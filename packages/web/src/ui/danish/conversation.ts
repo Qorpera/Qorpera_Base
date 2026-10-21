@@ -17,7 +17,6 @@ export const CONVERSATION: Record<string, string> = {
 		"Billeder understøttes ikke i gruppechats. Brug Virksomhedsfilen.",
 	"Open agent details": "Åbn agentdetaljer",
 	"Open group details": "Åbn gruppedetaljer",
-	"Open agent computer": "Åbn agentens computer",
 	Stop: "Stop",
 	"Sending messages is not available yet": "Beskeder kan ikke sendes endnu",
 	"Sending messages is not available yet. Your draft stays here.":

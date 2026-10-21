@@ -521,7 +521,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
-	"Rename agent": "Omdøb agent",
 	"{name} could not be renamed.": "{name} kunne ikke omdøbes.",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
 		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",

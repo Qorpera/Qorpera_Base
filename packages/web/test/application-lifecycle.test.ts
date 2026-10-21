@@ -75,6 +75,24 @@ function mounted(hash = "#/") {
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
 }
+/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
+function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
+	// jsdom does not implement the native dialog methods the card opens and closes with.
+	const dialog = HTMLDialogElement.prototype;
+	dialog.showModal ??= function (this: HTMLDialogElement) {
+		this.open = true;
+	};
+	dialog.show ??= dialog.showModal;
+	dialog.close ??= function (this: HTMLDialogElement) {
+		this.open = false;
+	};
+	root
+		.querySelector(`.rail [data-agent-id="${agentId}"], .rail [data-cofounder-id="${agentId}"]`)!
+		.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+	[...document.querySelectorAll<HTMLButtonElement>(".agent-card-link")]
+		.find((link) => link.textContent === line)!
+		.click();
+}
 /** A company of two with Members switched on (Interfaces C6a), so the rail has its Agents | Interfaces tabs. The cloud
  * answers no other RPC. */
 function withInterfacesTab(f: ReturnType<typeof mounted>): void {
@@ -757,7 +775,7 @@ describe("account and route ownership", () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		await draw();
-		f.root.querySelector<HTMLButtonElement>(".thread-computer:not([hidden])")!.click();
+		fromAgentCard(f.root, staff.id, "Computer");
 		const panel = f.root.querySelector<HTMLElement>(".computer-panel")!;
 		expect(panel.childElementCount).toBeGreaterThan(0);
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
@@ -776,6 +794,24 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(f.root.querySelector(".topbar .account-trigger")).not.toBeNull();
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
+	});
+
+	it("opens the agent's computer and routines from its card in the rail, in the agent's own chat", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/team`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		await draw();
+		expect(f.root.querySelector(".computer-panel")).toBeNull();
+		// Away from the chat, the card takes the member there and shows the computer once it opens.
+		fromAgentCard(f.root, staff.id, "Computer");
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(document.querySelector(".agent-card")).toBeNull();
+		expect(f.root.querySelectorAll("main .computer-panel")).toHaveLength(1);
+		// In the chat it opens there at once: the routines lie over the conversation.
+		fromAgentCard(f.root, staff.id, "Routines");
+		expect(f.root.querySelectorAll("main .thread-routines")).toHaveLength(1);
+		expect(f.root.querySelector<HTMLElement>("main .thread-conversation")?.inert).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 	});
 
 	it("keeps one rail placeholder while the company's agents load, then drops it", () => {

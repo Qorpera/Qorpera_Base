@@ -1,11 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { AgentDetails } from "../src/app/views/agent-details.ts";
+import { type AgentCardActions, AgentDetails } from "../src/app/views/agent-details.ts";
 import type { AgentDraft, WorkspaceActions } from "../src/app/workspace-actions.ts";
-import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
-import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
 import { FIGURE_IDS, figureFor, nativeColorOf } from "../src/ui/avatar.ts";
@@ -32,14 +30,19 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff, scope?: AbortSignal) {
+function open(
+	actions: WorkspaceActions = {},
+	agent: HostedStaffAgent = staff,
+	scope?: AbortSignal,
+	card?: AgentCardActions,
+) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [agent], loading: false });
 	const anchor = document.createElement("button");
 	document.body.append(anchor);
 	const onClose = vi.fn();
-	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope);
+	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope, card);
 	cleanup.push(() => {
 		details.dispose();
 		company.stop();
@@ -399,62 +402,54 @@ describe("agent pages", () => {
 		],
 		projects: [],
 	};
-	it("opens routines from the corner with a way back; responsibilities are the description, not a page", async () => {
-		const routines = {
-			list: vi.fn(async () => []),
-			runs: vi.fn(async () => []),
-			files: vi.fn(async (): Promise<ReadonlySet<string>> => new Set()),
-			open: vi.fn(async () => {
-				throw new Error("No routine to open");
-			}),
-			save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
-			setEnabled: vi.fn(async () => {}),
-			payer: vi.fn(async () => null),
-			setLogin: vi.fn(async () => null),
-		} satisfies WebRoutines;
-		const nativeSubscription = {
-			listConnections: vi.fn(async () => ({ connections: [] })),
-		} as unknown as WebNativeSubscription;
-		const f = open({ routines, nativeSubscription });
+	it("offers the computer and routines as lines and Hide and Delete as squares, each closing the card", () => {
+		const card = { computer: vi.fn(), routines: vi.fn(), hide: vi.fn(), remove: vi.fn() };
+		const f = open({}, staff, undefined, card);
 		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
 			item.getAttribute("aria-label"),
 		);
-		expect(tools).toEqual(["Routines", "Close agent details"]);
-		const toRoutines = named("Routines");
-		toRoutines.click();
-		// Until the first read answers, the page does not claim there are none.
-		expect(f.dialog.textContent).toContain("Reading routines…");
-		expect(f.dialog.textContent).not.toContain("has no routines yet");
-		await settle();
-		expect(f.dialog.dataset.page).toBe("routines");
-		expect(toRoutines.getAttribute("aria-pressed")).toBe("true");
-		expect(f.dialog.querySelector("h2")?.textContent).toBe("Routines");
-		expect(f.dialog.textContent).toContain(`${staff.displayName} has no routines yet.`);
-		expect(named("New routine")).toBeDefined();
-		expect(document.activeElement).toBe(named("Back to agent details"));
-		named("Back to agent details").click();
-		expect(f.dialog.dataset.page).toBe("details");
-		expect(f.dialog.contains(field("Agent name"))).toBe(true);
-		expect(document.activeElement).toBe(toRoutines);
+		expect(tools).toEqual(["Close agent details"]);
+		expect([...f.dialog.querySelectorAll(".agent-card-link")].map((item) => item.textContent)).toEqual([
+			"Computer",
+			"Routines",
+		]);
+		expect([...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.textContent)).toEqual([
+			"Hide",
+			"Delete",
+		]);
+		expect(f.dialog.querySelector(".agent-card-square:last-child")?.classList.contains("is-danger")).toBe(true);
+		named("Routines").click();
+		expect(card.routines).toHaveBeenCalledTimes(1);
+		expect(f.dialog.open).toBe(false);
+		expect(f.onClose).toHaveBeenCalledTimes(1);
+		const again = open({}, staff, undefined, card);
+		named("Computer").click();
+		expect(card.computer).toHaveBeenCalledTimes(1);
+		expect(again.dialog.open).toBe(false);
+	});
+
+	it("shows a hidden agent's square as Show, and leaves out what the member can't do", () => {
+		const f = open({}, staff, undefined, { hidden: true, hide: vi.fn() });
+		expect([...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.textContent)).toEqual(["Show"]);
+		expect(f.dialog.querySelector(".agent-card-links")).toBeNull();
+		const bare = open();
+		expect(bare.dialog.querySelector(".agent-card-links, .agent-card-squares")).toBeNull();
+	});
+
+	it("keeps responsibilities as the description, not a page of their own", async () => {
+		const f = open();
 		f.company.store.set({ organization });
 		await settle();
 		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
 		expect(f.dialog.textContent).not.toContain("Product quality");
 		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
 		expect(field("Responsibilities").value).toBe(staff.charter);
-		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
-		await settle();
-		toRoutines.click();
-		await settle();
-		// The list is read again each time the page opens, under the agent's current name.
-		expect(routines.list).toHaveBeenCalledTimes(2);
-		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 });
 
-describe("the popup's frame", () => {
-	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+describe("the card's frame", () => {
+	it("sizes the agent card to its content, beside its row, and leaves the group popup's frame alone", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
 		document.head.append(style);
@@ -463,23 +458,17 @@ describe("the popup's frame", () => {
 		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
 		const declared = (selector: string, property: string) =>
 			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
-		// The agent popup carries the class with the static height; the shared
-		// frame class does not, so the group popup keeps sizing itself.
-		expect(f.dialog.classList.contains("staff-details")).toBe(true);
-		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
-		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
+		expect(f.dialog.classList.contains("agent-card")).toBe(true);
 		expect(declared(".agent-details", "height")).toBeFalsy();
-		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
-		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
-		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
-			"none",
+		expect(declared(".agent-card", "height")).toBeFalsy();
+		expect(declared(".agent-card-square", "width")).toBe("50px");
+		// The description grows with its text up to eight lines; elsewhere the sizer still grows it to 13.
+		expect(declared(".agent-card .agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/8 \* 1\.5em|12em/,
 		);
 		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
 			/13 \* 1\.6em|20\.8em/,
 		);
 		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
-		named("Routines").click();
-		expect(f.dialog.dataset.page).toBe("routines");
-		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

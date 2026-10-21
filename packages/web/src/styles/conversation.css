@@ -6,6 +6,9 @@
 .icon-button[hidden] { display: none; }
 .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
 .thread-header { display: flex; align-items: center; gap: 10px; height: var(--titlebar-height); flex: none; min-width: 0; padding: 0 14px; background: var(--header-surface); border-bottom: 1px solid var(--sidebar-divider); }
+/* An agent's own chat has no header on a wide screen: the rail names the agent and right-clicking it opens its card.
+ * A phone keeps the header for its navigation button and the card. */
+@media (min-width: 761px) { .thread-header.is-agent { display: none; } }
 .thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: calc(100% - 42px); padding: 3px 5px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
 .thread-identity:hover:not(:disabled), .thread-identity[aria-expanded=true] { background: var(--hover); }
 .thread-identity:disabled { cursor: default; }
@@ -13,20 +16,13 @@
 .thread-identity .figure { width: 28px; height: 28px; }
 .thread-identity > .icon { width: 11px; height: 11px; color: var(--text-soft); }
 .thread-identity:disabled > .icon { display: none; }
-/* The computer button is a plain disc: a light wash on hover, a slightly deeper one while the computer is open. No colour, no border. */
-.thread-computer { margin-left: auto; border-radius: 50%; transition: background-color 120ms ease, color 120ms ease; }
-/* Who is here: the other members with this conversation open, as overlapping faces before the computer button. */
+/* Who is here: the other members with this conversation open, as overlapping faces at the end of the header. */
 .thread-presence { display: flex; flex: none; align-items: center; margin-left: auto; padding-left: 4px; }
 .thread-presence[hidden] { display: none; }
-.thread-presence:not([hidden]) + .thread-computer { margin-left: 6px; }
 .thread-presence > .person-avatar { width: 28px; height: 28px; font-size: 11px; box-shadow: 0 0 0 2px var(--header-surface); animation: presence-in 220ms cubic-bezier(.2,.7,.2,1) both; }
 .thread-presence > .person-avatar + .person-avatar, .thread-presence > .thread-presence-more { margin-left: -5px; }
 .thread-presence-more { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 14px; background: var(--pane-strong); box-shadow: 0 0 0 2px var(--header-surface); color: var(--text-muted); font-size: 11px; font-weight: 600; }
 @keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.thread-computer:hover:not(:disabled) { color: var(--text); }
-.thread-computer:active:not(:disabled) { background: color-mix(in srgb, var(--text) 18%, transparent); }
-.thread-computer[aria-expanded=true] { color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
-.thread-computer[aria-expanded=true]:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 16%, transparent); }
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
 .thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 /* Bubbles wrap and tables and code scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
@@ -373,26 +369,14 @@
 .dialog-page-title h2 { font-size: 15px; font-weight: 650; line-height: 22px; letter-spacing: -.01em; }
 .dialog-page-title p { margin: 0; color: var(--text-muted); font-size: 12px; }
 
-/* Agent details: a card under the conversation title. Its pages share the
- * frame, and only the page scrolls, so the corner buttons never do. */
+/* Agent and group details: a card beside the agent's row in the rail (an agent) or under the
+ * conversation title (a group). Only the content scrolls, so the corner buttons never do. */
 .agent-details { z-index: 100; top: 56px; width: min(720px, calc(100vw - 24px)); margin: 0; max-height: calc(100dvh - 72px); overflow: hidden; }
 .agent-details[open] { display: flex; flex-direction: column; }
 .agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-/* An agent's popup has one static height on every page: the details page with
- * an 8-line description, as tall as it gets. The parts: 2px border, 28px
- * content padding above and below, 132px identity row, the description's 6px
- * margin, 16px padding and 8 lines of 1.6 x 13px. The save status sits in
- * the bottom padding and takes no row. A short description or a short
- * routine list never shrinks it; only a short viewport does, through the
- * max-height above. It is as wide on every page too, wide enough that an open
- * routine reads its instruction beside its facts. The group popup, which
- * shares the frame, keeps its width and sizes itself to its content. */
-.staff-details { --agent-details-height: calc(2px + 28px + 28px + 132px + 6px + 16px + 8 * 1.6 * 13px); width: min(880px, calc(100vw - 24px)); height: var(--agent-details-height); }
-.staff-details > .surface-dialog-content { position: relative; padding-bottom: 28px; }
 .agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
-.agent-page-button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
 .agent-page { animation: agent-page-in 180ms cubic-bezier(.2, .7, .2, 1) both; }
 @keyframes agent-page-in { from { opacity: 0; transform: translateY(5px); } }
 .agent-page-empty { display: grid; justify-items: center; gap: 10px; padding: 40px 16px 28px; text-align: center; color: var(--text-soft); }
@@ -464,17 +448,44 @@
 .agent-inline-description > .agent-inline-size::after { min-height: calc(5 * 1.6em); max-height: calc(13 * 1.6em); white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-inline-description textarea { height: 100%; resize: none; overflow-y: auto; overflow-wrap: anywhere; line-height: inherit; scrollbar-width: thin; }
 .agent-inline-description > .icon { position: absolute; top: 12px; right: 12px; }
-/* In the agent popup the description fills what the static frame leaves under
- * the identity, never less than five lines, and scrolls inside that box: its
- * length does not size the panel, and the sizer's mirror is not needed. */
-.agent-details-page { display: flex; flex-direction: column; min-height: 100%; }
-.agent-details-page .agent-inline-description { display: flex; flex: 1 1 auto; flex-direction: column; min-height: calc(5 * 1.6em + 16px); }
-.agent-details-page .agent-inline-description > .agent-inline-size { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
-.agent-details-page .agent-inline-description > .agent-inline-size::after { display: none; }
-.agent-details-page .agent-inline-description textarea { flex: 1 1 auto; height: auto; }
-/* The save status lives in the strip under the description, inside the
+/* The save status of the group popup lives in the strip under the description, inside the
  * content's bottom padding, so the box keeps its size when it comes and goes. */
 .agent-details-status { position: absolute; left: 24px; right: 24px; bottom: 0; display: flex; align-items: center; gap: 10px; height: 28px; margin: 0; color: var(--text-muted); font-size: 12px; }
+/* The agent's card, beside its row in the rail: figure and names, the description, then the computer and routines
+ * as plain lines and Hide and Delete as two squares. It sizes to its content. */
+.agent-card { width: min(300px, calc(100vw - 24px)); }
+.agent-details.agent-card > .surface-dialog-content { position: relative; padding: 20px 16px 14px; }
+.agent-card .surface-tools { top: 6px; right: 6px; }
+.agent-card .agent-details-identity { grid-template-columns: 64px minmax(0, 1fr); gap: 12px; min-height: 0; padding: 0 22px 2px 0; }
+.agent-card .agent-figure-button { width: 64px; height: 64px; }
+.agent-card .agent-figure-stage .figure { width: 58px; height: 58px; }
+.agent-card .agent-figure-pencil .icon { width: 20px; height: 20px; }
+.agent-card .agent-figure-picker::before { left: 25px; }
+.agent-card .agent-inline-name { font-size: 17px; }
+.agent-card .agent-inline-title { font-size: 12.5px; }
+.agent-card .agent-inline-description { margin-top: 8px; padding-right: 30px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+/* The description grows with its text, from one line up to eight. */
+.agent-card .agent-inline-description > .agent-inline-size::after { min-height: 1.5em; max-height: calc(8 * 1.5em); }
+/* The field's own rows must not size the box; the sizer's mirror of the text does. */
+.agent-card .agent-inline-description textarea { height: 0; min-height: 100%; }
+.agent-card-links { display: grid; margin: 8px -6px 0; }
+.agent-card-link { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
+.agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
+.agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
+.agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
+.agent-card-squares { display: flex; gap: 8px; margin-top: 10px; }
+.agent-card-square { display: grid; place-items: center; align-content: center; gap: 3px; width: 50px; height: 46px; padding: 0; border: 0; border-radius: 11px; background: var(--pane-strong); color: var(--text-muted); font: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.agent-card-square:hover, .agent-card-square:focus-visible { background: color-mix(in srgb, var(--text) 11%, transparent); color: var(--text); outline: none; }
+.agent-card-square.is-danger { color: var(--danger); }
+.agent-card-square.is-danger:hover, .agent-card-square.is-danger:focus-visible { background: var(--danger-soft); color: var(--danger); }
+.agent-card-square > .icon { width: 16px; height: 16px; }
+.agent-card .agent-details-status { position: static; height: auto; min-height: 0; margin-top: 8px; }
+.agent-card .agent-details-status:empty { display: none; }
+.agent-card { animation: agent-card-in 170ms cubic-bezier(.2, .9, .3, 1.15) both; }
+@keyframes agent-card-in { from { opacity: 0; transform: translateX(-6px) scale(.98); } }
+@media (prefers-reduced-motion: reduce) { .agent-card { animation: none; } }
+/* The agent's routines over its chat: a page of the chat, not a panel. */
+.thread-routines { position: absolute; inset: 0; z-index: 28; overflow: auto; background: var(--bg); animation: pair-enter 160ms ease both; }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
@@ -573,84 +584,6 @@
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
 	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter, .computer-panel .computer-close, .computer-panel .screen-viewer-embedded::after { transition: none; }
 }
-/* Routines: one card each, its name, when it runs and a switch that pauses it.
- * A click opens the card in place: the instruction on the left, the facts on
- * the right, Edit by the switch. An open card fits the page under its heading
- * (1px border, 66px head, 1px rule, 14px + 20px above the instruction, 16px
- * below it and 1px border around 8 lines of it), so the instruction scrolls
- * inside the card and Edit and the facts stay in view. */
-@property --routine-above { syntax: "<length>"; inherits: false; initial-value: 0px; }
-@property --routine-below { syntax: "<length>"; inherits: false; initial-value: 0px; }
-.routine-list { display: grid; gap: 8px; }
-.routine-card { border: 1px solid var(--border); border-radius: var(--radius-lg); transition: border-color 160ms ease; }
-.routine-card.is-open { border-color: var(--border-strong); }
-.routine-card-head { display: flex; align-items: center; gap: 10px; padding-right: 16px; border-radius: calc(var(--radius-lg) - 1px); cursor: pointer; transition: background-color 120ms ease; }
-.routine-card-head:has(> .routine-card-summary:hover) { background: var(--hover); }
-.routine-card.is-open > .routine-card-head { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.routine-card-summary { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; padding: 13px 0 13px 16px; border: 0; border-radius: inherit; background: none; color: inherit; text-align: left; cursor: pointer; }
-.routine-card-summary:focus-visible { outline-offset: -2px; }
-.routine-card-summary strong { font-size: 13.5px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
-.routine-card-summary span { color: var(--text-muted); font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
-.routine-card-state { flex: none; color: var(--text-soft); font-size: 12px; }
-/* Edit keeps its room while the card is shut, so opening never rewraps the name. */
-.routine-card .routine-card-edit { flex: none; transition: background 120ms ease, border-color 120ms ease, opacity 160ms ease, visibility 0s; }
-.routine-card:not(.is-open) .routine-card-edit { visibility: hidden; opacity: 0; transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease, visibility 0s 120ms; }
-.routine-switch { position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background-color 180ms ease, opacity 160ms ease; }
-.routine-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgb(0 0 0 / 22%); transition: translate 200ms cubic-bezier(.2, .7, .2, 1), background-color 180ms ease; }
-.routine-switch[aria-checked="true"] { background: var(--primary); }
-.routine-switch[aria-checked="true"]::after { translate: 16px 0; background: var(--on-primary); }
-/* Waiting while another switch moves: a little faded. Locked for a member who
- * cannot manage routines: fainter, with a darker track when off so it still reads. */
-.routine-switch[aria-disabled="true"] { cursor: default; opacity: .7; }
-.routine-switch.is-locked { opacity: .55; }
-.routine-switch.is-locked:not([aria-checked="true"]) { background: var(--text-soft); }
-.routine-card-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 220ms cubic-bezier(.2, .7, .2, 1); }
-.routine-card.is-open > .routine-card-body { grid-template-rows: 1fr; }
-.routine-card-clip { min-height: 0; overflow: hidden; }
-.routine-card-inner { display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 32px; margin: 0 16px; padding: 14px 0 16px; border-top: 1px solid var(--border); opacity: 0; transition: opacity 140ms ease; }
-.routine-card.is-open .routine-card-inner { opacity: 1; transition-delay: 60ms; }
-.routine-card-instruction { min-width: 0; border-radius: 4px; }
-.routine-card-instruction:has(> .routine-card-prompt:focus-visible) { outline: 2px solid var(--ring); outline-offset: 4px; }
-.routine-card-instruction h3, .routine-card-fact dt { margin: 0 0 4px; color: var(--text-soft); font-size: 11.5px; font-weight: 500; line-height: 16px; }
-.routine-card-prompt {
-	max-height: calc(8 * 1.6 * 13px); overflow: auto; overscroll-behavior: contain; scrollbar-width: none; outline: none;
-	white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6;
-	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--routine-above), #000 calc(100% - var(--routine-below)), transparent);
-	mask-image: linear-gradient(to bottom, transparent, #000 var(--routine-above), #000 calc(100% - var(--routine-below)), transparent);
-	transition: --routine-above 160ms ease, --routine-below 160ms ease;
-}
-.routine-card-prompt::-webkit-scrollbar { display: none; }
-.routine-card-prompt[data-above] { --routine-above: 14px; }
-.routine-card-prompt[data-below] { --routine-below: 28px; }
-.routine-card-facts { display: grid; align-content: start; gap: 12px; min-width: 0; margin: 0; }
-.routine-card-fact dd { margin: 0; font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
-.routine-card-when { display: flex; gap: 6px; }
-.routine-card-when > .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-muted); }
-.routine-card-trigger { display: block; }
-.routine-card-when small, .routine-login small, .routine-login p { display: block; margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
-/* "Choose a login" under who pays, for a routine whose login cannot pay. */
-.routine-login { display: grid; justify-items: start; gap: 6px; margin-top: 6px; }
-.routine-login select { width: 100%; min-width: 0; font-size: 12.5px; }
-.routine-login-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.routine-list-footer { padding-top: 16px; }
-.agent-routines > .surface-status { margin: 0 0 12px; }
-.routine-editor { display: grid; gap: 14px; font-size: 12px; }
-.routine-editor label { display: grid; gap: 6px; font-weight: 500; }
-.routine-editor label small { color: var(--text-muted); font-weight: 400; line-height: 1.5; }
-.routine-editor input[type=text], .routine-editor textarea, .routine-editor select { width: 100%; min-width: 0; font-size: 13px; }
-.routine-editor textarea { resize: vertical; }
-.routine-when { display: grid; gap: 10px; }
-.routine-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.routine-inline input[type=number] { width: 84px; }
-.routine-inline input[type=time] { width: 110px; }
-.routine-inline input[type=text] { flex: 1; min-width: 140px; }
-.routine-days { display: flex; flex-wrap: wrap; gap: 6px; }
-.routine-editor .routine-days label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; font-weight: 400; cursor: pointer; }
-.routine-days input[type=checkbox], .routine-wait input[type=checkbox] { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; }
-.routine-editor .routine-wait { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
-/* Its own `display` beats the dialog's [hidden] rule, so restore it. */
-.routine-editor .routine-wait[hidden] { display: none; }
-.routine-editor .surface-actions { margin: 4px 0 0; }
 
 /* New conversation: a "To:" field with one short list hanging from it. */
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -709,7 +642,6 @@
 	.composer { padding: 8px 12px max(10px, env(safe-area-inset-bottom)); }
 	.agent-details { left: 12px; top: 60px; width: calc(100vw - 24px); }
 	.surface-dialog-content { padding: 30px 18px 20px; }
-	.staff-details > .surface-dialog-content { padding-bottom: 30px; }
 	.agent-details-status { left: 18px; right: 18px; height: 30px; }
 	.dialog-page-header { margin-inline: -18px; }
 	.new-conversation-body { padding: 26px 18px; }
@@ -719,9 +651,6 @@
 	.agent-figure-picker { left: -4px; }
 	.agent-figure-picker::before { left: 38px; }
 	.agent-inline-name { font-size: 22px; }
-	/* On a phone the instruction flows and the page alone scrolls. */
-	.routine-card-inner { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-	.routine-card-prompt { max-height: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
 	/* The list spans the header on a phone. */
 	.recipient-entry { position: static; }
 	.recipient-menu { left: 8px; right: 8px; width: auto; }
@@ -731,7 +660,7 @@
 	.computer-panel, .agent-page, .agent-figure-picker, .thread-presence > .person-avatar, .mention-picker { animation: none; }
 	.draft-notch.is-typing .draft-dots i { animation: none; opacity: 1; }
 	.draft-peek { transition: none; }
-	.composer-shell, .composer-switch, .composer-switch::after, .routine-card-body, .routine-card-inner, .routine-switch, .routine-switch::after { transition: none; }
+	.composer-shell, .composer-switch, .composer-switch::after { transition: none; }
 }
 
 /* Group details use the same anchored frame as an agent's details. */
@@ -856,30 +785,48 @@
 .coding-field-input[aria-disabled="true"] { cursor: default; }
 .coding-talk-locked { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 6px 16px; border-radius: 22px; background: var(--hover); box-sizing: border-box; font-size: 12.5px; line-height: 16px; color: var(--text-muted); text-align: center; }
 .coding-talk-locked .coding-glyph { margin: 0; width: 12px; height: 12px; }
-/* A session still going, beside the agent in the header: the agent's figure wearing the harness mark, a little
- * smaller than the agent's own and standing on the same line (bottoms aligned), with a thin rule before each.
- * Hover or focus unfolds the session's title into a pill that floats over the header, so nothing beside it moves. */
-.thread-coding-sessions { display: flex; flex: none; align-items: center; gap: 14px; margin-left: 4px; }
-.thread-coding-sessions[hidden] { display: none; }
-.coding-slot { position: relative; display: block; flex: none; width: 30px; height: 36px; padding: 0; border: 0; border-radius: 18px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; line-height: 16px; text-align: left; cursor: pointer; }
-.coding-slot::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: -8px; width: 1px; background: var(--border); pointer-events: none; }
-@media (forced-colors: active) { .coding-slot::before { background: CanvasText; } }
-.coding-slot:hover, .coding-slot:focus-visible { z-index: 2; }
-/* The ring is the pill's inset shadow; the clear outline stands in where forced colours drop shadows. */
-.coding-slot:focus-visible { outline: 2px solid transparent; outline-offset: 1px; }
-/* Bottom at 32px of the 36px slot: the agent's 28px figure ends on the same line in its centred 34px button. */
-.coding-slot-avatar { position: absolute; z-index: 1; top: 10px; left: 4px; display: block; width: 22px; height: 22px; pointer-events: none; }
-.coding-slot-avatar .figure { width: 22px; height: 22px; }
-.coding-slot-avatar .coding-badge { right: -3px; bottom: -2px; width: 11px; height: 11px; border-width: 1.25px; }
-.coding-slot-avatar .coding-badge svg { width: 6.5px; height: 6.5px; }
-.coding-slot-name { position: absolute; top: 0; left: 0; display: block; box-sizing: border-box; width: max-content; max-width: 30px; height: 36px; padding: 10px 14px 10px 36px; border-radius: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: transparent; background: transparent; pointer-events: none; transition: max-width 200ms ease, background-color 140ms ease, color 140ms ease; }
-.coding-slot:hover .coding-slot-name, .coding-slot:focus-visible .coding-slot-name { max-width: 280px; color: var(--text); background: color-mix(in srgb, var(--text) 8%, var(--header-surface)); }
-/* Under the pointer the open pill takes it, so moving onto the title keeps it open and a click there opens the
- * session. Opened by the keyboard it stays see-through to clicks on what lies under it. */
-.coding-slot:hover .coding-slot-name { pointer-events: auto; }
-.coding-slot.coding-slot-yield .coding-slot-name { pointer-events: none; }
-.coding-slot:focus-visible .coding-slot-name { box-shadow: inset 0 0 0 2px var(--text); }
-@media (prefers-reduced-motion: reduce) { .coding-slot-name { transition: none; } }
+/* The sessions still going: one pill above the composer, with a gap under it. Hover, focus or a tap unfolds it
+ * upward over the messages into a line per session, so the composer and the messages never move. */
+.coding-dock { position: relative; z-index: 6; flex: none; height: 32px; margin: 6px 16px 0; }
+.coding-dock[hidden] { display: none; }
+.coding-pill { position: absolute; left: 0; bottom: 0; display: flex; flex-direction: column; justify-content: flex-end; box-sizing: border-box; width: min(300px, 100%); max-height: 32px; padding: 0 3px; overflow: hidden; border-radius: 16px; background: color-mix(in srgb, var(--text) 5%, var(--bg)); box-shadow: 0 0 0 1px var(--border); transition: width 320ms cubic-bezier(.2, .9, .3, 1), max-height 360ms cubic-bezier(.2, .9, .3, 1), padding 320ms ease, border-radius 300ms ease, background-color 300ms ease, box-shadow 300ms ease; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) { width: min(500px, 100%); max-height: 240px; padding-top: 5px; border-radius: 17px; background: var(--overlay); box-shadow: 0 12px 34px rgb(18 18 17 / 15%), 0 0 0 1px var(--border); }
+/* A single session is the pill's own line: hover only widens it to the whole title and its action. */
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) { max-height: 32px; padding-top: 0; }
+.coding-pill.is-single .coding-pill-summary > .icon { display: none; }
+.coding-pill-summary > .coding-pill-action { display: none; }
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) .coding-pill-summary > .coding-pill-action { display: inline-flex; }
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) .coding-pill-label { max-width: 60%; }
+/* Five lines show at once; more scroll inside the pill, so every session stays reachable and the summary stays put. */
+.coding-pill-rows { display: flex; flex-direction: column; flex: none; max-height: calc(5 * 36px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.coding-pill-summary, .coding-pill-row { display: flex; align-items: center; gap: 9px; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.coding-pill-summary { flex: none; height: 32px; padding: 0 9px 0 6px; font-size: 12.5px; }
+.coding-pill-summary > .icon { flex: none; width: 12px; height: 12px; margin-left: auto; color: var(--text-soft); rotate: -90deg; transition: rotate 300ms ease; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-summary > .icon { rotate: 90deg; }
+.coding-pill-row { flex: none; height: 36px; padding: 0 8px 0 6px; border-radius: 11px; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity 200ms ease, transform 300ms cubic-bezier(.2, .9, .3, 1), background-color 120ms ease; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row { opacity: 1; transform: none; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(1) { transition-delay: 40ms; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(2) { transition-delay: 80ms; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(n + 3) { transition-delay: 120ms; }
+.coding-pill-row:hover, .coding-pill-row:focus-visible, .coding-pill-summary:focus-visible { background: var(--hover); outline: none; }
+.coding-pill-summary:focus-visible { border-radius: 14px; }
+.coding-pill-faces { display: flex; flex: none; gap: 3px; }
+.coding-pill-face { position: relative; display: block; flex: none; width: 20px; height: 20px; }
+.coding-pill-face .figure { width: 100%; height: 100%; }
+.coding-pill-face .coding-badge { right: -3px; bottom: -2px; width: 10px; height: 10px; border-width: 1.25px; border-color: var(--bg); }
+.coding-pill-face .coding-badge svg { width: 6px; height: 6px; }
+.coding-pill-row .coding-pill-face { width: 24px; height: 24px; }
+.coding-pill-row .coding-pill-face .coding-badge { width: 11px; height: 11px; }
+.coding-pill-row .coding-pill-face .coding-badge svg { width: 6.5px; height: 6.5px; }
+.coding-pill-label, .coding-pill-title { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.coding-pill-note, .coding-pill-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.coding-pill-note[data-tone="attention"], .coding-pill-row[data-tone="attention"] .coding-pill-status { color: #8a5a00; }
+.coding-pill-note[data-tone="failed"], .coding-pill-row[data-tone="failed"] .coding-pill-status { color: var(--danger); }
+.coding-pill-action { display: inline-flex; flex: none; align-items: center; gap: 1px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
+.coding-pill-row[data-tone="attention"] .coding-pill-action, .coding-pill-note[data-tone="attention"] ~ .coding-pill-action { color: var(--blue); font-weight: 600; }
+.coding-pill-action .icon { width: 11px; height: 11px; }
+@media (forced-colors: active) { .coding-pill { border: 1px solid CanvasText; } }
+@media (prefers-reduced-motion: reduce) { .coding-pill, .coding-pill-row, .coding-pill-summary > .icon { transition: none; } }
 /* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
 .coding-thread { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); animation: computer-enter 160ms ease both; }
 .coding-thread-header { gap: 8px; }

@@ -12,10 +12,11 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "../src/cloud/coding-session.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
 import {
+	CodingPill,
 	CodingSessionElement,
 	type CodingSessionNames,
-	CodingSessionSlot,
 	codingSessionActivity,
 	codingSessionLine,
 	codingSessionStandby,
@@ -1118,7 +1119,7 @@ describe("the element in the thread", () => {
 	});
 });
 
-describe("the session in the header", () => {
+describe("the sessions' pill above the composer", () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ now: NOW });
 	});
@@ -1128,38 +1129,348 @@ describe("the session in the header", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("is the agent's figure wearing the harness mark, on its own clock, and unfolds the title", () => {
+	it("is one session's line: the agent's figure wearing the harness mark, its title, status and Open", () => {
 		const motion = stubFigureMotion();
 		const open = vi.fn();
-		const slot = new CodingSessionSlot(WORKER, open);
-		document.body.append(slot.el);
-		slot.update(codingSession({ harness: "codex" }), staff, owner);
-		expect(slot.el.querySelector(".coding-slot-avatar .figure")).not.toBeNull();
-		expect(slot.el.querySelector(".coding-slot-avatar .coding-badge-codex")).not.toBeNull();
-		// The button names the session; the badge carries no title of its own over it.
-		expect(slot.el.querySelector(".coding-badge")?.hasAttribute("title")).toBe(false);
-		expect(slot.el.querySelector(".coding-slot-name")?.textContent).toBe("Fix the delay after send");
-		expect(slot.el.title).toBe(
-			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed",
+		const pill = new CodingPill(open);
+		document.body.append(pill.el);
+		pill.update(
+			[codingSession({ harness: "codex" })],
+			() => staff,
+			() => owner,
 		);
-		expect(slot.el.getAttribute("aria-label")).toBe(
+		expect(pill.el.hidden).toBe(false);
+		expect(pill.el.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);
+		// One session has no rows: the summary is its line.
+		expect(pill.el.querySelector(".coding-pill-rows")?.childElementCount).toBe(0);
+		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(summary.querySelectorAll(".coding-pill-face")).toHaveLength(1);
+		expect(summary.querySelector(".coding-pill-face .figure")).not.toBeNull();
+		expect(summary.querySelector(".coding-pill-face .coding-badge-codex")).not.toBeNull();
+		// The line names the session; the badge carries no title of its own over it.
+		expect(summary.querySelector(".coding-badge")?.hasAttribute("title")).toBe(false);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("Fix the delay after send");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe(
+			"Working · 4 min · running vitest in packages/web · 3 files changed",
+		);
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("working");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		expect(summary.dataset.workerId).toBe(WORKER);
+		expect(summary.hasAttribute("aria-expanded")).toBe(false);
+		expect(summary.getAttribute("aria-label")).toBe(
 			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed. Open the session",
 		);
 		expect(motion).toHaveBeenCalledTimes(1);
-		expect(motion.mock.calls[0]?.[4]).toMatchObject({ activity: "Working", identity: `coding:${WORKER}` });
+		expect(motion.mock.calls[0]?.[4]).toMatchObject({ activity: "Working" });
 		// A new listing with the same motion keeps the figure (and its motion) as it is.
-		slot.update(
-			codingSession({ harness: "codex", lastStep: "npm test", updatedAt: "2026-09-22T10:03:30Z" }),
-			staff,
-			owner,
+		pill.update(
+			[codingSession({ harness: "codex", lastStep: "npm test", updatedAt: "2026-09-22T10:03:30Z" })],
+			() => staff,
+			() => owner,
 		);
 		expect(motion).toHaveBeenCalledTimes(1);
-		// A question makes it wait, as an agent waits on the member.
-		slot.update(codingSession({ harness: "codex", phase: "awaiting_input" }), staff, owner);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toContain("npm test");
+		// A question makes it wait, as an agent waits on the member, and the line asks for the answer.
+		pill.update(
+			[codingSession({ harness: "codex", phase: "awaiting_input" })],
+			() => staff,
+			() => owner,
+		);
 		expect(motion).toHaveBeenCalledTimes(2);
 		expect(motion.mock.calls[1]?.[4]).toMatchObject({ activity: "Waiting" });
-		expect(slot.el.dataset.tone).toBe("attention");
-		slot.el.click();
-		expect(open).toHaveBeenCalledWith(slot.el);
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("attention");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		// A click opens the session; it never unfolds.
+		summary.click();
+		expect(open).toHaveBeenCalledWith(WORKER, summary);
+		expect(pill.el.querySelector<HTMLElement>(".coding-pill")?.dataset.open).not.toBe("true");
+		// With none going the pill hides.
+		pill.update(
+			[],
+			() => staff,
+			() => owner,
+		);
+		expect(pill.el.hidden).toBe(true);
+	});
+
+	it("gathers several sessions under a count, unfolds them into lines and opens each one", () => {
+		stubFigureMotion();
+		const open = vi.fn();
+		const pill = new CodingPill(open);
+		document.body.append(pill.el);
+		const second = codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:01:00Z" });
+		pill.update(
+			[codingSession(), second],
+			() => staff,
+			() => owner,
+		);
+		const box = pill.el.querySelector<HTMLElement>(".coding-pill")!;
+		expect(box.classList.contains("is-single")).toBe(false);
+		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(summary.querySelectorAll(".coding-pill-faces .coding-pill-face")).toHaveLength(2);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("2 coding agents");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("Working");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("");
+		expect(summary.dataset.workerId).toBeUndefined();
+		expect(summary.getAttribute("aria-label")).toBe("2 coding agents · Working");
+		// The lines, oldest first, each with its figure, title, status and Open.
+		const rows = [...pill.el.querySelectorAll<HTMLButtonElement>(".coding-pill-rows > .coding-pill-row")];
+		expect(rows.map((row) => row.dataset.workerId)).toEqual([WORKER, id(902)]);
+		expect(rows[0]?.querySelector(".coding-pill-face .coding-badge-claude-code")).not.toBeNull();
+		expect(rows[0]?.querySelector(".coding-pill-title")?.textContent).toBe("Fix the delay after send");
+		expect(rows[0]?.querySelector(".coding-pill-status")?.textContent).toContain("running vitest");
+		expect(rows[0]?.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		expect(rows[1]?.getAttribute("aria-label")).toMatch(/^Second · Working.*\. Open the session$/);
+		// The summary unfolds them; Escape folds them and gives focus back to it.
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		expect(summary.getAttribute("aria-expanded")).toBe("true");
+		rows[1]!.focus();
+		rows[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(box.dataset.open).toBe("false");
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(summary);
+		// Focus leaving the pill folds it too.
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+		expect(box.dataset.open).toBe("false");
+		rows[1]!.click();
+		expect(open).toHaveBeenCalledWith(id(902), rows[1]);
+		// Who needs an answer is counted on the summary, and the waiting line asks for it.
+		const asked = (session: CodingSession) => ({ ...session, phase: "awaiting_input" as const });
+		pill.update(
+			[asked(codingSession()), second],
+			() => staff,
+			() => owner,
+		);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("1 needs you");
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("attention");
+		expect(rows[0]?.dataset.tone).toBe("attention");
+		expect(rows[0]?.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		pill.update(
+			[asked(codingSession()), asked(second)],
+			() => staff,
+			() => owner,
+		);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("2 need you");
+		// Down to one, the summary is that session's line again.
+		pill.update(
+			[second],
+			() => staff,
+			() => owner,
+		);
+		expect(pill.el.querySelector(".coding-pill-rows")?.childElementCount).toBe(0);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("Second");
+		expect(summary.hasAttribute("aria-expanded")).toBe(false);
+		expect(summary.dataset.workerId).toBe(id(902));
+	});
+
+	it("folds on the member's word: Escape or the open summary, until the pointer and focus have both left", () => {
+		stubFigureMotion();
+		const pill = new CodingPill(vi.fn());
+		document.body.append(pill.el);
+		const second = codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:01:00Z" });
+		pill.update(
+			[codingSession(), second],
+			() => staff,
+			() => owner,
+		);
+		const box = pill.el.querySelector<HTMLElement>(".coding-pill")!;
+		const summary = box.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		const pressEscape = (target: HTMLElement) => {
+			const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			return event;
+		};
+		// The open summary folds it, and stays folded under the pointer and focus.
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		summary.click();
+		expect(box.dataset.open).toBe("false");
+		expect(box.dataset.folded).toBe("true");
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		// A click unfolds it again.
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		expect(box.dataset.folded).toBeUndefined();
+		// Escape from a line folds it onto the summary; a second Escape is not the pill's and goes on.
+		const row = box.querySelector<HTMLButtonElement>(".coding-pill-row")!;
+		row.focus();
+		expect(pressEscape(row).defaultPrevented).toBe(true);
+		expect(box.dataset.open).toBe("false");
+		expect(box.dataset.folded).toBe("true");
+		expect(document.activeElement).toBe(summary);
+		expect(pressEscape(summary).defaultPrevented).toBe(false);
+		// The pointer leaving while focus is still inside keeps the fold; focus leaving (not hovered) ends it.
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		expect(box.dataset.folded).toBe("true");
+		summary.blur();
+		expect(box.dataset.folded).toBeUndefined();
+		// Unfolded by focus alone (no click), Escape still folds it.
+		summary.focus();
+		expect(pressEscape(summary).defaultPrevented).toBe(true);
+		expect(box.dataset.folded).toBe("true");
+		expect(box.dataset.open).toBe("false");
+		// Folded by a click with focus elsewhere: a touch leaving keeps it, the mouse leaving ends it.
+		summary.blur();
+		summary.click();
+		summary.click();
+		expect(box.dataset.folded).toBe("true");
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "touch" }));
+		expect(box.dataset.folded).toBe("true");
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		expect(box.dataset.folded).toBeUndefined();
+		// One session folds the same way, and never opens.
+		pill.update(
+			[second],
+			() => staff,
+			() => owner,
+		);
+		summary.focus();
+		expect(pressEscape(summary).defaultPrevented).toBe(true);
+		expect(box.dataset.folded).toBe("true");
+		expect(box.dataset.open).toBe("false");
+		expect(summary.hasAttribute("aria-expanded")).toBe(false);
+		expect(document.activeElement).toBe(summary);
+		expect(pressEscape(summary).defaultPrevented).toBe(false);
+		summary.blur();
+		expect(box.dataset.folded).toBeUndefined();
+	});
+
+	it("folds a hovered pill on Escape from the composer, and keeps folded lines out of reach", () => {
+		stubFigureMotion();
+		const lifetime = new AbortController();
+		const pill = new CodingPill(vi.fn(), lifetime.signal);
+		const composer = document.createElement("textarea");
+		document.body.append(composer, pill.el);
+		const second = codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:01:00Z" });
+		pill.update(
+			[codingSession(), second],
+			() => staff,
+			() => owner,
+		);
+		const box = pill.el.querySelector<HTMLElement>(".coding-pill")!;
+		const rows = box.querySelector<HTMLElement>(".coding-pill-rows")!;
+		const summary = box.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		// jsdom matches no :hover; the pointer rests on the pill.
+		let hovered = true;
+		const matches = box.matches.bind(box);
+		vi.spyOn(box, "matches").mockImplementation((selector: string) =>
+			selector === ":hover" ? hovered : matches(selector),
+		);
+		const pressEscape = (target: HTMLElement) => {
+			const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			return event;
+		};
+		composer.focus();
+		expect(rows.inert).toBeFalsy();
+		expect(pressEscape(composer).defaultPrevented).toBe(true);
+		expect(box.dataset.folded).toBe("true");
+		// Focus stays in the composer; the folded lines can't be reached (Shift+Tab from the summary skips them).
+		expect(document.activeElement).toBe(composer);
+		expect(rows.inert).toBe(true);
+		// Already folded, the next Escape is the composer's own.
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+		// The pointer leaving ends the fold and the lines come back.
+		hovered = false;
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		expect(box.dataset.folded).toBeUndefined();
+		expect(rows.inert).toBe(false);
+		// Not under the pointer, Escape in the composer leaves the pill alone; an Escape handled on the way too.
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+		hovered = true;
+		composer.addEventListener("keydown", (event) => event.preventDefault(), { once: true });
+		pressEscape(composer);
+		expect(box.dataset.folded).toBeUndefined();
+		// Escape from the summary folds the lines out of reach too, until a click opens them.
+		summary.focus();
+		pressEscape(summary);
+		expect(rows.inert).toBe(true);
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		expect(rows.inert).toBe(false);
+		// The conversation's end takes the document listener with it.
+		summary.click();
+		hovered = false;
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		summary.blur();
+		lifetime.abort();
+		hovered = true;
+		composer.focus();
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+	});
+
+	it("scrolls past five lines and keeps every session in them", () => {
+		stubFigureMotion();
+		const style = document.createElement("style");
+		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		try {
+			const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
+			const rows = rules.find((rule) => rule.selectorText === ".coding-pill-rows")?.style;
+			expect(rows?.getPropertyValue("max-height")).toMatch(/calc\(5 \* 36px\)|180px/);
+			expect(rows?.getPropertyValue("overflow-y")).toBe("auto");
+		} finally {
+			style.remove();
+		}
+		const pill = new CodingPill(vi.fn());
+		document.body.append(pill.el);
+		const sessions = Array.from({ length: 7 }, (_, n) =>
+			codingSession({ workerId: id(910 + n), title: `Session ${n + 1}`, createdAt: `2026-09-22T10:0${n}:00Z` }),
+		);
+		pill.update(
+			sessions,
+			() => staff,
+			() => owner,
+		);
+		const lines = [...pill.el.querySelectorAll<HTMLElement>(".coding-pill-rows > .coding-pill-row")];
+		expect(lines.map((line) => line.dataset.workerId)).toEqual(sessions.map((item) => item.workerId));
+		expect(pill.el.querySelector(".coding-pill-label")?.textContent).toBe("7 coding agents");
+		// The summary stays outside the scrolling lines.
+		expect(pill.el.querySelector(".coding-pill-rows .coding-pill-summary")).toBeNull();
+	});
+
+	it("asks only the session's owner: another member's question reads as theirs, quietly, with Open", () => {
+		stubFigureMotion();
+		const pill = new CodingPill(vi.fn());
+		document.body.append(pill.el);
+		const theirs = codingSession({ phase: "awaiting_input", workerState: "blocked", isOwner: false });
+		pill.update(
+			[theirs],
+			() => staff,
+			() => other,
+		);
+		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		const note = summary.querySelector<HTMLElement>(".coding-pill-note")!;
+		expect(note.textContent).toBe(codingSessionStatus(theirs, other).text);
+		expect(note.textContent).toMatch(/^Needs Jonas · paused /);
+		expect(note.dataset.tone).toBe("idle");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		// Among several, theirs is not counted and its line opens quietly; the member's own still asks.
+		const mine = codingSession({
+			workerId: id(902),
+			title: "Mine",
+			phase: "awaiting_input",
+			workerState: "blocked",
+			createdAt: "2026-09-22T10:01:00Z",
+		});
+		const names = (session: CodingSession) => (session.workerId === WORKER ? other : owner);
+		pill.update([theirs, codingSession({ workerId: id(903), title: "Running" })], () => staff, names);
+		expect(note.textContent).toBe("Working");
+		expect(note.dataset.tone).toBe("working");
+		const [their] = pill.el.querySelectorAll<HTMLElement>(".coding-pill-row");
+		expect(their?.dataset.tone).toBe("idle");
+		expect(their?.querySelector(".coding-pill-status")?.textContent).toMatch(/^Needs Jonas · paused /);
+		expect(their?.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		pill.update([theirs, mine], () => staff, names);
+		expect(note.textContent).toBe("1 needs you");
+		expect(note.dataset.tone).toBe("attention");
+		const [, own] = pill.el.querySelectorAll<HTMLElement>(".coding-pill-row");
+		expect(own?.dataset.tone).toBe("attention");
+		expect(own?.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		expect(their?.querySelector(".coding-pill-action")?.textContent).toBe("Open");
 	});
 });

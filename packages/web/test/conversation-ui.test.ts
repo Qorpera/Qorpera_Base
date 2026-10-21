@@ -1182,13 +1182,10 @@ describe("conversation UI boundaries", () => {
 		expect(metrics.scrollTop).toBe(1600);
 	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
-		const f = setup(),
-			toggle = button(f.view.el, "Open agent computer");
-		toggle.focus();
-		toggle.click();
+		const f = setup();
+		expect(f.view.show(staff.id, "computer")).toBe(true);
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
-		expect(document.activeElement).toBe(toggle);
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(panel);
 		expect(panel.textContent).toContain("Computer access is not available yet.");
 		expect(panel.querySelector("header, select, .computer-preview")).toBeNull();
 		expect(panel.textContent).not.toContain("Open computer");
@@ -1204,47 +1201,68 @@ describe("conversation UI boundaries", () => {
 		panel.focus();
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
-		expect(document.activeElement).toBe(toggle);
+		expect(document.activeElement).toBe(composer);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("uses the same computer toggle to close and reopen the popover without moving focus", () => {
-		const f = setup(),
-			toggle = button(f.view.el, "Open agent computer");
-		toggle.focus();
-		for (let attempt = 0; attempt < 2; attempt++) {
-			toggle.click();
-			expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
-			expect(toggle.getAttribute("aria-expanded")).toBe("true");
-			expect(document.activeElement).toBe(toggle);
-			toggle.click();
-			expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-			expect(toggle.getAttribute("aria-expanded")).toBe("false");
-			expect(document.activeElement).toBe(toggle);
-		}
+	it("has no computer button in the header; the agent's card opens the computer, once however often it asks", () => {
+		const f = setup();
+		const header = f.view.el.querySelector<HTMLElement>(".thread-header")!;
+		expect([...header.children].map((node) => node.className)).toEqual([
+			"mobile-navigation-toggle icon-button",
+			"thread-identity",
+			"thread-presence",
+		]);
+		// The rail names an agent's own chat on a wide screen, so its header shows only on a phone.
+		expect(header.classList.contains("is-agent")).toBe(true);
+		// The phone header's identity opens the agent's card, and its Computer line opens the panel here.
+		button(f.view.el, "Open agent details").click();
+		button(document, "Computer").click();
+		expect(document.querySelector(".agent-details")).toBeNull();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(document.activeElement).toBe(panel);
+		// Asked again, the open one takes the keyboard; there is never a second.
+		f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!.focus();
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+		expect(f.view.el.querySelector(".computer-panel")).toBe(panel);
+		expect(document.activeElement).toBe(panel);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("closes the popover from its X top right as the toggle does", () => {
-		const f = setup(),
-			toggle = button(f.view.el, "Open agent computer");
-		toggle.focus();
-		toggle.click();
+	it("opens nothing for another agent, or before the thread knows its agent", () => {
+		const f = setup();
+		expect(f.view.show(id(97), "computer")).toBe(false);
+		expect(f.view.show(id(97), "routines")).toBe(false);
+		expect(f.view.el.querySelector(".computer-panel, .thread-routines")).toBeNull();
+		const unknown = new ConversationView(f.company, id(90));
+		document.body.append(unknown.el);
+		expect(unknown.show(staff.id, "computer")).toBe(false);
+		expect(unknown.el.querySelector(".computer-panel")).toBeNull();
+		unknown.dispose();
+		// A thread that is gone opens nothing either.
+		f.view.dispose();
+		expect(f.view.show(staff.id, "computer")).toBe(false);
+	});
+	it("closes the popover from its X top right and goes back to the composer", () => {
+		const f = setup();
+		f.view.show(staff.id, "computer");
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
 		const close = panel.querySelector<HTMLButtonElement>("button.computer-close")!;
 		expect(close.getAttribute("aria-label")).toBe("Close computer");
 		expect(close.getAttribute("title")).toBe("Close");
 		close.click();
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
-		expect(document.activeElement).toBe(toggle);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".composer-input"));
+		// It opens again from the card afterwards.
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps the agent's computer open across the threads a member moves between", () => {
 		const panels = new ComputerPanels(),
 			f = setup({ computerPanels: panels });
-		button(f.view.el, "Open agent computer").click();
+		f.view.show(staff.id, "computer");
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
 		expect(panel).not.toBeNull();
 		// Leaving the thread keeps the panel; it is only out of the page for now.
@@ -1259,9 +1277,8 @@ describe("conversation UI boundaries", () => {
 		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
 		document.body.append(restored.el);
 		expect(restored.el.querySelector(".computer-panel")).toBe(panel);
-		expect(button(restored.el, "Open agent computer").getAttribute("aria-expanded")).toBe("true");
 		// Closing it there ends it for every thread.
-		button(restored.el, "Open agent computer").click();
+		panel.querySelector<HTMLButtonElement>("button.computer-close")!.click();
 		expect(restored.el.querySelector(".computer-panel")).toBeNull();
 		expect(panels.get(staff.id)).toBeUndefined();
 		restored.dispose();
@@ -1275,7 +1292,7 @@ describe("conversation UI boundaries", () => {
 	it("keeps the open computer through a rename and replaces it only when the thread changes agent", async () => {
 		const panels = new ComputerPanels(),
 			f = setup({ computerPanels: panels });
-		button(f.view.el, "Open agent computer").click();
+		f.view.show(staff.id, "computer");
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
 		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
 		await settle();
@@ -1292,31 +1309,125 @@ describe("conversation UI boundaries", () => {
 		expect(replaced).not.toBe(panel);
 		expect(panels.get(staff.id)).toBeUndefined();
 		expect(panels.get(other.id)?.el).toBe(replaced);
+		// The card of the agent who left opens nothing here any more; the new agent's does.
+		expect(f.view.show(staff.id, "computer")).toBe(false);
+		expect(f.view.show(other.id, "computer")).toBe(true);
+		expect(f.view.el.querySelector(".computer-panel")).toBe(replaced);
 	});
 
-	it("places the company notices right above the composer, inside the conversation", () => {
+	it("lays the agent's routines over the chat from its card, once, and closes them back to the composer", () => {
+		const f = setup();
+		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
+		expect(f.view.show(staff.id, "routines")).toBe(true);
+		const routines = f.view.el.querySelector<HTMLElement>(".thread-routines")!;
+		expect(routines.tagName).toBe("SECTION");
+		expect(routines.getAttribute("aria-label")).toBe("Routines");
+		expect(routines.parentElement).toBe(f.view.el.querySelector(".thread-body"));
+		expect(pane.inert).toBe(true);
+		// Asked again, the same page stays; there is never a second.
+		expect(f.view.show(staff.id, "routines")).toBe(true);
+		expect(f.view.el.querySelectorAll(".thread-routines")).toHaveLength(1);
+		expect(f.view.el.querySelector(".thread-routines")).toBe(routines);
+		button(routines, "Close routines").click();
+		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
+		expect(pane.inert).toBe(false);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".composer-input"));
+		// Leaving the thread takes them with it.
+		f.view.show(staff.id, "routines");
+		expect(f.view.el.querySelector(".thread-routines")).not.toBeNull();
+		f.view.dispose();
+		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
+	});
+
+	it("closes the routines for the computer the card asks for, and gives the computer the keyboard", () => {
+		const f = setup();
+		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
+		f.view.show(staff.id, "routines");
+		expect(pane.inert).toBe(true);
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
+		expect(pane.inert).toBe(false);
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel).not.toBeNull();
+		expect(document.activeElement).toBe(panel);
+	});
+
+	it("shows one overlay at a time: routines and a coworker's transcript replace each other", async () => {
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		await f.company.loadConversation(session.sessionId);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId: id(98),
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		f.view.update();
+		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
+		f.view.show(staff.id, "routines");
+		// The chip under the routines cannot be reached by the member; the thread still keeps one overlay if it is.
+		f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!.click();
+		await settle();
+		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
+		expect(f.view.el.querySelector(".pair-transcript")).not.toBeNull();
+		expect(pane.inert).toBe(true);
+		// The card's Routines over an open transcript: the transcript goes, the routines come.
+		f.view.show(staff.id, "routines");
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		expect(f.view.el.querySelectorAll(".thread-routines")).toHaveLength(1);
+		expect(pane.inert).toBe(true);
+		button(f.view.el, "Close routines").click();
+		expect(pane.inert).toBe(false);
+		// The computer closes an open transcript too.
+		f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!.click();
+		await settle();
+		expect(f.view.el.querySelector(".pair-transcript")).not.toBeNull();
+		f.view.show(staff.id, "computer");
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		expect(pane.inert).toBe(false);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".computer-panel"));
+	});
+
+	it("places the company notices above the coding sessions' dock, which sits right above the composer", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
 		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
-		// The failed-run line shares the band: notices first, then the run, then the composer.
+		// The failed-run line shares the band: notices first, then the run, the coding dock, then the composer.
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
-		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
+		expect(dock?.classList.contains("coding-dock")).toBe(true);
+		expect(dock?.hidden).toBe(true);
+		expect(dock?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
 	});
 
-	it("places the failed-run line right above the composer without a notification host", () => {
+	it("places the failed-run line above the coding dock without a notification host", () => {
 		const f = setup();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
-		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(slot?.nextElementSibling?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
 		const host = document.createElement("div");
 		document.body.append(host);
 		const f = setup({ notificationHost: host });
-		button(f.view.el, "Open agent computer").click();
+		f.view.show(staff.id, "computer");
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
 		// The renderer sets this class when native fullscreen is unavailable.
 		panel.classList.toggle("is-entered", entered);
@@ -1376,13 +1487,14 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card sits right above the composer, below the company notices, never inside the thread.
+		// The card sits above the composer (only the coding dock between), below the notices, never in the thread.
 		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
-		expect(slot?.nextElementSibling?.classList.contains("composer")).toBe(true);
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(slot?.nextElementSibling?.nextElementSibling?.classList.contains("composer")).toBe(true);
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();

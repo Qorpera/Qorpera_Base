@@ -32,7 +32,7 @@ import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
 import type { Route } from "../router.ts";
 import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
-import { savedAgentDraft } from "./agent-edits.ts";
+import type { AgentCardActions } from "./agent-details.ts";
 import type { SettingsTab } from "./settings.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -50,6 +50,8 @@ export interface ShellContext {
 	navigation?: { open: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
+	/** A right-click on an agent opens its card beside the row; the rail adds Hide and Delete. */
+	openAgentCard?: (agent: HostedStaffAgent, anchor: HTMLElement, card: AgentCardActions) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -1513,34 +1515,23 @@ const joinMenu = (groups: MenuEntry[][]): MenuEntry[] =>
 		.filter((group) => group.length)
 		.flatMap((group, index) => (index ? [{ kind: "separator" } as MenuEntry, ...group] : group));
 
-function agentMenu(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): MenuEntry[] {
+/** An agent's card from the rail: Hide (or Show, for a hidden agent) where the member arranges the
+ * sidebar, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+function agentCard(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): AgentCardActions {
 	const state = company.store.get();
 	const actions = parts.context?.agentActions;
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const isCofounder = agent.id === company.cofounderId();
-	const canAuthorize = state.team?.capabilities.authorize === true;
-	const placeable = Boolean(sidebar) && !isCofounder;
-	const sessionId = company.primarySessionFor(agent.id)?.sessionId;
-	return joinMenu([
-		placeable ? placementEntries(company, sidebar!, { id: agent.id, kind: "agent" }) : [],
-		canAuthorize && actions?.updateAgent
-			? [{ label: t("Rename"), icon: "edit", select: () => void renameAgent(company, parts, agent) }]
-			: [],
-		sessionId ? [copyIdEntry(company, sessionId)] : [],
-		[
-			...(placeable ? [hideEntry(company, sidebar!, { id: agent.id, kind: "agent" })] : []),
-			...(!isCofounder && canAuthorize && actions?.deleteAgent
-				? [
-						{
-							label: t("Delete"),
-							icon: "trash",
-							danger: true,
-							select: () => void deleteAgent(company, parts, agent),
-						} satisfies MenuEntry,
-					]
-				: []),
-		],
-	]);
+	const item: RailItem = { id: agent.id, kind: "agent" };
+	const hidden = Boolean(sidebar?.hidden.includes(agent.id));
+	return {
+		...(sidebar && !isCofounder
+			? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) }
+			: {}),
+		...(!isCofounder && state.team?.capabilities.authorize === true && actions?.deleteAgent
+			? { remove: () => void deleteAgent(company, parts, agent) }
+			: {}),
+	};
 }
 
 /** A group chat's menu: placed like an agent where the cloud places group chats; renamed
@@ -1657,28 +1648,6 @@ async function deleteGroup(
 	}
 }
 
-async function renameAgent(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): Promise<void> {
-	const update = parts.context?.agentActions?.updateAgent;
-	if (!update) return;
-	const name = await nameDialog({
-		title: t("Rename agent"),
-		label: t("Agent name"),
-		value: agent.displayName,
-		confirm: t("Rename"),
-		maxLength: 160,
-		signal: company.signal,
-	});
-	const latest = company.staffById(agent.id);
-	if (!name || !latest) return;
-	try {
-		await update(latest, { ...savedAgentDraft(latest), displayName: name }, company.signal);
-		await company.refreshStaff();
-	} catch {
-		if (!company.signal.aborted)
-			company.reportRailError(t("{name} could not be renamed.", { name: latest.displayName }));
-	}
-}
-
 async function deleteAgent(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): Promise<void> {
 	const remove = parts.context?.agentActions?.deleteAgent;
 	if (!remove) return;
@@ -1784,14 +1753,12 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	let findOpener: (() => HTMLElement | null) | undefined;
 	if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
-		if (agent) {
-			items = agentMenu(company, parts, agent);
-			label = t("{name} actions", { name: agent.displayName });
-			opener = agentElement;
-			// The row is rebuilt when the agent's state changes; focus goes back to the new one.
-			findOpener = () =>
-				parts.list.querySelector<HTMLElement>(`[data-agent-id="${agent.id}"], [data-cofounder-id="${agent.id}"]`);
+		const open = parts.context?.openAgentCard;
+		if (agent && open) {
+			event.preventDefault();
+			open(agent, agentElement, agentCard(company, parts, agent));
 		}
+		return;
 	} else if (roomElement?.dataset.roomId) {
 		const roomId = roomElement.dataset.roomId;
 		const session = company.store

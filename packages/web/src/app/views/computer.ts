@@ -468,21 +468,6 @@ export class ComputerPanel {
 		this.#close = close;
 		body.append(this.el);
 		this.#fitPreview();
-		this.#aimAtButton();
-	}
-
-	/** The panel opens out of the header's computer button and closes back into it. */
-	#aimAtButton(): void {
-		const button = this.el.parentElement?.querySelector<HTMLElement>(".thread-computer");
-		const parent = this.el.offsetParent;
-		if (!button || !(parent instanceof HTMLElement) || !this.el.offsetWidth) return;
-		// From the layout box (offsets), not the drawn one, which the open animation scales.
-		const from = button.getBoundingClientRect();
-		const frame = parent.getBoundingClientRect();
-		const left = frame.left + parent.clientLeft + this.el.offsetLeft;
-		const top = frame.top + parent.clientTop + this.el.offsetTop;
-		this.el.style.setProperty("--computer-origin-x", `${from.left + from.width / 2 - left}px`);
-		this.el.style.setProperty("--computer-origin-y", `${from.top + from.height / 2 - top}px`);
 	}
 
 	/** Leave the thread, keeping the connection for the next thread that attaches it. */
@@ -514,8 +499,7 @@ export class ComputerPanel {
 		// Leaving the company sends nothing; its transport refuses after teardown.
 		this.#withdrawWakes();
 		this.#close = () => {};
-		// It goes back into its button (the viewer already closed with the abort above).
-		this.#aimAtButton();
+		// The viewer already closed with the abort above.
 		this.el.style.removeProperty("animation");
 		leave(this.el, "is-closing", () => {
 			replace(this.el);

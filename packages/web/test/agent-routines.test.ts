@@ -323,24 +323,44 @@ const click = (root: Element, label: string) =>
 	[...root.querySelectorAll("button")]
 		.find((item) => item.textContent === label || item.getAttribute("aria-label") === label)!
 		.click();
-/** A card's own controls, by what they read as: Edit, and the switch by its role and state. */
-const controls = (card: Element) =>
-	[...card.querySelectorAll(".routine-card-head > button:not(.routine-card-summary)")].map((item) =>
-		item.getAttribute("role") === "switch" ? `switch:${item.getAttribute("aria-checked")}` : item.textContent,
+/** A row's own controls, by what they read as: the row's button that opens the composer as Edit (or Read, for a
+ * routine the member may not change), Choose a login, and the switch by its role and state. */
+const controls = (row: Element) =>
+	[...row.querySelectorAll(":scope > button")].map((item) =>
+		item.getAttribute("role") === "switch"
+			? `switch:${item.getAttribute("aria-checked")}`
+			: item.classList.contains("routine-row-main")
+				? item.getAttribute("data-focus")?.startsWith("edit:")
+					? "Edit"
+					: "Read"
+				: item.textContent,
 	);
-const cards = (root: Element) => [...root.querySelectorAll<HTMLElement>(".routine-card")];
+const rowsOf = (root: Element) => [...root.querySelectorAll<HTMLElement>(".routine-row")];
+/** A row's line under its name: when it runs, or why it waits. */
+const line = (row: Element) => row.querySelector(".routine-row-line")?.textContent;
+/** A row's line when it says the routine's login can't pay now, else null. */
+const problem = (row: Element) => row.querySelector(".routine-row-line.is-problem")?.textContent ?? null;
+/** The first row's button, which opens its routine in the composer. */
+const editButton = (root: Element) => root.querySelector<HTMLButtonElement>("button.routine-row-main")!;
+/** The reply the composer has chosen. */
+const reply = (root: Element) => root.querySelector('[role="radiogroup"] [aria-checked="true"]')?.textContent;
 const field = <T extends HTMLElement = HTMLInputElement>(root: Element, label: string) =>
 	root.querySelector<T>(`[aria-label="${label}"]`)!;
 /** The editor's status line. */
 const status = (root: Element) => root.querySelector(".routine-editor .surface-status")?.textContent;
 /** Waits for the list's first read to show its routines. */
-const listed = (view: AgentRoutines) => vi.waitFor(() => expect(cards(view.el).length).toBeGreaterThan(0));
-/** Opens the editor with this button and waits for its form. */
-async function openEditor(view: AgentRoutines, label = "Edit") {
-	await vi.waitFor(() =>
-		expect([...view.el.querySelectorAll("button")].some((item) => item.textContent === label)).toBe(true),
-	);
-	click(view.el, label);
+const listed = (view: AgentRoutines) => vi.waitFor(() => expect(rowsOf(view.el).length).toBeGreaterThan(0));
+/** Opens the composer with this button, or from the first routine's row, and waits for its form. */
+async function openEditor(view: AgentRoutines, label?: string) {
+	if (label) {
+		await vi.waitFor(() =>
+			expect([...view.el.querySelectorAll("button")].some((item) => item.textContent === label)).toBe(true),
+		);
+		click(view.el, label);
+	} else {
+		await vi.waitFor(() => expect(view.el.querySelector("button.routine-row-main")).not.toBeNull());
+		editButton(view.el).click();
+	}
 	await vi.waitFor(() => expect(view.el.querySelector(".routine-editor")).not.toBeNull());
 }
 /** A draft for a new routine, as the editor makes it. */
@@ -475,7 +495,7 @@ describe("agent routines section", () => {
 		]);
 		await settle();
 		expect(f.view.el.textContent).toContain("Morning brief");
-		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(/^Mon at 8:30\sAM/);
+		expect(f.view.el.querySelector(".routine-row-line")?.textContent).toMatch(/^Mon at 8:30\sAM/);
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
 	});
@@ -500,43 +520,6 @@ describe("agent routines section", () => {
 		expect(access.memberName?.("10000000-0000-4000-8000-000000000032")).toBeUndefined();
 		// A contributor writes but does not manage: they choose their own login for a routine that waits.
 		expect([access.canManage(), access.canWrite?.()]).toEqual([false, true]);
-	});
-	it("says when a routine started again because its member turned on work while away", async () => {
-		const resumed = {
-			...routine({ status: "active" }),
-			resumeReason: "plan_turned_on",
-			resumedAt: "2026-10-01T10:00:00.000Z",
-			resumedByUserId: "10000000-0000-4000-8000-000000000031",
-		} as WebRoutine;
-		for (const [items, name, said] of [
-			[[resumed], () => "Anna", "When Anna turned on “Work while you're away”"],
-			[[resumed], () => undefined, "When a member turned on “Work while you're away”"],
-			[[{ ...resumed, status: "paused" } as WebRoutine], () => "Anna", undefined],
-			[[{ ...resumed, resumeReason: "member" } as WebRoutine], () => "Anna", undefined],
-			[[routine({ status: "active" })], () => "Anna", undefined],
-		] as const) {
-			const stop = new AbortController();
-			const view = new AgentRoutines(
-				() => staff,
-				{
-					routines: mocked([...items]),
-					accounts: async () => ({ connections: [account] }),
-					canManage: () => true,
-					memberName: name,
-				},
-				stop.signal,
-			);
-			document.body.append(view.el);
-			await settle();
-			const fact = [...view.el.querySelectorAll(".routine-card-fact")].find(
-				(item) => item.querySelector("dt")?.textContent === "Resumed",
-			);
-			if (said)
-				expect(fact?.querySelector("dd")?.textContent).toBe(`${said} · ${fmtTime("2026-10-01T10:00:00.000Z")}`);
-			else expect(fact).toBeUndefined();
-			stop.abort();
-			view.el.remove();
-		}
 	});
 	it("keeps why a routine is paused and whom it runs for, from the list's own answer", async () => {
 		const row = {
@@ -673,11 +656,12 @@ describe("agent routines section", () => {
 		expect(() => parseCloudRoutine({ ...row, status: "finished" })).toThrow();
 		const f = mount([routine(), ended]);
 		await settle();
-		const rows = cards(f.view.el);
+		const rows = rowsOf(f.view.el);
 		expect(rows.map((item) => item.querySelector("strong")?.textContent)).toEqual(["Morning brief", "One check"]);
-		expect(rows[1]!.querySelector(".routine-card-state")?.textContent).toBe("Ended");
+		expect(line(rows[1]!)).toBe("Ended");
+		expect(rows[1]!.classList.contains("is-quiet")).toBe(true);
 		// Read-only: a member save would keep its end, so there is nothing to edit or resume.
-		expect(controls(rows[1]!)).toEqual([]);
+		expect(controls(rows[1]!)).toEqual(["Read"]);
 		expect(controls(rows[0]!)).toEqual(["Edit", "switch:true"]);
 	});
 	it("shows a dynamic routine's next run, that it runs until its agent decides, and why a routine is done", async () => {
@@ -744,20 +728,13 @@ describe("agent routines section", () => {
 		).toThrow();
 		const f = mount([dynamic, done]);
 		await settle();
-		const rows = cards(f.view.el);
-		expect(rows[0]!.querySelector(".routine-card-summary")?.textContent).toContain("The agent picks each next run");
-		expect(rows[0]!.querySelector(".routine-card-facts")?.textContent).toContain("Next run");
-		expect(rows[0]!.textContent).toContain(`Runs until ${staff.displayName} decides it is done`);
+		const rows = rowsOf(f.view.el);
+		expect(line(rows[0]!)).toMatch(/^The agent picks each next run · next \S/);
 		// The editor has no shape for a dynamic routine; it can still be paused.
-		expect(controls(rows[0]!)).toEqual(["switch:true"]);
+		expect(controls(rows[0]!)).toEqual(["Read", "switch:true"]);
 		// A concluded routine says why instead of how it used to be scheduled.
-		expect(rows[1]!.querySelector(".routine-card-summary span")?.textContent).toBe(
-			"The launch went out on 24 September.",
-		);
-		expect(rows[1]!.querySelector(".routine-card-state")?.textContent).toBe("Done");
-		expect(rows[1]!.textContent).not.toContain("Next run");
-		expect(rows[1]!.textContent).not.toContain("When to run");
-		expect(controls(rows[1]!)).toEqual([]);
+		expect(line(rows[1]!)).toBe("Done · The launch went out on 24 September.");
+		expect(controls(rows[1]!)).toEqual(["Read"]);
 	});
 	it("saves a new weekday routine on the chosen account, as the same save across a retry", async () => {
 		const f = mount([]);
@@ -767,10 +744,10 @@ describe("agent routines section", () => {
 		f.view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
 		f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
 		f.routines.save.mockRejectedValueOnce(new Error("offline"));
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await settle();
 		expect(f.view.el.textContent).toContain("Your draft is still here");
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await settle();
 		expect(f.routines.save).toHaveBeenCalledTimes(2);
 		const [first, second] = f.routines.save.mock.calls as unknown as Array<[WebRoutineDraft, unknown, string]>;
@@ -847,13 +824,13 @@ describe("agent routines section", () => {
 		});
 		const f = mount([routine(), windowed, two, hooked]);
 		await settle();
-		expect(cards(f.view.el).map(controls)).toEqual([
+		expect(rowsOf(f.view.el).map(controls)).toEqual([
 			["Edit", "switch:true"],
-			["switch:true"],
-			["switch:true"],
-			["switch:true"],
+			["Read", "switch:true"],
+			["Read", "switch:true"],
+			["Read", "switch:true"],
 		]);
-		expect(cards(f.view.el)[3]!.textContent).toContain("When a hook receives an event");
+		expect(rowsOf(f.view.el)[3]!.textContent).toContain("When a hook receives an event");
 	});
 	it("offers each account once, by email, and numbers a repeated account", async () => {
 		const connections = [
@@ -889,7 +866,7 @@ describe("agent routines section", () => {
 		click(f.view.el, "Morning brief");
 		// The switch moves at once, before the cloud answers, and in place, so it slides.
 		expect(f.view.el.querySelector('[role="switch"]')).toBe(lever);
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		expect(lever.getAttribute("aria-busy")).toBe("true");
 		expect(lever.getAttribute("title")).toBe("Resume routine");
 		await settle();
@@ -902,8 +879,8 @@ describe("agent routines section", () => {
 		);
 		const readOnly = mount([routine()], false);
 		await settle();
-		const card = cards(readOnly.view.el)[0]!;
-		expect(controls(card)).toEqual(["switch:true"]);
+		const card = rowsOf(readOnly.view.el)[0]!;
+		expect(controls(card)).toEqual(["Read", "switch:true"]);
 		const locked = card.querySelector('[role="switch"]')!;
 		expect(locked.getAttribute("aria-disabled")).toBe("true");
 		expect(locked.classList.contains("is-locked")).toBe(true);
@@ -934,8 +911,8 @@ describe("agent routines section", () => {
 			paused(6, "something_new"),
 			paused(7),
 		];
-		const reasons = (root: Element) =>
-			cards(root).map((card) => card.querySelector(".routine-card-paused")?.textContent ?? null);
+		// The line says when it runs, then why it waits.
+		const reasons = (root: Element) => rowsOf(root).map((row) => line(row)?.split(" · ").at(-1));
 		const f = mount(items);
 		await settle();
 		expect(reasons(f.view.el)).toEqual([
@@ -944,11 +921,12 @@ describe("agent routines section", () => {
 			"Paused: it could not start with the access it had",
 			"Paused: no model account pays for it",
 			"Paused when its agent was archived",
-			null,
-			null,
+			"Paused",
+			"Paused",
 		]);
+		expect(rowsOf(f.view.el).every((row) => row.classList.contains("is-quiet"))).toBe(true);
 		// An active agent's paused routine resumes from its switch as before.
-		const lever = cards(f.view.el)[4]!.querySelector('[role="switch"]')!;
+		const lever = rowsOf(f.view.el)[4]!.querySelector('[role="switch"]')!;
 		expect(lever.getAttribute("aria-disabled")).toBeNull();
 		expect(lever.getAttribute("title")).toBe("Resume routine");
 
@@ -961,7 +939,7 @@ describe("agent routines section", () => {
 		);
 		document.body.append(view.el);
 		await settle();
-		const [off, on] = cards(view.el).map((card) => card.querySelector<HTMLButtonElement>('[role="switch"]')!);
+		const [off, on] = rowsOf(view.el).map((card) => card.querySelector<HTMLButtonElement>('[role="switch"]')!);
 		expect(off!.getAttribute("aria-disabled")).toBe("true");
 		expect(off!.classList.contains("is-locked")).toBe(true);
 		expect(off!.getAttribute("title")).toBe("Reactivate the agent first");
@@ -998,17 +976,17 @@ describe("agent routines section", () => {
 		click(f.view.el, "Morning brief");
 		await settle();
 		// While one switch moves, the others and Edit wait; clicking another does nothing.
-		const [, second] = cards(f.view.el);
+		const [, second] = rowsOf(f.view.el);
 		expect(second!.querySelector('[role="switch"]')?.getAttribute("aria-disabled")).toBe("true");
-		expect(second!.querySelector<HTMLButtonElement>(".routine-card-edit")?.disabled).toBe(true);
+		expect(second!.querySelector<HTMLButtonElement>(".routine-row-main")?.disabled).toBe(true);
 		click(f.view.el, "Evening wrap");
 		expect(f.routines.setEnabled).toHaveBeenCalledTimes(1);
 		// The change went through, but the read after it failed: the switch stays where it was moved.
 		f.routines.list.mockRejectedValueOnce(new Error("offline"));
 		release();
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
-		expect(controls(cards(f.view.el)[1]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[1]!)).toEqual(["Edit", "switch:true"]);
 		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
 			"Routines could not be read. Refresh to try again.",
 		);
@@ -1016,12 +994,12 @@ describe("agent routines section", () => {
 		f.routines.list.mockResolvedValue([routine({ status: "paused" }), other]);
 		f.view.refresh();
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
-		expect(cards(f.view.el)[0]!.querySelector('[role="switch"]')?.getAttribute("title")).toBe("Resume routine");
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(rowsOf(f.view.el)[0]!.querySelector('[role="switch"]')?.getAttribute("title")).toBe("Resume routine");
 		f.routines.list.mockResolvedValue([routine(), other]);
 		f.view.refresh();
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
 	});
 	it("keeps a moved switch through a list read that went out before the change", async () => {
 		const f = mount([routine()]);
@@ -1041,15 +1019,15 @@ describe("agent routines section", () => {
 		// The earlier read answers after the change went through, with the routine as it was.
 		held[0]!([routine()]);
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		// The read after the change decides.
 		held[1]!([routine({ status: "paused" })]);
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		f.routines.list.mockResolvedValue([routine()]);
 		f.view.refresh();
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
 	});
 	it("puts a switch back where it was moved when a second change fails before any read confirms the first", async () => {
 		const f = mount([routine()]);
@@ -1058,14 +1036,14 @@ describe("agent routines section", () => {
 		f.routines.list.mockRejectedValueOnce(new Error("offline"));
 		click(f.view.el, "Morning brief");
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		// Turning it back on fails, and so does the read after it: it stays off, as the routine is.
 		f.routines.setEnabled.mockRejectedValueOnce(new Error("offline"));
 		f.routines.list.mockRejectedValueOnce(new Error("offline"));
 		click(f.view.el, "Morning brief");
 		await settle();
 		expect(f.routines.setEnabled).toHaveBeenLastCalledWith(expect.anything(), account, true, expect.any(String));
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
 			"The routine could not be changed. Try again.",
 		);
@@ -1085,10 +1063,10 @@ describe("agent routines section", () => {
 		f.routines.list.mockResolvedValue([routine({ status: "paused" })]);
 		click(f.view.el, "Morning brief");
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		held[0]!([routine()]);
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 	});
 	it("an edit never writes the status: a routine the member just paused stays paused", async () => {
 		const f = mountFolder([routine()]);
@@ -1100,7 +1078,7 @@ describe("agent routines section", () => {
 		await openEditor(f.view);
 		f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value =
 			"Summarise what changed, briefly.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(2));
 		expect(parsed(f.fake.text(PATH))).toMatchObject({
 			status: "paused",
@@ -1143,7 +1121,7 @@ describe("agent routines section", () => {
 		click(view.el, "Morning brief");
 		await settle();
 		expect(routines.setEnabled).not.toHaveBeenCalled();
-		expect(controls(cards(view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		expect(view.el.querySelector(".surface-status")?.textContent).toBe(
 			"Your model accounts could not be read. Try again.",
 		);
@@ -1164,69 +1142,54 @@ describe("agent routines section", () => {
 		f.routines.setEnabled.mockRejectedValueOnce(new Error("offline"));
 		click(f.view.el, "Morning brief");
 		await settle();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
 		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
 			"The routine could not be changed. Try again.",
 		);
 	});
-	it("opens one card at a time in place, with the instruction beside when it runs, the next run and the last", async () => {
-		const other = routine({
-			routineId: "10000000-0000-4000-8000-000000000014",
-			clientRoutineId: "10000000-0000-4000-8000-000000000015",
-			title: "Evening wrap",
-			prompt: "Write down what is still open.\n\n1. Check the inbox.\n2. Note blockers.",
-			nextRunAt: "2026-09-28T16:00:00.000Z",
-		});
-		const f = mount([routine(), other]);
-		f.routines.runs.mockResolvedValue([
-			{
-				occurrenceId: "10000000-0000-4000-8000-000000000016",
-				routineId: other.routineId,
-				routineVersion: 1,
-				triggerId: "t",
-				scheduledFor: "2026-09-26T16:00:00.000Z",
-				status: "completed",
-				blockedReason: null,
-				runId: null,
-				createdAt: "2026-09-26T16:00:00.000Z",
-				finishedAt: "2026-09-26T16:05:00.000Z",
-			},
-		]);
-		// The first read went out when the page was built; read again with the run.
-		await settle();
-		f.view.refresh();
-		await settle();
-		const [first, second] = cards(f.view.el);
-		const body = (card: Element) => card.querySelector(".routine-card-body")!;
-		expect(first!.classList.contains("is-open")).toBe(false);
-		expect(body(first!).hasAttribute("inert")).toBe(true);
-		second!.querySelector<HTMLElement>(".routine-card-summary")!.click();
-		expect(second!.classList.contains("is-open")).toBe(true);
-		expect(second!.querySelector(".routine-card-summary")?.getAttribute("aria-expanded")).toBe("true");
-		expect(body(second!).hasAttribute("inert")).toBe(false);
-		// The instruction keeps its own lines.
-		expect(second!.querySelector(".routine-card-prompt")?.textContent).toBe(other.prompt);
-		const facts = second!.querySelector(".routine-card-facts")!.textContent!;
-		expect(facts).toMatch(/When to runMon at 8:30\sAMEurope\/Copenhagen/);
-		expect(facts).toContain("Next run");
-		expect(facts).toMatch(/Last runFinished · /);
-		// The switch and Edit act without opening or closing the card.
-		second!.querySelector<HTMLElement>('[role="switch"]')!.click();
-		first!.querySelector<HTMLElement>('[role="switch"]')!.click();
-		await settle();
-		const [firstAgain, secondAgain] = cards(f.view.el);
-		expect(firstAgain!.classList.contains("is-open")).toBe(false);
-		expect(secondAgain!.classList.contains("is-open")).toBe(true);
-		// Opening another closes the first; the open one stays open through a refresh.
-		firstAgain!.querySelector<HTMLElement>(".routine-card-head")!.click();
-		expect(firstAgain!.classList.contains("is-open")).toBe(true);
-		expect(secondAgain!.classList.contains("is-open")).toBe(false);
-		expect(body(secondAgain!).hasAttribute("inert")).toBe(true);
-		f.view.refresh();
-		await settle();
-		expect(cards(f.view.el).map((card) => card.classList.contains("is-open"))).toEqual([true, false]);
-		cards(f.view.el)[0]!.querySelector<HTMLElement>(".routine-card-summary")!.click();
-		expect(cards(f.view.el).some((card) => card.classList.contains("is-open"))).toBe(false);
+	it("opens a routine from anywhere on its row but its controls, and says when it runs next in few words", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			// Friday 25 September, 11:00 in Copenhagen, the viewer's zone.
+			vi.setSystemTime(new Date("2026-09-25T09:00:00.000Z"));
+			localStorage.setItem("qorpera.web.time-zone", "Europe/Copenhagen");
+			const at = (n: number, nextRunAt: string) =>
+				routine({
+					routineId: `10000000-0000-4000-8000-00000000014${n}`,
+					clientRoutineId: `10000000-0000-4000-8000-00000000015${n}`,
+					title: `Routine ${n}`,
+					nextRunAt,
+				});
+			const f = mount([
+				at(1, "2026-09-25T14:00:00.000Z"),
+				at(2, "2026-09-26T06:30:00.000Z"),
+				at(3, "2026-10-26T07:30:00.000Z"),
+				routine({ status: "paused", nextRunAt: "2026-09-26T06:30:00.000Z" }),
+			]);
+			await settle();
+			// Clocks may write a narrow space before AM.
+			const plain = (text: string | undefined) => text?.replace(/\s/g, " ");
+			expect(rowsOf(f.view.el).map((row) => plain(line(row)))).toEqual([
+				`Mon at 8:30 AM · next ${plain(fmtTime("2026-09-25T14:00:00.000Z"))}`,
+				"Mon at 8:30 AM · next tomorrow",
+				"Mon at 8:30 AM · next Oct 26",
+				// A paused routine plans no next run.
+				"Mon at 8:30 AM · Paused",
+			]);
+			// The switch acts without opening the composer.
+			const [first] = rowsOf(f.view.el);
+			first!.querySelector<HTMLElement>('[role="switch"]')!.click();
+			await settle();
+			expect(f.routines.setEnabled).toHaveBeenCalledTimes(1);
+			expect(f.view.el.querySelector(".routine-editor")).toBeNull();
+			// The row's own room opens it, as its button does.
+			rowsOf(f.view.el)[1]!.click();
+			await vi.waitFor(() => expect(f.view.el.querySelector(".routine-editor")).not.toBeNull());
+			expect(f.routines.open).toHaveBeenCalledWith(expect.objectContaining({ title: "Routine 2" }));
+			expect(field(f.view.el, "Routine name").value).toBe("Routine 2");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it.each([
 		[["monday", "tuesday", "wednesday", "thursday", "friday"], "Weekdays at 8:48"],
@@ -1251,7 +1214,7 @@ describe("agent routines section", () => {
 			}),
 		]);
 		await settle();
-		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(new RegExp(`^${words}\\sAM$`));
+		expect(f.view.el.querySelector(".routine-row-line")?.textContent).toMatch(new RegExp(`^${words}\\sAM$`));
 	});
 	it("names the routine's zone when the viewer's clock is another, beside the time it belongs to", async () => {
 		localStorage.setItem("qorpera.web.time-zone", "America/New_York");
@@ -1271,14 +1234,67 @@ describe("agent routines section", () => {
 			}),
 		]);
 		await settle();
-		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(
+		expect(f.view.el.querySelector(".routine-row-line")?.textContent).toMatch(
 			/^Mon at 8:30\sAM \(Europe\/Copenhagen\); When finance\/invoices changes$/,
 		);
-		expect(
-			[...f.view.el.querySelectorAll(".routine-card-trigger")].map((item) => item.textContent?.replace(/\s/g, " ")),
-		).toEqual(["Mon at 8:30 AMEurope/Copenhagen", "When finance/invoices changes"]);
 	});
-	it("steps back from the editor to the list, and from the list to the page it was opened from", async () => {
+	it("opens a routine a member may not change read-only: its instruction as text, and no Save", async () => {
+		const f = mount([routine({ prompt: "Summarise what changed.\n\n1. Inbox\n2. Calendar" })], false);
+		f.routines.payer.mockResolvedValue({
+			routineId: ROUTINE_ID,
+			routineVersion: 1,
+			status: "active",
+			pauseReason: null,
+			connectionId: account.connectionId,
+			payer: "company",
+			payerUserId: null,
+			savedByUserId: "10000000-0000-4000-8000-000000000041",
+			canPay: true,
+			waitsFor: null,
+			since: "2026-10-03T08:00:00.000Z",
+			changedByUserId: null,
+			changeReason: null,
+		});
+		await vi.waitFor(() => expect(f.routines.payer).toHaveBeenCalled());
+		await settle();
+		const [row] = rowsOf(f.view.el);
+		expect(controls(row!)).toEqual(["Read", "switch:true"]);
+		row!.click();
+		const form = f.view.el.querySelector(".routine-editor.is-reading")!;
+		expect(form).not.toBeNull();
+		expect(form.querySelector(".routine-name")?.textContent).toBe("Morning brief");
+		expect(form.querySelector(".routine-prompt")?.textContent).toBe(
+			"Summarise what changed.\n\n1. Inbox\n2. Calendar",
+		);
+		// Nothing to change: no fields, no Save; When, Reply and who pays as plain lines.
+		expect(form.querySelectorAll("input, textarea, select")).toHaveLength(0);
+		expect([...form.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Routines"]);
+		expect([...form.querySelectorAll(".routine-field")].map((item) => item.textContent?.replace(/\s/g, " "))).toEqual(
+			[
+				expect.stringMatching(/^WhenMon at 8:30 AM/),
+				"ReplyAlways",
+				`Runs onPaid by the company since ${fmtDate("2026-10-03T08:00:00.000Z")}`,
+			],
+		);
+		expect(f.routines.open).not.toHaveBeenCalled();
+		expect(document.activeElement?.textContent).toBe("Routines");
+		// A read that answers meanwhile does not draw the list over it.
+		f.view.refresh();
+		await settle();
+		expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
+		click(f.view.el, "Routines");
+		expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines");
+		expect(document.activeElement).toBe(rowsOf(f.view.el)[0]!.querySelector(".routine-row-main"));
+
+		// An ended routine reads as done, and why.
+		const done = mount([routine({ status: "concluded", conclusion: "The launch went out." })]);
+		await settle();
+		rowsOf(done.view.el).at(-1)!.querySelector<HTMLButtonElement>(".routine-row-main")!.click();
+		expect(done.view.el.querySelector(".routine-editor.is-reading .routine-hint")?.textContent).toBe(
+			"Done · The launch went out.",
+		);
+	});
+	it("steps back from the composer to the list, focus on what opened it, and closes the list", async () => {
 		const back = vi.fn();
 		const routines = mocked([routine()]);
 		const view = new AgentRoutines(
@@ -1288,20 +1304,28 @@ describe("agent routines section", () => {
 			back,
 		);
 		document.body.append(view.el);
+		// The list is headed by the agent: "Routines" and its name.
+		expect(view.el.querySelector(".routine-heading")?.textContent).toBe(`Routines${staff.displayName}`);
 		await openEditor(view);
-		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(view.el.querySelector("h2")).toBeNull();
+		expect(document.activeElement).toBe(field(view.el, "Routine name"));
+		expect(field<HTMLTextAreaElement>(view.el, "What to do").placeholder).toBe(
+			`What should ${staff.displayName} do?`,
+		);
 		expect(routines.open).toHaveBeenCalledWith(expect.objectContaining({ routineId: ROUTINE_ID }));
 		view.refresh();
 		await settle();
-		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
-		click(view.el, "Back to routines");
+		expect(view.el.querySelector(".routine-editor")).not.toBeNull();
+		click(view.el, "Routines");
 		expect(view.el.querySelector("h2")?.textContent).toBe("Routines");
 		expect(view.el.textContent).toContain("Morning brief");
+		expect(document.activeElement).toBe(editButton(view.el));
 		click(view.el, "New routine");
 		await settle();
 		click(view.el, "Cancel");
 		expect(view.el.querySelector("h2")?.textContent).toBe("Routines");
-		click(view.el, "Back to agent details");
+		expect(document.activeElement?.textContent).toBe("New routine");
+		click(view.el, "Close routines");
 		expect(back).toHaveBeenCalledTimes(1);
 		expect(routines.save).not.toHaveBeenCalled();
 	});
@@ -1318,7 +1342,7 @@ describe("a new routine's file (P34r)", () => {
 		await openEditor(f.view, "New routine");
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		// The name is free among the listed routines' file names, without their .md.
 		const path = "agents/nora/routines/weekly-close-2.md";
@@ -1453,11 +1477,11 @@ describe("a new routine's file (P34r)", () => {
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
 		fake.loseAnswer();
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() =>
 			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
 		);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
 		// The second Save sends the same change set again, under its key: a replay of the routine it made.
 		expect(fake.commits).toHaveLength(2);
@@ -1494,7 +1518,7 @@ describe("a new routine's file (P34r)", () => {
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
 		fake.loseAnswer();
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() =>
 			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
 		);
@@ -1502,10 +1526,10 @@ describe("a new routine's file (P34r)", () => {
 		const made = "agents/nora/routines/weekly-close.md";
 		const renamed = fake.put(made, fake.text(made)!.replace("title: Weekly close", "title: Friday close"));
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		// The replay is saved; the draft's change since meets the rename, and the form opens on the routine's file.
 		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
-		expect(f.view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
 		expect(field(f.view.el, "Routine name").value).toBe("Friday close");
 		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").value).toBe("Close the week.");
 		expect(fake.commits).toHaveLength(3);
@@ -1513,7 +1537,7 @@ describe("a new routine's file (P34r)", () => {
 		expect(fake.children("agents/nora/routines")).toEqual([made]);
 		// The next Save edits the file as it is now.
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
 		expect(fake.commits).toHaveLength(4);
 		expect(fake.commits[3]!.operationKey).toMatch(/^web:routine-update:/);
@@ -1559,12 +1583,11 @@ describe("an edit of a routine's file (P34r)", () => {
 		const version = fake.version(PATH);
 		const f = mountFolder([indexed(before)], { fake });
 		await openEditor(f.view);
-		// The form is the file's: an agent's effort shows, and stays.
-		expect(f.view.el.textContent).toContain("Effort: High");
-		expect(field<HTMLSelectElement>(f.view.el, "Reply").value).toBe("optional");
+		// The form is the file's: an agent's reply shows; its effort stays.
+		expect(reply(f.view.el)).toBe("When there is news");
 		field(f.view.el, "Routine name").value = "Morning digest";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Summarise what changed, in three lines.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		expect(fake.commits[0]!.operationKey).toMatch(/^web:routine-update:/);
 		expect(fake.commits[0]!.units).toEqual([
@@ -1585,15 +1608,14 @@ describe("an edit of a routine's file (P34r)", () => {
 		const f = mountFolder([indexed(text)], { fake });
 		await openEditor(f.view);
 		field(f.view.el, "Routine name").value = "Morning brief, shorter";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning brief, shorter", effort: "high" });
 		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
 		await openEditor(f.view, "New routine");
-		expect(f.view.el.textContent).toContain("Effort: Low");
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
 		const made = "agents/nora/routines/weekly-close.md";
 		expect(parsed(fake.text(made), made)).toMatchObject({ title: "Weekly close", effort: "low" });
@@ -1603,11 +1625,11 @@ describe("an edit of a routine's file (P34r)", () => {
 	it("writes nothing when nothing changed, and asks for no login", async () => {
 		const f = mountFolder([routine()]);
 		await openEditor(f.view);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(status(f.view.el)).toBe("Nothing changed."));
 		expect(f.fake.commits).toEqual([]);
 		expect(f.calls).toEqual([]);
-		expect(f.view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
 		f.stop.abort();
 	});
 	it("retries a version_changed while what the form shows is as it opened, keeping the other change", async () => {
@@ -1618,7 +1640,7 @@ describe("an edit of a routine's file (P34r)", () => {
 		const quiet = { start: "22:00", end: "07:00", timezone: "Europe/Copenhagen" };
 		fake.put(PATH, routineText({ status: "paused", quiet }));
 		field(f.view.el, "Routine name").value = "Morning digest";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
 		expect(fake.commits[1]!.operationKey).not.toBe(fake.commits[0]!.operationKey);
 		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning digest", status: "paused", quiet });
@@ -1631,7 +1653,7 @@ describe("an edit of a routine's file (P34r)", () => {
 		await openEditor(f.view);
 		fake.put(PATH, routineText({ title: "Morning digest" }));
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Summarise it all.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
 		expect(fake.commits).toHaveLength(1);
 		expect(field(f.view.el, "Routine name").value).toBe("Morning digest");
@@ -1644,7 +1666,7 @@ describe("an edit of a routine's file (P34r)", () => {
 		await openEditor(f.view);
 		field(f.view.el, "Routine name").value = "Morning digest";
 		f.fake.answer("refused", "structured_rule", ["timezone Mars/Olympus is not a time zone the database knows"]);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() =>
 			expect(status(f.view.el)).toBe(
 				"The routine could not be saved: timezone Mars/Olympus is not a time zone the database knows.",
@@ -1810,7 +1832,7 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 				"The routine could not be changed: no login of yours pays for this routine's runs.",
 			),
 		);
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		expect(parsed(f.fake.text(PATH)).status).toBe("paused");
 		f.stop.abort();
 	});
@@ -1863,15 +1885,15 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 			title: "Evening wrap",
 		});
 		const f = mountFolder([routine(), other]);
-		await vi.waitFor(() => expect(cards(f.view.el)).toHaveLength(2));
-		expect(cards(f.view.el).map(controls)).toEqual([["Edit", "switch:true"], []]);
+		await vi.waitFor(() => expect(rowsOf(f.view.el)).toHaveLength(2));
+		expect(rowsOf(f.view.el).map(controls)).toEqual([["Edit", "switch:true"], ["Read"]]);
 		f.stop.abort();
 		document.body.replaceChildren();
 
 		// A cloud whose state folders read does not list routines' files yet: every routine is read-only.
 		const older = mountFolder([routine()], { fake: seeded({ listsRoutines: false }) });
-		await vi.waitFor(() => expect(cards(older.view.el)).toHaveLength(1));
-		expect(cards(older.view.el).map(controls)).toEqual([[]]);
+		await vi.waitFor(() => expect(rowsOf(older.view.el)).toHaveLength(1));
+		expect(rowsOf(older.view.el).map(controls)).toEqual([["Read"]]);
 		await expect(older.routines.setEnabled(routine(), account, true, "resume-1")).rejects.toBeInstanceOf(
 			WebRoutineGoneError,
 		);
@@ -1885,8 +1907,8 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		const unread = seeded();
 		unread.folder.stateFolders.mockRejectedValueOnce(new Error("Company folder is unavailable (503)"));
 		const g = mountFolder([routine()], { fake: unread });
-		await vi.waitFor(() => expect(cards(g.view.el)).toHaveLength(1));
-		expect(cards(g.view.el).map(controls)).toEqual([[]]);
+		await vi.waitFor(() => expect(rowsOf(g.view.el)).toHaveLength(1));
+		expect(rowsOf(g.view.el).map(controls)).toEqual([["Read"]]);
 		expect(g.view.el.querySelector(".surface-status")).toBeNull();
 		g.stop.abort();
 	});
@@ -1898,8 +1920,10 @@ describe("the routine editor's choices", () => {
 		await openEditor(f.view, "New routine");
 		// The instructions may be as long as the file allows.
 		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").maxLength).toBe(32768);
-		const when = field<HTMLSelectElement>(f.view.el, "When it runs");
-		expect([...when.options].map((option) => option.value)).toEqual(["weekly", "interval"]);
+		// Days at a time first; one quiet button turns to every so often, and back.
+		const kind = f.view.el.querySelector<HTMLButtonElement>(".routine-kind")!;
+		expect(kind.textContent).toBe("or every few hours");
+		expect(field(f.view.el, "Interval").closest("[hidden]")).not.toBeNull();
 		expect(f.view.el.querySelector('[aria-label="Company File path"]')).toBeNull();
 		const every = field(f.view.el, "Interval");
 		const unit = field<HTMLSelectElement>(f.view.el, "Interval unit");
@@ -1912,16 +1936,66 @@ describe("the routine editor's choices", () => {
 			unit.dispatchEvent(new Event("change"));
 			expect([every.min, every.max]).toEqual(bounds);
 		}
-		when.value = "interval";
-		when.dispatchEvent(new Event("change"));
+		kind.click();
+		expect(kind.textContent).toBe("or on chosen days");
+		expect(every.closest("[hidden]")).toBeNull();
+		expect(field(f.view.el, "Days").closest("[hidden]")).not.toBeNull();
 		unit.value = "minutes";
 		every.value = "2";
 		field(f.view.el, "Routine name").value = "Ping";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Check the inbox.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await settle();
 		expect(status(f.view.el)).toBe("Choose an interval between 5 minutes and 7 days.");
 		expect(f.routines.save).not.toHaveBeenCalled();
+	});
+	it("chooses days with one-letter circles, Monday first, and the reply among three words", async () => {
+		const f = mount([]);
+		await openEditor(f.view, "New routine");
+		const days = [...f.view.el.querySelectorAll<HTMLButtonElement>(".routine-day")];
+		expect(
+			days.map((day) => [day.textContent, day.getAttribute("aria-label"), day.getAttribute("aria-pressed")]),
+		).toEqual([
+			["M", "Monday", "true"],
+			["T", "Tuesday", "true"],
+			["W", "Wednesday", "true"],
+			["T", "Thursday", "true"],
+			["F", "Friday", "true"],
+			["S", "Saturday", "false"],
+			["S", "Sunday", "false"],
+		]);
+		days[5]!.click();
+		days[0]!.click();
+		expect(days.map((day) => day.getAttribute("aria-pressed"))).toEqual([
+			"false",
+			"true",
+			"true",
+			"true",
+			"true",
+			"true",
+			"false",
+		]);
+		// A member's routine replies every time unless they choose otherwise; arrows move the choice.
+		const choices = [...f.view.el.querySelectorAll<HTMLButtonElement>('[role="radiogroup"] [role="radio"]')];
+		expect(choices.map((choice) => choice.textContent)).toEqual(["Always", "When there is news", "Never"]);
+		expect(reply(f.view.el)).toBe("Always");
+		expect(choices.map((choice) => choice.tabIndex)).toEqual([0, -1, -1]);
+		click(f.view.el, "Never");
+		expect(reply(f.view.el)).toBe("Never");
+		choices[2]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+		expect(reply(f.view.el)).toBe("Always");
+		choices[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		expect(reply(f.view.el)).toBe("Never");
+		expect(document.activeElement).toBe(choices[2]);
+		field(f.view.el, "Routine name").value = "Weekend check";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Check the shop.";
+		click(f.view.el, "Save");
+		await settle();
+		const [draft] = f.routines.save.mock.calls[0] as unknown as [WebRoutineDraft];
+		expect(draft.trigger).toMatchObject({
+			weekdays: ["tuesday", "wednesday", "thursday", "friday", "saturday"],
+			replyPolicy: "silent",
+		});
 	});
 	it("runs on the member's own account that works while they're away; the picker shows only when none is on", async () => {
 		const on = {
@@ -1944,7 +2018,7 @@ describe("the routine editor's choices", () => {
 		expect(f.view.el.textContent).toContain("This routine runs on your own account that works while you're away.");
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1));
 		// The account that is on gets today's idempotent consent and binding; a Claude login never pays.
 		expect(f.calls[0]).toEqual([
@@ -1998,7 +2072,7 @@ describe("a member edit of an agent's routine", () => {
 		const f = mountFolder([indexed(before)], { fake: seeded({ text: before }) });
 		await openEditor(f.view);
 		change(f.view.el);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
 		f.stop.abort();
 		document.body.replaceChildren();
@@ -2090,9 +2164,7 @@ describe("a member edit of an agent's routine", () => {
 		const switched = await saveEdited(weekly, (form) => {
 			// Unchecked first: a hidden box no longer acts.
 			waiting(form).querySelector("input")!.checked = false;
-			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
-			when.value = "interval";
-			when.dispatchEvent(new Event("change"));
+			form.querySelector<HTMLButtonElement>(".routine-kind")!.click();
 			expect(waiting(form).hidden).toBe(true);
 		});
 		// The weekly date does not become the interval's anchor, and the interval starts one interval from now. The zone
@@ -2109,9 +2181,9 @@ describe("a member edit of an agent's routine", () => {
 		const quiet = { start: "22:00", end: "07:00", timezone: "America/New_York" };
 		const kept = routineFile({ ...every, timezone: "America/New_York", quiet });
 		const toWeekly = (form: HTMLElement) => {
-			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
-			when.value = "weekly";
-			when.dispatchEvent(new Event("change"));
+			const kind = form.querySelector<HTMLButtonElement>(".routine-kind")!;
+			expect(kind.textContent).toBe("or on chosen days");
+			kind.click();
 		};
 		const same = await saveEdited(kept, (form) => {
 			expect(form.querySelector<HTMLInputElement>('[aria-label="Time zone"]')!.value).toBe("America/New_York");
@@ -2168,7 +2240,7 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		expect(f.view.el.textContent).toContain(
 			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
 		);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await settle();
 		expect(status(f.view.el)).toBe("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
 		expect(f.calls).toEqual([]);
@@ -2179,7 +2251,7 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		const f = mountFolder([], { fake: seeded({ text: null }), connections: [plan(true)] });
 		await draft(f.view);
 		expect(f.view.el.textContent).toContain("This routine runs on your own account that works while you're away.");
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
 		expect(f.calls.map(([name]) => name)).toEqual([SPONSOR]);
 		expect(f.calls[0]![1]).toMatchObject({
@@ -2246,7 +2318,7 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 			await settle();
 			expect(f.routines.setEnabled).not.toHaveBeenCalled();
 			// The switch is back where it stood.
-			expect(controls(cards(f.view.el)[0]!)).toContain("switch:false");
+			expect(controls(rowsOf(f.view.el)[0]!)).toContain("switch:false");
 			expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(said);
 			f.stop.abort();
 			document.body.replaceChildren();
@@ -2257,7 +2329,7 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		await draft(f.view);
 		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
 		expect([...picker.options].map((option) => option.value)).toEqual([account.connectionId]);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
 		expect(f.calls[0]).toEqual([
 			CONSENT,
@@ -2304,17 +2376,11 @@ describe("who pays for a routine (20260930095000)", () => {
 			allowAutonomous,
 		}) as unknown as WebMemberConnection;
 	const refused = (code: string, message: string) => new CloudRpcError(SET, { message, code }, 403);
-	/** A card's "Who pays", or null when it has none. */
-	const whoPays = (card: Element) =>
-		[...card.querySelectorAll(".routine-card-fact")]
-			.find((item) => item.querySelector("dt")?.textContent === "Who pays")
-			?.querySelector("dd") ?? null;
 	/** What "Choose a login" says, under its choices. */
 	const note = (root: Element) => root.querySelector(".routine-login [role=status]")?.textContent;
-	/** Opens the first card and its "Choose a login". */
+	/** Opens the first row's "Choose a login". */
 	async function choose(view: AgentRoutines) {
 		await vi.waitFor(() => expect(view.el.textContent).toContain("Choose a login"));
-		view.el.querySelector<HTMLButtonElement>(".routine-card-summary")!.click();
 		click(view.el, "Choose a login");
 		await vi.waitFor(() =>
 			expect(view.el.querySelector(".routine-login select, .routine-login [role=status]")).not.toBeNull(),
@@ -2412,11 +2478,11 @@ describe("who pays for a routine (20260930095000)", () => {
 		await vi.waitFor(() => expect(page.routines.payer).toHaveBeenCalledTimes(1));
 		await settle();
 		expect(page.routines.payer).toHaveBeenCalledTimes(1);
-		expect(cards(page.view.el).map(whoPays)).toEqual([null, null]);
+		expect(rowsOf(page.view.el).map(problem)).toEqual([null, null]);
 		expect(page.view.el.querySelector(".surface-status")).toBeNull();
 	});
 
-	it("says who pays for each routine and since when: you, another member or the company", async () => {
+	it("reads who pays for each routine, and says nothing more of a login that pays", async () => {
 		const items = ["51", "52", "53", "54"].map((n, index) =>
 			routine({ routineId: `10000000-0000-4000-8000-0000000000${n}`, title: `Routine ${index + 1}` }),
 		);
@@ -2446,49 +2512,38 @@ describe("who pays for a routine (20260930095000)", () => {
 			new AbortController().signal,
 		);
 		document.body.append(view.el);
-		await vi.waitFor(() => expect(whoPays(cards(view.el)[0]!)).not.toBeNull());
-		const date = fmtDate(SINCE);
-		expect(cards(view.el).map((card) => whoPays(card)?.textContent)).toEqual([
-			`Paid by you since ${date}`,
-			`Paid by Anna since ${date}`,
-			`Paid by the company since ${date}`,
-			`Paid by a member since ${date}`,
-		]);
-		// One read per routine for the list read; a login that pays offers no choice.
-		expect(routines.payer).toHaveBeenCalledTimes(4);
+		// One read per routine for the list read; a login that pays adds nothing to its row and offers no choice.
+		await vi.waitFor(() => expect(routines.payer).toHaveBeenCalledTimes(4));
+		await settle();
+		expect(rowsOf(view.el).map(problem)).toEqual([null, null, null, null]);
 		expect(view.el.textContent).not.toContain("Choose a login");
 
-		// A read that fails says nothing for its routine, and no error; the others still say who pays.
+		// A read that fails says nothing for its routine, and no error; the others still say why they wait.
 		const failing = mount(items.slice(0, 2));
 		failing.routines.payer.mockImplementation(async (routineId) => {
 			if (routineId === items[0]!.routineId) throw new Error("offline");
-			return answers.get(routineId) ?? null;
+			return { ...paid(waits), routineId };
 		});
-		await vi.waitFor(() => expect(whoPays(cards(failing.view.el)[1]!)).not.toBeNull());
-		expect(whoPays(cards(failing.view.el)[0]!)).toBeNull();
+		await vi.waitFor(() => expect(problem(rowsOf(failing.view.el)[1]!)).not.toBeNull());
+		expect(problem(rowsOf(failing.view.el)[0]!)).toBeNull();
 		expect(failing.view.el.querySelector(".surface-status")).toBeNull();
 	});
 
-	it("says why a kept login can't pay now, and offers a choice", async () => {
-		const date = fmtDate(SINCE);
+	it("says on its row why a kept login can't pay now, and offers a choice there", async () => {
 		for (const [update, words] of [
-			[{ waitsFor: "usage_limit" }, "Paid by you since {date}Runs wait until this login's usage limit resets."],
-			[
-				{ waitsFor: "sign_in" },
-				"Paid by you since {date}Sign in to this login again in Settings → My connections to let it run.",
-			],
-			[
-				{ waitsFor: "sign_in", payerUserId: OTHER_MEMBER },
-				"Paid by Anna since {date}Runs wait until Anna signs in to this login again.",
-			],
+			[{ waitsFor: "usage_limit" }, "Runs wait until this login's usage limit resets."],
+			[{ waitsFor: "sign_in" }, "Sign in to this login again in Settings → My connections to let it run."],
+			[{ waitsFor: "sign_in", payerUserId: OTHER_MEMBER }, "Runs wait until Anna signs in to this login again."],
 			[
 				// A member the team list does not name.
 				{ waitsFor: "sign_in", payerUserId: "10000000-0000-4000-8000-000000000043" },
-				"Paid by a member since {date}Runs wait until this login is signed in again.",
+				"Runs wait until this login is signed in again.",
 			],
+			// No login pays: the routine waits for a choice.
+			[waits, "Paused: no model account pays for it"],
 		] as const) {
 			const routines = mocked([routine()]);
-			routines.payer.mockResolvedValue(paid({ canPay: false, ...update }));
+			routines.payer.mockResolvedValue(paid({ ...update, canPay: false }));
 			const stop = new AbortController();
 			const view = new AgentRoutines(
 				() => staff,
@@ -2502,8 +2557,8 @@ describe("who pays for a routine (20260930095000)", () => {
 				stop.signal,
 			);
 			document.body.append(view.el);
-			await vi.waitFor(() => expect(whoPays(cards(view.el)[0]!)).not.toBeNull());
-			expect(whoPays(cards(view.el)[0]!)?.textContent).toBe(`${words.replace("{date}", date)}Choose a login`);
+			await vi.waitFor(() => expect(problem(rowsOf(view.el)[0]!)).toBe(words));
+			expect(controls(rowsOf(view.el)[0]!)).toEqual(["Edit", "Choose a login", "switch:true"]);
 			stop.abort();
 			document.body.replaceChildren();
 		}
@@ -2521,7 +2576,8 @@ describe("who pays for a routine (20260930095000)", () => {
 		// It waits on another login of the member's, which cannot pay.
 		f.routines.payer.mockResolvedValue(paid({ ...waits, connectionId: "10000000-0000-4000-8000-0000000000c3" }));
 		await choose(f.view);
-		expect(whoPays(cards(f.view.el)[0]!)?.textContent).toContain(`Paid by you since ${fmtDate(SINCE)}`);
+		expect(problem(rowsOf(f.view.el)[0]!)).toBe("Paused: no model account pays for it");
+		expect(document.activeElement).toBe(field(f.view.el, "Login"));
 		const picker = field<HTMLSelectElement>(f.view.el, "Login");
 		expect([...picker.options].map((option) => [option.value, option.textContent])).toEqual([
 			[account.connectionId, "ChatGPT · owner@example.invalid"],
@@ -2536,13 +2592,9 @@ describe("who pays for a routine (20260930095000)", () => {
 		await vi.waitFor(() => expect(f.log).toEqual([CONSENT, SPONSOR, SET]), { timeout: 3000 });
 		expect(f.calls.at(-1)).toEqual([SET, { p_routine_id: ROUTINE_ID, p_connection_id: account.connectionId }]);
 		expect(f.routines.setLogin).toHaveBeenCalledWith(ROUTINE_ID, account);
-		// The card and the list are read again.
+		// Who pays and the list are read again: the login pays, and the row says nothing of it.
 		await vi.waitFor(() => expect(f.routines.list).toHaveBeenCalledTimes(2));
-		await vi.waitFor(() =>
-			expect(whoPays(cards(f.view.el)[0]!)?.textContent).toBe(
-				`Paid by you since ${fmtDate("2026-10-04T09:00:00.000Z")}`,
-			),
-		);
+		await vi.waitFor(() => expect(problem(rowsOf(f.view.el)[0]!)).toBeNull());
 		expect(f.view.el.querySelector(".routine-login")).toBeNull();
 		expect(f.view.el.querySelector(".surface-status")).toBeNull();
 		f.stop.abort();
@@ -2651,16 +2703,16 @@ describe("who pays for a routine (20260930095000)", () => {
 	it("turns the switch of a routine whose login can't pay into Choose a login; without that read it resumes", async () => {
 		const f = mount([waiting()]);
 		f.routines.payer.mockResolvedValue(paid(waits));
-		await vi.waitFor(() => expect(whoPays(cards(f.view.el)[0]!)).not.toBeNull());
+		await vi.waitFor(() => expect(problem(rowsOf(f.view.el)[0]!)).not.toBeNull());
 		const lever = f.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!;
 		lever.click();
-		// No resume: the card opens on the member's logins, and the switch stays off.
+		// No resume: the member's logins open under the row, and the switch stays off.
 		await vi.waitFor(() =>
 			expect(f.view.el.querySelector('.routine-login select[aria-label="Login"]')).not.toBeNull(),
 		);
-		expect(cards(f.view.el)[0]!.classList.contains("is-open")).toBe(true);
+		expect(f.view.el.querySelector(".routine-editor")).toBeNull();
 		expect(document.activeElement).toBe(field(f.view.el, "Login"));
-		expect(controls(cards(f.view.el)[0]!)).toContain("switch:false");
+		expect(controls(rowsOf(f.view.el)[0]!)).toContain("switch:false");
 		expect(f.routines.setEnabled).not.toHaveBeenCalled();
 		// Pressed again, it stays on the open choice.
 		f.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
@@ -2731,9 +2783,10 @@ describe("who pays for a routine (20260930095000)", () => {
 			await choose(f.view);
 			expect(note(f.view.el)).toBe(said);
 			expect(f.view.el.querySelector(".routine-login select")).toBeNull();
-			// Cancel puts the button back.
+			// Cancel puts the button back, and focus on it.
 			click(f.view.el, "Cancel");
-			expect(f.view.el.querySelector(".routine-login .btn")?.textContent).toBe("Choose a login");
+			expect(f.view.el.querySelector(".routine-login")).toBeNull();
+			expect(document.activeElement?.textContent).toBe("Choose a login");
 			expect(f.routines.setLogin).not.toHaveBeenCalled();
 			f.stop.abort();
 			document.body.replaceChildren();
@@ -2758,8 +2811,10 @@ describe("who pays for a routine (20260930095000)", () => {
 		] as const) {
 			const f = mount([waiting()], write);
 			f.routines.payer.mockResolvedValue(paid(update));
-			await vi.waitFor(() => expect(whoPays(cards(f.view.el)[0]!)).not.toBeNull());
-			expect(whoPays(cards(f.view.el)[0]!)?.textContent).toBe(`Paid by a member since ${fmtDate(SINCE)}`);
+			await vi.waitFor(() => expect(f.routines.payer).toHaveBeenCalled());
+			await settle();
+			// The viewer still reads why it waits.
+			expect(problem(rowsOf(f.view.el)[0]!)).toBe(write ? null : "Paused: no model account pays for it");
 			expect(f.view.el.textContent).not.toContain("Choose a login");
 			f.stop.abort();
 			document.body.replaceChildren();
@@ -2771,8 +2826,8 @@ describe("who pays for a routine (20260930095000)", () => {
 		const f = mount([waiting()], false, [account], true);
 		f.routines.payer.mockResolvedValue(paid(waits));
 		await choose(f.view);
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["switch:false"]);
-		expect(cards(f.view.el)[0]!.querySelector('[role="switch"]')!.classList.contains("is-locked")).toBe(true);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Read", "switch:false"]);
+		expect(rowsOf(f.view.el)[0]!.querySelector('[role="switch"]')!.classList.contains("is-locked")).toBe(true);
 		expect([...field<HTMLSelectElement>(f.view.el, "Login").options].map((option) => option.value)).toEqual([
 			account.connectionId,
 		]);
@@ -2809,12 +2864,12 @@ describe("who pays for a routine (20260930095000)", () => {
 			f.routines.list.mockReturnValueOnce(list.promise);
 			f.routines.open.mockReturnValueOnce(file.promise);
 			f.view.refresh();
-			click(f.view.el, "Edit");
-			// While the editor opens, the list's controls wait: the choice (Cancel too), Edit, New routine, the switch.
+			editButton(f.view.el).click();
+			// While the composer opens, the list's controls wait: the choice (Cancel too), the row, New routine, the switch.
 			const button = (label: string) =>
 				[...f.view.el.querySelectorAll("button")].find((item) => item.textContent === label)!;
-			const held = ["Use this login", "Cancel", "Edit", "New routine"].map((label) => button(label).disabled);
-			expect(held).toEqual([true, true, true, true]);
+			const held = ["Use this login", "Cancel", "New routine"].map((label) => button(label).disabled);
+			expect([...held, editButton(f.view.el).disabled]).toEqual([true, true, true, true]);
 			expect(field<HTMLSelectElement>(f.view.el, "Login").disabled).toBe(true);
 			expect(f.view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBe("true");
 			button(press).click();
@@ -2845,11 +2900,11 @@ describe("who pays for a routine (20260930095000)", () => {
 		const file = deferred<WebRoutineFile>();
 		f.routines.save.mockRejectedValueOnce(new WebRoutineChangedError("changed"));
 		f.routines.open.mockReturnValueOnce(file.promise);
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.routines.open).toHaveBeenCalledTimes(2));
 		// While the routine's file is read again, the form on screen is no longer the editor's: its buttons do nothing.
 		click(f.view.el, "Cancel");
-		click(f.view.el, "Save routine");
+		click(f.view.el, "Save");
 		await settle();
 		expect(f.routines.save).toHaveBeenCalledTimes(1);
 		expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
@@ -2878,7 +2933,7 @@ describe("who pays for a routine (20260930095000)", () => {
 		await settle();
 		expect(f.view.el.querySelector(".routine-editor")).toBeNull();
 		expect(f.view.el.querySelector(":scope > .surface-status")).toBeNull();
-		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(rowsOf(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
 		f.stop.abort();
 		document.body.replaceChildren();
 
@@ -2891,7 +2946,7 @@ describe("who pays for a routine (20260930095000)", () => {
 		await vi.waitFor(() => expect(g.routines.payer).toHaveBeenCalledTimes(2));
 		await settle();
 		expect(g.view.el.querySelector(".routine-login select")).not.toBeNull();
-		expect(whoPays(cards(g.view.el)[0]!)?.textContent).toContain(`Paid by a member since ${fmtDate(SINCE)}`);
+		expect(problem(rowsOf(g.view.el)[0]!)).toBe("Paused: no model account pays for it");
 		g.stop.abort();
 		document.body.replaceChildren();
 
@@ -2910,14 +2965,14 @@ describe("who pays for a routine (20260930095000)", () => {
 		);
 		document.body.append(view.el);
 		await listed(view);
-		click(view.el, "Edit");
+		editButton(view.el).click();
 		await vi.waitFor(() =>
 			expect(view.el.querySelector(":scope > .surface-status")?.textContent).toBe(
 				"Your model accounts could not be read. Try again.",
 			),
 		);
 		expect(view.el.querySelector(".routine-editor")).toBeNull();
-		expect(view.el.querySelector<HTMLButtonElement>(".routine-card-edit")!.disabled).toBe(false);
+		expect(editButton(view.el).disabled).toBe(false);
 		expect(view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBeNull();
 	});
 
@@ -2934,18 +2989,17 @@ describe("who pays for a routine (20260930095000)", () => {
 			const view = new AgentRoutines(() => staff, { routines, accounts, canManage: () => true }, stop.signal);
 			document.body.append(view.el);
 			await vi.waitFor(() => expect(view.el.textContent).toContain("Choose a login"));
-			if (start === "choose") {
-				view.el.querySelector<HTMLButtonElement>(".routine-card-summary")!.click();
-				click(view.el, "Choose a login");
-			} else view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+			if (start === "choose") click(view.el, "Choose a login");
+			else view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
 			expect(accounts).toHaveBeenCalledTimes(1);
 			// While the logins are read, nothing can open an editor over the list, change a switch or choose again.
 			const button = (label: string) =>
 				[...view.el.querySelectorAll("button")].find((item) => item.textContent === label)!;
-			const held = () => ["Edit", "New routine", "Choose a login"].map((label) => button(label).disabled);
+			const held = () =>
+				[editButton(view.el), button("New routine"), button("Choose a login")].map((item) => item.disabled);
 			expect(held()).toEqual([true, true, true]);
 			expect(view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBe("true");
-			button("Edit").click();
+			rowsOf(view.el)[0]!.click();
 			button("New routine").click();
 			view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
 			await settle();
