@@ -34,6 +34,7 @@ export const STORAGE: Record<string, string> = {
 	"Show the page or its source": "Vis siden eller dens kilde",
 	"Page: {name}": "Side: {name}",
 	"Show {name} large": "Vis {name} stort",
+	"This page can't be shown live, so its source is shown.": "Siden kan ikke vises direkte, så dens kilde vises.",
 	"Open {path} in Storage": "Åbn {path} i Lager",
 	"{name} could not be found in the Company File.": "{name} findes ikke i Virksomhedsfilen.",
 	"Qorpera folders": "Qorpera-mapper",

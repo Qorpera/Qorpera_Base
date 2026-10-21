@@ -15,7 +15,7 @@ import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
-import { PageFrames } from "../../ui/page-frame.ts";
+import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { phrase, presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
@@ -991,9 +991,11 @@ export class CompanyFolderBrowser {
 			);
 		const file = opened.file;
 		const page = opened.text !== undefined && PAGES.has(extension(opened.path)) ? opened.text : undefined;
+		// What the frame is handed, or null when the page can't be shown live (ui/page-frame.ts).
+		const live = page !== undefined ? framePage(page) : null;
 		let body: HTMLElement;
 		if (opened.image) body = h("img", { class: "files-image", src: opened.image, alt: name });
-		else if (page !== undefined) body = this.#page(page, name);
+		else if (page !== undefined) body = this.#page(page, live, name);
 		else if (opened.text !== undefined)
 			body = MARKDOWN.has(extension(opened.path))
 				? h("div", { class: "files-doc" }, markdown(opened.text))
@@ -1048,17 +1050,24 @@ export class CompanyFolderBrowser {
 				h("div", { class: "files-preview-body" }, body),
 				h("div", { class: "files-preview-actions" }, ...actions),
 			],
-			page !== undefined
-				? [this.#iconButton("expand", t("Show {name} large", { name }), () => this.#showLarge(page, name))]
+			live !== null
+				? [this.#iconButton("expand", t("Show {name} large", { name }), () => this.#showLarge(live, name))]
 				: [],
 		);
 	}
 
 	/** A page, live in its frame or as its source. The frame is made the first time the page shows and kept while the
-	 * source shows, so the page keeps its state. */
-	#page(html: string, name: string): HTMLElement {
+	 * source shows, so the page keeps its state. A page that can't be shown live shows its source, and says so. */
+	#page(html: string, live: string | null, name: string): HTMLElement {
 		const stage = h("div", { class: "files-page-stage" });
 		const source = h("pre", { class: "files-text files-page-source" }, html);
+		if (live === null)
+			return h(
+				"div",
+				{ class: "files-page-view" },
+				h("p", { class: "files-note" }, t("This page can't be shown live, so its source is shown.")),
+				source,
+			);
 		const views = h("div", {
 			class: "storage-view-toggle files-page-toggle",
 			role: "group",
@@ -1068,7 +1077,7 @@ export class CompanyFolderBrowser {
 		const show = (view: "page" | "source") => {
 			this.#pageView = view;
 			if (view === "page" && !frame) {
-				frame = this.#frames.frame(html, t("Page: {name}", { name }), "files-page-frame");
+				frame = this.#frames.frame(live, t("Page: {name}", { name }), "files-page-frame");
 				stage.prepend(frame);
 			}
 			if (frame) frame.hidden = view !== "page";
@@ -1092,8 +1101,9 @@ export class CompanyFolderBrowser {
 		return h("div", { class: "files-page-view" }, views, stage);
 	}
 
-	/** The page across the window, run afresh, in the dialog the attachment preview uses. */
-	#showLarge(html: string, name: string): void {
+	/** The page across the window, run afresh, in the dialog the attachment preview uses. `live`: what framePage handed
+	 * over. */
+	#showLarge(live: string, name: string): void {
 		this.#large?.close(false);
 		const dialog = new SurfaceDialog(name, "file-preview-dialog page-preview-dialog", () => {
 			if (this.#large === dialog) this.#large = undefined;
@@ -1101,7 +1111,7 @@ export class CompanyFolderBrowser {
 		this.#large = dialog;
 		dialog.content.append(
 			h("h2", null, name),
-			this.#frames.frame(html, t("Page: {name}", { name }), "page-preview-frame"),
+			this.#frames.frame(live, t("Page: {name}", { name }), "page-preview-frame"),
 		);
 		dialog.open();
 	}

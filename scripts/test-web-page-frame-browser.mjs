@@ -6,7 +6,8 @@
 // link hints in its markup. Each attempt aims at a listener here (HTTP, a STUN
 // port on UDP, a TCP port), and Chrome's net log shows every host name it looked up.
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-page-frame-browser.mjs
-// PAGE_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail).
+// PAGE_FRAME_DOCUMENT=<file> serves another frame document, PAGE_FRAME_MODULE=<file> bundles another page-frame.ts (to
+// see a weaker one fail).
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -51,12 +52,14 @@ function headersFor(path) {
 // The app's side: the frame code as the web app ships it, in a page that hands the frame the variant's page.
 const parent = await build({
 	stdin: {
-		contents: `import { PageFrames } from ${JSON.stringify(join(web, "src/ui/page-frame.ts"))};
+		contents: `import { framePage, PageFrames } from ${JSON.stringify(process.env.PAGE_FRAME_MODULE ?? join(web, "src/ui/page-frame.ts"))};
 window.reports = [];
 addEventListener("message", (event) => { if (event.data && typeof event.data.probe === "string") window.reports.push(event.data.probe); });
 const variant = new URLSearchParams(location.search).get("v");
 const { page } = await (await fetch("/variant/" + variant)).json();
-document.body.append(new PageFrames(new AbortController().signal).frame(page, "Page", "page"));`,
+const handed = framePage(page);
+if (handed === null) window.reports.push("not live");
+else document.body.append(new PageFrames(new AbortController().signal).frame(handed, "Page", "page"));`,
 		resolveDir: repository,
 		loader: "ts",
 	},
@@ -148,6 +151,8 @@ host.shadowRoot.innerHTML = ${JSON.stringify(childFrame("unwatched"))};
 document.body.append(host); ${say('"root added"')};</script></body>`,
 	"webrtc from a declarative root split between a write and the page": () =>
 		`<!doctype html><body><script>document.write('<div><template shadow');</script>rootmode="open">${childFrame("split")}</template></div><script>${say('"split"')}</script></body>`,
+	"webrtc from a declarative root hidden from the check by noscript": () =>
+		`<!doctype html><body><script>${say('"noscript"')}</script><noscript><!--</noscript><div><template shadowrootmode="open">${childFrame("noscript")}</template></div>--></noscript></body>`,
 	"webrtc from a frame in a declarative shadow root": () =>
 		`<!doctype html><body><div><template shadowrootmode="closed">${childFrame("declared")}</template></div><script>${say('"declared"')}</script></body>`,
 	"webrtc from a declarative shadow root in a template": () =>
@@ -174,6 +179,7 @@ const expected = {
 	"webrtc from a root made clonable through Object.prototype": ["clone added"],
 	"webrtc from a root whose watch was made to throw": ["root added"],
 	"webrtc from a declarative root split between a write and the page": ["split"],
+	"webrtc from a declarative root hidden from the check by noscript": ["noscript"],
 	"webrtc from a frame in a declarative shadow root": ["declared"],
 	"webrtc from a declarative shadow root in a template": ["template added"],
 	"webrtc from a declarative shadow root written during the parse": ["written"],

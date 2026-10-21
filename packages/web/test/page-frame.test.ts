@@ -90,14 +90,14 @@ describe("an HTML page's frame", () => {
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="DNS-Prefetch" href="//cdn.example">
 <link rel="stylesheet preconnect" href="https://x.example"><link rel="icon" href="data:,"></head>
 <body><p>Sales</p><script>const a = "<link rel=preconnect>";</script></body></html>`;
-		const handed = framePage(page);
+		const handed = framePage(page)!;
 		expect(handed).not.toMatch(/fonts\.googleapis|cdn\.example|x\.example/);
 		expect(handed.startsWith('<!DOCTYPE html><html lang="da">')).toBe(true);
 		expect(handed).toContain('<link rel="icon" href="data:,">');
 		expect(handed).toContain('<p>Sales</p><script>const a = "<link rel=preconnect>";</script>');
-		// What a frame is handed is the page without them.
+		// A frame is handed the page it was made with.
 		const stop = new AbortController();
-		const frame = new PageFrames(stop.signal).frame(page, "Page: sales.html", "files-page-frame");
+		const frame = new PageFrames(stop.signal).frame(handed, "Page: sales.html", "files-page-frame");
 		document.body.append(frame);
 		const send = vi.spyOn(frame.contentWindow!, "postMessage");
 		ready(frame.contentWindow);
@@ -109,16 +109,42 @@ describe("an HTML page's frame", () => {
 		const page = `<!doctype html><body><div><template shadowrootmode="closed"><p>In</p></template></div>
 <template id="outer"><section><template SHADOWROOTMODE="open" shadowrootdelegatesfocus><b>Deep</b></template></section></template>
 <template shadowroot="open"><i>Old</i></template><template id="plain"><u>Plain</u></template></body>`;
-		const handed = framePage(page);
+		const handed = framePage(page)!;
 		expect(handed).not.toMatch(/shadowroot(mode)?=/i);
 		expect(handed).toContain("<div><template><p>In</p></template></div>");
 		expect(handed).toContain(
 			'<template id="outer"><section><template shadowrootdelegatesfocus=""><b>Deep</b></template></section></template>',
 		);
 		expect(handed).toContain('<template id="plain"><u>Plain</u></template>');
-		// An SVG element named template has no contents and makes no shadow root: the page goes as written.
-		const drawing = '<!doctype html><svg><template shadowrootmode="open"/></svg><p>Chart</p>';
-		expect(framePage(drawing)).toBe(drawing);
+		// An SVG element named template has no contents to look into; its attribute goes all the same.
+		const drawing = framePage('<!doctype html><svg><template shadowrootmode="open"/></svg><p>Chart</p>')!;
+		expect(drawing).not.toMatch(/shadowroot/i);
+		expect(drawing).toContain("<p>Chart</p>");
+	});
+
+	it("hands a page over without noscript, whose content the frame would parse differently", () => {
+		// The frame parses with scripting on (noscript's content is text), this check with it off (markup): a comment
+		// opened inside noscript hides a declarative root from the check that the frame would make.
+		const hidden = `<!doctype html><body><p>Before</p><noscript><!--</noscript><div><template shadowrootmode="open"><iframe srcdoc="x"></iframe></template></div>--></noscript><p>After</p></body>`;
+		const handed = framePage(hidden)!;
+		expect(handed).not.toMatch(/noscript|shadowroot/i);
+		expect(handed).toContain("<p>Before</p>");
+		const plain = framePage("<!doctype html><noscript><p>Turn scripts on</p></noscript><p>Hi</p>")!;
+		expect(plain).not.toContain("noscript");
+		expect(plain).toContain("<p>Hi</p>");
+		// Inside a template too.
+		expect(framePage("<template><noscript><b>x</b></noscript></template><p>y</p>")).not.toContain("noscript");
+	});
+
+	it("shows nothing live when the page, written out and parsed again, would still bring something unfit", () => {
+		const parse = DOMParser.prototype.parseFromString;
+		let parses = 0;
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (this: DOMParser, text, type) {
+			parses++;
+			return Reflect.apply(parse, this, [parses === 2 ? "<noscript></noscript>" : text, type]) as Document;
+		});
+		expect(framePage('<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>')).toBeNull();
+		expect(parses).toBe(2);
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {

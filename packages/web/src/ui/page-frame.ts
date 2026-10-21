@@ -7,8 +7,8 @@
  *   no request, connection or frame of another site;
  * - no browser lets a policy stop WebRTC, so the frame document takes its interfaces away before the page runs, and
  *   takes out any frame put into the page before it loads (a frame would be a window of its own, with them);
- *   A frame in a shadow tree counts too: the frame document watches every shadow root the page makes, and the
- *   page's own declarative shadow roots are taken out before it is handed over (framePage);
+ *   A frame in a shadow tree counts too: the frame document watches every shadow root the page's scripts make, and
+ *   a page is handed over only once it is checked to declare none (framePage);
  * - link hints that make the browser look up a name or open a connection (dns-prefetch, preconnect) obey no policy
  *   either: the page's own are taken out before it is handed over (framePage). A hint the page's script adds while
  *   it runs still reaches the network: nothing in a page can stop the browser acting on it. What it can carry out is
@@ -33,38 +33,48 @@ function isReady(data: unknown): boolean {
 /** Template attributes that make the parser attach a shadow root (the second is the older spelling). */
 const DECLARATIVE_SHADOW_ROOT = ["shadowrootmode", "shadowroot"];
 
-/** The page as the frame is handed it: without its dns-prefetch and preconnect links, and with its declarative shadow
- * roots left as plain templates (in templates too), so no shadow tree is made that the frame document doesn't watch.
- * A page with none of them is handed over exactly as written; one with some, as the browser parsed it, without them. */
-export function framePage(html: string): string {
-	const page = new DOMParser().parseFromString(html, "text/html");
-	let changed = false;
+function isHint(link: Element): boolean {
+	return (link.getAttribute("rel") ?? "")
+		.toLowerCase()
+		.split(/[\t\n\f\r ]+/)
+		.some((token) => NETWORK_HINTS.has(token));
+}
+
+/** What the page may not bring into the frame: a declarative shadow root (the frame document watches only the roots
+ * the page's scripts make), a dns-prefetch or preconnect link, and noscript. The frame parses the page with scripting
+ * on, this check with it off, and noscript is the only thing that differs between the two (a noscript's content is
+ * text there, markup here): with none, the frame's parse is the one checked here. Template contents count, as
+ * scripts can bring them in. */
+function unfit(page: Document): Element[] {
+	const found: Element[] = [];
 	const scopes: ParentNode[] = [page];
-	for (let index = 0; index < scopes.length; index++) {
-		const scope = scopes[index]!;
-		// Only an HTML template has contents and makes shadow roots (an SVG element may be named template too).
-		for (const template of scope.querySelectorAll("template")) {
-			if (!(template instanceof HTMLTemplateElement)) continue;
-			scopes.push(template.content);
-			for (const name of DECLARATIVE_SHADOW_ROOT)
-				if (template.hasAttribute(name)) {
-					template.removeAttribute(name);
-					changed = true;
-				}
-		}
-		for (const link of scope.querySelectorAll("link[rel]"))
+	for (let index = 0; index < scopes.length; index++)
+		for (const element of scopes[index]!.querySelectorAll("noscript, template, link[rel]")) {
+			if (element instanceof HTMLTemplateElement) scopes.push(element.content);
 			if (
-				(link.getAttribute("rel") ?? "")
-					.toLowerCase()
-					.split(/[\t\n\f\r ]+/)
-					.some((token) => NETWORK_HINTS.has(token))
-			) {
-				link.remove();
-				changed = true;
-			}
-	}
-	if (!changed) return html;
-	return `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+				element.localName === "noscript" ||
+				(element.localName === "template" && DECLARATIVE_SHADOW_ROOT.some((name) => element.hasAttribute(name))) ||
+				(element.localName === "link" && isHint(element))
+			)
+				found.push(element);
+		}
+	return found;
+}
+
+/** The page as the frame is handed it, or null when it can't be shown live. A page with nothing unfit is handed over
+ * exactly as written. Otherwise it is handed over as this check parsed it, with its noscript and hint links taken
+ * out and its declarative shadow roots left as plain templates, but only if that text, parsed again, has nothing
+ * unfit either (writing a parsed page out and parsing it again need not give the same page). */
+export function framePage(html: string): string | null {
+	const parse = (text: string) => new DOMParser().parseFromString(text, "text/html");
+	const page = parse(html);
+	const found = unfit(page);
+	if (found.length === 0) return html;
+	for (const element of found)
+		if (element.localName === "template") for (const name of DECLARATIVE_SHADOW_ROOT) element.removeAttribute(name);
+		else element.remove();
+	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	return unfit(parse(handed)).length === 0 ? handed : null;
 }
 
 /** The pages of one view's frames. Only a frame made here is answered, with its own page, each time it is ready (a
@@ -79,10 +89,11 @@ export class PageFrames {
 		signal.addEventListener("abort", () => this.#pages.clear(), { once: true });
 	}
 
-	/** A frame that shows `html` once it is in the page; `title` names it for assistive technology. The pages of frames
+	/** A frame that shows `page` (what framePage handed over) once it is in the page; `title` names it for assistive
+	 * technology. The pages of frames
 	 * that had theirs and are gone from the page go first, so a view that shows page after page keeps only the pages
 	 * still shown (a frame made but not yet put in keeps its own). */
-	frame(html: string, title: string, className: string): HTMLIFrameElement {
+	frame(page: string, title: string, className: string): HTMLIFrameElement {
 		for (const done of this.#pages.keys()) if (this.#shown.has(done) && !done.isConnected) this.#pages.delete(done);
 		const frame = document.createElement("iframe");
 		frame.className = className;
@@ -90,7 +101,7 @@ export class PageFrames {
 		frame.setAttribute("referrerpolicy", "no-referrer");
 		frame.setAttribute("src", PAGE_FRAME_URL);
 		frame.title = title;
-		this.#pages.set(frame, framePage(html));
+		this.#pages.set(frame, page);
 		return frame;
 	}
 

@@ -1013,6 +1013,30 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
 	});
 
+	it("shows a page it can't run live as its source, and says so", async () => {
+		// The page written out again (XMLSerializer's doctype) parses as something unfit: it isn't run.
+		const parse = DOMParser.prototype.parseFromString;
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (this: DOMParser, text, type) {
+			return Reflect.apply(parse, this, [
+				text.startsWith("<!DOCTYPE html>") ? "<noscript></noscript>" : text,
+				type,
+			]) as Document;
+		});
+		const html = '<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>';
+		const { fake, host, browser } = await opened({ embedded: true });
+		fake.contents.set("hinted.html", html);
+		browser.reveal("hinted.html");
+		await settle();
+		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("hinted.html");
+		expect(visibleText(host.querySelector(".files-page-view .files-note"))).toBe(
+			"This page can't be shown live, so its source is shown.",
+		);
+		expect(host.querySelector(".files-page-source")?.textContent).toBe(html);
+		expect(host.querySelector(".files-preview iframe")).toBeNull();
+		expect(host.querySelector(".files-page-toggle")).toBeNull();
+		expect(host.querySelector(".files-preview-head [aria-label^='Show']")).toBeNull();
+	});
+
 	it("tells the platform's folders apart at the top, after the company's own work, each with its one line", async () => {
 		const { fake, host, browser } = await opened({ embedded: true });
 		for (const name of ["vision", "agents", "human-tasks", "code"]) fake.folders.add(name);
