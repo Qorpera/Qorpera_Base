@@ -420,9 +420,13 @@ describe("paths and order", () => {
 		expect(interfacePathProblems("tables/numbers/README.md")).toEqual([]);
 		expect(interfacePathProblems("work/anything.csv")).toEqual([]);
 		// Each root's own README.md, spelled README.md or readme.md (20260930526000).
-		for (const path of ["interfaces/README.md", "interfaces/readme.md", "tables/README.md", "Tables/readme.md"])
+		for (const path of ["interfaces/README.md", "interfaces/readme.md", "tables/README.md", "tables/readme.md"])
 			expect(interfacePathProblems(path), path).toEqual([]);
 		expect(interfacePathProblems("tables/ReadMe.md")).toHaveLength(1);
+		// The roots themselves are written in lowercase, as every folder here.
+		expect(interfacePathProblems("Tables/readme.md")[0]?.message).toBe(
+			"Folders and files here are named in lowercase plain letters, digits and hyphens.",
+		);
 		expect(interfacePathProblems("interfaces/notes.md")[0]?.message).toBe(
 			"Under interfaces/ go README.md, order.md and one folder per interface, with interface.toml and an optional README.md.",
 		);
