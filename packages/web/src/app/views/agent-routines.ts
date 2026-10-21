@@ -307,6 +307,7 @@ export class AgentRoutines {
 	readonly #access: AgentRoutineAccess | undefined;
 	readonly #signal: AbortSignal;
 	readonly #close: (() => void) | undefined;
+	readonly #back: boolean;
 	#routines: WebRoutine[] = [];
 	/** The routines whose file this member finds: only those have a switch and open in the composer. */
 	#files: ReadonlySet<string> = new Set();
@@ -340,13 +341,15 @@ export class AgentRoutines {
 	#returnTo: string | undefined;
 	/** The agent's figure, kept through redraws so it does not start over. */
 	#figure: { key: string; el: HTMLElement } | undefined;
-	/** `close` leaves the routines for the conversation. */
+	/** `close` leaves the routines: back to the agent's card when `back` (they are its page), else closes them. */
 	constructor(
 		agent: () => HostedStaffAgent,
 		access: AgentRoutineAccess | undefined,
 		signal: AbortSignal,
 		close?: () => void,
+		back = false,
 	) {
+		this.#back = back;
 		this.#agent = agent;
 		this.#access = access;
 		this.#signal = signal;
@@ -450,11 +453,11 @@ export class AgentRoutines {
 									{
 										type: "button",
 										class: "icon-button routine-close",
-										title: t("Close routines"),
-										"aria-label": t("Close routines"),
+										title: this.#back ? t("Back to agent details") : t("Close routines"),
+										"aria-label": this.#back ? t("Back to agent details") : t("Close routines"),
 										onclick: this.#close,
 									},
-									icon("close"),
+									icon(this.#back ? "back" : "close"),
 								)
 							: null,
 						create,
@@ -553,7 +556,7 @@ export class AgentRoutines {
 			choice && !choosing
 				? textButton(t("Choose a login"), () => void this.#openChoice(routine), "routine-choose", this.#busy)
 				: null,
-			!ended && known ? lever : null,
+			lever,
 			choice && choosing ? this.#loginChoice(routine, choosing) : null,
 		);
 	}
@@ -641,17 +644,27 @@ export class AgentRoutines {
 		const on = this.#runsNow(routine);
 		// A routine never runs under an archived agent: turned on, it is paused again at once.
 		const archived = this.#archived();
-		lever.setAttribute("aria-checked", String(on));
-		lever.title = !manage
-			? t("Only owners and admins can pause or resume routines.")
-			: archived && !on
-				? t("Reactivate the agent first")
-				: on
-					? t("Pause routine")
-					: t("Resume routine");
+		// An ended routine's switch stays, off and locked: a member save keeps its end, so only its agent starts it
+		// again. One whose file this member doesn't find can't be changed from here either.
+		const ended = routine.status === "expired" || routine.status === "concluded";
+		const known = this.#files.has(id);
+		lever.setAttribute("aria-checked", String(on && !ended));
+		lever.title = ended
+			? routine.status === "concluded"
+				? t("Done: {name} ended this routine", { name: this.#agent().displayName })
+				: t("This routine has ended")
+			: !known
+				? t("This routine can't be changed from here")
+				: !manage
+					? t("Only owners and admins can pause or resume routines.")
+					: archived && !on
+						? t("Reactivate the agent first")
+						: on
+							? t("Pause routine")
+							: t("Resume routine");
 		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
 		else lever.removeAttribute("aria-busy");
-		const locked = !manage || (archived && !on);
+		const locked = ended || !known || !manage || (archived && !on);
 		lever.classList.toggle("is-locked", locked);
 		if (locked || (this.#held() && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
@@ -725,7 +738,7 @@ export class AgentRoutines {
 			same[index] ??
 			same[0] ??
 			(back ? this.#controls(back)[0] : undefined) ??
-			this.#controls(t("Close routines"))[0]
+			this.el.querySelector<HTMLElement>(".routine-close")
 		)?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
@@ -768,6 +781,8 @@ export class AgentRoutines {
 			this.#editing ||
 			!this.#access?.canManage() ||
 			!this.#files.has(routine.routineId) ||
+			routine.status === "expired" ||
+			routine.status === "concluded" ||
 			(this.#archived() && !this.#runsNow(routine))
 		)
 			return;

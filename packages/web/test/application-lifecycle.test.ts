@@ -796,7 +796,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
 	});
 
-	it("opens the agent's computer and routines from its card in the rail, in the agent's own chat", async () => {
+	it("opens the agent's computer from its rail card in the agent's chat, and its routines in the card", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/team`);
 		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		await draw();
@@ -807,11 +807,22 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(document.querySelector(".agent-card")).toBeNull();
 		expect(f.root.querySelectorAll("main .computer-panel")).toHaveLength(1);
-		// In the chat it opens there at once: the routines lie over the conversation.
+		// The routines are a page of the card itself: nothing moves and nothing lies over the chat.
 		fromAgentCard(f.root, staff.id, "Routines");
-		expect(f.root.querySelectorAll("main .thread-routines")).toHaveLength(1);
-		expect(f.root.querySelector<HTMLElement>("main .thread-conversation")?.inert).toBe(true);
+		await draw();
+		const card = document.querySelector<HTMLDialogElement>("dialog.agent-card")!;
+		expect(card.dataset.page).toBe("routines");
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(document.querySelector(".thread-routines")).toBeNull();
+		expect(f.root.querySelector<HTMLElement>("main .thread-conversation")?.inert).toBeFalsy();
+		const back = card.querySelector<HTMLButtonElement>(".routine-close")!;
+		expect(back.getAttribute("aria-label")).toBe("Back to agent details");
+		expect(document.activeElement).toBe(back);
+		// The way back returns to the details, on the Routines line.
+		back.click();
+		expect(card.dataset.page).toBe("details");
+		expect(card.querySelector(".routine-close")).toBeNull();
+		expect(document.activeElement?.textContent).toBe("Routines");
 	});
 
 	it("keeps one rail placeholder while the company's agents load, then drops it", () => {

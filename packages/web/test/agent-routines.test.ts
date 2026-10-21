@@ -660,8 +660,8 @@ describe("agent routines section", () => {
 		expect(rows.map((item) => item.querySelector("strong")?.textContent)).toEqual(["Morning brief", "One check"]);
 		expect(line(rows[1]!)).toBe("Ended");
 		expect(rows[1]!.classList.contains("is-quiet")).toBe(true);
-		// Read-only: a member save would keep its end, so there is nothing to edit or resume.
-		expect(controls(rows[1]!)).toEqual(["Read"]);
+		// Read-only: a member save would keep its end, so there is nothing to edit or resume; its switch stays, off.
+		expect(controls(rows[1]!)).toEqual(["Read", "switch:false"]);
 		expect(controls(rows[0]!)).toEqual(["Edit", "switch:true"]);
 	});
 	it("shows a dynamic routine's next run, that it runs until its agent decides, and why a routine is done", async () => {
@@ -734,7 +734,7 @@ describe("agent routines section", () => {
 		expect(controls(rows[0]!)).toEqual(["Read", "switch:true"]);
 		// A concluded routine says why instead of how it used to be scheduled.
 		expect(line(rows[1]!)).toBe("Done · The launch went out on 24 September.");
-		expect(controls(rows[1]!)).toEqual(["Read"]);
+		expect(controls(rows[1]!)).toEqual(["Read", "switch:false"]);
 	});
 	it("saves a new weekday routine on the chosen account, as the same save across a retry", async () => {
 		const f = mount([]);
@@ -1293,6 +1293,72 @@ describe("agent routines section", () => {
 		expect(done.view.el.querySelector(".routine-editor.is-reading .routine-hint")?.textContent).toBe(
 			"Done · The launch went out.",
 		);
+	});
+	it("locks the switch of an ended routine and of one whose file it does not find, says why, and does nothing", async () => {
+		const done = routine({
+			routineId: "10000000-0000-4000-8000-000000000061",
+			title: "Launch watch",
+			status: "concluded",
+			conclusion: "The launch went out.",
+		});
+		const expired = routine({
+			routineId: "10000000-0000-4000-8000-000000000062",
+			title: "One check",
+			status: "expired",
+		});
+		const fileless = routine({ routineId: "10000000-0000-4000-8000-000000000063", title: "Evening wrap" });
+		const f = mount([done, expired, fileless, routine()]);
+		// Only the last routine's file is found.
+		f.routines.files.mockResolvedValue(new Set([ROUTINE_ID]));
+		await settle();
+		f.view.refresh();
+		await settle();
+		const levers = rowsOf(f.view.el).map((row) => row.querySelector<HTMLButtonElement>('[role="switch"]')!);
+		expect(
+			levers.map((lever) => [
+				lever.getAttribute("aria-checked"),
+				lever.getAttribute("aria-disabled"),
+				lever.classList.contains("is-locked"),
+				lever.title,
+			]),
+		).toEqual([
+			["false", "true", true, `Done: ${staff.displayName} ended this routine`],
+			["false", "true", true, "This routine has ended"],
+			["true", "true", true, "This routine can't be changed from here"],
+			["true", null, false, "Pause routine"],
+		]);
+		for (const lever of levers.slice(0, 3)) lever.click();
+		await settle();
+		expect(f.routines.setEnabled).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".routine-editor, .routine-login")).toBeNull();
+		expect(levers.slice(0, 3).map((lever) => lever.getAttribute("aria-checked"))).toEqual(["false", "false", "true"]);
+	});
+	it("is the agent card's page in back mode: its top-left control steps back to the card", async () => {
+		for (const back of [false, true]) {
+			const close = vi.fn();
+			const view = new AgentRoutines(
+				() => staff,
+				{
+					routines: mocked([routine()]),
+					accounts: async () => ({ connections: [account] }),
+					canManage: () => true,
+				},
+				new AbortController().signal,
+				close,
+				back,
+			);
+			document.body.append(view.el);
+			await settle();
+			const control = view.el.querySelector<HTMLButtonElement>(".routine-close")!;
+			const label = back ? "Back to agent details" : "Close routines";
+			expect([control.getAttribute("aria-label"), control.title]).toEqual([label, label]);
+			expect([...control.querySelectorAll("path")].map((path) => path.getAttribute("d"))).toEqual(
+				back ? ["m14 5-7 7 7 7M7 12h14"] : ["m6 6 12 12M6 18 18 6"],
+			);
+			click(view.el, label);
+			expect(close).toHaveBeenCalledTimes(1);
+			view.el.remove();
+		}
 	});
 	it("steps back from the composer to the list, focus on what opened it, and closes the list", async () => {
 		const back = vi.fn();
@@ -1878,7 +1944,7 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		expect(fake.commits).toHaveLength(writes + 1);
 		expect(parsed(fake.text(PATH))).toMatchObject({ status: "paused", title: "Morning digest" });
 	});
-	it("leaves a routine without a file it can find read-only: no switch, no Edit", async () => {
+	it("leaves a routine without a file it can find read-only: its switch locked, no Edit", async () => {
 		const other = routine({
 			routineId: "10000000-0000-4000-8000-000000000017",
 			clientRoutineId: "10000000-0000-4000-8000-000000000018",
@@ -1886,14 +1952,18 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		});
 		const f = mountFolder([routine(), other]);
 		await vi.waitFor(() => expect(rowsOf(f.view.el)).toHaveLength(2));
-		expect(rowsOf(f.view.el).map(controls)).toEqual([["Edit", "switch:true"], ["Read"]]);
+		expect(rowsOf(f.view.el).map(controls)).toEqual([
+			["Edit", "switch:true"],
+			["Read", "switch:true"],
+		]);
+		expect(rowsOf(f.view.el)[1]!.querySelector('[role="switch"]')?.getAttribute("aria-disabled")).toBe("true");
 		f.stop.abort();
 		document.body.replaceChildren();
 
 		// A cloud whose state folders read does not list routines' files yet: every routine is read-only.
 		const older = mountFolder([routine()], { fake: seeded({ listsRoutines: false }) });
 		await vi.waitFor(() => expect(rowsOf(older.view.el)).toHaveLength(1));
-		expect(rowsOf(older.view.el).map(controls)).toEqual([["Read"]]);
+		expect(rowsOf(older.view.el).map(controls)).toEqual([["Read", "switch:true"]]);
 		await expect(older.routines.setEnabled(routine(), account, true, "resume-1")).rejects.toBeInstanceOf(
 			WebRoutineGoneError,
 		);
@@ -1908,7 +1978,7 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		unread.folder.stateFolders.mockRejectedValueOnce(new Error("Company folder is unavailable (503)"));
 		const g = mountFolder([routine()], { fake: unread });
 		await vi.waitFor(() => expect(rowsOf(g.view.el)).toHaveLength(1));
-		expect(rowsOf(g.view.el).map(controls)).toEqual([["Read"]]);
+		expect(rowsOf(g.view.el).map(controls)).toEqual([["Read", "switch:true"]]);
 		expect(g.view.el.querySelector(".surface-status")).toBeNull();
 		g.stop.abort();
 	});

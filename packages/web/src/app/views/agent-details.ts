@@ -8,6 +8,7 @@ import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
+import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 
 type TextKey = "displayName" | "role" | "charter";
 
@@ -22,7 +23,6 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions {
 	computer?: () => void;
-	routines?: () => void;
 	/** Hides the agent from this member's sidebar, or shows it again when `hidden`. */
 	hide?: () => void;
 	hidden?: boolean;
@@ -35,10 +35,16 @@ export interface AgentCardActions {
  * the conversation title). Name, title and responsibilities are edited where they stand
  * and save on their own; the figure changes from a picker under it, as on the desktop. The
  * responsibilities field is the agent's description in plain prose and what the agent works
- * from. Under it, the agent's computer and routines, then Hide and Delete. */
+ * from. Under it, the agent's computer and routines, then Copy, Hide and Delete. Routines are a page
+ * of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
+	readonly #company: CompanyController;
+	readonly #actions: WorkspaceActions;
 	readonly #agent: HostedStaffAgent;
+	/** The routines page, kept while the card is open so going back and forth reads the list again in place. */
+	#routines: AgentRoutines | undefined;
+	readonly #routinesLink: HTMLButtonElement | null;
 	readonly #lifetime = new AbortController();
 	readonly #edits: AgentEdits;
 	readonly #unsubscribeEdits: () => void;
@@ -67,6 +73,8 @@ export class AgentDetails {
 		card: AgentCardActions = {},
 		placement: "below" | "beside" = "below",
 	) {
+		this.#company = company;
+		this.#actions = actions;
 		this.#agent = agent;
 		this.#edits = editsFor(company, agent, actions, scope);
 		this.dialog = new SurfaceDialog(
@@ -110,7 +118,15 @@ export class AgentDetails {
 		const copy = conversationId
 			? square(t("Copy conversation ID"), "copy", () => void this.#copy(conversationId))
 			: null;
-		const links = [link(t("Computer"), "computer", card.computer), link(t("Routines"), "clock", card.routines)];
+		const routines = h(
+			"button",
+			{ type: "button", class: "agent-card-link", onclick: () => this.#showRoutines() },
+			icon("clock"),
+			h("span", null, t("Routines")),
+			icon("chevron"),
+		) as HTMLButtonElement;
+		this.#routinesLink = routines;
+		const links = [link(t("Computer"), "computer", card.computer), routines];
 		const squares = [
 			copy,
 			card.hidden
@@ -198,6 +214,7 @@ export class AgentDetails {
 		this.#unsubscribeEdits = this.#edits.store.subscribe(() => this.#syncEdits());
 		this.#sync();
 		this.#syncEdits();
+		this.dialog.el.dataset.page = "details";
 		replace(this.dialog.content, this.#details);
 		this.dialog.open();
 	}
@@ -321,6 +338,35 @@ export class AgentDetails {
 		this.#sync();
 		const { status, failed, saved } = this.#edits.store.get();
 		this.#say(status, saved, failed);
+	}
+
+	/** The agent's routines take the card, which widens for them; the way back returns to the details. */
+	#showRoutines(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#closePicker(false);
+		if (this.#routines) this.#routines.refresh();
+		else
+			this.#routines = new AgentRoutines(
+				() => this.#company.staffById(this.#agent.id) ?? this.#agent,
+				routineAccessFor(this.#company, this.#actions),
+				this.#lifetime.signal,
+				() => this.#showDetails(),
+				true,
+			);
+		this.dialog.el.dataset.page = "routines";
+		replace(this.dialog.content, this.#routines.el);
+		this.dialog.content.scrollTop = 0;
+		this.dialog.content.querySelector<HTMLElement>(".routine-close")?.focus({ preventScroll: true });
+	}
+
+	#showDetails(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.dialog.el.dataset.page = "details";
+		replace(this.dialog.content, this.#details);
+		// Figures that left the page stop drawing; this one is drawn anew.
+		this.#drawn = "";
+		this.#drawFigure();
+		this.#routinesLink?.focus({ preventScroll: true });
 	}
 
 	/** The card stays open: its button turns into a check for a moment, or the status says it failed. */

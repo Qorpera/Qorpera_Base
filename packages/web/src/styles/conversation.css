@@ -453,7 +453,14 @@
 .agent-details-status { position: absolute; left: 24px; right: 24px; bottom: 0; display: flex; align-items: center; gap: 10px; height: 28px; margin: 0; color: var(--text-muted); font-size: 12px; }
 /* The agent's card, beside its row in the rail: figure and names, the description, then the computer and routines
  * as plain lines and Hide and Delete as two squares. It sizes to its content. */
-.agent-card { width: min(300px, calc(100vw - 24px)); }
+.agent-card { width: min(340px, calc(100vw - 24px)); transition: width 220ms cubic-bezier(.2, .9, .3, 1); }
+/* The routines page widens the card for its rows and composer. */
+.agent-card[data-page="routines"] { width: min(460px, calc(100vw - 24px)); }
+/* Its own way back stands where the card's close would; Escape and a click outside still close the card. */
+.agent-card[data-page="routines"] .surface-tools { display: none; }
+/* Scrolling stays, scrollbars don't show. */
+.agent-card, .agent-card * { scrollbar-width: none; }
+.agent-card::-webkit-scrollbar, .agent-card *::-webkit-scrollbar { display: none; }
 .agent-details.agent-card > .surface-dialog-content { position: relative; padding: 20px 16px 14px; }
 .agent-card .surface-tools { top: 6px; right: 6px; }
 .agent-card .agent-details-identity { grid-template-columns: 64px minmax(0, 1fr); gap: 12px; min-height: 0; padding: 0 22px 2px 0; }
@@ -463,9 +470,11 @@
 .agent-card .agent-figure-picker::before { left: 25px; }
 .agent-card .agent-inline-name { font-size: 17px; }
 .agent-card .agent-inline-title { font-size: 12.5px; }
-.agent-card .agent-inline-description { margin-top: 8px; padding-right: 30px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
-/* The description grows with its text, from one line up to eight. */
-.agent-card .agent-inline-description > .agent-inline-size::after { min-height: 1.5em; max-height: calc(8 * 1.5em); }
+.agent-card .agent-inline-description { margin-top: 8px; padding-right: 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+/* The text runs the card's full width; the pencil sits over its corner on hover, on a chip of the field's own colour. */
+.agent-card .agent-inline-description > .icon { top: 6px; right: 6px; box-sizing: content-box; padding: 3px; border-radius: 6px; background: #f2f2ef; }
+/* The description grows with its text, from one line up to five, then scrolls. */
+.agent-card .agent-inline-description > .agent-inline-size::after { min-height: 1.5em; max-height: calc(5 * 1.5em); }
 /* The field's own rows must not size the box; the sizer's mirror of the text does. */
 .agent-card .agent-inline-description textarea { height: 0; min-height: 100%; }
 .agent-card-links { display: grid; margin: 8px -6px 0; }
@@ -484,9 +493,7 @@
 .agent-card .agent-details-status:empty { display: none; }
 .agent-card { animation: agent-card-in 170ms cubic-bezier(.2, .9, .3, 1.15) both; }
 @keyframes agent-card-in { from { opacity: 0; transform: translateX(-6px) scale(.98); } }
-@media (prefers-reduced-motion: reduce) { .agent-card { animation: none; } }
-/* The agent's routines over its chat: a page of the chat, not a panel. */
-.thread-routines { position: absolute; inset: 0; z-index: 28; overflow: auto; background: var(--bg); animation: pair-enter 160ms ease both; }
+@media (prefers-reduced-motion: reduce) { .agent-card { animation: none; transition: none; } }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
