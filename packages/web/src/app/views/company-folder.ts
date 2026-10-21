@@ -169,7 +169,7 @@ const MARKDOWN = new Set(["md", "markdown", "mdown"]);
 /** HTML pages: shown live, in a locked-down frame (ui/page-frame.ts), or as their source. */
 const PAGES = new Set(["html", "htm"]);
 /** The platform's own folders at the top of a company's Company File, each with its one line (the words the agents'
- * prompt and each folder's README use). They are listed after the company's own work. */
+ * prompt uses). They are listed after the company's own work. */
 const PLATFORM_FOLDERS: ReadonlyMap<string, string> = new Map([
 	["vision", phrase("What the company is and where it is going. Every agent reads it.")],
 	["agents", phrase("The team: each agent's settings, memory, skills, routines and tasks.")],
