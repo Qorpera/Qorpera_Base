@@ -406,12 +406,14 @@ returns table(owner_kind text, owner_id uuid, session_id uuid) language sql stab
 	limit 1
 $$;
 
--- Moving and copying folders: nothing below a root outside the structured roots under qorperaos/ can be structured.
+-- Moving and copying folders: nothing below a root outside the structured roots under qorperaos/ can be structured. A
+-- folder holding them is QorperaOS/ itself (never moved, but it may be copied): its contents are checked too, so a copy of
+-- it lands no structured file as an ordinary one.
 select pg_temp.os527_replace('public.qorpera_company_state_carried(uuid,text,text,text,public.qorpera_folder_entries)'::regprocedure,
 	$old$	if p_from_key !~ '^(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' -- P16
 		and v_to_key !~ '^(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' then$old$,
-	$new$	if p_from_key !~ '^qorperaos/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' -- P16; 527000
-		and v_to_key !~ '^qorperaos/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' then$new$);
+	$new$	if p_from_key !~ '^qorperaos($|/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$))' -- P16; 527000
+		and v_to_key !~ '^qorperaos($|/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$))' then$new$);
 
 -- Interfaces and tables.
 select pg_temp.os527_replace(

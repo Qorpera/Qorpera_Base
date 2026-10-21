@@ -319,7 +319,9 @@ begin
 		jsonb_build_object('op','mkdir','path','QorperaOS/agents/empty/Routines'),
 		pg_temp.write('QorperaOS/agents/nora-back/routines/Daily.md', 'routine', 'x', '{"kind":"routine"}'),
 		pg_temp.write('QorperaOS/agents/nora-back/Agent.md', 'agent', pg_temp.agent_text(nora, 'Nora'), pg_temp.agent_parse(nora, 'Nora'),
-			pg_temp.version('QorperaOS/agents/nora-back/agent.md'))));
+			pg_temp.version('QorperaOS/agents/nora-back/agent.md')),
+		-- 20260930527000: a copy of QorperaOS/ itself would land its structured files as ordinary ones.
+		jsonb_build_object('op','copy','from','QorperaOS','to','backup')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 2, 'refused', 'structured_copy');
 	perform pg_temp.expect(r, 3, 'refused', 'structured_copy');
@@ -327,6 +329,7 @@ begin
 	perform pg_temp.expect(r, 5, 'refused', 'structured_invalid');
 	perform pg_temp.expect(r, 6, 'refused', 'structured_invalid');
 	perform pg_temp.expect(r, 7, 'refused', 'structured_invalid');
+	perform pg_temp.expect(r, 8, 'refused', 'kind_change');
 	-- An ordinary folder moves anywhere; an ordinary copy is untouched.
 	r := pg_temp.commit(pg_temp.owner(), 'kinds-0002', jsonb_build_array(
 		jsonb_build_object('op','copy','from','notes','to','notes-copy'),

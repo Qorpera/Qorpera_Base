@@ -264,7 +264,7 @@ it("shows a table's problems: a broken definition, a rows file it can't read, an
 	await refuses(
 		f.call("table_read", { table: "nope", where: null, after: null, limit: 5 }),
 		CloudToolRefusal,
-		"TABLE_NOT_FOUND",
+		"TABLE_NOT_FOUND: no table has that name; company_list QorperaOS/tables lists them",
 	);
 	expect(f.releases).toHaveLength(1);
 

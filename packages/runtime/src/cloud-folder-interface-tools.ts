@@ -335,7 +335,9 @@ export function cloudInterfaceTools(options: {
 				const input = value as { table: string; where: Where | null; after: string | null; limit: number };
 				const table = await readTable(folder, input.table, context.signal);
 				if (table.kind === "absent")
-					throw new CloudToolRefusal("TABLE_NOT_FOUND: no table has that name; company_list tables lists them");
+					throw new CloudToolRefusal(
+						`TABLE_NOT_FOUND: no table has that name; company_list ${osPath("tables")} lists them`,
+					);
 				if (table.kind === "broken") {
 					const answer = (n: number) =>
 						render({
