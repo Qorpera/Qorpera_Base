@@ -283,5 +283,6 @@ export const AGENTS: Record<string, string> = {
 	"Only {owner} can write to this session. Steer it through {agent}.":
 		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",
+	"Back to {name}": "Tilbage til {name}",
 	"Loading group details": "Henter gruppedetaljer",
 };
