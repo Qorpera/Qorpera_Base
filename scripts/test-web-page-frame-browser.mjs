@@ -133,6 +133,21 @@ document.body.append(host); ${say('"shadow added"')};</script></body>`,
 const root = host.attachShadow({ mode: "open", clonable: true, serializable: true });
 root.innerHTML = ${JSON.stringify(childFrame("clone"))};
 document.body.append(host.cloneNode(true)); ${say('"clone added"')};</script></body>`,
+	"webrtc from a root made clonable through Object.prototype": () =>
+		`<!doctype html><body><script>Object.prototype.clonable = true; Object.prototype.serializable = true;
+const host = document.createElement("div");
+const root = host.attachShadow({ mode: "open" });
+root.innerHTML = ${JSON.stringify(childFrame("inherited"))};
+document.body.append(host.cloneNode(true)); ${say('"clone added"')};</script></body>`,
+	"webrtc from a root whose watch was made to throw": () =>
+		`<!doctype html><body><script>const host = document.createElement("div");
+Object.defineProperty(Object.prototype, "attributeFilter", { get() { throw new Error("no"); }, configurable: true });
+try { host.attachShadow({ mode: "open" }); } catch {}
+delete Object.prototype.attributeFilter;
+host.shadowRoot.innerHTML = ${JSON.stringify(childFrame("unwatched"))};
+document.body.append(host); ${say('"root added"')};</script></body>`,
+	"webrtc from a declarative root split between a write and the page": () =>
+		`<!doctype html><body><script>document.write('<div><template shadow');</script>rootmode="open">${childFrame("split")}</template></div><script>${say('"split"')}</script></body>`,
 	"webrtc from a frame in a declarative shadow root": () =>
 		`<!doctype html><body><div><template shadowrootmode="closed">${childFrame("declared")}</template></div><script>${say('"declared"')}</script></body>`,
 	"webrtc from a declarative shadow root in a template": () =>
@@ -142,9 +157,11 @@ document.body.append(host.cloneNode(true)); ${say('"clone added"')};</script></b
 		`<!doctype html><body><script>document.write(${JSON.stringify(`<div><template shadowrootmode="open">${childFrame("written")}</template></div>`)}); ${say('"written"')};</script></body>`,
 	"webrtc from a declarative shadow root by setHTMLUnsafe": () =>
 		`<!doctype html><body><div id="target"></div><script>try { document.getElementById("target").setHTMLUnsafe(${JSON.stringify(`<template shadowrootmode="open">${childFrame("unsafe")}</template>`)}); ${say('"set"')}; } catch (error) { ${say('"refused " + error.name')}; }</script></body>`,
-	"link hints in the markup": () =>
+	"link hints in the markup": (origin) =>
 		`<!doctype html><head><link rel="preconnect" href="http://127.0.0.1:${hint}/"><link rel="dns-prefetch" href="//dns-hint.leak.invalid">
-<link rel="preconnect" href="https://preconnect-hint.leak.invalid"></head><body><script>${say('"hinted"')}</script></body>`,
+<link rel="preconnect" href="https://preconnect-hint.leak.invalid"><link rel="prefetch" href="${origin}/probe/prefetch">
+<link rel="preload" as="fetch" href="${origin}/probe/preload"><link rel="modulepreload" href="${origin}/probe/modulepreload">
+<link rel="prerender" href="${origin}/probe/prerender"></head><body><script>${say('"hinted"')}</script></body>`,
 };
 const expected = {
 	runs: ["ran, rgb(1, 2, 3), no storage, no cookies"],
@@ -154,6 +171,9 @@ const expected = {
 	"webrtc from a frame in the markup": ["markup written"],
 	"webrtc from a frame in a closed shadow root": ["shadow added"],
 	"webrtc from a frame in a cloned shadow root": ["clone added"],
+	"webrtc from a root made clonable through Object.prototype": ["clone added"],
+	"webrtc from a root whose watch was made to throw": ["root added"],
+	"webrtc from a declarative root split between a write and the page": ["split"],
 	"webrtc from a frame in a declarative shadow root": ["declared"],
 	"webrtc from a declarative shadow root in a template": ["template added"],
 	"webrtc from a declarative shadow root written during the parse": ["written"],

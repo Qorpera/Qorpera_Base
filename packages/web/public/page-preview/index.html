@@ -33,20 +33,25 @@
 	const remove = Element.prototype.remove;
 	const observe = MutationObserver.prototype.observe;
 	const attachShadow = Element.prototype.attachShadow;
-	const [open, write, writeln, close] = ["open", "write", "writeln", "close"].map((name) => Document.prototype[name]);
-	const join = Array.prototype.join;
-	const lower = String.prototype.toLowerCase;
-	const includes = String.prototype.includes;
+	const [open, write, close] = ["open", "write", "close"].map((name) => Document.prototype[name]);
+	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
+	// (`clonable`, a throwing `attributeFilter`) is never read from them.
+	const create = Object.create;
+	const watching = create(null);
+	watching.childList = true;
+	watching.subtree = true;
 
 	// WebRTC reaches the network whatever the policy says (STUN and TURN servers, and the names they are given), so its
 	// interfaces are gone for good.
 	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
+	// A picture-in-picture window would be a window of its own too.
+	if ("documentPictureInPicture" in window) define(window, "documentPictureInPicture", undefined);
 
 	// A frame inside the page would be a window of its own, with WebRTC. Each one is taken out as soon as it is put
 	// into the page or into a shadow tree, before it loads: the document and every shadow root are watched from the
 	// start. A shadow root is only ever made by attachShadow (watched at once, and never cloned along with its host);
-	// the ways to make one from markup are gone (the app takes declarative shadow roots out of the page it hands over,
-	// and a write during the page's parse can't add one).
+	// the ways to make one from markup are gone: the app takes declarative shadow roots out of the page it hands over,
+	// and the page can't write into its own parse (a write could start a template the rest of the page finishes).
 	const frames = "iframe, frame, object, embed, portal, fencedframe";
 	const each = (list, act) => {
 		for (let index = apply(count, list, []) - 1; index >= 0; index--) act(apply(item, list, [index]));
@@ -60,13 +65,14 @@
 	const watcher = new MutationObserver((records) => {
 		for (let index = 0; index < records.length; index++) each(apply(addedNodes, records[index], []), strip);
 	});
-	const watch = (target) => apply(observe, watcher, [target, { childList: true, subtree: true }]);
+	const watch = (target) => apply(observe, watcher, [target, watching]);
 	watch(document);
 	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
-		const options = init ?? {};
-		const root = apply(attachShadow, this, [
-			{ mode: options.mode, delegatesFocus: options.delegatesFocus, slotAssignment: options.slotAssignment },
-		]);
+		const options = create(null);
+		options.mode = init?.mode;
+		options.delegatesFocus = init?.delegatesFocus;
+		options.slotAssignment = init?.slotAssignment;
+		const root = apply(attachShadow, this, [options]);
 		watch(root);
 		return root;
 	});
@@ -80,19 +86,9 @@
 	])
 		if (name in target) define(target, name, undefined);
 
-	// The page may write into itself while it is parsed, as pages do, but never a shadow root, and nothing after.
-	let parsing = false;
-	let written = "";
-	const pageWrite = (original) =>
-		function writeDuringParse(...parts) {
-			if (!parsing) return;
-			const text = apply(join, parts, [""]);
-			written += text;
-			if (apply(includes, apply(lower, written, []), ["shadowroot"])) return;
-			apply(original, this, [text]);
-		};
-	define(Document.prototype, "write", pageWrite(write));
-	define(Document.prototype, "writeln", pageWrite(writeln));
+	// The page can't write into itself, during its parse or after.
+	define(Document.prototype, "write", function writeRefused() {});
+	define(Document.prototype, "writeln", function writelnRefused() {});
 	define(Document.prototype, "open", function openRefused() {
 		return this;
 	});
@@ -102,11 +98,9 @@
 		const data = event.data;
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
-		parsing = true;
 		apply(open, document, []);
 		apply(write, document, [data.html]);
 		apply(close, document, []);
-		parsing = false;
 	});
 	app.postMessage({ type: "qorpera-page-ready" }, "*");
 })();

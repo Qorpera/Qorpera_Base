@@ -42,7 +42,9 @@ export function framePage(html: string): string {
 	const scopes: ParentNode[] = [page];
 	for (let index = 0; index < scopes.length; index++) {
 		const scope = scopes[index]!;
+		// Only an HTML template has contents and makes shadow roots (an SVG element may be named template too).
 		for (const template of scope.querySelectorAll("template")) {
+			if (!(template instanceof HTMLTemplateElement)) continue;
 			scopes.push(template.content);
 			for (const name of DECLARATIVE_SHADOW_ROOT)
 				if (template.hasAttribute(name)) {

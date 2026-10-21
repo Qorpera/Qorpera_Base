@@ -116,6 +116,9 @@ describe("an HTML page's frame", () => {
 			'<template id="outer"><section><template shadowrootdelegatesfocus=""><b>Deep</b></template></section></template>',
 		);
 		expect(handed).toContain('<template id="plain"><u>Plain</u></template>');
+		// An SVG element named template has no contents and makes no shadow root: the page goes as written.
+		const drawing = '<!doctype html><svg><template shadowrootmode="open"/></svg><p>Chart</p>';
+		expect(framePage(drawing)).toBe(drawing);
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {
@@ -131,12 +134,15 @@ describe("an HTML page's frame", () => {
 		guarded('const frames = "iframe, frame, object, embed, portal, fencedframe";');
 		guarded("watch(document);");
 		guarded('define(Element.prototype, "attachShadow", function attachShadowWatched(init) {');
-		guarded("{ mode: options.mode, delegatesFocus: options.delegatesFocus, slotAssignment: options.slotAssignment }");
+		// Options the browser reads have no prototype, so nothing the page puts on Object.prototype counts.
+		guarded("const watching = create(null);");
+		guarded("const options = create(null);");
+		guarded("const root = apply(attachShadow, this, [options]);");
 		// No markup makes a shadow root the frame doesn't watch.
 		guarded('[Element.prototype, "setHTMLUnsafe"],');
 		guarded('[Document, "parseHTMLUnsafe"],');
-		guarded('if (apply(includes, apply(lower, written, []), ["shadowroot"])) return;');
-		guarded('define(Document.prototype, "write", pageWrite(write));');
+		guarded('define(Document.prototype, "write", function writeRefused() {});');
+		guarded('define(Document.prototype, "writeln", function writelnRefused() {});');
 		guarded('define(Document.prototype, "open", function openRefused() {');
 	});
 
