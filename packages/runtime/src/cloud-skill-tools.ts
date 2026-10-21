@@ -5,12 +5,12 @@
  * whose body holds the steps. Supporting files may sit beside SKILL.md.
  *
  * Two libraries, both ordinary Company File objects:
- * - the company library, skills/<name>/SKILL.md, shared by every member and
+ * - the company library, QorperaOS/skills/<name>/SKILL.md, shared by every member and
  *   agent and governed by the usual path authority (a protected path proposes);
  * - an agent's own library, <agent folder>/skills/<name>/SKILL.md, in the agent's folder
- *   of contract 5.6 (`agents/<agent-name>/`, found through cloudAgentFolder), under the
+ *   of contract 5.6 (`QorperaOS/agents/<agent-name>/`, found through cloudAgentFolder), under the
  *   same path authority.
- * A flat skills/<name>.md is read as a skill too; a new skill is always a folder.
+ * A flat QorperaOS/skills/<name>.md is read as a skill too; a new skill is always a folder.
  *
  * Every turn composes a catalog, never the bodies: the agent's own skills with
  * their descriptions, and the company library (with descriptions while it is
@@ -30,6 +30,7 @@ import {
 	parseCloudSkillFile,
 	renderCloudSkillFile,
 } from "@qorpera/cloud-client/cloud-skill-file";
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathResult } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
@@ -53,7 +54,7 @@ import { type CloudRuntimeToolOperation, cloudRuntimeErrorCategory } from "./clo
 export const CLOUD_SKILLS_SCHEMA = "qorpera.agent-skills/v1" as const;
 export const CLOUD_SKILL_SCOPES = ["agent", "company"] as const;
 export type CloudSkillScope = (typeof CLOUD_SKILL_SCOPES)[number];
-export const CLOUD_COMPANY_SKILLS_ROOT = "skills";
+export const CLOUD_COMPANY_SKILLS_ROOT = osPath("skills");
 const SKILL_FILE = "SKILL.md";
 const MAX_DESCRIPTION_BYTES = 1024;
 /** A description as the result fence carries it (escaped twice, markup as six-byte escapes): an imported

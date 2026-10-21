@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
 	COMPANY_STATE_FILE_MAX_BYTES,
+	osPath,
 	parseCompanyStateFile,
 	type SectionsFile,
 } from "@qorpera/cloud-client/company-state-files";
@@ -19,7 +20,7 @@ import {
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 
 /*
- * `organize_sidebar` as a thin writer of a folder-v2 company's `agents/sections.md` (deploy/first-node/
+ * `organize_sidebar` as a thin writer of a folder-v2 company's `QorperaOS/agents/sections.md` (deploy/first-node/
  * RUNTIME-COMPANY-STATE-FILES.md §2 "agents/sections.md", §5). The file is the sections, in order, each listing agents
  * and group chats by id; anyone not listed is Unassigned. The folder core's commit decides each save (F2-2's rules:
  * the Co-Founder is refused, an id the save adds must be a current agent or open group chat), under the tool call's
@@ -33,7 +34,7 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * as read.
  */
 
-const PATH = "agents/sections.md";
+const PATH = osPath("agents/sections.md");
 const TOOL_VERSION = "folder-v2/1";
 
 export interface CloudFolderSidebarRequest {

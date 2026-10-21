@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	COMPANY_STATE_FILE_MAX_BYTES,
 	newCompanyStateId,
+	osPath,
 	parseCompanyStateFile,
 	setCompanyStateSettings,
 	type TodoFile,
@@ -24,9 +25,9 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `manage_todo` as a thin writer of a folder-v2 agent's todo files (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
- * §2 "todo", §5): `agents/<handle>/todos/<todoKey>.md`, whose name is the todo's key. The folder core's commit decides
- * every save (F2-5a's rules: a closed todo is not opened again, done is refused while a worker is at work), under the
- * tool call's receipt, so the change is exactly once and the index follows the file.
+ * §2 "todo", §5): `QorperaOS/agents/<handle>/todos/<todoKey>.md`, whose name is the todo's key. The folder core's
+ * commit decides every save (F2-5a's rules: a closed todo is not opened again, done is refused while a worker is at
+ * work), under the tool call's receipt, so the change is exactly once and the index follows the file.
  *
  * A call reads the file first, outside the receipt, and refuses what can never succeed. Every such check still passes
  * once the call's own change is saved, so a replay of the same call reaches its receipt and returns the stored result.
@@ -90,7 +91,7 @@ export class CloudFolderTodos {
 		this.#folder = options.folder;
 		this.#operations = options.operations;
 		this.#identity = options.identity;
-		this.#todos = `agents/${options.handle}/todos`;
+		this.#todos = osPath(`agents/${options.handle}/todos`);
 	}
 
 	/** The path of a todo, or a refusal the model can act on. */

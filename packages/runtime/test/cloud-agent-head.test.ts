@@ -31,7 +31,7 @@ function memory(facts: string[]): CloudAgentMemoryBlock {
 		available: true,
 		tools: ["update_memory", "recall_memory"],
 		profile: {
-			path: "agents/nora/memory/profile.md",
+			path: "QorperaOS/agents/nora/memory/profile.md",
 			version: randomUUID(),
 			facts: facts.map((fact) => ({ date: "2026-09-01", tier: "profile", fact })),
 		},
@@ -39,7 +39,7 @@ function memory(facts: string[]): CloudAgentMemoryBlock {
 	};
 }
 
-const vision = (text: string) => ({ path: "vision/vision.md", version: randomUUID(), text });
+const vision = (text: string) => ({ path: "QorperaOS/vision/vision.md", version: randomUUID(), text });
 const parts = (head: { text: string }) => JSON.parse(head.text).parts.map((part: { part: string }) => part.part);
 
 it("shows the vision, the job specification and the profile page whole, in order, each with its file and trust", () => {
@@ -59,7 +59,7 @@ it("shows the vision, the job specification and the profile page whole, in order
 			},
 			{
 				part: "job",
-				path: "agents/nora/agent.md",
+				path: "QorperaOS/agents/nora/agent.md",
 				staffVersion: context.agent.version,
 				trust: "job_specification_not_authority",
 				text: "Keep the books.",
@@ -108,7 +108,9 @@ it("bounds the head by its escaped bytes, leaving out whole, in order, each part
 	// after it still fit.
 	const escaped = composeCloudAgentHead(context, vision("<".repeat(3_000)), notebook);
 	expect(parts(escaped)).toEqual(["job", "profile"]);
-	expect(JSON.parse(escaped.text).omitted).toEqual([{ part: "vision", path: "vision/vision.md", bytes: 3_000 }]);
+	expect(JSON.parse(escaped.text).omitted).toEqual([
+		{ part: "vision", path: "QorperaOS/vision/vision.md", bytes: 3_000 },
+	]);
 	expect([...escaped.shown]).toEqual(["job", "profile"]);
 	// Across the edge: a part is shown only when the head, with every later part named, stays within the bound.
 	const shown = new Set<boolean>();
@@ -132,7 +134,7 @@ it("leaves out a job specification the context cut short, and has no profile par
 		content: { ...source.content, text: text.slice(0, 4096), truncated: true, nextOffset: 4096 },
 	};
 	const context = parseCloudNativeCompanyContext(f.context, f.binding);
-	const job = { part: "job", path: "agents/nora/agent.md", bytes: 20_000 };
+	const job = { part: "job", path: "QorperaOS/agents/nora/agent.md", bytes: 20_000 };
 	const head = composeCloudAgentHead(context, null, unavailableCloudAgentMemory("read_failed"));
 	expect(JSON.parse(head.text)).toEqual({ schema: CLOUD_AGENT_HEAD_SCHEMA, parts: [], omitted: [job] });
 	expect(head.shown.size).toBe(0);
@@ -205,7 +207,7 @@ it("reads the vision whole, names one too large for text by the size its read fo
 	const version = randomUUID();
 	const file = {
 		readTrusted: vi.fn(async () => ({
-			path: "vision/vision.md",
+			path: "QorperaOS/vision/vision.md",
 			version,
 			kind: "file" as const,
 			text: "# Vision",
@@ -213,11 +215,11 @@ it("reads the vision whole, names one too large for text by the size its read fo
 		})),
 	};
 	const read = await readCloudAgentHeadVision(file, signal);
-	expect(read).toEqual({ path: "vision/vision.md", version, text: "# Vision" });
-	expect(file.readTrusted).toHaveBeenCalledWith("vision/vision.md", signal);
+	expect(read).toEqual({ path: "QorperaOS/vision/vision.md", version, text: "# Vision" });
+	expect(file.readTrusted).toHaveBeenCalledWith("QorperaOS/vision/vision.md", signal);
 	const absent = {
 		readTrusted: vi.fn(async () => ({
-			path: "vision/vision.md",
+			path: "QorperaOS/vision/vision.md",
 			version: null,
 			kind: "absent" as const,
 			text: "" as const,
@@ -231,7 +233,7 @@ it("reads the vision whole, names one too large for text by the size its read fo
 			throw new CloudCompanyPathNotText("Company folder file exceeds its bound", 40_000);
 		}),
 	};
-	expect(await readCloudAgentHeadVision(large, signal)).toEqual({ path: "vision/vision.md", bytes: 40_000 });
+	expect(await readCloudAgentHeadVision(large, signal)).toEqual({ path: "QorperaOS/vision/vision.md", bytes: 40_000 });
 	expect(large.readTrusted).toHaveBeenCalledOnce();
 	// Any other failure, or a "not text" that found no file, fails the composition.
 	const failed = {

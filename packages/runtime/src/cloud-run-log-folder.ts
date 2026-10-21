@@ -1,5 +1,5 @@
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { osRelative, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { parseMemoryRunToml } from "@qorpera/cloud-client/memory-run-files";
 import { isUuid, parseClosedRecord, POSTGRES_UUID_PATTERN as UUID, WireValueError } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
@@ -129,7 +129,12 @@ export class CloudRunLogCompanyFolder implements CloudRunLogFolder {
 		} catch {
 			invalid();
 		}
-		const parts = path.split("/");
+		// The place is a key (qorperaos/agents/...): the position checks are on the part below the root, and the folders on
+		// the way keep the root as the path spells it.
+		const below = osRelative(path);
+		if (below === null) invalid();
+		const top = path.slice(0, path.length - below.length);
+		const parts = below.split("/");
 		const group =
 			parts[0] === "agents" &&
 			parts[1] === "groups" &&
@@ -144,7 +149,7 @@ export class CloudRunLogCompanyFolder implements CloudRunLogFolder {
 			parts[4] === "runs" &&
 			parts.length === 6;
 		if ((!group && !thread) || parts[5] !== this.#runId) invalid();
-		const ancestors = (thread ? [3, 4, 5] : [4, 5]).map((length) => parts.slice(0, length).join("/"));
+		const ancestors = (thread ? [3, 4, 5] : [4, 5]).map((length) => `${top}${parts.slice(0, length).join("/")}`);
 		const missing = place.missing;
 		let previous = -1;
 		for (const folder of missing) {

@@ -1077,10 +1077,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						};
 					},
 				}).finally(async () => {
-					// What the run's machine saved under interfaces/ or tables/ (its shell, its screen) shows in its
-					// conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's commits
-					// there once, now that the machine is closed. A note that fails leaves the change without its line; the
-					// run's outcome stands.
+					// What the run's machine saved under QorperaOS/interfaces/ or QorperaOS/tables/ (its shell, its screen)
+					// shows in its conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's
+					// commits there once, now that the machine is closed. A note that fails leaves the change without its line;
+					// the run's outcome stands.
 					if (machine && context.identity.sessionId !== null)
 						await folder.client.noteInterfaceChanges(signal).catch((error: unknown) => {
 							console.error(

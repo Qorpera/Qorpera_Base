@@ -22,7 +22,7 @@ async function fixture(ownDynamicRoutine?: Parameters<typeof cloudRoutineTools>[
 		new AbortController().signal,
 	);
 	const writer = {
-		path: vi.fn<CloudFolderRoutines["path"]>((routineKey) => `agents/nora/routines/${routineKey}.md`),
+		path: vi.fn<CloudFolderRoutines["path"]>((routineKey) => `QorperaOS/agents/nora/routines/${routineKey}.md`),
 		check: vi.fn<CloudFolderRoutines["check"]>(),
 		list: vi.fn<CloudFolderRoutines["list"]>(async () => ({ kind: "text", value: '{"routines":[]}' })),
 		change: vi.fn<CloudFolderRoutines["change"]>(async (request) => ({

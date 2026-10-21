@@ -65,7 +65,10 @@ mrr,2026-10-01T09:00:00Z,1200,€,2000,${AGENT}
 mrr,2026-10-08T09:00:00Z,1500,€,2000,${AGENT}
 signups,2026-10-08T09:00:00Z,40,count,,${AGENT}
 `;
-const NUMBERS = { "tables/numbers/table.toml": NUMBERS_TABLE, "tables/numbers/rows.csv": NUMBERS_ROWS };
+const NUMBERS = {
+	"QorperaOS/tables/numbers/table.toml": NUMBERS_TABLE,
+	"QorperaOS/tables/numbers/rows.csv": NUMBERS_ROWS,
+};
 const NUMBERS_ABOUT = "The numbers the company steers by. One row per reading; a number's newest row is its value now.";
 const NUMBERS_COLUMNS = ["number", "at", "value", "unit", "target", "kept_by"];
 
@@ -82,8 +85,8 @@ it("offers the read tool as a Company File tool, and no interface_read since the
 
 it("reads a table page by page, with its types and who may write it first, and releases both files", async () => {
 	const f = await fixture({ files: NUMBERS });
-	const definitionVersion = f.version("tables/numbers/table.toml");
-	const rowsVersion = f.version("tables/numbers/rows.csv");
+	const definitionVersion = f.version("QorperaOS/tables/numbers/table.toml");
+	const rowsVersion = f.version("QorperaOS/tables/numbers/rows.csv");
 	const first = await f.call("table_read", { table: "numbers", where: null, after: null, limit: 2 });
 	expect(read(first)).toEqual({
 		table: "numbers",
@@ -119,14 +122,14 @@ it("reads a table page by page, with its types and who may write it first, and r
 		p_output_sha256: sha(String(first.value)),
 		p_reads: [
 			{
-				path: "tables/numbers/table.toml",
+				path: "QorperaOS/tables/numbers/table.toml",
 				version: definitionVersion,
-				fileSha256: f.files.get("tables/numbers/table.toml")?.file.fileSha256,
+				fileSha256: f.files.get("QorperaOS/tables/numbers/table.toml")?.file.fileSha256,
 			},
 			{
-				path: "tables/numbers/rows.csv",
+				path: "QorperaOS/tables/numbers/rows.csv",
 				version: rowsVersion,
-				fileSha256: f.files.get("tables/numbers/rows.csv")?.file.fileSha256,
+				fileSha256: f.files.get("QorperaOS/tables/numbers/rows.csv")?.file.fileSha256,
 			},
 		],
 	});
@@ -147,7 +150,7 @@ it("reads a table page by page, with its types and who may write it first, and r
 		rows: [["signups", "2026-10-08T09:00:00Z", 40, "count", null, AGENT]],
 		next: null,
 	});
-	cites(f, second, ["tables/numbers/table.toml", "tables/numbers/rows.csv"]);
+	cites(f, second, ["QorperaOS/tables/numbers/table.toml", "QorperaOS/tables/numbers/rows.csv"]);
 });
 
 it("keeps the rows a where names, and says when a column or an after names nothing", async () => {
@@ -181,8 +184,8 @@ it("shows a yes-no cell as yes or no, cuts a long cell and a long list, and matc
 	const agents = Array.from({ length: 25 }, () => randomUUID());
 	const f = await fixture({
 		files: {
-			"tables/areas/table.toml": AREAS_TABLE,
-			"tables/areas/rows.csv": `area,about,owner,shared,supervisor,agents\nsales,${"A".repeat(250)},,yes,,${agents.join(" ")}\nops,,,no,,${AGENT}\n`,
+			"QorperaOS/tables/areas/table.toml": AREAS_TABLE,
+			"QorperaOS/tables/areas/rows.csv": `area,about,owner,shared,supervisor,agents\nsales,${"A".repeat(250)},,yes,,${agents.join(" ")}\nops,,,no,,${AGENT}\n`,
 		},
 	});
 	const answer = read(
@@ -211,11 +214,11 @@ it("says who may write a table, and whether this agent may", async () => {
 	const f = await fixture();
 	const columns = [["name", "text"]] as const;
 	f.seed(
-		"tables/listed/table.toml",
+		"QorperaOS/tables/listed/table.toml",
 		tableFile("Listed", 'key = ["name"]', columns, `[write]\nagents = ["${randomUUID()}"]\nmembers = "owners"\n`),
 	);
 	f.seed(
-		"tables/mine/table.toml",
+		"QorperaOS/tables/mine/table.toml",
 		tableFile("Mine", 'key = ["name"]', columns, `[write]\nagents = ["${f.identity.staffAgentId}"]\n`),
 	);
 	const listed = read(await f.call("table_read", { table: "listed", where: null, after: null, limit: 5 }));
@@ -239,25 +242,25 @@ it("shows a table's problems: a broken definition, a rows file it can't read, an
 	const events = tableFile("Events", 'key = ["title"]', [["title", "text"]]);
 	const f = await fixture({
 		files: {
-			"tables/broken/table.toml": NUMBERS_TABLE.replace('format = "qorpera.table/v0"', 'format = "nope"'),
+			"QorperaOS/tables/broken/table.toml": NUMBERS_TABLE.replace('format = "qorpera.table/v0"', 'format = "nope"'),
 			...NUMBERS,
-			"tables/numbers/rows.csv": "x".repeat(64 * 1024 + 1),
-			"tables/folded/table.toml": events,
-			"tables/bad/table.toml": NUMBERS_TABLE,
-			"tables/bad/rows.csv": `${NUMBERS_COLUMNS.join(",")}\nmrr,2026-10-01T09:00:00Z,1200,€,2000,${AGENT}\nmrr,2026-10-08T09:00:00Z,lots,€,2000,${AGENT}\n`,
+			"QorperaOS/tables/numbers/rows.csv": "x".repeat(64 * 1024 + 1),
+			"QorperaOS/tables/folded/table.toml": events,
+			"QorperaOS/tables/bad/table.toml": NUMBERS_TABLE,
+			"QorperaOS/tables/bad/rows.csv": `${NUMBERS_COLUMNS.join(",")}\nmrr,2026-10-01T09:00:00Z,1200,€,2000,${AGENT}\nmrr,2026-10-08T09:00:00Z,lots,€,2000,${AGENT}\n`,
 		},
-		folders: ["tables/folded/rows.csv"],
+		folders: ["QorperaOS/tables/folded/rows.csv"],
 	});
 	const broken = await f.call("table_read", { table: "broken", where: null, after: null, limit: 5 });
 	const answer = read(broken);
 	expect(answer).toMatchObject({
 		table: "broken",
-		definitionVersion: f.version("tables/broken/table.toml"),
+		definitionVersion: f.version("QorperaOS/tables/broken/table.toml"),
 		broken: true,
 		moreProblems: 0,
 	});
 	expect(answer.problems).toEqual([expect.stringContaining('format must be "qorpera.table/v0"')]);
-	cites(f, broken, ["tables/broken/table.toml"]);
+	cites(f, broken, ["QorperaOS/tables/broken/table.toml"]);
 	await refuses(
 		f.call("table_read", { table: "nope", where: null, after: null, limit: 5 }),
 		CloudToolRefusal,
@@ -266,7 +269,7 @@ it("shows a table's problems: a broken definition, a rows file it can't read, an
 	expect(f.releases).toHaveLength(1);
 
 	expect(read(await f.call("table_read", { table: "numbers", where: null, after: null, limit: 5 }))).toMatchObject({
-		rowsVersion: f.version("tables/numbers/rows.csv"),
+		rowsVersion: f.version("QorperaOS/tables/numbers/rows.csv"),
 		problems: ["rows.csv is larger than 64 KiB"],
 		matching: 0,
 		rows: [],
@@ -275,7 +278,10 @@ it("shows a table's problems: a broken definition, a rows file it can't read, an
 	expect(folded).toMatchObject({ rowsVersion: expect.any(String), problems: ["rows.csv is a folder"], matching: 0 });
 	// A folder is released at its version, with no file hash.
 	const reads = f.releases.at(-1)?.p_reads as Record<string, unknown>[];
-	expect(reads.map((entry) => entry.path)).toEqual(["tables/folded/table.toml", "tables/folded/rows.csv"]);
+	expect(reads.map((entry) => entry.path)).toEqual([
+		"QorperaOS/tables/folded/table.toml",
+		"QorperaOS/tables/folded/rows.csv",
+	]);
 	expect(reads[1]).toMatchObject({ version: folded.rowsVersion });
 	expect(reads[1]).not.toHaveProperty("fileSha256");
 	expect(read(await f.call("table_read", { table: "bad", where: null, after: null, limit: 5 }))).toMatchObject({
@@ -294,8 +300,8 @@ it("cuts a row's cells when one row does not fit a result whole", async () => {
 	const row = (key: string) => [key, ...Array.from({ length: 29 }, () => "w".repeat(300))].join(",");
 	const f = await fixture({
 		files: {
-			"tables/wide/table.toml": tableFile("Wide", 'key = ["k"]', columns),
-			"tables/wide/rows.csv": `${header}\n${row("a")}\n${row("b")}\n`,
+			"QorperaOS/tables/wide/table.toml": tableFile("Wide", 'key = ["k"]', columns),
+			"QorperaOS/tables/wide/rows.csv": `${header}\n${row("a")}\n${row("b")}\n`,
 		},
 	});
 	const answer = read(await f.call("table_read", { table: "wide", where: null, after: null, limit: 2 }));

@@ -3,6 +3,7 @@ import {
 	type AgentFigure,
 	COMPANY_STATE_RESERVED_AGENT_NAMES,
 	freeCompanyStateName,
+	osPath,
 	parseCompanyStateFile,
 	writeAgentFile,
 	writeTodoFile,
@@ -20,10 +21,10 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `hire_agent` as a thin writer of a folder-v2 company's agent folders (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
- * §2 "agent.md", §5; RUNTIME-COMPANY-FOLDER-C2.md §4): one `new_folder` unit `agents/<handle>` holding `agent.md`, the
- * agent's folders, and its first assignment as an open todo. The folder core's commit decides it and indexes the new
- * agent in the same transaction. A new agent folder is delegation, so the save carries the automatic review's approval
- * of this call, recorded for exactly these units (C2 R1).
+ * §2 "agent.md", §5; RUNTIME-COMPANY-FOLDER-C2.md §4): one `new_folder` unit `QorperaOS/agents/<handle>` holding
+ * `agent.md`, the agent's folders, and its first assignment as an open todo. The folder core's commit decides it and
+ * indexes the new agent in the same transaction. A new agent folder is delegation, so the save carries the automatic
+ * review's approval of this call, recorded for exactly these units (C2 R1).
  *
  * The files are checked with the arguments, before the automatic review (`check`), so a card is never raised for a
  * hire that cannot be saved. Every other check that can refuse runs before the receipt: a begun receipt that ends in
@@ -150,7 +151,7 @@ export class CloudFolderHiring {
 	 * ids are placeholders; the real ones cannot add a problem (the handle is a free folder name). */
 	check(request: CloudFolderHire): void {
 		const problems = problemsOf(
-			"agents/agent",
+			osPath("agents/agent"),
 			hireFiles(request, PLACEHOLDER_ID, PLACEHOLDER_ID, this.#identity.requesterUserId),
 		);
 		if (problems.length) throw new CloudToolArgumentRefusal(invalidMessage(problems));
@@ -174,11 +175,11 @@ export class CloudFolderHiring {
 			this.#identity.requesterUserId,
 		);
 		// The handle: the name as a folder name, numbered past the names taken (§1 "Names").
-		const listing = await this.#folder.listAll("agents", { maxEntries: MAX_AGENTS }, signal);
+		const listing = await this.#folder.listAll(osPath("agents"), { maxEntries: MAX_AGENTS }, signal);
 		const taken = new Set<string>(COMPANY_STATE_RESERVED_AGENT_NAMES);
 		for (const entry of listing.entries) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());
 		const handle = freeCompanyStateName(request.name, "agent", taken);
-		const root = `agents/${handle}`;
+		const root = osPath(`agents/${handle}`);
 		const problems = problemsOf(root, files);
 		if (problems.length) throw new CloudToolRefusal(invalidMessage(problems));
 		const units: CloudCompanyFolderUnit[] = [

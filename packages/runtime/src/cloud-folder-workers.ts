@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import {
 	appendWorkerFollowUp,
 	COMPANY_STATE_FILE_MAX_BYTES,
+	osPath,
+	osRelative,
 	parseCompanyStateFile,
 	type TodoFile,
 	type WorkerResultsFile,
@@ -37,11 +39,12 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `manage_worker` and `report_work` as thin writers of a folder-v2 agent's worker files (deploy/first-node/
- * RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (F2-5b)" §7): each worker is a folder `agents/<handle>/todos/<todo>/<worker>`
- * holding `brief.md` (what it was asked) and `results.md` (what it reported, and the agent's decision). The platform's
- * worker tool writes them as the run, through `qorpera_folder_worker_commit`, which carries the tool's request so the
- * folder core's hook checks the files against it and indexes the worker in the same transaction (F2-5b-2). The commit
- * starts nothing: the worker drain (F2-5b-3) dispatches and revives.
+ * RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (F2-5b)" §7): each worker is a folder
+ * `QorperaOS/agents/<handle>/todos/<todo>/<worker>` holding `brief.md` (what it was asked) and `results.md` (what it
+ * reported, and the agent's decision). The platform's worker tool writes them as the run, through
+ * `qorpera_folder_worker_commit`, which carries the tool's request so the folder core's hook checks the files against
+ * it and indexes the worker in the same transaction (F2-5b-2). The commit starts nothing: the worker drain (F2-5b-3)
+ * dispatches and revives.
  *
  * - dispatch: the todo's folder when it is missing, and the worker's folder with its brief; delegation, so the save
  *   carries the automatic review's approval of this call (C2 R1).
@@ -63,7 +66,8 @@ const TOOL_VERSION = "folder-v2/1";
 /** A todo's file name is its key (§1 "Names"), as manage_todo's. */
 const TODO_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TODO_NAME_BYTES = 64;
-/** A worker's folder, as the worker wake names it (its outputFolder). */
+/** A worker's folder below QorperaOS/, as the worker wake names it (its outputFolder, spelled
+ * `QorperaOS/agents/<handle>/todos/<todo>/<worker>`, as the database takes it). */
 const WORKER_FOLDER =
 	/^agents\/([a-z0-9]+(?:-[a-z0-9]+)*)\/todos\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
@@ -144,7 +148,7 @@ export class CloudFolderWorkers {
 		this.#folder = options.folder;
 		this.#operations = options.operations;
 		this.#identity = options.identity;
-		this.#todos = `agents/${options.handle}/todos`;
+		this.#todos = osPath(`agents/${options.handle}/todos`);
 		this.#outputFolder = options.outputFolder;
 	}
 
@@ -326,8 +330,10 @@ export class CloudFolderWorkers {
 	/** The worker run's report: its results file, in the folder its wake names. */
 	async report(request: CloudFolderWorkerReport, context: CloudToolContext): Promise<CloudToolContent> {
 		const folder = this.#outputFolder;
-		const match = folder === undefined ? null : WORKER_FOLDER.exec(folder);
-		if (!folder || !match || `agents/${match[1]}/todos` !== this.#todos)
+		const below = folder === undefined ? null : osRelative(folder);
+		// Spelled exactly as the database takes a worker's folder: QorperaOS/, then the folder's key.
+		const match = below === null || folder !== osPath(below) ? null : WORKER_FOLDER.exec(below);
+		if (!folder || !match || osPath(`agents/${match[1]}/todos`) !== this.#todos)
 			throw new Error("This worker's folder is not known");
 		if (!this.#operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 		const signal = context.signal;

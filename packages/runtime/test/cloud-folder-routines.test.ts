@@ -19,7 +19,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-const ROUTINES = "agents/nora/routines";
+const ROUTINES = "QorperaOS/agents/nora/routines";
 const OWN = "0c1d2e3f-5555-4555-8555-555555555555";
 
 async function fixture(...args: Parameters<typeof folderWriterFixture>) {
@@ -220,7 +220,7 @@ it("writes each trigger, the end, the runs, quiet hours and effort as the file s
 			trigger: {
 				kind: "listener",
 				source: "company-file",
-				path: "vision/Vision.md",
+				path: "QorperaOS/vision/Vision.md",
 				match: "exact",
 				timeZone: "Europe/Copenhagen",
 				replyPolicy: "optional",
@@ -230,7 +230,7 @@ it("writes each trigger, the end, the runs, quiet hours and effort as the file s
 		f.call(),
 	);
 	expect(f.routine("vision-check")).toMatchObject({
-		trigger: { when: "file-change", watch: "vision/Vision.md", match: "exact" },
+		trigger: { when: "file-change", watch: "QorperaOS/vision/Vision.md", match: "exact" },
 		timezone: "Europe/Copenhagen",
 		runs: 50,
 		reply: "optional",

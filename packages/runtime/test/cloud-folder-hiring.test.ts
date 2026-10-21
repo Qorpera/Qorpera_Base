@@ -52,7 +52,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		schema: "qorpera.agent-hire-receipt/v2",
 		runId: f.identity.runId,
 		outcome: "saved",
-		agent: { name: "Ada Lind", role: "Bookkeeper", folder: "agents/ada-lind" },
+		agent: { name: "Ada Lind", role: "Bookkeeper", folder: "QorperaOS/agents/ada-lind" },
 	});
 	expect(result.next).toContain("has not started yet");
 	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
@@ -62,7 +62,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 	expect(f.commits).toHaveLength(1);
 	const [commit] = f.commits;
 	expect(commit).toMatchObject({ key: "hire-folder:hire-1", receiptId: result.receiptId });
-	expect(commit?.units.map((unit) => [unit.op, unit.path])).toEqual([["new_folder", "agents/ada-lind"]]);
+	expect(commit?.units.map((unit) => [unit.op, unit.path])).toEqual([["new_folder", "QorperaOS/agents/ada-lind"]]);
 	expect(f.recordings).toHaveLength(1);
 	expect(f.recordings[0]?.p_request).toEqual({
 		actionReviewId: f.context.actionReviewId,
@@ -71,15 +71,18 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		units: commit?.units,
 	});
 	expect(f.reviews.get(commit?.reviewId as string)).toBe(JSON.stringify(commit?.units));
-	expect([...f.folders].filter((path) => path.startsWith("agents/ada-lind")).sort()).toEqual([
-		"agents/ada-lind",
-		"agents/ada-lind/memory",
-		"agents/ada-lind/routines",
-		"agents/ada-lind/skills",
-		"agents/ada-lind/todos",
+	expect([...f.folders].filter((path) => path.startsWith("QorperaOS/agents/ada-lind")).sort()).toEqual([
+		"QorperaOS/agents/ada-lind",
+		"QorperaOS/agents/ada-lind/memory",
+		"QorperaOS/agents/ada-lind/routines",
+		"QorperaOS/agents/ada-lind/skills",
+		"QorperaOS/agents/ada-lind/todos",
 	]);
 	// The files are the shared writers' and parse as the database will check them.
-	const agent = parseCompanyStateFile("agents/ada-lind/agent.md", f.text("agents/ada-lind/agent.md") ?? "");
+	const agent = parseCompanyStateFile(
+		"QorperaOS/agents/ada-lind/agent.md",
+		f.text("QorperaOS/agents/ada-lind/agent.md") ?? "",
+	);
 	expect(agent?.ok && agent.file).toMatchObject({
 		kind: "agent",
 		id: result.agent.id,
@@ -91,8 +94,8 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		instructions: HIRE.jobDescription,
 	});
 	const todo = parseCompanyStateFile(
-		"agents/ada-lind/todos/first-assignment.md",
-		f.text("agents/ada-lind/todos/first-assignment.md") ?? "",
+		"QorperaOS/agents/ada-lind/todos/first-assignment.md",
+		f.text("QorperaOS/agents/ada-lind/todos/first-assignment.md") ?? "",
 	);
 	expect(todo?.ok && todo.file).toMatchObject({
 		kind: "todo",
@@ -121,15 +124,15 @@ it("derives the agent and todo ids from the run and the operation key, so a call
 });
 
 it("numbers the handle past the names taken, the reserved ones included", async () => {
-	const f = await fixture({ folders: ["agents/ada-lind"] });
-	expect(parse(await f.hiring().hire(HIRE, f.context)).agent.folder).toBe("agents/ada-lind-2");
+	const f = await fixture({ folders: ["QorperaOS/agents/ada-lind"] });
+	expect(parse(await f.hiring().hire(HIRE, f.context)).agent.folder).toBe("QorperaOS/agents/ada-lind-2");
 	// Each tool call has its own call id and its own approval.
 	const call = () => ({ ...f.context, callId: randomUUID(), actionReviewId: randomUUID() });
 	expect(parse(await f.hiring().hire({ ...HIRE, operationKey: "hire-2", name: "Groups" }, call())).agent.folder).toBe(
-		"agents/groups-2",
+		"QorperaOS/agents/groups-2",
 	);
 	expect(parse(await f.hiring().hire({ ...HIRE, operationKey: "hire-3", name: "Ærø Ø" }, call())).agent.folder).toBe(
-		"agents/aeroe-oe",
+		"QorperaOS/agents/aeroe-oe",
 	);
 });
 
@@ -138,8 +141,8 @@ it("titles the first todo with the assignment's first line, as one line of at mo
 	const long = `${"Å".repeat(150)}\u0007more`;
 	await f.hiring().hire({ ...HIRE, firstAssignment: `\n  ${long}\nThe rest.` }, f.context);
 	const todo = parseCompanyStateFile(
-		"agents/ada-lind/todos/first-assignment.md",
-		f.text("agents/ada-lind/todos/first-assignment.md") ?? "",
+		"QorperaOS/agents/ada-lind/todos/first-assignment.md",
+		f.text("QorperaOS/agents/ada-lind/todos/first-assignment.md") ?? "",
 	);
 	const title = todo?.ok && todo.file.kind === "todo" ? todo.file.title : "";
 	expect(Buffer.byteLength(title)).toBeLessThanOrEqual(200);
@@ -210,7 +213,7 @@ it("reports a folder taken meanwhile as a conflict, and a save the review does n
 	const hiring = f.hiring();
 	// The listing missed the folder another save just made.
 	vi.spyOn(f.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
-	f.folders.add("agents/ada-lind");
+	f.folders.add("QorperaOS/agents/ada-lind");
 	const conflict = parse(await hiring.hire(HIRE, f.context));
 	expect(conflict).toMatchObject({ outcome: "conflict", reason: "exists" });
 	expect(conflict.next).toContain("new operationKey");
@@ -246,7 +249,9 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	).not.toThrow();
 	const parsed = tool?.parseArguments(args);
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
-	expect(result).toMatchObject({ outcome: "saved", agent: { folder: "agents/ada-lind" } });
-	// The key is bound to that request: other arguments under it are refused, pointing at agents/.
-	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(/check agents\/ before hiring again/);
+	expect(result).toMatchObject({ outcome: "saved", agent: { folder: "QorperaOS/agents/ada-lind" } });
+	// The key is bound to that request: other arguments under it are refused, pointing at QorperaOS/agents/.
+	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(
+		/check QorperaOS\/agents\/ before hiring again/,
+	);
 });

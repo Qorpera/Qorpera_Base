@@ -3,6 +3,7 @@ import {
 	COMPANY_STATE_FILE_MAX_BYTES,
 	type CompanyStateSetting,
 	canonicalCompanyStateInstant,
+	osPath,
 	parseCompanyStateFile,
 	type RoutineFile,
 	setCompanyStateSettings,
@@ -26,8 +27,8 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `decide_routine` as a thin writer of a folder-v2 dynamic routine's own file (deploy/first-node/
- * RUNTIME-COMPANY-STATE-FILES.md §2 "routines", §5): `agents/<handle>/routines/<routineKey>.md`, whose name is the
- * routine's key. The run woken by the routine's `once` occurrence owes its end-of-run decision: a new `at` (with,
+ * RUNTIME-COMPANY-STATE-FILES.md §2 "routines", §5): `QorperaOS/agents/<handle>/routines/<routineKey>.md`, whose name
+ * is the routine's key. The run woken by the routine's `once` occurrence owes its end-of-run decision: a new `at` (with,
  * if needed, a new effort or reply), or `status: concluded` with a `conclusion`. F2-6's hook takes that save as the
  * decision while it is owed, without review. A next run that also rewrites the title or the instructions is
  * delegation (later runs read them as their request): it is written with the decision (`writeRoutineFile` from the
@@ -130,7 +131,7 @@ export class CloudFolderRoutineDecision {
 		this.#identity = options.identity;
 		this.#routineKey = options.routineKey;
 		this.#routineId = options.routineId;
-		this.#routines = `agents/${options.handle}/routines`;
+		this.#routines = osPath(`agents/${options.handle}/routines`);
 	}
 
 	/** A new title or instructions, checked with the arguments before the automatic review: the routine file they make

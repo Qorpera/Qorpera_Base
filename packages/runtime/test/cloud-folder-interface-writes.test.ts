@@ -98,8 +98,8 @@ const C1 = "1a2b3c4d-0000-4000-8000-000000000001";
 const C2 = "1a2b3c4d-0000-4000-8000-000000000002";
 const CARDS_HEAD = "id,card,area,holder,state,added_by,todo";
 const CARDS_ROWS = `${CARDS_HEAD}\n${C1},Bake,sales,,open,,\n${C2},Sell,sales,,open,,\n`;
-const CARDS = { "tables/cards/table.toml": CARDS_TABLE, "tables/cards/rows.csv": CARDS_ROWS };
-const CARDS_FILES = ["tables/cards/table.toml", "tables/cards/rows.csv"];
+const CARDS = { "QorperaOS/tables/cards/table.toml": CARDS_TABLE, "QorperaOS/tables/cards/rows.csv": CARDS_ROWS };
+const CARDS_FILES = ["QorperaOS/tables/cards/table.toml", "QorperaOS/tables/cards/rows.csv"];
 const NUMBERS_HEAD = "number,at,value,unit,target,kept_by";
 
 const rows = (
@@ -151,7 +151,7 @@ it("refuses arguments it cannot save before anything is read", async () => {
 
 it("sets, adds and removes rows in place, with the ids it made, and a replay finds its change made", async () => {
 	const f = await fixture({ files: CARDS });
-	const path = "tables/cards/rows.csv";
+	const path = "QorperaOS/tables/cards/rows.csv";
 	const expectedVersion = f.version(path);
 	const value = rows(
 		"cards",
@@ -201,9 +201,9 @@ it("sets, adds and removes rows in place, with the ids it made, and a replay fin
 
 it("keeps every byte it does not change: the BOM, CRLF line ends and a quoted field", async () => {
 	const BOM = String.fromCharCode(0xfeff);
-	const path = "tables/cards/rows.csv";
+	const path = "QorperaOS/tables/cards/rows.csv";
 	const text = `${BOM}${CARDS_HEAD}\r\n${C1},"Bake, then slice",sales,,open,,\r\n${C2},Sell,sales,,open,,\r\n`;
-	const f = await fixture({ files: { "tables/cards/table.toml": CARDS_TABLE, [path]: text } });
+	const f = await fixture({ files: { "QorperaOS/tables/cards/table.toml": CARDS_TABLE, [path]: text } });
 	const value = rows("cards", "cards-1", [
 		{ id: C2, state: "held" },
 		{ card: "New, too", state: "open" },
@@ -218,20 +218,26 @@ it("keeps every byte it does not change: the BOM, CRLF line ends and a quoted fi
 });
 
 it("writes a table's first rows as a new rows file", async () => {
-	const f = await fixture({ files: { "tables/cards/table.toml": CARDS_TABLE } });
+	const f = await fixture({ files: { "QorperaOS/tables/cards/table.toml": CARDS_TABLE } });
 	const answer = await f.call("table_write", rows("cards", "cards-1", [{ card: "First", state: "open" }]));
 	const made = madeId(f.identity.runId, "cards-1", 0);
 	expect(read(answer)).toMatchObject({ state: "applied", changed: { updated: 0, added: 1, removed: 0 } });
-	cites(f, answer, ["tables/cards/table.toml"]);
+	cites(f, answer, ["QorperaOS/tables/cards/table.toml"]);
 	const unit = f.commits[0]?.units[0];
-	expect(unit).toMatchObject({ op: "write", path: "tables/cards/rows.csv", file: { mediaType: "text/csv" } });
+	expect(unit).toMatchObject({
+		op: "write",
+		path: "QorperaOS/tables/cards/rows.csv",
+		file: { mediaType: "text/csv" },
+	});
 	expect(unit).not.toHaveProperty("expectedVersion");
-	expect(f.text("tables/cards/rows.csv")).toBe(`${CARDS_HEAD}\n${made},First,,,open,,\n`);
+	expect(f.text("QorperaOS/tables/cards/rows.csv")).toBe(`${CARDS_HEAD}\n${made},First,,,open,,\n`);
 });
 
 it("writes a number as decimal text, never in exponent form, given as text or as a JSON number", async () => {
-	const rowsFile = "tables/numbers/rows.csv";
-	const f = await fixture({ files: { "tables/numbers/table.toml": NUMBERS_TABLE, [rowsFile]: `${NUMBERS_HEAD}\n` } });
+	const rowsFile = "QorperaOS/tables/numbers/rows.csv";
+	const f = await fixture({
+		files: { "QorperaOS/tables/numbers/table.toml": NUMBERS_TABLE, [rowsFile]: `${NUMBERS_HEAD}\n` },
+	});
 	const at = (day: number) => `2026-10-0${day}T09:00:00Z`;
 	const answer = await f.call(
 		"table_write",
@@ -261,7 +267,7 @@ it("changes nothing when the rows already hold the values", async () => {
 		state: "unchanged",
 		operationKey: "cards-1",
 		table: "cards",
-		version: f.version("tables/cards/rows.csv"),
+		version: f.version("QorperaOS/tables/cards/rows.csv"),
 		receiptId: null,
 		changed: { updated: 0, added: 0, removed: 0 },
 		next: "Nothing changed: the rows already hold these values.",
@@ -271,7 +277,7 @@ it("changes nothing when the rows already hold the values", async () => {
 });
 
 it("answers a row write as unconfirmed when its answer cannot be released after the commit", async () => {
-	const rowsFile = "tables/cards/rows.csv";
+	const rowsFile = "QorperaOS/tables/cards/rows.csv";
 	const f = await fixture({ files: CARDS });
 	const value = rows("cards", "cards-1", [{ id: C1, state: "done" }]);
 	vi.spyOn(f.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
@@ -287,7 +293,7 @@ it("answers a row write as unconfirmed when its answer cannot be released after 
 
 it("saves no rows that do not fit, and says why with the files it read", async () => {
 	const f = await fixture({ files: CARDS });
-	const version = f.version("tables/cards/rows.csv");
+	const version = f.version("QorperaOS/tables/cards/rows.csv");
 	const answer = await f.call(
 		"table_write",
 		rows(
@@ -316,7 +322,10 @@ it("saves no rows that do not fit, and says why with the files it read", async (
 	cites(f, answer, CARDS_FILES);
 	// A table keyed by its values gets no made key.
 	const numbers = await fixture({
-		files: { "tables/numbers/table.toml": NUMBERS_TABLE, "tables/numbers/rows.csv": `${NUMBERS_HEAD}\n` },
+		files: {
+			"QorperaOS/tables/numbers/table.toml": NUMBERS_TABLE,
+			"QorperaOS/tables/numbers/rows.csv": `${NUMBERS_HEAD}\n`,
+		},
 	});
 	expect(
 		read(await numbers.call("table_write", rows("numbers", "numbers-1", [{ value: 3, unit: "count" }]))),
@@ -336,7 +345,10 @@ it("refuses a claim, a table the agent may not write, and rows that would be too
 	const closed = await fixture({
 		files: {
 			...CARDS,
-			"tables/cards/table.toml": CARDS_TABLE.replace('[write]\nagents = "all"', '[write]\nagents = "none"'),
+			"QorperaOS/tables/cards/table.toml": CARDS_TABLE.replace(
+				'[write]\nagents = "all"',
+				'[write]\nagents = "none"',
+			),
 		},
 	});
 	const shut = await closed.call("table_write", rows("cards", "cards-1", [{ id: C1, state: "done" }]));
@@ -345,7 +357,7 @@ it("refuses a claim, a table the agent may not write, and rows that would be too
 	// Rows just under 64 KiB, and one more row that does not fit.
 	let full = `${CARDS_HEAD}\n`;
 	while (Buffer.byteLength(full) + 227 <= 64 * 1024) full += `${randomUUID()},${"x".repeat(180)},,,open,,\n`;
-	const large = await fixture({ files: { ...CARDS, "tables/cards/rows.csv": full } });
+	const large = await fixture({ files: { ...CARDS, "QorperaOS/tables/cards/rows.csv": full } });
 	const answer = read(
 		await large.call("table_write", rows("cards", "cards-1", [{ card: "y".repeat(200), state: "open" }])),
 	);
@@ -354,13 +366,13 @@ it("refuses a claim, a table the agent may not write, and rows that would be too
 });
 
 const AREAS_HEAD = "area,about,owner,shared,supervisor,agents";
-const AREAS_FILES = ["tables/areas/table.toml", "tables/areas/rows.csv"];
+const AREAS_FILES = ["QorperaOS/tables/areas/table.toml", "QorperaOS/tables/areas/rows.csv"];
 /** The cards, and the areas: the run's agent works in Sales, which `supervisor` supervises (or nobody, when null). */
 async function supervised(supervisor: string | null, options: Parameters<typeof folderWriterFixture>[1] = {}) {
 	const f = await fixture({ files: CARDS }, options);
-	f.seed("tables/areas/table.toml", AREAS_TABLE);
+	f.seed("QorperaOS/tables/areas/table.toml", AREAS_TABLE);
 	f.seed(
-		"tables/areas/rows.csv",
+		"QorperaOS/tables/areas/rows.csv",
 		`${AREAS_HEAD}\nOps,,,no,${randomUUID()},${randomUUID()}\nSales,,,no,${supervisor ?? ""},${AGENT} ${f.identity.staffAgentId}\n`,
 	);
 	return f;
@@ -369,7 +381,7 @@ async function supervised(supervisor: string | null, options: Parameters<typeof 
 it("changes a claim for the member who supervises the agent's area, and only takes or lets go for them", async () => {
 	const supervisor = randomUUID();
 	const f = await supervised(supervisor);
-	const path = "tables/cards/rows.csv";
+	const path = "QorperaOS/tables/cards/rows.csv";
 	// Taken for the supervisor: the areas were read for it, and the answer is released with them.
 	const taken = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]));
 	expect(read(taken)).toMatchObject({ state: "applied", outcome: "saved", changed: { updated: 1 } });
@@ -432,7 +444,7 @@ it("answers the folder core's claim refusal at the commit as a claim", async () 
 	const message = "nobody assigns anybody: only the member named changes holder";
 	const f = await supervised(supervisor, {
 		hook: (path) =>
-			path === "tables/cards/rows.csv"
+			path === "QorperaOS/tables/cards/rows.csv"
 				? { outcome: "refused", reason: "structured_rule", problems: [{ code: "claim", message }] }
 				: null,
 	});
@@ -462,7 +474,7 @@ it("answers the folder core's claim refusal at the commit as a claim", async () 
 	});
 	cites(f, answer, [...CARDS_FILES, ...AREAS_FILES]);
 	expect(f.commits).toHaveLength(1);
-	expect(f.text("tables/cards/rows.csv")).toBe(CARDS_ROWS);
+	expect(f.text("QorperaOS/tables/cards/rows.csv")).toBe(CARDS_ROWS);
 });
 
 it("refuses a table that is not there, and answers one it cannot read with its problems", async () => {
@@ -472,15 +484,15 @@ it("refuses a table that is not there, and answers one it cannot read with its p
 		CloudToolRefusal,
 		"TABLE_NOT_FOUND: no table has that name",
 	);
-	const broken = await fixture({ files: { "tables/cards/table.toml": "format = 1\n" } });
+	const broken = await fixture({ files: { "QorperaOS/tables/cards/table.toml": "format = 1\n" } });
 	const answer = await broken.call("table_write", rows("cards", "cards-1", [{ card: "x", state: "open" }]));
 	const parsed = read(answer);
 	expect(parsed).toMatchObject({ state: "not_applied", version: null, reason: "broken", next: ROWS.broken });
 	expect(parsed.problems.length).toBeGreaterThan(0);
-	cites(broken, answer, ["tables/cards/table.toml"]);
+	cites(broken, answer, ["QorperaOS/tables/cards/table.toml"]);
 	// A row that does not fit the definition stops every write until a member fixes it.
 	const unfit = await fixture({
-		files: { ...CARDS, "tables/cards/rows.csv": `${CARDS_HEAD}\n${C1},Bake,sales,,lost,,\n` },
+		files: { ...CARDS, "QorperaOS/tables/cards/rows.csv": `${CARDS_HEAD}\n${C1},Bake,sales,,lost,,\n` },
 	});
 	const stuck = await unfit.call("table_write", rows("cards", "cards-1", [{ card: "x", state: "open" }]));
 	const stuckAnswer = read(stuck);

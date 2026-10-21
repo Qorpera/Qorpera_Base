@@ -72,7 +72,8 @@ export function nativeCompanyContextFixture() {
 		jobSpecification: source("job_spec", identity.staffAgentId, "Own the company onboarding."),
 		continuation: null,
 		serviceTier: "fast",
-		// Every company run is on the company folder (legacy sweep step C, C-P1): the agent's own folder is agents/nora.
+		// Every company run is on the company folder (legacy sweep step C, C-P1): the agent's own folder is
+		// QorperaOS/agents/nora.
 		folder: { agent: "nora", coworkers: {} },
 	};
 	return { ...fixture, context, source };

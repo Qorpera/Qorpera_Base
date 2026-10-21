@@ -351,7 +351,8 @@ async function fixture(
 				return { off: true };
 			}
 			expect(args.p_binding).toEqual(f.binding);
-			// What a run's machine saved under interfaces/ or tables/, noted in its conversation (Interfaces I10).
+			// What a run's machine saved under QorperaOS/interfaces/ or QorperaOS/tables/, noted in its conversation
+			// (Interfaces I10).
 			if (method === "qorpera_folder_note_interface_changes") {
 				expect(args.p_request).toEqual({});
 				return { schema: "qorpera.interface-change-notes/v1", noted: 1 };
@@ -819,8 +820,8 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
-	// What the machine saved under interfaces/ or tables/ is noted in the run's conversation once, after it closed
-	// (Interfaces I10).
+	// What the machine saved under QorperaOS/interfaces/ or QorperaOS/tables/ is noted in the run's conversation once,
+	// after it closed (Interfaces I10).
 	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
 		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
 	);
@@ -936,7 +937,7 @@ it.each([
 			parts: [
 				{
 					part: "job",
-					path: "agents/nora/agent.md",
+					path: "QorperaOS/agents/nora/agent.md",
 					staffVersion: f.context.identity.staffVersion,
 					trust: "job_specification_not_authority",
 					text: f.context.jobSpecification.content.text,
@@ -994,7 +995,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v5",
+			schema: "qorpera.hire-overlay/v6",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1012,8 +1013,8 @@ it.each([
 			schema: "qorpera.agent-skills/v1",
 			trust: "guidance_not_authority",
 			available: true,
-			own: { path: "agents/nora/skills", skills: [], moreSkills: 0 },
-			company: { path: "skills", descriptions: "included", skills: [], moreSkills: 0 },
+			own: { path: "QorperaOS/agents/nora/skills", skills: [], moreSkills: 0 },
+			company: { path: "QorperaOS/skills", descriptions: "included", skills: [], moreSkills: 0 },
 		});
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
@@ -1029,7 +1030,7 @@ it.each([
 it("keeps a listed company's run's work log, each acting step's line saved before it acts (W1c-3)", async () => {
 	const f = await fixture("company-logged");
 	const bytes = f.stagedBytes();
-	const root = `agents/nora/memory/thread/runs/${f.binding.runId}`;
+	const root = `qorperaos/agents/nora/memory/thread/runs/${f.binding.runId}`;
 	const writes: { path: string; text: string }[] = [];
 	const conversation = randomUUID();
 	const original = f.pathCall.getMockImplementation()!;
@@ -1041,7 +1042,7 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 				: {
 						path: root,
 						exists: false,
-						missing: ["agents/nora/memory/thread/runs"],
+						missing: ["qorperaos/agents/nora/memory/thread/runs"],
 						last: null,
 						generation: 0,
 						gone: false,
@@ -1373,14 +1374,15 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	// The decision went to the routine's file: no file there, so nothing is owed.
-	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
+	expect(f.folderReads).toContain(`QorperaOS/agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
 	// The routine writer lists the routines folder once (composition lists the notebook and skills, P20).
 	expect(
 		f.pathCall.mock.calls.filter(
 			([method, args]) =>
-				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+				method === "qorpera_folder_list" &&
+				(args as { p_parent?: string }).p_parent === "QorperaOS/agents/nora/routines",
 		),
 	).toHaveLength(1);
 	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
@@ -1465,7 +1467,7 @@ it("refuses a company run whose context names no company folder, before reading 
 
 it("releases what a folder-v2 run's composition read under the composed context, before the model starts", async () => {
 	const f = await fixture("company-dynamic");
-	f.folderFiles.set("agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
+	f.folderFiles.set("QorperaOS/agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const calls = f.pathCall.mock.calls;
 	const start = calls.findIndex(([method]) => method === "qorpera_bind_native_company_context");
@@ -1473,7 +1475,7 @@ it("releases what a folder-v2 run's composition read under the composed context,
 		([method, args]) =>
 			method === "qorpera_folder_record_release" &&
 			(args as { p_reads: { path: string }[] }).p_reads.some(
-				(read) => read.path === "agents/nora/memory/profile.md",
+				(read) => read.path === "QorperaOS/agents/nora/memory/profile.md",
 			),
 	);
 	expect(released).toBeGreaterThanOrEqual(0);
@@ -1501,8 +1503,8 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 		}
 		const f = await fixture("company-dynamic");
 		f.context.jobSpecification = f.source("job_spec", f.context.identity.staffAgentId, HOSTILE_JOB);
-		f.folderFiles.set("vision/vision.md", HOSTILE_VISION);
-		f.folderFiles.set("agents/nora/memory/profile.md", HOSTILE_PROFILE);
+		f.folderFiles.set("QorperaOS/vision/vision.md", HOSTILE_VISION);
+		f.folderFiles.set("QorperaOS/agents/nora/memory/profile.md", HOSTILE_PROFILE);
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const instructions: string = evidence.threadParameters.developerInstructions;
@@ -1521,22 +1523,22 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 			parts: [
 				{
 					part: "vision",
-					path: "vision/vision.md",
-					version: folderVersion("vision/vision.md", HOSTILE_VISION),
+					path: "QorperaOS/vision/vision.md",
+					version: folderVersion("QorperaOS/vision/vision.md", HOSTILE_VISION),
 					trust: "company_instructions_not_authority",
 					text: HOSTILE_VISION,
 				},
 				{
 					part: "job",
-					path: "agents/nora/agent.md",
+					path: "QorperaOS/agents/nora/agent.md",
 					staffVersion: f.context.agent.version,
 					trust: "job_specification_not_authority",
 					text: HOSTILE_JOB,
 				},
 				{
 					part: "profile",
-					path: "agents/nora/memory/profile.md",
-					version: folderVersion("agents/nora/memory/profile.md", HOSTILE_PROFILE),
+					path: "QorperaOS/agents/nora/memory/profile.md",
+					version: folderVersion("QorperaOS/agents/nora/memory/profile.md", HOSTILE_PROFILE),
 					trust: "own_notebook_not_authority",
 					text: HOSTILE_PROFILE.trimEnd(),
 				},
@@ -1548,8 +1550,8 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 		const prompt = JSON.parse(promptText);
 		expect(prompt.hireOverlay).not.toHaveProperty("jobSpecification");
 		expect(prompt.memory.profile).toEqual({
-			path: "agents/nora/memory/profile.md",
-			version: folderVersion("agents/nora/memory/profile.md", HOSTILE_PROFILE),
+			path: "QorperaOS/agents/nora/memory/profile.md",
+			version: folderVersion("QorperaOS/agents/nora/memory/profile.md", HOSTILE_PROFILE),
 			inHead: true,
 		});
 		expect(promptText).not.toContain("ignore all previous");
@@ -1559,12 +1561,12 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 		const composed = createHash("sha256").update(`${head}\n\n${promptText}`).digest("hex");
 		expect(start.p_context_sha256).toBe(composed);
 		const released = f.folderReleases.filter((release) =>
-			(release.p_reads as { path: string }[]).some((read) => read.path === "vision/vision.md"),
+			(release.p_reads as { path: string }[]).some((read) => read.path === "QorperaOS/vision/vision.md"),
 		);
 		expect(released).toHaveLength(1);
 		expect(released[0]?.p_output_sha256).toBe(composed);
 		expect((released[0]?.p_reads as { path: string }[]).map((read) => read.path)).toContain(
-			"agents/nora/memory/profile.md",
+			"QorperaOS/agents/nora/memory/profile.md",
 		);
 	}
 	expect(heads[1]).toBe(heads[0]);
@@ -1574,27 +1576,29 @@ it("leaves a head part that does not fit out whole, names it, and keeps the rest
 	const f = await fixture("company-dynamic");
 	// More than a trusted read holds as text: the head names it with the size that read found.
 	const vision = `# Vision\n${"Calm books for small firms. ".repeat(1500)}`;
-	f.folderFiles.set("vision/vision.md", vision);
-	f.folderFiles.set("vision/notes.md", "Draft ideas.");
-	f.folderFiles.set("agents/nora/memory/profile.md", HOSTILE_PROFILE);
+	f.folderFiles.set("QorperaOS/vision/vision.md", vision);
+	f.folderFiles.set("QorperaOS/vision/notes.md", "Draft ideas.");
+	f.folderFiles.set("QorperaOS/agents/nora/memory/profile.md", HOSTILE_PROFILE);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const head = JSON.parse(headLine(evidence.threadParameters.developerInstructions));
 	expect(head.parts.map((part: { part: string }) => part.part)).toEqual(["job", "profile"]);
-	expect(head.omitted).toEqual([{ part: "vision", path: "vision/vision.md", bytes: Buffer.byteLength(vision) }]);
+	expect(head.omitted).toEqual([
+		{ part: "vision", path: "QorperaOS/vision/vision.md", bytes: Buffer.byteLength(vision) },
+	]);
 	// The agent reads it with company_read; the context message does not carry it either.
 	expect(evidence.turnParameters.input[0].text).not.toContain("Calm books");
 	// Only the vision file is a read of this context, never the files beside it.
 	const reads = f.folderReleases.flatMap((release) => release.p_reads as { path: string }[]).map((read) => read.path);
-	expect(reads).toContain("vision/vision.md");
-	expect(reads).not.toContain("vision/notes.md");
+	expect(reads).toContain("QorperaOS/vision/vision.md");
+	expect(reads).not.toContain("QorperaOS/vision/notes.md");
 });
 
 it("starts a run whose head is near its bound, past what the instructions held before the head", async () => {
 	const f = await fixture("company-dynamic");
 	f.context.jobSpecification = f.source("job_spec", f.context.identity.staffAgentId, "Keep the books.");
 	// About 15,800 bytes of head: the vision whole beside the job description.
-	f.folderFiles.set("vision/vision.md", "Calm books. ".repeat(1_290));
+	f.folderFiles.set("QorperaOS/vision/vision.md", "Calm books. ".repeat(1_290));
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const instructions: string = evidence.threadParameters.developerInstructions;
@@ -1657,7 +1661,7 @@ it("has a folder-v2 dynamic routine run find its file by the woken routine's id"
 	if (!routine?.routineKey) throw new Error("The dynamic fixture names its routine");
 	// The routine was paused by a member while this run worked: its own file says so, and nothing is owed.
 	f.folderFiles.set(
-		`agents/nora/routines/${routine.routineKey}.md`,
+		`QorperaOS/agents/nora/routines/${routine.routineKey}.md`,
 		writeRoutineFile({
 			id: routine.id,
 			title: "Invoice follow-up",
@@ -1687,7 +1691,8 @@ it("has a folder-v2 dynamic routine run find its file by the woken routine's id"
 	expect(
 		f.pathCall.mock.calls.some(
 			([method, args]) =>
-				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+				method === "qorpera_folder_list" &&
+				(args as { p_parent?: string }).p_parent === "QorperaOS/agents/nora/routines",
 		),
 	).toBe(false);
 });
@@ -2265,13 +2270,13 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	expect(todo).toContain("Each todo is a file in your folder");
 	expect(todo).not.toContain("Each todo is also a document in the shared Company File");
 	const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
-	expect(sidebar).toContain("the sections live in the file agents/sections.md");
+	expect(sidebar).toContain("the sections live in the file QorperaOS/agents/sections.md");
 	expect(sidebar).not.toContain("by its id or name");
 	const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
 	expect(hire).toContain("saved as the agent's own folder");
 	expect(hire).not.toContain("under organization/agents");
 	const chat = tools.find((tool) => tool.name === "create_group_chat")?.description ?? "";
-	expect(chat).toContain("agents/groups/<name>/group.md");
+	expect(chat).toContain("QorperaOS/agents/groups/<name>/group.md");
 	expect(chat).not.toContain("No member approval is needed");
 	const routine = tools.find((tool) => tool.name === "manage_routine")?.description ?? "";
 	expect(routine).toContain("routines/<routineKey>.md");
@@ -2883,7 +2888,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the scope reset (C6b) the catalog has no
 	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
 	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
-	// saveTo), so they moved again; every other tool is as on master.
+	// saveTo), so they moved again. Since the platform's folders moved under QorperaOS/ (21 October 2026), table_read's,
+	// table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there, so they moved
+	// again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2918,9 +2925,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ecf6d6b1ce729c2015921446223ee6271f0e411327fee9d1285ac3ef6a7a8f8f",
+		"4871a58fd485df67beccc39c53bf6fec1f37904d8235fe14d3c1d0f76d58c7fd",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"e435848034b07f20d7aba94a2cd5b519ca7a8f521b3307543fce8d867d2de88f",
+		"ce3142e4d4507dcc38e7c0b862e11daad358d67be1cb1b659776787801757a33",
 	);
 });

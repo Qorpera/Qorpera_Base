@@ -134,12 +134,12 @@ async function fixture(initial: Record<string, string> = {}) {
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	// The agent's folder name: its own library is under agents/<agent>/skills.
+	// The agent's folder name: its own library is under QorperaOS/agents/<agent>/skills.
 	const agent = PLACE.handle;
 	const own = cloudSkillRoot("agent", run.identity, PLACE);
-	expect(own).toBe("agents/nora/skills");
+	expect(own).toBe("QorperaOS/agents/nora/skills");
 	expect(cloudSkillRoot("agent", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe(
-		"agents/anna-berg/skills",
+		"QorperaOS/agents/anna-berg/skills",
 	);
 	expect(cloudSkillRoot("company", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe(
 		cloudSkillRoot("company", run.identity, PLACE),
@@ -210,8 +210,9 @@ describe("agent skills", () => {
 			);
 			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
 			expect(mkdirs.map(([, input]) => input.path)).toEqual([
-				"agents",
-				`agents/${f.agent}`,
+				"QorperaOS",
+				"QorperaOS/agents",
+				`QorperaOS/agents/${f.agent}`,
 				f.own,
 				`${f.own}/monthly-vat-report`,
 			]);
@@ -235,7 +236,7 @@ describe("agent skills", () => {
 	});
 
 	it("puts a company skill in the shared library under the usual path authority", async () => {
-		const f = await fixture({ "skills/": "" });
+		const f = await fixture({ "QorperaOS/skills/": "" });
 		try {
 			const created = await f.call("update_skill", {
 				action: "create",
@@ -244,18 +245,22 @@ describe("agent skills", () => {
 				description: "Refund a customer. Use when a refund is approved.",
 				body: "Steps.",
 			});
-			expect(created).toMatchObject({ scope: "company", state: "created", path: "skills/customer-refund/SKILL.md" });
+			expect(created).toMatchObject({
+				scope: "company",
+				state: "created",
+				path: "QorperaOS/skills/customer-refund/SKILL.md",
+			});
 			// Only the skill's own folder was missing.
 			expect(
 				f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir").map(([, input]) => input.path),
-			).toEqual(["skills/customer-refund"]);
+			).toEqual(["QorperaOS/skills/customer-refund"]);
 		} finally {
 			f.run.close();
 		}
 	});
 
 	it("updates the body or the description and keeps the rest of an imported file", async () => {
-		const f = await fixture({ "skills/pdf-forms/SKILL.md": imported });
+		const f = await fixture({ "QorperaOS/skills/pdf-forms/SKILL.md": imported });
 		try {
 			const read = await f.call("read_skill", { name: "pdf-forms" });
 			const body = await f.call("update_skill", {
@@ -265,9 +270,9 @@ describe("agent skills", () => {
 				version: read.version,
 				body: "1. Read the fields.\n2. Flatten.",
 			});
-			expect(body).toMatchObject({ state: "updated", saved: true, path: "skills/pdf-forms/SKILL.md" });
-			expect(body.version).toBe(f.version("skills/pdf-forms/SKILL.md"));
-			const text = f.store.files.get("skills/pdf-forms/SKILL.md")!.text;
+			expect(body).toMatchObject({ state: "updated", saved: true, path: "QorperaOS/skills/pdf-forms/SKILL.md" });
+			expect(body.version).toBe(f.version("QorperaOS/skills/pdf-forms/SKILL.md"));
+			const text = f.store.files.get("QorperaOS/skills/pdf-forms/SKILL.md")!.text;
 			expect(text).toContain("license: Apache-2.0\nmetadata:\n  author: someone\n");
 			expect(text).toContain("description: >-\n  Fill in PDF forms and flatten them.");
 			expect(text.endsWith("---\n\n1. Read the fields.\n2. Flatten.\n")).toBe(true);
@@ -403,7 +408,8 @@ describe("agent skills", () => {
 			"<own>/quarter-close/SKILL.md": `---\nname: quarter-close\ndescription: Close the quarter.\n---\n\n${body}\n`,
 			"<own>/quarter-close/templates/summary.md": "template",
 			"<own>/quarter-close/check.py": "print(1)",
-			"skills/quarter-close/SKILL.md": "---\nname: quarter-close\ndescription: Company way.\n---\n\nCompany.\n",
+			"QorperaOS/skills/quarter-close/SKILL.md":
+				"---\nname: quarter-close\ndescription: Company way.\n---\n\nCompany.\n",
 		});
 		try {
 			let text = "";
@@ -430,7 +436,7 @@ describe("agent skills", () => {
 			const company = await f.call("read_skill", { name: "quarter-close", scope: "company" });
 			expect(company).toMatchObject({ scope: "company", body: { text: "Company.\n", nextOffset: null } });
 			expect(await f.call("read_skill", { name: "no-such-skill" })).toMatchObject({ state: "not_found" });
-			f.store.unreadable.add("skills/quarter-close/SKILL.md");
+			f.store.unreadable.add("QorperaOS/skills/quarter-close/SKILL.md");
 			expect(await f.call("read_skill", { name: "quarter-close", scope: "company" })).toMatchObject({
 				state: "unreadable",
 			});
@@ -443,14 +449,14 @@ describe("agent skills", () => {
 		const f = await fixture({
 			"<own>/invoice-chasing/SKILL.md":
 				"---\nname: invoice-chasing\ndescription: Chase unpaid invoices.\n---\n\nx\n",
-			"skills/invoice-chasing/SKILL.md":
+			"QorperaOS/skills/invoice-chasing/SKILL.md":
 				"---\nname: invoice-chasing\ndescription: Chase unpaid invoices.\n---\n\nx\n",
-			"skills/payroll-run/SKILL.md":
+			"QorperaOS/skills/payroll-run/SKILL.md":
 				"---\nname: payroll-run\ndescription: Run payroll for Danish staff.\n---\n\nx\n",
 			// A flat file is a skill too; a folder without SKILL.md is not.
-			"skills/supplier-onboarding.md": "---\ndescription: Onboard a new supplier.\n---\n\nx\n",
-			"skills/empty-folder/notes.txt": "not a skill",
-			"skills/README.md": "Not a skill name.",
+			"QorperaOS/skills/supplier-onboarding.md": "---\ndescription: Onboard a new supplier.\n---\n\nx\n",
+			"QorperaOS/skills/empty-folder/notes.txt": "not a skill",
+			"QorperaOS/skills/README.md": "Not a skill name.",
 		});
 		try {
 			const found = await f.call("search_skills", { query: "unpaid invoices" });
@@ -481,7 +487,7 @@ describe("agent skills", () => {
 		const f = await fixture(
 			Object.fromEntries(
 				Array.from({ length: 12 }, (_, index) => [
-					`skills/ledger-${String(index).padStart(2, "0")}/SKILL.md`,
+					`QorperaOS/skills/ledger-${String(index).padStart(2, "0")}/SKILL.md`,
 					`---\nname: ledger-${index}\ndescription: ${long}\n---\n\nx\n`,
 				]),
 			),
@@ -503,7 +509,7 @@ describe("imported skills with long descriptions", () => {
 	it("cuts a description past the bound in the catalog, the search and a read", async () => {
 		const long = "Ærlig beskrivelse ".repeat(200).trim();
 		const f = await fixture({
-			"skills/long-one/SKILL.md": `---\nname: long-one\ndescription: ${long}\n---\n\nSteps.\n`,
+			"QorperaOS/skills/long-one/SKILL.md": `---\nname: long-one\ndescription: ${long}\n---\n\nSteps.\n`,
 		});
 		try {
 			const block = await f.compose();
@@ -527,10 +533,10 @@ describe("skill catalog composition", () => {
 			"<own>/triage/SKILL.md": "---\nname: triage\ndescription: Triage new tickets.\n---\n\nx\n",
 			"<own>/broken/SKILL.md": "No front matter at all.",
 			"<own>/empty/": "",
-			"skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund a customer.\n---\n\nx\n",
+			"QorperaOS/skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund a customer.\n---\n\nx\n",
 		});
 		try {
-			f.store.unreadable.add("skills/refund/SKILL.md");
+			f.store.unreadable.add("QorperaOS/skills/refund/SKILL.md");
 			const block = await f.compose();
 			expect(block).toEqual({
 				schema: "qorpera.agent-skills/v1",
@@ -546,7 +552,7 @@ describe("skill catalog composition", () => {
 					moreSkills: 0,
 				},
 				company: {
-					path: "skills",
+					path: "QorperaOS/skills",
 					descriptions: "included",
 					skills: [{ name: "refund", problem: "unreadable" }],
 					moreSkills: 0,
@@ -563,7 +569,7 @@ describe("skill catalog composition", () => {
 		const f = await fixture(
 			Object.fromEntries(
 				Array.from({ length: 30 }, (_, index) => [
-					`skills/skill-${String(index).padStart(2, "0")}/SKILL.md`,
+					`QorperaOS/skills/skill-${String(index).padStart(2, "0")}/SKILL.md`,
 					`---\nname: skill-${index}\ndescription: Skill ${index}.\n---\n\nx\n`,
 				]),
 			),
@@ -583,10 +589,10 @@ describe("skill catalog composition", () => {
 	it("keeps one library when the other cannot be listed, and fails only when neither can", async () => {
 		const f = await fixture({
 			"<own>/triage/SKILL.md": "---\nname: triage\ndescription: Triage.\n---\n\nx\n",
-			"skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
+			"QorperaOS/skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
 		});
 		try {
-			f.store.unlistable.add("skills");
+			f.store.unlistable.add("QorperaOS/skills");
 			const block = await f.compose();
 			expect(block.available).toBe(true);
 			expect(block.own.skills).toEqual([{ name: "triage", description: "Triage." }]);
@@ -605,9 +611,9 @@ describe("skill catalog composition", () => {
 
 describe("refusals and protected libraries", () => {
 	it("proposes the folder of a new skill in a protected library and saves nothing yet", async () => {
-		const f = await fixture({ "skills/": "" });
+		const f = await fixture({ "QorperaOS/skills/": "" });
 		try {
-			f.store.protectedFolders.add("skills");
+			f.store.protectedFolders.add("QorperaOS/skills");
 			const created = await f.call("update_skill", {
 				action: "create",
 				scope: "company",
@@ -618,7 +624,7 @@ describe("refusals and protected libraries", () => {
 			expect(created).toMatchObject({
 				state: "proposed",
 				saved: false,
-				path: "skills/refund",
+				path: "QorperaOS/skills/refund",
 				proposalId: expect.any(String),
 			});
 			expect(created.hint).toMatch(/approve/);
@@ -630,10 +636,10 @@ describe("refusals and protected libraries", () => {
 
 	it("answers refused and interrupted saves with receipts, never an unknown outcome", async () => {
 		const f = await fixture({
-			"skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
+			"QorperaOS/skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
 		});
 		try {
-			f.store.deniedChanges.add("skills/new-one");
+			f.store.deniedChanges.add("QorperaOS/skills/new-one");
 			const refused = await f.call("update_skill", {
 				action: "create",
 				scope: "company",
@@ -642,7 +648,7 @@ describe("refusals and protected libraries", () => {
 				body: "Steps.",
 			});
 			expect(refused).toMatchObject({ state: "denied", saved: false });
-			f.store.deniedReads.add("skills/other/SKILL.md");
+			f.store.deniedReads.add("QorperaOS/skills/other/SKILL.md");
 			const unreadFolder = await f.call("update_skill", {
 				action: "create",
 				scope: "company",
@@ -650,18 +656,18 @@ describe("refusals and protected libraries", () => {
 				description: "Other.",
 				body: "Steps.",
 			});
-			expect(unreadFolder).toMatchObject({ state: "denied", saved: false, path: "skills/other/SKILL.md" });
+			expect(unreadFolder).toMatchObject({ state: "denied", saved: false, path: "QorperaOS/skills/other/SKILL.md" });
 			f.store.vanishParent();
 			const vanished = await f.call("update_skill", {
 				action: "update",
 				scope: "company",
 				name: "refund",
-				version: f.version("skills/refund/SKILL.md"),
+				version: f.version("QorperaOS/skills/refund/SKILL.md"),
 				body: "New steps.",
 			});
 			expect(vanished).toMatchObject({ state: "parent_missing", saved: false });
-			expect(f.store.files.get("skills/refund/SKILL.md")?.text).toContain("\n\nx\n");
-			f.store.deniedReads.add("skills/refund/SKILL.md");
+			expect(f.store.files.get("QorperaOS/skills/refund/SKILL.md")?.text).toContain("\n\nx\n");
+			f.store.deniedReads.add("QorperaOS/skills/refund/SKILL.md");
 			expect(await f.call("read_skill", { name: "refund", scope: "company" })).toMatchObject({ state: "no_access" });
 			const block = await f.compose();
 			expect(block.company.skills).toEqual([{ name: "refund", problem: "no_access" }]);
@@ -671,7 +677,9 @@ describe("refusals and protected libraries", () => {
 	});
 
 	it("reads the company skill when the own library cannot be read, and says changed between pages", async () => {
-		const f = await fixture({ "skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nSteps.\n" });
+		const f = await fixture({
+			"QorperaOS/skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nSteps.\n",
+		});
 		try {
 			f.store.gateway.readTrusted.mockImplementation(async (path) => {
 				if (path.startsWith(f.own)) throw new Error("Company File read unavailable");
@@ -703,7 +711,7 @@ describe("refusals and protected libraries", () => {
 		const f = await fixture(
 			Object.fromEntries(
 				Array.from({ length: 6 }, (_, index) => [
-					`skills/markup-${index}/SKILL.md`,
+					`QorperaOS/skills/markup-${index}/SKILL.md`,
 					`---\nname: markup-${index}\ndescription: "${markup}"\n---\n\n${"<b>&amp;</b>\n".repeat(400)}`,
 				]),
 			),

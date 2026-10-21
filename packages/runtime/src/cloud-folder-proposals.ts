@@ -1,4 +1,4 @@
-import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { isUuid, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { cloudActionEventWhen, cloudActionFileName } from "./cloud-action-review.ts";
 import type {
@@ -253,10 +253,13 @@ function shownPath(path: string): string {
 }
 
 /** Whether applying it may change the company's pages or tables (Interfaces I10): a path it names, or where it moves
- * one, is under interfaces/ or tables/, or is one of them. An apply reads the proposal whole (`#whole`). */
+ * one, is under QorperaOS/interfaces/ or QorperaOS/tables/, or is one of them. An apply reads the proposal whole
+ * (`#whole`). */
 function touchesInterfaces(proposal: CloudCompanyFolderProposal): boolean {
 	return proposal.units.some((unit) =>
-		[unit.path, unit.to].some((path) => path !== null && /^(?:interfaces|tables)(?:\/|$)/.test(companyPathKey(path))),
+		[unit.path, unit.to].some(
+			(path) => path !== null && /^(?:interfaces|tables)(?:\/|$)/.test(osRelative(companyPathKey(path)) ?? ""),
+		),
 	);
 }
 

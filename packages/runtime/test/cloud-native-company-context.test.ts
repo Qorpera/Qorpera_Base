@@ -494,7 +494,7 @@ it("composes the whole profile, and degrades memory instead of failing when a no
 		available: true,
 		tools: ["update_memory", "recall_memory"],
 		profile: {
-			path: `agents/${context.agent.id}/memory/profile.md`,
+			path: `QorperaOS/agents/${context.agent.id}/memory/profile.md`,
 			version: randomUUID(),
 			// Angle brackets are escaped six bytes each: the worst case another writer can leave.
 			facts: Array.from({ length: count }, (_, index) => ({
@@ -522,7 +522,7 @@ it("shows the changes waiting for review just before the skills, only when the r
 				proposalId: randomUUID(),
 				savedAt: "2026-10-05T10:00:00+00:00",
 				savedFrom: "a computer",
-				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "agents/mira" }],
+				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "QorperaOS/agents/mira" }],
 			},
 		],
 	};
@@ -625,7 +625,7 @@ it.each(["cofounder", "employee"] as const)(
 			available: false,
 			reason: "not_composed",
 			own: { skills: [] },
-			company: { path: "skills", skills: [] },
+			company: { path: "QorperaOS/skills", skills: [] },
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
@@ -655,16 +655,17 @@ it.each(["cofounder", "employee"] as const)(
 it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
-	for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
+	for (const path of ["QorperaOS/vision/vision.md", "QorperaOS/agents/sections.md", "agent.md"])
+		expect(cofounder).toContain(path);
 	// Jonas, 4 October 2026: the first job is the onboarding. The Co-Founder drafts the vision in its own words and
 	// revises it until every founder approves; only then does it write the file, close its first todo and propose hires.
 	expect(cofounder).toContain("Your first job is the onboarding: building the vision with the founders");
-	expect(cofounder).toContain("Read vision/vision.md first");
+	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("write the whole vision in your own words, post it in the thread as a draft");
 	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
 	expect(cofounder).toContain(
-		"Only then write it to vision/vision.md, with the company's name as its first line, and close your first todo, Start with the founders",
+		"Only then write it to QorperaOS/vision/vision.md, with the company's name as its first line, and close your first todo, Start with the founders",
 	);
 	expect(cofounder).toContain("Then propose the first hires");
 	expect(cofounder).toContain("hire no one before the vision is agreed unless a founder asks you to");
@@ -676,8 +677,9 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		firstTodo: { id: "44444444-4444-4444-8444-444444444445", requestedBy: null },
 	});
 	const paths = new Set(seeded.map((entry) => entry.path));
-	for (const path of ["vision/vision.md", "agents/sections.md"]) expect(paths.has(path)).toBe(true);
-	expect(paths.has(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
+	for (const path of ["QorperaOS/vision/vision.md", "QorperaOS/agents/sections.md"])
+		expect(paths.has(path)).toBe(true);
+	expect(paths.has(`QorperaOS/agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
 	const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
 	expect(todo?.text).toContain("title: Start with the founders");
 	expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
@@ -892,6 +894,7 @@ it.each([
 	"attachment-count",
 	"image-count",
 	"image-path",
+	"image-outside-root",
 	"image-not-a-path",
 	"image-input-id",
 	"image-on-job",
@@ -899,7 +902,7 @@ it.each([
 ])("rejects mismatched context: %s", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const context = structuredClone(f.context);
-	const image = `agents/nora/memory/thread/images/${randomUUID()}/${"a".repeat(64)}.png`;
+	const image = `QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${"a".repeat(64)}.png`;
 	if (kind === "company") context.company.id = randomUUID();
 	else if (kind === "agent") context.agent.id = randomUUID();
 	else if (kind === "requester") context.currentInputs[0].authorUserId = f.authority.identity.sponsorUserId;
@@ -914,10 +917,11 @@ it.each([
 	else if (kind === "invalid-acknowledgement") Object.assign(context, { initialAcknowledgementSatisfied: "true" });
 	else if (kind === "attachment-count") Object.assign(context.currentInputs[0], { attachmentCount: 0 });
 	else if (kind === "image-count") context.currentInputs[0].images = Array.from({ length: 6 }, () => image);
-	else if (kind === "image-path") context.currentInputs[0].images = ["agents/nora/memory/thread/notes.md"];
+	else if (kind === "image-path") context.currentInputs[0].images = ["QorperaOS/agents/nora/memory/thread/notes.md"];
+	else if (kind === "image-outside-root") context.currentInputs[0].images = [image.slice("QorperaOS/".length)];
 	else if (kind === "image-input-id")
 		context.currentInputs[0].images = [
-			`agents/nora/memory/thread/images/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/${"a".repeat(64)}.png`,
+			`QorperaOS/agents/nora/memory/thread/images/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/${"a".repeat(64)}.png`,
 		];
 	else if (kind === "image-not-a-path") Object.assign(context.currentInputs[0], { images: 1 });
 	else if (kind === "image-on-job") context.job.images = [image];
@@ -934,8 +938,10 @@ it.each([
 
 it("lists a member's images by their folder paths, current and earlier, for company_read to open", () => {
 	const f = nativeCompanyContextFixture();
-	const thread = [1, 2].map((n) => `agents/nora/memory/thread/images/${randomUUID()}/${String(n).repeat(64)}.jpg`);
-	const group = `agents/groups/launch/memory/images/${randomUUID()}/${"c".repeat(64)}.webp`;
+	const thread = [1, 2].map(
+		(n) => `QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${String(n).repeat(64)}.jpg`,
+	);
+	const group = `QorperaOS/agents/groups/launch/memory/images/${randomUUID()}/${"c".repeat(64)}.webp`;
 	f.context.currentInputs[0].images = thread;
 	f.context.history[0] = {
 		...f.context.history[0],
@@ -1121,7 +1127,7 @@ it("rejects changed data or provenance on a later source page", async () => {
 			},
 		},
 		// The same words with an image the run's context did not list.
-		{ ...source, images: [`agents/nora/memory/thread/images/${randomUUID()}/${"d".repeat(64)}.gif`] },
+		{ ...source, images: [`QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${"d".repeat(64)}.gif`] },
 	];
 	for (const [index, page] of changed.entries()) {
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => page);
@@ -1287,8 +1293,8 @@ it("names the company's agent folders, and refuses a context that names none", (
 	expect(context.folder).toEqual(folder);
 	expect(cloudAgentFolderPlace(context)).toEqual({ core: "folder-v2", handle: "anna-berg" });
 	const prompt = composeCloudNativeCompanyPrompt(context);
-	expect(prompt).toContain('"folder":"agents/anna-berg"');
-	expect(prompt).toContain('"folder":"agents/ida-lund"');
+	expect(prompt).toContain('"folder":"QorperaOS/agents/anna-berg"');
+	expect(prompt).toContain('"folder":"QorperaOS/agents/ida-lund"');
 	// A coworker without a folder (an agent from before the files) is shown as it is.
 	const unnamed = parseCloudNativeCompanyContext(
 		{ ...f.context, folder: { agent: "anna-berg", coworkers: {} } },
@@ -1420,56 +1426,63 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
 // images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
 // folder at /company replaced the workbench line), and taken again for the 21 October 2026 amendment (how agents start
-// work and use the company folder: constitution v3, overlay v5, the new rules). A change to either is a change to every
+// work and use the company folder: constitution v3, overlay v5, the new rules), and taken again for QorperaOS (the
+// platform's folders under QorperaOS/, overlay v6; Jonas, 21 October 2026). A change to either is a change to every
 // run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "2437fb51bd8bea08c1d711264bcf9eec8afdf4b2eb7b85a3cc262c3950d05c38",
-			prompt: "7c08147caf24677a28b3dfcce381dedd442bea1c56a9a1763670279098692833",
+			instructions: "0bb313c95de1492725c20bb89756889564eb0c89e77373852bd307d5f7ff3103",
+			prompt: "fe4af4b350e2f5a4372f454a0c3f206098175e7614df5a724aa7f4038ce3e3d7",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "91dcf5b128cd4a842c1343ff29c5467f76df6f4628d99e4d14779d4b3489cb11",
-			prompt: "606dca346945e947cd1b7a03fff0562fa01122c0a7a80d61523f26deb759a86f",
+			instructions: "ed6f64a6007589de5fa68e1f67e196471c037a2729f36ca2c2d4876c43ae5d24",
+			prompt: "1903d9d09591488677ee8189370edada2c13d2a05c7826d6d70068710ad83f11",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "2437fb51bd8bea08c1d711264bcf9eec8afdf4b2eb7b85a3cc262c3950d05c38",
-			prompt: "887167596b836fdc96beb2fe956417d96a3c5a99b1108a02e5385ebfcf542d89",
+			instructions: "0bb313c95de1492725c20bb89756889564eb0c89e77373852bd307d5f7ff3103",
+			prompt: "21f150c26692e417dd282ddfbcceebab9504b96c6118aa82d836c2fc18e749a8",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
 });
 
-// The 21 October 2026 amendment "how agents start work and use the company folder".
+// The 21 October 2026 amendment "how agents start work and use the company folder"; the platform's folders are in
+// QorperaOS/ (Jonas, 21 October 2026).
 it("tells every agent the seeded folders, how to make files and how to link them, with no invented paths", () => {
 	for (const [name, about] of CLOUD_COMPANY_TOP_FOLDERS)
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(`\n- ${name}/ — ${about}\n`);
 	expect(CLOUD_COMPANY_TOP_FOLDERS.map(([name]) => name)).toEqual([
-		"vision",
-		"agents",
-		"rules",
-		"connections",
-		"skills",
-		"contacts",
-		"human-tasks",
-		"interfaces",
-		"tables",
+		"QorperaOS/vision",
+		"QorperaOS/agents",
+		"QorperaOS/rules",
+		"QorperaOS/connections",
+		"QorperaOS/skills",
+		"QorperaOS/contacts",
+		"QorperaOS/human-tasks",
+		"QorperaOS/interfaces",
+		"QorperaOS/tables",
 		"code",
 	]);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"Everything else is the company's own work, in category folders the agents create.",
+		"At its top, the platform keeps QorperaOS/, which holds the platform's own folders, and code/:\n- QorperaOS/vision/ — ",
 	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"\n- code/ — Code projects (git repositories).\nEverything else is the company's own work, in category folders the agents create.",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("the company's vision, QorperaOS/vision/vision.md: the file's");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("such as QorperaOS/vision/vision.md. Keep the first messages");
 	expect(CLOUD_FOLDER_LINK_EXAMPLE).toBe("[sales-dashboard.html](folder:designs/sales-dashboard.html)");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		`Link a file you made or changed as a markdown link with the folder: scheme and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}`,

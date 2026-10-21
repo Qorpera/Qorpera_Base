@@ -1,7 +1,7 @@
 /** The head (RUNTIME-AGENT-MEMORY-TREE.md §5.6, W3): the fixed top of every request, in the developer instructions
  * after the stable part, so runs share it as a cached prefix (Codex's environment context, with its random working
  * directory, follows the developer message, so no user-message text can be such a prefix).
- * - The company head: vision/vision.md, whole (C:887 asks every run to read it).
+ * - The company head: QorperaOS/vision/vision.md, whole (C:887 asks every run to read it).
  * - The agent head: its job specification (the body of its agent.md) and its profile page.
  *
  * It is data, not instructions, as C §9.2 asks: one serialized object, escaped as the context prompt is, whose every
@@ -16,6 +16,7 @@
  * out.
  */
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderNotebookGateway } from "./cloud-folder-notebooks.ts";
 import type { CloudAgentMemoryBlock } from "./cloud-memory-tools.ts";
@@ -28,7 +29,7 @@ import {
 export const CLOUD_AGENT_HEAD_SCHEMA = "qorpera.agent-head/v1";
 /** HEAD (§5.1): the serialized head's bound, in UTF-8 bytes. */
 export const CLOUD_AGENT_HEAD_BYTES = 16_000;
-export const CLOUD_AGENT_VISION_PATH = "vision/vision.md";
+export const CLOUD_AGENT_VISION_PATH = osPath("vision/vision.md");
 
 export type CloudAgentHeadPart = "vision" | "job" | "profile";
 

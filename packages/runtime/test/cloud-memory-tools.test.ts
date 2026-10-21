@@ -92,7 +92,7 @@ async function fixture(initial: Record<string, string> = {}, place = PLACE) {
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	// The agent's folder name: its notebook is under agents/<agent>/memory.
+	// The agent's folder name: its notebook is under QorperaOS/agents/<agent>/memory.
 	const agent = place.handle;
 	const folder = cloudAgentFolder(run.identity.companyId, run.identity.staffAgentId, place);
 	const paths = cloudMemoryPaths(folder);
@@ -121,19 +121,20 @@ describe("agent memory notebook", () => {
 				fact: "Clinics book by phone.",
 			});
 			expect(logged.success, JSON.stringify(logged)).toBe(true);
-			expect(f.paths.root).toBe("agents/anna-berg/memory");
-			expect(f.store.files.get("agents/anna-berg/memory/log/2026-09.md")?.text).toBe(
+			expect(f.paths.root).toBe("QorperaOS/agents/anna-berg/memory");
+			expect(f.store.files.get("QorperaOS/agents/anna-berg/memory/log/2026-09.md")?.text).toBe(
 				"- (2026-09-22) Clinics book by phone.\n",
 			);
 			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
 			expect(mkdirs.map(([, input]) => input.path)).toEqual([
-				"agents",
-				"agents/anna-berg",
-				"agents/anna-berg/memory",
-				"agents/anna-berg/memory/log",
+				"QorperaOS",
+				"QorperaOS/agents",
+				"QorperaOS/agents/anna-berg",
+				"QorperaOS/agents/anna-berg/memory",
+				"QorperaOS/agents/anna-berg/memory/log",
 			]);
 			const block = await composeCloudAgentMemory(f.store.gateway, f.folder, NOW, new AbortController().signal);
-			expect(block.profile.path).toBe("agents/anna-berg/memory/profile.md");
+			expect(block.profile.path).toBe("QorperaOS/agents/anna-berg/memory/profile.md");
 			expect(block.recentLog.facts.map((fact) => fact.fact)).toEqual(["Clinics book by phone."]);
 		} finally {
 			f.run.close();
@@ -167,14 +168,15 @@ describe("agent memory notebook", () => {
 				"- (2026-09-22) Jonas prefers short replies in Danish.\n- (2026-09-22) [note] The September export is still running.\n",
 			);
 			expect(f.store.files.get(f.paths.profile)?.text).toBe("- (2026-09-22) I own the weekly ledger review.\n");
-			expect(cloudMemoryLogPath(f.folder, NOW)).toBe(`agents/${f.agent}/memory/log/2026-09.md`);
+			expect(cloudMemoryLogPath(f.folder, NOW)).toBe(`QorperaOS/agents/${f.agent}/memory/log/2026-09.md`);
 			// The first fact created the notebook's folders, once each and in order.
 			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
 			expect(mkdirs.map(([, input]) => input.path)).toEqual([
-				"agents",
-				`agents/${f.agent}`,
-				`agents/${f.agent}/memory`,
-				`agents/${f.agent}/memory/log`,
+				"QorperaOS",
+				"QorperaOS/agents",
+				`QorperaOS/agents/${f.agent}`,
+				`QorperaOS/agents/${f.agent}/memory`,
+				`QorperaOS/agents/${f.agent}/memory/log`,
 			]);
 			for (const [, input] of mkdirs) {
 				expect(input.operationKey).toMatch(/^memory-folder-[0-9a-f]{40}$/);
@@ -196,7 +198,7 @@ describe("agent memory notebook", () => {
 
 	it("deduplicates on write", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Jonas prefers short replies.\n",
+			"QorperaOS/agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Jonas prefers short replies.\n",
 		});
 		try {
 			const again = await f.boundary.invoke("d1", "qorpera", "update_memory", {
@@ -212,9 +214,9 @@ describe("agent memory notebook", () => {
 
 	it("deduplicates across the whole notebook and says where the fact already is", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/profile.md": "- (2026-07-01) I report to Jonas.\n",
-			"agents/<agent>/memory/log/2026-08.md": "- (2026-08-01) Original lasting preference.\n",
-			"agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Something else.\n",
+			"QorperaOS/agents/<agent>/memory/profile.md": "- (2026-07-01) I report to Jonas.\n",
+			"QorperaOS/agents/<agent>/memory/log/2026-08.md": "- (2026-08-01) Original lasting preference.\n",
+			"QorperaOS/agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Something else.\n",
 		});
 		try {
 			const again = await f.boundary.invoke("d1", "qorpera", "update_memory", {
@@ -225,7 +227,7 @@ describe("agent memory notebook", () => {
 				state: "duplicate",
 				tier: "log",
 				date: "2026-08-01",
-				path: `agents/${f.agent}/memory/log/2026-08.md`,
+				path: `QorperaOS/agents/${f.agent}/memory/log/2026-08.md`,
 			});
 			const promoted = await f.boundary.invoke("d2", "qorpera", "update_memory", {
 				action: "write",
@@ -247,7 +249,7 @@ describe("agent memory notebook", () => {
 
 	it("treats a note tag as part of no fact's identity, on write and on forget", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/profile.md": "- (2026-07-01) [note] Export runs nightly.\n",
+			"QorperaOS/agents/<agent>/memory/profile.md": "- (2026-07-01) [note] Export runs nightly.\n",
 		});
 		try {
 			const tagged = await f.boundary.invoke("n1", "qorpera", "update_memory", {
@@ -268,11 +270,11 @@ describe("agent memory notebook", () => {
 
 	it("forgets every current copy of a fact and says how many it removed", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/profile.md":
+			"QorperaOS/agents/<agent>/memory/profile.md":
 				"- (2026-07-01) Bills go out monthly.\n- (2026-07-02) I report to Jonas.\n",
-			"agents/<agent>/memory/log/2026-08.md":
+			"QorperaOS/agents/<agent>/memory/log/2026-08.md":
 				"- (2026-08-01) Bills go out monthly.\n- (2026-08-02) [note] bills go out  monthly.\n- (2026-08-03) Kept.\n",
-			"agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Bills go out monthly.\n",
+			"QorperaOS/agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Bills go out monthly.\n",
 		});
 		try {
 			const gone = await f.boundary.invoke("f1", "qorpera", "update_memory", {
@@ -284,8 +286,10 @@ describe("agent memory notebook", () => {
 				1, 1, 2,
 			]);
 			expect(f.store.files.get(f.paths.profile)?.text).toBe("- (2026-07-02) I report to Jonas.\n");
-			expect(f.store.files.get(`agents/${f.agent}/memory/log/2026-08.md`)?.text).toBe("- (2026-08-03) Kept.\n");
-			expect(f.store.files.get(`agents/${f.agent}/memory/log/2026-09.md`)?.text).toBe("");
+			expect(f.store.files.get(`QorperaOS/agents/${f.agent}/memory/log/2026-08.md`)?.text).toBe(
+				"- (2026-08-03) Kept.\n",
+			);
+			expect(f.store.files.get(`QorperaOS/agents/${f.agent}/memory/log/2026-09.md`)?.text).toBe("");
 			const recall = f.receipt(
 				await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "bills monthly" }),
 			);
@@ -330,7 +334,7 @@ describe("agent memory notebook", () => {
 
 	it("answers full when this month's log file is full", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/log/2026-09.md": `- (2026-09-01) ${"b".repeat(28 * 1024 - 100)}\n`,
+			"QorperaOS/agents/<agent>/memory/log/2026-09.md": `- (2026-09-01) ${"b".repeat(28 * 1024 - 100)}\n`,
 		});
 		try {
 			const full = await f.boundary.invoke("l1", "qorpera", "update_memory", {
@@ -346,9 +350,9 @@ describe("agent memory notebook", () => {
 
 	it("forgets by exact recorded text and rewrites the file with its current version", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/profile.md":
+			"QorperaOS/agents/<agent>/memory/profile.md":
 				"- (2026-08-01) I report to Jonas.\n- (2026-08-02) I use British spelling.\n",
-			"agents/<agent>/memory/log/2026-08.md":
+			"QorperaOS/agents/<agent>/memory/log/2026-08.md":
 				"- (2026-08-28) [note] Old export path.\n- (2026-08-29) Decided to bill monthly.\n",
 		});
 		try {
@@ -371,7 +375,7 @@ describe("agent memory notebook", () => {
 				fact: "Old export path.",
 			});
 			expect(f.receipt(note)).toMatchObject({ state: "forgotten", removed: 1 });
-			expect(f.store.files.get(`agents/${f.agent}/memory/log/2026-08.md`)?.text).toBe(
+			expect(f.store.files.get(`QorperaOS/agents/${f.agent}/memory/log/2026-08.md`)?.text).toBe(
 				"- (2026-08-29) Decided to bill monthly.\n",
 			);
 			const missing = await f.boundary.invoke("f3", "qorpera", "update_memory", {
@@ -389,7 +393,7 @@ describe("agent memory notebook", () => {
 	});
 
 	it("re-reads and retries once when another run changed the notebook file under a write", async () => {
-		const f = await fixture({ "agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) First.\n" });
+		const f = await fixture({ "QorperaOS/agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) First.\n" });
 		try {
 			f.store.conflicts.push("once");
 			const result = await f.boundary.invoke("c1", "qorpera", "update_memory", { action: "write", fact: "Second." });
@@ -408,10 +412,10 @@ describe("agent memory notebook", () => {
 
 	it("recalls by distinctive words first, newest first, and falls back to a substring match", async () => {
 		const f = await fixture({
-			"agents/<agent>/memory/profile.md": "- (2026-07-01) I prefer the Danish ledger format.\n",
-			"agents/<agent>/memory/log/2026-08.md":
+			"QorperaOS/agents/<agent>/memory/profile.md": "- (2026-07-01) I prefer the Danish ledger format.\n",
+			"QorperaOS/agents/<agent>/memory/log/2026-08.md":
 				"- (2026-08-10) Ledger review moved to Fridays.\n- (2026-08-11) [note] Ledger export took 40 minutes.\n",
-			"agents/<agent>/memory/log/2026-09.md":
+			"QorperaOS/agents/<agent>/memory/log/2026-09.md":
 				"- (2026-09-02) Jonas approved the Q3 ledger review plan.\n- (2026-09-03) Coffee machine is on floor two.\n",
 		});
 		try {
@@ -446,7 +450,7 @@ describe("agent memory notebook", () => {
 		["a member scope", { action: "write", fact: "x", scope: "user" }],
 		["an agent scope", { action: "write", fact: "x", scope: "agent" }],
 		["a tier on forget", { action: "forget", fact: "x", tier: "log" }],
-		["an unknown field", { action: "write", fact: "x", path: "agents/other/memory/profile.md" }],
+		["an unknown field", { action: "write", fact: "x", path: "QorperaOS/agents/other/memory/profile.md" }],
 	])("rejects %s before any read or write", async (_label, request) => {
 		const f = await fixture();
 		try {
@@ -492,10 +496,13 @@ describe("agent memory notebook", () => {
 				...f.store.mutate.mock.calls.map(([, input]) => input.path),
 			];
 			expect(touched.length).toBeGreaterThan(0);
-			// Its own notebook, plus the two folders on the way to it; never another agent's.
+			// Its own notebook, plus the three folders on the way to it; never another agent's.
 			for (const path of touched)
 				expect(
-					path === "agents" || path === `agents/${f.agent}` || path.startsWith(`agents/${f.agent}/memory`),
+					path === "QorperaOS" ||
+						path === "QorperaOS/agents" ||
+						path === `QorperaOS/agents/${f.agent}` ||
+						path.startsWith(`QorperaOS/agents/${f.agent}/memory`),
 					path,
 				).toBe(true);
 		} finally {
@@ -508,29 +515,34 @@ describe("composed agent memory", () => {
 	it("composes the whole profile, the newest log facts of two months, and fades old notes", async () => {
 		const agent = randomUUID();
 		const store = companyFile({
-			[`agents/${agent}/memory/profile.md`]: "# Profile\n- (2026-07-01) I report to Jonas.\n",
-			[`agents/${agent}/memory/log/2026-07.md`]: "- (2026-07-15) Too old for the slice.\n",
-			[`agents/${agent}/memory/log/2026-08.md`]:
+			[`QorperaOS/agents/${agent}/memory/profile.md`]: "# Profile\n- (2026-07-01) I report to Jonas.\n",
+			[`QorperaOS/agents/${agent}/memory/log/2026-07.md`]: "- (2026-07-15) Too old for the slice.\n",
+			[`QorperaOS/agents/${agent}/memory/log/2026-08.md`]:
 				"- (2026-08-20) [note] Faded note.\n- (2026-08-29) Decided to bill monthly.\n",
-			[`agents/${agent}/memory/log/2026-09.md`]:
+			[`QorperaOS/agents/${agent}/memory/log/2026-09.md`]:
 				"- (2026-09-18) [note] Fresh note.\n- (2026-09-21) Ledger review moved to Fridays.\n",
 		});
-		const block = await composeCloudAgentMemory(store.gateway, `agents/${agent}`, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(
+			store.gateway,
+			`QorperaOS/agents/${agent}`,
+			NOW,
+			new AbortController().signal,
+		);
 		expect(block).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
 			trust: "own_notebook_not_authority",
 			available: true,
 			tools: ["update_memory", "recall_memory"],
 			profile: {
-				path: `agents/${agent}/memory/profile.md`,
+				path: `QorperaOS/agents/${agent}/memory/profile.md`,
 				facts: [{ date: "2026-07-01", tier: "profile" }],
 			},
 		});
 		expect(block).not.toHaveProperty("scope");
-		expect(block.profile.version).toBe(store.files.get(`agents/${agent}/memory/profile.md`)!.version);
+		expect(block.profile.version).toBe(store.files.get(`QorperaOS/agents/${agent}/memory/profile.md`)!.version);
 		expect(block.recentLog.files.map((file) => file.path)).toEqual([
-			`agents/${agent}/memory/log/2026-09.md`,
-			`agents/${agent}/memory/log/2026-08.md`,
+			`QorperaOS/agents/${agent}/memory/log/2026-09.md`,
+			`QorperaOS/agents/${agent}/memory/log/2026-08.md`,
 		]);
 		expect(block.recentLog.facts.map((fact) => fact.fact)).toEqual([
 			"Ledger review moved to Fridays.",
@@ -547,7 +559,7 @@ describe("composed agent memory", () => {
 	it("reads the profile and both months together", async () => {
 		const agent = randomUUID();
 		const store = companyFile({
-			[`agents/${agent}/memory/profile.md`]: "# Profile\n- (2026-07-01) I report to Jonas.\n",
+			[`QorperaOS/agents/${agent}/memory/profile.md`]: "# Profile\n- (2026-07-01) I report to Jonas.\n",
 		});
 		const read = store.readTrusted.getMockImplementation()!;
 		let inFlight = 0;
@@ -558,7 +570,12 @@ describe("composed agent memory", () => {
 			inFlight--;
 			return read(path, signal);
 		});
-		const block = await composeCloudAgentMemory(store.gateway, `agents/${agent}`, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(
+			store.gateway,
+			`QorperaOS/agents/${agent}`,
+			NOW,
+			new AbortController().signal,
+		);
 		expect(most).toBe(3);
 		expect(block.profile.facts).toHaveLength(1);
 	});
@@ -567,7 +584,7 @@ describe("composed agent memory", () => {
 		const agent = randomUUID();
 		const block = await composeCloudAgentMemory(
 			companyFile().gateway,
-			`agents/${agent}`,
+			`QorperaOS/agents/${agent}`,
 			NOW,
 			new AbortController().signal,
 		);

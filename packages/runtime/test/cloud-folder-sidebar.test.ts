@@ -15,7 +15,7 @@ afterEach(() => {
 const NORA = "2d1c4a8e-5b6f-4c3d-9e2a-7f8b9c0d1e2f";
 const OLE = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
 const PIA = "9c0d1e2f-3a4b-4c5d-9e6f-7a8b9c0d1e2f";
-const PATH = "agents/sections.md";
+const PATH = "QorperaOS/agents/sections.md";
 const SEEDED = `# Sections
 
 Each line is an id. The words after it are only for reading.

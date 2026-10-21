@@ -45,20 +45,22 @@ async function refuses(call: Promise<unknown>, reason: string) {
 }
 
 it("saves a group chat as one new folder with group.md, recording its review", async () => {
-	const f = await fixture({ folders: ["agents/groups"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const result = parse(await f.chats().create(CHAT, f.context));
 	const id = hashedId("qorpera.folder-group/v1", f.identity.runId, "chat-1");
 	expect(result).toMatchObject({
 		schema: "qorpera.group-chat-receipt/v2",
 		runId: f.identity.runId,
 		outcome: "saved",
-		chat: { id, name: "Launch Week", folder: "agents/groups/launch-week" },
+		chat: { id, name: "Launch Week", folder: "QorperaOS/agents/groups/launch-week" },
 	});
 	expect(result.next).toBe("The group chat Launch Week is open: tell the member its name.");
 	expect(f.commits).toHaveLength(1);
 	const [commit] = f.commits;
 	expect(commit).toMatchObject({ key: "group-folder:chat-1", receiptId: result.receiptId });
-	expect(commit?.units.map((unit) => [unit.op, unit.path])).toEqual([["new_folder", "agents/groups/launch-week"]]);
+	expect(commit?.units.map((unit) => [unit.op, unit.path])).toEqual([
+		["new_folder", "QorperaOS/agents/groups/launch-week"],
+	]);
 	expect(f.recordings[0]?.p_request).toEqual({
 		actionReviewId: f.context.actionReviewId,
 		tool: "create_group_chat",
@@ -66,8 +68,8 @@ it("saves a group chat as one new folder with group.md, recording its review", a
 		units: commit?.units,
 	});
 	const group = parseCompanyStateFile(
-		"agents/groups/launch-week/group.md",
-		f.text("agents/groups/launch-week/group.md") ?? "",
+		"QorperaOS/agents/groups/launch-week/group.md",
+		f.text("QorperaOS/agents/groups/launch-week/group.md") ?? "",
 	);
 	expect(group?.ok && group.file).toEqual({
 		kind: "group",
@@ -82,7 +84,7 @@ it("saves a group chat as one new folder with group.md, recording its review", a
 });
 
 it("leaves the member out when asked, and binds the receipt to the chat and the request", async () => {
-	const f = await fixture({ folders: ["agents/groups"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const execute = vi.spyOn(CloudNativeToolOperations.prototype, "execute");
 	const result = parse(await f.chats().create({ ...CHAT, includeRequestingMember: false }, f.context));
 	expect(result.outcome).toBe("saved");
@@ -96,17 +98,17 @@ it("leaves the member out when asked, and binds the receipt to the chat and the 
 	});
 	execute.mockRestore();
 	const group = parseCompanyStateFile(
-		"agents/groups/launch-week/group.md",
-		f.text("agents/groups/launch-week/group.md") ?? "",
+		"QorperaOS/agents/groups/launch-week/group.md",
+		f.text("QorperaOS/agents/groups/launch-week/group.md") ?? "",
 	);
 	expect(group?.ok && group.file.kind === "group" && group.file.people).toEqual([]);
 });
 
 it("numbers the handle past the chats there, and replays a finished call from its receipt", async () => {
-	const f = await fixture({ folders: ["agents/groups", "agents/groups/launch-week"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups", "QorperaOS/agents/groups/launch-week"] });
 	const first = parse(await f.chats().create(CHAT, f.context));
-	expect(first.chat.folder).toBe("agents/groups/launch-week-2");
-	// Only the chats under agents/groups count: "groups" is reserved under agents/, not here.
+	expect(first.chat.folder).toBe("QorperaOS/agents/groups/launch-week-2");
+	// Only the chats under QorperaOS/agents/groups count: "groups" is reserved under QorperaOS/agents/, not here.
 	const groups = parse(
 		await f
 			.chats()
@@ -115,14 +117,14 @@ it("numbers the handle past the chats there, and replays a finished call from it
 				{ ...f.context, callId: "call-2", actionReviewId: "5b0c2d3e-3333-4333-8333-333333333333" },
 			),
 	);
-	expect(groups.chat.folder).toBe("agents/groups/groups");
+	expect(groups.chat.folder).toBe("QorperaOS/agents/groups/groups");
 	expect(parse(await f.chats().create(CHAT, f.context))).toEqual(first);
 	expect(f.commits).toHaveLength(2);
 	expect(f.recordings).toHaveLength(2);
 });
 
 it("checks the file before the review, and refuses a call without the review's approval", async () => {
-	const f = await fixture({ folders: ["agents/groups"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const chats = f.chats();
 	let thrown: unknown = null;
 	try {
@@ -140,14 +142,14 @@ it("checks the file before the review, and refuses a call without the review's a
 });
 
 it("tells the model what a conflict, a refusal and a waiting chat mean", async () => {
-	const f = await fixture({ folders: ["agents/groups"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	vi.spyOn(f.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
-	f.folders.add("agents/groups/launch-week");
+	f.folders.add("QorperaOS/agents/groups/launch-week");
 	const conflict = parse(await f.chats().create(CHAT, f.context));
 	expect(conflict).toMatchObject({ outcome: "conflict", reason: "exists" });
 	expect(conflict.next).toContain("choose a slightly different name");
 	const g = await fixture(
-		{ folders: ["agents/groups"] },
+		{ folders: ["QorperaOS/agents/groups"] },
 		{
 			hook: () => ({
 				outcome: "refused",
@@ -164,14 +166,14 @@ it("tells the model what a conflict, a refusal and a waiting chat mean", async (
 	});
 	expect(refused.next).toContain("No group chat was opened");
 	const h = await fixture(
-		{ folders: ["agents/groups"] },
+		{ folders: ["QorperaOS/agents/groups"] },
 		{ hook: () => ({ outcome: "waiting_for_review", reason: "waiting_for_review" }) },
 	);
 	expect(parse(await h.chats().create(CHAT, h.context)).next).toContain("do not open it again");
 });
 
 it("is the group chat tool's folder-v2 path: its description, the check before review, a bound key, the writer behind execute", async () => {
-	const f = await fixture({ folders: ["agents/groups"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
 	const tool = cloudHiringTools(f.identity, {
 		folderHiring: new CloudFolderHiring({ folder: f.folder, operations, identity: f.identity }),
@@ -187,8 +189,8 @@ it("is the group chat tool's folder-v2 path: its description, the check before r
 	expect(() => tool?.parseArguments({ ...args, name: "Launch\tWeek" })).toThrow(CloudToolArgumentRefusal);
 	const parsed = tool?.parseArguments(args);
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
-	expect(result).toMatchObject({ outcome: "saved", chat: { folder: "agents/groups/launch-week" } });
+	expect(result).toMatchObject({ outcome: "saved", chat: { folder: "QorperaOS/agents/groups/launch-week" } });
 	expect(() => tool?.parseArguments({ ...args, name: "Other" })).toThrow(
-		/check agents\/groups\/ before opening another/,
+		/check QorperaOS\/agents\/groups\/ before opening another/,
 	);
 });

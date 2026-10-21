@@ -1,3 +1,4 @@
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFolderGroupChat, CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import type { CloudFolderHire, CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -45,16 +46,16 @@ function chatRequest(chat: {
 	return JSON.stringify([chat.operationKey, chat.name, chat.purpose, chat.coworkerIds, chat.includeRequestingMember]);
 }
 
-/** A folder-v2 company's group chat (thin writers W4b): its folder under agents/groups, with group.md. */
+/** A folder-v2 company's group chat (thin writers W4b): its folder under QorperaOS/agents/groups, with group.md. */
 export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER =
-	"Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. The chat is saved as its own folder, agents/groups/<name>/group.md, which lists its agents and people and holds its purpose. " +
+	`Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. The chat is saved as its own folder, ${osPath("agents/groups")}/<name>/group.md, which lists its agents and people and holds its purpose. ` +
 	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
 	"When the result's outcome is saved the chat exists: tell the member its name. Keep operationKey stable for one intended chat and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again. A conflict or a refusal needs a new key.";
 
 /** A folder-v2 company's hire (thin writers W4a): the agent's folder, with the first assignment as a todo. */
 export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER =
-	"Hire a new coworker for this company. The hire is saved as the agent's own folder: agents/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the result's outcome is saved, the agent exists but has not started: send it a coworker message to begin, and tell the member who you hired and why. If your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card. " +
-	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's agent.md under agents/ says what it does. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment (at most 4000 bytes) as the first concrete piece of work it should start on. figure picks its avatar. " +
+	`Hire a new coworker for this company. The hire is saved as the agent's own folder: ${osPath("agents")}/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the result's outcome is saved, the agent exists but has not started: send it a coworker message to begin, and tell the member who you hired and why. If your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card. ` +
+	`Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's agent.md under ${osPath("agents")}/ says what it does. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment (at most 4000 bytes) as the first concrete piece of work it should start on. figure picks its avatar. ` +
 	"Keep operationKey stable for one intended hire and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again, never a new key. A conflict or a refusal needs a new key.";
 /** The todo a folder-v2 hire's first assignment becomes holds at most this much (§2 "todo"). */
 const FOLDER_ASSIGNMENT_BYTES = 4000;
@@ -84,8 +85,8 @@ export function cloudHiringTools(
 		if (previous !== undefined && previous !== request)
 			throw new CloudToolArgumentRefusal(
 				kind === "hire"
-					? "operationKey is already used in this run for a different hire, which may already exist: check agents/ before hiring again, and repeat this operationKey only with identical arguments"
-					: "operationKey is already used in this run for a different group chat, which may already exist: check agents/groups/ before opening another, and repeat this operationKey only with identical arguments",
+					? `operationKey is already used in this run for a different hire, which may already exist: check ${osPath("agents")}/ before hiring again, and repeat this operationKey only with identical arguments`
+					: `operationKey is already used in this run for a different group chat, which may already exist: check ${osPath("agents/groups")}/ before opening another, and repeat this operationKey only with identical arguments`,
 			);
 	};
 	const assertContext = (context: CloudToolContext) => {

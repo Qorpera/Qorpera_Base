@@ -20,7 +20,7 @@ async function fixture() {
 	return { ...f, todos };
 }
 
-const PATH = "agents/nora/todos/call-the-bank.md";
+const PATH = "QorperaOS/agents/nora/todos/call-the-bank.md";
 /** The tool's own refusal before any effect, which the boundary shows the model as REFUSED: <reason>. */
 async function refuses(call: Promise<unknown>, reason: string) {
 	const error = await call.then(
@@ -128,15 +128,15 @@ it("keeps a todo's requester, changes only its status, and releases the read its
 		},
 	]);
 	// An upsert keeps whoever asked, not the run's requester.
-	f.seed("agents/nora/todos/send-the-offer.md", original.replace("Call the bank", "Send the offer"));
+	f.seed("QorperaOS/agents/nora/todos/send-the-offer.md", original.replace("Call the bank", "Send the offer"));
 	await f
 		.todos()
 		.change(
 			{ action: "upsert", operationKey: "todo-2", todoKey: "send-the-offer", title: "Send it", state: "blocked" },
 			f.context,
 		);
-	expect(f.text("agents/nora/todos/send-the-offer.md")).toContain(`requested_by: ${requester}`);
-	expect(f.text("agents/nora/todos/send-the-offer.md")).not.toContain(String(f.identity.requesterUserId));
+	expect(f.text("QorperaOS/agents/nora/todos/send-the-offer.md")).toContain(`requested_by: ${requester}`);
+	expect(f.text("QorperaOS/agents/nora/todos/send-the-offer.md")).not.toContain(String(f.identity.requesterUserId));
 });
 
 it("binds a call's whole request to its receipt: the same operationKey with other content is refused", async () => {
@@ -301,7 +301,7 @@ it("lists the todos from the index, newest first, and reads one todo's whole con
 	expect(one.todos).toMatchObject([{ todoKey: "call-the-bank", detail: "x".repeat(400), state: "open" }]);
 	expect(f.releases).toHaveLength(releases + 1);
 	expect((f.releases.at(-1) as { p_reads: { path: string }[] }).p_reads).toMatchObject([
-		{ path: "agents/nora/todos/call-the-bank.md" },
+		{ path: "QorperaOS/agents/nora/todos/call-the-bank.md" },
 	]);
 	expect(parse(await todos.list({ todoKey: "nothing-here" }, f.context, fits))).toMatchObject({ todos: [] });
 	// The same call showing the same read releases it under the same id; showing something else, under its own.
