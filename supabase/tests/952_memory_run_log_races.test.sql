@@ -184,11 +184,11 @@ declare
 	x jsonb; r jsonb;
 begin
 	x := public.qorpera_memory_run_log_place(env, one);
-	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array('qorperaos/agents/ada/memory/thread/runs/' || one,
-		'["qorperaos/agents/ada/memory/thread", "qorperaos/agents/ada/memory/thread/runs"]'::jsonb), 'one''s place');
+	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array('QorperaOS/agents/ada/memory/thread/runs/' || one,
+		'["QorperaOS/agents/ada/memory/thread", "QorperaOS/agents/ada/memory/thread/runs"]'::jsonb), 'one''s place');
 	x := public.qorpera_memory_run_log_place(env, g);
-	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array(public.qorpera_folder_key(glog),
-		'["qorperaos/agents/groups/launch/memory", "qorperaos/agents/groups/launch/memory/runs"]'::jsonb), 'g''s place');
+	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array(glog,
+		'["QorperaOS/agents/groups/launch/memory", "QorperaOS/agents/groups/launch/memory/runs"]'::jsonb), 'g''s place');
 	r := pg_temp.logc('one', 'w1b-race:mk:1', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/memory/thread'),
 		jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/memory/thread/runs')), 'QorperaOS/agents/ada/memory/thread/runs/' || one);
 	perform pg_temp.same(jsonb_build_array(r -> 'units' -> 0 ->> 'outcome', r -> 'units' -> 1 ->> 'outcome'), '["saved", "saved"]',

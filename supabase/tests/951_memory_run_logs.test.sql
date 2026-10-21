@@ -285,18 +285,19 @@ declare
 begin
 	-- The company chose the beta in 970's setup, so its runs are recorded in it and keep logs (20260930508000).
 	-- A run in its agent's thread: the thread's tree, and the folders on the way that are not there yet. Otto's tree is.
+	-- The paths are handed out as the folder spells them, under QorperaOS/ (20260930527000).
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path',
-		'qorperaos/agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('qorperaos/agents/nora/memory/thread',
-		'qorperaos/agents/nora/memory/thread/runs'), 'last', null, 'generation', 0, 'gone', false, 'origin', jsonb_build_object(
+		'QorperaOS/agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('QorperaOS/agents/nora/memory/thread',
+		'QorperaOS/agents/nora/memory/thread/runs'), 'last', null, 'generation', 0, 'gone', false, 'origin', jsonb_build_object(
 		'conversation', pg_temp.thread('nora'), 'parent', null, 'step', null, 'continues', null, 'narrow', false)),
 		'nora''s place');
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, pg_temp.run_id('otto')) -> 'missing',
-		'["qorperaos/agents/otto/memory/thread/runs"]', 'otto''s place');
+		'["QorperaOS/agents/otto/memory/thread/runs"]', 'otto''s place');
 	-- A room run: the group chat's tree.
 	x := public.qorpera_memory_run_log_place(env, room);
 	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing', x -> 'origin' -> 'conversation'), jsonb_build_array(
-		'qorperaos/agents/groups/launch/memory/runs/' || room, jsonb_build_array('qorperaos/agents/groups/launch/memory',
-		'qorperaos/agents/groups/launch/memory/runs'), pg_temp.chat('launch')), 'the room run''s place');
+		'QorperaOS/agents/groups/launch/memory/runs/' || room, jsonb_build_array('QorperaOS/agents/groups/launch/memory',
+		'QorperaOS/agents/groups/launch/memory/runs'), pg_temp.chat('launch')), 'the room run''s place');
 	-- A worker's completion continues the run that started the worker, in its conversation.
 	wc := pg_temp.run(pg_temp.id('otto'), 'agent', '63400000-0000-4000-8000-000000000002', 'worker-completion', pg_temp.actor('otto'),
 		extensions.gen_random_uuid());

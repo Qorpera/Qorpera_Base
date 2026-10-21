@@ -301,8 +301,8 @@ end $$;
 
 -- 11. Where a link may stand (qorpera_folder_link_problems, by key): never in a summary tree, on a structured file's
 -- path, as a folder the company keeps or names; anywhere else, also inside an agent's folder and under the old roots,
--- which are ordinary folders since 20260930527000. The message names the place as written, under QorperaOS/. The
--- service's alone.
+-- which are ordinary folders since 20260930527000. The message names the place as people see it, QorperaOS/... (the
+-- root itself QorperaOS/). The service's alone.
 do $$
 declare v record; v_problems jsonb;
 begin
@@ -320,7 +320,7 @@ begin
 		v_problems := public.qorpera_folder_link_problems(v.key);
 		if jsonb_array_length(v_problems) <> (case when v.what is null then 0 else 1 end)
 			or v_problems -> 0 ->> 'message' is distinct from (case when v.what is not null
-				then format('%s is %s; a link cannot stand there', 'QorperaOS' || substr(v.key, 10), v.what) end) then
+				then format('%s is %s; a link cannot stand there', rtrim('QorperaOS/' || substr(v.key, 11), '/'), v.what) end) then
 			raise exception 'Where a link may stand, %: %', v.key, v_problems; end if;
 	end loop;
 	if has_function_privilege('anon', 'public.qorpera_folder_link_problems(text)', 'execute')

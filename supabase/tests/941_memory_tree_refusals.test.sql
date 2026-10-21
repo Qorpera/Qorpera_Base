@@ -347,7 +347,7 @@ begin
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-8', jsonb_build_array(jsonb_build_object('op','mkdir','path',root || '/t15')),
 		array[ns]), 1, 'structured_rule', only_tree);
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-9', jsonb_build_array(jsonb_build_object('op','mkdir','path',root || '/T1')),
-		array[ns]), 1, 'structured_invalid', 'write the path in lowercase, as ' || public.qorpera_folder_key(root) || '/t1', 'name');
+		array[ns]), 1, 'structured_invalid', 'write the path below QorperaOS/ in lowercase, as ' || root || '/t1', 'name');
 
 	-- Each tree.toml or t<n> unit names its conversation; the root alone needs none.
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-10', jsonb_build_array(

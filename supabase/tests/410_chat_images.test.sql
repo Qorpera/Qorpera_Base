@@ -176,7 +176,7 @@ begin
 	perform pg_temp.same(pg_temp.begin_image(pg_temp.u(1), ns, pg_temp.cid(1), f), jsonb_build_object('schema', 'qorpera.room-image-begin/v1',
 		'environmentId', '63400000-0000-4000-8000-000000000020', 'sessionId', ns, 'clientInputId', pg_temp.cid(1),
 		'sha256', f ->> 'fileSha256', 'bytes', f -> 'bytes', 'mediaType', 'image/png',
-		'path', format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256')), 'The begin');
+		'path', format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256')), 'The begin');
 	if not exists (select 1 from public.qorpera_room_image_uploads where session_id = ns and client_input_id = pg_temp.cid(1)
 		and user_id = pg_temp.u(1) and environment_id = '63400000-0000-4000-8000-000000000020') then
 		raise exception 'The begin holds the input id for its member'; end if;
@@ -207,9 +207,9 @@ end $$;
 do $$
 declare
 	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); f constant jsonb := pg_temp.image('nora one');
-	g constant jsonb := pg_temp.image('launch one'); root constant text := 'qorperaos/agents/nora/memory/thread';
+	g constant jsonb := pg_temp.image('launch one'); root constant text := 'QorperaOS/agents/nora/memory/thread';
 	dir constant text := root || '/images/' || pg_temp.cid(1); v_path constant text := dir || '/' || (f ->> 'fileSha256') || '.png';
-	gpath constant text := format('qorperaos/agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
+	gpath constant text := format('QorperaOS/agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
 	r jsonb; v uuid; bad jsonb;
 begin
 	perform pg_temp.path_claims('authenticated', pg_temp.u(1));

@@ -119,7 +119,7 @@ end $$;
 -- 2. The beta's runs keep theirs after the switch: their views, tools, logs and tree writes.
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; otto constant uuid := pg_temp.run_id('otto');
-	root constant text := 'qorperaos/agents/otto/memory/thread'; v_who text;
+	root constant text := 'QorperaOS/agents/otto/memory/thread'; v_who text;
 begin
 	foreach v_who in array array['nora', 'otto'] loop
 		if public.qorpera_memory_view(pg_temp.b(v_who)) is null then raise exception '%''s beta run has its view', v_who; end if;

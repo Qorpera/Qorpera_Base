@@ -17,8 +17,8 @@ begin
 	perform pg_temp.upload(pg_temp.u(1), ns, pg_temp.cid(31), 'thirty-one b');
 	r := pg_temp.say(pg_temp.u(1), ns, pg_temp.cid(31), 'Compare these', jsonb_build_array(pg_temp.img(a), pg_temp.img(b)));
 	paths := jsonb_build_array(
-		format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(31), a ->> 'fileSha256'),
-		format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(31), b ->> 'fileSha256'));
+		format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(31), a ->> 'fileSha256'),
+		format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(31), b ->> 'fileSha256'));
 
 	-- A run value that names the input is enough for the source (as 815's); the input's run is a hand-built one.
 	p := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', pg_temp.u(1));
@@ -56,7 +56,7 @@ begin
 			from jsonb_array_elements(public.qorpera_memory_events(ns, 0, 50)) e
 			where e.value ->> 'eventId' in (r ->> 'inputId', n ->> 'inputId')),
 		jsonb_build_array(jsonb_build_array(jsonb_build_object('mediaType', 'image/png', 'bytes', f -> 'bytes',
-			'path', format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(32), f ->> 'fileSha256'))), null),
+			'path', format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(32), f ->> 'fileSha256'))), null),
 		'The zoom''s image in a thread');
 
 	perform pg_temp.begin_image(pg_temp.u(1), ls, pg_temp.cid(33), pg_temp.image('thirty-three', 'image/webp'));
@@ -65,7 +65,7 @@ begin
 	perform pg_temp.same((select e.value -> 'attachments' from jsonb_array_elements(public.qorpera_memory_events(ls, 0, 50)) e
 			where e.value ->> 'eventId' = q ->> 'inputId'),
 		jsonb_build_array(jsonb_build_object('mediaType', 'image/webp', 'bytes', g -> 'bytes',
-			'path', format('qorperaos/agents/groups/launch/memory/images/%s/%s.webp', pg_temp.cid(33), g ->> 'fileSha256'))),
+			'path', format('QorperaOS/agents/groups/launch/memory/images/%s/%s.webp', pg_temp.cid(33), g ->> 'fileSha256'))),
 		'The zoom''s image in a group chat');
 end $$;
 
@@ -80,8 +80,8 @@ declare
 begin
 	perform pg_temp.same(public.qorpera_room_input_image_paths(ns, pg_temp.cid(35), jsonb_build_object('images',
 			jsonb_build_array(b, a || '{"mediaType":"image/bmp"}', a))),
-		jsonb_build_array(format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(35), b ->> 'objectSha256'),
-			format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(35), a ->> 'objectSha256')), 'The paths in order');
+		jsonb_build_array(format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(35), b ->> 'objectSha256'),
+			format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(35), a ->> 'objectSha256')), 'The paths in order');
 	perform pg_temp.same(public.qorpera_room_input_image_paths(a1, pg_temp.cid(35), jsonb_build_object('images', jsonb_build_array(a))),
 		'[]', 'A conversation with no tree root');
 	perform pg_temp.same(public.qorpera_room_input_image_paths(ns, pg_temp.cid(35), '{"text":"Hi"}'), '[]', 'No images');

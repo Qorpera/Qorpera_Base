@@ -703,7 +703,7 @@ create or replace function public.qorpera_folder_link_problems(p_key text)
 returns jsonb language sql immutable set search_path = '' as $$
 	-- 20260930380000 (LK1); 20260930527000: a path under the root is named QorperaOS/....
 	select case when v.what is null then '[]'::jsonb else jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
-		format('%s is %s; a link cannot stand there', left(coalesce('QorperaOS/' || public.qorpera_os_relative(p_key), p_key), 100),
+		format('%s is %s; a link cannot stand there', left(coalesce(rtrim('QorperaOS/' || public.qorpera_os_relative(p_key), '/'), p_key), 100),
 			v.what))) end
 	from (select case
 		when public.qorpera_memory_tree_root_key(p_key) is not null then 'in a summary tree'

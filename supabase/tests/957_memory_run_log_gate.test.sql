@@ -71,7 +71,7 @@ begin
 	perform pg_temp.lg_mode('tree');
 	v_place := pg_temp.lg_place();
 	perform pg_temp.base_assert(not v_place ? 'off' and v_place ->> 'exists' = 'false' and v_place ->> 'gone' = 'false'
-		and v_place ->> 'path' = 'qorperaos/agents/alice/memory/thread/runs/' || v_run.id
+		and v_place ->> 'path' = 'QorperaOS/agents/alice/memory/thread/runs/' || v_run.id
 		and v_place #>> '{origin,conversation}' = v_run.session_id::text,
 		'a beta run is placed in its conversation''s tree: ' || v_place::text);
 	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"off":true}'::jsonb,
@@ -100,7 +100,7 @@ begin
 		raise exception 'undo the room' using errcode = 'QG957';
 	exception when sqlstate 'QG957' then null;
 	end;
-	perform pg_temp.base_assert(pg_temp.lg_place() ->> 'path' = 'qorperaos/agents/alice/memory/thread/runs/' || v_run.id,
+	perform pg_temp.base_assert(pg_temp.lg_place() ->> 'path' = 'QorperaOS/agents/alice/memory/thread/runs/' || v_run.id,
 		'the room is back: ' || pg_temp.lg_place()::text);
 	perform pg_temp.lg_mode('notebooks');
 end
