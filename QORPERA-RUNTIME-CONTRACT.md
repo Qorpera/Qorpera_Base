@@ -1939,6 +1939,9 @@ named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
 `description` (what the skill does and when to use it) and whose Markdown body
 holds the steps. Supporting files such as templates or scripts may sit beside
 it. A name is lowercase words joined by hyphens, at most 64 characters.
+`readme` is not a skill name: `skills/README.md` says what the folder is for
+(5.6), and a folder's key ignores case, so no skill is read, listed or written
+under that name (added with the folders' READMEs, 21 October 2026).
 
 Two libraries, both ordinary versioned Company File objects:
 
