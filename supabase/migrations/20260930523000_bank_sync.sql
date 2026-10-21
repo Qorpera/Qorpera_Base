@@ -261,9 +261,9 @@ grant execute on function public.qorpera_record_bank_transactions(uuid, text, uu
 	to qorpera_secret_broker;
 
 -- The end of a leased sync (this claim's lease only):
--- - current: a new summary; due again in six hours. What the fetch covered decides the next one: after a
---   whole history ('deep') or the weeks since the newest kept day ('since') the next reads from there; a
---   fetch that ran out of pages ('incomplete') leaves the next one deep again.
+-- - current: a new summary; due again in six hours. After the whole history ('deep') the next fetch reads
+--   only the weeks since the newest kept day ('since'). A fetch that did not reach the bank's last page is a
+--   failure (the vault keeps what it brought and publishes nothing), so the next one is deep again.
 -- - ended: the bank's consent ended; the summary kept is marked paused from today (the Bank page says
 --   so), and nothing is due until the member connects again.
 -- - failed: offered again after 15 minutes, doubling to six hours; the summary kept is unchanged.
@@ -295,7 +295,7 @@ declare
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
 	if p_outcome is null or p_outcome not in ('current', 'ended', 'failed')
-		or p_fetch is null or p_fetch not in ('deep', 'since', 'incomplete')
+		or p_fetch is null or p_fetch not in ('deep', 'since')
 		or (p_outcome = 'current' and p_summary is null)
 		or (p_outcome <> 'current' and p_summary is not null)
 		or (p_outcome = 'failed' and v_error is null)
@@ -329,8 +329,7 @@ begin
 		lease_id = null,
 		attempts = case when p_outcome = 'failed' then v_sync.attempts else 0 end,
 		last_error = case when p_outcome = 'failed' then v_error end,
-		deep_done = case when p_outcome <> 'current' then v_sync.deep_done
-			when p_fetch = 'deep' then true when p_fetch = 'incomplete' then false else v_sync.deep_done end,
+		deep_done = v_sync.deep_done or (p_outcome = 'current' and p_fetch = 'deep'),
 		consent_until = coalesce(p_consent_until, v_sync.consent_until),
 		fetched_at = case when p_outcome = 'failed' then v_sync.fetched_at else v_now end,
 		summary = coalesce(v_summary, v_sync.summary),

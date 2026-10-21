@@ -1,7 +1,7 @@
 -- The company bank connection, part 2 (migration 20260930523000): the vault's bank sync follows the company's bank
 -- secret, is claimed by the company's own authority, keeps booked transactions once each, records the summary, backs
--- off after a failure, marks the summary paused when the consent ends, starts over (deep) on a connect-again and after
--- an incomplete fetch, refuses a late answer from an earlier claim, and stops on a Disconnect, which also queues the
+-- off after a failure, marks the summary paused when the consent ends, starts over (deep) on a connect-again, refuses
+-- a late answer from an earlier claim, and stops on a Disconnect, which also queues the
 -- session's close at Enable Banking (as does a company's deletion). The shared vault asks which of its companies are
 -- due. Nothing else reaches the tables.
 begin;
@@ -218,8 +218,7 @@ begin
 		'69100000-0000-4000-8000-0000000000e1', 1, 'failed', null, null)$q$, '22023');
 end $$;
 
--- 5b. A claim whose lease ran out cannot answer once another claim holds the sync; a fetch that ran out of pages
--- leaves the next fetch deep again.
+-- 5b. A claim whose lease ran out cannot answer once another claim holds the sync.
 select pg_temp.past();
 do $$
 declare
@@ -237,15 +236,12 @@ begin
 		'69100000-0000-4000-8000-0000000000e1', 1, jsonb_build_array(repeat('a', 64)), '[]', %L)$q$, v_first), '55000');
 	perform pg_temp.check((pg_temp.sync()).lease_id = v_second, 'the earlier claim left the lease alone');
 	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
-		'current', pg_temp.summary(2000), null, 'incomplete');
-	perform pg_temp.check(not (pg_temp.sync()).deep_done and (pg_temp.sync()).summary_generation = 2
-		and (pg_temp.sync()).lease_id is null, 'an incomplete fetch: ' || v::text);
-	perform pg_temp.past();
-	v := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64));
-	perform pg_temp.check((v ->> 'deep')::boolean and v -> 'since' = 'null'::jsonb, 'deep again after an incomplete fetch: ' || v::text);
-	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
-		'current', pg_temp.summary(1000), null, 'deep');
-	perform pg_temp.check((pg_temp.sync()).deep_done and (pg_temp.sync()).summary_generation = 3, 'deep once more');
+		'current', pg_temp.summary(1000), null, 'since');
+	perform pg_temp.check((pg_temp.sync()).summary_generation = 2 and (pg_temp.sync()).lease_id is null
+		and ((pg_temp.sync()).summary ->> 'saldo')::integer = 1000, 'the current claim answers: ' || v::text);
+	perform pg_temp.refused($q$select pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64),
+		'69100000-0000-4000-8000-0000000000e1', 1, 'current', pg_temp.summary(1), null, 'incomplete',
+		'69100000-0000-4000-8000-0000000000f0')$q$, '22023');
 end $$;
 
 -- 6. After the deep fetch, a fetch starts two weeks before the newest booked day; a failure keeps the summary and
@@ -259,7 +255,7 @@ begin
 		'failed', null, 'the bank asked us to wait', 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'current' and (pg_temp.sync()).last_error = 'the bank asked us to wait'
 		and (pg_temp.sync()).due_at between clock_timestamp() + interval '14 minutes' and clock_timestamp() + interval '15 minutes'
-		and (pg_temp.sync()).summary_generation = 3, 'a failure backs off and keeps the summary');
+		and (pg_temp.sync()).summary_generation = 2, 'a failure backs off and keeps the summary');
 end $$;
 
 -- 7. An ended consent marks the kept summary paused from today and stops until the member connects again.
@@ -271,7 +267,7 @@ begin
 		'ended', null, null, 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'ended' and (pg_temp.sync()).due_at is null
 		and (pg_temp.sync()).summary ->> 'pausedSince' = to_char(current_date, 'YYYY-MM-DD')
-		and (pg_temp.sync()).summary_generation = 4, 'ended: ' || to_jsonb(pg_temp.sync())::text);
+		and (pg_temp.sync()).summary_generation = 3, 'ended: ' || to_jsonb(pg_temp.sync())::text);
 	perform pg_temp.check(pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64)) is null, 'nothing due when ended');
 end $$;
 

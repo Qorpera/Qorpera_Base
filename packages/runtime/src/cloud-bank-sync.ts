@@ -43,8 +43,7 @@ export interface BankSyncAuthority {
 			outcome: "current" | "ended" | "failed";
 			summary: BankSummaryFile | null;
 			consentUntil: string | null;
-			/** What the fetch covered: the whole history (`deep`), from the claim's day (`since`), or less than the
-			 * bank had (`incomplete`, so the next fetch is deep again). */
+			/** What a current fetch covered: the whole history (`deep`) or the weeks from the claim's day (`since`). */
 			fetch: BankFetchCover;
 			error: string | null;
 		},
@@ -65,7 +64,7 @@ export interface KeptBankTransaction {
 
 export type BankSyncOutcome = "idle" | "current" | "ended" | "failed";
 
-export type BankFetchCover = "deep" | "since" | "incomplete";
+export type BankFetchCover = "deep" | "since";
 
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -78,9 +77,11 @@ const DATABASE_DEADLINE_MS = 10_000;
 /** The whole fetch: every account's balances and transaction pages. */
 const FETCH_DEADLINE_MS = 4 * 60_000;
 const PASS_EVERY_MS = 60_000;
-/** Transaction pages per account: a deep fetch reads far back once, a later fetch only some weeks. */
-const DEEP_PAGES = 250;
-const SINCE_PAGES = 40;
+/** Transaction pages per account, only as a guard against a bank that never ends its pages: a fetch reads to the
+ * bank's last page, and one that does not get there (this guard, or the fetch's deadline) publishes nothing. */
+const PAGES = 1000;
+/** Booked transactions per call that keeps them (SQL takes at most 20000). */
+const RECORD_BATCH = 5000;
 
 interface Claim {
 	readonly companyId: string;
@@ -283,7 +284,6 @@ export class CloudBankSyncs {
 			summary: BankSummaryFile | null,
 			consentUntil: string | null,
 			error: string | null,
-			fetch: BankFetchCover = claim.deep ? "deep" : "since",
 		) =>
 			// Recorded even when the pass is closing: the bank has been asked.
 			this.#authority.finishBankSync(
@@ -294,7 +294,7 @@ export class CloudBankSyncs {
 					outcome,
 					summary,
 					consentUntil,
-					fetch,
+					fetch: claim.deep ? "deep" : "since",
 					error,
 				},
 				AbortSignal.timeout(DATABASE_DEADLINE_MS),
@@ -312,30 +312,40 @@ export class CloudBankSyncs {
 		}
 		const consentUntil = fetched.validUntil && TIMESTAMP.test(fetched.validUntil) ? fetched.validUntil : null;
 		try {
-			const kept = parseKept(
-				await this.#authority.recordBankTransactions(
+			const booked: KeptBankTransaction[] = fetched.accounts.flatMap((account) => {
+				const accountBooked = account.transactions.filter((transaction) => transaction.status === "BOOK");
+				const keys = bankTransactionKeys(account.key, accountBooked);
+				return accountBooked.map((transaction, index) => ({
+					accountKey: account.key,
+					key: keys[index] as string,
+					date: transaction.date,
+					amount: transaction.amount,
+					currency: transaction.currency,
+					counterparty: transaction.counterparty,
+					text: transaction.text,
+				}));
+			});
+			// Kept in batches; each answer is everything kept so far, so the last one is the summary's.
+			let answer: unknown;
+			for (let start = 0; start === 0 || start < booked.length; start += RECORD_BATCH) {
+				answer = await this.#authority.recordBankTransactions(
 					{
 						secretId: claim.secretId,
 						version: claim.version,
 						lease: claim.lease,
 						accountKeys: fetched.accounts.map((account) => account.key),
-						transactions: fetched.accounts.flatMap((account) => {
-							const booked = account.transactions.filter((transaction) => transaction.status === "BOOK");
-							const keys = bankTransactionKeys(account.key, booked);
-							return booked.map((transaction, index) => ({
-								accountKey: account.key,
-								key: keys[index] as string,
-								date: transaction.date,
-								amount: transaction.amount,
-								currency: transaction.currency,
-								counterparty: transaction.counterparty,
-								text: transaction.text,
-							}));
-						}),
+						transactions: booked.slice(start, start + RECORD_BATCH),
 					},
 					AbortSignal.timeout(DATABASE_DEADLINE_MS),
-				),
-			);
+				);
+			}
+			// What a fetch that did not reach the bank's last page brought is kept, but no summary is made of it: it
+			// would understate the history. The summary stays as it was, and the sync is tried again later.
+			if (!fetched.complete) {
+				await finish("failed", null, consentUntil, "the bank's history did not fit in one fetch");
+				return "failed";
+			}
+			const kept = parseKept(answer);
 			const payTo =
 				fetched.accounts
 					.filter((account) => (account.account.currency ?? "DKK") === "DKK")
@@ -365,9 +375,7 @@ export class CloudBankSyncs {
 					],
 				})),
 			});
-			// A fetch that ran out of pages before the bank's end summarizes what it has, and the next fetch reads the
-			// whole history again instead of only the weeks after the newest day kept.
-			await finish("current", summary, consentUntil, null, fetched.complete ? undefined : "incomplete");
+			await finish("current", summary, consentUntil, null);
 			return "current";
 		} catch {
 			await finish("failed", null, consentUntil, "the bank data could not be kept or summarized");
@@ -402,7 +410,7 @@ export class CloudBankSyncs {
 								account.uid,
 								claim.deep ? null : claim.since,
 								signal,
-								claim.deep ? DEEP_PAGES : SINCE_PAGES,
+								PAGES,
 							);
 							complete &&= fetchedTransactions.complete;
 							accounts.push({
