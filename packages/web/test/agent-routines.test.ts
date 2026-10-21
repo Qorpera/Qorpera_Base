@@ -1555,10 +1555,7 @@ describe("a new routine's file (P34r)", () => {
 		});
 		const f = writer(fake);
 		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
-		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([
-			[["write", WEEKLY]],
-			[["write", WEEKLY_2]],
-		]);
+		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([[["write", WEEKLY]], [["write", WEEKLY_2]]]);
 		expect(fake.commits[1]!.operationKey).not.toBe(fake.commits[0]!.operationKey);
 		expect(parsed(fake.text(WEEKLY), WEEKLY).id).toBe(OTHER_FILE);
 		expect(parsed(fake.text(WEEKLY_2), WEEKLY_2).id).toBe(newDraft().clientRoutineId);
