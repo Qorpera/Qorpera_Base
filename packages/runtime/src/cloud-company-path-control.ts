@@ -81,6 +81,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
 			"qorpera_read_company_run_context",
+			"qorpera_read_company_run_card",
 			"qorpera_record_native_context_view",
 			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",

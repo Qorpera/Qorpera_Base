@@ -1,11 +1,16 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
+/** How an agent links a file of the company folder in a message: a markdown link whose target is `folder:` and the
+ * file's company path, which the app opens in the folder's view (21 October 2026). */
+export const CLOUD_FOLDER_LINK_EXAMPLE = "[sales-dashboard.html](folder:designs/sales-dashboard.html)";
 export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	"send_message sends a message to this conversation. It is your only public voice: ordinary assistant text, reasoning, tool calls and tool results stay private. " +
 	"phase progress keeps people informed and does not end your turn. When the reply policy asks you to acknowledge a request, do it with one short progress message before you start work, and never acknowledge twice in the same run. " +
-	"phase final delivers this turn's result, a concrete blocker or a decision request, even if the underlying task continues later, and it ends the turn at once: " +
-	"nothing after it runs, so finish every Company File change, check and coworker message before it. " +
+	"phase final delivers this turn's result, a concrete blocker or a decision request, and it ends the turn at once: " +
+	"nothing after it runs, so finish every file change, check and coworker message before it. " +
+	"Never end with a promise such as I'll do it: say what is done and where it is, and when work goes on after the turn, what runs it (a worker, or a todo behind it). " +
+	`Link a file you made or changed in the company folder as a markdown link to folder: and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}. ` +
 	"If a send's result was lost, retry with the same idempotencyKey and exactly the same arguments. Never include private reasoning or credentials.";
 
 export interface CloudAgentSendInput {

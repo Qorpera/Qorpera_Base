@@ -6,6 +6,8 @@ const STAGES = [
 	"wake-envelope",
 	"connector-tools",
 	"prompt-composition",
+	// A coding session's turn, which runs in its own composition (21 October 2026).
+	"coding-session",
 	"native-tools",
 	"public-completion",
 	"codex-artifact",
