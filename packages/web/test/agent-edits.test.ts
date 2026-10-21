@@ -119,11 +119,14 @@ describe("agent edit reconciliation", () => {
 });
 
 describe("a figure being saved", () => {
-	const gold = "#e8b84a";
-	const coral = "#d9534f";
+	// The palette's real hex, as the roster's `qorpera-<colour>` names resolve to them.
+	const gold = "#fcb51b";
+	const coral = "#ff365e";
+	const heartShade = "#ff2994";
 
 	function railSetup(update: NonNullable<WorkspaceActions["updateAgent"]>) {
 		const mount = stubFigureMotion();
+		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [{ id: "heart", color: heartShade }] });
 		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", {
 			palette: [
 				{ name: "Gold", color: gold },
@@ -151,21 +154,26 @@ describe("a figure being saved", () => {
 		return { ...f, drawn };
 	}
 
-	it("shows in the rail at once and leaves once the roster has it", async () => {
+	it.each([
+		["a palette colour, saved as its name", gold, "qorpera-gold"],
+		["the figure's own shade, saved as no colour", heartShade, ""],
+	])("shows %s in the rail at once and keeps the row once the roster has it", async (_case, picked, stored) => {
 		const write = deferred<number>();
 		const f = railSetup(vi.fn<NonNullable<WorkspaceActions["updateAgent"]>>().mockReturnValueOnce(write.promise));
-		f.company.store.set({ staff: [{ ...staff, appearance: { color: coral, shape: "circle", creature: "crown" } }] });
+		f.company.store.set({
+			staff: [{ ...staff, appearance: { color: "qorpera-coral", shape: "circle", creature: "crown" } }],
+		});
 		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
 
-		f.edits.change({ figure: "heart", color: gold });
+		f.edits.change({ figure: "heart", color: picked });
 		await settle();
-		expect(f.company.store.get().looks?.[staff.id]).toEqual({ figure: "heart", color: gold });
-		expect(f.drawn()).toEqual([{ figure: "heart", color: gold }]);
+		expect(f.company.store.get().looks?.[staff.id]).toEqual({ figure: "heart", color: picked });
+		expect(f.drawn()).toEqual([{ figure: "heart", color: picked }]);
 
 		const saved = {
 			...staff,
 			version: staff.version + 1,
-			appearance: { color: gold, shape: "circle", creature: "heart" },
+			appearance: { color: stored, shape: "circle", creature: "heart" },
 		};
 		vi.mocked(f.api.listStaff).mockResolvedValue([saved]);
 		write.resolve(saved.version);
@@ -183,7 +191,9 @@ describe("a figure being saved", () => {
 				.mockRejectedValueOnce(new Error("offline"))
 				.mockReturnValue(new Promise(() => {})),
 		);
-		f.company.store.set({ staff: [{ ...staff, appearance: { color: coral, shape: "circle", creature: "crown" } }] });
+		f.company.store.set({
+			staff: [{ ...staff, appearance: { color: "qorpera-coral", shape: "circle", creature: "crown" } }],
+		});
 		f.edits.change({ color: gold });
 		await settle();
 		expect(f.edits.store.get().failed).toBe(true);
@@ -193,8 +203,10 @@ describe("a figure being saved", () => {
 		void f.edits.save();
 		await settle();
 		expect(f.company.store.get().looks?.[staff.id]).toEqual({ figure: "crown", color: gold });
+		expect(f.drawn()).toEqual([{ figure: "crown", color: gold }]);
 		f.edits.dispose();
 		await settle();
 		expect(f.company.store.get().looks?.[staff.id]).toBeUndefined();
+		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
 	});
 });
