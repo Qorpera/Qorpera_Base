@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
+import { COMPANY_STATE_SEEDED_PATHS, isCompanyFolderReadme } from "@qorpera/cloud-client/company-state-files";
 import { folderKey } from "@qorpera/contracts";
 import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
@@ -208,7 +208,8 @@ function checkMove(from: string, to: string): void {
 	checkRemovable(from);
 	const source = folderKey(from);
 	const target = folderKey(to);
-	const agent = (key: string) => /^agents\/[^/]+$/.test(key) && key !== "agents/groups";
+	// agents/README.md is a note, not an agent's folder.
+	const agent = (key: string) => /^agents\/[^/]+$/.test(key) && key !== "agents/groups" && !isCompanyFolderReadme(key);
 	const group = (key: string) => /^agents\/groups\/[^/]+$/.test(key);
 	if ((agent(source) && !agent(target)) || (group(source) && !group(target)))
 		fail(ErrorCode.notPermitted, "An agent's or group's folder stays in its place");

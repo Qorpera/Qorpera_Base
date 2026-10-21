@@ -16,7 +16,7 @@ import {
 	writeTodoFile,
 	writeVisionFile,
 } from "@qorpera/cloud-client/company-state-files";
-import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
+import { interfaceLibraryFiles, NUMBERS_TABLE } from "@qorpera/cloud-client/interface-library";
 import { type InterfaceFile, parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
@@ -265,13 +265,14 @@ function bare(text: string): FolderFake {
 	return fake;
 }
 
-/** A folder seeded as at founding, with the company's own files and `rows` in the numbers table, and `text` as the
- * page under test. */
+/** A folder seeded as at founding, with the company's own files and `rows` in a numbers table it made (founding seeds
+ * none since 21 October 2026), and `text` as the page under test. */
 function seeded(rows: string, text: string): FolderFake {
 	const fake = folderFake({ seed: [] });
 	let next = 500;
 	for (const [path, file] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, file);
 	companyFiles(fake);
+	fake.put("tables/numbers/table.toml", NUMBERS_TABLE);
 	fake.put("tables/numbers/rows.csv", rows);
 	pageOf.set(fake, parsed(text));
 	return fake;

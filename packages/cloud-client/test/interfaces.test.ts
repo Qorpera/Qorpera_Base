@@ -165,12 +165,14 @@ k = {}
 });
 
 describe("interface files", () => {
-	it("parses the library's three interfaces and their tables", () => {
+	it("parses the library's interfaces and tables, and the examples no company is seeded with", () => {
+		expect(INTERFACE_LIBRARY.map((entry) => entry.name)).toEqual(["mailbox", "members"]);
 		for (const entry of INTERFACE_LIBRARY) {
 			const page = parseInterfaceFile(entry.interface);
 			expect(page.problems, entry.name).toEqual([]);
 			for (const text of Object.values(entry.tables)) expect(parseTableFile(text).problems).toEqual([]);
 		}
+		for (const text of [NUMBERS_TABLE, CARDS_TABLE]) expect(parseTableFile(text).problems).toEqual([]);
 		const pulse = parseInterfaceFile(PULSE_INTERFACE);
 		if (!pulse.ok) throw new Error("pulse");
 		expect(pulse.file.main).toBe(true);
@@ -417,6 +419,13 @@ describe("paths and order", () => {
 		expect(interfacePathProblems("tables/numbers")).toEqual([]);
 		expect(interfacePathProblems("tables/numbers/README.md")).toEqual([]);
 		expect(interfacePathProblems("work/anything.csv")).toEqual([]);
+		// Each root's own README.md, spelled README.md or readme.md (20260930526000).
+		for (const path of ["interfaces/README.md", "interfaces/readme.md", "tables/README.md", "Tables/readme.md"])
+			expect(interfacePathProblems(path), path).toEqual([]);
+		expect(interfacePathProblems("tables/ReadMe.md")).toHaveLength(1);
+		expect(interfacePathProblems("interfaces/notes.md")[0]?.message).toBe(
+			"Under interfaces/ go README.md, order.md and one folder per interface, with interface.toml and an optional README.md.",
+		);
 	});
 
 	it("reads and writes interfaces/order.md", () => {
@@ -433,26 +442,27 @@ describe("paths and order", () => {
 		]);
 	});
 
-	it("seeds the library with fresh ids and empty rows files", () => {
+	it("seeds Mailbox, Members and the areas table with fresh ids and an empty rows file", () => {
 		let n = 0;
 		const files = interfaceLibraryFiles(() => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`);
+		// No Pulse, numbers or cards since 21 October 2026.
 		expect(Object.keys(files).sort()).toEqual([
 			"interfaces/mailbox/interface.toml",
 			"interfaces/members/interface.toml",
 			"interfaces/order.md",
-			"interfaces/pulse/interface.toml",
 			"tables/areas/rows.csv",
 			"tables/areas/table.toml",
-			"tables/cards/rows.csv",
-			"tables/cards/table.toml",
-			"tables/numbers/rows.csv",
-			"tables/numbers/table.toml",
 		]);
-		const pulse = parseInterfaceFile(files["interfaces/pulse/interface.toml"] ?? "");
-		expect(pulse.ok && pulse.file.id).toBe("00000000-0000-4000-8000-000000000001");
+		const mailbox = parseInterfaceFile(files["interfaces/mailbox/interface.toml"] ?? "");
+		expect(mailbox.ok && mailbox.file.id).toBe("00000000-0000-4000-8000-000000000001");
+		const members = parseInterfaceFile(files["interfaces/members/interface.toml"] ?? "");
+		expect(members.ok && members.file.id).toBe("00000000-0000-4000-8000-000000000002");
 		const order = parseInterfaceOrderFile(files["interfaces/order.md"] ?? "");
-		expect(order.ok && order.file.ids.length).toBe(3);
-		for (const name of ["numbers", "areas", "cards"]) {
+		expect(order.ok && order.file.ids).toEqual([
+			"00000000-0000-4000-8000-000000000001",
+			"00000000-0000-4000-8000-000000000002",
+		]);
+		for (const name of ["areas"]) {
 			const definition = table(files[`tables/${name}/table.toml`] ?? "");
 			const rows = parseTableRows(definition, files[`tables/${name}/rows.csv`] ?? "");
 			expect(rows).toEqual({ rows: [], problems: [], readable: true });

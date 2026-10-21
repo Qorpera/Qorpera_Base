@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createHash } from "node:crypto";
-import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
+import { CARDS_TABLE, interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import type { TableValue } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
@@ -31,8 +31,9 @@ import { type FolderFake, folderFake } from "./folder-fake.ts";
  * drag, through the member's own folder client (folder-fake.ts); its People view reads the members source with a
  * lookup into the areas. Step I9c: an area is offered to another member, and an offer is answered on its card. The
  * page is the one the web ships, switched on (Interfaces C6a); the folder's interfaces/ is never read. Interfaces C6d:
- * the page hides the cards, which the library still seeds; a member adds an area and changes its agents; and a cell
- * that names someone who left stays theirs in the file but counts as empty for the members who stay. */
+ * the page hides the cards, which an older company's folder still holds; a member adds an area and changes its
+ * agents; and a cell that names someone who left stays theirs in the file but counts as empty for the members who
+ * stay. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
 const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada", role: "Bookkeeper" };
@@ -60,7 +61,8 @@ const areaRows = [
 const areas = (...rows: string[]) => `area,about,owner,shared,supervisor,agents\n${rows.join("\n")}\n`;
 /** The seeded areas with Ops's owner cell set to `owner`. */
 const withOps = (owner: string) => areas(...areaRows.slice(0, 3), `Ops,,${owner},no,,`, ...areaRows.slice(4));
-/** The cards founding's library seeds a table for, which the page no longer draws (Interfaces C6d). */
+/** The cards an older company's folder holds (founding seeded the table until 21 October 2026), which the page no
+ * longer draws (Interfaces C6d). */
 const cards = `id,card,area,holder,state,added_by,todo\n${CALL},Call the bank,Sales,,open,,\n${SEND},Send invoices,Sales,${me},held,,\n`;
 
 const cleanup: (() => void)[] = [];
@@ -109,12 +111,13 @@ function company(role: HostedProfileRole = "owner") {
 	return controller;
 }
 
-/** A folder seeded as at founding, with `rows` in the areas table and cards in the cards table. */
+/** A folder seeded as at founding, with `rows` in the areas table, and an older company's cards table with cards. */
 function seeded(rows: string = areas(...areaRows)): FolderFake {
 	const fake = folderFake({ seed: [] });
 	let next = 500;
 	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, text);
 	fake.put(AREAS, rows);
+	fake.put("tables/cards/table.toml", CARDS_TABLE);
 	fake.put(CARDS, cards);
 	return fake;
 }
@@ -1582,7 +1585,7 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 	});
 });
 
-describe("the cards the Members page hides, and the library that still seeds them (Interfaces C6d)", () => {
+describe("the cards the Members page hides, which founding no longer seeds (Interfaces C6d)", () => {
 	it("draws no cards on the board and no lookup of them in the People view, though the folder has them", async () => {
 		const fake = seeded();
 		expect(fake.text(CARDS)).toBe(cards);
@@ -1595,16 +1598,17 @@ describe("the cards the Members page hides, and the library that still seeds the
 		expect(texts(main, ".interface-table thead th")).toEqual(["Name", "Role", "Owns", "Supervises"]);
 	});
 
-	it("still seeds the cards' table that the library's members interface reads, and keeps its bytes", () => {
+	it("seeds no cards table, though the library's members interface still names it, and keeps its bytes", () => {
 		let n = 0;
 		const files = interfaceLibraryFiles(() => id(++n));
-		expect(files["tables/cards/table.toml"]).toBeDefined();
-		expect(files["tables/cards/rows.csv"]).toBeDefined();
+		expect(files["tables/cards/table.toml"]).toBeUndefined();
+		expect(files["tables/cards/rows.csv"]).toBeUndefined();
 		expect(files["interfaces/members/interface.toml"]).toContain('from = "table:cards"');
-		// The hash pins the library's bytes as master has them (C6d changes none).
+		// The hash pins the library's bytes as master has them (C6d changes none; founding stopped seeding Pulse, numbers
+		// and cards on 21 October 2026).
 		const entries = Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1));
 		expect(createHash("sha256").update(JSON.stringify(entries)).digest("hex")).toBe(
-			"7cc5cce55a11255afe7700db9c8c1ee933ab77bec27ab7719b81bf0ad34031d6",
+			"92c05205b748c9df20920f133bcf3fd07ce0eac9bf7204955c81427757dcb0a9",
 		);
 	});
 });
