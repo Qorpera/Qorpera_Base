@@ -46,19 +46,29 @@ agents/sections.md           sidebar sections, in order, with their agents
 agents/<agent-name>/         agent.md, memory/, skills/, routines/, todos/
 agents/groups/<group-name>/  group.md, one folder per group chat
 connections/<connection>.md  one file per connected account, no secrets
+human-tasks/<task>.md        work an agent hands to a member or a contact
+contacts/<contact>.md        one file per outside person or firm
 skills/<skill>/SKILL.md      company skills
 rules/<rule>.md              company review rules, written by owners and admins
+interfaces/                  order.md, mailbox/ and members/: the app's pages
+tables/areas/                table.toml and rows.csv: the company's areas
 ```
+
+Each folder above but `vision/` also holds a `README.md` that says what the
+folder is for, who writes in it, and that the company's own work goes in
+folders of its own. It is an ordinary file, never data, and the company may
+change or delete it (contract 5.6).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts.
 Everything else the company makes goes in folders it creates, one per
-category of files.
+category of files, such as `designs/` or `documents/`.
 
 ## Durable content
 
 The folder must be able to hold and restore the company's durable work:
 
-- the vision, agents, group chats, connections, skills and rules above;
+- the vision, agents, group chats, connections, human tasks, contacts,
+  skills, rules, pages and tables above;
 - shared data files, attachments, generated artifacts and review material;
 - repositories with their shared git directory, branches, worktrees and
   unmerged work (contract, 2026-09-27 amendment "every machine works in the

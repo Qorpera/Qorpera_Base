@@ -9,8 +9,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // Company creation's worker (P14b) against a real database: every migration, a folder-v2 company opened and started
 // as the operator's path does (P14a's open and seed), the object gateway's worker and file store as built, and its
 // RPCs answered by the database as the service role. The worker's seeded tree is the one the creation commit takes:
-// every unit saves, the Co-Founder and its kickoff are written, the company is ready, and every structured file reads
-// back through the shared parser.
+// every unit saves, the Co-Founder and its kickoff are written, the company is ready, every structured file reads
+// back through the shared parser, and each platform folder's README.md is stored as an ordinary file (20260930526000).
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_company_creation";
@@ -65,7 +65,7 @@ async function main() {
 				contents: [
 					'export {CompanyFolderCreator} from "./packages/object-gateway/src/company-folder-creation.ts";',
 					'export {FileSystemObjectStore} from "./packages/object-gateway/src/object-store.ts";',
-					'export {parseCompanyStateFile, companyStateSeedTree} from "./packages/cloud-client/src/company-state-files.ts";',
+					'export {parseCompanyStateFile, companyStateSeedTree, COMPANY_FOLDER_README_ROOTS} from "./packages/cloud-client/src/company-state-files.ts";',
 				].join("\n"),
 			},
 			platform: "node",
@@ -150,20 +150,32 @@ async function main() {
 			from public.qorpera_folder_entries e where e.environment_id = '${environmentId}' and e.kind <> 'claim'`));
 		for (const path of ["vision", "agents", "agents/co-founder", "agents/co-founder/memory", "agents/co-founder/skills",
 			"agents/co-founder/routines", "agents/co-founder/todos", "agents/groups", "connections", "human-tasks", "contacts",
-			"skills", "skills/human-task", "rules", "interfaces", "interfaces/pulse", "tables", "tables/areas"])
+			"skills", "skills/human-task", "rules", "interfaces", "interfaces/mailbox", "interfaces/members", "tables",
+			"tables/areas"])
 			assert.equal(entries[path]?.kind, "folder", `${path} is a folder`);
 		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
 			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/skill.md", "interfaces/order.md",
-			"interfaces/pulse/interface.toml", "tables/areas/table.toml", "tables/areas/rows.csv"])
+			"interfaces/mailbox/interface.toml", "tables/areas/table.toml", "tables/areas/rows.csv",
+			...code.COMPANY_FOLDER_README_ROOTS.map((root) => `${root}/readme.md`)])
 			assert.equal(entries[path]?.kind, "file", `${path} is a file`);
+		// Pulse, its numbers table and the cards table are no longer seeded.
+		for (const path of ["interfaces/pulse", "tables/numbers", "tables/cards"]) assert.equal(entries[path], undefined, path);
+		// Each README is stored as written (README.md) with no parse, and no index takes it.
+		assert.equal(query(`select count(*) from public.qorpera_folder_entries e
+			join public.qorpera_folder_path_versions v on v.version = e.version
+			where e.environment_id = '${environmentId}' and e.kind = 'file' and e.path like '%/README.md'
+				and v.structured is null`), "8");
+		assert.equal(query(`select (select count(*) from public.qorpera_folder_connection_index where environment_id = '${environmentId}')
+			+ (select count(*) from public.qorpera_folder_human_task_index where environment_id = '${environmentId}')
+			+ (select count(*) from public.qorpera_folder_contact_index where environment_id = '${environmentId}')
+			+ (select count(*) from public.qorpera_review_rules where folder_environment_id = '${environmentId}')`), "0");
 		const text = async (key) =>
 			new TextDecoder().decode(await store.get(profileId, entries[key].sha, Number(entries[key].bytes)));
 		// Every file of the seed tree (built as the worker builds it, from the creation's input and ids, and the library's
 		// ids as the stored files carry them, in the order the library draws them) is stored as written, and every
 		// structured one reads back through the parser.
 		const library = [];
-		for (const path of ["interfaces/pulse/interface.toml", "tables/numbers/table.toml", "interfaces/mailbox/interface.toml",
-			"interfaces/members/interface.toml", "tables/areas/table.toml", "tables/cards/table.toml"]) {
+		for (const path of ["interfaces/mailbox/interface.toml", "interfaces/members/interface.toml", "tables/areas/table.toml"]) {
 			const parsed = code.parseCompanyStateFile(path, await text(path));
 			assert(parsed?.ok, `${path} parses`);
 			library.push(parsed.file.id);
