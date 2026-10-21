@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { tagNativeRuntimeFailure } from "../src/cloud-native-failure.ts";
 import { nativeProviderFailureCode } from "../src/cloud-native-provider-service.ts";
-import { cloudRunnerJobFailureIsRetryable } from "../src/cloud-runner-worker.ts";
+import {
+	cloudRunnerJobFailureBeforeStartIsRetryable,
+	cloudRunnerJobFailureIsRetryable,
+} from "../src/cloud-runner-worker.ts";
 
 describe("the fixed code a failed native execution carries back", () => {
 	it("keeps an error's own fixed code, also when the runtime tagged its stage", () => {
@@ -87,5 +90,30 @@ describe("the runner's retry decision", () => {
 			["Native provider response is invalid", false],
 		] as const)
 			expect(cloudRunnerJobFailureIsRetryable(new Error(message))).toBe(retryable);
+	});
+
+	it("tries again only a timeout before the run started: its context, wake, connectors or prompt", () => {
+		for (const stage of ["company-context", "wake-envelope", "connector-tools", "prompt-composition"] as const)
+			expect(
+				cloudRunnerJobFailureBeforeStartIsRetryable(
+					new Error(
+						`Native provider bridge request failed (422) [code=${nativeProviderFailureCode(tagNativeRuntimeFailure(new Error("late"), stage, "timeout"))}]`,
+					),
+				),
+			).toBe(true);
+		for (const message of [
+			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE]",
+			"Native provider bridge request failed (422) [code=NATIVE_NATIVE_TOOLS:TIMEOUT]",
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TIMEOUT]",
+			"Native provider bridge request failed (422) [code=NATIVE_CODING_SESSION:TIMEOUT]",
+			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT] trailing",
+			"NATIVE_PROMPT_COMPOSITION:TIMEOUT",
+		])
+			expect(cloudRunnerJobFailureBeforeStartIsRetryable(new Error(message))).toBe(false);
+		expect(cloudRunnerJobFailureBeforeStartIsRetryable("[code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]")).toBe(false);
+		// A coding session's turn names its own stage, never the prompt's.
+		expect(nativeProviderFailureCode(tagNativeRuntimeFailure(new Error("late"), "coding-session", "timeout"))).toBe(
+			"NATIVE_CODING_SESSION:TIMEOUT",
+		);
 	});
 });

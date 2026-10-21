@@ -56,6 +56,7 @@ import {
 	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
+	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
@@ -334,11 +335,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			stage = "wake-envelope";
 			const wake = parseCloudWakeEnvelope(await wakeRequest, context.identity);
 			// A coding session's turn is its own composition: three command tools in
-			// the credential-free repository VM and two ways to end the turn.
+			// the credential-free repository VM and two ways to end the turn. Its failures name their own stage, so a
+			// timeout in a turn is never taken for one in composing a run's prompt, which the runner retries.
 			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
 				if (!this.#coding)
 					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
-				stage = "prompt-composition";
+				stage = "coding-session";
 				composition.finish("succeeded", { outputBytes: 0 });
 				return await this.#coding.execute(request, identityRoot, signal, {
 					binding,
@@ -347,6 +349,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					observability,
 				});
 			}
+			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
+			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
+			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
+			roomRequest.catch(() => undefined);
 			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
@@ -522,6 +528,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						: null;
 					openingSignal.throwIfAborted();
 					const head = composeCloudAgentHead(context, vision, memory);
+					const request = await roomRequest;
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
 					const views = view?.views ?? "";
 					const prompt = composeCloudNativeCompanyPrompt(
@@ -534,6 +541,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						proposals?.context,
 						head,
 						view?.tree,
+						request,
 					);
 					// The run's context is its head and views (in the developer instructions) and its context message, hashed
 					// together.

@@ -5797,6 +5797,78 @@ the proofs and the list of documents, is
      is missing is not a failed core test.
    - Reports keep four things apart: scope recorded, work reassigned, behavior built and behavior verified.
 
+### 2026-10-21 amendment: how agents start work and use the company folder
+
+> **Built, not live.** The runtime part goes live with the next release cut. Jonas approved the proposal on
+> 21 October 2026: "Layout A. HTML opens live in the app: yes. The rules are OK. Go ahead and build it." The web app
+> and the seeded company folder change in their own PRs; §5.6's tree is theirs.
+
+On 21 October a founder asked the Co-Founder to prototype a sales dashboard. The page ended up in a worker's own
+folder. The worker's report never reached him: the run that carried it timed out composing its prompt and was not
+tried again. The first reply also guessed an answer in the message that asked the question. This amendment says how
+an agent starts work and where the results go.
+
+1. **Rules for starting work.** Every staff agent's instructions say how to do what was asked:
+   - a question: answer in chat, reading the company folder first when the answer is there;
+   - one file (a page, a document, a plan, a prototype, an HTML mockup): write it at once with the file tools, in
+     the folder where it belongs, and link it in the reply;
+   - bigger or longer work, or many files: a worker, which saves straight into the folder where the results belong
+     (item 4), and the agent posts the links when it reports;
+   - work that needs commands (converting files, running code, spreadsheets): the company's computer or a machine,
+     saving the result in the company folder;
+   - a real code project: a coding session. Its work is under `code/`, and it is the only case that needs a
+     repository.
+
+   Every agent also follows these rules:
+   - Look before making anything: list the folder and reuse what fits.
+   - Name a folder for a kind of thing (`designs/`, `documents/`), never for a team (`growth/`) or one task.
+   - Ask only when the answer changes what happens. Never guess the answer in the message that asks; an
+     `ask_member` card's text only introduces the card.
+   - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
+     it).
+   - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 and keeps its
+     onboarding role for new companies.
+   - A file the member asked for is the work, not an extra.
+   - HTML pages and prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from
+     the network). Members open them live in the app.
+
+   The instructions name the platform's top-level folders once, one line each: `vision/`, `agents/`, `rules/`,
+   `connections/`, `skills/`, `contacts/`, `human-tasks/`, `interfaces/`, `tables/` and `code/`. Everything else is
+   the company's own work, in category folders the agents create. The constitution is v3. Its law 2 now says
+   "company folder" where it said "Company File". Its law 6 no longer names public websites, because web search is
+   off; the company's browser reaches them.
+2. **Links to files.** An agent links a file it made or changed as a markdown link to `folder:` and the file's
+   company path, such as `[sales-dashboard.html](folder:designs/sales-dashboard.html)`. The web app opens it in the
+   folder's view.
+3. **A post is the request.** A run woken by a post in a conversation gets the post its wake names as `request` in
+   its context. For a card answer, it also gets the card the answer is for. Each is read in full, up to one 16 KiB
+   page, and the history no longer repeats the post. A page that cannot be read leaves the history's 2 KiB excerpt,
+   which `read_context` reads on from. No SQL changes.
+4. **Workers save into the real folder.** `manage_worker` dispatch takes `saveTo`, a company folder such as
+   `designs/`, and only with write access. The brief's context then says where the finished files belong. The worker
+   saves them there and lists them in its report. The folder core already lets a writing worker write wherever its
+   agent and member may, so no SQL changes. Review by path is unchanged. Without `saveTo`, a worker saves in its own
+   folder, as before.
+5. **File tools.** These apply in every run, chat, worker and routine alike:
+   - `company_read` asks for up to 8 KiB a call and shows as much as fits one tool result. The result fence stays at
+     8 KiB: the patched Codex pins it, and the run log and context views check it. Raising it needs a Codex rebuild
+     and a migration.
+   - `company_write` takes up to 512 KiB of text. A tool may raise its own argument bound to 960 KiB, which stays
+     below the native session's 1 MiB message.
+   - `company_edit` replaces one exact span, found once in the file at the version the agent read.
+   - `company_move` moves or renames a file, link or folder in one move unit. The folder core reviews it as a
+     deletion. Migration `20260930525000` adds it to the review recorder, and adds both tools to the observation
+     vocabulary.
+6. **Search.** `company_search` is offered whenever the host has the node's folder search. On the shared execution
+   host that is off until the coordinator switches it on (`QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, with the
+   node's folder service), so no chat run had it. No code changes.
+7. **A composition timeout is tried again.** A run can time out reading its context, wake or connectors, or
+   composing its prompt (`NATIVE_COMPANY_CONTEXT`, `NATIVE_WAKE_ENVELOPE`, `NATIVE_CONNECTOR_TOOLS` or
+   `NATIVE_PROMPT_COMPOSITION` with `TIMEOUT`). Such a run failed before its start was recorded, so the runner now
+   reports the failure as retryable. The database queues it again only while nothing of the attempt is durable and
+   fewer than eight attempts were made, as for any retryable failure. A coding session's turn now names its own stage
+   (`coding-session`), so its timeouts are never taken for these. Each call keeps its 5-second bound.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

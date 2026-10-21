@@ -278,7 +278,7 @@ it("fails a coding turn whose model ends with text and no submission with its ow
 	// The throw point: the end of the coding runtime's turn, after the native session returned.
 	expect(failure).toBeInstanceOf(Error);
 	expect((failure as Error).message).toBe("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
-	expect(nativeRuntimeFailureMetadata(failure)).toMatchObject({ stage: "prompt-composition", category: "unknown" });
+	expect(nativeRuntimeFailureMetadata(failure)).toMatchObject({ stage: "coding-session", category: "unknown" });
 	expect(nativeProviderFailureCode(failure)).toBe("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
 	// The model's turn itself succeeded, and nothing was submitted.
 	expect(
@@ -338,7 +338,7 @@ it("carries CODING_TURN_ENDED_WITHOUT_SUBMISSION to the runner through the host'
 			/^Native provider bridge request failed \(422\) \[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION\]$/,
 		);
 		expect(logged).toHaveBeenCalledWith(
-			"Native provider request rejected: Native provider execution failed (stage=prompt-composition, category=unknown) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+			"Native provider request rejected: Native provider execution failed (stage=coding-session, category=unknown) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
 		);
 		expect(logged.mock.calls.flat().join("\n")).not.toMatch(/PRIVATE_|SYNTHETIC_NATIVE_SECRET/);
 	} finally {

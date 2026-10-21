@@ -20,6 +20,7 @@ import {
 	CloudToolRefusal,
 	type CloudToolResult,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
+	MAX_TOOL_ARGUMENT_BYTES,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { describe, expect, it, vi } from "vitest";
 
@@ -132,6 +133,28 @@ describe("cloud-owned native tool boundary", () => {
 		expect(response.success).toBe(false);
 		expect(result).toMatchObject({ status: "denied", content: { text: "INVALID_ARGUMENTS" } });
 		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("lets a tool that carries a file's text take arguments past 64 KiB, up to its own bound", async () => {
+		const text = "a".repeat(300 * 1024);
+		// Every other tool keeps the 64 KiB bound.
+		const plain = fixture();
+		expect((await plain.call("call_1", { path: text })).result).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS" },
+		});
+		expect(plain.execute).not.toHaveBeenCalled();
+		const large = fixture({ maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES });
+		expect((await large.call("call_1", { path: text })).result).toMatchObject({ status: "ok" });
+		expect(large.execute).toHaveBeenCalledWith({ path: text }, expect.anything());
+		expect((await large.call("call_2", { path: "a".repeat(MAX_TOOL_ARGUMENT_BYTES) })).result).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS" },
+		});
+		// The bound stays below the native session's 1 MiB message, and a tool cannot raise it further or lower it.
+		expect(MAX_TOOL_ARGUMENT_BYTES).toBeLessThan(1024 * 1024);
+		for (const maxArgumentBytes of [MAX_TOOL_ARGUMENT_BYTES + 1, 1024, 1.5])
+			expect(() => fixture({ maxArgumentBytes })).toThrow("Invalid cloud tool registration");
 	});
 
 	it("passes a parser's own refusal wording to the model, and nothing from any other parser error", async () => {

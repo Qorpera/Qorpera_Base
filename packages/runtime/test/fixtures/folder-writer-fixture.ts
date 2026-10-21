@@ -326,6 +326,46 @@ export async function folderWriterFixture(
 					units,
 				});
 				const results = units.map((unit, index) => {
+					// A move, as SQL's: the source at its version (a folder as of the listing that read it), the target free in
+					// a folder that exists, and its review (an in-house run's move is a deletion, C1B §6); a folder moves with
+					// everything in it.
+					if (unit.op === "move") {
+						const from = unit.from as string;
+						const to = unit.to as string;
+						const moved = { unit: index + 1, op: "move", path: from, to };
+						if (folders.has(from)) {
+							if (folderVersion(from) !== unit.expectedVersion)
+								return { ...moved, outcome: "conflict", reason: "version_changed" };
+							if (unit.asOfSeq === undefined)
+								return { ...moved, outcome: "refused", reason: "as_of_seq_required" };
+						} else {
+							const current = files.get(from) ?? links.get(from);
+							if (current?.version !== unit.expectedVersion)
+								return { ...moved, outcome: "conflict", reason: current ? "version_changed" : "missing" };
+						}
+						if (files.has(to) || folders.has(to) || links.has(to))
+							return { ...moved, outcome: "conflict", reason: "exists" };
+						const into = to.split("/").slice(0, -1).join("/");
+						if (into !== "" && !folders.has(into))
+							return { ...moved, outcome: "refused", reason: "parent_missing" };
+						if (!reviewed(args, units)) return { ...moved, outcome: "denied", reason: "review_required" };
+						const renamed = (path: string) =>
+							path === from ? to : path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null;
+						for (const map of [files, links] as Map<string, unknown>[])
+							for (const [path, value] of [...map]) {
+								const next = renamed(path);
+								if (next === null) continue;
+								map.delete(path);
+								map.set(next, value);
+							}
+						for (const path of [...folders]) {
+							const next = renamed(path);
+							if (next === null) continue;
+							folders.delete(path);
+							folders.add(next);
+						}
+						return { ...moved, outcome: "saved", version: randomUUID() };
+					}
 					const path = unit.path as string;
 					const parent = path.split("/").slice(0, -1).join("/");
 					const base = { unit: index + 1, op: unit.op, path };

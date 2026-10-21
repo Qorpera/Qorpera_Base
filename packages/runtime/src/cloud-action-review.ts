@@ -210,6 +210,8 @@ export function cloudActionEffect(
 		case "update_skill":
 			return args.action === "delete" ? "destructive" : "internal";
 		case "company_write":
+		// One exact span of one file replaced, written as company_write writes (21 October 2026).
+		case "company_edit":
 		case "company_mkdir":
 		case "update_memory":
 		case "organize_sidebar":
@@ -235,6 +237,8 @@ export function cloudActionEffect(
 		case "machine_delete":
 			return "internal";
 		case "company_delete":
+		// A move empties its source path: the folder core reviews it as a deletion (21 October 2026).
+		case "company_move":
 			return "destructive";
 		// A command on a company machine can reach the internet and, with the company folder mounted (F3 6d), the
 		// company's files, as a networked shell command can. Every one is reviewed, also on a boot without the folder:
@@ -609,6 +613,11 @@ export function describeCloudAction(
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;
+	} else if (tool.name === "company_move") {
+		// A move takes the path away from where it was, so the folder core reviews it as a deletion (21 October 2026).
+		title = "Move or rename in the Company File";
+		target = text(args.from) || null;
+		add("to", args.to);
 	} else if (tool.name === "update_skill") {
 		title = "Delete a skill";
 		target = text(args.name) || null;
@@ -682,6 +691,8 @@ export function describeCloudAction(
 			(args.action === "followup" && worker ? readable(worker) : null);
 		add("title", args.title);
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
+		// Where a worker saves its finished files, when the dispatch names a folder (21 October 2026).
+		add("saves in", args.saveTo);
 	} else if (tool.name === "apply_proposal") {
 		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts): what
 		// changes, in order, never its files.
