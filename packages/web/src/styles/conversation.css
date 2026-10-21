@@ -830,16 +830,31 @@
 @media (prefers-reduced-motion: reduce) { .coding-pill, .coding-pill-row, .coding-pill-summary > .icon { transition: none; } }
 /* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
 .coding-thread { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); animation: computer-enter 160ms ease both; }
-.coding-thread-header { gap: 8px; }
-.coding-thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.coding-thread-identity .figure { width: 28px; height: 28px; flex: none; }
-.coding-thread-swap { flex: none; width: 14px; height: 14px; color: var(--text-soft); }
+/* No header bar: a pill floats at the top with the transcript scrolling under it, and a labelled way back
+ * beside it. The bar itself lets clicks through to what scrolls under its empty sides. */
+.coding-thread-header { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 3; display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(0, 1fr); align-items: center; gap: 8px; pointer-events: none; }
+.coding-thread-header > * { pointer-events: auto; }
+.coding-thread-back { justify-self: start; display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 34px; padding: 0 14px 0 10px; border: 0; border-radius: 17px; background: var(--overlay); box-shadow: 0 4px 16px rgb(18 18 17 / 10%), 0 0 0 1px var(--border); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color 120ms ease, box-shadow 160ms ease; }
+.coding-thread-back:hover, .coding-thread-back:focus-visible { background: color-mix(in srgb, var(--text) 5%, var(--overlay)); box-shadow: 0 6px 20px rgb(18 18 17 / 14%), 0 0 0 1px var(--border-strong); outline: none; }
+.coding-thread-back .icon { flex: none; width: 16px; height: 16px; }
+.coding-thread-back span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coding-thread-identity { grid-column: 2; display: flex; align-items: center; gap: 7px; min-width: 0; max-width: 520px; height: 38px; padding: 0 16px 0 8px; border-radius: 19px; background: var(--overlay); box-shadow: 0 6px 22px rgb(18 18 17 / 12%), 0 0 0 1px var(--border); }
+.coding-thread-identity .figure { width: 22px; height: 22px; flex: none; }
+.coding-thread-swap { flex: none; width: 12px; height: 12px; color: var(--text-soft); }
 .coding-thread-harness { display: inline-flex; flex: none; }
-.coding-thread-harness .coding-badge { position: static; width: 26px; height: 26px; border: 0; border-radius: 50%; box-sizing: border-box; }
-.coding-thread-harness .coding-badge svg { width: 12px; height: 12px; }
-.coding-thread-names { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.coding-thread-names h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
-.coding-thread-subtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 13px; color: var(--text-muted); }
+.coding-thread-harness .coding-badge { position: static; width: 22px; height: 22px; border: 0; border-radius: 50%; box-sizing: border-box; }
+.coding-thread-harness .coding-badge svg { width: 11px; height: 11px; }
+.coding-thread-identity h1 { flex: none; margin: 0 0 0 3px; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.coding-thread-subtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text-muted); }
+.coding-thread-subtitle::before { content: "·"; margin: 0 6px 0 2px; color: var(--text-soft); }
+/* The transcript starts under the floating pill and scrolls beneath it. */
+.coding-thread .coding-log { padding-top: 60px; }
+@media (max-width: 760px) {
+	/* A phone keeps the way back as an arrow beside the pill, and the pill drops the title. */
+	.coding-thread-back { width: 34px; padding: 0; justify-content: center; }
+	.coding-thread-back span, .coding-thread-subtitle { display: none; }
+	.coding-thread-identity { max-width: calc(100vw - 120px); padding-right: 14px; }
+}
 
 /* A message between two agents: a chip in each agent's thread, the transcript behind it (contract 14.6). */
 .peer-link { display: flex; flex: none; align-self: center; justify-content: center; max-width: 100%; margin: 6px 0; }
