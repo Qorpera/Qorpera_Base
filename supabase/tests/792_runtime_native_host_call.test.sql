@@ -161,7 +161,7 @@ begin
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_record_runtime_observation_batch', v_batch || '{"p_extra":1}'),
 		'refused', 'an undeclared argument');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_presence_scope',
-		jsonb_build_object('p_environment_id', v_other, 'p_binding', v_binding, 'p_paths', '["vision/vision.md"]'::jsonb)),
+		jsonb_build_object('p_environment_id', v_other, 'p_binding', v_binding, 'p_paths', '["QorperaOS/vision/vision.md"]'::jsonb)),
 		'refused', 'another environment beside the run''s own binding');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority',
 		jsonb_build_object('p_binding', v_binding, 'p_run_id', v_other)), 'refused', 'another run beside the run''s own binding');
@@ -196,7 +196,7 @@ begin
 	select * into v_run from public.qorpera_execution_runs where id = pg_temp.g2_run();
 	-- binding: the in-scope call is section 2's; a binding call that also names the run's own environment is in scope.
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_presence_scope', jsonb_build_object('p_environment_id',
-		v_run.environment_id, 'p_binding', v_binding, 'p_paths', '["vision/vision.md"]'::jsonb)), 'ok',
+		v_run.environment_id, 'p_binding', v_binding, 'p_paths', '["QorperaOS/vision/vision.md"]'::jsonb)), 'ok',
 		'a binding call in the run''s environment');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority',
 		jsonb_build_object('p_binding', v_binding || jsonb_build_object('runId', v_other))), 'refused', 'a binding of another run');
@@ -239,25 +239,25 @@ begin
 	v_actor := jsonb_build_object('kind', 'run', 'runId', v_binding ->> 'runId', 'jobId', v_binding ->> 'jobId',
 		'runnerId', v_binding ->> 'runnerId', 'assignmentId', v_binding ->> 'assignmentId');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor, 'p_path', 'vision/vision.md')), 'ok',
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor, 'p_path', 'QorperaOS/vision/vision.md')), 'ok',
 		'a folder call');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_other, 'p_actor', v_actor, 'p_path', 'vision/vision.md')), 'refused',
+		jsonb_build_object('p_environment_id', v_other, 'p_actor', v_actor, 'p_path', 'QorperaOS/vision/vision.md')), 'refused',
 		'a folder call in another environment');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', '{"kind":"platform"}'::jsonb,
-			'p_path', 'vision/vision.md')), 'refused', 'a platform folder actor');
+			'p_path', 'QorperaOS/vision/vision.md')), 'refused', 'a platform folder actor');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('kind', 'member',
-			'userId', v_other), 'p_path', 'vision/vision.md')), 'refused', 'a member folder actor');
+			'userId', v_other), 'p_path', 'QorperaOS/vision/vision.md')), 'refused', 'a member folder actor');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('runId', v_other),
-			'p_path', 'vision/vision.md')), 'refused', 'a folder actor of another run');
+			'p_path', 'QorperaOS/vision/vision.md')), 'refused', 'a folder actor of another run');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('jobId', v_other),
-			'p_path', 'vision/vision.md')), 'refused', 'a folder actor of another job');
+			'p_path', 'QorperaOS/vision/vision.md')), 'refused', 'a folder actor of another job');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_path', 'vision/vision.md')), 'refused',
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_path', 'QorperaOS/vision/vision.md')), 'refused',
 		'a folder call without its actor');
 	-- environment
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_presence_subject',

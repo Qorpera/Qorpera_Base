@@ -26,7 +26,7 @@ begin
 end $$;
 create function pg_temp.versions_at(p_key text) returns bigint language sql as $$
 	select count(*) from public.qorpera_folder_path_versions where environment_id = '70700000-0000-4000-8000-000000000020'
-		and public.qorpera_folder_key(path) = p_key
+		and public.qorpera_folder_key(path) = public.qorpera_folder_key(p_key)
 $$;
 -- The SQLSTATE a statement fails with ('ok' when it does not), its changes undone.
 create function pg_temp.fails(p_sql text) returns text language plpgsql as $$
@@ -69,24 +69,24 @@ $$;
 do $$
 begin
 	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'erase-0001')$q$), '42501',
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-0001')$q$), '42501',
 		'only the service role asks');
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'erase-0002', '{"kind":"platform"}')$q$),
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-0002', '{"kind":"platform"}')$q$),
 		'22023', 'only a member erases');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'erase-0003', pg_temp.member(2))$q$),
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-0003', pg_temp.member(2))$q$),
 		'42501', 'a contributor does not erase');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['tables/t'], 'erase-0005b')$q$), 'ok',
-		'tables/ is erased like any other path since P18c (886)');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts', 'contacts/no-mail.md'], 'erase-0006')$q$),
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/tables/t'], 'erase-0005b')$q$), 'ok',
+		'QorperaOS/tables/ is erased like any other path since P18c (886)');
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/contacts', 'QorperaOS/contacts/no-mail.md'], 'erase-0006')$q$),
 		'22023', 'a root inside another');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['members/70700000-0000-4000-8000-000000000002/private'], 'erase-0007')$q$),
 		'42501', 'another member''s private paths');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['members/70700000-0000-4000-8000-000000000002'], 'erase-0007b')$q$),
 		'42501', 'and a root above them');
-	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['contacts/maria.md'], 'erase-0008')$q$),
-		'Nothing to erase at contacts/maria.md', 'a live root with no earlier life has nothing to erase');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'bad key')$q$), '22023',
+	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['QorperaOS/contacts/maria.md'], 'erase-0008')$q$),
+		'Nothing to erase at QorperaOS/contacts/maria.md', 'a live root with no earlier life has nothing to erase');
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'bad key')$q$), '22023',
 		'the operation key');
 	if exists (select 1 from public.qorpera_folder_erasures) then raise exception 'A refusal recorded an erasure'; end if;
 end $$;
@@ -97,27 +97,27 @@ do $$
 declare r jsonb; v_manifest text; v_erasure public.qorpera_folder_erasures%rowtype; v_units jsonb; v_id uuid;
 begin
 	select manifest_sha256 into v_manifest from public.qorpera_folder_entries
-	where environment_id = '70700000-0000-4000-8000-000000000020' and key_text = 'contacts/no-mail.md';
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-del-no-mail', jsonb_build_array(pg_temp.del('contacts/no-mail.md'))),
+	where environment_id = '70700000-0000-4000-8000-000000000020' and key_text = 'qorperaos/contacts/no-mail.md';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-del-no-mail', jsonb_build_array(pg_temp.del('QorperaOS/contacts/no-mail.md'))),
 		1, 'saved');
 	if not exists (select 1 from public.qorpera_folder_contact_index where environment_id = '70700000-0000-4000-8000-000000000020'
-			and folder_key = 'contacts/no-mail.md' and retired_at is not null) then
+			and folder_key = 'qorperaos/contacts/no-mail.md' and retired_at is not null) then
 		raise exception 'Fixture: the contact row is retired'; end if;
-	r := pg_temp.erase(array['contacts/no-mail.md'], 'erase-no-mail-1');
+	r := pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-no-mail-1');
 	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '2', 'the write and the delete are counted');
-	perform pg_temp.is(r -> 'roots' -> 0 ->> 'path', 'contacts/no-mail.md', 'the root as named');
+	perform pg_temp.is(r -> 'roots' -> 0 ->> 'path', 'QorperaOS/contacts/no-mail.md', 'the root as named');
 	-- The index row goes with the request; the claim does not outlive it.
 	if exists (select 1 from public.qorpera_folder_contact_index where environment_id = '70700000-0000-4000-8000-000000000020'
-			and folder_key = 'contacts/no-mail.md') then raise exception 'The contact row is deleted by the request'; end if;
+			and folder_key = 'qorperaos/contacts/no-mail.md') then raise exception 'The contact row is deleted by the request'; end if;
 	if exists (select 1 from public.qorpera_folder_entries where environment_id = '70700000-0000-4000-8000-000000000020'
 			and kind = 'claim') then raise exception 'No claim outlives the request'; end if;
 	-- A replay answers the same; the same key for other paths is refused.
-	if pg_temp.erase(array['contacts/no-mail.md'], 'erase-no-mail-1') is distinct from r then raise exception 'A replay answers the same'; end if;
+	if pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-no-mail-1') is distinct from r then raise exception 'A replay answers the same'; end if;
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['docs/other.md'], 'erase-no-mail-1')$q$), '22023',
 		'a key reused for other paths');
 	v_id := (r ->> 'erasureId')::uuid;
 	v_erasure := pg_temp.drain(v_id);
-	perform pg_temp.is(pg_temp.versions_at('contacts/no-mail.md')::text, '0', 'its versions are gone');
+	perform pg_temp.is(pg_temp.versions_at('QorperaOS/contacts/no-mail.md')::text, '0', 'its versions are gone');
 	-- Its path is gone from the change set that saved it, which keeps the parser's shape.
 	select units into v_units from public.qorpera_folder_commits
 	where environment_id = '70700000-0000-4000-8000-000000000020' and operation_key = 'human-roots';
@@ -150,7 +150,7 @@ begin
 			and sha256 = v_manifest and unreferenced_since > clock_timestamp() - interval '1 minute') then
 		raise exception 'The contact''s manifest lost its roots and waits for GC'; end if;
 	-- A replay after done answers the stored outcome.
-	if (pg_temp.erase(array['contacts/no-mail.md'], 'erase-no-mail-1') ->> 'erasureId')::uuid <> v_id then
+	if (pg_temp.erase(array['QorperaOS/contacts/no-mail.md'], 'erase-no-mail-1') ->> 'erasureId')::uuid <> v_id then
 		raise exception 'A replay after done'; end if;
 end $$;
 
@@ -231,22 +231,22 @@ end $$;
 -- 5. The units scrub, directly ------------------------------------------------------------------------------------------
 
 do $$
-declare v_roots jsonb := '[{"key":"contacts/maria.md","cutoffSeq":10,"cutoffUnit":2147483647,"cutoffAt":"2026-10-03T00:00:00Z"}]';
-	v_needles jsonb := '[{"needle":"contacts/Maria.md","cutoffSeq":10,"cutoffUnit":2147483647,"cutoffAt":"2026-10-03T00:00:00Z"}]';
-	v_units jsonb := '[{"unit":1,"op":"write","path":"contacts/Maria.md","outcome":"refused","reason":"structured_rule",
+declare v_roots jsonb := '[{"key":"qorperaos/contacts/maria.md","cutoffSeq":10,"cutoffUnit":2147483647,"cutoffAt":"2026-10-03T00:00:00Z"}]';
+	v_needles jsonb := '[{"needle":"QorperaOS/contacts/Maria.md","cutoffSeq":10,"cutoffUnit":2147483647,"cutoffAt":"2026-10-03T00:00:00Z"}]';
+	v_units jsonb := '[{"unit":1,"op":"write","path":"QorperaOS/contacts/Maria.md","outcome":"refused","reason":"structured_rule",
 		"problems":[{"line":3,"key":"email","code":"invalid","message":"put \"x\" in double quotes"}]},
-		{"unit":2,"op":"write","path":"contacts/other.md","outcome":"refused","reason":"structured_rule",
-		"problems":[{"line":null,"key":"id","code":"taken","message":"this contact already has the file contacts/Maria.md"},
+		{"unit":2,"op":"write","path":"QorperaOS/contacts/other.md","outcome":"refused","reason":"structured_rule",
+		"problems":[{"line":null,"key":"id","code":"taken","message":"this contact already has the file QorperaOS/contacts/Maria.md"},
 			{"line":null,"key":"name","code":"x","message":"unrelated"},
-			{"line":null,"key":"near","code":"x","message":"see contacts/Maria for more"}]},
-		{"unit":3,"op":"move","path":"docs/q.md","to":"contacts/maria.md","outcome":"saved","version":"11111111-1111-4111-8111-111111111111"}]';
+			{"line":null,"key":"near","code":"x","message":"see QorperaOS/contacts/Maria for more"}]},
+		{"unit":3,"op":"move","path":"docs/q.md","to":"QorperaOS/contacts/maria.md","outcome":"saved","version":"11111111-1111-4111-8111-111111111111"}]';
 	v_out jsonb;
 begin
 	v_out := public.qorpera_folder_erasure_units(v_units, 9, now(), v_roots, v_needles);
 	if v_out -> 0 <> '{"unit":1,"op":"write","path":"","outcome":"refused","reason":"structured_rule"}'::jsonb then
 		raise exception 'A unit under the root loses its path and problems: %', v_out -> 0; end if;
 	if v_out -> 1 -> 'problems' -> 0 ->> 'message' <> '' or v_out -> 1 -> 'problems' -> 1 ->> 'message' <> 'unrelated'
-		or v_out -> 1 -> 'problems' -> 2 ->> 'message' <> 'see contacts/Maria for more' or v_out -> 1 ->> 'path' <> 'contacts/other.md' then
+		or v_out -> 1 -> 'problems' -> 2 ->> 'message' <> 'see QorperaOS/contacts/Maria for more' or v_out -> 1 ->> 'path' <> 'QorperaOS/contacts/other.md' then
 		raise exception 'Another unit''s quoting message is blanked, nothing else (a stem alone never): %', v_out -> 1; end if;
 	if v_out -> 2 ->> 'to' <> '' or v_out -> 2 ->> 'path' <> 'docs/q.md' then raise exception 'A target under the root: %', v_out -> 2; end if;
 	-- After the cutoff (a later life), nothing changes; an unsaved change set goes by time.
@@ -400,24 +400,24 @@ begin
 
 	-- A contact deleted and saved again at one path in one change set: the earlier contact's index row goes with its
 	-- life; the live contact keeps its row, its version and its unit.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-k2-1', jsonb_build_array(pg_temp.save('contacts/split.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-k2-1', jsonb_build_array(pg_temp.save('QorperaOS/contacts/split.md',
 		pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e1","email":null}')))), 1, 'saved');
-	r := pg_temp.commit(pg_temp.owner(), 'erase-k2-2', jsonb_build_array(pg_temp.del('contacts/split.md'),
-		pg_temp.write('contacts/split.md', 'contact', pg_temp.state_text(pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e2","email":null}')),
+	r := pg_temp.commit(pg_temp.owner(), 'erase-k2-2', jsonb_build_array(pg_temp.del('QorperaOS/contacts/split.md'),
+		pg_temp.write('QorperaOS/contacts/split.md', 'contact', pg_temp.state_text(pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e2","email":null}')),
 			pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e2","email":null}'), null)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	v_live := pg_temp.version('contacts/split.md');
+	v_live := pg_temp.version('QorperaOS/contacts/split.md');
 	if not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e1' and retired_at is not null)
 		or not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e2' and retired_at is null) then
 		raise exception 'Fixture: one retired and one live contact at the path'; end if;
-	r := pg_temp.erase(array['contacts/split.md'], 'erase-k2-3');
+	r := pg_temp.erase(array['QorperaOS/contacts/split.md'], 'erase-k2-3');
 	if exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e1') then
 		raise exception 'The earlier contact''s row goes'; end if;
 	if not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e2'
 			and retired_at is null and folder_path_version = v_live) then raise exception 'The live contact keeps its row'; end if;
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
-	if pg_temp.versions_at('contacts/split.md') <> 1 or not exists (select 1 from public.qorpera_folder_path_versions where version = v_live)
-		or (select units -> 1 ->> 'path' from public.qorpera_folder_commits where operation_key = 'erase-k2-2') <> 'contacts/split.md' then
+	if pg_temp.versions_at('QorperaOS/contacts/split.md') <> 1 or not exists (select 1 from public.qorpera_folder_path_versions where version = v_live)
+		or (select units -> 1 ->> 'path' from public.qorpera_folder_commits where operation_key = 'erase-k2-2') <> 'QorperaOS/contacts/split.md' then
 		raise exception 'The live contact keeps its version and its unit'; end if;
 
 	-- A history through a path that now holds another file: that path's past life is added, not refused as live.

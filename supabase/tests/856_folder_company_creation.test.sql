@@ -178,35 +178,35 @@ begin
 	v_todo := format(E'---\nid: %s\ntitle: Start with the founders\nstatus: open\nrequested-by: %s\n---\nMeet the founders.\n',
 		p_claim ->> 'firstTodoId', v_kickoff);
 	return jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'),
-		jsonb_build_object('op','write','path','vision/vision.md',
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'),
+		jsonb_build_object('op','write','path','QorperaOS/vision/vision.md',
 			'file', case when p_change = 'unstored' then pg_temp.unstored(v_vision) else pg_temp.stage(v_env, v_vision) end,
-			'structured', jsonb_build_array(pg_temp.entry('vision/vision.md', 'vision', v_vision,
+			'structured', jsonb_build_array(pg_temp.entry('QorperaOS/vision/vision.md', 'vision', v_vision,
 				jsonb_build_object('kind','vision','name', case when p_change = 'vision_name' then '' else v_name end)))),
-		jsonb_build_object('op','mkdir','path','agents'),
-		jsonb_build_object('op','write','path','agents/sections.md','file',pg_temp.stage(v_env, v_sections),
-			'structured', jsonb_build_array(pg_temp.entry('agents/sections.md','sections',v_sections,'{"kind":"sections","sections":[]}'))),
-		jsonb_build_object('op','new_folder','path','agents/co-founder',
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		jsonb_build_object('op','write','path','QorperaOS/agents/sections.md','file',pg_temp.stage(v_env, v_sections),
+			'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/sections.md','sections',v_sections,'{"kind":"sections","sections":[]}'))),
+		jsonb_build_object('op','new_folder','path','QorperaOS/agents/co-founder',
 			'contents', jsonb_build_array(
 				jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(v_env, v_agent)),
 				jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','skills','kind','folder'),
 				jsonb_build_object('path','routines','kind','folder'), jsonb_build_object('path','todos','kind','folder'),
 				jsonb_build_object('path','todos/start-with-the-founders.md','kind','file','file',pg_temp.stage(v_env, v_todo))),
 			'structured', jsonb_build_array(
-				pg_temp.entry('agents/co-founder/agent.md','agent',v_agent,jsonb_build_object('kind','agent','id',v_agent_id,
+				pg_temp.entry('QorperaOS/agents/co-founder/agent.md','agent',v_agent,jsonb_build_object('kind','agent','id',v_agent_id,
 					'name','Co-Founder','role','Co-Founder','agentKind','co-founder','status','active','colour','blue','figure','crown',
 					'model',null,'effort',null,'instructions','Found the company.')),
-				pg_temp.entry('agents/co-founder/todos/start-with-the-founders.md','todo',v_todo,jsonb_build_object('kind','todo',
+				pg_temp.entry('QorperaOS/agents/co-founder/todos/start-with-the-founders.md','todo',v_todo,jsonb_build_object('kind','todo',
 					'id',p_claim ->> 'firstTodoId','title','Start with the founders','status','open','requestedBy',v_kickoff,
 					'detail','Meet the founders.')))),
-		jsonb_build_object('op','mkdir','path','agents/groups'),
-		jsonb_build_object('op','mkdir','path','connections'),
-		jsonb_build_object('op','mkdir','path','human-tasks'),
-		jsonb_build_object('op','mkdir','path','contacts'),
-		jsonb_build_object('op','mkdir','path','skills'),
-		jsonb_build_object('op','mkdir','path','skills/human-task'),
-		jsonb_build_object('op','write','path','skills/human-task/SKILL.md','file',pg_temp.stage(v_env, v_skill)),
-		jsonb_build_object('op','mkdir','path','rules'));
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/contacts'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/skills'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/skills/human-task'),
+		jsonb_build_object('op','write','path','QorperaOS/skills/human-task/SKILL.md','file',pg_temp.stage(v_env, v_skill)),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules'));
 end $$;
 
 create function pg_temp.creation(p_profile uuid) returns public.qorpera_folder_company_creations language sql as $$
@@ -290,7 +290,7 @@ begin
 		or not exists (select 1 from public.qorpera_folder_admissions where profile_id = v_profile)
 		or not exists (select 1 from public.qorpera_folder_clocks where environment_id = v_environment.id and last_seq = 0)
 		or (select count(*) from public.qorpera_company_path_resources where environment_id = v_environment.id
-			and path in ('','rules')) is distinct from 2 then
+			and path in ('','QorperaOS/rules')) is distinct from 2 then
 		raise exception 'Open did not switch the folder core on'; end if;
 	if exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_company_cofounders where profile_id = v_profile)
@@ -486,7 +486,7 @@ begin
 		or not (select vision_seeded from public.qorpera_folder_company_index where environment_id = v_env) then
 		raise exception 'The vision is not indexed as seeded'; end if;
 	select * into v_staff from public.qorpera_profile_staff where profile_id = v_profile and staff_agent_id = v_cofounder;
-	if v_staff.template_id is distinct from 'co-founder' or v_staff.folder_path is distinct from 'agents/co-founder/agent.md'
+	if v_staff.template_id is distinct from 'co-founder' or v_staff.folder_path is distinct from 'QorperaOS/agents/co-founder/agent.md'
 		or (select count(*) from public.qorpera_profile_staff where profile_id = v_profile) is distinct from 1
 		or not exists (select 1 from public.qorpera_company_cofounders where profile_id = v_profile and staff_agent_id = v_cofounder
 			and formation_id is null) then
@@ -508,12 +508,12 @@ begin
 		or v_input.client_input_id is distinct from md5('qorpera.folder-company-create/kickoff:' || v_creation.id)::uuid
 		or v_input.body is distinct from jsonb_build_object('schema','qorpera.company-first-run/v1','assignment',jsonb_build_object(
 			'kind','company_founding','companyId',v_profile,'creationId',v_creation.id,'cofounderStaffAgentId',v_cofounder,
-			'firstTodo','agents/co-founder/todos/start-with-the-founders.md'))
+			'firstTodo','QorperaOS/agents/co-founder/todos/start-with-the-founders.md'))
 		or v_input.completed_at is not null or v_input.execution_run_id is not null then
 		raise exception 'The kickoff is not the agreed shape: %', to_jsonb(v_input); end if;
 	if v_first.session_id is distinct from v_thread or v_first.environment_id is distinct from v_env or v_first.startup_assignment is distinct from v_input.body
 		or v_first.source_path_version is distinct from (select version from public.qorpera_folder_entries where environment_id = v_env
-			and key_text = 'agents/co-founder/agent.md') then
+			and key_text = 'qorperaos/agents/co-founder/agent.md') then
 		raise exception 'The first-run row does not match: %', to_jsonb(v_first); end if;
 	if (select count(*) from public.qorpera_session_inputs where session_id = v_thread) is distinct from 1 then
 		raise exception 'More than the kickoff in the thread'; end if;
@@ -613,7 +613,7 @@ begin
 	if v_result ->> 'state' is distinct from 'failed' or v_result ->> 'problem' is distinct from 'refused' or v_creation.state is distinct from 'failed'
 		or v_creation.failure ->> 'code' is distinct from 'refused'
 		or jsonb_array_length(v_creation.failure -> 'units') is distinct from 1
-		or v_creation.failure -> 'units' -> 0 ->> 'unit' is distinct from '2'
+		or v_creation.failure -> 'units' -> 0 ->> 'unit' is distinct from '3'
 		or v_creation.failure -> 'units' -> 0 ->> 'reason' is distinct from 'structured_invalid'
 		or v_creation.input is null or v_creation.lease_owner is not null
 		or not pg_temp.nothing_left(v_profile, v_creation.environment_id) then

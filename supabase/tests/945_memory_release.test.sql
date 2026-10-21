@@ -21,7 +21,8 @@ create function pg_temp.write(p_path text, p_kind text, p_text text, p_parse jso
 		|| case when p_expected is not null then jsonb_build_object('expectedVersion', p_expected) else '{}'::jsonb end
 $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.agent_text(p_id uuid, p_name text) returns text language sql as $$
 	select format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: agent\nstatus: active\n---\nSell.\n', p_id, p_name)
@@ -32,11 +33,11 @@ create function pg_temp.agent_parse(p_id uuid, p_name text) returns jsonb langua
 $$;
 -- A new agent folder with its agent.md, as one unit, staged by the owner who commits it (as 943).
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name), pg_temp.member(1))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name), pg_temp.agent_parse(p_id, p_name))))
 $$;
 -- An agent's thread conversation.
@@ -62,7 +63,7 @@ create function pg_temp.memory(p_key text, p_units jsonb, p_session uuid) return
 $$;
 -- Nora's first block of a tier.
 create function pg_temp.t(p_tier integer) returns text language sql immutable as $$
-	select format('agents/nora/memory/thread/t%s/00000000.jsonl', p_tier)
+	select format('QorperaOS/agents/nora/memory/thread/t%s/00000000.jsonl', p_tier)
 $$;
 
 -- The release run's actor, binding and run id; a block at its current version; a request and a release by the run.
@@ -96,10 +97,11 @@ insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400
 
 -- The setup: Nora's hire; the release run (Agent A's, for the member); Nora's tree, a tier-0 block (a pair and a four)
 -- and a tier-1 block (a sixteen).
-select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'release-setup', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'release-setup',
+	'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved') \g /dev/null
 do $$
 declare
-	nora constant uuid := '94500000-0000-4000-8000-0000000000a1'; root constant text := 'agents/nora/memory/thread';
+	nora constant uuid := '94500000-0000-4000-8000-0000000000a1'; root constant text := 'QorperaOS/agents/nora/memory/thread';
 	x jsonb; s uuid; r jsonb; i integer;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'release-hire', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'))),
@@ -171,8 +173,8 @@ begin
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk - 'version')),
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk - 'path')),
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":""}')),
-		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":"/agents/nora"}')),
-		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":"agents//nora"}')),
+		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":"/QorperaOS/agents/nora"}')),
+		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":"QorperaOS/agents//nora"}')),
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"path":5}')),
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk || jsonb_build_object('version', upper(blk ->> 'version')))),
 		ok || jsonb_build_object('blocks', jsonb_build_array(blk || '{"version":"block"}')),
@@ -191,7 +193,7 @@ end $$;
 
 do $$
 declare
-	root constant text := 'agents/nora/memory/thread'; v0 text := pg_temp.version(pg_temp.t(0));
+	root constant text := 'QorperaOS/agents/nora/memory/thread'; v0 text := pg_temp.version(pg_temp.t(0));
 	folder uuid := (select v.version from public.qorpera_folder_path_versions v
 		where v.environment_id = '63400000-0000-4000-8000-000000000020' and v.path = root || '/t0' and v.op = 'mkdir');
 	block jsonb; i integer := 0; n integer := jsonb_array_length(pg_temp.records(pg_temp.run_id()));
@@ -200,9 +202,9 @@ begin
 	foreach block in array array[
 		jsonb_build_object('path', pg_temp.t(0), 'version', extensions.gen_random_uuid()),
 		jsonb_build_object('path', pg_temp.t(1), 'version', v0),
-		jsonb_build_object('path', 'agents/Nora/memory/thread/t0/00000000.jsonl', 'version', v0),
-		jsonb_build_object('path', 'agents/nora/memory/thread/t0/00000001.jsonl', 'version', v0),
-		pg_temp.blk(root || '/tree.toml'), pg_temp.blk('agents/nora/agent.md'),
+		jsonb_build_object('path', 'QorperaOS/agents/Nora/memory/thread/t0/00000000.jsonl', 'version', v0),
+		jsonb_build_object('path', 'QorperaOS/agents/nora/memory/thread/t0/00000001.jsonl', 'version', v0),
+		pg_temp.blk(root || '/tree.toml'), pg_temp.blk('QorperaOS/agents/nora/agent.md'),
 		jsonb_build_object('path', root || '/t0', 'version', folder)] loop
 		i := i + 1;
 		perform pg_temp.raises_like(format('select pg_temp.rel(%L)', pg_temp.req(format('94500000-0000-4000-8000-00000000f1%s',
@@ -244,8 +246,9 @@ begin
 	perform pg_temp.same(pg_temp.rel(first) -> 'replay', 'true', 'The replay after');
 end $$;
 
--- 5. The re-checks leave platform reads out. Agents A and B may read agents/nora, and neither its memory folder. A's
--- grant is replaced twice: A's run re-checks every path under agents/nora, and so does B's coworker wake from that run.
+-- 5. The re-checks leave platform reads out. Agents A and B may read QorperaOS/agents/nora, and neither its memory
+-- folder. A's grant is replaced twice: A's run re-checks every path under QorperaOS/agents/nora, and so does B's coworker
+-- wake from that run.
 -- The wake copies A's platform reads as they are ------------------------------------------------------------------------
 
 do $$
@@ -255,21 +258,21 @@ declare
 	c_nil constant uuid := '00000000-0000-0000-0000-000000000000';
 	p jsonb := pg_temp.actor(); r1 uuid; v jsonb; vb jsonb; e jsonb; w public.qorpera_wake_occurrences%rowtype; blocks jsonb; n bigint;
 begin
-	r1 := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'agents/nora', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	r1 := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'QorperaOS/agents/nora', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant(c_env, pg_temp.member(1), r1, 'staff_agent', c_a, array['read']);
 	perform public.qorpera_folder_grant(c_env, pg_temp.member(1), r1, 'staff_agent', c_b, array['read']);
-	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'agents/nora/memory', 'subtree', 'company_shared', 'normal');
-	if not public.qorpera_folder_actor_allowed(c_env, c_profile, pg_temp.resolved(p), 'agents/nora/agent.md', 'read')
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'QorperaOS/agents/nora/memory', 'subtree', 'company_shared', 'normal');
+	if not public.qorpera_folder_actor_allowed(c_env, c_profile, pg_temp.resolved(p), 'QorperaOS/agents/nora/agent.md', 'read')
 		or public.qorpera_folder_actor_allowed(c_env, c_profile, pg_temp.resolved(p), pg_temp.t(1), 'read') then
 		raise exception 'A reads agent.md and no block'; end if;
 
 	-- A's run reads agent.md through the folder core, and the blocks as the platform's.
 	perform pg_temp.release(p, '94500000-0000-4000-8000-00000000f005',
-		jsonb_build_array(pg_temp.read('agents/nora/agent.md', p) -> 'entry'));
+		jsonb_build_array(pg_temp.read('QorperaOS/agents/nora/agent.md', p) -> 'entry'));
 	blocks := jsonb_build_array(pg_temp.blk(pg_temp.t(0)), pg_temp.blk(pg_temp.t(1)));
 	perform pg_temp.rel(pg_temp.req('94500000-0000-4000-8000-00000000f006', blocks));
 
-	-- A's grant is replaced, so the grant its read used is gone: the re-check covers every path under agents/nora.
+	-- A's grant is replaced, so the grant its read used is gone: the re-check covers every path under QorperaOS/agents/nora.
 	perform public.qorpera_folder_grant(c_env, pg_temp.member(1), r1, 'staff_agent', c_a, array['read']);
 	if public.qorpera_folder_run_reads_current(c_env, c_profile, pg_temp.resolved(p)) <> 1 then
 		raise exception 'The run re-checks its one changed read'; end if;
@@ -284,7 +287,7 @@ begin
 	perform pg_temp.same((select jsonb_agg(jsonb_build_array(rec.resource_id,
 			(select jsonb_agg(x ->> 'path' order by x ->> 'path') from jsonb_array_elements(rec.reads) x)) order by rec.resource_id = c_nil)
 		from public.qorpera_folder_run_read_records rec where rec.run_id = (v ->> 'runId')::uuid and rec.release_id = (e ->> 'id')::uuid),
-		jsonb_build_array(jsonb_build_array(r1, '["agents/nora/agent.md"]'::jsonb),
+		jsonb_build_array(jsonb_build_array(r1, '["QorperaOS/agents/nora/agent.md"]'::jsonb),
 			jsonb_build_array(c_nil, jsonb_build_array(pg_temp.t(0), pg_temp.t(1)))),
 		'The wake''s copy: agent.md under agents/nora, the blocks under the nil resource');
 	perform pg_temp.same((select rec.reads from public.qorpera_folder_run_read_records rec where rec.run_id = (v ->> 'runId')::uuid

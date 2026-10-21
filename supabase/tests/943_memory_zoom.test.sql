@@ -20,7 +20,8 @@ create function pg_temp.write(p_path text, p_kind text, p_text text, p_parse jso
 		|| case when p_expected is not null then jsonb_build_object('expectedVersion', p_expected) else '{}'::jsonb end
 $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.agent_text(p_id uuid, p_name text) returns text language sql as $$
 	select format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: agent\nstatus: active\n---\nSell.\n', p_id, p_name)
@@ -32,11 +33,11 @@ $$;
 -- A new agent folder with its agent.md, as one unit, staged by the owner who commits it (a version-2 file is held to
 -- possession).
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name), pg_temp.member(1))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name), pg_temp.agent_parse(p_id, p_name))))
 $$;
 -- A group chat's folder (as 940), staged by the owner.
@@ -46,10 +47,10 @@ create function pg_temp.group_text(p_id uuid, p_agents uuid[], p_people uuid[]) 
 		(select string_agg(format(E'  - %s\n', a), '') from unnest(p_people) a))
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_agents, p_people), pg_temp.member(1)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_agents, p_people),
 			jsonb_build_object('kind','group','id',p_id,'name','Launch','subtitle',null,'agents',to_jsonb(p_agents),
 				'people',to_jsonb(p_people),'purpose','Plan the launch.'))))
@@ -129,8 +130,8 @@ create function pg_temp.receipts() returns jsonb language sql as $$
 	from public.qorpera_memory_read_receipts r where r.run_id = pg_temp.run_id()
 $$;
 create function pg_temp.blk() returns jsonb language sql as $$
-	select jsonb_build_object('path', 'agents/nora/memory/thread/t0/00000000.jsonl',
-		'version', pg_temp.version('agents/nora/memory/thread/t0/00000000.jsonl'))
+	select jsonb_build_object('path', 'QorperaOS/agents/nora/memory/thread/t0/00000000.jsonl',
+		'version', pg_temp.version('QorperaOS/agents/nora/memory/thread/t0/00000000.jsonl'))
 $$;
 create function pg_temp.nora() returns jsonb language sql as $$
 	select jsonb_build_object('ref', 'thread:nora', 'sessionId', pg_temp.thread('94300000-0000-4000-8000-0000000000a1'), 'kind', 'thread',
@@ -144,12 +145,12 @@ insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400
 
 -- The setup: two hires and their group chat; the zoom run (Agent A's, for the member); Nora's transcript, nine
 -- included events and a session_info; Nora's tree, with lines 0-3 at level 0, both at level 1 and the first at level 2.
-select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'zoom-setup', '[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'),
-	2, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'zoom-setup', '[{"op":"mkdir","path":"QorperaOS"},
+	{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/groups"}]'), 3, 'saved') \g /dev/null
 do $$
 declare
 	nora constant uuid := '94300000-0000-4000-8000-0000000000a1'; otto constant uuid := '94300000-0000-4000-8000-0000000000a2';
-	x jsonb; s uuid; r jsonb; i integer; run uuid; root constant text := 'agents/nora/memory/thread';
+	x jsonb; s uuid; r jsonb; i integer; run uuid; root constant text := 'QorperaOS/agents/nora/memory/thread';
 	quote constant jsonb := jsonb_build_object('start', 5, 'end', 10, 'source', 'mail', 'ref', repeat('A', 43));
 begin
 	r := pg_temp.commit(pg_temp.member(1), 'zoom-hire', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'), pg_temp.hire('otto', otto, 'Otto')));
@@ -331,7 +332,7 @@ do $$
 declare s uuid := pg_temp.thread('94300000-0000-4000-8000-0000000000a1'); tree jsonb; line jsonb;
 begin
 	tree := jsonb_build_object('sessionId', s, 'generation', (select memory_generation from public.qorpera_shared_sessions where id = s),
-		'messages', 9, 'root', 'agents/nora/memory/thread', 'nodeBytes', 1024, 'blocks', jsonb_build_array(pg_temp.blk()), 'lines', '[]'::jsonb);
+		'messages', 9, 'root', 'QorperaOS/agents/nora/memory/thread', 'nodeBytes', 1024, 'blocks', jsonb_build_array(pg_temp.blk()), 'lines', '[]'::jsonb);
 	foreach line in array array['{"l":0,"k":0,"text":"said"}', '{"l":0,"k":1,"text":"said"}', '{"l":0,"k":2,"text":"said"}',
 		'{"l":0,"k":3,"text":"said"}', '{"l":1,"k":0,"text":"first pair"}', '{"l":1,"k":1,"text":"second pair"}',
 		'{"l":2,"k":0,"text":"first four"}']::jsonb[] loop

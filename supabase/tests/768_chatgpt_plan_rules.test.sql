@@ -114,7 +114,7 @@ declare v_parse jsonb := jsonb_build_object('kind', 'routine', 'id', '76800000-0
 	v_result jsonb;
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'r768-docs', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'docs')));
-	v_result := pg_temp.r768_commit('r768-watch', jsonb_build_array(pg_temp.base_write('agents/alice/routines/watch.md', 'routine',
+	v_result := pg_temp.r768_commit('r768-watch', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/routines/watch.md', 'routine',
 		E'---\n' || v_parse::text || E'\n---\n', v_parse)));
 	if v_result -> 'units' -> 0 ->> 'outcome' is distinct from 'refused'
 		or v_result -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' is distinct from

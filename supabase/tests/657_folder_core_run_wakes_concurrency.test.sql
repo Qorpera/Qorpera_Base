@@ -113,7 +113,7 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 select set_config('qorpera_test.ada_' || s, pg_temp.stage(replace(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada'),
 	'status: active', 'status: ' || s))::text, false) from unnest(array['archived', 'active']) s \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
-	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md', 'file', current_setting('qorpera_test.ada_' || s)::jsonb)))
+	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'QorperaOS/agents/ada/agent.md', 'file', current_setting('qorpera_test.ada_' || s)::jsonb)))
 from unnest(array['archived', 'active']) s \g /dev/null
 
 create function pg_temp.sql_cw(p_binding text, p_to uuid, p_key text) returns text language sql as $$
@@ -135,9 +135,9 @@ create function pg_temp.sql_routine_wake(p_key text) returns text language sql a
 $$;
 -- A save of Ada's agent.md with this status (a change of status takes her thread room FOR UPDATE at rank 4).
 create function pg_temp.ada_units(p_status text) returns jsonb language sql as $$
-	select jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md',
-		'file', current_setting('qorpera_test.ada_' || p_status)::jsonb, 'expectedVersion', pg_temp.version('agents/ada/agent.md'),
-		'structured', jsonb_build_array(pg_temp.entry('agents/ada/agent.md', 'agent',
+	select jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'QorperaOS/agents/ada/agent.md',
+		'file', current_setting('qorpera_test.ada_' || p_status)::jsonb, 'expectedVersion', pg_temp.version('QorperaOS/agents/ada/agent.md'),
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/ada/agent.md', 'agent',
 			replace(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada'), 'status: active', 'status: ' || p_status),
 			pg_temp.agent_parse('64800000-0000-4000-8000-0000000000a1', 'Ada') || jsonb_build_object('status', p_status)))))
 $$;

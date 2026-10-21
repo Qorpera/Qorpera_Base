@@ -55,7 +55,7 @@ select dblink_exec('rrace_sched', $q$set request.jwt.claims = '{"role":"authenti
 
 -- R1. A save holds its hook (an open transaction); the removal waits for it at the hook row, then removes it. The routine
 -- saved before the removal, so its listener exists and never wakes.
-select set_config('qorpera_test.save_one', pg_temp.save_sql('erace-0001', 'agents/nora/routines/race-one.md',
+select set_config('qorpera_test.save_one', pg_temp.save_sql('erace-0001', 'QorperaOS/agents/nora/routines/race-one.md',
 	'92300000-0000-4000-8000-0000000000e1', '92300000-0000-4000-8000-0000000000b1'), false) \g /dev/null
 do $$
 declare r jsonb; v_outcome text;
@@ -76,7 +76,7 @@ begin
 end $$;
 
 -- R2. The other order: a removal holds the hook; the save waits for it there, then its rules see the hook removed.
-select set_config('qorpera_test.save_two', pg_temp.save_sql('erace-0002', 'agents/nora/routines/race-two.md',
+select set_config('qorpera_test.save_two', pg_temp.save_sql('erace-0002', 'QorperaOS/agents/nora/routines/race-two.md',
 	'92300000-0000-4000-8000-0000000000e2', '92300000-0000-4000-8000-0000000000b2'), false) \g /dev/null
 do $$
 declare r jsonb;
@@ -96,7 +96,7 @@ end $$;
 
 -- R3. A drain step holds the hook (FOR SHARE) while it writes a wake; a removal waits for it. The wake it wrote is then
 -- refused at the gate, and the next step wakes nothing.
-select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erace-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/race-three.md',
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erace-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/race-three.md',
 	pg_temp.rparse('92300000-0000-4000-8000-0000000000e3', 'Events', pg_temp.ev('92300000-0000-4000-8000-0000000000b3'))))), 1, 'saved')
 	\g /dev/null
 insert into public.qorpera_event_deliveries(hook_id, profile_id, status, delivery_key, event_type, content_type, body, body_bytes,

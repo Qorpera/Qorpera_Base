@@ -50,11 +50,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Tasks'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Tasks'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70700000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(
 		pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a1', 'Nora'))), 1, 'saved');
 end $$;
@@ -71,12 +72,12 @@ begin
 		jsonb_build_object('op','write','path','ops/disk-order.pdf','file',pg_temp.stage('An order'))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0002', jsonb_build_array(
-		jsonb_build_object('op','move','from','drafts','to','contacts','expectedVersion',pg_temp.version('drafts'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','drafts','to','human-tasks','expectedVersion',pg_temp.version('drafts'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','copy','from','drafts','to','contacts'),
-		jsonb_build_object('op','copy','from','ops','to','contacts')));
+		jsonb_build_object('op','move','from','drafts','to','QorperaOS/contacts','expectedVersion',pg_temp.version('drafts'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','drafts','to','QorperaOS/human-tasks','expectedVersion',pg_temp.version('drafts'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','copy','from','drafts','to','QorperaOS/contacts'),
+		jsonb_build_object('op','copy','from','ops','to','QorperaOS/contacts')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change');
-	-- Since H2b nothing moves or copies onto human-tasks/: it is made empty.
+	-- Since H2b nothing moves or copies onto QorperaOS/human-tasks/: it is made empty.
 	perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
 	perform pg_temp.expect(r, 3, 'refused', 'structured_copy');
 	-- A folder that holds no .md file may become a root: what it holds stays ordinary.
@@ -88,9 +89,9 @@ do $$
 declare saved jsonb := pg_temp.task('78500000-0000-4000-8000-0000000000eb', '{"secret":"Code","secretState":"saved"}');
 	r jsonb;
 begin
-	r := pg_temp.commit(pg_temp.owner(), 'tasks-0017', jsonb_build_array(jsonb_build_object('op','new_folder','path','human-tasks',
+	r := pg_temp.commit(pg_temp.owner(), 'tasks-0017', jsonb_build_array(jsonb_build_object('op','new_folder','path','QorperaOS/human-tasks',
 		'contents', jsonb_build_array(jsonb_build_object('path','enter.md','kind','file','file',pg_temp.stage(pg_temp.state_text(saved)))),
-		'structured', jsonb_build_array(pg_temp.entry('human-tasks/enter.md', 'human-task', pg_temp.state_text(saved), saved)))));
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/human-tasks/enter.md', 'human-task', pg_temp.state_text(saved), saved)))));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
 end $$;
 
@@ -100,28 +101,29 @@ do $$
 declare r jsonb; t record;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0003', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','human-tasks'),
-		jsonb_build_object('op','mkdir','path','contacts/archive'),
-		jsonb_build_object('op','mkdir','path','human-tasks/Fit Disk'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit_disk'),
-		jsonb_build_object('op','mkdir','path','human-tasks/' || repeat('a', 65)),
-		jsonb_build_object('op','new_folder','path','human-tasks/My Task','contents',
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/contacts/archive'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/Fit Disk'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit_disk'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/' || repeat('a', 65)),
+		jsonb_build_object('op','new_folder','path','QorperaOS/human-tasks/My Task','contents',
 			jsonb_build_array(jsonb_build_object('path','proof','kind','folder')))));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	for i in 3..6 loop perform pg_temp.expect(r, i, 'refused', 'structured_invalid'); end loop;
 	-- The same checks as the parser's structuredFolderNames (700 §7 keeps the file names).
-	for t in select * from (values ('human-tasks', 0), ('contacts', 0), ('human-tasks/fit-disk', 0), ('human-tasks/fit-disk/proof', 0),
-		('human-tasks/T/proof', 1), ('human-tasks/my_task', 1), ('human-tasks/fit-disk/Proof', 1), ('Human-Tasks', 1), ('Contacts', 1),
-		('human-tasks/fit-disk/photos', 0), ('human-tasks/fit-disk/Photos', 0), ('human-tasks/fit-disk/proof/x', 0), ('contacts/Archive', 0),
-		('human-tasks/', 0),
-		('human-tasks/Fit/', 1)) v(path, problems)
+	for t in select * from (values ('QorperaOS/human-tasks', 0), ('QorperaOS/contacts', 0), ('QorperaOS/human-tasks/fit-disk', 0), ('QorperaOS/human-tasks/fit-disk/proof', 0),
+		('QorperaOS/human-tasks/T/proof', 1), ('QorperaOS/human-tasks/my_task', 1), ('QorperaOS/human-tasks/fit-disk/Proof', 1), ('QorperaOS/Human-Tasks', 1), ('QorperaOS/Contacts', 1),
+		('qorperaos/human-tasks/fit-disk', 0), ('Human-Tasks', 0), ('human-tasks/My Task', 0),
+		('QorperaOS/human-tasks/fit-disk/photos', 0), ('QorperaOS/human-tasks/fit-disk/Photos', 0), ('QorperaOS/human-tasks/fit-disk/proof/x', 0), ('QorperaOS/contacts/Archive', 0),
+		('QorperaOS/human-tasks/', 0),
+		('QorperaOS/human-tasks/Fit/', 1)) v(path, problems)
 	loop
 		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, true)) is distinct from t.problems then
 			raise exception 'Folder % expected % problems, got %', t.path, t.problems,
 				public.qorpera_company_state_path_problems(t.path, true); end if;
 	end loop;
-	if coalesce(public.qorpera_company_state_path_problems('human-tasks/日本', true) -> 0 ->> 'message', '') not like '%a human task''s folder%' then
-		raise exception 'A task folder''s problem names the place: %', public.qorpera_company_state_path_problems('human-tasks/日本', true); end if;
+	if coalesce(public.qorpera_company_state_path_problems('QorperaOS/human-tasks/日本', true) -> 0 ->> 'message', '') not like '%a human task''s folder%' then
+		raise exception 'A task folder''s problem names the place: %', public.qorpera_company_state_path_problems('QorperaOS/human-tasks/日本', true); end if;
 end $$;
 
 -- 3. A task and a contact are saved with their parse; a wrong name or a parse that breaks the rules is refused ----------
@@ -130,21 +132,21 @@ do $$
 declare r jsonb; v jsonb;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0004', jsonb_build_array(
-		pg_temp.save('human-tasks/fit-disk.md', pg_temp.task()),
-		pg_temp.save('contacts/maria-jensen.md', pg_temp.contact()),
-		pg_temp.save('human-tasks/file-vat-q3.md', pg_temp.contact_task()),
-		pg_temp.save('human-tasks/my_task.md', pg_temp.task('78500000-0000-4000-8000-0000000000e3')),
-		pg_temp.save('contacts/Maria.md', pg_temp.contact('{"id":"78500000-0000-4000-8000-0000000000f2"}')),
+		pg_temp.save('QorperaOS/human-tasks/fit-disk.md', pg_temp.task()),
+		pg_temp.save('QorperaOS/contacts/maria-jensen.md', pg_temp.contact()),
+		pg_temp.save('QorperaOS/human-tasks/file-vat-q3.md', pg_temp.contact_task()),
+		pg_temp.save('QorperaOS/human-tasks/my_task.md', pg_temp.task('78500000-0000-4000-8000-0000000000e3')),
+		pg_temp.save('QorperaOS/contacts/Maria.md', pg_temp.contact('{"id":"78500000-0000-4000-8000-0000000000f2"}')),
 		-- A contact's task never shows the company's people, tasks, accounts or rules.
-		pg_temp.save('human-tasks/show-roster.md', pg_temp.contact_task(
-			'{"id":"78500000-0000-4000-8000-0000000000e4","files":["Agents/nora/agent.md"]}')),
+		pg_temp.save('QorperaOS/human-tasks/show-roster.md', pg_temp.contact_task(
+			'{"id":"78500000-0000-4000-8000-0000000000e4","files":["QorperaOS/Agents/nora/agent.md"]}')),
 		-- The parse says a member's task, but names a contact too.
-		pg_temp.save('human-tasks/two-people.md', pg_temp.task('78500000-0000-4000-8000-0000000000e5',
+		pg_temp.save('QorperaOS/human-tasks/two-people.md', pg_temp.task('78500000-0000-4000-8000-0000000000e5',
 			'{"contact":"78500000-0000-4000-8000-0000000000f1"}')),
 		-- A structured file must carry its parse.
-		jsonb_build_object('op','write','path','contacts/bare.md','file',pg_temp.stage(E'---\nname: Bare\n---\n')),
+		jsonb_build_object('op','write','path','QorperaOS/contacts/bare.md','file',pg_temp.stage(E'---\nname: Bare\n---\n')),
 		-- The parse of another kind.
-		pg_temp.write('contacts/wrong-kind.md', 'contact', 'x', pg_temp.task('78500000-0000-4000-8000-0000000000e6'))));
+		pg_temp.write('QorperaOS/contacts/wrong-kind.md', 'contact', 'x', pg_temp.task('78500000-0000-4000-8000-0000000000e6'))));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	for i in 4..9 loop perform pg_temp.expect(r, i, 'refused', 'structured_invalid'); end loop;
 	if coalesce(r -> 'units' -> 5 -> 'problems' -> 0 ->> 'message', '') not like '%read this file differently%(files)%'
@@ -152,11 +154,11 @@ begin
 		raise exception 'A broken parse names the rule it breaks: %', r; end if;
 	-- The parse is stored with the version, as H2's index will read it.
 	select v2.structured into v from public.qorpera_folder_entries e join public.qorpera_folder_path_versions v2 on v2.version = e.version
-	where e.environment_id = '70700000-0000-4000-8000-000000000020' and e.key_text = 'human-tasks/fit-disk.md';
+	where e.environment_id = '70700000-0000-4000-8000-000000000020' and e.key_text = 'qorperaos/human-tasks/fit-disk.md';
 	if v is distinct from jsonb_build_object('kind', 'human-task', 'parse', pg_temp.task(), 'parserVersion', 1) then
 		raise exception 'A task''s version keeps its parse: %', v; end if;
 	select v2.structured into v from public.qorpera_folder_entries e join public.qorpera_folder_path_versions v2 on v2.version = e.version
-	where e.environment_id = '70700000-0000-4000-8000-000000000020' and e.key_text = 'contacts/maria-jensen.md';
+	where e.environment_id = '70700000-0000-4000-8000-000000000020' and e.key_text = 'qorperaos/contacts/maria-jensen.md';
 	if v is distinct from jsonb_build_object('kind', 'contact', 'parse', pg_temp.contact(), 'parserVersion', 1) then
 		raise exception 'A contact''s version keeps its parse: %', v; end if;
 end $$;
@@ -166,9 +168,9 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit(pg_temp.mem(), 'tasks-0019', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/proof'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/photos')));
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit-disk'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit-disk/proof'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit-disk/photos')));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
@@ -188,8 +190,8 @@ begin
 		(pg_temp.task(p_set => '{"secret":"Code from the SMS","secretState":"asked","connection":"78500000-0000-4000-8000-0000000000c2",
 			"step":"phone_code"}'), 0),
 		(pg_temp.task(p_set => '{"secret":"Code","secretState":"saved","step":"other"}'), 0),
-		(pg_temp.task(p_set => '{"files":["sales/q3 draft.pdf","a*b.md","agents/a/memory/x.md","Sales/Q4.pdf"]}'), 0),
-		(pg_temp.contact_task('{"files":["finance/vat-q3-draft.pdf","agentsx/a.pdf","hooks.md"]}'), 0),
+		(pg_temp.task(p_set => '{"files":["sales/q3 draft.pdf","a*b.md","QorperaOS/agents/a/memory/x.md","Sales/Q4.pdf"]}'), 0),
+		(pg_temp.contact_task('{"files":["finance/vat-q3-draft.pdf","agentsx/a.pdf","hooks.md","agents/a.pdf","QorperaOSx/agents/a.pdf"]}'), 0),
 		(pg_temp.task(p_set => jsonb_build_object('title', repeat('ø', 100), 'reason', null)), 0),
 		(pg_temp.task(p_set => jsonb_build_object('steps', (select jsonb_agg(jsonb_build_object('line', 10 + n, 'text', 'Step ' || n, 'done', false))
 			from generate_series(1, 50) n))), 0),
@@ -241,9 +243,9 @@ begin
 		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array('e' || chr(769) || '.pdf'))), 1),
 		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array(repeat('x', 4097)))), 1),
 		(pg_temp.task(p_set => jsonb_build_object('files', (select jsonb_agg('f' || n || '.pdf') from generate_series(1, 21) n))), 1),
-		(pg_temp.contact_task('{"files":["agents/nora/agent.md"]}'), 1), (pg_temp.contact_task('{"files":["CONTACTS/maria.md"]}'), 1),
-		(pg_temp.contact_task('{"files":["human-tasks/fit-disk/proof/label.jpg"]}'), 1),
-		(pg_temp.contact_task('{"files":["connections/github.md"]}'), 1), (pg_temp.contact_task('{"files":["rules/x.md"]}'), 1),
+		(pg_temp.contact_task('{"files":["QorperaOS/agents/nora/agent.md"]}'), 1), (pg_temp.contact_task('{"files":["qorperaos/CONTACTS/maria.md"]}'), 1),
+		(pg_temp.contact_task('{"files":["QorperaOS/human-tasks/fit-disk/proof/label.jpg"]}'), 1),
+		(pg_temp.contact_task('{"files":["QorperaOS/connections/github.md"]}'), 1), (pg_temp.contact_task('{"files":["QorperaOS/rules/x.md"]}'), 1),
 		(pg_temp.contact_task('{"files":["hooks/stripe/a.json"]}'), 1),
 		-- Steps: at most 50, each a line, one line of 1-500 bytes, and a box.
 		(pg_temp.task(p_set => jsonb_build_object('steps', (select jsonb_agg(jsonb_build_object('line', 10 + n, 'text', 'Step ' || n, 'done', false))
@@ -286,16 +288,16 @@ do $$
 declare r jsonb;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0005', jsonb_build_array(
-		jsonb_build_object('op','move','from','human-tasks','to','old-tasks','expectedVersion',pg_temp.version('human-tasks'),
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks','to','old-tasks','expectedVersion',pg_temp.version('QorperaOS/human-tasks'),
 			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','copy','from','contacts','to','contacts-copy'),
-		jsonb_build_object('op','copy','from','drafts/plan.md','to','contacts/plan.md'),
-		jsonb_build_object('op','copy','from','human-tasks/fit-disk.md','to','human-tasks/fit-disk-again.md'),
-		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','drafts/file-vat-q3.md',
-			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md')),
-		jsonb_build_object('op','move','from','drafts/plan.md','to','human-tasks/plan.md','expectedVersion',pg_temp.version('drafts/plan.md')),
-		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','human-tasks/File Vat.md',
-			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md'))));
+		jsonb_build_object('op','copy','from','QorperaOS/contacts','to','contacts-copy'),
+		jsonb_build_object('op','copy','from','drafts/plan.md','to','QorperaOS/contacts/plan.md'),
+		jsonb_build_object('op','copy','from','QorperaOS/human-tasks/fit-disk.md','to','QorperaOS/human-tasks/fit-disk-again.md'),
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/file-vat-q3.md','to','drafts/file-vat-q3.md',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/file-vat-q3.md')),
+		jsonb_build_object('op','move','from','drafts/plan.md','to','QorperaOS/human-tasks/plan.md','expectedVersion',pg_temp.version('drafts/plan.md')),
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/file-vat-q3.md','to','QorperaOS/human-tasks/File Vat.md',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/file-vat-q3.md'))));
 	-- Since H2b the root is a seeded folder (Jonas, 2 October): it never moves.
 	perform pg_temp.expect(r, 1, 'refused', 'seeded');
 	perform pg_temp.expect(r, 2, 'refused', 'kind_change');
@@ -306,21 +308,21 @@ begin
 	perform pg_temp.expect(r, 7, 'refused', 'structured_invalid');
 	-- A task's folder moved by its person onto a misnamed folder: the name check says so.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0020', jsonb_build_array(
-		jsonb_build_object('op','move','from','human-tasks/fit-disk','to','human-tasks/Fit Disk 2',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_invalid');
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/fit-disk','to','QorperaOS/human-tasks/Fit Disk 2',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_invalid');
 	-- Within a root a task file without a folder moves like any file; a task with a folder keeps its name, and its folder
 	-- never goes where no task is (H2b).
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0006', jsonb_build_array(
-		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','human-tasks/file-vat-quarter-3.md',
-			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md')),
-		jsonb_build_object('op','copy','from','contacts/archive','to','contacts/archive-2'),
-		jsonb_build_object('op','move','from','human-tasks/fit-disk.md','to','human-tasks/fit-the-disk.md',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk.md'))));
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/file-vat-q3.md','to','QorperaOS/human-tasks/file-vat-quarter-3.md',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/file-vat-q3.md')),
+		jsonb_build_object('op','copy','from','QorperaOS/contacts/archive','to','QorperaOS/contacts/archive-2'),
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/fit-disk.md','to','QorperaOS/human-tasks/fit-the-disk.md',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/fit-disk.md'))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.expect(r, 3, 'refused', 'structured_rule');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0021', jsonb_build_array(
-		jsonb_build_object('op','move','from','human-tasks/fit-disk','to','human-tasks/fit-the-disk',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_rule');
+		jsonb_build_object('op','move','from','QorperaOS/human-tasks/fit-disk','to','QorperaOS/human-tasks/fit-the-disk',
+			'expectedVersion',pg_temp.version('QorperaOS/human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_rule');
 end $$;
 
 -- 6. Only the platform marks a secret saved ---------------------------------------------------------------------------
@@ -333,60 +335,60 @@ declare r jsonb; code constant uuid := '78500000-0000-4000-8000-0000000000e7';
 	asked jsonb := pg_temp.task(code, '{"title":"Enter the code","secret":"Code from the SMS","secretState":"asked","step":"phone_code"}');
 	saved jsonb := pg_temp.task(code, '{"title":"Enter the code","secret":"Code from the SMS","secretState":"saved","step":"phone_code"}');
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0007', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', asked))),
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0007', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', asked))),
 		1, 'saved');
 	-- A member, a contributor and an owner alike: never over a file that is not saved.
-	r := pg_temp.commit(pg_temp.owner(), 'tasks-0008', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved)));
+	r := pg_temp.commit(pg_temp.owner(), 'tasks-0008', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved)));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
 	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
 		or coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'only the platform marks a secret saved%' then
 		raise exception 'The refusal names secret_state: %', r; end if;
 	-- The task's person is refused earlier since H2b, by the person's own rule (803 has it).
-	r := pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved)));
+	r := pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved)));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
 	if coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'as the task''s person you may only tick%' then
 		raise exception 'The person''s rule answers first: %', r; end if;
 	-- A new task cannot start saved either.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0010', jsonb_build_array(pg_temp.save('human-tasks/enter-code-2.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0010', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code-2.md',
 		pg_temp.task('78500000-0000-4000-8000-0000000000e8', '{"secret":"Code","secretState":"saved"}')))), 1, 'refused', 'structured_rule');
 	-- The platform marks it.
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0011', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0011', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved))),
 		1, 'saved');
 	-- Anyone may keep the mark over the same task and label, as when the agent edits the title.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0012', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0012', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md',
 		saved || '{"title":"Enter the code from the SMS"}'))), 1, 'saved');
 	-- Not over another label, and not as a new task at another path (the same id there is H2's one-file rule).
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0013', jsonb_build_array(
-		pg_temp.save('human-tasks/enter-code.md', saved || '{"secret":"Code from the email"}'),
-		pg_temp.save('human-tasks/enter-code-3.md', saved || '{"id":"78500000-0000-4000-8000-0000000000ef"}')));
+		pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved || '{"secret":"Code from the email"}'),
+		pg_temp.save('QorperaOS/human-tasks/enter-code-3.md', saved || '{"id":"78500000-0000-4000-8000-0000000000ef"}')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
 	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
 		or r -> 'units' -> 1 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
 		raise exception 'Both refusals name secret_state: %', r; end if;
 	-- Not over another task's saved file either: the id is part of the mark.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0014', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0014', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md',
 		saved || '{"id":"78500000-0000-4000-8000-0000000000e9"}'))), 1, 'refused', 'structured_rule');
 	-- Taking the mark back is anyone's; after that only the platform sets it again.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0015', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', asked))),
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0015', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', asked))),
 		1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0016', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0016', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved))),
 		1, 'refused', 'structured_rule');
 	-- An agent's run, which writes most task files, is held to the same rule (the decision its commit takes).
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code.md', saved), 'human-tasks/enter-code.md', null);
+		pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved), 'QorperaOS/human-tasks/enter-code.md', null);
 	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'An agent never marks a secret saved: %', r; end if;
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-4.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f5"}'), 'human-tasks/enter-code-4.md', null);
+		pg_temp.save('QorperaOS/human-tasks/enter-code-4.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f5"}'), 'QorperaOS/human-tasks/enter-code-4.md', null);
 	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
 		raise exception 'Not as a new task either: %', r; end if;
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0018', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0018', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved))),
 		1, 'saved');
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code.md', saved || '{"title":"Enter the SMS code"}'), 'human-tasks/enter-code.md', null);
+		pg_temp.save('QorperaOS/human-tasks/enter-code.md', saved || '{"title":"Enter the SMS code"}'), 'QorperaOS/human-tasks/enter-code.md', null);
 	if r is distinct from '{"ok": true}'::jsonb then raise exception 'An agent keeps the mark over the same task and label: %', r; end if;
 	-- The mark is the file's at its own path: a saved task elsewhere does not lend it to a new path.
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-5.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f6"}'), 'human-tasks/enter-code-5.md', null);
+		pg_temp.save('QorperaOS/human-tasks/enter-code-5.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f6"}'), 'QorperaOS/human-tasks/enter-code-5.md', null);
 	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
 		raise exception 'Not at a new path while another is saved: %', r; end if;
 end $$;
@@ -397,11 +399,11 @@ do $$
 declare env constant uuid := '70700000-0000-4000-8000-000000000020'; t jsonb; u record;
 begin
 	for u in select * from (values
-		(pg_temp.save('human-tasks/fit-disk.md', pg_temp.task(p_set => '{"title":"Fit the disk"}')),
+		(pg_temp.save('QorperaOS/human-tasks/fit-disk.md', pg_temp.task(p_set => '{"title":"Fit the disk"}')),
 			'qorpera_folder_human_task_index', '78500000-0000-4000-8000-0000000000e1'),
-		(pg_temp.save('contacts/maria-jensen.md', pg_temp.contact('{"asks":["VAT filing"]}')),
+		(pg_temp.save('QorperaOS/contacts/maria-jensen.md', pg_temp.contact('{"asks":["VAT filing"]}')),
 			'qorpera_folder_contact_index', '78500000-0000-4000-8000-0000000000f1'),
-		(pg_temp.save('human-tasks/new-task.md', pg_temp.task('78500000-0000-4000-8000-0000000000ea')),
+		(pg_temp.save('QorperaOS/human-tasks/new-task.md', pg_temp.task('78500000-0000-4000-8000-0000000000ea')),
 			'qorpera_folder_human_task_index', '78500000-0000-4000-8000-0000000000ea')) v(unit, tbl, id) loop
 		select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 		from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(u.unit)) y;

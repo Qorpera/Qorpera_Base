@@ -203,7 +203,7 @@ begin
 	insert into public.qorpera_company_rooms(id, profile_id, environment_id, room_key, name, purpose, status, session_id, version,
 		created_by_user_id, source_path, source_path_version, source_snapshot_id, source_file_sha256)
 	values (v_room, v_profile, v_env, 'room-' || left(v_room::text, 8), 'Room', 'Talk', 'active', v_session, 1, p_poster,
-		'agents/groups/room', extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('f', 64));
+		'QorperaOS/agents/groups/room', extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('f', 64));
 	insert into public.qorpera_company_room_members(room_id, principal_kind, principal_id, status, source_path_version) values
 		(v_room, 'member', p_poster, 'active', extensions.gen_random_uuid()),
 		(v_room, 'staff_agent', v_staff, 'active', extensions.gen_random_uuid());
@@ -396,24 +396,26 @@ begin
 	r := pg_temp.commit(v, 'auth-private-other', jsonb_build_array(jsonb_build_object('op','write','path','shared/q.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
 
-	-- rules/. Ordinary files there (a rule file, rules/*.md, needs its parse since F2-1): the authority is the same.
-	r := pg_temp.commit(pg_temp.member(1), 'rules-owner-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','rules'),
-		jsonb_build_object('op','write','path','rules/tone.txt','file',a)));
-	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	if (pg_temp.read('rules/tone.txt', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
+	-- QorperaOS/rules/. Ordinary files there (a rule file, QorperaOS/rules/*.md, needs its parse since F2-1): the authority
+	-- is the same.
+	r := pg_temp.commit(pg_temp.member(1), 'rules-owner-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules'),
+		jsonb_build_object('op','write','path','QorperaOS/rules/tone.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved'); perform pg_temp.expect(r, 3, 'saved');
+	if (pg_temp.read('QorperaOS/rules/tone.txt', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(5), 'rules-admin-1', jsonb_build_array(jsonb_build_object('op','write',
-		'path','rules/admin.txt','file',a))), 1, 'saved');
-	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.txt','file',a),
-		jsonb_build_object('op','move','from','shared/p.txt','to','rules/p.txt',
+		'path','QorperaOS/rules/admin.txt','file',a))), 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/rules/mine.txt','file',a),
+		jsonb_build_object('op','move','from','shared/p.txt','to','QorperaOS/rules/p.txt',
 			'expectedVersion',pg_temp.read('shared/p.txt') -> 'entry' ->> 'version')));
 	perform pg_temp.expect(r, 1, 'denied', 'denied'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	v := pg_temp.run('human', c_member);
-	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/agent.txt','file',a)));
+	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/rules/agent.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
-	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
+	if (pg_temp.read('QorperaOS/rules/tone.txt', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = clock_timestamp()
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');
-	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
+	if (pg_temp.read('QorperaOS/rules/tone.txt', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
 		raise exception 'Without its root grant an agent still reads rules/ and nothing shared'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = null
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');
@@ -421,7 +423,8 @@ end $$;
 
 -- Worker and coding rules, through the authority functions with resolved actors (coding and worker runs reach the
 -- commit with C1b-2). A read-access in-house worker writes nothing; a coding session (whose worker access is always
--- 'read') writes as its agent and member, except agents/ and rules/, and can still copy out of agents/.
+-- 'read') writes as its agent and member, except QorperaOS/agents/ and QorperaOS/rules/, and can still copy out of
+-- QorperaOS/agents/.
 do $$
 declare
 	c_env constant uuid := '63200000-0000-4000-8000-000000000020'; c_profile constant uuid := '63200000-0000-4000-8000-000000000010';
@@ -429,7 +432,7 @@ declare
 		"requesterUserId":"63200000-0000-4000-8000-000000000002","audience":{"kind":"company"}}';
 	v_reader jsonb; v_writer jsonb; v_coding jsonb; r jsonb;
 begin
-	r := pg_temp.commit('{"kind":"platform"}', 'coding-setup-1', '[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/a"},
+	r := pg_temp.commit('{"kind":"platform"}', 'coding-setup-1', '[{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/a"},
 		{"op":"mkdir","path":"code"},{"op":"mkdir","path":"code/repo"}]');
 	perform pg_temp.expect(r, 4, 'saved');
 	v_reader := v_base || '{"sessionKind":"in_house","workerAccess":"read"}';
@@ -441,17 +444,17 @@ begin
 		raise exception 'In-house worker access'; end if;
 	if not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'code/repo/main.py', 'write')
 		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'shared/w.txt', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'agents', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'agents/a/agent.md', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'rules', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'Rules/x.md', 'write')
-		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'agents/a', 'read') then
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/agents', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/agents/a/agent.md', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/rules', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/Rules/x.md', 'write')
+		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/agents/a', 'read') then
 		raise exception 'The coding rule'; end if;
 	-- As a subtree: a move into agents/ or rules/ is refused as a target, a copy out of agents/ is allowed.
-	if public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'code/repo', 'rules/repo', 'write')
-		or public.qorpera_folder_actor_keys_allowed(c_env, c_profile, v_coding, 'misc', array['misc/x', 'agents/b'], 'write')
-		or not (public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'agents/a', 'agents/a', 'read')
-			and public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'agents/a', 'misc/a', 'write')) then
+	if public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'code/repo', 'QorperaOS/rules/repo', 'write')
+		or public.qorpera_folder_actor_keys_allowed(c_env, c_profile, v_coding, 'misc', array['misc/x', 'qorperaos/agents/b'], 'write')
+		or not (public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'qorperaos/agents/a', 'QorperaOS/agents/a', 'read')
+			and public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'qorperaos/agents/a', 'misc/a', 'write')) then
 		raise exception 'The coding rule on subtrees'; end if;
 end $$;
 
@@ -554,7 +557,7 @@ begin
 		or (public.qorpera_folder_path_resource(c_env, 'members/63200000-0000-4000-8000-000000000003/private/x')).id is not null
 		or (public.qorpera_folder_path_resource(c_env, 'members/63200000-0000-4000-8000-000000000002/private/x')).scope
 			is distinct from 'member_private'
-		or (public.qorpera_folder_path_resource(c_env, 'rules/x.md')).scope is distinct from 'company_rules' then
+		or (public.qorpera_folder_path_resource(c_env, 'QorperaOS/rules/x.md')).scope is distinct from 'company_rules' then
 		raise exception 'The indexed resolver'; end if;
 end $$;
 

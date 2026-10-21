@@ -71,7 +71,7 @@ begin
 	perform pg_temp.lg_mode('tree');
 	v_place := pg_temp.lg_place();
 	perform pg_temp.base_assert(not v_place ? 'off' and v_place ->> 'exists' = 'false' and v_place ->> 'gone' = 'false'
-		and v_place ->> 'path' = 'agents/alice/memory/thread/runs/' || v_run.id
+		and v_place ->> 'path' = 'qorperaos/agents/alice/memory/thread/runs/' || v_run.id
 		and v_place #>> '{origin,conversation}' = v_run.session_id::text,
 		'a beta run is placed in its conversation''s tree: ' || v_place::text);
 	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"off":true}'::jsonb,
@@ -100,7 +100,7 @@ begin
 		raise exception 'undo the room' using errcode = 'QG957';
 	exception when sqlstate 'QG957' then null;
 	end;
-	perform pg_temp.base_assert(pg_temp.lg_place() ->> 'path' = 'agents/alice/memory/thread/runs/' || v_run.id,
+	perform pg_temp.base_assert(pg_temp.lg_place() ->> 'path' = 'qorperaos/agents/alice/memory/thread/runs/' || v_run.id,
 		'the room is back: ' || pg_temp.lg_place()::text);
 	perform pg_temp.lg_mode('notebooks');
 end
@@ -113,13 +113,13 @@ declare v_run public.qorpera_execution_runs := pg_temp.lg_run(); v_place jsonb;
 begin
 	-- The run's log, as its runtime's first batch indexes runs/<run>/run.toml and marks the generation row.
 	insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
-	values (v_run.environment_id, v_run.id, v_run.session_id, 'agents/alice/memory/thread/runs/' || v_run.id,
-		'agents/alice/memory/thread/runs/' || v_run.id, extensions.gen_random_uuid(), extensions.gen_random_uuid());
+	values (v_run.environment_id, v_run.id, v_run.session_id, 'QorperaOS/agents/alice/memory/thread/runs/' || v_run.id,
+		'qorperaos/agents/alice/memory/thread/runs/' || v_run.id, extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	insert into public.qorpera_memory_run_generations(environment_id, run_id, log_created_at)
 	values (v_run.environment_id, v_run.id, clock_timestamp());
 	v_place := pg_temp.lg_place();
 	perform pg_temp.base_assert(v_place ->> 'exists' = 'true' and v_place ->> 'gone' = 'false' and not v_place ? 'off'
-		and v_place ->> 'path' = 'agents/alice/memory/thread/runs/' || v_run.id,
+		and v_place ->> 'path' = 'QorperaOS/agents/alice/memory/thread/runs/' || v_run.id,
 		'a notebook run''s live log goes on: ' || v_place::text);
 	update public.qorpera_memory_run_logs set retired_at = clock_timestamp() where run_id = v_run.id;
 	perform pg_temp.base_assert(pg_temp.lg_place() = '{"gone":true}'::jsonb, 'a retired log is gone, not off');

@@ -1,6 +1,6 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- Interfaces I9b under concurrency (deploy/first-node/RUNTIME-INTERFACES.md §5.1 "Supervision", §6.1 rule 8): an agent's
--- commit in tables/ holds the areas table's index row FOR SHARE at rank 5, so it reads its area and its supervisor's
+-- commit in QorperaOS/tables/ holds the areas table's index row FOR SHARE at rank 5, so it reads its area and its supervisor's
 -- consent as no save of the areas can change them before it ends. A save that drops the agent from its area holds the
 -- row; the agent's take of a claimed cell waits there, then acts for no one and is refused. The agent's take holds the
 -- row; the save waits there and lands after it. The take holds the row in its rank-5 place, before its paths: in the
@@ -84,10 +84,10 @@ $$;
 -- The areas (no area yet) and the claims (no one holds t1 or t2), committed. Then the member makes Sales with Ada in its
 -- agents and themselves its supervisor: their consent.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'i9b-race-seed', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','tables'),
-	pg_temp.table_folder('tables/areas', pg_temp.areas_def(), pg_temp.rows(array['area','owner','supervisor','agents','shared'], '{}')),
-	pg_temp.table_folder('tables/claims', pg_temp.claims_def(), pg_temp.claims('', '')))), 3, 'saved') \g /dev/null
-select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-1', jsonb_build_array(pg_temp.w('tables/areas/rows.csv',
+	jsonb_build_object('op','mkdir','path','QorperaOS/tables'),
+	pg_temp.table_folder('QorperaOS/tables/areas', pg_temp.areas_def(), pg_temp.rows(array['area','owner','supervisor','agents','shared'], '{}')),
+	pg_temp.table_folder('QorperaOS/tables/claims', pg_temp.claims_def(), pg_temp.claims('', '')))), 3, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-1', jsonb_build_array(pg_temp.w('QorperaOS/tables/areas/rows.csv',
 	pg_temp.sales('64800000-0000-4000-8000-0000000000a1')))), 1, 'saved') \g /dev/null
 select set_config('qorpera_test.live', pg_temp.live()::text, false) \g /dev/null
 do $$
@@ -98,9 +98,9 @@ end $$;
 -- Each race's units, staged and held by whoever commits them (Ada's run the take, the member their save), committed
 -- before the blocks that drive the fences: a row this session wrote and has not committed would make the other sessions
 -- wait on it while it waits on them.
-select set_config('qorpera_test.a_take', jsonb_build_array(pg_temp.w('tables/claims/rows.csv',
+select set_config('qorpera_test.a_take', jsonb_build_array(pg_temp.w('QorperaOS/tables/claims/rows.csv',
 	pg_temp.claims(pg_temp.member() ->> 'userId', '')))::text, false) \g /dev/null
-select set_config('qorpera_test.a_drop', jsonb_build_array(pg_temp.w('tables/areas/rows.csv', pg_temp.sales('')))::text,
+select set_config('qorpera_test.a_drop', jsonb_build_array(pg_temp.w('QorperaOS/tables/areas/rows.csv', pg_temp.sales('')))::text,
 	false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.a_take')::jsonb) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.a_drop')::jsonb)
@@ -127,16 +127,16 @@ begin
 end $$;
 
 -- Ada back in Sales (the member's consent stays live: the save keeps the cell), and the next race's units.
-select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-2', jsonb_build_array(pg_temp.w('tables/areas/rows.csv',
+select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-2', jsonb_build_array(pg_temp.w('QorperaOS/tables/areas/rows.csv',
 	pg_temp.sales('64800000-0000-4000-8000-0000000000a1')))), 1, 'saved') \g /dev/null
 do $$
 begin
 	if pg_temp.live() is distinct from current_setting('qorpera_test.live')::uuid then
 		raise exception 'A save that keeps the supervisor keeps the consent: %', pg_temp.live(); end if;
 end $$;
-select set_config('qorpera_test.b_take', jsonb_build_array(pg_temp.w('tables/claims/rows.csv',
+select set_config('qorpera_test.b_take', jsonb_build_array(pg_temp.w('QorperaOS/tables/claims/rows.csv',
 	pg_temp.claims('', pg_temp.member() ->> 'userId')))::text, false) \g /dev/null
-select set_config('qorpera_test.b_drop', jsonb_build_array(pg_temp.w('tables/areas/rows.csv', pg_temp.sales('')))::text,
+select set_config('qorpera_test.b_drop', jsonb_build_array(pg_temp.w('QorperaOS/tables/areas/rows.csv', pg_temp.sales('')))::text,
 	false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.b_take')::jsonb) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.b_drop')::jsonb)
@@ -158,10 +158,10 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	perform pg_temp.expect(pg_temp.result('fence_two')::jsonb, 1, 'saved');
 	-- (Read in a statement of its own: the take committed before it.)
-	if public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'tables/claims/rows.csv') -> 'rows' -> 1 -> 'fields' ->> 1
+	if public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'qorperaos/tables/claims/rows.csv') -> 'rows' -> 1 -> 'fields' ->> 1
 		is distinct from pg_temp.member() ->> 'userId' then
 		raise exception 'The take behind which the save waited: %',
-			public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'tables/claims/rows.csv'); end if;
+			public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'qorperaos/tables/claims/rows.csv'); end if;
 end $$;
 
 -- C. A withdrawal holds the consent (as its FOR UPDATE does); consenting again meanwhile finds it live, waits at it,
@@ -197,9 +197,9 @@ begin
 end $$;
 
 -- Ada back in Sales (under the new consent), and the last race's take: t1 for the member, t2 as it is.
-select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-3', jsonb_build_array(pg_temp.w('tables/areas/rows.csv',
+select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9b-race-sales-3', jsonb_build_array(pg_temp.w('QorperaOS/tables/areas/rows.csv',
 	pg_temp.sales('64800000-0000-4000-8000-0000000000a1')))), 1, 'saved') \g /dev/null
-select set_config('qorpera_test.d_take', jsonb_build_array(pg_temp.w('tables/claims/rows.csv',
+select set_config('qorpera_test.d_take', jsonb_build_array(pg_temp.w('QorperaOS/tables/claims/rows.csv',
 	pg_temp.claims(pg_temp.member() ->> 'userId', pg_temp.member() ->> 'userId')))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.d_take')::jsonb) \g /dev/null
 
@@ -211,16 +211,16 @@ begin
 	perform dblink_exec('fence_three', 'begin');
 	perform * from dblink('fence_three', format('select e.path from public.qorpera_folder_entries e where e.environment_id = %L
 		and e.key_sha256 = extensions.digest(public.qorpera_folder_key(%L), %L) for update', '64800000-0000-4000-8000-000000000020',
-		'tables/claims/rows.csv', 'sha256')) as t(x text);
+		'QorperaOS/tables/claims/rows.csv', 'sha256')) as t(x text);
 	perform dblink_send_query('fence_one', pg_temp.sql_commit(pg_temp.ada(), 'i9b-race-d-take', current_setting('qorpera_test.d_take')::jsonb));
 	if not pg_temp.waits_for('fence_one', 'fence_three') then raise exception 'The take must wait at its path'; end if;
 	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_folder_entries'::regclass then
 		raise exception 'The take must queue on its path, not on %', pg_temp.queued_on('fence_one'); end if;
 	perform dblink_send_query('fence_two', format('select i.id::text from public.qorpera_folder_table_index i
 		where i.environment_id = %L and i.folder_key = %L and i.retired_at is null for no key update',
-		'64800000-0000-4000-8000-000000000020', 'tables/areas'));
+		'64800000-0000-4000-8000-000000000020', 'qorperaos/tables/areas'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then
-		raise exception 'An agent''s take in tables/ must hold the areas'' row before its paths'; end if;
+		raise exception 'An agent''s take in QorperaOS/tables/ must hold the areas'' row before its paths'; end if;
 	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_table_index'::regclass then
 		raise exception 'The save''s lock must queue on the areas'' row, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_three', 'rollback');
@@ -229,10 +229,10 @@ begin
 end $$;
 do $$
 begin
-	if public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'tables/claims/rows.csv') -> 'rows' -> 0 -> 'fields' ->> 1
+	if public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'qorperaos/tables/claims/rows.csv') -> 'rows' -> 0 -> 'fields' ->> 1
 		is distinct from pg_temp.member() ->> 'userId' then
 		raise exception 'The take that held the areas'' row: %',
-			public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'tables/claims/rows.csv'); end if;
+			public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', 'qorperaos/tables/claims/rows.csv'); end if;
 end $$;
 
 -- Remove the fixture: every row of the company, its environment, its runs, jobs, sessions, rooms and login.

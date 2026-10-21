@@ -121,11 +121,11 @@ begin
 			where i.run_id = (v2 ->> 'runId')::uuid and i.inherit_id = k and i.view_id = (s ->> 'viewId')::uuid) then
 		raise exception 'The reading run takes in the read set and the records'; end if;
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k), k, s, 1, true);
-	perform pg_temp.release(s, 'rules/tone.txt');
+	perform pg_temp.release(s, 'QorperaOS/rules/tone.txt');
 	k2 := pg_temp.action(v2);
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k2), k2, s, 2, false);
 	if not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
-			where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k2 and x ->> 'path' = 'rules/tone.txt')
+			where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k2 and x ->> 'path' = 'QorperaOS/rules/tone.txt')
 		or exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k2 and x ->> 'path' = 'shared/a.txt') then
 		raise exception 'A new action copies only what the view released since'; end if;
@@ -142,7 +142,7 @@ begin
 	k4 := pg_temp.action(v3);
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k4), k4, s, 2, false);
 	if (select count(*) from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
-		where rec.run_id = (v3 ->> 'runId')::uuid and rec.release_id = k4 and x ->> 'path' in ('shared/a.txt', 'rules/tone.txt')) <> 2 then
+		where rec.run_id = (v3 ->> 'runId')::uuid and rec.release_id = k4 and x ->> 'path' in ('shared/a.txt', 'QorperaOS/rules/tone.txt')) <> 2 then
 		raise exception 'A closed view''s reads are taken in'; end if;
 end $$;
 

@@ -192,14 +192,14 @@ begin
 	-- the turn's own reader gets it. s7's turn is no longer leased: it takes in nothing.
 	v_turn6 := pg_temp.turn(6, clock_timestamp() + interval '1 hour');
 	v_turn7 := pg_temp.turn(7, clock_timestamp() - interval '1 second');
-	v_read := jsonb_build_object('path', 'rules/coding.md', 'version', '1', 'authority', public.qorpera_folder_read_receipt(
+	v_read := jsonb_build_object('path', 'QorperaOS/rules/coding.md', 'version', '1', 'authority', public.qorpera_folder_read_receipt(
 		'48500000-0000-4000-8000-000000000020', '48500000-0000-4000-8000-000000000010',
-		public.qorpera_folder_run_reader('48500000-0000-4000-8000-000000000010', v_turn6), 'rules/coding.md'));
+		public.qorpera_folder_run_reader('48500000-0000-4000-8000-000000000010', v_turn6), 'QorperaOS/rules/coding.md'));
 	insert into public.qorpera_coding_machine_read_records(coding_machine_id, release_id, environment_id, resource_id, reads, output_sha256)
 	values ((v_m1 ->> 'machineId')::uuid, extensions.gen_random_uuid(), '48500000-0000-4000-8000-000000000020',
 		(v_read -> 'authority' ->> 'resourceId')::uuid, jsonb_build_array(v_read), repeat('3', 64));
 	perform pg_temp.ok(v_read -> 'authority' ->> 'grantId' is null and not exists (select 1 from public.qorpera_folder_run_read_records
-		where run_id = v_turn6), format('rules/ needs no grant, and s6''s turn has no records before it moves: %s', v_read));
+		where run_id = v_turn6), format('QorperaOS/rules/ needs no grant, and s6''s turn has no records before it moves: %s', v_read));
 	perform pg_temp.ok(pg_temp.run(6, v_m1 ->> 'bindingText') ->> 'intent' = 'run'
 		and pg_temp.run(7, v_m1 ->> 'bindingText') ->> 'intent' = 'run', 's6 and s7 move onto m1');
 	v_take := md5('coding-machine:' || v_turn6 || ':' || (v_m1 ->> 'machineId'))::uuid;

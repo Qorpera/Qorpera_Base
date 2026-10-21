@@ -17,11 +17,11 @@ begin
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	for i in 1 .. 2 loop
 		perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'cb-dispatch-' || i,
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('98800000-0000-4000-8000-0000000000b' || i)::uuid,
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('98800000-0000-4000-8000-0000000000b' || i)::uuid,
 				p_title => case i when 1 then 'Fix the login page' else 'Fix the logout page' end))
 			-> 'units' -> 0 ->> 'outcome' = 'saved', 'dispatch ' || i);
 		perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder',
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'cb-cancel-' || i));
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'cb-cancel-' || i));
 		perform pg_temp.base_assert((select settled_at from public.qorpera_coding_session_turns
 			where worker_id = ('98800000-0000-4000-8000-0000000000b' || i)::uuid and sequence = 1) is not null, 'turn 1 ended: ' || i);
 	end loop;
@@ -288,7 +288,7 @@ declare v_q jsonb := pg_temp.cb_run((pg_temp.cb_question('98800000-0000-4000-800
 begin
 	perform set_config('qorpera_test.cb_question_run', v_q::text, true);
 	perform pg_temp.base_assert(pg_temp.cb_after(format('select pg_temp.cb_archive(%L, %L, %L)', v_q,
-			'agents/alice/todos/fix-login/session-a', 'cb-archive-1'),
+			'QorperaOS/agents/alice/todos/fix-login/session-a', 'cb-archive-1'),
 		$c$(pg_temp.c3_session('98800000-0000-4000-8000-0000000000b1')).archived_by = 'agent'$c$, false),
 		'the question''s run archives the session');
 end $$;
@@ -315,7 +315,7 @@ end $$;
 -- 6. A new turn since the question: its run may not archive the session, even once that turn ended and the session is
 --    busy again; the three-hour question no longer stands -----------------------------------------------------------------
 do $$
-declare v_q jsonb := current_setting('qorpera_test.cb_question_run')::jsonb; v_folder text := 'agents/alice/todos/fix-login/session-a';
+declare v_q jsonb := current_setting('qorpera_test.cb_question_run')::jsonb; v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-a';
 	v_step jsonb; w public.qorpera_runtime_workers;
 begin
 	perform pg_temp.c3_answer('98800000-0000-4000-8000-0000000000b1', 'Keep the dev server, and add a test.');

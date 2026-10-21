@@ -1,6 +1,6 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Group chats in the sidebar on folder-v2 (ported from snapshot-v1 in the legacy sweep): a group chat (its group.md) is
--- placed and ordered by agents/sections.md in one order with the agents of its section, and pinned and hidden by each
+-- placed and ordered by QorperaOS/agents/sections.md in one order with the agents of its section, and pinned and hidden by each
 -- member like an agent. Unassigned lists the agents, then the group chats oldest first; an agent's own thread is never a
 -- group chat. A group chat with no model chosen names none. A group chat whose folder is gone leaves every list but keeps
 -- its place; a deleted one takes its rows with it.
@@ -50,25 +50,25 @@ create function pg_temp.gc_container(p_state jsonb, p_section text) returns text
 $$;
 -- A new group chat's folder with its group.md, as one unit.
 create function pg_temp.gc_group(p_handle text, p_id uuid, p_name text, p_agents uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/' || p_handle,
+	select jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(g.text))),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/' || p_handle || '/group.md', 'kind', 'group', 'text', g.text,
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/' || p_handle || '/group.md', 'kind', 'group', 'text', g.text,
 			'parse', jsonb_build_object('kind', 'group', 'id', p_id, 'name', p_name, 'subtitle', null, 'agents', to_jsonb(p_agents),
 				'people', '["92400000-0000-4000-8000-000000000001"]'::jsonb, 'purpose', 'Plan the launch.'), 'parserVersion', 1)))
 	from (select format(E'---\nid: %s\nname: %s\nagents:\n%speople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the launch.\n',
 		p_id, p_name, (select string_agg(format(E'  - %s\n', a), '') from unnest(p_agents) a)) as text) g
 $$;
 create function pg_temp.gc_sections(p_sections jsonb) returns jsonb language sql as $$
-	select pg_temp.base_write('agents/sections.md', 'sections', 'sections ' || p_sections::text, jsonb_build_object('kind', 'sections',
+	select pg_temp.base_write('QorperaOS/agents/sections.md', 'sections', 'sections ' || p_sections::text, jsonb_build_object('kind', 'sections',
 		'sections', coalesce((select jsonb_agg(jsonb_build_object('name', section ->> 'name', 'line', 3 + 10 * (ordinal - 1)::integer,
 			'members', coalesce((select jsonb_agg(jsonb_build_object('id', member #>> '{}', 'line', 4 + 10 * (ordinal - 1)::integer + n::integer)
 				order by n) from jsonb_array_elements(section -> 'items') with ordinality m(member, n)), '[]'::jsonb)) order by ordinal)
 			from jsonb_array_elements(p_sections) with ordinality s(section, ordinal)), '[]'::jsonb)),
-		pg_temp.base_version('agents/sections.md'))
+		pg_temp.base_version('QorperaOS/agents/sections.md'))
 $$;
 
 -- Two group chats, Launch then Hiring, each saved by the owner.
-select pg_temp.base_commit(pg_temp.base_owner(), 'gc-launch-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
+select pg_temp.base_commit(pg_temp.base_owner(), 'gc-launch-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
 	pg_temp.gc_group('launch', '62200000-0000-4000-8000-000000000001', 'Launch',
 		array['92400000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000032']::uuid[]))) \g /dev/null
 select pg_temp.base_commit(pg_temp.base_owner(), 'gc-hiring-0001', jsonb_build_array(
@@ -179,7 +179,7 @@ begin
 	perform pg_temp.gc_manage('92400000-0000-4000-8000-000000000003', jsonb_build_object('action', 'set_pins', 'groupChats', true,
 		'order', jsonb_build_array('62200000-0000-4000-8000-000000000001', '62200000-0000-4000-8000-000000000002')));
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'gc-delete-hiring', jsonb_build_array(jsonb_build_object('op', 'delete',
-		'path', 'agents/groups/hiring', 'expectedVersion', pg_temp.base_version('agents/groups/hiring'),
+		'path', 'QorperaOS/agents/groups/hiring', 'expectedVersion', pg_temp.base_version('QorperaOS/agents/groups/hiring'),
 		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.base_assert((select status = 'closed' from public.qorpera_shared_sessions where id = (select session_id
 		from public.qorpera_company_rooms where id = '62200000-0000-4000-8000-000000000002')), 'Its conversation is closed');

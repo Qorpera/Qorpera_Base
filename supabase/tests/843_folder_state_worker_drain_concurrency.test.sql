@@ -18,9 +18,9 @@ $$;
 select public.qorpera_folder_worker_commit('64800000-0000-4000-8000-000000000020', pg_temp.ada(), k.key, k.units::jsonb,
 	jsonb_build_object('action','dispatch','folder',k.folder,'title','Race worker','goal','Race.','doneWhen','Raced.','context',null,
 		'sources','[]'::jsonb,'access','write','revival','each'), k.review::uuid) ->> 'seq'
-from (values ('f2b3-race-1', current_setting('qorpera_test.u1'), 'agents/ada/todos/race-one/worker', current_setting('qorpera_test.r1')),
-	('f2b3-race-2', current_setting('qorpera_test.u2'), 'agents/ada/todos/race-two/worker', current_setting('qorpera_test.r2')),
-	('f2b3-race-3', current_setting('qorpera_test.u3'), 'agents/ada/todos/race-three/worker', current_setting('qorpera_test.r3')))
+from (values ('f2b3-race-1', current_setting('qorpera_test.u1'), 'QorperaOS/agents/ada/todos/race-one/worker', current_setting('qorpera_test.r1')),
+	('f2b3-race-2', current_setting('qorpera_test.u2'), 'QorperaOS/agents/ada/todos/race-two/worker', current_setting('qorpera_test.r2')),
+	('f2b3-race-3', current_setting('qorpera_test.u3'), 'QorperaOS/agents/ada/todos/race-three/worker', current_setting('qorpera_test.r3')))
 	as k(key, units, folder, review) \g /dev/null
 do $$
 begin
@@ -55,7 +55,7 @@ end $$;
 -- B. The materializer holds a worker's queued wake while its todo is cancelled: the drain never waits on that row (NOWAIT),
 -- passes over the worker, and cancels it on its next pass.
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'f2b3-cancel-two', jsonb_build_array(
-	pg_temp.todo('agents/ada/todos/race-two.md', 'cancelled'))), 1, 'saved') \g /dev/null
+	pg_temp.todo('QorperaOS/agents/ada/todos/race-two.md', 'cancelled'))), 1, 'saved') \g /dev/null
 do $$
 declare two constant uuid := '84100000-0000-4000-8000-000000000102'; v_text text;
 begin

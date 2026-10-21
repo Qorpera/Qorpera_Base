@@ -96,18 +96,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70300000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -126,7 +126,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70300000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70300000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70300000-0000-4000-8000-000000000020'
@@ -149,24 +149,24 @@ returns jsonb language sql as $$
 $$;
 -- A new group chat folder with its group.md, as one unit.
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 -- An edit of a group.md, with its parse given.
 create function pg_temp.edit_group(p_handle text, p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
-		pg_temp.version('agents/groups/' || p_handle || '/group.md'))
+	select pg_temp.write('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
+		pg_temp.version('QorperaOS/agents/groups/' || p_handle || '/group.md'))
 $$;
 -- The creation commit, two hires and a group chat, committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'race-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Group Race'),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Group Race'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 	pg_temp.hire('co-founder', '70300000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-	jsonb_build_object('op','mkdir','path','agents/groups'))), 6, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'))), 7, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-0001', jsonb_build_array(
 	pg_temp.hire('nora-dahl', '70300000-0000-4000-8000-0000000000a1', 'Nora Dahl'), pg_temp.hire('otto', '70300000-0000-4000-8000-0000000000a2', 'Otto'))), 2, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-group-0001', jsonb_build_array(
@@ -227,7 +227,7 @@ declare v jsonb;
 begin
 	perform dblink_exec('srace_hold', 'begin');
 	perform * from dblink('srace_hold', $q$select 1 from public.qorpera_folder_entries
-		where environment_id = '70300000-0000-4000-8000-000000000020' and key_text = 'agents/groups/launch/group.md' for update$q$) as t(x integer);
+		where environment_id = '70300000-0000-4000-8000-000000000020' and key_text = 'qorperaos/agents/groups/launch/group.md' for update$q$) as t(x integer);
 	perform dblink_send_query('srace_save', current_setting('qorpera_test.state_rename_back'));
 	if not pg_temp.waits_for('srace_save', 'srace_hold') then raise exception 'The rename must wait on the held path'; end if;
 	-- The save now holds the company row KEY SHARE and the chat's room FOR NO KEY UPDATE.

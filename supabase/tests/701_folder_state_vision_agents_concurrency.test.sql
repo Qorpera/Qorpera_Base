@@ -95,18 +95,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70100000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -125,7 +125,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70100000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70100000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70100000-0000-4000-8000-000000000020'
@@ -136,20 +136,20 @@ $$;
 
 -- The creation commit and one hire, committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'race-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Race'),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
-	pg_temp.hire('co-founder', '70100000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 5, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Race'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	pg_temp.hire('co-founder', '70100000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 6, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-0001', jsonb_build_array(
 	pg_temp.hire('nora-dahl', '70100000-0000-4000-8000-0000000000a1', 'Nora Dahl'))), 1, 'saved') \g /dev/null
 select set_config('qorpera_test.state_room', (select id::text from public.qorpera_company_rooms
 	where profile_id = '70100000-0000-4000-8000-000000000010' and bound_staff_agent_id = '70100000-0000-4000-8000-0000000000a1'), false) \g /dev/null
 -- The rename, staged now: staging an object inside the save's own transaction would lock the company row itself.
 select set_config('qorpera_test.state_rename', pg_temp.sql_commit('70100000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-rename-0001', jsonb_build_array(pg_temp.write('agents/nora-dahl/agent.md', 'agent',
+	pg_temp.owner()::text, 'race-rename-0001', jsonb_build_array(pg_temp.write('QorperaOS/agents/nora-dahl/agent.md', 'agent',
 		pg_temp.agent_text('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'),
 		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'),
-		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
+		pg_temp.version('QorperaOS/agents/nora-dahl/agent.md')))::text), false) \g /dev/null
 
 select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['srace_post','srace_save','srace_hold']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['srace_post','srace_save','srace_hold']) name;
@@ -194,10 +194,10 @@ end $$;
 -- B. An instructions edit (no room) ends in the roster's company operation: the clock, then the company row.
 -- Posting holds the company row and appends its own operations later; the edit waits before it takes the clock.
 select set_config('qorpera_test.state_edit', pg_temp.sql_commit('70100000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-edit-0001', jsonb_build_array(pg_temp.write('agents/nora-dahl/agent.md', 'agent',
+	pg_temp.owner()::text, 'race-edit-0001', jsonb_build_array(pg_temp.write('QorperaOS/agents/nora-dahl/agent.md', 'agent',
 		replace(pg_temp.agent_text('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'), 'Sell.', 'Sell more.'),
 		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Skov') || '{"instructions":"Sell more."}',
-		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
+		pg_temp.version('QorperaOS/agents/nora-dahl/agent.md')))::text), false) \g /dev/null
 do $$
 declare v jsonb;
 begin
@@ -221,16 +221,16 @@ end $$;
 -- C. The other order: the save holds its room (it waits on a path another connection holds) and a post
 -- starts. The post waits for the save at the company row, before the room, and both finish.
 select set_config('qorpera_test.state_rename_back', pg_temp.sql_commit('70100000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-rename-0002', jsonb_build_array(pg_temp.write('agents/nora-dahl/agent.md', 'agent',
+	pg_temp.owner()::text, 'race-rename-0002', jsonb_build_array(pg_temp.write('QorperaOS/agents/nora-dahl/agent.md', 'agent',
 		replace(pg_temp.agent_text('70100000-0000-4000-8000-0000000000a1', 'Nora Dahl'), 'Sell.', 'Sell more.'),
 		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Dahl') || '{"instructions":"Sell more."}',
-		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
+		pg_temp.version('QorperaOS/agents/nora-dahl/agent.md')))::text), false) \g /dev/null
 do $$
 declare v jsonb;
 begin
 	perform dblink_exec('srace_hold', 'begin');
 	perform * from dblink('srace_hold', $q$select 1 from public.qorpera_folder_entries
-		where environment_id = '70100000-0000-4000-8000-000000000020' and key_text = 'agents/nora-dahl/agent.md' for update$q$) as t(x integer);
+		where environment_id = '70100000-0000-4000-8000-000000000020' and key_text = 'qorperaos/agents/nora-dahl/agent.md' for update$q$) as t(x integer);
 	perform dblink_send_query('srace_save', current_setting('qorpera_test.state_rename_back'));
 	if not pg_temp.waits_for('srace_save', 'srace_hold') then raise exception 'The rename must wait on the held path'; end if;
 	-- The save now holds the company row KEY SHARE and the room FOR UPDATE.

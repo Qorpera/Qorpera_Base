@@ -5,7 +5,7 @@ create function pg_temp.fx_other_folder(p_staff uuid) returns void language plpg
 begin
 	set local session_replication_role = replica;
 	update public.qorpera_profile_staff set folder_environment_id = '70700000-0000-4000-8000-000000000022',
-		folder_path = 'agents/elsewhere/agent.md', folder_path_version = extensions.gen_random_uuid(),
+		folder_path = 'QorperaOS/agents/elsewhere/agent.md', folder_path_version = extensions.gen_random_uuid(),
 		folder_commit_id = extensions.gen_random_uuid()
 	where profile_id = '70700000-0000-4000-8000-000000000010' and staff_agent_id = p_staff;
 	set local session_replication_role = origin;
@@ -22,11 +22,12 @@ declare r jsonb; i integer; f jsonb; v_all uuid[];
 	elsewhere constant uuid := '75000000-0000-4000-8000-0000000000b8';
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Folders'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Folders'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', cofounder, 'Co-Founder', 'co-founder')));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'), pg_temp.hire('otto', otto, 'Otto')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	-- An agent row from before the company's files has no folder; one whose folder is another environment's is no folder here.
@@ -50,12 +51,12 @@ begin
 		raise exception 'An agent without a folder'; end if;
 
 	-- A rename moves the folder; a deleted agent folder is no folder.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(pg_temp.move('agents/otto', 'agents/otis'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(pg_temp.move('QorperaOS/agents/otto', 'QorperaOS/agents/otis'))), 1, 'saved');
 	if public.qorpera_company_state_run_folder('70700000-0000-4000-8000-000000000020', nora, v_all) -> 'coworkers' ->> otto::text
 		is distinct from 'otis' then
 		raise exception 'A renamed coworker''s folder'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/otis','expectedVersion',pg_temp.version('agents/otis'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+		'path','QorperaOS/agents/otis','expectedVersion',pg_temp.version('QorperaOS/agents/otis'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	if coalesce(public.qorpera_company_state_run_folder('70700000-0000-4000-8000-000000000020', nora, v_all) -> 'coworkers' ? otto::text, true) then
 		raise exception 'A deleted coworker has no folder'; end if;
 

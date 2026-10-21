@@ -6,7 +6,7 @@
 -- read: the routine as runs see it and the file's own view, per file read authority, one key, a cursor, no worker.
 
 create function pg_temp.inbox(p_status text default 'active', p_title text default 'Inbox') returns jsonb language sql as $$
-	select pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse('78000000-0000-4000-8000-0000000000e1', p_title,
+	select pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md', pg_temp.rparse('78000000-0000-4000-8000-0000000000e1', p_title,
 		pg_temp.every(30), jsonb_build_object('status', p_status)))
 $$;
 create function pg_temp.raises(p_sql text, p_state text) returns void language plpgsql as $$
@@ -63,7 +63,7 @@ begin
 		raise exception 'A member without a paying login is refused the resume: %', r; end if;
 	-- An unpaid resume, by a run whose requester has no paying login, keeps the platform's pause and its reason. The run
 	-- is woken by another of Nora's routines, which the member (whose login does not pay) made.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'resume-other', jsonb_build_array(pg_temp.routine('agents/nora/routines/other.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'resume-other', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/other.md',
 		pg_temp.rparse('78000000-0000-4000-8000-0000000000e2', 'Other', pg_temp.every())))), 1, 'saved');
 	perform pg_temp.fx(format('update public.qorpera_cloud_routine_versions set created_by_user_id = %L, sponsor_binding_id = %L where routine_id = %L',
 		'70700000-0000-4000-8000-000000000002', '70800000-0000-4000-8000-0000000000b2', '78000000-0000-4000-8000-0000000000e2'));
@@ -90,11 +90,11 @@ declare a jsonb; r jsonb; i integer; e jsonb; seen text[] := '{}'; w jsonb; work
 begin
 	for i in 1..32 loop
 		perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-' || i, jsonb_build_array(pg_temp.routine(
-			'agents/nora/routines/r-' || i || '.md', pg_temp.rparse(md5('r' || i)::uuid, 'Routine ' || i, pg_temp.every())))), 1, 'saved');
+			'QorperaOS/agents/nora/routines/r-' || i || '.md', pg_temp.rparse(md5('r' || i)::uuid, 'Routine ' || i, pg_temp.every())))), 1, 'saved');
 	end loop;
 	-- Otto's routine is not Nora's.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-otto', jsonb_build_array(pg_temp.routine(
-		'agents/otto/routines/watch.md', pg_temp.rparse(md5('otto')::uuid, 'Watch', pg_temp.every())))), 1, 'saved');
+		'QorperaOS/agents/otto/routines/watch.md', pg_temp.rparse(md5('otto')::uuid, 'Watch', pg_temp.every())))), 1, 'saved');
 	a := pg_temp.routine_run('78000000-0000-4000-8000-0000000000e2');
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{}');
 	if r ->> 'schema' is distinct from 'qorpera.folder-agent-routines/v1' or jsonb_array_length(r -> 'routines') is distinct from 32
@@ -114,14 +114,14 @@ begin
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"inbox"}');
 	e := r -> 'routines' -> 0;
 	if jsonb_array_length(r -> 'routines') is distinct from 1 or e ->> 'routineKey' is distinct from 'inbox'
-		or e ->> 'path' is distinct from 'agents/nora/routines/inbox.md' or e ->> 'status' is distinct from 'paused'
+		or e ->> 'path' is distinct from 'QorperaOS/agents/nora/routines/inbox.md' or e ->> 'status' is distinct from 'paused'
 		or e -> 'file' ->> 'status' is distinct from 'paused' or e -> 'file' -> 'trigger' ->> 'when' is distinct from 'every'
 		or e -> 'file' ->> 'instructions' is distinct from 'Look at the inbox.' or e ? 'intent' or e ? 'instructionsTruncated'
 		or e ->> 'folderVersion' is null then
 		raise exception 'One routine, as runs see it and as the file says: %', e; end if;
 	-- A page cuts long instructions to 200 characters; one routine by its key is whole.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-long', jsonb_build_array(pg_temp.routine(
-		'agents/nora/routines/long.md', pg_temp.rparse(md5('long')::uuid, 'Long', pg_temp.every(),
+		'QorperaOS/agents/nora/routines/long.md', pg_temp.rparse(md5('long')::uuid, 'Long', pg_temp.every(),
 			jsonb_build_object('instructions', repeat('é', 250)))))), 1, 'saved');
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{}');
 	r := r -> 'routines' || (public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a,
@@ -137,9 +137,9 @@ begin
 	-- leave it out. Neither a removed routine (its file deleted, the row retired) nor one from before the company's
 	-- folder (no file, so no folder environment) is listed.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-remove', jsonb_build_array(
-		pg_temp.del('agents/nora/routines/r-2.md'))), 1, 'saved');
+		pg_temp.del('QorperaOS/agents/nora/routines/r-2.md'))), 1, 'saved');
 	v_res := public.qorpera_folder_set_resource('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
-		'agents/nora/routines/r-1.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
+		'QorperaOS/agents/nora/routines/r-1.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant('70700000-0000-4000-8000-000000000020', pg_temp.owner(), v_res, 'staff_agent',
 		'70700000-0000-4000-8000-0000000000a2', array['read']);
 	perform pg_temp.fx(format('insert into public.qorpera_cloud_routines select (jsonb_populate_record(r, %L)).* '

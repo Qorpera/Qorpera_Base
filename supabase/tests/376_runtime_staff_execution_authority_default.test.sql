@@ -5,12 +5,12 @@
 -- becomes active again through its agent.md; a newer company account replaces nothing, and a later hire takes the newest
 -- (ported from snapshot-v1 in the legacy sweep).
 create function pg_temp.sd_agent(p_handle text, p_id uuid, p_name text, p_status text) returns jsonb language sql as $$
-	select pg_temp.base_write('agents/' || p_handle || '/agent.md', 'agent',
+	select pg_temp.base_write('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 		format(E'---\nid: %s\nname: %s\nrole: Research\nkind: agent\nstatus: %s\n---\nRead and change the company folder.\n',
 			p_id, p_name, p_status),
 		jsonb_build_object('kind', 'agent', 'id', p_id, 'name', p_name, 'role', 'Research', 'agentKind', 'agent', 'status', p_status,
 			'colour', null, 'figure', null, 'model', null, 'effort', null, 'instructions', 'Read and change the company folder.'),
-		pg_temp.base_version('agents/' || p_handle || '/agent.md'))
+		pg_temp.base_version('QorperaOS/agents/' || p_handle || '/agent.md'))
 $$;
 
 do $$

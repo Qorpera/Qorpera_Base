@@ -1,7 +1,7 @@
 -- @fixture 887_folder_core_listener.test.sql until "-- 1. Listeners: the trigger, activation, the refusals gone"
 -- L09.3 (P29's tree rule, 20260930111000 M1a): a plain file wakes its listener once; a memory-tree write wakes no one.
--- A memory commit's tree files, under an agent's thread (agents/<agent>/memory/thread) or a group chat's tree
--- (agents/groups/<group>/memory), wake no listener, not even one whose watch covers them. On 708's company; rolled back.
+-- A memory commit's tree files, under an agent's thread (QorperaOS/agents/<agent>/memory/thread) or a group chat's tree
+-- (QorperaOS/agents/groups/<group>/memory), wake no listener, not even one whose watch covers them. On 708's company; rolled back.
 
 create function pg_temp.same(p_got jsonb, p_want jsonb, p_what text) returns void language plpgsql as $$
 begin
@@ -35,10 +35,10 @@ create function pg_temp.group_parse(p_id uuid, p_name text, p_agents uuid[], p_p
 		'people',to_jsonb(coalesce(p_people, '{}'::uuid[])),'purpose','Plan the launch.')
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 -- The run actor of an agent's listener the owner saved (the company audience), and what it hears of a change set.
@@ -47,7 +47,7 @@ create function pg_temp.reader(p_agent uuid) returns jsonb language sql as $$
 $$;
 create function pg_temp.hears(p_agent uuid, p_commit jsonb, p_watch text) returns jsonb language sql as $$
 	select public.qorpera_folder_listener_matches('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010',
-		pg_temp.reader(p_agent), (p_commit ->> 'commitId')::uuid, p_watch, 'subtree')
+		pg_temp.reader(p_agent), (p_commit ->> 'commitId')::uuid, public.qorpera_folder_key(p_watch), 'subtree')
 $$;
 -- A change set's paths, each with whether Nora's and Otto's listeners may read it.
 create function pg_temp.readable(p_commit jsonb) returns jsonb language sql as $$
@@ -80,25 +80,25 @@ $$;
 do $$
 declare nora constant uuid := '70700000-0000-4000-8000-0000000000a1'; r jsonb; w public.qorpera_wake_occurrences;
 begin
-	perform pg_temp.saved(pg_temp.commit('{"kind":"platform"}', 'l093-0001', '[{"op":"mkdir","path":"agents/groups"}]'));
+	perform pg_temp.saved(pg_temp.commit('{"kind":"platform"}', 'l093-0001', '[{"op":"mkdir","path":"QorperaOS/agents/groups"}]'));
 	-- e1: Nora's whole folder; e2: only her thread's tree; e3 (Otto's): every agent's folder.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'l093-0002', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/folder.md', pg_temp.watch('68100000-0000-4000-8000-0000000000e1', 'agents/nora', 'subtree')),
-		pg_temp.routine('agents/nora/routines/tree.md',
-			pg_temp.watch('68100000-0000-4000-8000-0000000000e2', 'agents/nora/memory/thread', 'subtree')),
-		pg_temp.routine('agents/otto/routines/agents.md', pg_temp.watch('68100000-0000-4000-8000-0000000000e3', 'agents', 'subtree')))));
+		pg_temp.routine('QorperaOS/agents/nora/routines/folder.md', pg_temp.watch('68100000-0000-4000-8000-0000000000e1', 'QorperaOS/agents/nora', 'subtree')),
+		pg_temp.routine('QorperaOS/agents/nora/routines/tree.md',
+			pg_temp.watch('68100000-0000-4000-8000-0000000000e2', 'QorperaOS/agents/nora/memory/thread', 'subtree')),
+		pg_temp.routine('QorperaOS/agents/otto/routines/agents.md', pg_temp.watch('68100000-0000-4000-8000-0000000000e3', 'QorperaOS/agents', 'subtree')))));
 	perform pg_temp.heard();
 	perform pg_temp.is(pg_temp.woken(), '0/0/0', 'activation: nothing up to the saving change set');
 	r := pg_temp.saved(pg_temp.commit('{"kind":"platform"}', 'l093-0003', jsonb_build_array(
-		pg_temp.put('agents/nora/memory/notes.md', 'A plain note.'))));
+		pg_temp.put('QorperaOS/agents/nora/memory/notes.md', 'A plain note.'))));
 	perform pg_temp.heard();
 	perform pg_temp.is(pg_temp.woken(), '1/0/1', 'a plain file wakes each listener whose watch covers it, once');
 	select * into w from pg_temp.fw('68100000-0000-4000-8000-0000000000e1');
 	perform pg_temp.same(w.payload, jsonb_build_object('schema','qorpera.folder-file-wake/v1','seq',(r ->> 'seq')::bigint,
-		'commitId',r ->> 'commitId','versions',jsonb_build_array(pg_temp.version('agents/nora/memory/notes.md')),'more',0),
+		'commitId',r ->> 'commitId','versions',jsonb_build_array(pg_temp.version('QorperaOS/agents/nora/memory/notes.md')),'more',0),
 		'Nora''s wake names the plain file');
-	perform pg_temp.same(pg_temp.hears(nora, r, 'agents/nora'), jsonb_build_object('versions',
-		jsonb_build_array(pg_temp.version('agents/nora/memory/notes.md')), 'more', 0), 'The matcher hears the plain file');
+	perform pg_temp.same(pg_temp.hears(nora, r, 'QorperaOS/agents/nora'), jsonb_build_object('versions',
+		jsonb_build_array(pg_temp.version('QorperaOS/agents/nora/memory/notes.md')), 'more', 0), 'The matcher hears the plain file');
 end $$;
 
 -- 2. A memory commit into Nora's thread tree wakes no listener, not even the one watching only the tree -------------------
@@ -106,7 +106,7 @@ end $$;
 do $$
 declare
 	nora constant uuid := '70700000-0000-4000-8000-0000000000a1'; otto constant uuid := '70700000-0000-4000-8000-0000000000a2';
-	root constant text := 'agents/nora/memory/thread'; s uuid := pg_temp.thread('70700000-0000-4000-8000-0000000000a1');
+	root constant text := 'QorperaOS/agents/nora/memory/thread'; s uuid := pg_temp.thread('70700000-0000-4000-8000-0000000000a1');
 	n bigint := pg_temp.wakes(); r jsonb;
 begin
 	-- tree.toml and a block of one level-1 line (no level-0 line, so no conversation event is needed).
@@ -120,19 +120,19 @@ begin
 	perform pg_temp.same(pg_temp.readable(r), jsonb_build_array(jsonb_build_array(root, true, true),
 		jsonb_build_array(root || '/t0', true, true), jsonb_build_array(root || '/t0/00000000.jsonl', true, true),
 		jsonb_build_array(root || '/tree.toml', true, true)), 'The tree''s versions, readable by both listeners');
-	perform pg_temp.same(jsonb_build_array(pg_temp.hears(nora, r, 'agents/nora'), pg_temp.hears(nora, r, root),
-		pg_temp.hears(otto, r, 'agents')), '[{"versions": [], "more": 0}, {"versions": [], "more": 0}, {"versions": [], "more": 0}]',
+	perform pg_temp.same(jsonb_build_array(pg_temp.hears(nora, r, 'QorperaOS/agents/nora'), pg_temp.hears(nora, r, root),
+		pg_temp.hears(otto, r, 'QorperaOS/agents')), '[{"versions": [], "more": 0}, {"versions": [], "more": 0}, {"versions": [], "more": 0}]',
 		'The matcher hears none of the tree''s files');
 	perform pg_temp.heard();
 	perform pg_temp.is(pg_temp.woken(), '1/0/1', 'a memory-tree write wakes no listener');
 	perform pg_temp.is(pg_temp.wakes()::text, n::text, 'and no wake of any kind');
 end $$;
 
--- 3. A group chat's tree, at agents/groups/<group>/memory, wakes no listener either; its group.md does -------------------
+-- 3. A group chat's tree, at QorperaOS/agents/groups/<group>/memory, wakes no listener either; its group.md does -------------------
 
 do $$
 declare
-	launch constant uuid := '68100000-0000-4000-8000-0000000000b1'; root constant text := 'agents/groups/launch/memory';
+	launch constant uuid := '68100000-0000-4000-8000-0000000000b1'; root constant text := 'QorperaOS/agents/groups/launch/memory';
 	s uuid; n bigint; r jsonb;
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'l093-0005', jsonb_build_array(pg_temp.new_group('launch', launch, 'Launch',
@@ -146,7 +146,7 @@ begin
 		pg_temp.tree_file(root || '/tree.toml', pg_temp.toml(s))), s));
 	perform pg_temp.same(pg_temp.readable(r), jsonb_build_array(jsonb_build_array(root, true, true),
 		jsonb_build_array(root || '/tree.toml', true, true)), 'The group tree''s versions, readable by both listeners');
-	perform pg_temp.same(pg_temp.hears('70700000-0000-4000-8000-0000000000a2', r, 'agents'), '{"versions": [], "more": 0}',
+	perform pg_temp.same(pg_temp.hears('70700000-0000-4000-8000-0000000000a2', r, 'QorperaOS/agents'), '{"versions": [], "more": 0}',
 		'The matcher hears none of the group tree''s files');
 	perform pg_temp.heard();
 	perform pg_temp.is(pg_temp.woken(), '1/0/2', 'a group chat''s tree wakes no listener');

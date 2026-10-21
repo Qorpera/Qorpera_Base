@@ -23,10 +23,10 @@ select pg_temp.nb_none(pg_temp.ws_child(), 'The worker''s run') \g /dev/null
 
 -- 2. A group chat of the owner, the member and the agents Bob and Carol (626's). The owner's post names Carol, so it
 --    wakes only her, and the next pass makes her run.
-select pg_temp.base_commit(pg_temp.base_owner(), 'mn-group-launch', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
-	jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/launch',
+select pg_temp.base_commit(pg_temp.base_owner(), 'mn-group-launch', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
+	jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/launch',
 		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(g.text))),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/launch/group.md', 'kind', 'group', 'text', g.text,
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/launch/group.md', 'kind', 'group', 'text', g.text,
 			'parse', jsonb_build_object('kind', 'group', 'id', '62600000-0000-4000-8000-000000000628', 'name', 'Launch', 'subtitle', null,
 				'agents', '["92400000-0000-4000-8000-000000000031","92400000-0000-4000-8000-000000000032"]'::jsonb,
 				'people', '["92400000-0000-4000-8000-000000000001","92400000-0000-4000-8000-000000000002"]'::jsonb, 'purpose', 'Plan the launch.'),

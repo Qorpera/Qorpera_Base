@@ -134,7 +134,7 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	r jsonb; i integer; e7 uuid; e2 uuid;
 begin
 	-- The company never chose Shared context (C5), so this erasure runs with the beta off.
@@ -308,7 +308,7 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	eid uuid := (select e.id from public.qorpera_memory_message_erases e); g bigint; r jsonb; er public.qorpera_memory_message_erases;
 begin
 	perform pg_temp.service();
@@ -366,7 +366,7 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	eid uuid := (select e.id from public.qorpera_memory_message_erases e); p jsonb; p1 jsonb; r jsonb; v uuid;
 	er public.qorpera_memory_message_erases;
 	t text := pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(1, 3), pg_temp.line0(2, 4), pg_temp.line0(3, 5),
@@ -441,7 +441,7 @@ end $$;
 
 do $$
 declare
-	root constant text := 'agents/co-founder/memory/thread';
+	root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	eid uuid := (select e.id from public.qorpera_memory_message_erases e); r jsonb; i integer; b public.qorpera_memory_message_erase_blocks;
 begin
 	perform pg_temp.service();

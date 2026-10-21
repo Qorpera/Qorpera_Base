@@ -9,7 +9,7 @@
 -- a real todo file in Alice's folder, written by the owner's folder commit.
 -- Two concurrent reservations of the last free share are serialised on the node
 -- row: scripts/test-runtime-node-capacity.mjs proves that with real sessions.
-select pg_temp.base_commit(pg_temp.base_owner(), 'capacity-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/capacity.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'capacity-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/capacity.md',
 	'todo', E'---\nid: 40300000-0000-4000-8000-0000000000d1\ntitle: Capacity fits demand\nstatus: open\n---\n\n',
 	'{"kind":"todo","id":"40300000-0000-4000-8000-0000000000d1","title":"Capacity fits demand","status":"open","requestedBy":null,"detail":""}'))) \g /dev/null
 reset role;

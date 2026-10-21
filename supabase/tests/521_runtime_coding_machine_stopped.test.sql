@@ -17,11 +17,11 @@ begin
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	for i in 1 .. 3 loop
 		perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'ms-dispatch-' || i,
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('52100000-0000-4000-8000-0000000000b' || i)::uuid,
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('52100000-0000-4000-8000-0000000000b' || i)::uuid,
 				p_title => case i when 1 then 'Fix the login page' when 2 then 'Fix the logout page' else 'Fix the signup page' end))
 			-> 'units' -> 0 ->> 'outcome' = 'saved', 'dispatch ' || i);
 		perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder',
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'ms-cancel-' || i));
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'ms-cancel-' || i));
 		perform pg_temp.base_assert((select settled_at from public.qorpera_coding_session_turns
 			where worker_id = ('52100000-0000-4000-8000-0000000000b' || i)::uuid and sequence = 1) is not null, 'turn 1 ended: ' || i);
 	end loop;

@@ -21,7 +21,7 @@ $$;
 -- which agent A and every member read) or a member's private folder (member 2's, below).
 create function pg_temp.company_wide(p_view jsonb, p_holder text) returns void language plpgsql as $$
 begin
-	if not pg_temp.sees(p_view, 'shared/a.txt') or not pg_temp.sees(p_view, 'rules/tone.txt') then
+	if not pg_temp.sees(p_view, 'shared/a.txt') or not pg_temp.sees(p_view, 'QorperaOS/rules/tone.txt') then
 		raise exception 'A desktop view held by % reads less than the company-wide set', p_holder; end if;
 	if pg_temp.sees(p_view, 'secret/s.txt') or pg_temp.sees(p_view, 'members/63200000-0000-4000-8000-000000000002/private/p.txt') then
 		raise exception 'A desktop view held by % reads more than the company-wide set', p_holder; end if;

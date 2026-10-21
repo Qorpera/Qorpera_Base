@@ -94,11 +94,11 @@ returns jsonb language sql as $$
 		'colour',null,'figure',null,'model',null,'effort',null,'instructions','Sell.')
 $$;
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 -- P15: the follow-up queue, run at once after a commit that marked something, as its step would: each marked subject
@@ -131,17 +131,18 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 
 -- The creation commit and agent Ada's hire, committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'fence-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'),
-	pg_temp.write('vision/vision.md', 'vision', E'# Run fence race\n\n## What we build\n', '{"kind":"vision","name":"Run fence race"}',
-		pg_temp.version('vision/vision.md')),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
-	pg_temp.hire('co-founder', '64800000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 5, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/vision'),
+	pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# Run fence race\n\n## What we build\n', '{"kind":"vision","name":"Run fence race"}',
+		pg_temp.version('QorperaOS/vision/vision.md')),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	pg_temp.hire('co-founder', '64800000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 6, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'fence-hire-0001',
 	jsonb_build_array(pg_temp.hire('ada', '64800000-0000-4000-8000-0000000000a1', 'Ada'))), 1, 'saved') \g /dev/null
 
@@ -278,13 +279,13 @@ select (public.qorpera_native_tool_locked_run(current_setting('qorpera_test.bind
 select set_config('qorpera_test.file_' || n, pg_temp.stage(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada ' || n))::text,
 	false) from generate_series(1, 2) n \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
-	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md', 'file', current_setting('qorpera_test.file_' || n)::jsonb)))
+	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'QorperaOS/agents/ada/agent.md', 'file', current_setting('qorpera_test.file_' || n)::jsonb)))
 from generate_series(1, 2) n \g /dev/null
 -- The save's SQL for another connection, after taking possession of its file in this one (held already: a no-op).
 create function pg_temp.sql_rename(p_n integer) returns text language plpgsql as $$
-declare v_units jsonb := jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md',
-	'file', current_setting('qorpera_test.file_' || p_n)::jsonb, 'expectedVersion', pg_temp.version('agents/ada/agent.md'),
-	'structured', jsonb_build_array(pg_temp.entry('agents/ada/agent.md', 'agent',
+declare v_units jsonb := jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'QorperaOS/agents/ada/agent.md',
+	'file', current_setting('qorpera_test.file_' || p_n)::jsonb, 'expectedVersion', pg_temp.version('QorperaOS/agents/ada/agent.md'),
+	'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/ada/agent.md', 'agent',
 		pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n),
 		pg_temp.agent_parse('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n)))));
 begin
@@ -507,7 +508,7 @@ begin
 	v_state := pg_temp.outcome('fence_four');
 	if v_state <> 'ok' then raise exception 'The actor entry point beside a tool call: %', v_state; end if;
 	perform dblink_send_query('fence_four', format('select public.qorpera_company_presence_scope(%L, %L, %L)::text',
-		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding'), array['vision/vision.md']));
+		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding'), array['QorperaOS/vision/vision.md']));
 	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'Presence must not wait for a tool call'; end if;
 	v_state := pg_temp.outcome('fence_four');
 	if v_state <> 'ok' then raise exception 'Presence beside a tool call: %', v_state; end if;

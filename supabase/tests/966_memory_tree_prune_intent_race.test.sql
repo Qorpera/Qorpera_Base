@@ -7,7 +7,7 @@
 
 -- Nora's tree.toml rewritten at node_bytes p_bytes in this connection, at generation 0; returns the new version.
 create function pg_temp.toml_write(p_key text, p_bytes integer) returns uuid language plpgsql as $$
-declare v jsonb; t constant text := 'agents/nora/memory/thread/tree.toml';
+declare v jsonb; t constant text := 'QorperaOS/agents/nora/memory/thread/tree.toml';
 begin
 	execute pg_temp.sql_memory(p_key, jsonb_build_array(pg_temp.tree_file(t,
 		pg_temp.toml(current_setting('qorpera_test.nora_session')::uuid, p_bytes), pg_temp.version(t))),
@@ -36,7 +36,7 @@ $$;
 create function pg_temp.age(p_versions uuid[] default null) returns void language sql as $$
 	update public.qorpera_folder_path_versions set created_at = created_at - interval '8 days'
 	where environment_id = '94200000-0000-4000-8000-000000000020'
-		and public.qorpera_folder_key(path) = 'agents/nora/memory/thread/tree.toml' and (p_versions is null or version = any (p_versions));
+		and public.qorpera_folder_key(path) = 'qorperaos/agents/nora/memory/thread/tree.toml' and (p_versions is null or version = any (p_versions));
 	update public.qorpera_memory_tree_prune_cursor set created_at = '-infinity', version = '00000000-0000-0000-0000-000000000000',
 		updated_at = clock_timestamp() where id;
 $$;
@@ -95,7 +95,7 @@ end $$;
 -- B. The prune first: it deletes the third version (now replaced) and queues nothing, as its intent roots the bytes.
 -- The sweep passes over the intent the prune holds; once the prune commits, the next sweep removes it and queues them.
 do $$
-declare v3 constant uuid := pg_temp.version('agents/nora/memory/thread/tree.toml'); m text; i uuid; e timestamptz;
+declare v3 constant uuid := pg_temp.version('QorperaOS/agents/nora/memory/thread/tree.toml'); m text; i uuid; e timestamptz;
 begin
 	m := pg_temp.manifest(v3); i := pg_temp.intent(m);
 	perform pg_temp.age(array[pg_temp.toml_write('m3b-race-4', 384)]);

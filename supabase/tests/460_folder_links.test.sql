@@ -266,54 +266,61 @@ end $$;
 -- 10. A link stands nowhere the company keeps or reads: not as a folder it keeps, on a structured file's path or as a
 -- folder it names; a move or copy carries none there, alone or inside a folder; a new folder brings none there.
 do $$
-declare v_lina constant text := 'agents/lina is an agent''s folder; a link cannot stand there';
-	v_agent constant text := 'agents/lina/agent.md is the path of a structured file; a link cannot stand there';
+declare v_lina constant text := 'QorperaOS/agents/lina is an agent''s folder; a link cannot stand there';
+	v_agent constant text := 'QorperaOS/agents/lina/agent.md is the path of a structured file; a link cannot stand there';
 begin
-	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-agents', jsonb_build_array(pg_temp.link('agents', 'x'))))),
-		to_jsonb('agents is a folder the company keeps; a link cannot stand there'::text), 'A link as agents/');
-	perform pg_temp.expect(pg_temp.platform('lk10-agents-folder', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved');
+	perform pg_temp.expect(pg_temp.platform('lk10-root', '[{"op":"mkdir","path":"QorperaOS"}]'), 1, 'saved');
+	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-agents', jsonb_build_array(pg_temp.link('QorperaOS/agents', 'x'))))),
+		to_jsonb('QorperaOS/agents is a folder the company keeps; a link cannot stand there'::text), 'A link as QorperaOS/agents/');
+	perform pg_temp.expect(pg_temp.platform('lk10-agents-folder', '[{"op":"mkdir","path":"QorperaOS/agents"}]'), 1, 'saved');
 	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-sections', jsonb_build_array(
-		pg_temp.link('agents/sections.md', 'x'))))),
-		to_jsonb('agents/sections.md is the path of a structured file; a link cannot stand there'::text), 'A link as a structured file');
-	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-lina', jsonb_build_array(pg_temp.link('agents/lina', 'x'))))),
+		pg_temp.link('QorperaOS/agents/sections.md', 'x'))))),
+		to_jsonb('QorperaOS/agents/sections.md is the path of a structured file; a link cannot stand there'::text),
+		'A link as a structured file');
+	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-lina', jsonb_build_array(
+		pg_temp.link('QorperaOS/agents/lina', 'x'))))),
 		to_jsonb(v_lina), 'A link as an agent''s folder');
 	-- Moved or copied there, alone or inside a folder.
 	perform pg_temp.expect(pg_temp.platform('lk10-setup', jsonb_build_array(pg_temp.link('lkm.lnk', 'x'),
 		jsonb_build_object('op','mkdir','path','lkf'), pg_temp.link('lkf/agent.md', 'x'))), 3, 'saved');
 	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-move', jsonb_build_array(jsonb_build_object('op','move',
-		'from','lkm.lnk','to','agents/lina','expectedVersion',pg_temp.version('lkm.lnk')))))), to_jsonb(v_lina), 'A link moved there');
-	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-copy', '[{"op":"copy","from":"lkm.lnk","to":"agents/lina"}]'))),
+		'from','lkm.lnk','to','QorperaOS/agents/lina','expectedVersion',pg_temp.version('lkm.lnk')))))), to_jsonb(v_lina), 'A link moved there');
+	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-copy', '[{"op":"copy","from":"lkm.lnk","to":"QorperaOS/agents/lina"}]'))),
 		to_jsonb(v_lina), 'A link copied there');
 	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-move-folder', jsonb_build_array(jsonb_build_object('op','move',
-		'from','lkf','to','agents/lina','expectedVersion',pg_temp.version('lkf'),'asOfSeq',pg_temp.seq()))))), to_jsonb(v_agent),
+		'from','lkf','to','QorperaOS/agents/lina','expectedVersion',pg_temp.version('lkf'),'asOfSeq',pg_temp.seq()))))), to_jsonb(v_agent),
 		'A folder''s link moved there');
-	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-copy-folder', '[{"op":"copy","from":"lkf","to":"agents/lina"}]'))),
+	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-copy-folder', '[{"op":"copy","from":"lkf","to":"QorperaOS/agents/lina"}]'))),
 		to_jsonb(v_agent), 'A folder''s link copied there');
 	perform pg_temp.same(to_jsonb(pg_temp.refusal(pg_temp.platform('lk10-new-folder', jsonb_build_array(jsonb_build_object(
-		'op','new_folder','path','agents/lina','contents','[{"path":"agent.md","kind":"symlink","target":"x"}]'::jsonb))))),
+		'op','new_folder','path','QorperaOS/agents/lina','contents','[{"path":"agent.md","kind":"symlink","target":"x"}]'::jsonb))))),
 		to_jsonb(v_agent), 'A new folder''s link there');
-	if pg_temp.present('agents/lina') or not pg_temp.present('lkm.lnk') or not pg_temp.present('lkf/agent.md') then
+	if pg_temp.present('QorperaOS/agents/lina') or not pg_temp.present('lkm.lnk') or not pg_temp.present('lkf/agent.md') then
 		raise exception 'Nothing moved'; end if;
 end $$;
 
--- 11. Where a link may stand (qorpera_folder_link_problems): never in a summary tree, on a structured file's path, as a
--- folder the company keeps or names; anywhere else, also inside an agent's folder. The service's alone.
+-- 11. Where a link may stand (qorpera_folder_link_problems, by key): never in a summary tree, on a structured file's
+-- path, as a folder the company keeps or names; anywhere else, also inside an agent's folder and under the old roots,
+-- which are ordinary folders since 20260930527000. The message names the place as written, under QorperaOS/. The
+-- service's alone.
 do $$
 declare v record; v_problems jsonb;
 begin
 	for v in select * from (values
-		('agents/nora/memory/thread/t0', 'in a summary tree'), ('agents/groups/g/memory', 'in a summary tree'),
-		('agents/nora/agent.md', 'the path of a structured file'), ('rules/x.md', 'the path of a structured file'),
-		('vision/vision.md', 'the path of a structured file'), ('agents/sections.md', 'the path of a structured file'),
-		('interfaces/x', 'an interface''s folder'), ('agents/groups/g', 'a group chat''s folder'),
-		('human-tasks/x.lnk', 'a human task''s folder'), ('agents/lina', 'an agent''s folder'),
-		('agents/lina/todos/t1', 'the todo''s folder'), ('skills', 'a folder the company keeps'),
-		('tables/areas', 'a folder the company keeps'), ('agents', 'a folder the company keeps'),
-		('agents/pia/notes.lnk', null), ('agents/nora/memory', null), ('docs/x', null)) t(key, what) loop
+		('qorperaos/agents/nora/memory/thread/t0', 'in a summary tree'), ('qorperaos/agents/groups/g/memory', 'in a summary tree'),
+		('qorperaos/agents/nora/agent.md', 'the path of a structured file'), ('qorperaos/rules/x.md', 'the path of a structured file'),
+		('qorperaos/vision/vision.md', 'the path of a structured file'),
+		('qorperaos/agents/sections.md', 'the path of a structured file'), ('qorperaos/interfaces/x', 'an interface''s folder'),
+		('qorperaos/agents/groups/g', 'a group chat''s folder'), ('qorperaos/human-tasks/x.lnk', 'a human task''s folder'),
+		('qorperaos/agents/lina', 'an agent''s folder'), ('qorperaos/agents/lina/todos/t1', 'the todo''s folder'),
+		('qorperaos/skills', 'a folder the company keeps'), ('qorperaos/tables/areas', 'a folder the company keeps'),
+		('qorperaos/agents', 'a folder the company keeps'), ('qorperaos', 'a folder the company keeps'),
+		('qorperaos/agents/pia/notes.lnk', null), ('qorperaos/agents/nora/memory', null), ('docs/x', null),
+		('agents/lina', null), ('agents/sections.md', null), ('rules/x.md', null)) t(key, what) loop
 		v_problems := public.qorpera_folder_link_problems(v.key);
 		if jsonb_array_length(v_problems) <> (case when v.what is null then 0 else 1 end)
 			or v_problems -> 0 ->> 'message' is distinct from (case when v.what is not null
-				then format('%s is %s; a link cannot stand there', v.key, v.what) end) then
+				then format('%s is %s; a link cannot stand there', 'QorperaOS' || substr(v.key, 10), v.what) end) then
 			raise exception 'Where a link may stand, %: %', v.key, v_problems; end if;
 	end loop;
 	if has_function_privilege('anon', 'public.qorpera_folder_link_problems(text)', 'execute')

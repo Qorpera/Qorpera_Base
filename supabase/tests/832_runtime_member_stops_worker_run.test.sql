@@ -59,7 +59,7 @@ declare
 begin
 	v_seal := pg_temp.base_seal(v_actor, pg_temp.base_manifest(v_brief::text));
 	perform pg_temp.base_assert(v_seal ->> 'state' = 'sealed', 'The run stages the brief: ' || v_seal::text);
-	v_units := case when p_mkdir then jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/alice/todos/stop-scan'))
+	v_units := case when p_mkdir then jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/stop-scan'))
 		else '[]'::jsonb end
 		|| jsonb_build_array(jsonb_build_object('op', 'new_folder', 'path', p_folder,
 			'contents', jsonb_build_array(jsonb_build_object('path', 'brief.md', 'kind', 'file', 'file', v_seal -> 'file')),
@@ -79,12 +79,12 @@ $$;
 -- on it. The parent reports and its own run ends; the drain starts the worker, the materializer makes its run, and the run
 -- starts (leased).
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'stop-ack') \g /dev/null
-select pg_temp.base_commit(pg_temp.base_owner(), 'stop-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/stop-scan.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'stop-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/stop-scan.md',
 	'todo', E'---\nid: 83200000-0000-4000-8000-0000000000d1\ntitle: Scan\nstatus: open\n---\nScan the market.\n',
 	'{"kind":"todo","id":"83200000-0000-4000-8000-0000000000d1","title":"Scan","status":"open","requestedBy":null,"detail":"Scan the market."}'))) \g /dev/null
 do $$
 declare v_result jsonb := pg_temp.ws_dispatch(current_setting('qorpera_test.base_binding')::jsonb, 'stop-dispatch',
-	'agents/alice/todos/stop-scan/scan', '83200000-0000-4000-8000-0000000000e1', true);
+	'QorperaOS/agents/alice/todos/stop-scan/scan', '83200000-0000-4000-8000-0000000000e1', true);
 begin
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_result -> 'units') u where u ->> 'outcome' <> 'saved'),
 		'The dispatch saves: ' || v_result::text);
@@ -142,7 +142,7 @@ rollback to ws_viewer_dispatcher;
 
 -- 4. The worker's own run cannot dispatch a worker of its own (moved here from 385 §4, which refused it on the old core).
 do $$
-declare v_result jsonb := pg_temp.ws_dispatch(pg_temp.ws_child(), 'stop-nested', 'agents/alice/todos/stop-scan/helper',
+declare v_result jsonb := pg_temp.ws_dispatch(pg_temp.ws_child(), 'stop-nested', 'QorperaOS/agents/alice/todos/stop-scan/helper',
 	'83200000-0000-4000-8000-0000000000e2', false);
 begin
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'refused' and v_result -> 'units' -> 0 ->> 'reason' = 'structured_rule'

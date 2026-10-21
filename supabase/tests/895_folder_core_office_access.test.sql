@@ -398,7 +398,7 @@ begin
 end $$;
 
 -- J. A computer added while an agent returns or is hired still gets the agent's default access: the computer is added
---    under the seat lock in another session, and the return (or the hire, a platform commit creating agents/bea) waits at
+--    under the seat lock in another session, and the return (or the hire, a platform commit creating QorperaOS/agents/bea) waits at
 --    the seat lock; once the computer commits, the walk sees it.
 create function pg_temp.answer(p_conn text) returns text language plpgsql as $$
 declare v text;

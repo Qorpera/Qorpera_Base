@@ -96,18 +96,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70600000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -126,7 +126,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70600000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70600000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70600000-0000-4000-8000-000000000020'
@@ -139,8 +139,8 @@ create function pg_temp.rule_text(p_id uuid, p_outcome text, p_text text) return
 	select format(E'---\nid: %s\noutcome: %s\n---\n%s\n', p_id, p_outcome, p_text)
 $$;
 create function pg_temp.rule(p_name text, p_id uuid, p_outcome text, p_text text) returns jsonb language sql as $$
-	select pg_temp.write('rules/' || p_name || '.md', 'rule', pg_temp.rule_text(p_id, p_outcome, p_text),
-		jsonb_build_object('kind','rule','id',p_id,'outcome',p_outcome,'text',p_text), pg_temp.version('rules/' || p_name || '.md'))
+	select pg_temp.write('QorperaOS/rules/' || p_name || '.md', 'rule', pg_temp.rule_text(p_id, p_outcome, p_text),
+		jsonb_build_object('kind','rule','id',p_id,'outcome',p_outcome,'text',p_text), pg_temp.version('QorperaOS/rules/' || p_name || '.md'))
 $$;
 create function pg_temp.row(p_id uuid) returns public.qorpera_review_rules language sql as $$
 	select * from public.qorpera_review_rules where id = p_id
@@ -158,12 +158,12 @@ do $$
 declare r jsonb; i integer; x public.qorpera_review_rules; t jsonb;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Rules'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Rules'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70600000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','rules')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	-- A rule save takes the company row at rank 0 (its new row's foreign key would take it after the paths).
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70600000-0000-4000-8000-000000000020', pg_temp.owner(),
 		jsonb_build_array(pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'allow', 'refund a customer under 500 kroner'))) y;
@@ -174,12 +174,12 @@ begin
 	x := pg_temp.row('70600000-0000-4000-8000-0000000000f1');
 	if x.id is null or x.scope is distinct from 'company' or x.member_user_id is not null or x.outcome is distinct from 'allow_automatically'
 		or x.when_text is distinct from 'refund a customer under 500 kroner' or x.created_via is distinct from 'folder'
-		or x.created_by_user_id is distinct from '70600000-0000-4000-8000-000000000001' or x.folder_path is distinct from 'rules/refunds.md'
-		or x.folder_path_version is distinct from pg_temp.version('rules/refunds.md') or x.archived_at is not null then
+		or x.created_by_user_id is distinct from '70600000-0000-4000-8000-000000000001' or x.folder_path is distinct from 'QorperaOS/rules/refunds.md'
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/refunds.md') or x.archived_at is not null then
 		raise exception 'A rule file is a company rule in the reviewer''s table: %', to_jsonb(x); end if;
 	if not pg_temp.reviewed('70600000-0000-4000-8000-0000000000f1') then raise exception 'The reviewer reads the file''s rule'; end if;
 	if public.qorpera_folder_structured_review_class('70600000-0000-4000-8000-000000000020', jsonb_build_object('kind','staff_agent','requesterUserId','70600000-0000-4000-8000-000000000002'),
-		pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'allow', 'x'), 'rules/refunds.md', null) is distinct from 'plain' then
+		pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'allow', 'x'), 'QorperaOS/rules/refunds.md', null) is distinct from 'plain' then
 		raise exception 'A rule file is never reviewed'; end if;
 end $$;
 
@@ -192,7 +192,7 @@ begin
 		pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'ask-first', 'refund a customer'))), 1, 'saved');
 	x := pg_temp.row('70600000-0000-4000-8000-0000000000f1');
 	if x.outcome is distinct from 'ask_first' or x.when_text is distinct from 'refund a customer'
-		or x.folder_path_version is distinct from pg_temp.version('rules/refunds.md') then
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/refunds.md') then
 		raise exception 'An edit reaches the rule: %', to_jsonb(x); end if;
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0003', jsonb_build_array(
 		pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f2', 'ask-first', 'refund a customer')))) then
@@ -214,19 +214,19 @@ begin
 		pg_temp.rule('maybe', '70600000-0000-4000-8000-0000000000f4', 'maybe', 'send a file'))), 'structured_invalid') then
 		raise exception 'An outcome is ask-first or allow'; end if;
 	-- The id is a UUID.
-	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.write('rules/badid.md', 'rule',
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.write('QorperaOS/rules/badid.md', 'rule',
 		pg_temp.rule_text('70600000-0000-4000-8000-0000000000f6', 'ask-first', 'send a file'),
 		jsonb_build_object('kind','rule','id','NOT-A-UUID','outcome','ask-first','text','send a file'), null))), 'structured_invalid') then
 		raise exception 'A rule''s id is a UUID'; end if;
 	-- The parse has exactly the rule's keys.
-	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.write('rules/keys.md', 'rule',
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.write('QorperaOS/rules/keys.md', 'rule',
 		pg_temp.rule_text('70600000-0000-4000-8000-0000000000f6', 'ask-first', 'send a file'),
 		jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000f6','outcome','ask-first','text','send a file','extra',1), null))), 'structured_invalid') then
 		raise exception 'A rule''s parse has exactly its keys'; end if;
 	-- An id held by a rule file of the company's other environment is refused.
 	insert into public.qorpera_review_rules(id, profile_id, scope, when_text, outcome, created_via, created_by_user_id,
 		folder_environment_id, folder_path, folder_path_version, folder_commit_id)
-	values ('70600000-0000-4000-8000-0000000000f7', '70600000-0000-4000-8000-000000000010', 'company', 'print a page', 'ask_first', 'folder', '70600000-0000-4000-8000-000000000001', '70600000-0000-4000-8000-000000000022', 'rules/print.md',
+	values ('70600000-0000-4000-8000-0000000000f7', '70600000-0000-4000-8000-000000000010', 'company', 'print a page', 'ask_first', 'folder', '70600000-0000-4000-8000-000000000001', '70600000-0000-4000-8000-000000000022', 'QorperaOS/rules/print.md',
 		extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0009', jsonb_build_array(
 		pg_temp.rule('print', '70600000-0000-4000-8000-0000000000f7', 'ask-first', 'print a page')))) then
@@ -268,8 +268,8 @@ begin
 		pg_temp.rule('after', '70600000-0000-4000-8000-0000000000fb', 'ask-first', repeat('a', 200)))), 1, 'saved');
 	delete from public.qorpera_review_rules where profile_id = '70600000-0000-4000-8000-000000000010' and created_via = 'settings' and scope = 'company';
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'budget-0006', jsonb_build_array(
-		jsonb_build_object('op','delete','path','rules/edge.md','expectedVersion',pg_temp.version('rules/edge.md')),
-		jsonb_build_object('op','delete','path','rules/after.md','expectedVersion',pg_temp.version('rules/after.md')))), 2, 'saved');
+		jsonb_build_object('op','delete','path','QorperaOS/rules/edge.md','expectedVersion',pg_temp.version('QorperaOS/rules/edge.md')),
+		jsonb_build_object('op','delete','path','QorperaOS/rules/after.md','expectedVersion',pg_temp.version('QorperaOS/rules/after.md')))), 2, 'saved');
 end $$;
 
 -- 4. Moving, deleting and restoring ------------------------------------------------------------------------------------
@@ -278,12 +278,12 @@ do $$
 declare x public.qorpera_review_rules;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(jsonb_build_object('op','move',
-		'from','rules/refunds.md','to','rules/money.md','expectedVersion',pg_temp.version('rules/refunds.md')))), 1, 'saved');
+		'from','QorperaOS/rules/refunds.md','to','QorperaOS/rules/money.md','expectedVersion',pg_temp.version('QorperaOS/rules/refunds.md')))), 1, 'saved');
 	x := pg_temp.row('70600000-0000-4000-8000-0000000000f1');
-	if x.folder_path is distinct from 'rules/money.md' or x.folder_path_version is distinct from pg_temp.version('rules/money.md') then
+	if x.folder_path is distinct from 'QorperaOS/rules/money.md' or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/money.md') then
 		raise exception 'A rule follows its file: %', to_jsonb(x); end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','rules/money.md','expectedVersion',pg_temp.version('rules/money.md')))), 1, 'saved');
+		'path','QorperaOS/rules/money.md','expectedVersion',pg_temp.version('QorperaOS/rules/money.md')))), 1, 'saved');
 	if (pg_temp.row('70600000-0000-4000-8000-0000000000f1')).archived_at is null or pg_temp.reviewed('70600000-0000-4000-8000-0000000000f1') then
 		raise exception 'Deleting the file archives the rule'; end if;
 	if (pg_temp.row('70600000-0000-4000-8000-0000000000f4')).archived_at is not null or (pg_temp.row('70600000-0000-4000-8000-0000000000f9')).archived_at is not null then
@@ -330,25 +330,27 @@ do $$
 declare r jsonb;
 begin
 	perform public.qorpera_folder_enable('70600000-0000-4000-8000-000000000021');
+	perform pg_temp.expect(pg_temp.commit_in('70600000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'pair-root',
+		'[{"op":"mkdir","path":"QorperaOS"}]'), 1, 'saved');
 	r := pg_temp.commit_in('70600000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'pair-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
-		'path','rules','contents',jsonb_build_array(
+		'path','QorperaOS/rules','contents',jsonb_build_array(
 			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'), '70600000-0000-4000-8000-000000000011')),
 			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'), '70600000-0000-4000-8000-000000000011'))),
 		'structured',jsonb_build_array(
-			pg_temp.entry('rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one')),
-			pg_temp.entry('rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one'))))));
+			pg_temp.entry('QorperaOS/rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one')),
+			pg_temp.entry('QorperaOS/rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one'))))));
 	if not pg_temp.refused(r) then raise exception 'Two files with one rule id in one unit are refused: %', r; end if;
 	insert into public.qorpera_review_rules(id, profile_id, scope, when_text, outcome, created_via, created_by_user_id)
 	select extensions.gen_random_uuid(), '70600000-0000-4000-8000-000000000011', 'company', repeat('x', 280), 'ask_first', 'settings', '70600000-0000-4000-8000-000000000001' from generate_series(1, 175);
 	-- 49000 bytes, then two files of 100: each fits alone, not together.
 	r := pg_temp.commit_in('70600000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'pair-0002', jsonb_build_array(jsonb_build_object('op','new_folder',
-		'path','rules','contents',jsonb_build_array(
+		'path','QorperaOS/rules','contents',jsonb_build_array(
 			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', repeat('a', 100)), '70600000-0000-4000-8000-000000000011')),
 			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e2', 'ask-first', repeat('b', 100)), '70600000-0000-4000-8000-000000000011'))),
 		'structured',jsonb_build_array(
-			pg_temp.entry('rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', repeat('a', 100)),
+			pg_temp.entry('QorperaOS/rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', repeat('a', 100)),
 				jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text',repeat('a', 100))),
-			pg_temp.entry('rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e2', 'ask-first', repeat('b', 100)),
+			pg_temp.entry('QorperaOS/rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e2', 'ask-first', repeat('b', 100)),
 				jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e2','outcome','ask-first','text',repeat('b', 100)))))));
 	if not pg_temp.refused(r) or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like '%too long%' then
 		raise exception 'The budget counts the unit''s files together: %', r; end if;

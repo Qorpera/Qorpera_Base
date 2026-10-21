@@ -86,14 +86,14 @@ end $$;
 -- C. The task's agent changes after the drain read who to wake: the member archives Nora while the drain waits for the
 -- paying owner's row (another step holds it). The drain then holds Nora's rows, not the Co-Founder's, so it wakes nobody
 -- and tries again after its wait; then it wakes the Co-Founder.
-select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-accept-0001', jsonb_build_array(pg_temp.save('human-tasks/fit.md',
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-accept-0001', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/fit.md',
 	pg_temp.task_parse('80500000-0000-4000-8000-0000000000e1', '{"status":"accepted"}')))), 1, 'saved') \g /dev/null
 select public.qorpera_folder_listen_company('80500000-0000-4000-8000-000000000020', 256) \g /dev/null
 select set_config('qorpera_test.h2_archive', pg_temp.sql_commit('80500000-0000-4000-8000-000000000020', pg_temp.mem()::text,
-	'race-archive-0001', jsonb_build_array(pg_temp.write('agents/nora/agent.md', 'agent',
+	'race-archive-0001', jsonb_build_array(pg_temp.write('QorperaOS/agents/nora/agent.md', 'agent',
 		pg_temp.agent_text('80500000-0000-4000-8000-0000000000a1', 'Nora', 'agent', 'archived'),
 		pg_temp.agent_parse('80500000-0000-4000-8000-0000000000a1', 'Nora', 'agent', 'archived'),
-		pg_temp.version('agents/nora/agent.md')))::text), false) \g /dev/null
+		pg_temp.version('QorperaOS/agents/nora/agent.md')))::text), false) \g /dev/null
 select dblink_connect('h2race_c', 'dbname=' || current_database()) \g /dev/null
 select dblink_exec('h2race_c', $q$set request.jwt.claims = '{"role":"service_role"}'$q$) \g /dev/null
 select dblink_exec('h2race_c', 'set lock_timeout = ''5s''') \g /dev/null

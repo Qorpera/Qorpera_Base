@@ -7,7 +7,7 @@
 
 -- A dispatch of a new worker under one of the run's todos, named by its key, under the review of the call.
 create function pg_temp.w5_dispatch(p_run jsonb, p_name text, p_extra jsonb, p_call text,
-	p_todo text default 'agents/ada/todos/plan-the-trip') returns jsonb language plpgsql as $$
+	p_todo text default 'QorperaOS/agents/ada/todos/plan-the-trip') returns jsonb language plpgsql as $$
 declare f text := p_todo || '/' || p_name; b jsonb := pg_temp.brief(md5(p_name)::uuid);
 	u jsonb := pg_temp.dispatch_units(p_run -> 'actor', f, b);
 begin
@@ -15,7 +15,7 @@ begin
 		pg_temp.reviewed(p_run, p_call, u));
 end $$;
 -- The same dispatch, which must stop at the parent step's check (under a review of its own, which goes with it).
-create function pg_temp.w5_refused(p_run jsonb, p_name text, p_extra jsonb, p_todo text default 'agents/ada/todos/plan-the-trip')
+create function pg_temp.w5_refused(p_run jsonb, p_name text, p_extra jsonb, p_todo text default 'QorperaOS/agents/ada/todos/plan-the-trip')
 returns void language sql as $$
 	select pg_temp.raises_like(format('select pg_temp.w5_dispatch(%L, %L, %L, %L, %L)', p_run, p_name, p_extra, 'w5-review-' || p_name,
 		p_todo), '22023', 'The parent step is not this call''s pending step%')
@@ -60,9 +60,9 @@ begin
 	-- The steps stay as they were: the call returns later, and its line is finished then.
 	if pg_temp.w5_steps() is distinct from before then raise exception 'A dispatch changed the log''s steps'; end if;
 	-- Ben's run has no log: refused. Once his step is in his log, the same dispatch lands.
-	perform pg_temp.w5_refused(ben, 'scout', '{"parentStep":4,"parentCall":"w5-call-ben4"}', 'agents/ben/todos/ben-only');
-	perform pg_temp.w4_step(ben, 4, 'w5-call-ben4', p_tree => 'agents/ben/memory/thread');
-	r := pg_temp.w5_dispatch(ben, 'scout', '{"parentStep":4,"parentCall":"w5-call-ben4"}', 'w5-call-ben4', 'agents/ben/todos/ben-only');
+	perform pg_temp.w5_refused(ben, 'scout', '{"parentStep":4,"parentCall":"w5-call-ben4"}', 'QorperaOS/agents/ben/todos/ben-only');
+	perform pg_temp.w4_step(ben, 4, 'w5-call-ben4', p_tree => 'QorperaOS/agents/ben/memory/thread');
+	r := pg_temp.w5_dispatch(ben, 'scout', '{"parentStep":4,"parentCall":"w5-call-ben4"}', 'w5-call-ben4', 'QorperaOS/agents/ben/todos/ben-only');
 	-- (840 may have made Ben's todo folder already: the last unit is the worker's.)
 	perform pg_temp.expect(r, jsonb_array_length(r -> 'units'), 'saved');
 	if (pg_temp.w5_parent('scout')).parent_run_id is distinct from (ben -> 'actor' ->> 'runId')::uuid
@@ -133,7 +133,7 @@ end $$;
 -- 3. A follow-up names its own step the same way ------------------------------------------------------------------------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'agents/ada/todos/plan-the-trip/one';
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'QorperaOS/agents/ada/todos/plan-the-trip/one';
 	x jsonb := pg_temp.worker_run(ada, md5('one')::uuid); base jsonb; next jsonb; u jsonb; q jsonb; r jsonb;
 	w public.qorpera_runtime_worker_parents%rowtype;
 begin
@@ -168,9 +168,9 @@ end $$;
 do $$
 declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor';
-	f text := 'agents/ada/todos/plan-the-trip/shape'; b jsonb := pg_temp.brief(md5('shape')::uuid);
+	f text := 'QorperaOS/agents/ada/todos/plan-the-trip/shape'; b jsonb := pg_temp.brief(md5('shape')::uuid);
 	u jsonb := pg_temp.dispatch_units(p, f, b); q jsonb := pg_temp.dispatch_request(f, b);
-	fu jsonb := jsonb_build_object('action','followup','folder','agents/ada/todos/plan-the-trip/one','text','More.','resultsVersion',null);
+	fu jsonb := jsonb_build_object('action','followup','folder','QorperaOS/agents/ada/todos/plan-the-trip/one','text','More.','resultsVersion',null);
 	s jsonb := '{"parentStep":20}'; x jsonb; i integer := 0;
 begin
 	foreach x in array array[
@@ -186,9 +186,9 @@ begin
 		q || s || jsonb_build_object('parentCall', 'w5-call' || chr(159)), q || s || jsonb_build_object('parentCall', E'w5-call\n0020'),
 		fu || s || '{"parentCall":""}'::jsonb,
 		-- Only a dispatch or a follow-up names a step.
-		jsonb_build_object('action','decide','folder','agents/ada/todos/plan-the-trip/one','decision','accepted','note',null,
+		jsonb_build_object('action','decide','folder','QorperaOS/agents/ada/todos/plan-the-trip/one','decision','accepted','note',null,
 			'parentCall','w5-call-0020'),
-		jsonb_build_object('action','report','folder','agents/ada/todos/plan-the-trip/one','parentCall','w5-call-0020')
+		jsonb_build_object('action','report','folder','QorperaOS/agents/ada/todos/plan-the-trip/one','parentCall','w5-call-0020')
 	] loop
 		i := i + 1;
 		perform pg_temp.raises_like(format('select pg_temp.wc(%L, %L, %L, %L)', p, 'w5-bad-' || lpad(i::text, 4, '0'), u, x), '22023',

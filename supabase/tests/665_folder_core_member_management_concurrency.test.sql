@@ -214,17 +214,17 @@ select set_config('qorpera_test.hire_' || h, pg_temp.sql_member_save('member-cha
 	jsonb_build_array(pg_temp.hire(h, ('66500000-0000-4000-8000-0000000000' || id)::uuid, initcap(h)))), false)
 from (values ('bea', 'a2'), ('cal', 'a3')) v(h, id) \g /dev/null
 select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-dan-archived',
-	jsonb_build_array(jsonb_build_object('op', 'new_folder', 'path', 'agents/dan',
+	jsonb_build_array(jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/dan',
 		'contents', jsonb_build_array(
 			jsonb_build_object('path', 'agent.md', 'kind', 'file', 'file', pg_temp.stage(replace(pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4',
 				'Dan'), 'status: active', 'status: archived'))),
 			jsonb_build_object('path', 'memory', 'kind', 'folder'), jsonb_build_object('path', 'todos', 'kind', 'folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/dan/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/dan/agent.md', 'agent',
 			replace(pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'), 'status: active', 'status: archived'),
 			pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan') || '{"status":"archived"}'))))), 1, 'saved') \g /dev/null
 select set_config('qorpera_test.hire_dan', pg_temp.sql_member_save('member-change-dan-active',
-	jsonb_build_array(pg_temp.write('agents/dan/agent.md', 'agent', pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'),
-		pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan'), pg_temp.version('agents/dan/agent.md')))), false) \g /dev/null
+	jsonb_build_array(pg_temp.write('QorperaOS/agents/dan/agent.md', 'agent', pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'),
+		pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan'), pg_temp.version('QorperaOS/agents/dan/agent.md')))), false) \g /dev/null
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_rooms where bound_staff_agent_id = '66500000-0000-4000-8000-0000000000a4') then

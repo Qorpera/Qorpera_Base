@@ -92,11 +92,11 @@ end $$;
 do $$
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-roots', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','human-tasks'), jsonb_build_object('op','mkdir','path','contacts'),
-		jsonb_build_object('op','mkdir','path','agents/co-founder/routines'),
-		pg_temp.routine('agents/nora/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000081', 'Tasks', pg_temp.every())),
-		pg_temp.routine('agents/otto/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000082', 'Tasks', pg_temp.every())),
-		pg_temp.routine('agents/co-founder/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000083', 'Tasks',
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks'), jsonb_build_object('op','mkdir','path','QorperaOS/contacts'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/co-founder/routines'),
+		pg_temp.routine('QorperaOS/agents/nora/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000081', 'Tasks', pg_temp.every())),
+		pg_temp.routine('QorperaOS/agents/otto/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000082', 'Tasks', pg_temp.every())),
+		pg_temp.routine('QorperaOS/agents/co-founder/routines/tasks.md', pg_temp.rparse('91500000-0000-4000-8000-000000000083', 'Tasks',
 			pg_temp.every())))));
 	-- Every change set so far reaches the hook, and none writes a task.
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'nothing to wake');
@@ -110,7 +110,7 @@ do $$
 declare r jsonb; m public.qorpera_folder_human_task_wakes; w public.qorpera_wake_occurrences;
 	e1 constant uuid := '91500000-0000-4000-8000-0000000000e1';
 begin
-	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-1', jsonb_build_array(pg_temp.save('human-tasks/fit-disk.md',
+	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-1', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/fit-disk.md',
 		pg_temp.task(e1)))));
 	perform pg_temp.listen();
 	m := pg_temp.mark(e1, 'assigned');
@@ -142,9 +142,9 @@ declare t jsonb := pg_temp.task('91500000-0000-4000-8000-0000000000e1'); ticked 
 	w public.qorpera_wake_occurrences;
 begin
 	ticked := t || '{"instructions":"## Steps\n- [x] Fit it in slot 2","steps":[{"line":15,"text":"Fit it in slot 2","done":true}]}';
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-tick-1', jsonb_build_array(pg_temp.save('human-tasks/fit-disk.md', ticked))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-tick-1', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/fit-disk.md', ticked))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'a tick wakes nobody');
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-decline-1', jsonb_build_array(pg_temp.save('human-tasks/fit-disk.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-decline-1', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/fit-disk.md',
 		ticked || '{"status":"declined","reason":"I am away that week"}'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'declined wakes Nora');
 	m := pg_temp.mark('91500000-0000-4000-8000-0000000000e1', 'declined');
@@ -163,8 +163,8 @@ do $$
 declare e2 constant uuid := '91500000-0000-4000-8000-0000000000e2'; t jsonb := pg_temp.task('91500000-0000-4000-8000-0000000000e2');
 	a jsonb; m public.qorpera_folder_human_task_wakes; w public.qorpera_wake_occurrences;
 begin
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-2', jsonb_build_array(pg_temp.save('human-tasks/sign.md', t))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-done-2', jsonb_build_array(pg_temp.save('human-tasks/sign.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-2', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/sign.md', t))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-done-2', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/sign.md',
 		t || '{"status":"done"}'))));
 	-- Two change sets, two marks; by the drain the task is done, so only done wakes.
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/1/0/0', 'the late assigned mark is skipped, done wakes');
@@ -172,7 +172,7 @@ begin
 	perform pg_temp.woken(e2, 'done', '70700000-0000-4000-8000-0000000000a1', 'done');
 	-- Otto's run accepts it.
 	a := pg_temp.routine_run('91500000-0000-4000-8000-000000000082');
-	perform pg_temp.saved(pg_temp.commit(a, 'p31-accept-2', jsonb_build_array(pg_temp.save('human-tasks/sign.md',
+	perform pg_temp.saved(pg_temp.commit(a, 'p31-accept-2', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/sign.md',
 		t || '{"status":"accepted"}'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'accepted wakes Nora');
 	m := pg_temp.mark(e2, 'accepted');
@@ -188,8 +188,8 @@ end $$;
 do $$
 declare e3 constant uuid := '91500000-0000-4000-8000-0000000000e3'; a jsonb := pg_temp.routine_run('91500000-0000-4000-8000-000000000081');
 begin
-	perform pg_temp.saved(pg_temp.commit(a, 'p31-own-1', jsonb_build_array(pg_temp.save('human-tasks/own.md', pg_temp.task(e3)))));
-	perform pg_temp.saved(pg_temp.commit(a, 'p31-own-2', jsonb_build_array(pg_temp.save('human-tasks/own.md',
+	perform pg_temp.saved(pg_temp.commit(a, 'p31-own-1', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/own.md', pg_temp.task(e3)))));
+	perform pg_temp.saved(pg_temp.commit(a, 'p31-own-2', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/own.md',
 		pg_temp.task(e3, '{"status":"cancelled"}')))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'nothing to wake');
 	perform pg_temp.is(pg_temp.marks(e3), '', 'no mark for the agent''s own changes');
@@ -198,12 +198,12 @@ begin
 		raise exception 'The run''s requester started the task'; end if;
 	-- A final task removed: a mark still waiting for it (one a busy pass left) finds no task. Restored, it is no new task:
 	-- nobody is woken.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-remove-2', jsonb_build_array(pg_temp.del('human-tasks/sign.md'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-remove-2', jsonb_build_array(pg_temp.del('QorperaOS/human-tasks/sign.md'))));
 	insert into public.qorpera_folder_human_task_wakes(environment_id, profile_id, task_id, reason, commit_id, seq, occurrence_key)
 	select environment_id, profile_id, task_id, 'accepted', commit_id, seq, 'human-task:' || task_id || ':late'
 	from public.qorpera_folder_human_task_wakes where task_id = '91500000-0000-4000-8000-0000000000e2' and reason = 'accepted';
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 0/1/0/0', 'a removed task wakes nobody');
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-restore-2', jsonb_build_array(pg_temp.save('human-tasks/sign.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-restore-2', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/sign.md',
 		pg_temp.task('91500000-0000-4000-8000-0000000000e2', '{"status":"accepted"}')))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'a restore wakes nobody');
 	perform pg_temp.is(pg_temp.marks('91500000-0000-4000-8000-0000000000e2'),
@@ -214,13 +214,13 @@ end $$;
 do $$
 declare e11 constant uuid := '91500000-0000-4000-8000-0000000000eb'; e12 constant uuid := '91500000-0000-4000-8000-0000000000ec';
 begin
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-11', jsonb_build_array(pg_temp.save('human-tasks/old-name.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-11', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/old-name.md',
 		pg_temp.task(e11)))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'assigned');
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-rename-11', jsonb_build_array(
-		pg_temp.move('human-tasks/old-name.md', 'human-tasks/new-name.md'))));
+		pg_temp.move('QorperaOS/human-tasks/old-name.md', 'QorperaOS/human-tasks/new-name.md'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'a rename wakes nobody');
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-12', jsonb_build_array(pg_temp.save('human-tasks/old-name.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-12', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/old-name.md',
 		pg_temp.task(e12)))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'a new task at the old name');
 	perform pg_temp.is(pg_temp.marks(e11) || ' / ' || pg_temp.marks(e12), 'assigned:woken / assigned:woken', 'one mark each');
@@ -232,18 +232,18 @@ do $$
 declare e4 constant uuid := '91500000-0000-4000-8000-0000000000e4'; m public.qorpera_folder_human_task_wakes;
 	w public.qorpera_wake_occurrences; v_due timestamptz := date_trunc('second', clock_timestamp()) - interval '1 hour';
 begin
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-4', jsonb_build_array(pg_temp.save('human-tasks/call.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-4', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/call.md',
 		pg_temp.task(e4)))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'assigned');
 	-- A member hands the task to another person: Nora is woken. A move of its due date wakes nobody.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-person-4', jsonb_build_array(pg_temp.save('human-tasks/call.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-person-4', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/call.md',
 		pg_temp.task(e4, '{"member":"70700000-0000-4000-8000-000000000001"}')))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'a new person wakes Nora');
 	if (pg_temp.mark(e4, 'person')).expect <> '{"contact_id":null,"member_user_id":"70700000-0000-4000-8000-000000000001",
 			"from_staff_agent_id":"70700000-0000-4000-8000-0000000000a1"}' then
 		raise exception 'A new person: %', to_jsonb(pg_temp.mark(e4, 'person')); end if;
 	perform pg_temp.woken(e4, 'person', '70700000-0000-4000-8000-0000000000a1', 'a new person');
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-due-4', jsonb_build_array(pg_temp.save('human-tasks/call.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-due-4', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/call.md',
 		pg_temp.task(e4, '{"member":"70700000-0000-4000-8000-000000000001","due":"2099-12-01T09:00:00Z"}')))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'idle', 'a moved due wakes nobody');
 	-- Time passes (the index row's due, as the scan reads it).
@@ -290,26 +290,26 @@ declare e5 constant uuid := '91500000-0000-4000-8000-0000000000e5';
 	t jsonb := pg_temp.task('91500000-0000-4000-8000-0000000000e5', '{"from":"70700000-0000-4000-8000-0000000000a2"}');
 	assigned public.qorpera_wake_occurrences; m public.qorpera_folder_human_task_wakes;
 begin
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-5', jsonb_build_array(pg_temp.save('human-tasks/otto.md', t))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-5', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/otto.md', t))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'Otto''s task wakes Otto');
 	assigned := pg_temp.woken(e5, 'assigned', '70700000-0000-4000-8000-0000000000a2', 'Otto''s wake');
 	-- Otto is archived before his wake runs: the materializer no longer takes it.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-archive-otto', jsonb_build_array(pg_temp.write('agents/otto/agent.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-archive-otto', jsonb_build_array(pg_temp.write('QorperaOS/agents/otto/agent.md',
 		'agent', pg_temp.agent_text('70700000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'),
-		pg_temp.agent_parse('70700000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'), pg_temp.version('agents/otto/agent.md')))));
+		pg_temp.agent_parse('70700000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'), pg_temp.version('QorperaOS/agents/otto/agent.md')))));
 	if public.qorpera_wake_authorized(assigned) then raise exception 'An archived agent''s task wake is no longer authorized'; end if;
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-done-5', jsonb_build_array(pg_temp.save('human-tasks/otto.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-done-5', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/otto.md',
 		t || '{"status":"done"}'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'done wakes the Co-Founder');
 	perform pg_temp.woken(e5, 'done', '70700000-0000-4000-8000-0000000000c0', 'the Co-Founder stands in');
 	-- The Co-Founder's run returns it: its own change wakes nobody, though it is not the task's `from`.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.routine_run('91500000-0000-4000-8000-000000000083'), 'p31-return-5',
-		jsonb_build_array(pg_temp.save('human-tasks/otto.md',
+		jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/otto.md',
 			t || '{"status":"returned","reason":"The photo is blurry","due":"2099-11-01T00:00:00Z"}'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 0/1/0/0', 'the Co-Founder''s own change');
 	perform pg_temp.is(pg_temp.marks(e5), 'assigned:woken done:woken returned:skipped:own_change', 'skipped as its own');
 	-- A member hands it to Nora: Nora is woken.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-handoff-5', jsonb_build_array(pg_temp.save('human-tasks/otto.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-handoff-5', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/otto.md',
 		t || '{"status":"returned","reason":"The photo is blurry","due":"2099-11-01T00:00:00Z",
 			"from":"70700000-0000-4000-8000-0000000000a1"}'))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 1/0/0/0', 'the hand-off wakes Nora');
@@ -327,7 +327,7 @@ declare e6 constant uuid := '91500000-0000-4000-8000-0000000000e6'; e7 constant 
 	r jsonb; w public.qorpera_wake_occurrences; v_state text;
 begin
 	-- The member starts a task for themselves; their login does not pay for unattended work.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-new-6', jsonb_build_array(pg_temp.save('human-tasks/mine.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-new-6', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/mine.md',
 		pg_temp.task(e6)))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 0/0/1/0', 'nobody can pay');
 	perform pg_temp.is(pg_temp.marks(e6), 'assigned:unpaid:no_payer', 'unpaid, and why');
@@ -337,7 +337,7 @@ begin
 	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
 		('70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000003', 'todos-stranger@example.test', 'Guest', 'contributor');
 	perform pg_temp.saved(pg_temp.commit('{"kind":"member","userId":"70700000-0000-4000-8000-000000000003"}', 'p31-new-7',
-		jsonb_build_array(pg_temp.save('human-tasks/guest.md', pg_temp.task(e7)))));
+		jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/guest.md', pg_temp.task(e7)))));
 	perform pg_temp.fx('delete from public.qorpera_profile_members where user_id = ''70700000-0000-4000-8000-000000000003''');
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 0/0/1/0', 'the starter left');
 	perform pg_temp.is(pg_temp.marks(e7), 'assigned:unpaid:starter_left', 'unpaid because the starter left');
@@ -408,7 +408,7 @@ begin
 			'70700000-0000-4000-8000-000000000002', '70700000-0000-4000-8000-0000000000a1', null) s)
 			is distinct from '70800000-0000-4000-8000-0000000000b2' then
 		raise exception 'Fixture: the member''s plan would pay for new work'; end if;
-	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-new-8', jsonb_build_array(pg_temp.save('human-tasks/plan.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.mem(), 'p31-new-8', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/plan.md',
 		pg_temp.task(e8)))));
 	perform pg_temp.is(pg_temp.counts(pg_temp.wake_up()), 'done 0/0/1/0', 'a plan never pays');
 	perform pg_temp.is(pg_temp.marks(e8), 'assigned:unpaid:plan', 'unpaid because the login is a plan');
@@ -431,7 +431,7 @@ end $$;
 -- 9. A paused company: the listener still marks, the drain waits; after the resume it wakes ------------------------------------
 
 do $$
-declare e9 constant uuid := '91500000-0000-4000-8000-0000000000e9'; v_unit jsonb := pg_temp.save('human-tasks/paused.md',
+declare e9 constant uuid := '91500000-0000-4000-8000-0000000000e9'; v_unit jsonb := pg_temp.save('QorperaOS/human-tasks/paused.md',
 	pg_temp.task('91500000-0000-4000-8000-0000000000e9'));
 begin
 	perform pg_temp.possess('70700000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(v_unit));
@@ -451,7 +451,7 @@ do $$
 declare e10 constant uuid := '91500000-0000-4000-8000-0000000000ea'; m public.qorpera_folder_human_task_wakes;
 	w public.qorpera_wake_occurrences; v_case text;
 begin
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-10', jsonb_build_array(pg_temp.save('human-tasks/pin.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-new-10', jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/pin.md',
 		pg_temp.task(e10)))));
 	perform pg_temp.listen();
 	m := pg_temp.mark(e10, 'assigned');
@@ -595,7 +595,7 @@ begin
 		or e ->> 'parentRunId' is not null or e -> 'causal' ->> 'rootId' is distinct from w.id::text
 		or (select array_agg(k order by k) from jsonb_object_keys(e -> 'payload') k)
 			is distinct from array['commitId','dueAt','reason','schema','task','taskId']
-		or e -> 'payload' -> 'task' is distinct from '{"due":"2099-10-20T12:00:00.000000Z","path":"human-tasks/fit-disk.md",
+		or e -> 'payload' -> 'task' is distinct from '{"due":"2099-10-20T12:00:00.000000Z","path":"QorperaOS/human-tasks/fit-disk.md",
 			"title":"Fit the new disk","status":"declined"}'
 		or e -> 'payload' ->> 'reason' is distinct from 'declined' or e -> 'payload' -> 'dueAt' is distinct from 'null' then
 		raise exception 'The run''s wake: %', e; end if;
@@ -606,7 +606,7 @@ begin
 		or not exists (select 1 from public.qorpera_folder_run_read_records rr where rr.run_id = (a ->> 'runId')::uuid
 			and rr.release_id = public.qorpera_folder_human_task_release_id(w.id, (select folder_path_version
 				from public.qorpera_folder_human_task_index where id = '91500000-0000-4000-8000-0000000000e1'))
-			and rr.reads -> 0 ->> 'path' = 'human-tasks/fit-disk.md' and rr.reads -> 0 -> 'authority' ->> 'resourceId' is not null)
+			and rr.reads -> 0 ->> 'path' = 'QorperaOS/human-tasks/fit-disk.md' and rr.reads -> 0 -> 'authority' ->> 'resourceId' is not null)
 		or not exists (select 1 from public.qorpera_folder_run_reads r where r.run_id = (a ->> 'runId')::uuid) then
 		raise exception 'The task read is recorded: %', (select jsonb_agg(to_jsonb(rr)) from public.qorpera_folder_run_read_records rr
 			where rr.run_id = (a ->> 'runId')::uuid); end if;
@@ -628,17 +628,17 @@ begin
 	update public.qorpera_company_path_grants set revoked_at = null
 	where principal_kind = 'staff_agent' and principal_id = '70700000-0000-4000-8000-0000000000a1' and revoked_at is not null;
 	if public.qorpera_folder_human_task_wake_payload(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
-			w.requested_by_user_id, w.session_id)) -> 'task' ->> 'path' is distinct from 'human-tasks/fit-disk.md' then
+			w.requested_by_user_id, w.session_id)) -> 'task' ->> 'path' is distinct from 'QorperaOS/human-tasks/fit-disk.md' then
 		raise exception 'A task the run may read is shown'; end if;
 	-- A private resource over the task's file hides it too.
 	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy, created_by_user_id)
-	values ('70700000-0000-4000-8000-000000000020', 'human-tasks/fit-disk.md', 'exact', 'member_private',
+	values ('70700000-0000-4000-8000-000000000020', 'QorperaOS/human-tasks/fit-disk.md', 'exact', 'member_private',
 		'70700000-0000-4000-8000-000000000002', 'normal', '70700000-0000-4000-8000-000000000002');
 	if public.qorpera_folder_human_task_wake_payload(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
 			w.requested_by_user_id, w.session_id)) -> 'task' <> 'null' then
 		raise exception 'A task the run may not read is not shown'; end if;
 	delete from public.qorpera_company_path_resources
-	where environment_id = '70700000-0000-4000-8000-000000000020' and path = 'human-tasks/fit-disk.md';
+	where environment_id = '70700000-0000-4000-8000-000000000020' and path = 'QorperaOS/human-tasks/fit-disk.md';
 	-- Once its run is admitted, a later change of the task does not take the wake's authority away; before, it does.
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set retired_at = clock_timestamp() where id = %L',
 		'91500000-0000-4000-8000-0000000000e1'));
@@ -648,8 +648,8 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set retired_at = null where id = %L',
 		'91500000-0000-4000-8000-0000000000e1'));
 	-- Erasing the (final, removed) task's file finds the run that read it through its wake.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-remove-1', jsonb_build_array(pg_temp.del('human-tasks/fit-disk.md'))));
-	v_id :=(public.qorpera_folder_erase('70700000-0000-4000-8000-000000000020', pg_temp.owner(), '["human-tasks/fit-disk.md"]',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-remove-1', jsonb_build_array(pg_temp.del('QorperaOS/human-tasks/fit-disk.md'))));
+	v_id :=(public.qorpera_folder_erase('70700000-0000-4000-8000-000000000020', pg_temp.owner(), '["QorperaOS/human-tasks/fit-disk.md"]',
 		'erase-fit-disk') ->> 'erasureId')::uuid;
 	for i in 1 .. 60 loop
 		select * into v from public.qorpera_folder_erasures where id = v_id;

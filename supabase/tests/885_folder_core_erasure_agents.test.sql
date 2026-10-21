@@ -15,15 +15,15 @@ create function pg_temp.group_parse(p_id uuid, p_name text, p_agents uuid[]) ret
 		'people','[]'::jsonb,'purpose','Plan the launch.')
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents), pg_temp.group_parse(p_id, p_name, p_agents))))
 $$;
 create function pg_temp.rule(p_name text, p_id uuid, p_outcome text, p_text text) returns jsonb language sql as $$
-	select pg_temp.write('rules/' || p_name || '.md', 'rule', format(E'---\nid: %s\noutcome: %s\n---\n%s\n', p_id, p_outcome, p_text),
-		jsonb_build_object('kind','rule','id',p_id,'outcome',p_outcome,'text',p_text), pg_temp.version('rules/' || p_name || '.md'))
+	select pg_temp.write('QorperaOS/rules/' || p_name || '.md', 'rule', format(E'---\nid: %s\noutcome: %s\n---\n%s\n', p_id, p_outcome, p_text),
+		jsonb_build_object('kind','rule','id',p_id,'outcome',p_outcome,'text',p_text), pg_temp.version('QorperaOS/rules/' || p_name || '.md'))
 $$;
 create function pg_temp.erase(p_paths text[], p_key text) returns jsonb language sql as $$
 	select public.qorpera_folder_erase('70700000-0000-4000-8000-000000000020', pg_temp.owner(), to_jsonb(p_paths), p_key)
@@ -56,12 +56,12 @@ $$;
 do $$
 declare r jsonb; i integer;
 begin
-	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-0', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/groups'),
-		jsonb_build_object('op','mkdir','path','rules')));
+	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-0', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-1', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/daily.md', pg_temp.rparse('88500000-0000-4000-8000-0000000000b1', 'Daily inbox', pg_temp.every(60))),
-		pg_temp.todo('agents/nora/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call Maria about the audit', 'open', null,
+		pg_temp.routine('QorperaOS/agents/nora/routines/daily.md', pg_temp.rparse('88500000-0000-4000-8000-0000000000b1', 'Daily inbox', pg_temp.every(60))),
+		pg_temp.todo('QorperaOS/agents/nora/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call Maria about the audit', 'open', null,
 			'Ask Maria about the audit.'),
 		pg_temp.new_group('launch', '88500000-0000-4000-8000-0000000000d1', 'Launch with Nora',
 			array['70700000-0000-4000-8000-0000000000a1', '70700000-0000-4000-8000-0000000000a2']::uuid[]),
@@ -95,10 +95,10 @@ begin
 			folder_path, folder_key, folder_brief_version, folder_commit_id)
 		values ('88500000-0000-4000-8000-0000000000c2', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020',
 			'70700000-0000-4000-8000-0000000000a1', '88500000-0000-4000-8000-0000000000c1', 'ask-maria', 'Ask Maria about the audit',
-			'read', 'each', '{"goal":"Ask Maria about the audit","definitionOfDone":"She answers","sources":["contacts/maria.md"]}',
+			'read', 'each', '{"goal":"Ask Maria about the audit","definitionOfDone":"She answers","sources":["QorperaOS/contacts/maria.md"]}',
 			'succeeded', '70700000-0000-4000-8000-000000000001', %1$L, '{"summary":"Maria said yes","words":3}', clock_timestamp(),
-			'Maria agreed', '70700000-0000-4000-8000-000000000020', 'agents/nora/todos/call-maria/ask-maria',
-			'agents/nora/todos/call-maria/ask-maria', '88500000-0000-4000-8000-0000000000c3',
+			'Maria agreed', '70700000-0000-4000-8000-000000000020', 'QorperaOS/agents/nora/todos/call-maria/ask-maria',
+			'qorperaos/agents/nora/todos/call-maria/ask-maria', '88500000-0000-4000-8000-0000000000c3',
 			(select id from public.qorpera_folder_commits where operation_key = 'erase-agents-1'));
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
 		values ('88500000-0000-4000-8000-0000000000c2', 1, 'dispatched', %1$L, '{"goal":"Ask Maria about the audit"}')$q$,
@@ -125,14 +125,14 @@ begin
 			exists (select 1 from public.qorpera_company_path_grants where principal_id = '70700000-0000-4000-8000-0000000000a1'),
 			exists (select 1 from public.qorpera_company_rooms where bound_staff_agent_id = '70700000-0000-4000-8000-0000000000a1'); end if;
 	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-2', jsonb_build_array(
-		jsonb_build_object('op','delete','path','agents/nora','expectedVersion',pg_temp.version('agents/nora'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','delete','path','agents/groups/launch','expectedVersion',pg_temp.version('agents/groups/launch'),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/nora','expectedVersion',pg_temp.version('QorperaOS/agents/nora'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/groups/launch','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch'),
 			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','delete','path','rules/no-maria.md','expectedVersion',pg_temp.version('rules/no-maria.md'))));
+		jsonb_build_object('op','delete','path','QorperaOS/rules/no-maria.md','expectedVersion',pg_temp.version('QorperaOS/rules/no-maria.md'))));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	if (select folder_retired_at is null or employment_status <> 'archived' from public.qorpera_profile_staff
 			where staff_agent_id = '70700000-0000-4000-8000-0000000000a1') then raise exception 'Fixture: Nora is retired'; end if;
-	-- Nova moves into agents/nora: the root is live, and only its earlier life (Nora's) is erased.
+	-- Nova moves into QorperaOS/agents/nora: the root is live, and only its earlier life (Nora's) is erased.
 	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-2b', jsonb_build_array(pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a3', 'Nova')));
 	perform pg_temp.expect(r, 1, 'saved');
 	-- A connector grant of hers, as archiving leaves it (revoked).
@@ -154,7 +154,7 @@ begin
 	v_seq := pg_temp.seq();
 	select count(*) into v_ops from public.qorpera_company_operations o join public.qorpera_company_rooms m on m.session_id = o.entity_id
 	where m.bound_staff_agent_id = '70700000-0000-4000-8000-0000000000a1' and o.operation_type = 'session_state';
-	r := pg_temp.erase(array['agents/nora', 'agents/groups/launch', 'rules/no-maria.md'], 'erase-agents-3');
+	r := pg_temp.erase(array['QorperaOS/agents/nora', 'QorperaOS/agents/groups/launch', 'QorperaOS/rules/no-maria.md'], 'erase-agents-3');
 	if r -> 'erased' <> '{"agents":1,"groupChats":1,"todos":1,"workers":1,"routines":1,"rules":1,"tables":0,"proposals":0}'::jsonb then
 		raise exception 'The reply counts what was erased: %', r; end if;
 	select * into v_staff from public.qorpera_profile_staff where staff_agent_id = '70700000-0000-4000-8000-0000000000a1';
@@ -174,7 +174,7 @@ begin
 			and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key('70700000-0000-4000-8000-0000000000a1',
 				'70700000-0000-4000-8000-0000000000a2')) <> 'Erased agent & Otto' then
 		raise exception 'The pair conversation is titled with the erased side''s placeholder'; end if;
-	if (select (display_name, folder_path, folder_erased_at) is distinct from ('Nova', 'agents/nora/agent.md', null)
+	if (select (display_name, folder_path, folder_erased_at) is distinct from ('Nova', 'QorperaOS/agents/nora/agent.md', null)
 			from public.qorpera_profile_staff where staff_agent_id = '70700000-0000-4000-8000-0000000000a3') then
 		raise exception 'The agent living at the root now is untouched'; end if;
 	select * into v_group from public.qorpera_company_rooms where room_key = 'chat-88500000-0000-4000-8000-0000000000d1';
@@ -234,10 +234,10 @@ begin
 		pg_temp.rule('no-maria', '88500000-0000-4000-8000-0000000000e1', 'ask-first', 'mail Maria')))),
 		'refused/this id belongs to another rule; give this rule a new id', 'the rule');
 	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-7', jsonb_build_array(
-		pg_temp.todo('agents/otto/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call', 'open', null, '')))),
+		pg_temp.todo('QorperaOS/agents/otto/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call', 'open', null, '')))),
 		'refused/this id belongs to another todo; give this todo a new id', 'the todo');
 	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-8', jsonb_build_array(
-		pg_temp.routine('agents/otto/routines/daily.md', pg_temp.rparse('88500000-0000-4000-8000-0000000000b1', 'Daily', pg_temp.every(60)))))),
+		pg_temp.routine('QorperaOS/agents/otto/routines/daily.md', pg_temp.rparse('88500000-0000-4000-8000-0000000000b1', 'Daily', pg_temp.every(60)))))),
 		'refused/this id belongs to another routine; give this routine a new id', 'the routine');
 end $$;
 
@@ -291,7 +291,7 @@ do $$
 declare v_plan text; v_seq bigint; v_commit uuid; v_first uuid; v_second uuid;
 begin
 	perform set_config('enable_seqscan', 'off', true);
-	execute format($q$explain (format json) select t.id from unnest(array['agents/nora']) k
+	execute format($q$explain (format json) select t.id from unnest(array['qorperaos/agents/nora']) k
 		join public.qorpera_runtime_agent_todos t on t.folder_environment_id = %L and t.folder_path is not null
 			and public.qorpera_folder_key(t.folder_path) collate "C" >= k collate "C"
 			and public.qorpera_folder_key(t.folder_path) collate "C" < (k || '0') collate "C"$q$,

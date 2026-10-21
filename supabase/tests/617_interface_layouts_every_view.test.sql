@@ -69,11 +69,11 @@ end $$;
 create function pg_temp.agent_view(p_view jsonb, p_name text) returns public.qorpera_folder_commits language plpgsql as $$
 declare r jsonb; i integer; c public.qorpera_folder_commits%rowtype;
 begin
-	r := pg_temp.vcommit(p_view, 'layout-' || p_name, jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/page-' || p_name),
-		jsonb_build_object('op','write','path','interfaces/order-' || p_name || '.md','file',pg_temp.stage('A page file.')),
-		jsonb_build_object('op','write','path','tables/t/table.toml','file',pg_temp.stage('name = "Figures"')),
-		jsonb_build_object('op','mkdir','path','tables/table-' || p_name),
-		jsonb_build_object('op','copy','from','shared/a.txt','to','interfaces/copy-' || p_name || '.md'),
+	r := pg_temp.vcommit(p_view, 'layout-' || p_name, jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/page-' || p_name),
+		jsonb_build_object('op','write','path','QorperaOS/interfaces/order-' || p_name || '.md','file',pg_temp.stage('A page file.')),
+		jsonb_build_object('op','write','path','QorperaOS/tables/t/table.toml','file',pg_temp.stage('name = "Figures"')),
+		jsonb_build_object('op','mkdir','path','QorperaOS/tables/table-' || p_name),
+		jsonb_build_object('op','copy','from','shared/a.txt','to','QorperaOS/interfaces/copy-' || p_name || '.md'),
 		jsonb_build_object('op','mkdir','path','shared/by-' || p_name)));
 	for i in 1..5 loop perform pg_temp.layout(r, i); end loop;
 	perform pg_temp.expect(r, 6, 'saved');
@@ -82,18 +82,18 @@ begin
 		raise exception 'The % view''s commit: %', p_name, to_jsonb(c); end if;
 	return c;
 end $$;
--- Every live entry under interfaces/ or tables/ (689's, by key).
+-- Every live entry under QorperaOS/interfaces/ or QorperaOS/tables/ (689's, by key).
 create function pg_temp.layouts() returns text[] language sql as $$
 	select coalesce(array_agg(key_text order by key_text), '{}') from public.qorpera_folder_entries
-	where environment_id = '63200000-0000-4000-8000-000000000020' and kind <> 'claim' and key_text ~ '^(interfaces|tables)(/|$)'
+	where environment_id = '63200000-0000-4000-8000-000000000020' and kind <> 'claim' and key_text ~ '^qorperaos/(interfaces|tables)(/|$)'
 $$;
 
 -- The platform makes the pages folder, the tables root and a table's folder, so each change below has its parent.
 do $$
 begin
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'layout-seed', '[{"op":"mkdir","path":"interfaces"},
-		{"op":"mkdir","path":"tables"},{"op":"mkdir","path":"tables/t"}]'), 3, 'saved');
-	if pg_temp.layouts() <> array['interfaces', 'tables', 'tables/t'] then raise exception 'The seed: %', pg_temp.layouts(); end if;
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'layout-seed', '[{"op":"mkdir","path":"QorperaOS/interfaces"},
+		{"op":"mkdir","path":"QorperaOS/tables"},{"op":"mkdir","path":"QorperaOS/tables/t"}]'), 3, 'saved');
+	if pg_temp.layouts() <> array['qorperaos/interfaces', 'qorperaos/tables', 'qorperaos/tables/t'] then raise exception 'The seed: %', pg_temp.layouts(); end if;
 end $$;
 
 -- A desktop held by a run, then detached (the run's lease released): both save as the agent.
@@ -155,10 +155,10 @@ begin
 	values (cm, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('9', 64), cm, clock_timestamp());
 	set local session_replication_role = origin;
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
-	r := pg_temp.vcommit(cv, 'layout-coding', jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/page-coding'),
-		jsonb_build_object('op','write','path','interfaces/order-coding.md','file',pg_temp.stage('A page file.')),
-		jsonb_build_object('op','write','path','tables/t/table.toml','file',pg_temp.stage('name = "Figures"')),
-		jsonb_build_object('op','mkdir','path','tables/table-coding'), jsonb_build_object('op','mkdir','path','code/by-coding')));
+	r := pg_temp.vcommit(cv, 'layout-coding', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/page-coding'),
+		jsonb_build_object('op','write','path','QorperaOS/interfaces/order-coding.md','file',pg_temp.stage('A page file.')),
+		jsonb_build_object('op','write','path','QorperaOS/tables/t/table.toml','file',pg_temp.stage('name = "Figures"')),
+		jsonb_build_object('op','mkdir','path','QorperaOS/tables/table-coding'), jsonb_build_object('op','mkdir','path','code/by-coding')));
 	perform pg_temp.expect(r, 1, 'denied', 'denied'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	perform pg_temp.expect(r, 3, 'denied', 'denied'); perform pg_temp.layout(r, 4); perform pg_temp.expect(r, 5, 'saved');
 	c := pg_temp.last_commit(r);
@@ -169,7 +169,7 @@ end $$;
 -- No agent's view stored anything the rule keeps.
 do $$
 begin
-	if pg_temp.layouts() <> array['interfaces', 'tables', 'tables/t'] then raise exception 'The layouts changed: %', pg_temp.layouts(); end if;
+	if pg_temp.layouts() <> array['qorperaos/interfaces', 'qorperaos/tables', 'qorperaos/tables/t'] then raise exception 'The layouts changed: %', pg_temp.layouts(); end if;
 end $$;
 
 -- A desktop a member holds (a takeover) is the member's: its page folder saves as the member and is stored, by design
@@ -180,10 +180,10 @@ begin
 	perform pg_temp.hold(null, '63200000-0000-4000-8000-000000000001');
 	m := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4',
 		'holderUserId','63200000-0000-4000-8000-000000000001'));
-	r := pg_temp.vcommit(m, 'layout-member-desk', '[{"op":"mkdir","path":"interfaces/member-desk"}]');
+	r := pg_temp.vcommit(m, 'layout-member-desk', '[{"op":"mkdir","path":"QorperaOS/interfaces/member-desk"}]');
 	perform pg_temp.expect(r, 1, 'saved');
 	c := pg_temp.last_commit(r);
 	if c.actor_kind is distinct from 'member' or c.view_kind is distinct from 'computer_desktop' then
 		raise exception 'A member-held desktop saves as the member: %', to_jsonb(c); end if;
-	if not (pg_temp.read('interfaces/member-desk') ->> 'found')::boolean then raise exception 'The member''s page folder is stored'; end if;
+	if not (pg_temp.read('QorperaOS/interfaces/member-desk') ->> 'found')::boolean then raise exception 'The member''s page folder is stored'; end if;
 end $$;

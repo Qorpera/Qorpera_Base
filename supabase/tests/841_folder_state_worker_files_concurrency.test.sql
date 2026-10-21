@@ -75,29 +75,29 @@ set session_replication_role = origin;
 
 -- Three open todos of Ada's, committed.
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'f2b-race-todos', jsonb_build_array(
-	pg_temp.todo('agents/ada/todos/race-one.md', 'open'), pg_temp.todo('agents/ada/todos/race-two.md', 'open'),
-	pg_temp.todo('agents/ada/todos/race-three.md', 'open'))), 3, 'saved') \g /dev/null
+	pg_temp.todo('QorperaOS/agents/ada/todos/race-one.md', 'open'), pg_temp.todo('QorperaOS/agents/ada/todos/race-two.md', 'open'),
+	pg_temp.todo('QorperaOS/agents/ada/todos/race-three.md', 'open'))), 3, 'saved') \g /dev/null
 
 -- Each race's staged files, its done and its recorded review, committed before the block that drives the fences: a
 -- row this session wrote and has not committed would make the other sessions wait on it while it waits on them.
 select set_config('qorpera_test.b1', pg_temp.brief('84100000-0000-4000-8000-000000000101')::text, false) \g /dev/null
-select set_config('qorpera_test.u1', pg_temp.dispatch('agents/ada/todos/race-one/worker', current_setting('qorpera_test.b1')::jsonb)::text,
+select set_config('qorpera_test.u1', pg_temp.dispatch('QorperaOS/agents/ada/todos/race-one/worker', current_setting('qorpera_test.b1')::jsonb)::text,
 	false) \g /dev/null
 select set_config('qorpera_test.r1', pg_temp.reviewed('f2b-race-call-1', current_setting('qorpera_test.u1')::jsonb)::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u1')::jsonb) \g /dev/null
-select set_config('qorpera_test.d1', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-one.md', 'done'))::text, false) \g /dev/null
+select set_config('qorpera_test.d1', jsonb_build_array(pg_temp.todo('QorperaOS/agents/ada/todos/race-one.md', 'done'))::text, false) \g /dev/null
 -- Each committer holds the files it commits (Ada's run its brief, the member its done), as its own upload would leave
 -- them (C1D §3), before its commit runs on another session.
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.d1')::jsonb) \g /dev/null
 select set_config('qorpera_test.b2', pg_temp.brief('84100000-0000-4000-8000-000000000102')::text, false) \g /dev/null
-select set_config('qorpera_test.u2', pg_temp.dispatch('agents/ada/todos/race-two/worker', current_setting('qorpera_test.b2')::jsonb)::text,
+select set_config('qorpera_test.u2', pg_temp.dispatch('QorperaOS/agents/ada/todos/race-two/worker', current_setting('qorpera_test.b2')::jsonb)::text,
 	false) \g /dev/null
 select set_config('qorpera_test.r2', pg_temp.reviewed('f2b-race-call-2', current_setting('qorpera_test.u2')::jsonb)::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u2')::jsonb) \g /dev/null
-select set_config('qorpera_test.d2', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-two.md', 'done'))::text, false) \g /dev/null
+select set_config('qorpera_test.d2', jsonb_build_array(pg_temp.todo('QorperaOS/agents/ada/todos/race-two.md', 'done'))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.d2')::jsonb) \g /dev/null
 select set_config('qorpera_test.b3', pg_temp.brief('84100000-0000-4000-8000-000000000103')::text, false) \g /dev/null
-select set_config('qorpera_test.u3', pg_temp.dispatch('agents/ada/todos/race-three/worker', current_setting('qorpera_test.b3')::jsonb)::text,
+select set_config('qorpera_test.u3', pg_temp.dispatch('QorperaOS/agents/ada/todos/race-three/worker', current_setting('qorpera_test.b3')::jsonb)::text,
 	false) \g /dev/null
 select set_config('qorpera_test.r3', pg_temp.reviewed('f2b-race-call-3', current_setting('qorpera_test.u3')::jsonb)::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u3')::jsonb) \g /dev/null
@@ -105,7 +105,7 @@ select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), cu
 -- A. A done holds the todo; a dispatch on it waits at the todo's row, then meets a closed todo -------------------------
 do $$
 declare
-	f text := 'agents/ada/todos/race-one/worker'; b jsonb := current_setting('qorpera_test.b1')::jsonb;
+	f text := 'QorperaOS/agents/ada/todos/race-one/worker'; b jsonb := current_setting('qorpera_test.b1')::jsonb;
 	u jsonb := current_setting('qorpera_test.u1')::jsonb; v_review uuid := current_setting('qorpera_test.r1')::uuid;
 	d jsonb := current_setting('qorpera_test.d1')::jsonb; r jsonb;
 begin
@@ -126,14 +126,14 @@ end $$;
 
 -- C. A dispatch holds its todo; a member's move of the agent's whole folder waits at the todo, then meets the new worker at
 -- work and is refused (it never carries a worker it did not see) --------------------------------------------------------
-select set_config('qorpera_test.mv', jsonb_build_array(jsonb_build_object('op','move','from','agents/ada','to','agents/adele',
+select set_config('qorpera_test.mv', jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/agents/ada','to','QorperaOS/agents/adele',
 	'expectedVersion',(select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020'
-		and key_text = 'agents/ada'),
+		and key_text = 'qorperaos/agents/ada'),
 	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
 	false) \g /dev/null
 do $$
 declare
-	f text := 'agents/ada/todos/race-three/worker'; b jsonb := current_setting('qorpera_test.b3')::jsonb;
+	f text := 'QorperaOS/agents/ada/todos/race-three/worker'; b jsonb := current_setting('qorpera_test.b3')::jsonb;
 	u jsonb := current_setting('qorpera_test.u3')::jsonb; v_review uuid := current_setting('qorpera_test.r3')::uuid;
 	mv jsonb := current_setting('qorpera_test.mv')::jsonb; r jsonb;
 begin
@@ -150,16 +150,16 @@ begin
 		or (r -> 'units' -> 0 ->> 'outcome' = 'conflict' and r -> 'units' -> 0 ->> 'reason' = 'unseen_change')) then
 		raise exception 'A move behind a dispatch: %', r; end if;
 	if (select folder_key from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000103')
-			is distinct from 'agents/ada/todos/race-three/worker'
+			is distinct from 'qorperaos/agents/ada/todos/race-three/worker'
 		or exists (select 1 from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020'
-			and key_text = 'agents/adele') then
+			and key_text = 'qorperaos/agents/adele') then
 		raise exception 'The agent''s folder moved with a worker it did not see'; end if;
 end $$;
 
 -- B. A dispatch holds the todo; a done of it waits, then meets the worker at work ----------------------------------------
 do $$
 declare
-	f text := 'agents/ada/todos/race-two/worker'; b jsonb := current_setting('qorpera_test.b2')::jsonb;
+	f text := 'QorperaOS/agents/ada/todos/race-two/worker'; b jsonb := current_setting('qorpera_test.b2')::jsonb;
 	u jsonb := current_setting('qorpera_test.u2')::jsonb; v_review uuid := current_setting('qorpera_test.r2')::uuid;
 	d jsonb := current_setting('qorpera_test.d2')::jsonb; r jsonb;
 begin
@@ -174,7 +174,7 @@ begin
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'refused' or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like 'a worker is still at work%' then
 		raise exception 'A done behind a dispatch: %', r; end if;
-	if (select state from public.qorpera_runtime_agent_todos where id = md5('agents/ada/todos/race-two.md')::uuid) is distinct from 'open'
+	if (select state from public.qorpera_runtime_agent_todos where id = md5('QorperaOS/agents/ada/todos/race-two.md')::uuid) is distinct from 'open'
 		or (select state from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000102') is distinct from 'active' then
 		raise exception 'The todo stays open with its worker at work'; end if;
 end $$;

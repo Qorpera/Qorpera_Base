@@ -43,7 +43,7 @@ $$;
 -- Bob's routine file, saved by the owner: its version pins the owner's first login (the base sponsor), and the scheduler
 -- has queued one wake already.
 select pg_temp.base_commit(pg_temp.base_owner(), 'pins-routine', jsonb_build_array(
-	pg_temp.base_write('agents/bob/routines/tick.md', 'routine',
+	pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md', 'routine',
 		E'---\n' || pg_temp.pins_routine_parse('69800000-0000-4000-8000-0000000000e1', 'Tick')::text || E'\n---\n',
 		pg_temp.pins_routine_parse('69800000-0000-4000-8000-0000000000e1', 'Tick')))) \g /dev/null
 select pg_temp.base_assert(routine.status = 'active' and version.staff_agent_id = '92400000-0000-4000-8000-000000000031'

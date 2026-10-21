@@ -84,9 +84,9 @@ begin
 		raise exception 'A malformed event trigger is a trigger problem'; end if;
 	-- Nora listens to Stripe's payments, Otto to the mailbox.
 	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'event-0001', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/payments.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e1', 'Payments',
+		pg_temp.routine('QorperaOS/agents/nora/routines/payments.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e1', 'Payments',
 			pg_temp.ev('91300000-0000-4000-8000-0000000000b1', '["payment_intent.succeeded","charge.refunded"]'))),
-		pg_temp.routine('agents/otto/routines/support.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e2', 'Support',
+		pg_temp.routine('QorperaOS/agents/otto/routines/support.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e2', 'Support',
 			pg_temp.ev('91300000-0000-4000-8000-0000000000b2'))))));
 	perform pg_temp.is((pg_temp.rv('91300000-0000-4000-8000-0000000000e1')).triggers::text,
 		'[{"id": "file", "kind": "listener", "only": ["payment_intent.succeeded", "charge.refunded"], "hookId": '
@@ -110,7 +110,7 @@ declare r jsonb; v_trigger jsonb; v_capsule uuid;
 begin
 	-- A removed hook, and an id that is no hook of this company.
 	foreach v_trigger in array array[pg_temp.ev('91300000-0000-4000-8000-0000000000b4'), pg_temp.ev('91300000-0000-4000-8000-0000000000ff')] loop
-		r := pg_temp.commit(pg_temp.owner(), 'event-rule-' || (v_trigger ->> 'hook'), jsonb_build_array(pg_temp.routine('agents/nora/routines/gone.md',
+		r := pg_temp.commit(pg_temp.owner(), 'event-rule-' || (v_trigger ->> 'hook'), jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/gone.md',
 			pg_temp.rparse('91300000-0000-4000-8000-0000000000e3', 'Gone', v_trigger))));
 		if not pg_temp.refused(r, 'structured_rule')
 			or pg_temp.problem(r) not like 'hook 91300000-0000-4000-8000-0000000000_% is not a hook or mailbox of this company; list_hooks shows them' then
@@ -124,7 +124,7 @@ begin
 		values (extensions.gen_random_uuid(), '70700000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), %L,
 			extensions.gen_random_uuid(), 'openai', 'codex-cli', 1, clock_timestamp(), clock_timestamp() + interval '1 hour', 'chatgpt_plan')$q$,
 		v_capsule));
-	r := pg_temp.commit(pg_temp.owner(), 'event-plan', jsonb_build_array(pg_temp.routine('agents/nora/routines/plan.md',
+	r := pg_temp.commit(pg_temp.owner(), 'event-plan', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/plan.md',
 		pg_temp.rparse('91300000-0000-4000-8000-0000000000e4', 'Plan', pg_temp.ev('91300000-0000-4000-8000-0000000000b3')))));
 	if not pg_temp.refused(r, 'structured_rule')
 		or pg_temp.problem(r) <> 'a ChatGPT plan pays only for work its member starts; an event routine needs another AI login' then
@@ -132,7 +132,7 @@ begin
 	delete from public.qorpera_model_logins where credential_capsule_id = v_capsule;
 	-- A unit that writes an event routine's file takes its hook FOR SHARE at rank 5 (923 races it against a removal).
 	if not exists (select 1 from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
-			jsonb_build_array(pg_temp.routine('agents/nora/routines/forms.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e5',
+			jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/forms.md', pg_temp.rparse('91300000-0000-4000-8000-0000000000e5',
 				'Forms', pg_temp.ev('91300000-0000-4000-8000-0000000000b3')))))
 		where rank = 5 and tbl = 'qorpera_event_hooks' and key = '91300000-0000-4000-8000-0000000000b3' and mode = 'share') then
 		raise exception 'An event routine''s file does not take its hook at rank 5'; end if;
@@ -302,7 +302,7 @@ begin
 	perform pg_temp.is(coalesce(pg_temp.drain() ->> 'wakes', '0'), '0', 'a removed hook wakes nothing');
 	-- A save that keeps the removed hook is refused by its rules. (A version made by a move or a handover asks no rules and
 	-- is kept; its listener never wakes.)
-	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'event-0009', jsonb_build_array(pg_temp.routine('agents/otto/routines/support.md',
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'event-0009', jsonb_build_array(pg_temp.routine('QorperaOS/agents/otto/routines/support.md',
 			pg_temp.rparse('91300000-0000-4000-8000-0000000000e2', 'Support again', pg_temp.ev('91300000-0000-4000-8000-0000000000b2'))))),
 		'structured_rule') then
 		raise exception 'A save keeps a removed hook'; end if;
@@ -314,7 +314,7 @@ do $$
 declare r jsonb; i integer;
 begin
 	-- Otto's cursor stays active on the removed mailbox, oldest of all; Nora's new routine on the forms hook has a post waiting.
-	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'event-0010', jsonb_build_array(pg_temp.routine('agents/nora/routines/forms.md',
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'event-0010', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/forms.md',
 		pg_temp.rparse('91300000-0000-4000-8000-0000000000e6', 'Forms', pg_temp.ev('91300000-0000-4000-8000-0000000000b3'))))));
 	perform pg_temp.deliver('91300000-0000-4000-8000-0000000000b3', 'form.posted');
 	update public.qorpera_event_listener_cursors set last_scanned_at = '-infinity' where routine_id = '91300000-0000-4000-8000-0000000000e2';

@@ -39,7 +39,7 @@ from unnest(array['anon', 'authenticated', 'service_role']) role_name,
 -- Alice's run (the parent) acknowledges its wake. The owner gives Alice a todo, and the run dispatches an in-house worker on
 -- it: the todo's folder and the worker's folder with its brief, staged by the run itself, under the run's allowed review.
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'hours-ack') \g /dev/null
-select pg_temp.base_commit(pg_temp.base_owner(), 'hours-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/hours-scan.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'hours-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/hours-scan.md',
 	'todo', E'---\nid: 72400000-0000-4000-8000-0000000000d1\ntitle: Scan\nstatus: open\n---\nScan the market.\n',
 	'{"kind":"todo","id":"72400000-0000-4000-8000-0000000000d1","title":"Scan","status":"open","requestedBy":null,"detail":"Scan the market."}'))) \g /dev/null
 do $$
@@ -47,7 +47,7 @@ declare
 	b jsonb := current_setting('qorpera_test.base_binding')::jsonb;
 	v_actor jsonb := jsonb_build_object('kind', 'run', 'runId', b ->> 'runId', 'jobId', b ->> 'jobId', 'runnerId', b ->> 'runnerId',
 		'assignmentId', b ->> 'assignmentId');
-	v_folder constant text := 'agents/alice/todos/hours-scan/scan';
+	v_folder constant text := 'QorperaOS/agents/alice/todos/hours-scan/scan';
 	v_brief jsonb := jsonb_build_object('kind', 'worker-brief', 'id', '72400000-0000-4000-8000-0000000000e1', 'title', 'Scan',
 		'species', 'in-house', 'access', 'read', 'revival', 'each',
 		'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUps', 0,
@@ -57,7 +57,7 @@ declare
 begin
 	v_seal := pg_temp.base_seal(v_actor, pg_temp.base_manifest(v_brief::text));
 	perform pg_temp.base_assert(v_seal ->> 'state' = 'sealed', 'The run stages the brief: ' || v_seal::text);
-	v_units := jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/alice/todos/hours-scan'),
+	v_units := jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/hours-scan'),
 		jsonb_build_object('op', 'new_folder', 'path', v_folder,
 			'contents', jsonb_build_array(jsonb_build_object('path', 'brief.md', 'kind', 'file', 'file', v_seal -> 'file')),
 			'structured', jsonb_build_array(jsonb_build_object('path', v_folder || '/brief.md', 'kind', 'worker-brief',

@@ -51,7 +51,7 @@ begin
 			'orders/incoming/.git/HEAD', 'code/.git', 'code/repo/.git', 'code/acme/repo.git']) p)
 		or (select bool_or(public.qorpera_folder_path_reserved(public.qorpera_folder_key(p))) from unnest(array['orders',
 			'orders/incoming', 'orders/inbox', 'inboxes', 'code/acme/repo/.git', 'code/acme/repo/repo.git', 'code/repo/node_modules',
-			'agents/nora']) p) then
+			'QorperaOS/agents/nora']) p) then
 		raise exception 'The reserved paths by their folder key'; end if;
 end $$;
 
@@ -68,21 +68,21 @@ begin
 		['secrets/api.md','exact'], ['orders/node_modules','subtree'], ['orders/incoming/.git/HEAD','exact'],
 		['code/repo/.git','subtree']] loop
 		i := i + 1;
-		perform pg_temp.refuse(pg_temp.owner(), 'reserved-01' || lpad(i::text, 2, '0'), 'agents/nora/routines/watch-' || i || '.md',
+		perform pg_temp.refuse(pg_temp.owner(), 'reserved-01' || lpad(i::text, 2, '0'), 'QorperaOS/agents/nora/routines/watch-' || i || '.md',
 			('43200000-0000-4000-8000-0000000001' || lpad(i::text, 2, '0'))::uuid, w[1], w[2]);
 		perform pg_temp.is((pg_temp.rt(('43200000-0000-4000-8000-0000000001' || lpad(i::text, 2, '0'))::uuid)).id::text, null,
 			'no routine row for a watch on ' || w[1]);
 	end loop;
 	-- The member who does not pay for unattended work, in Otto's folder: the same refusal.
-	perform pg_temp.refuse(pg_temp.mem(), 'reserved-0201', 'agents/otto/routines/mail.md', '43200000-0000-4000-8000-000000000201',
+	perform pg_temp.refuse(pg_temp.mem(), 'reserved-0201', 'QorperaOS/agents/otto/routines/mail.md', '43200000-0000-4000-8000-000000000201',
 		'inbox', 'subtree');
 	-- An agent's run (manage_routine) saving a routine of its own: refused at once, before any review.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'reserved-0202', jsonb_build_array(pg_temp.routine(
-		'agents/nora/routines/hourly.md', pg_temp.rparse('43200000-0000-4000-8000-000000000202', 'Hourly', pg_temp.every())))));
+		'QorperaOS/agents/nora/routines/hourly.md', pg_temp.rparse('43200000-0000-4000-8000-000000000202', 'Hourly', pg_temp.every())))));
 	a := pg_temp.routine_run('43200000-0000-4000-8000-000000000202');
-	perform pg_temp.refuse(a, 'reserved-0203', 'agents/nora/routines/mail.md', '43200000-0000-4000-8000-000000000203',
+	perform pg_temp.refuse(a, 'reserved-0203', 'QorperaOS/agents/nora/routines/mail.md', '43200000-0000-4000-8000-000000000203',
 		'inbox', 'subtree');
-	perform pg_temp.refuse(a, 'reserved-0204', 'agents/nora/routines/mail.md', '43200000-0000-4000-8000-000000000203',
+	perform pg_temp.refuse(a, 'reserved-0204', 'QorperaOS/agents/nora/routines/mail.md', '43200000-0000-4000-8000-000000000203',
 		'inbox/new', 'subtree');
 	perform pg_temp.is((pg_temp.rt('43200000-0000-4000-8000-000000000203')).id::text, null, 'no routine row for the run''s watch');
 	-- inbox/ with its slash never reaches the rules: the parse refuses an empty part (as the agent's tool does).
@@ -94,9 +94,9 @@ end $$;
 do $$
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'reserved-0301', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/orders.md', pg_temp.watch('43200000-0000-4000-8000-000000000301', 'orders/incoming', 'subtree')),
-		pg_temp.routine('agents/nora/routines/order.md', pg_temp.watch('43200000-0000-4000-8000-000000000302', 'orders/incoming/a.md', 'exact')),
-		pg_temp.routine('agents/otto/routines/repo.md', pg_temp.watch('43200000-0000-4000-8000-000000000303', 'code/acme/repo/.git',
+		pg_temp.routine('QorperaOS/agents/nora/routines/orders.md', pg_temp.watch('43200000-0000-4000-8000-000000000301', 'orders/incoming', 'subtree')),
+		pg_temp.routine('QorperaOS/agents/nora/routines/order.md', pg_temp.watch('43200000-0000-4000-8000-000000000302', 'orders/incoming/a.md', 'exact')),
+		pg_temp.routine('QorperaOS/agents/otto/routines/repo.md', pg_temp.watch('43200000-0000-4000-8000-000000000303', 'code/acme/repo/.git',
 			'subtree')))));
 	perform pg_temp.is((pg_temp.rv('43200000-0000-4000-8000-000000000301')).triggers::text,
 		'[{"id": "file", "kind": "file-change", "match": "subtree", "watch": "orders/incoming", "timeZone": "Europe/Copenhagen", "replyPolicy": "optional"}]',
@@ -111,7 +111,7 @@ end $$;
 -- 4. An edit that points a saved routine's watch at a reserved path is refused; the routine stays as it was ------------------
 
 do $$
-declare e constant uuid := '43200000-0000-4000-8000-000000000301'; p constant text := 'agents/nora/routines/orders.md';
+declare e constant uuid := '43200000-0000-4000-8000-000000000301'; p constant text := 'QorperaOS/agents/nora/routines/orders.md';
 	a jsonb; v_file uuid; v_row jsonb; v_version jsonb;
 begin
 	-- A run of Nora's hourly routine (708's run fixture has no file wake), acting for her agent.

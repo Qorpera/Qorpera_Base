@@ -16,7 +16,7 @@ language sql as $$
 $$;
 -- Ada's block 1 (t0) or 2 (t1), at the version the fixture saved.
 create function pg_temp.w4_block(p_n integer) returns jsonb language sql as $$
-	select jsonb_build_object('path', format('agents/ada/memory/thread/t%s/00000000.jsonl', p_n - 1),
+	select jsonb_build_object('path', format('QorperaOS/agents/ada/memory/thread/t%s/00000000.jsonl', p_n - 1),
 		'version', current_setting('qorpera_test.w4_v' || p_n))
 $$;
 create function pg_temp.w4_check(p_view jsonb) returns text language sql as $$
@@ -39,7 +39,7 @@ create function pg_temp.w4_erasure(p_roots jsonb, p_state text default 'working'
 $$;
 -- An erasure root whose cutoff is the fixture's commit at this unit: the versions before that unit are erased.
 create function pg_temp.w4_root(p_key text, p_unit integer) returns jsonb language sql as $$
-	select jsonb_build_object('key', p_key, 'cutoffSeq', current_setting('qorpera_test.w4_seq')::bigint, 'cutoffUnit', p_unit,
+	select jsonb_build_object('key', public.qorpera_folder_key(p_key), 'cutoffSeq', current_setting('qorpera_test.w4_seq')::bigint, 'cutoffUnit', p_unit,
 		'cutoffAt', clock_timestamp())
 $$;
 create function pg_temp.w4_row(p_worker uuid, p_sequence integer) returns public.qorpera_runtime_worker_parents language sql as $$
@@ -57,19 +57,19 @@ $$;
 -- row, pending unless told otherwise. A dispatch or a follow-up names such a step as its parent (W4a-2, test 995).
 create function pg_temp.w4_step(p_run jsonb, p_j integer, p_call text, p_tool text default 'manage_worker',
 	p_finished boolean default false, p_erased boolean default false, p_narrow boolean default false,
-	p_tree text default 'agents/ada/memory/thread') returns void
+	p_tree text default 'QorperaOS/agents/ada/memory/thread') returns void
 language plpgsql as $$
 declare
 	env uuid := '63400000-0000-4000-8000-000000000020'; r uuid := (p_run -> 'actor' ->> 'runId')::uuid;
 	k text := p_tree || '/runs/' || r; b text := format('%s/log/%s.jsonl', k, lpad((p_j / 16 * 16)::text, 8, '0'));
 begin
 	insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
-	select env, r, run.session_id, k, k, extensions.gen_random_uuid(), extensions.gen_random_uuid()
+	select env, r, run.session_id, k, public.qorpera_folder_key(k), extensions.gen_random_uuid(), extensions.gen_random_uuid()
 	from public.qorpera_execution_runs run where run.id = r
 	on conflict (environment_id, run_id) do nothing;
 	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished, line_sha256,
 		fixed_sha256, block_path, block_key, block_path_version, commit_id)
-	values (env, r, p_j, p_tool, p_call, p_narrow, p_erased, p_finished, repeat('a', 64), repeat('b', 64), b, b,
+	values (env, r, p_j, p_tool, p_call, p_narrow, p_erased, p_finished, repeat('a', 64), repeat('b', 64), b, public.qorpera_folder_key(b),
 		extensions.gen_random_uuid(), extensions.gen_random_uuid());
 end $$;
 
@@ -90,11 +90,11 @@ begin
 	update public.qorpera_folder_clocks set last_seq = n where environment_id = env;
 	insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no)
 	select b.version, env, b.path, extensions.digest(public.qorpera_folder_key(b.path), 'sha256'), 'write', 'file', c, b.unit
-	from (values (v1, 'agents/ada/memory/thread/t0/00000000.jsonl', 1), (v2, 'agents/ada/memory/thread/t1/00000000.jsonl', 2),
-		(v3, 'agents/groups/trip/memory/t0/00000000.jsonl', 3)) b(version, path, unit);
+	from (values (v1, 'QorperaOS/agents/ada/memory/thread/t0/00000000.jsonl', 1), (v2, 'QorperaOS/agents/ada/memory/thread/t1/00000000.jsonl', 2),
+		(v3, 'QorperaOS/agents/groups/trip/memory/t0/00000000.jsonl', 3)) b(version, path, unit);
 	insert into public.qorpera_memory_trees(environment_id, session_id, root_path, root_key, owner_kind, owner_id, node_bytes,
 		toml_path_version, commit_id)
-	values (env, s, 'agents/ada/memory/thread', 'agents/ada/memory/thread', 'agent', '84000000-0000-4000-8000-0000000000e1', 1024,
+	values (env, s, 'QorperaOS/agents/ada/memory/thread', 'qorperaos/agents/ada/memory/thread', 'agent', '84000000-0000-4000-8000-0000000000e1', 1024,
 		extensions.gen_random_uuid(), c);
 	set local session_replication_role = origin;
 	perform set_config('qorpera_test.w4_session', s::text, false);
@@ -111,8 +111,8 @@ declare
 	ben uuid := (select session_id from public.qorpera_execution_runs
 		where id = (current_setting('qorpera_test.ben')::jsonb -> 'actor' ->> 'runId')::uuid);
 	b1 jsonb := pg_temp.w4_block(1); b2 jsonb := pg_temp.w4_block(2);
-	gone jsonb := jsonb_build_object('path', 'agents/ada/memory/thread/t0/00000000.jsonl', 'version', extensions.gen_random_uuid());
-	g jsonb := jsonb_build_object('path', 'agents/groups/trip/memory/t0/00000000.jsonl', 'version', current_setting('qorpera_test.w4_v3'));
+	gone jsonb := jsonb_build_object('path', 'QorperaOS/agents/ada/memory/thread/t0/00000000.jsonl', 'version', extensions.gen_random_uuid());
+	g jsonb := jsonb_build_object('path', 'QorperaOS/agents/groups/trip/memory/t0/00000000.jsonl', 'version', current_setting('qorpera_test.w4_v3'));
 	e uuid;
 begin
 	if ben is null or ben = s then raise exception 'Ben''s run has its own conversation'; end if;
@@ -137,43 +137,43 @@ begin
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'block_gone', 'A retired tree');
 	perform pg_temp.fx(format('update public.qorpera_memory_trees set retired_at = null where session_id = %L', s));
 	perform pg_temp.fx(format('update public.qorpera_memory_trees set root_path = %L, root_key = %L where session_id = %L',
-		'agents/ada-2/memory/thread', 'agents/ada-2/memory/thread', s));
+		'QorperaOS/agents/ada-2/memory/thread', 'qorperaos/agents/ada-2/memory/thread', s));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'block_gone', 'A renamed tree');
 	perform pg_temp.fx(format('update public.qorpera_memory_trees set root_path = %L, root_key = %L where session_id = %L',
-		'agents/ada/memory/thread', 'agents/ada/memory/thread', s));
+		'QorperaOS/agents/ada/memory/thread', 'qorperaos/agents/ada/memory/thread', s));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1, b2))), 'ok', 'The tree back');
 	-- An open erasure of the tree with its cutoff at unit 2: block 1 is erased, block 2 (the root's current life) is not.
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada/memory/thread', 2)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada/memory/thread', 2)));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'erasure_covers', 'An open erasure');
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b2))), 'ok', 'After the cutoff');
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(gone, b1))), 'block_gone',
 		'A gone block comes before an erased one');
 	delete from public.qorpera_folder_erasures where id = e;
 	-- A root above the tree covers it; a sibling root does not; a done erasure and another company's are not counted.
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada', 2)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada', 2)));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'erasure_covers', 'The agent''s root');
 	delete from public.qorpera_folder_erasures where id = e;
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada/todos', 2), pg_temp.w4_root('agents/ada/memory/thread/t0x', 2)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada/todos', 2), pg_temp.w4_root('QorperaOS/agents/ada/memory/thread/t0x', 2)));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'ok', 'Sibling roots');
 	delete from public.qorpera_folder_erasures where id = e;
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada/memory/thread', 2)), 'done');
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada/memory/thread', 2)), 'done');
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'ok', 'A done erasure');
 	delete from public.qorpera_folder_erasures where id = e;
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada/memory/thread', 2)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada/memory/thread', 2)));
 	perform pg_temp.fx(format('update public.qorpera_folder_erasures set environment_id = %L where id = %L',
 		'63400000-0000-4000-8000-0000000000ff', e));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'ok', 'Another company''s erasure');
 	perform pg_temp.fx(format('delete from public.qorpera_folder_erasures where id = %L', e));
-	-- A group chat's tree (agents/groups/<chat>/memory, its blocks one level down) counts as an agent's does. Ben's
+	-- A group chat's tree (QorperaOS/agents/groups/<chat>/memory, its blocks one level down) counts as an agent's does. Ben's
 	-- conversation stands in for the chat: the check reads only the conversation's tree row.
 	perform pg_temp.fx(format('insert into public.qorpera_memory_trees(environment_id, session_id, root_path, root_key, owner_kind,
 		owner_id, node_bytes, toml_path_version, commit_id) values (%L, %L, %L, %L, %L, %L, 1024, %L, %L)',
-		'63400000-0000-4000-8000-000000000020', ben, 'agents/groups/trip/memory', 'agents/groups/trip/memory', 'group',
+		'63400000-0000-4000-8000-000000000020', ben, 'QorperaOS/agents/groups/trip/memory', 'qorperaos/agents/groups/trip/memory', 'group',
 		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid()));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g), ben)), 'ok', 'A group chat''s block');
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g))), 'block_gone',
 		'A group chat''s block under Ada''s conversation');
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/groups/trip', 4)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/groups/trip', 4)));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g), ben)), 'erasure_covers',
 		'An erasure of the group chat');
 	delete from public.qorpera_folder_erasures where id = e;
@@ -257,7 +257,7 @@ begin
 	perform pg_temp.raises(format('select pg_temp.w4_check(%L)', pg_temp.w4_view(n, 1, '[]')), '22023');
 	perform pg_temp.raises(format('select pg_temp.w4_check(%L)', pg_temp.w4_view(n - 1, 0, jsonb_build_array(b1))), '22023');
 	perform pg_temp.raises(format('select pg_temp.w4_check(%L)', pg_temp.w4_view(n, 0, jsonb_build_array(jsonb_build_object(
-		'path', 'agents/ada/todos/call-the-bank.md', 'version', pg_temp.f2_version('agents/ada/todos/call-the-bank.md'))))), '22023');
+		'path', 'QorperaOS/agents/ada/todos/call-the-bank.md', 'version', pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank.md'))))), '22023');
 	perform pg_temp.raises(format('select pg_temp.w4_check(%L)', pg_temp.w4_view(n, 0, jsonb_build_array(
 		b1 || jsonb_build_object('path', b2 ->> 'path')))), '22023');
 	-- Only the platform's service calls it.
@@ -272,7 +272,7 @@ do $$
 declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; n bigint := current_setting('qorpera_test.w4_seq')::bigint;
 	v jsonb := pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(1), pg_temp.w4_block(2)));
-	f text := 'agents/ada/todos/plan-the-trip/scout'; b jsonb := pg_temp.brief('99300000-0000-4000-8000-000000000001');
+	f text := 'QorperaOS/agents/ada/todos/plan-the-trip/scout'; b jsonb := pg_temp.brief('99300000-0000-4000-8000-000000000001');
 	u jsonb := pg_temp.dispatch_units(p, f, b); q jsonb; r jsonb; w public.qorpera_runtime_worker_parents%rowtype; x jsonb;
 	stale jsonb; i integer := 0; c jsonb := '{"parentCall":"w4-call-0001"}';
 begin
@@ -291,7 +291,7 @@ begin
 	if coalesce(current_setting('qorpera.folder_worker_view', true), '') <> '' or public.qorpera_folder_worker_request() is not null then
 		raise exception 'The request outlived its commit'; end if;
 	-- A step alone; neither (no row); a stale reference (a block gone) is kept: the worker composes fresh from it.
-	f := 'agents/ada/todos/plan-the-trip/second'; b := pg_temp.brief('99300000-0000-4000-8000-000000000002');
+	f := 'QorperaOS/agents/ada/todos/plan-the-trip/second'; b := pg_temp.brief('99300000-0000-4000-8000-000000000002');
 	u := pg_temp.dispatch_units(p, f, b);
 	perform pg_temp.expect(pg_temp.wc(p, 'w4-dispatch-0002', u, pg_temp.dispatch_request(f, b)
 		|| '{"parentStep":0,"parentCall":"w4-call-0002"}'::jsonb,
@@ -299,23 +299,23 @@ begin
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000002', 1);
 	if w.parent_run_id is distinct from (p ->> 'runId')::uuid or w.parent_step is distinct from 0 or w.parent_view is not null then
 		raise exception 'The step-only parent: %', to_jsonb(w); end if;
-	f := 'agents/ada/todos/plan-the-trip/plain'; b := pg_temp.brief('99300000-0000-4000-8000-000000000003');
+	f := 'QorperaOS/agents/ada/todos/plan-the-trip/plain'; b := pg_temp.brief('99300000-0000-4000-8000-000000000003');
 	u := pg_temp.dispatch_units(p, f, b);
 	perform pg_temp.expect(pg_temp.wc(p, 'w4-dispatch-0003', u, pg_temp.dispatch_request(f, b),
 		pg_temp.reviewed(ada, 'w4-call-0003', u)), 1, 'saved');
 	if exists (select 1 from public.qorpera_runtime_worker_parents where worker_id = '99300000-0000-4000-8000-000000000003') then
 		raise exception 'A dispatch that named no parent kept one'; end if;
-	stale := pg_temp.w4_view(n, 0, jsonb_build_array(jsonb_build_object('path', 'agents/ada/memory/thread/t0/00000000.jsonl',
+	stale := pg_temp.w4_view(n, 0, jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/ada/memory/thread/t0/00000000.jsonl',
 		'version', extensions.gen_random_uuid())));
 	perform pg_temp.w4_same(pg_temp.w4_check(stale), 'block_gone', 'The stale reference');
-	f := 'agents/ada/todos/plan-the-trip/stale'; b := pg_temp.brief('99300000-0000-4000-8000-000000000004');
+	f := 'QorperaOS/agents/ada/todos/plan-the-trip/stale'; b := pg_temp.brief('99300000-0000-4000-8000-000000000004');
 	u := pg_temp.dispatch_units(p, f, b);
 	perform pg_temp.expect(pg_temp.wc(p, 'w4-dispatch-0004', u, pg_temp.dispatch_request(f, b) || jsonb_build_object('view', stale),
 		pg_temp.reviewed(ada, 'w4-call-0004', u)), 1, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000004', 1);
 	if w.parent_step is not null or w.parent_view is distinct from stale then raise exception 'The stale parent: %', to_jsonb(w); end if;
 	-- Without the review of the call: denied, and nothing kept.
-	f := 'agents/ada/todos/plan-the-trip/unreviewed'; b := pg_temp.brief('99300000-0000-4000-8000-000000000005');
+	f := 'QorperaOS/agents/ada/todos/plan-the-trip/unreviewed'; b := pg_temp.brief('99300000-0000-4000-8000-000000000005');
 	u := pg_temp.dispatch_units(p, f, b);
 	perform pg_temp.expect(pg_temp.wc(p, 'w4-unreviewed-0001', u, pg_temp.dispatch_request(f, b)
 		|| jsonb_build_object('parentStep', 1, 'parentCall', 'w4-unreviewed-0001', 'view', v)), 1, 'denied', 'review_required');
@@ -333,11 +333,11 @@ begin
 		q || jsonb_build_object('view', pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(1) || jsonb_build_object('path',
 			pg_temp.w4_block(2) ->> 'path')))),
 		q || '{"parentSessionId":"63400000-0000-4000-8000-000000000020"}'::jsonb,
-		jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/price-check','text','More.',
+		jsonb_build_object('action','followup','folder','QorperaOS/agents/ada/todos/call-the-bank/price-check','text','More.',
 			'resultsVersion',null,'parentStep',-1,'parentCall','w4-call-0001'),
-		jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/price-check','text','More.',
+		jsonb_build_object('action','followup','folder','QorperaOS/agents/ada/todos/call-the-bank/price-check','text','More.',
 			'resultsVersion',null,'view','{}'::jsonb),
-		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/price-check','decision','accepted','note',null,
+		jsonb_build_object('action','decide','folder','QorperaOS/agents/ada/todos/call-the-bank/price-check','decision','accepted','note',null,
 			'parentStep',1),
 		jsonb_build_object('action','report','folder',f,'parentStep',1),
 		jsonb_build_object('action','report','folder',f,'view',v)
@@ -392,7 +392,7 @@ do $$
 declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; x jsonb := current_setting('qorpera_test.w4_scout')::jsonb;
 	n bigint := current_setting('qorpera_test.w4_seq')::bigint; s uuid := current_setting('qorpera_test.w4_session')::uuid;
-	f text := 'agents/ada/todos/plan-the-trip/scout'; v jsonb := pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(2)));
+	f text := 'QorperaOS/agents/ada/todos/plan-the-trip/scout'; v jsonb := pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(2)));
 	ada2 jsonb; base jsonb; next jsonb; u jsonb; q jsonb; r jsonb; w public.qorpera_runtime_worker_parents%rowtype; y jsonb; z jsonb;
 	got jsonb;
 begin

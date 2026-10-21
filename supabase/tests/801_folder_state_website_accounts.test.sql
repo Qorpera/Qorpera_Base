@@ -22,7 +22,7 @@ create function pg_temp.site_text(p_parse jsonb) returns text language sql as $$
 		p_parse ->> 'purpose')
 $$;
 create function pg_temp.site_write(p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('connections/portal.md', 'connection', pg_temp.site_text(p_parse), p_parse, pg_temp.version('connections/portal.md'))
+	select pg_temp.write('QorperaOS/connections/portal.md', 'connection', pg_temp.site_text(p_parse), p_parse, pg_temp.version('QorperaOS/connections/portal.md'))
 $$;
 create function pg_temp.problems(p_parse jsonb) returns integer language sql as $$
 	select jsonb_array_length(public.qorpera_company_state_parse_problems('connection', p_parse))
@@ -34,19 +34,19 @@ do $$
 declare r jsonb; i integer; s text;
 begin
 	r := pg_temp.commit(pg_temp.platform(), 'site-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Connections'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/connections'),
 		pg_temp.conn('hello', '70400000-0000-4000-8000-0000000000e1', 'gmail', 'hello@nordlys.test')));
-	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..8 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	-- Opened, waiting for a person, connected, broken: each a platform save of the same file.
 	foreach s in array array['pending','needs_person','connected','broken'] loop
 		perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'site-state-' || s, jsonb_build_array(
 			pg_temp.site_write(pg_temp.site_parse(jsonb_build_object('status', s))))), 1, 'saved');
 	end loop;
-	if (pg_temp.idx('80100000-0000-4000-8000-0000000000f1')).folder_path is distinct from 'connections/portal.md' then
+	if (pg_temp.idx('80100000-0000-4000-8000-0000000000f1')).folder_path is distinct from 'QorperaOS/connections/portal.md' then
 		raise exception 'A website account''s file is indexed like any connection: %', to_jsonb(pg_temp.idx('80100000-0000-4000-8000-0000000000f1')); end if;
 	-- A member writes the text below the settings, on a website file and on a file whose shape did not change.
 	r := pg_temp.commit(pg_temp.member(), 'site-0002', jsonb_build_array(
@@ -60,8 +60,8 @@ begin
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
 	-- A website account's own states belong to website files: a gmail file stays connected or broken.
 	r := pg_temp.commit(pg_temp.platform(), 'site-0004', jsonb_build_array(
-		pg_temp.write('connections/hello.md', 'connection', 'x', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e1', 'gmail',
-			'hello@nordlys.test', 'The shared inbox.') || '{"status":"pending"}', pg_temp.version('connections/hello.md'))));
+		pg_temp.write('QorperaOS/connections/hello.md', 'connection', 'x', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e1', 'gmail',
+			'hello@nordlys.test', 'The shared inbox.') || '{"status":"pending"}', pg_temp.version('QorperaOS/connections/hello.md'))));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid');
 	if coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like '%read this file differently%(status)%' then
 		raise exception 'The refusal names the status: %', r; end if;

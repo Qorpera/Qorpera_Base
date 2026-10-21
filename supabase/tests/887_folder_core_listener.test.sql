@@ -57,8 +57,8 @@ begin
 		jsonb_build_object('op','mkdir','path','docs'), jsonb_build_object('op','mkdir','path','docs/sub'),
 		jsonb_build_object('op','mkdir','path','notes'))));
 	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0002', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/docs.md', pg_temp.watch('88700000-0000-4000-8000-0000000000e1', 'docs', 'subtree')),
-		pg_temp.routine('agents/otto/routines/exact.md', pg_temp.watch('88700000-0000-4000-8000-0000000000e2', 'docs/a.md', 'exact')))));
+		pg_temp.routine('QorperaOS/agents/nora/routines/docs.md', pg_temp.watch('88700000-0000-4000-8000-0000000000e1', 'docs', 'subtree')),
+		pg_temp.routine('QorperaOS/agents/otto/routines/exact.md', pg_temp.watch('88700000-0000-4000-8000-0000000000e2', 'docs/a.md', 'exact')))));
 	perform pg_temp.is((pg_temp.rv('88700000-0000-4000-8000-0000000000e1')).triggers::text,
 		'[{"id": "file", "kind": "file-change", "match": "subtree", "watch": "docs", "timeZone": "Europe/Copenhagen", "replyPolicy": "optional"}]',
 		'the listener''s trigger');
@@ -167,7 +167,7 @@ declare a jsonb; r jsonb; w public.qorpera_wake_occurrences;
 begin
 	-- A run of another routine of Nora's (a schedule).
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0012a', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/hourly.md', pg_temp.rparse('88700000-0000-4000-8000-0000000000e3', 'Hourly', pg_temp.every(60))))));
+		pg_temp.routine('QorperaOS/agents/nora/routines/hourly.md', pg_temp.rparse('88700000-0000-4000-8000-0000000000e3', 'Hourly', pg_temp.every(60))))));
 	a := pg_temp.routine_run('88700000-0000-4000-8000-0000000000e3');
 	r := pg_temp.saved(pg_temp.commit(a, 'listen-0012', jsonb_build_array(pg_temp.put('docs/a.md', 'alpha by nora'))));
 	perform pg_temp.listen();
@@ -342,7 +342,7 @@ begin
 	-- 38 more listeners on docs/ (19 Nora's, 19 Otto's) beside e1; e2 (exact, docs/a.md) has expired by now.
 	for i in 1 .. 38 loop
 		perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'bound-r' || i, jsonb_build_array(
-			pg_temp.routine(case when i % 2 = 0 then 'agents/nora' else 'agents/otto' end || '/routines/b' || lpad(i::text, 2, '0') || '.md',
+			pg_temp.routine(case when i % 2 = 0 then 'QorperaOS/agents/nora' else 'QorperaOS/agents/otto' end || '/routines/b' || lpad(i::text, 2, '0') || '.md',
 				pg_temp.watch(('88700000-0000-4000-8000-0000000001' || lpad(i::text, 2, '0'))::uuid, 'docs', 'subtree')))));
 	end loop;
 	for i in 1 .. 20 loop

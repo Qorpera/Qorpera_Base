@@ -42,7 +42,7 @@ create function pg_temp.plain(p_actor jsonb, p_path text, p_text text) returns j
 $$;
 -- The numbers table's rows with the first reading's value changed: a rows save.
 create function pg_temp.reading(p_actor jsonb, p_value text) returns jsonb language sql as $$
-	select pg_temp.p16_write(p_actor, 'tables/numbers/rows.csv', jsonb_set(pg_temp.fixture('rows'), '{rows,0,fields,2}', to_jsonb(p_value)))
+	select pg_temp.p16_write(p_actor, 'QorperaOS/tables/numbers/rows.csv', jsonb_set(pg_temp.fixture('rows'), '{rows,0,fields,2}', to_jsonb(p_value)))
 $$;
 -- A routine run of agent A with no conversation (a silent routine, as 658 builds it), with its binding.
 create function pg_temp.routine_run() returns jsonb language plpgsql as $$
@@ -93,13 +93,13 @@ declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; p jsonb := x 
 	v_old uuid; c jsonb; e public.qorpera_session_events%rowtype;
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'i10-readme-0001', jsonb_build_array(
-		pg_temp.plain('{"kind":"platform"}', 'tables/numbers/README.md', 'About the numbers.'))), 1, 'saved');
-	v_old := pg_temp.p16_version('tables/numbers/readme.md');
+		pg_temp.plain('{"kind":"platform"}', 'QorperaOS/tables/numbers/README.md', 'About the numbers.'))), 1, 'saved');
+	v_old := pg_temp.p16_version('QorperaOS/tables/numbers/readme.md');
 	c := pg_temp.commit(p, pg_temp.key('company_write', 'readme-1'), jsonb_build_array(
-		pg_temp.p16_write(p, 'tables/numbers/README.md', '"About the numbers, by the agent."')));
+		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/README.md', '"About the numbers, by the agent."')));
 	perform pg_temp.expect(c, 1, 'saved');
 	perform pg_temp.refused(pg_temp.commit(p, pg_temp.key('company_write', 'page-1'), jsonb_build_array(
-		pg_temp.p16_write(p, 'interfaces/pulse/README.md', '"About Pulse, by the agent."'))), 1, 'structured_rule', 'layout_authoring');
+		pg_temp.p16_write(p, 'QorperaOS/interfaces/pulse/README.md', '"About Pulse, by the agent."'))), 1, 'structured_rule', 'layout_authoring');
 	perform pg_temp.expect(pg_temp.commit(p, pg_temp.key('company_write', 'plain-1'), jsonb_build_array(
 		pg_temp.plain(p, 'i10-plain.md', 'A plain file.'))), 1, 'saved');
 	if pg_temp.note(b) <> pg_temp.noted(1) then raise exception 'One note: %', pg_temp.note(b); end if;
@@ -110,8 +110,8 @@ begin
 		or e.execution_kind is not null or e.execution_id is not null or e.runner_assignment_id is not null
 		or e.body <> jsonb_build_object('schema', 'qorpera.interface-change/v1', 'commitId', c ->> 'commitId',
 			'seq', pg_temp.seq(c), 'runId', p ->> 'runId', 'staffAgentId', '63400000-0000-4000-8000-0000000000a1',
-			'changes', jsonb_build_array(pg_temp.change(1, 'write', 'file', 'tables/numbers/README.md', v_old)))
-		or pg_temp.seq(c) is null or v_old is null or v_old = pg_temp.p16_version('tables/numbers/readme.md') then
+			'changes', jsonb_build_array(pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/numbers/README.md', v_old)))
+		or pg_temp.seq(c) is null or v_old is null or v_old = pg_temp.p16_version('QorperaOS/tables/numbers/readme.md') then
 		raise exception 'The event: %', to_jsonb(e); end if;
 	if pg_temp.note(b) <> pg_temp.noted(0) or (select count(*) from pg_temp.notes(p)) <> 1 then
 		raise exception 'A repeat notes nothing more'; end if;
@@ -126,7 +126,7 @@ declare x jsonb := current_setting('qorpera_test.i10_run')::jsonb; b jsonb := x 
 	c3 jsonb; c5 jsonb; v_notes jsonb; v_prior uuid;
 begin
 	c3 := pg_temp.commit(p, pg_temp.key('company_write', 'table-1'), jsonb_build_array(
-		pg_temp.p16_write(p, 'tables/areas/README.md', '"About the areas."'),
+		pg_temp.p16_write(p, 'QorperaOS/tables/areas/README.md', '"About the areas."'),
 		pg_temp.plain(p, 'i10-also.md', 'Another plain file.'),
 		pg_temp.reading(p, '1300')));
 	perform pg_temp.expect(c3, 1, 'saved');
@@ -134,9 +134,9 @@ begin
 	perform pg_temp.expect(c3, 3, 'saved');
 	perform pg_temp.expect(pg_temp.commit(p, pg_temp.key('table_write', 'rows-1'), jsonb_build_array(pg_temp.reading(p, '1400'))),
 		1, 'saved');
-	v_prior := pg_temp.p16_version('tables/numbers/readme.md');
+	v_prior := pg_temp.p16_version('QorperaOS/tables/numbers/readme.md');
 	c5 := pg_temp.commit(p, pg_temp.key('save_interface', 'readme-2'), jsonb_build_array(
-		pg_temp.p16_write(p, 'tables/numbers/README.md', '"About the numbers, again."')));
+		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/README.md', '"About the numbers, again."')));
 	perform pg_temp.expect(c5, 1, 'saved');
 	if pg_temp.note(b) <> pg_temp.noted(2) then raise exception 'Two notes'; end if;
 	select jsonb_agg(jsonb_build_array(e.event_id, e.body) order by e.sequence) into v_notes from pg_temp.notes(p) e
@@ -145,11 +145,11 @@ begin
 		jsonb_build_array(pg_temp.event_id(c3), jsonb_build_object('schema', 'qorpera.interface-change/v1',
 			'commitId', c3 ->> 'commitId', 'seq', pg_temp.seq(c3), 'runId', p ->> 'runId',
 			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
-				pg_temp.change(1, 'write', 'file', 'tables/areas/README.md', null)))),
+				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/areas/README.md', null)))),
 		jsonb_build_array(pg_temp.event_id(c5), jsonb_build_object('schema', 'qorpera.interface-change/v1',
 			'commitId', c5 ->> 'commitId', 'seq', pg_temp.seq(c5), 'runId', p ->> 'runId',
 			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
-				pg_temp.change(1, 'write', 'file', 'tables/numbers/README.md', v_prior))))) then
+				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/numbers/README.md', v_prior))))) then
 		raise exception 'The notes: %', v_notes; end if;
 	if pg_temp.note(b) <> pg_temp.noted(0) or (select count(*) from pg_temp.notes(p)) <> 3 then
 		raise exception 'A repeat notes nothing more'; end if;
@@ -176,10 +176,10 @@ declare x jsonb := current_setting('qorpera_test.i10_run')::jsonb; b jsonb := x 
 	c jsonb; v_events bigint;
 begin
 	c := pg_temp.commit(y -> 'actor', pg_temp.key('company_write', 'other-1'), jsonb_build_array(
-		pg_temp.p16_write(y -> 'actor', 'tables/areas/README.md', '"Another run''s note."')));
+		pg_temp.p16_write(y -> 'actor', 'QorperaOS/tables/areas/README.md', '"Another run''s note."')));
 	perform pg_temp.expect(c, 1, 'saved');
 	c := pg_temp.commit(p, pg_temp.key('company_write', 'stale-1'), jsonb_build_array(
-		pg_temp.plain(p, 'tables/numbers/README.md', 'Stale.') || jsonb_build_object('expectedVersion', extensions.gen_random_uuid())));
+		pg_temp.plain(p, 'QorperaOS/tables/numbers/README.md', 'Stale.') || jsonb_build_object('expectedVersion', extensions.gen_random_uuid())));
 	perform pg_temp.expect(c, 1, 'conflict', 'version_changed');
 	if exists (select 1 from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid and seq is not null) then
 		raise exception 'The conflict saved nothing: %', c; end if;
@@ -187,11 +187,11 @@ begin
 	if pg_temp.note(b) <> pg_temp.noted(0) then raise exception 'Another run''s commit is not this run''s'; end if;
 	-- A run with no conversation.
 	perform pg_temp.expect(pg_temp.commit(z -> 'actor', pg_temp.key('company_write', 'quiet-1'), jsonb_build_array(
-		pg_temp.p16_write(z -> 'actor', 'tables/numbers/README.md', '"Quietly."'))), 1, 'saved');
+		pg_temp.p16_write(z -> 'actor', 'QorperaOS/tables/numbers/README.md', '"Quietly."'))), 1, 'saved');
 	if pg_temp.note(z -> 'binding') <> pg_temp.noted(0) then raise exception 'No conversation, no note'; end if;
 	-- A closed conversation (Agent B's own): the run check refuses.
 	perform pg_temp.expect(pg_temp.commit(w -> 'actor', pg_temp.key('company_write', 'closed-1'), jsonb_build_array(
-		pg_temp.p16_write(w -> 'actor', 'tables/areas/README.md', '"Closed soon."'))), 1, 'saved');
+		pg_temp.p16_write(w -> 'actor', 'QorperaOS/tables/areas/README.md', '"Closed soon."'))), 1, 'saved');
 	perform pg_temp.fx(format('update public.qorpera_shared_sessions set status = %L where id = (select session_id from '
 		'public.qorpera_execution_runs where id = %L)', 'closed', w -> 'actor' ->> 'runId'));
 	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_changes(%L, %L)', w -> 'binding', '{}'), '42501');

@@ -9,7 +9,8 @@ create function pg_temp.f2_entry(p_path text, p_parse jsonb) returns jsonb langu
 	select jsonb_build_object('path', p_path, 'kind', p_parse ->> 'kind', 'text', p_parse::text, 'parse', p_parse, 'parserVersion', 1)
 $$;
 create function pg_temp.f2_version(p_path text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_path
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_path)
 		and kind is distinct from 'claim'
 $$;
 -- A structured file's write, staged by the actor that commits it.
@@ -20,13 +21,13 @@ create function pg_temp.f2_write(p_actor jsonb, p_path text, p_parse jsonb) retu
 			else '{}'::jsonb end
 $$;
 create function pg_temp.f2_hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(jsonb_build_object('kind','agent','id',p_id,'name',p_name,
 				'role','Sales','agentKind',p_kind,'status','active','colour',null,'figure',null,'model',null,'effort',null,
 				'instructions','Sell.')::text)),
 			jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.f2_entry('agents/' || p_handle || '/agent.md', jsonb_build_object('kind','agent','id',p_id,
+		'structured', jsonb_build_array(pg_temp.f2_entry('QorperaOS/agents/' || p_handle || '/agent.md', jsonb_build_object('kind','agent','id',p_id,
 			'name',p_name,'role','Sales','agentKind',p_kind,'status','active','colour',null,'figure',null,'model',null,'effort',null,
 			'instructions','Sell.'))))
 $$;
@@ -86,7 +87,7 @@ begin
 end $$;
 create function pg_temp.worker_row(p_folder text) returns public.qorpera_runtime_workers language sql as $$
 	select * from public.qorpera_runtime_workers where folder_environment_id = '63400000-0000-4000-8000-000000000020'
-		and folder_key = p_folder and folder_retired_at is null
+		and folder_key = public.qorpera_folder_key(p_folder) and folder_retired_at is null
 $$;
 -- A worker's own run, as the drain will start it: a wake of the worker for the parent run, and the row's occurrence.
 create function pg_temp.worker_run(p_parent jsonb, p_worker uuid) returns jsonb language plpgsql as $$
@@ -123,17 +124,18 @@ do $$
 declare r jsonb; m jsonb := pg_temp.member(2); i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'f2b-seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.f2_write('{"kind":"platform"}', 'agents/sections.md', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.f2_write('{"kind":"platform"}', 'QorperaOS/agents/sections.md', '{"kind":"sections","sections":[]}'),
 		pg_temp.f2_hire('co-founder', '84000000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
 		pg_temp.f2_hire('ada', '84000000-0000-4000-8000-0000000000e1', 'Ada'),
 		pg_temp.f2_hire('ben', '84000000-0000-4000-8000-0000000000e2', 'Ben')));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(m, 'f2b-todos-0001', jsonb_build_array(
-		pg_temp.f2_todo(m, 'agents/ada/todos/call-the-bank.md', 'Call the bank'),
-		pg_temp.f2_todo(m, 'agents/ada/todos/book-the-room.md', 'Book the room', 'done'),
-		pg_temp.f2_todo(m, 'agents/ada/todos/plan-the-trip.md', 'Plan the trip'),
-		pg_temp.f2_todo(m, 'agents/ben/todos/ben-only.md', 'Ben''s work')));
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ada/todos/call-the-bank.md', 'Call the bank'),
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ada/todos/book-the-room.md', 'Book the room', 'done'),
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ada/todos/plan-the-trip.md', 'Plan the trip'),
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ben/todos/ben-only.md', 'Ben''s work')));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	perform set_config('qorpera_test.ada', pg_temp.agent_run('84000000-0000-4000-8000-0000000000e1')::text, false);
 	perform set_config('qorpera_test.ben', pg_temp.agent_run('84000000-0000-4000-8000-0000000000e2')::text, false);
@@ -142,8 +144,8 @@ end $$;
 -- 1. A dispatch: the todo's folder and the worker's folder with its brief; the row is the index, the wake waits ---------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'agents/ada/todos/call-the-bank/price-check';
-	b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000101', p_sources => '["agents/ada/todos/call-the-bank.md"]');
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'QorperaOS/agents/ada/todos/call-the-bank/price-check';
+	b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000101', p_sources => '["QorperaOS/agents/ada/todos/call-the-bank.md"]');
 	u jsonb := pg_temp.dispatch_units(p, f, b); r jsonb; w public.qorpera_runtime_workers%rowtype; e public.qorpera_runtime_worker_events%rowtype;
 begin
 	r := pg_temp.wc(p, 'f2b-dispatch-0001', u, pg_temp.dispatch_request(f, b), pg_temp.reviewed(ada, 'f2b-call-0001', u));
@@ -153,11 +155,11 @@ begin
 		or w.occurrence_id is not null or w.species is distinct from 'in-house' or w.access is distinct from 'write' or w.revival is distinct from 'each' or w.worker_key is distinct from 'price-check'
 		or w.title is distinct from 'Compare suppliers' or w.staff_agent_id is distinct from '84000000-0000-4000-8000-0000000000e1'
 		or w.requested_by_user_id is distinct from '63400000-0000-4000-8000-000000000002' or w.steering_run_id is distinct from (p ->> 'runId')::uuid
-		or w.todo_id is distinct from (select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/call-the-bank.md')
+		or w.todo_id is distinct from (select id from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md')
 		or w.folder_path is distinct from f or w.folder_brief_version is distinct from pg_temp.f2_version(f || '/brief.md')
 		or w.folder_results_version is not null or w.folder_commit_id is distinct from (r ->> 'commitId')::uuid
 		or w.dispatch is distinct from jsonb_build_object('goal','Find three suppliers.','definitionOfDone','Three suppliers with prices.',
-			'context','','sources','["agents/ada/todos/call-the-bank.md"]'::jsonb,'followUp',null)
+			'context','','sources','["QorperaOS/agents/ada/todos/call-the-bank.md"]'::jsonb,'followUp',null)
 			|| public.qorpera_company_state_worker_standing('in-house','write','each') then
 		raise exception 'The dispatched row: %', to_jsonb(w); end if;
 	select * into e from public.qorpera_runtime_worker_events where worker_id = w.id;
@@ -175,7 +177,7 @@ end $$;
 do $$
 declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; m jsonb := pg_temp.member(2);
-	f text := 'agents/ada/todos/call-the-bank/second'; b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000102');
+	f text := 'QorperaOS/agents/ada/todos/call-the-bank/second'; b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000102');
 	u jsonb; r jsonb; q jsonb;
 begin
 	-- Without the tool's request: a run's plain commit, and a member's.
@@ -186,7 +188,7 @@ begin
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-plain-0002', u), 1, 'manage_worker''s dispatch');
 	-- A brief written into an existing folder without a request.
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-plain-0003', jsonb_build_array(
-		pg_temp.f2_write(m, 'agents/ada/todos/call-the-bank/price-check/brief.md', pg_temp.brief('84000000-0000-4000-8000-000000000101')))),
+		pg_temp.f2_write(m, 'QorperaOS/agents/ada/todos/call-the-bank/price-check/brief.md', pg_temp.brief('84000000-0000-4000-8000-000000000101')))),
 		1, 'only manage_worker and report_work');
 	-- A request that names another operation key (set by hand, as only trusted SQL could).
 	u := pg_temp.dispatch_units(p, f, b);
@@ -209,21 +211,21 @@ begin
 	perform pg_temp.refused(r, 1, 'does not belong to this change');
 	-- A worker change that holds another unit: that unit is refused (a change set is not atomic, so the dispatch lands).
 	q := pg_temp.brief('84000000-0000-4000-8000-000000000104');
-	u := pg_temp.dispatch_units(p, 'agents/ada/todos/call-the-bank/extra', q)
-		|| jsonb_build_array(pg_temp.f2_write(p, 'agents/ada/notes.md', '{"kind":"x"}'::jsonb) - 'structured');
-	r := pg_temp.wc(p, 'f2b-extra-0001', u, pg_temp.dispatch_request('agents/ada/todos/call-the-bank/extra', q),
+	u := pg_temp.dispatch_units(p, 'QorperaOS/agents/ada/todos/call-the-bank/extra', q)
+		|| jsonb_build_array(pg_temp.f2_write(p, 'QorperaOS/agents/ada/notes.md', '{"kind":"x"}'::jsonb) - 'structured');
+	r := pg_temp.wc(p, 'f2b-extra-0001', u, pg_temp.dispatch_request('QorperaOS/agents/ada/todos/call-the-bank/extra', q),
 		pg_temp.reviewed(ada, 'f2b-call-0004', u));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.refused(r, 2, 'holds only its own files');
 	-- A closed todo.
-	f := 'agents/ada/todos/book-the-room/w1'; u := pg_temp.dispatch_units(p, f, b);
+	f := 'QorperaOS/agents/ada/todos/book-the-room/w1'; u := pg_temp.dispatch_units(p, f, b);
 	r := pg_temp.wc(p, 'f2b-closed-0001', u, pg_temp.dispatch_request(f, b), pg_temp.reviewed(ada, 'f2b-call-0005', u));
 	perform pg_temp.refused(r, 2, 'the todo is closed');
 	-- Another agent's todo.
-	f := 'agents/ben/todos/ben-only/w1'; u := pg_temp.dispatch_units(p, f, b);
+	f := 'QorperaOS/agents/ben/todos/ben-only/w1'; u := pg_temp.dispatch_units(p, f, b);
 	r := pg_temp.wc(p, 'f2b-other-0001', u, pg_temp.dispatch_request(f, b), pg_temp.reviewed(ada, 'f2b-call-0006', u));
 	perform pg_temp.refused(r, 2, 'its own agent''s todos');
-	f := 'agents/ada/todos/call-the-bank/second';
+	f := 'QorperaOS/agents/ada/todos/call-the-bank/second';
 	-- The brief and the request disagree; the standing texts are not the platform's; a follow-up in a new brief; coding.
 	u := pg_temp.dispatch_units(p, f, b);
 	r := pg_temp.wc(p, 'f2b-mismatch-0001', u, pg_temp.dispatch_request(f, b) || '{"title":"Other"}',
@@ -254,7 +256,7 @@ begin
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', m, 'f2b-member-0001', u, pg_temp.dispatch_request(f, b)), '22023');
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', p, 'f2b-bad-0001', u, '{"action":"dispatch"}'), '22023');
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', p, 'f2b-bad-0002', u,
-		pg_temp.dispatch_request('agents/ada/todos/call-the-bank/Bad_Key', b)), '22023');
+		pg_temp.dispatch_request('QorperaOS/agents/ada/todos/call-the-bank/Bad_Key', b)), '22023');
 	perform set_config('qorpera.folder_worker', '{"action":"dispatch"}', true);
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', p, 'f2b-nested-0001', u, pg_temp.dispatch_request(f, b)), '55000');
 	perform set_config('qorpera.folder_worker', '', true);
@@ -263,7 +265,7 @@ end $$;
 -- 3. A write worker's report: its files, then results.md; the row waits to revive its parent ------------------------------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'agents/ada/todos/call-the-bank/price-check';
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'QorperaOS/agents/ada/todos/call-the-bank/price-check';
 	w public.qorpera_runtime_workers%rowtype := pg_temp.worker_row(f); x jsonb := pg_temp.worker_run(ada, w.id); p jsonb := x -> 'actor';
 	r jsonb; q jsonb := jsonb_build_object('action','report','folder',f);
 begin
@@ -273,7 +275,7 @@ begin
 		'path',f || '/suppliers.md','file',pg_temp.stage('Three suppliers.', p)))), 1, 'saved');
 	-- Refusals: a file this run did not write, a decision, a cancelled outcome, the parent reporting.
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-report-0001', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
-		pg_temp.results(p_files => '["agents/ada/todos/call-the-bank.md"]'))), q), 1, 'this run did not write');
+		pg_temp.results(p_files => '["QorperaOS/agents/ada/todos/call-the-bank.md"]'))), q), 1, 'this run did not write');
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-report-0002', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
 		pg_temp.results(p_decision => 'accepted'))), q), 1, 'without a decision');
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-report-0003', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
@@ -303,7 +305,7 @@ end $$;
 -- 4. A read-only worker reports through the exception, and writes nothing else ------------------------------------------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'agents/ada/todos/call-the-bank/reader';
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'QorperaOS/agents/ada/todos/call-the-bank/reader';
 	b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000103', p_access => 'read', p_revival => 'batch');
 	u jsonb := pg_temp.dispatch_units(ada -> 'actor', f, b); x jsonb; p jsonb; r jsonb; q jsonb := jsonb_build_object('action','report','folder',f);
 begin
@@ -331,22 +333,22 @@ end $$;
 -- 5. The parent decides: only decision and note change; only a success is accepted ----------------------------------------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'agents/ada/todos/call-the-bank/price-check';
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'QorperaOS/agents/ada/todos/call-the-bank/price-check';
 	base jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v where v.version = pg_temp.f2_version(f || '/results.md'));
 	r jsonb; w public.qorpera_runtime_workers%rowtype;
 begin
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-decide-0001', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
 		base || '{"decision":"accepted","summary":"Better."}')), jsonb_build_object('action','decide','folder',f,'decision','accepted',
 		'note',null)), 1, 'changes only decision and note');
-	perform pg_temp.refused(pg_temp.wc(p, 'f2b-decide-0002', jsonb_build_array(pg_temp.f2_write(p, 'agents/ada/todos/call-the-bank/reader/results.md',
+	perform pg_temp.refused(pg_temp.wc(p, 'f2b-decide-0002', jsonb_build_array(pg_temp.f2_write(p, 'QorperaOS/agents/ada/todos/call-the-bank/reader/results.md',
 		(select v.structured -> 'parse' from public.qorpera_folder_path_versions v
-			where v.version = pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/results.md')) || '{"decision":"accepted"}')),
-		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/reader','decision','accepted','note',null)),
+			where v.version = pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank/reader/results.md')) || '{"decision":"accepted"}')),
+		jsonb_build_object('action','decide','folder','QorperaOS/agents/ada/todos/call-the-bank/reader','decision','accepted','note',null)),
 		1, 'only a finished, successful result');
 	-- No report, no decision.
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-decide-0004', jsonb_build_array(pg_temp.f2_write(p,
-		'agents/ada/todos/call-the-bank/extra/results.md', base || '{"decision":"rejected"}')),
-		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/extra','decision','rejected','note',null)),
+		'QorperaOS/agents/ada/todos/call-the-bank/extra/results.md', base || '{"decision":"rejected"}')),
+		jsonb_build_object('action','decide','folder','QorperaOS/agents/ada/todos/call-the-bank/extra','decision','rejected','note',null)),
 		1, 'without a report there is none');
 	r := pg_temp.wc(p, 'f2b-decide-0003', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
 		base || '{"decision":"accepted","note":"Good sources."}')), jsonb_build_object('action','decide','folder',f,'decision','accepted',
@@ -361,7 +363,7 @@ end $$;
 -- 6. A follow-up: one more follow-up in the brief, results.md removed, the worker at work again ---------------------------
 do $$
 declare
-	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'agents/ada/todos/call-the-bank/price-check';
+	ada jsonb := current_setting('qorpera_test.ada')::jsonb; p jsonb := ada -> 'actor'; f text := 'QorperaOS/agents/ada/todos/call-the-bank/price-check';
 	base jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v where v.version = pg_temp.f2_version(f || '/brief.md'));
 	next jsonb := base || jsonb_build_object('followUps', 1, 'followedUpAt', to_char(clock_timestamp() at time zone 'UTC',
 		'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Add a fourth.');
@@ -400,21 +402,21 @@ begin
 			next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))))), 1, 'still working');
 	-- A follow-up that keeps the old results.md: the row no longer points at it, so verify refuses the whole change set.
 	declare rb jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
-			where v.version = pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/brief.md'));
+			where v.version = pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank/reader/brief.md'));
 		ru jsonb;
 	begin
-		ru := jsonb_build_array(pg_temp.f2_write(p, 'agents/ada/todos/call-the-bank/reader/brief.md', rb || jsonb_build_object('followUps', 1,
+		ru := jsonb_build_array(pg_temp.f2_write(p, 'QorperaOS/agents/ada/todos/call-the-bank/reader/brief.md', rb || jsonb_build_object('followUps', 1,
 			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Try again.')));
 		perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L, %L)', p, 'f2b-followup-0004', ru,
-			jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/reader','text','Try again.',
-				'resultsVersion',pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/results.md')),
+			jsonb_build_object('action','followup','folder','QorperaOS/agents/ada/todos/call-the-bank/reader','text','Try again.',
+				'resultsVersion',pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank/reader/results.md')),
 			pg_temp.reviewed(ada, 'f2b-call-0016', ru)), 'XX000');
-		if (pg_temp.worker_row('agents/ada/todos/call-the-bank/reader')).state is distinct from 'blocked' then
+		if (pg_temp.worker_row('QorperaOS/agents/ada/todos/call-the-bank/reader')).state is distinct from 'blocked' then
 			raise exception 'A refused follow-up changed the reader'; end if;
 	end;
 	-- A todo with a worker at work is not done.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'f2b-done-0001', jsonb_build_array(pg_temp.f2_todo(pg_temp.member(2),
-		'agents/ada/todos/call-the-bank.md', 'Call the bank', 'done'))), 1, 'refused', 'structured_rule');
+		'QorperaOS/agents/ada/todos/call-the-bank.md', 'Call the bank', 'done'))), 1, 'refused', 'structured_rule');
 end $$;
 
 -- 7. Status: the run's own workers on one todo, from the index -------------------------------------------------------------
@@ -424,7 +426,7 @@ begin
 	r := public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor', '{"todoKey":"call-the-bank"}');
 	if r ->> 'schema' is distinct from 'qorpera.folder-agent-workers/v1' or jsonb_array_length(r -> 'workers') is distinct from 3
 		or (select jsonb_agg(w ->> 'folder' order by w ->> 'folder') from jsonb_array_elements(r -> 'workers') w)
-			is distinct from '["agents/ada/todos/call-the-bank/extra","agents/ada/todos/call-the-bank/price-check","agents/ada/todos/call-the-bank/reader"]' then
+			is distinct from '["QorperaOS/agents/ada/todos/call-the-bank/extra","QorperaOS/agents/ada/todos/call-the-bank/price-check","QorperaOS/agents/ada/todos/call-the-bank/reader"]' then
 		raise exception 'Status: %', r; end if;
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_workers(%L, %L, %L)', '63400000-0000-4000-8000-000000000020',
 		pg_temp.member(2), '{"todoKey":"call-the-bank"}'), '42501');
@@ -455,7 +457,7 @@ end $$;
 
 -- 8. Cancel: the row only, its queued wake cancelled; no file ------------------------------------------------------------
 do $$
-declare ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'agents/ada/todos/call-the-bank/price-check'; r jsonb;
+declare ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'QorperaOS/agents/ada/todos/call-the-bank/price-check'; r jsonb;
 	w public.qorpera_runtime_workers%rowtype;
 begin
 	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', ada -> 'binding', '{"folder":"x"}'), '22023');
@@ -484,7 +486,7 @@ begin
 	end;
 	-- A folder with no worker: nothing to cancel (never a retry).
 	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', ada -> 'binding',
-		jsonb_build_object('folder', 'agents/ada/todos/call-the-bank/nobody', 'operationKey', 'f2b-cancel-0004')), 'P0002');
+		jsonb_build_object('folder', 'QorperaOS/agents/ada/todos/call-the-bank/nobody', 'operationKey', 'f2b-cancel-0004')), 'P0002');
 	-- Ben's run cannot cancel Ada's worker.
 	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', current_setting('qorpera_test.ben')::jsonb -> 'binding',
 		jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0002')), '42501');
@@ -492,34 +494,34 @@ end $$;
 
 -- 9. The guard: worker files go with their folder; a todo with workers keeps its file; a restore brings them back --------
 do $$
-declare m jsonb := pg_temp.member(2); f text := 'agents/ada/todos/call-the-bank/reader'; r jsonb; w public.qorpera_runtime_workers%rowtype;
+declare m jsonb := pg_temp.member(2); f text := 'QorperaOS/agents/ada/todos/call-the-bank/reader'; r jsonb; w public.qorpera_runtime_workers%rowtype;
 	brief_sha text;
 begin
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0001', jsonb_build_array(jsonb_build_object('op','delete',
 		'path',f || '/brief.md','expectedVersion',pg_temp.f2_version(f || '/brief.md')))), 1, 'go with its folder');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0002', jsonb_build_array(jsonb_build_object('op','move',
-		'from',f,'to','agents/ada/todos/call-the-bank/renamed','expectedVersion',pg_temp.f2_version(f),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from',f,'to','QorperaOS/agents/ada/todos/call-the-bank/renamed','expectedVersion',pg_temp.f2_version(f),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'moves only with its agent''s folder');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0003', jsonb_build_array(jsonb_build_object('op','mkdir',
-		'path','agents/ada/todos/plan-the-trip'), jsonb_build_object('op','mkdir','path','agents/ada/todos/plan-the-trip/sneaky'))),
+		'path','QorperaOS/agents/ada/todos/plan-the-trip'), jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/todos/plan-the-trip/sneaky'))),
 		2, 'made by manage_worker''s dispatch');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0004', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.f2_version('agents/ada/todos/call-the-bank.md')))),
+		'path','QorperaOS/agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank.md')))),
 		1, 'this todo has workers');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0005', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada/todos/call-the-bank.md','to','agents/ada/todos/call-the-banks.md','expectedVersion',
-		pg_temp.f2_version('agents/ada/todos/call-the-bank.md')))), 1, 'this todo has workers');
+		'from','QorperaOS/agents/ada/todos/call-the-bank.md','to','QorperaOS/agents/ada/todos/call-the-banks.md','expectedVersion',
+		pg_temp.f2_version('QorperaOS/agents/ada/todos/call-the-bank.md')))), 1, 'this todo has workers');
 	-- Nothing arrives at a worker's place by a move or a copy, nor in a subtree that would put a folder there.
-	perform pg_temp.expect(pg_temp.commit(m, 'f2b-guard-0013', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/ada/drafts'),
+	perform pg_temp.expect(pg_temp.commit(m, 'f2b-guard-0013', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/drafts'),
 		jsonb_build_object('op','mkdir','path','stuff'), jsonb_build_object('op','mkdir','path','stuff/inside'))), 3, 'saved');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0014', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada/drafts','to','agents/ada/todos/call-the-bank/fake','expectedVersion',pg_temp.f2_version('agents/ada/drafts'),
+		'from','QorperaOS/agents/ada/drafts','to','QorperaOS/agents/ada/todos/call-the-bank/fake','expectedVersion',pg_temp.f2_version('QorperaOS/agents/ada/drafts'),
 		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
 		1, 'made by manage_worker''s dispatch');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0015', jsonb_build_array(jsonb_build_object('op','copy',
-		'from','agents/ada/drafts','to','agents/ada/todos/call-the-bank/fake'))), 1, 'made by manage_worker''s dispatch');
+		'from','QorperaOS/agents/ada/drafts','to','QorperaOS/agents/ada/todos/call-the-bank/fake'))), 1, 'made by manage_worker''s dispatch');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0016', jsonb_build_array(jsonb_build_object('op','move',
-		'from','stuff','to','agents/ada/todos/fresh-todo','expectedVersion',pg_temp.f2_version('stuff'),
+		'from','stuff','to','QorperaOS/agents/ada/todos/fresh-todo','expectedVersion',pg_temp.f2_version('stuff'),
 		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
 		1, 'made by manage_worker''s dispatch');
 	-- A finished worker's folder goes, and retires its row; a restore brings it back whole, finished, with the same bytes.
@@ -545,24 +547,24 @@ begin
 		raise exception 'The restored row: %', to_jsonb(pg_temp.worker_row(f)); end if;
 	-- An agent's folder with a worker at work does not move; once none is, its workers follow it.
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0011', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada','to','agents/adele','expectedVersion',pg_temp.f2_version('agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from','QorperaOS/agents/ada','to','QorperaOS/agents/adele','expectedVersion',pg_temp.f2_version('QorperaOS/agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'still at work');
 	perform public.qorpera_folder_cancel_agent_worker(current_setting('qorpera_test.ada')::jsonb -> 'binding',
-		jsonb_build_object('folder', 'agents/ada/todos/call-the-bank/extra', 'operationKey', 'f2b-cancel-0003'));
+		jsonb_build_object('folder', 'QorperaOS/agents/ada/todos/call-the-bank/extra', 'operationKey', 'f2b-cancel-0003'));
 	-- Workers move only with their agent's whole folder: not with its todos folder, even when none is at work.
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0017', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada/todos','to','stuff/todos','expectedVersion',pg_temp.f2_version('agents/ada/todos'),
+		'from','QorperaOS/agents/ada/todos','to','stuff/todos','expectedVersion',pg_temp.f2_version('QorperaOS/agents/ada/todos'),
 		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
 		1, 'workers move only with their agent''s folder');
 	r := pg_temp.commit(m, 'f2b-guard-0012', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada','to','agents/adele','expectedVersion',pg_temp.f2_version('agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from','QorperaOS/agents/ada','to','QorperaOS/agents/adele','expectedVersion',pg_temp.f2_version('QorperaOS/agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.expect(r, 1, 'saved');
-	if (pg_temp.worker_row('agents/adele/todos/call-the-bank/reader')).id is distinct from w.id
-		or (pg_temp.worker_row('agents/adele/todos/call-the-bank/reader')).folder_brief_version
-			is distinct from pg_temp.f2_version('agents/adele/todos/call-the-bank/reader/brief.md')
-		or (pg_temp.worker_row('agents/adele/todos/call-the-bank/price-check')).folder_path is distinct from 'agents/adele/todos/call-the-bank/price-check'
-		or exists (select 1 from public.qorpera_runtime_workers where folder_key like 'agents/ada/%' and folder_retired_at is null) then
+	if (pg_temp.worker_row('QorperaOS/agents/adele/todos/call-the-bank/reader')).id is distinct from w.id
+		or (pg_temp.worker_row('QorperaOS/agents/adele/todos/call-the-bank/reader')).folder_brief_version
+			is distinct from pg_temp.f2_version('QorperaOS/agents/adele/todos/call-the-bank/reader/brief.md')
+		or (pg_temp.worker_row('QorperaOS/agents/adele/todos/call-the-bank/price-check')).folder_path is distinct from 'QorperaOS/agents/adele/todos/call-the-bank/price-check'
+		or exists (select 1 from public.qorpera_runtime_workers where folder_key like 'qorperaos/agents/ada/%' and folder_retired_at is null) then
 		raise exception 'The moved workers'; end if;
 end $$;
 
@@ -589,7 +591,7 @@ begin
 	perform public.qorpera_folder_structured_lock('63400000-0000-4000-8000-000000000020', jsonb_build_array(
 		jsonb_build_object('rank',5,'tbl','qorpera_runtime_workers','key','84000000-0000-4000-8000-000000000101','mode','nokeyupdate'),
 		jsonb_build_object('rank',5,'tbl','qorpera_runtime_agent_todos','key',(select id from public.qorpera_runtime_agent_todos
-			where folder_path = 'agents/ada/todos/call-the-bank.md'),'mode','share')), 5::smallint, 5::smallint);
+			where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md'),'mode','share')), 5::smallint, 5::smallint);
 	select count(*) into v_n from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
 	where n.nspname = 'public' and p.prosrc like '%20260930003000%' and p.proname in ('qorpera_company_state_parse_problems',
 		'qorpera_company_state_checked','qorpera_folder_structured_targets','qorpera_folder_structured_lock',

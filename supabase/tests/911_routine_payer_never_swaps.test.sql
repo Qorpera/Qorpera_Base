@@ -98,7 +98,7 @@ reset role;
 do $$
 declare e uuid := '91100000-0000-4000-8000-0000000000e1';
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/digest.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/digest.md',
 		pg_temp.rparse(e, 'Digest', pg_temp.every())))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '91100000-0000-4000-8000-0000000000b3',
 		'a new routine starts on the saver''s newest own login, not the company account');
@@ -113,7 +113,7 @@ select pg_temp.fx($f$insert into public.qorpera_provider_connection_versions
 do $$
 declare e uuid := '91100000-0000-4000-8000-0000000000e1'; p jsonb;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/digest.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/digest.md',
 		pg_temp.rparse(e, 'Digest, daily', pg_temp.every())))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '91100000-0000-4000-8000-0000000000b3'
 		and (pg_temp.rt(e)).status = 'paused' and (pg_temp.rt(e)).pause_reason = 'needs_model_account',
@@ -186,7 +186,7 @@ begin
 		and (pg_temp.rv(e)).created_by_user_id = '70700000-0000-4000-8000-000000000002', 'the saver stays the member');
 	perform pg_temp.p911_assert(pg_temp.p911_told('2', e) = 1, 'the member whose login paid is told');
 	-- A company account serves every member: the member's edit keeps it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'p911-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/digest.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'p911-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/digest.md',
 		pg_temp.rparse(e, 'Digest, twice a day', pg_temp.every(720))))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = current_setting('qorpera_test.p911_company_binding')::uuid,
 		'an edit keeps the company account it serves');
@@ -196,10 +196,10 @@ end $$;
 do $$
 declare e uuid := '91100000-0000-4000-8000-0000000000e2'; c public.qorpera_routine_payer_changes;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0004', jsonb_build_array(pg_temp.routine('agents/nora/routines/report.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0004', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/report.md',
 		pg_temp.rparse(e, 'Report', pg_temp.every())))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b1', 'the owner''s routine');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'p911-0005', jsonb_build_array(pg_temp.routine('agents/nora/routines/report.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'p911-0005', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/report.md',
 		pg_temp.rparse(e, 'Report, short', pg_temp.every())))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b2'
 		and (pg_temp.rv(e)).created_by_user_id = '70700000-0000-4000-8000-000000000002', 'the member''s save pays with their own login');
@@ -271,7 +271,7 @@ declare e uuid := '91100000-0000-4000-8000-0000000000e3';
 begin
 	perform pg_temp.commit(pg_temp.owner(), 'p911-0006', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'docs')));
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0007', jsonb_build_array(pg_temp.routine(
-		'agents/nora/routines/watch.md', pg_temp.rparse(e, 'Watch docs',
+		'QorperaOS/agents/nora/routines/watch.md', pg_temp.rparse(e, 'Watch docs',
 			jsonb_build_object('when', 'file-change', 'watch', 'docs', 'match', 'subtree'))))), 1, 'saved');
 	perform pg_temp.p911_assert((pg_temp.rv(e)).triggers -> 0 ->> 'kind' = 'file-change'
 		and (pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b1', 'the owner''s file-change routine');

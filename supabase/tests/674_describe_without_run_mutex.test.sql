@@ -160,9 +160,9 @@ create function pg_temp.j_rparse(p_id uuid) returns jsonb language sql as $$
 		'instructions', 'Examine the authorized change.')
 $$;
 select pg_temp.base_commit(pg_temp.base_owner(), 'j674-routine-tick', jsonb_build_array(
-	pg_temp.base_write('agents/bob/routines/tick.md', 'routine',
+	pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md', 'routine',
 		E'---\n' || pg_temp.j_rparse('92400000-0000-4000-8000-0000000006e1')::text || E'\n---\n',
-		pg_temp.j_rparse('92400000-0000-4000-8000-0000000006e1'), pg_temp.base_version('agents/bob/routines/tick.md')))) \g /dev/null
+		pg_temp.j_rparse('92400000-0000-4000-8000-0000000006e1'), pg_temp.base_version('QorperaOS/agents/bob/routines/tick.md')))) \g /dev/null
 do $$
 declare v_cursor public.qorpera_cloud_routine_schedule_cursors; v_wake uuid := extensions.gen_random_uuid();
 	v_at timestamptz := statement_timestamp() - interval '5 minutes'; v_run uuid; v_binding jsonb; v_three jsonb;

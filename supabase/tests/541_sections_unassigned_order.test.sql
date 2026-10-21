@@ -90,18 +90,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '54100000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -120,7 +120,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '54100000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '54100000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '54100000-0000-4000-8000-000000000020'
@@ -143,19 +143,19 @@ returns jsonb language sql as $$
 $$;
 -- A new group chat folder with its group.md, as one unit.
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 -- An edit of a group.md, with its parse given.
 create function pg_temp.edit_group(p_handle text, p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
-		pg_temp.version('agents/groups/' || p_handle || '/group.md'))
+	select pg_temp.write('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
+		pg_temp.version('QorperaOS/agents/groups/' || p_handle || '/group.md'))
 $$;
 create function pg_temp.sections(p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('agents/sections.md', 'sections', 'sections ' || p_parse::text, p_parse, pg_temp.version('agents/sections.md'))
+	select pg_temp.write('QorperaOS/agents/sections.md', 'sections', 'sections ' || p_parse::text, p_parse, pg_temp.version('QorperaOS/agents/sections.md'))
 $$;
 create function pg_temp.rule(p_result jsonb, p_unit integer) returns text language sql as $$
 	select p_result -> 'units' -> (p_unit - 1) ->> 'reason'
@@ -167,12 +167,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Order'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Order'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '54100000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','agents/groups')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(
 		pg_temp.hire('nora', '54100000-0000-4000-8000-0000000000a1', 'Nora'), pg_temp.hire('otto', '54100000-0000-4000-8000-0000000000a2', 'Otto'), pg_temp.hire('vera', '54100000-0000-4000-8000-0000000000a3', 'Vera')));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
@@ -261,7 +261,7 @@ begin
 		'unassigned', jsonb_build_array(jsonb_build_object('id','54100000-0000-4000-8000-0000000000a3','line',1),
 			jsonb_build_object('id','54100000-0000-4000-8000-0000000000a2','line',2)), 'sections', '[]'::jsonb)))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'rules-0008', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/vera','expectedVersion',pg_temp.version('agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+		'path','QorperaOS/agents/vera','expectedVersion',pg_temp.version('QorperaOS/agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'rules-0009', jsonb_build_array(pg_temp.sections(jsonb_build_object('kind','sections',
 		'unassigned', jsonb_build_array(jsonb_build_object('id','54100000-0000-4000-8000-0000000000a2','line',1),
 			jsonb_build_object('id','54100000-0000-4000-8000-0000000000a3','line',2)), 'sections', '[]'::jsonb))));

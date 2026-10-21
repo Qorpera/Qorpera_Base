@@ -54,7 +54,7 @@ select public.qorpera_folder_grant('63400000-0000-4000-8000-000000000020', pg_te
 do $$
 declare
 	v_paths text[] := array['a.md', 'teams/sales/a.md', 'teams/sales/q1', 'teams/sales/q1/x.md', 'TEAMS/Sales/b.md', 'docs/deep/a/b/c.md',
-		'credentials/x.md', 'Østen/f.md', 'members/63400000-0000-4000-8000-000000000002/private/n.md', 'rules/r.md'];
+		'credentials/x.md', 'Østen/f.md', 'members/63400000-0000-4000-8000-000000000002/private/n.md', 'QorperaOS/rules/r.md'];
 	v_run jsonb; v_actor jsonb; v_actor_a jsonb; v_actor_b jsonb; v_bad text[]; v_staff uuid;
 begin
 	-- A run is built in one statement and resolved in the next (a stable function reads its statement's snapshot).

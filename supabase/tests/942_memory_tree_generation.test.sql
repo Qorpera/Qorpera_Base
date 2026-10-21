@@ -90,18 +90,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '94200000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -120,7 +120,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '94200000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '94200000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 
 -- An agent's thread conversation.
@@ -144,17 +144,17 @@ create function pg_temp.sql_memory(p_key text, p_units jsonb, p_sessions uuid[],
 $$;
 -- A tree's first change set: its root and tree.toml.
 create function pg_temp.new_tree(p_agent uuid, p_handle text, p_bytes integer default 1024) returns jsonb language sql as $$
-	select jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/' || p_handle || '/memory/thread'),
-		pg_temp.tree_file('agents/' || p_handle || '/memory/thread/tree.toml', pg_temp.toml(pg_temp.thread(p_agent), p_bytes)))
+	select jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/' || p_handle || '/memory/thread'),
+		pg_temp.tree_file('QorperaOS/agents/' || p_handle || '/memory/thread/tree.toml', pg_temp.toml(pg_temp.thread(p_agent), p_bytes)))
 $$;
 
 -- The creation commit and two hires, committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'mrace-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Memory Race'),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Memory Race'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 	pg_temp.hire('co-founder', '94200000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-	jsonb_build_object('op','mkdir','path','agents/groups'))), 6, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'))), 7, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'mrace-hire-0001', jsonb_build_array(
 	pg_temp.hire('nora', '94200000-0000-4000-8000-0000000000a1', 'Nora'), pg_temp.hire('otto', '94200000-0000-4000-8000-0000000000a2', 'Otto'))),
 	2, 'saved') \g /dev/null
@@ -210,7 +210,7 @@ begin
 	perform * from dblink_get_result('mrace_save') as t(r jsonb);
 	perform pg_temp.expect(v, 1, 'refused', 'memory_generation_stale');
 	perform pg_temp.expect(v, 2, 'refused', 'parent_missing');
-	if pg_temp.version('agents/nora/memory/thread') is not null
+	if pg_temp.version('QorperaOS/agents/nora/memory/thread') is not null
 		or exists (select 1 from public.qorpera_memory_trees where environment_id = '94200000-0000-4000-8000-000000000020') then
 		raise exception 'A refused batch writes nothing'; end if;
 end $$;
@@ -253,15 +253,15 @@ end $$;
 -- B2. The other order: the batch holds both conversations FOR SHARE (it waits on a path another connection holds) and
 -- a join starts. The join waits for the batch at the conversations, and both finish.
 select set_config('qorpera_test.memory_b2', pg_temp.sql_memory('mrace-b2', jsonb_build_array(
-	pg_temp.tree_file('agents/otto/memory/thread/tree.toml', pg_temp.toml(current_setting('qorpera_test.otto_session')::uuid, 256),
-		pg_temp.version('agents/otto/memory/thread/tree.toml'))),
+	pg_temp.tree_file('QorperaOS/agents/otto/memory/thread/tree.toml', pg_temp.toml(current_setting('qorpera_test.otto_session')::uuid, 256),
+		pg_temp.version('QorperaOS/agents/otto/memory/thread/tree.toml'))),
 	array[current_setting('qorpera_test.nora_session')::uuid, current_setting('qorpera_test.otto_session')::uuid], array[1, 0]), false) \g /dev/null
 do $$
 declare v jsonb;
 begin
 	perform dblink_exec('mrace_hold', 'begin');
 	perform * from dblink('mrace_hold', $q$select 1 from public.qorpera_folder_entries
-		where environment_id = '94200000-0000-4000-8000-000000000020' and key_text = 'agents/otto/memory/thread/tree.toml' for update$q$)
+		where environment_id = '94200000-0000-4000-8000-000000000020' and key_text = 'qorperaos/agents/otto/memory/thread/tree.toml' for update$q$)
 		as t(x integer);
 	perform dblink_send_query('mrace_save', current_setting('qorpera_test.memory_b2'));
 	if not pg_temp.waits_for('mrace_save', 'mrace_hold') then raise exception 'The batch must wait on the held path'; end if;

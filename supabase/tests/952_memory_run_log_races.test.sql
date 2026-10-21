@@ -13,8 +13,8 @@ create function pg_temp.owner() returns jsonb language sql as $$
 	select '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}'::jsonb
 $$;
 create or replace function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020' and key_text = p_key
-		and kind is distinct from 'claim'
+	select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key) and kind is distinct from 'claim'
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020'
@@ -161,10 +161,10 @@ begin
 	perform pg_temp.same(pg_temp.unit(pg_temp.commit(pg_temp.owner(), 'w1b-race:hire', jsonb_build_array(
 		pg_temp.hire('bo', '95200000-0000-4000-8000-0000000000a2', 'Bo')))), '["saved", null]', 'Bo''s hire');
 	perform pg_temp.same(pg_temp.unit(pg_temp.commit(pg_temp.owner(), 'w1b-race:group', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','agents/groups'),
-		jsonb_build_object('op','new_folder','path','agents/groups/launch',
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'),
+		jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/launch',
 			'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file','file',pg_temp.stage(v_text))),
-			'structured', jsonb_build_array(pg_temp.entry('agents/groups/launch/group.md', 'group', v_text,
+			'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/launch/group.md', 'group', v_text,
 				jsonb_build_object('kind','group','id','95200000-0000-4000-8000-0000000000b1','name','Launch','subtitle',null,
 					'agents','["64800000-0000-4000-8000-0000000000a1", "95200000-0000-4000-8000-0000000000a2"]'::jsonb,
 					'people','["64800000-0000-4000-8000-000000000001"]'::jsonb,'purpose','Plan the launch.'))))))),
@@ -180,21 +180,21 @@ select pg_temp.run('one', pg_temp.thread()), pg_temp.run('two', pg_temp.thread()
 do $$
 declare
 	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
-	g constant uuid := pg_temp.run_id('g'); glog constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('g');
+	g constant uuid := pg_temp.run_id('g'); glog constant text := 'QorperaOS/agents/groups/launch/memory/runs/' || pg_temp.run_id('g');
 	x jsonb; r jsonb;
 begin
 	x := public.qorpera_memory_run_log_place(env, one);
-	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array('agents/ada/memory/thread/runs/' || one,
-		'["agents/ada/memory/thread", "agents/ada/memory/thread/runs"]'::jsonb), 'one''s place');
+	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array('qorperaos/agents/ada/memory/thread/runs/' || one,
+		'["qorperaos/agents/ada/memory/thread", "qorperaos/agents/ada/memory/thread/runs"]'::jsonb), 'one''s place');
 	x := public.qorpera_memory_run_log_place(env, g);
-	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array(glog,
-		'["agents/groups/launch/memory", "agents/groups/launch/memory/runs"]'::jsonb), 'g''s place');
-	r := pg_temp.logc('one', 'w1b-race:mk:1', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/ada/memory/thread'),
-		jsonb_build_object('op','mkdir','path','agents/ada/memory/thread/runs')), 'agents/ada/memory/thread/runs/' || one);
+	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing'), jsonb_build_array(public.qorpera_folder_key(glog),
+		'["qorperaos/agents/groups/launch/memory", "qorperaos/agents/groups/launch/memory/runs"]'::jsonb), 'g''s place');
+	r := pg_temp.logc('one', 'w1b-race:mk:1', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/memory/thread'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/ada/memory/thread/runs')), 'QorperaOS/agents/ada/memory/thread/runs/' || one);
 	perform pg_temp.same(jsonb_build_array(r -> 'units' -> 0 ->> 'outcome', r -> 'units' -> 1 ->> 'outcome'), '["saved", "saved"]',
 		'one makes the thread''s runs folder');
-	r := pg_temp.logc('g', 'w1b-race:mk:2', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/groups/launch/memory'),
-		jsonb_build_object('op','mkdir','path','agents/groups/launch/memory/runs')), glog);
+	r := pg_temp.logc('g', 'w1b-race:mk:2', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups/launch/memory'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups/launch/memory/runs')), glog);
 	perform pg_temp.same(jsonb_build_array(r -> 'units' -> 0 ->> 'outcome', r -> 'units' -> 1 ->> 'outcome'), '["saved", "saved"]',
 		'g makes the chat''s runs folder');
 	r := pg_temp.logc('g', 'w1b-race:mk:3', jsonb_build_array(pg_temp.log_folder(glog, pg_temp.rtoml(g, pg_temp.chat())),
@@ -208,8 +208,8 @@ end $$;
 do $$
 declare
 	one constant uuid := pg_temp.run_id('one'); two constant uuid := pg_temp.run_id('two');
-	l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
-	l2 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
+	l1 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+	l2 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
 begin
 	perform pg_temp.sql_log('a1', 'one', 'w1b-race:a:1', jsonb_build_array(pg_temp.log_folder(l1, pg_temp.rtoml(one, pg_temp.thread()))), l1);
 	perform pg_temp.sql_log('a2', 'one', 'w1b-race:a:2', jsonb_build_array(pg_temp.log_folder(l1, pg_temp.rtoml(one, pg_temp.thread()))), l1);
@@ -240,7 +240,7 @@ end $$;
 -- batch saves (E2).
 do $$
 declare
-	one constant uuid := pg_temp.run_id('one'); l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+	one constant uuid := pg_temp.run_id('one'); l1 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
 begin
 	perform pg_temp.sql_log('e1', 'one', 'w1b-race:e:1', jsonb_build_array(pg_temp.step(l1, 0)), l1,
 		jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', one, 'generation', 0))));
@@ -269,14 +269,14 @@ end $$;
 -- D. A batch against an erase of its run: the erase takes the run's generations row FOR UPDATE and opens; the batch
 -- waits, then is refused while the erase is open, and saves once it has closed.
 do $$
-declare l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+declare l1 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
 begin
 	perform pg_temp.sql_log('d1', 'one', 'w1b-race:d:1', jsonb_build_array(pg_temp.step(l1, 1)), l1);
 end $$;
 do $$
 declare
 	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
-	l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one'); x jsonb;
+	l1 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('one'); x jsonb;
 begin
 	x := pg_temp.race(format('with held as (select g.run_id from public.qorpera_memory_run_generations g
 			where g.environment_id = %L and g.run_id = %L for update)
@@ -291,26 +291,26 @@ begin
 		'["saved", null]', 'D: after the erase');
 end $$;
 
--- B. A batch against its agent's rename: the move of agents/ada holds its transaction; the batch at the log's old path
+-- B. A batch against its agent's rename: the move of QorperaOS/agents/ada holds its transaction; the batch at the log's old path
 -- waits at the log's row, which the move rewrote, then the core refuses it (its folder is gone). The logs follow the
 -- rename, and a batch at the new path saves.
 do $$
-declare l2 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
+declare l2 constant text := 'QorperaOS/agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
 begin
 	perform pg_temp.sql_log('b1', 'two', 'w1b-race:b:1', jsonb_build_array(pg_temp.step(l2, 0)), l2);
 end $$;
 do $$
 declare
 	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
-	two constant uuid := pg_temp.run_id('two'); l2 constant text := 'agents/ada-2/memory/thread/runs/' || pg_temp.run_id('two');
+	two constant uuid := pg_temp.run_id('two'); l2 constant text := 'QorperaOS/agents/ada-2/memory/thread/runs/' || pg_temp.run_id('two');
 	x jsonb;
 begin
 	x := pg_temp.race(format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', env, pg_temp.owner(), 'w1b-race:b:2',
-		jsonb_build_array(jsonb_build_object('op','move','from','agents/ada','to','agents/ada-2',
-			'expectedVersion',pg_temp.version('agents/ada'),'asOfSeq',pg_temp.seq()))), 'b1', 'commit', 'B');
+		jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/agents/ada','to','QorperaOS/agents/ada-2',
+			'expectedVersion',pg_temp.version('QorperaOS/agents/ada'),'asOfSeq',pg_temp.seq()))), 'b1', 'commit', 'B');
 	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
 		'[["saved", null], "qorpera_memory_run_logs", ["refused", "parent_missing"]]', 'B: a batch at the old path');
-	perform pg_temp.same((select jsonb_build_array(count(*), bool_and(l.run_path = 'agents/ada-2/memory/thread/runs/' || l.run_id))
+	perform pg_temp.same((select jsonb_build_array(count(*), bool_and(l.run_path = 'QorperaOS/agents/ada-2/memory/thread/runs/' || l.run_id))
 		from public.qorpera_memory_run_logs l where l.environment_id = env and l.run_id in (one, two)), '[2, true]',
 		'B: the logs follow the rename');
 	perform pg_temp.follow_ups(env);
@@ -321,7 +321,7 @@ end $$;
 -- C. A batch against its group's delete: the delete of the launch group's folder holds its transaction; the batch in the
 -- group chat's log waits at the log's row, which the delete retired, then the core refuses it. The log's steps are gone.
 do $$
-declare glog constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('g');
+declare glog constant text := 'QorperaOS/agents/groups/launch/memory/runs/' || pg_temp.run_id('g');
 begin
 	perform pg_temp.sql_log('c1', 'g', 'w1b-race:c:1', jsonb_build_array(pg_temp.step(glog, 1)), glog);
 end $$;
@@ -329,8 +329,8 @@ do $$
 declare env constant uuid := '64800000-0000-4000-8000-000000000020'; g constant uuid := pg_temp.run_id('g'); x jsonb;
 begin
 	x := pg_temp.race(format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', env, pg_temp.owner(), 'w1b-race:c:2',
-		jsonb_build_array(jsonb_build_object('op','delete','path','agents/groups/launch',
-			'expectedVersion',pg_temp.version('agents/groups/launch'),'asOfSeq',pg_temp.seq()))), 'c1', 'commit', 'C');
+		jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/groups/launch',
+			'expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch'),'asOfSeq',pg_temp.seq()))), 'c1', 'commit', 'C');
 	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
 		'[["saved", null], "qorpera_memory_run_logs", ["refused", "parent_missing"]]', 'C: a batch in a deleted group');
 	perform pg_temp.same((select jsonb_build_array(l.retired_at is not null, (select count(*) from public.qorpera_memory_run_steps s

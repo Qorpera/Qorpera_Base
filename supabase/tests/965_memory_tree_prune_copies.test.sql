@@ -12,10 +12,10 @@ $$;
 -- A memory commit of Nora's block, saved; its version after it.
 create function pg_temp.put(p_key text, p_text text) returns uuid language plpgsql as $$
 begin
-	perform pg_temp.expect(pg_temp.memory(p_key, jsonb_build_array(pg_temp.block_file('agents/nora-skov/memory/thread/t0/00000000.jsonl',
-		p_text, pg_temp.version('agents/nora-skov/memory/thread/t0/00000000.jsonl'))),
+	perform pg_temp.expect(pg_temp.memory(p_key, jsonb_build_array(pg_temp.block_file('QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl',
+		p_text, pg_temp.version('QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl'))),
 		array[pg_temp.thread('70000000-0000-4000-8000-0000000000a1')]), 1, 'saved');
-	return pg_temp.version('agents/nora-skov/memory/thread/t0/00000000.jsonl');
+	return pg_temp.version('QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl');
 end $$;
 create function pg_temp.v(p_name text) returns uuid language sql as $$
 	select nullif(current_setting('qorpera_test.' || p_name, true), '')::uuid
@@ -54,7 +54,7 @@ end $$;
 
 do $$
 declare
-	b constant text := 'agents/nora-skov/memory/thread/t0/00000000.jsonl'; r jsonb; v1 uuid;
+	b constant text := 'QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl'; r jsonb; v1 uuid;
 begin
 	perform pg_temp.service();
 	perform pg_temp.keep('mi', pg_temp.version(b));
@@ -103,7 +103,7 @@ end $$;
 do $$
 declare
 	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000a1'); eid uuid; r jsonb;
-	old constant text := 'agents/nora-dahl/memory/thread/t0/00000000.jsonl'; b constant text := 'agents/nora-skov/memory/thread/t0/00000000.jsonl';
+	old constant text := 'qorperaos/agents/nora-dahl/memory/thread/t0/00000000.jsonl'; b constant text := 'qorperaos/agents/nora-skov/memory/thread/t0/00000000.jsonl';
 begin
 	r := public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
 		s, (pg_temp.event(s, 7)).event_id);

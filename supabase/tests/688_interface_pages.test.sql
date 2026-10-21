@@ -116,7 +116,7 @@ declare v_data text; r jsonb; v_at timestamptz;
 	c_m constant text := '63400000-0000-4000-8000-000000000002';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 begin
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6-pages-0001', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6-pages-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.rows(array['area','owner','supervisor','agents','shared'],
 			array[array['Sales','',c_m,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if (select count(*) from public.qorpera_interface_supervisions where state = 'live') is distinct from 1 then

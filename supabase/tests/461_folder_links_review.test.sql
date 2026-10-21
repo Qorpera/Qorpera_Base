@@ -103,19 +103,20 @@ end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); h jsonb; r jsonb; p public.qorpera_folder_proposals;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'lk-agents-folder', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'lk-agents-folder',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved');
 	h := pg_temp.hire(b, 'pia', '63400000-0000-4000-8000-00000000f460', 'Pia');
 	h := jsonb_set(h, '{contents}', (h -> 'contents') || '[{"path":"notes.lnk","kind":"symlink","target":"../shared/notes.md"}]');
 	r := pg_temp.vcommit(b, 'lk-park-hire', jsonb_build_array(h));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	p := pg_temp.parked(r);
 	if p.effect <> 'delegation' or jsonb_array_length(pg_temp.paths(p.id)) <> 5
-		or pg_temp.paths(p.id) -> 4 <> '{"unit":1,"item":4,"path":"agents/pia/notes.lnk","manifest":null}' then
+		or pg_temp.paths(p.id) -> 4 <> '{"unit":1,"item":4,"path":"QorperaOS/agents/pia/notes.lnk","manifest":null}' then
 		raise exception 'The parked hire: % %', to_jsonb(p), pg_temp.paths(p.id); end if;
 	perform pg_temp.same((select q -> 'units' -> 0 -> 'contains' from jsonb_array_elements(pg_temp.list(x -> 'actor') -> 'proposals') q
-		where q ->> 'proposalId' = p.id::text), '[{"path":"agents/pia/agent.md","kind":"file"},
-		{"path":"agents/pia/memory","kind":"folder"},{"path":"agents/pia/todos","kind":"folder"},
-		{"path":"agents/pia/notes.lnk","kind":"symlink","target":"../shared/notes.md"}]', 'A listed new folder''s link');
+		where q ->> 'proposalId' = p.id::text), '[{"path":"QorperaOS/agents/pia/agent.md","kind":"file"},
+		{"path":"QorperaOS/agents/pia/memory","kind":"folder"},{"path":"QorperaOS/agents/pia/todos","kind":"folder"},
+		{"path":"QorperaOS/agents/pia/notes.lnk","kind":"symlink","target":"../shared/notes.md"}]', 'A listed new folder''s link');
 	perform set_config('qorpera_test.lk_hire', p.id::text, true);
 end $$;
 
@@ -123,7 +124,7 @@ do $$
 declare x jsonb := pg_temp.agent_run(); p uuid := current_setting('qorpera_test.lk_hire')::uuid; e jsonb;
 begin
 	perform pg_temp.expect(pg_temp.approve(x, 'apply-lk-hire', p, 'delegation'), 1, 'saved');
-	e := pg_temp.entry('agents/pia/notes.lnk');
+	e := pg_temp.entry('QorperaOS/agents/pia/notes.lnk');
 	if (pg_temp.proposal(p)).status <> 'applied' or e ->> 'kind' <> 'symlink' or e ->> 'target' <> '../shared/notes.md'
 		or not exists (select 1 from public.qorpera_profile_staff where profile_id = '63400000-0000-4000-8000-000000000010'
 			and staff_agent_id = '63400000-0000-4000-8000-00000000f460') then

@@ -155,7 +155,7 @@ begin
 	perform pg_temp.base_public_send(v_binding, 'progress', 'delete-working-ack');
 	perform set_config('qorpera_test.delete_working', v_binding::text, true);
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'delete-routine', jsonb_build_array(pg_temp.base_write(
-		'agents/bob/routines/daily.md', 'routine', E'---\ntitle: Daily\n---\n',
+		'QorperaOS/agents/bob/routines/daily.md', 'routine', E'---\ntitle: Daily\n---\n',
 		jsonb_build_object('kind', 'routine', 'id', '71500000-0000-4000-8000-0000000000e1', 'title', 'Daily', 'status', 'active',
 			'trigger', jsonb_build_object('when', 'every', 'minutes', 1440, 'starts', null), 'timezone', null, 'ends', null,
 			'runs', null, 'quiet', null, 'effort', 'medium', 'reply', 'optional', 'conclusion', null,
@@ -228,7 +228,7 @@ begin
 		or not exists (select 1 from public.qorpera_folder_file_chunks where profile_id = '92400000-0000-4000-8000-000000000010')
 		or not exists (select 1 from public.qorpera_folder_storage_usage where profile_id = '92400000-0000-4000-8000-000000000010')
 		or not exists (select 1 from public.qorpera_cloud_routines where profile_id = '92400000-0000-4000-8000-000000000010'
-			and folder_path = 'agents/bob/routines/daily.md') then
+			and folder_path = 'QorperaOS/agents/bob/routines/daily.md') then
 		raise exception 'The fixture company lacks a published commit, a working lease, history, folder bytes or a routine';
 	end if;
 end

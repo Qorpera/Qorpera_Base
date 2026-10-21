@@ -9,7 +9,7 @@
 -- one, 24 uploaded and posted with none, 25 uploaded within the day. In the group chat: 26 uploaded and never posted.
 do $$
 declare
-	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); root constant text := 'agents/nora/memory/thread';
+	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); root constant text := 'qorperaos/agents/nora/memory/thread';
 	x constant jsonb := pg_temp.image('twenty-three x'); y constant jsonb := pg_temp.image('twenty-three y');
 	member_claims constant text := '{"role":"authenticated","sub":"63400000-0000-4000-8000-000000000001"}';
 	v_role text; n integer := 0; k integer; calls integer := 0; c integer;
@@ -57,7 +57,7 @@ begin
 
 	if pg_temp.version(root || '/images/' || pg_temp.cid(21)) is not null
 		or pg_temp.version(root || '/images/' || pg_temp.cid(24)) is not null
-		or pg_temp.version(format('agents/groups/launch/memory/images/%s', pg_temp.cid(26))) is not null then
+		or pg_temp.version(format('qorperaos/agents/groups/launch/memory/images/%s', pg_temp.cid(26))) is not null then
 		raise exception 'An input never posted, or posted with no image, loses its images folder'; end if;
 	if pg_temp.version(format('%s/images/%s/%s.png', root, pg_temp.cid(23), y ->> 'fileSha256')) is not null
 		or pg_temp.version(format('%s/images/%s/%s.png', root, pg_temp.cid(23), x ->> 'fileSha256')) is null
@@ -80,7 +80,7 @@ end $$;
 do $$
 declare
 	v jsonb; v_command text; ns uuid := pg_temp.thread('nora');
-	dir constant text := 'agents/nora/memory/thread/images/' || pg_temp.cid(27);
+	dir constant text := 'qorperaos/agents/nora/memory/thread/images/' || pg_temp.cid(27);
 begin
 	perform pg_temp.upload(pg_temp.u(1), ns, pg_temp.cid(27), 'twenty-seven');
 	update public.qorpera_room_image_uploads set updated_at = updated_at - interval '25 hours' where client_input_id = pg_temp.cid(27);

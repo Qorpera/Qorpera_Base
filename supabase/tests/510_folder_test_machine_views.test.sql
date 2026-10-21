@@ -225,13 +225,13 @@ begin
 		or r -> 'view' -> 'companyWide' is distinct from 'true'::jsonb or r -> 'view' -> 'runActor' is distinct from v then
 		raise exception 'Live test machine view: %', r; end if;
 	r := pg_temp.vcommit(s, 'tm-live-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/tm.txt','file',a),
-		jsonb_build_object('op','write','path','secret/tm.txt','file',a), jsonb_build_object('op','write','path','rules/tm.txt','file',a)));
+		jsonb_build_object('op','write','path','secret/tm.txt','file',a), jsonb_build_object('op','write','path','QorperaOS/rules/tm.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied'); perform pg_temp.expect(r, 3, 'denied', 'denied');
 	c := pg_temp.last_commit(r);
 	if c.run_id is distinct from (v ->> 'runId')::uuid or c.view_kind is distinct from 'test_machine'
 		or c.view_id is distinct from (s ->> 'viewId')::uuid then raise exception 'Live test machine commit: %', to_jsonb(c); end if;
 	if (pg_temp.read('secret/s.txt', pg_temp.vactor(s)) ->> 'found')::boolean
-		or not (pg_temp.read('rules/tone.txt', pg_temp.vactor(s)) ->> 'found')::boolean then
+		or not (pg_temp.read('QorperaOS/rules/tone.txt', pg_temp.vactor(s)) ->> 'found')::boolean then
 		raise exception 'The company-wide view for a test machine''s reads'; end if;
 	-- The run's turn ends; the machine runs on.
 	perform pg_temp.lapse(v);

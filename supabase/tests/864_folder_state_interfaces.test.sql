@@ -21,7 +21,8 @@ create function pg_temp.p16_entry(p_path text, p_parse jsonb) returns jsonb lang
 	select jsonb_build_object('path', p_path, 'kind', p_parse ->> 'kind', 'text', p_parse::text, 'parse', p_parse, 'parserVersion', 1)
 $$;
 create function pg_temp.p16_version(p_path text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_path
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_path)
 		and kind is distinct from 'claim'
 $$;
 -- A file's write, staged by the actor that commits it: structured when given a parse, plain when given text.
@@ -80,15 +81,15 @@ end $$;
 -- One field of a table's index row damaged, then verify run on the commit that wrote it (it must raise XX000).
 create function pg_temp.damaged_verify(p_folder text, p_set text) returns void language plpgsql as $$
 declare v_commit uuid := (select commit_id from public.qorpera_folder_table_index where environment_id = '63400000-0000-4000-8000-000000000020'
-	and folder_key = p_folder and retired_at is null);
+	and folder_key = public.qorpera_folder_key(p_folder) and retired_at is null);
 begin
 	execute format('update public.qorpera_folder_table_index set %s where environment_id = %L and folder_key = %L and retired_at is null',
-		p_set, '63400000-0000-4000-8000-000000000020', p_folder);
+		p_set, '63400000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_folder));
 	perform public.qorpera_folder_structured_verify('63400000-0000-4000-8000-000000000020', v_commit);
 end $$;
 create function pg_temp.trow(p_folder text) returns public.qorpera_folder_table_index language sql as $$
 	select * from public.qorpera_folder_table_index where environment_id = '63400000-0000-4000-8000-000000000020'
-		and folder_key = p_folder and retired_at is null
+		and folder_key = public.qorpera_folder_key(p_folder) and retired_at is null
 $$;
 
 -- 0. The seed, as a creation commits it: interfaces/ with order.md, Pulse (main) and Mailbox; tables/ with numbers and
@@ -97,57 +98,58 @@ do $$
 declare r jsonb; i integer; t public.qorpera_folder_table_index;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'p16-seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','interfaces'),
-		jsonb_build_object('op','mkdir','path','tables'),
-		pg_temp.p16_write('{"kind":"platform"}', 'interfaces/order.md', pg_temp.fixture('order')),
-		pg_temp.p16_folder('{"kind":"platform"}', 'interfaces/pulse', jsonb_build_object('interface.toml',
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/interfaces'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/tables'),
+		pg_temp.p16_write('{"kind":"platform"}', 'QorperaOS/interfaces/order.md', pg_temp.fixture('order')),
+		pg_temp.p16_folder('{"kind":"platform"}', 'QorperaOS/interfaces/pulse', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true), 'README.md', 'About Pulse.')),
-		pg_temp.p16_folder('{"kind":"platform"}', 'interfaces/mailbox', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder('{"kind":"platform"}', 'QorperaOS/interfaces/mailbox', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', false))),
-		pg_temp.p16_folder('{"kind":"platform"}', 'tables/numbers', jsonb_build_object(
+		pg_temp.p16_folder('{"kind":"platform"}', 'QorperaOS/tables/numbers', jsonb_build_object(
 			'table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011'), 'rows.csv', pg_temp.fixture('rows'))),
-		pg_temp.p16_folder('{"kind":"platform"}', 'tables/areas', jsonb_build_object(
+		pg_temp.p16_folder('{"kind":"platform"}', 'QorperaOS/tables/areas', jsonb_build_object(
 			'table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas'),
 			'rows.csv', '{"kind":"table-rows","header":["area","owner","supervisor","agents","shared"],"rows":[]}'::jsonb))));
-	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	t := pg_temp.trow('tables/numbers');
-	if t.id <> '86400000-0000-4000-8000-000000000011' or t.folder_path <> 'tables/numbers'
-		or t.definition_version <> pg_temp.p16_version('tables/numbers/table.toml')
-		or t.rows_version is distinct from pg_temp.p16_version('tables/numbers/rows.csv') or t.commit_id::text <> r ->> 'commitId' then
+	for i in 1..8 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	t := pg_temp.trow('QorperaOS/tables/numbers');
+	if t.id <> '86400000-0000-4000-8000-000000000011' or t.folder_path <> 'QorperaOS/tables/numbers'
+		or t.definition_version <> pg_temp.p16_version('QorperaOS/tables/numbers/table.toml')
+		or t.rows_version is distinct from pg_temp.p16_version('QorperaOS/tables/numbers/rows.csv') or t.commit_id::text <> r ->> 'commitId' then
 		raise exception 'The numbers table''s row: %', to_jsonb(t); end if;
-	if (pg_temp.trow('tables/areas')).rows_version is null then raise exception 'The areas row points at its rows'; end if;
+	if (pg_temp.trow('QorperaOS/tables/areas')).rows_version is null then raise exception 'The areas row points at its rows'; end if;
 end $$;
 
 -- 1. The kinds, by the path's shape alone; the folder places; the fixed paths.
 do $$
 begin
-	if public.qorpera_structured_path_kind('interfaces/order.md') is distinct from 'interface-order'
-		or public.qorpera_structured_path_kind('interfaces/x/interface.toml') is distinct from 'interface'
-		or public.qorpera_structured_path_kind('interfaces/Bad_Name/interface.toml') is distinct from 'interface'
-		or public.qorpera_structured_path_kind('tables/x/table.toml') is distinct from 'table'
-		or public.qorpera_structured_path_kind('tables/x/rows.csv') is distinct from 'table-rows'
-		or public.qorpera_structured_path_kind('interfaces/x/readme.md') is not null
-		or public.qorpera_structured_path_kind('interfaces/x/y/interface.toml') is not null
-		or public.qorpera_structured_path_kind('tables/x/other.csv') is not null
-		or public.qorpera_structured_path_kind('tables/table.toml') is not null
+	if public.qorpera_structured_path_kind('qorperaos/interfaces/order.md') is distinct from 'interface-order'
+		or public.qorpera_structured_path_kind('qorperaos/interfaces/x/interface.toml') is distinct from 'interface'
+		or public.qorpera_structured_path_kind('qorperaos/interfaces/Bad_Name/interface.toml') is distinct from 'interface'
+		or public.qorpera_structured_path_kind('qorperaos/tables/x/table.toml') is distinct from 'table'
+		or public.qorpera_structured_path_kind('qorperaos/tables/x/rows.csv') is distinct from 'table-rows'
+		or public.qorpera_structured_path_kind('qorperaos/interfaces/x/readme.md') is not null
+		or public.qorpera_structured_path_kind('qorperaos/interfaces/x/y/interface.toml') is not null
+		or public.qorpera_structured_path_kind('qorperaos/tables/x/other.csv') is not null
+		or public.qorpera_structured_path_kind('qorperaos/tables/table.toml') is not null
 		or public.qorpera_structured_path_kind('drafts/x/table.toml') is not null then
 		raise exception 'The four kinds by shape'; end if;
-	if public.qorpera_structured_folder_names('interfaces') <> '{}' or public.qorpera_structured_folder_names('tables') <> '{}'
-		or public.qorpera_structured_folder_names('interfaces/x') <> array['2:an interface''s folder']
-		or public.qorpera_structured_folder_names('tables/x') <> array['2:a table''s folder'] then
+	if public.qorpera_structured_folder_names('qorperaos/interfaces') <> '{}' or public.qorpera_structured_folder_names('qorperaos/tables') <> '{}'
+		or public.qorpera_structured_folder_names('qorperaos/interfaces/x') <> array['2:an interface''s folder']
+		or public.qorpera_structured_folder_names('qorperaos/tables/x') <> array['2:a table''s folder'] then
 		raise exception 'The folder places'; end if;
 	-- A .toml or .csv is never asked to end in .md; a bad folder name is named.
-	if jsonb_array_length(public.qorpera_company_state_path_problems('tables/x/rows.csv', false)) <> 0
-		or jsonb_array_length(public.qorpera_company_state_path_problems('interfaces/x/interface.toml', false)) <> 0
-		or public.qorpera_company_state_path_problems('interfaces/Bad_Name/interface.toml', false) -> 0 ->> 'message'
+	if jsonb_array_length(public.qorpera_company_state_path_problems('QorperaOS/tables/x/rows.csv', false)) <> 0
+		or jsonb_array_length(public.qorpera_company_state_path_problems('QorperaOS/interfaces/x/interface.toml', false)) <> 0
+		or public.qorpera_company_state_path_problems('QorperaOS/interfaces/Bad_Name/interface.toml', false) -> 0 ->> 'message'
 			not like 'the name of an interface''s folder (Bad_Name)%'
-		or public.qorpera_company_state_path_problems('tables/x_y/table.toml', false) -> 0 ->> 'message'
+		or public.qorpera_company_state_path_problems('QorperaOS/tables/x_y/table.toml', false) -> 0 ->> 'message'
 			not like 'the name of a table''s folder (x_y)%' then
 		raise exception 'Path problems of the new kinds'; end if;
-	if not (public.qorpera_company_state_seeded('interfaces') and public.qorpera_company_state_seeded('interfaces/order.md')
-			and public.qorpera_company_state_seeded('tables') and public.qorpera_company_state_seeded('tables/areas')
-			and public.qorpera_company_state_seeded('tables/areas/table.toml') and public.qorpera_company_state_seeded('tables/areas/rows.csv'))
-		or public.qorpera_company_state_seeded('tables/numbers') then
+	if not (public.qorpera_company_state_seeded('qorperaos/interfaces') and public.qorpera_company_state_seeded('qorperaos/interfaces/order.md')
+			and public.qorpera_company_state_seeded('qorperaos/tables') and public.qorpera_company_state_seeded('qorperaos/tables/areas')
+			and public.qorpera_company_state_seeded('qorperaos/tables/areas/table.toml') and public.qorpera_company_state_seeded('qorperaos/tables/areas/rows.csv'))
+		or public.qorpera_company_state_seeded('qorperaos/tables/numbers') then
 		raise exception 'The fixed paths'; end if;
 end $$;
 
@@ -253,11 +255,11 @@ do $$
 declare m jsonb := pg_temp.member(2); r jsonb; t public.qorpera_folder_table_index;
 begin
 	r := pg_temp.commit(m, 'p16-place-0001', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/notes.txt', '"notes"'),
-		jsonb_build_object('op','mkdir','path','interfaces/pulse/sub'),
-		pg_temp.p16_write(m, 'interfaces/pulse/extra.md', '"extra"'),
-		pg_temp.p16_write(m, 'tables/foo', '"a file"'),
-		jsonb_build_object('op','mkdir','path','interfaces/order.md/x')));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/notes.txt', '"notes"'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/pulse/sub'),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/extra.md', '"extra"'),
+		pg_temp.p16_write(m, 'QorperaOS/tables/foo', '"a file"'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/order.md/x')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'placement');
@@ -265,11 +267,11 @@ begin
 	perform pg_temp.refused_any(r, 5);
 	-- A table folder with only its README, then rows without a definition.
 	r := pg_temp.commit(m, 'p16-place-0002', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','tables/foo'),
-		pg_temp.p16_write(m, 'tables/foo/README.md', '"About foo."'),
-		pg_temp.p16_folder(m, 'tables/baz', '{"readme.md":"about baz"}'),
-		pg_temp.p16_write(m, 'tables/foo/rows.csv', pg_temp.fixture('rows-empty')),
-		pg_temp.p16_folder(m, 'tables/bar', jsonb_build_object('rows.csv', pg_temp.fixture('rows-empty')))));
+		jsonb_build_object('op','mkdir','path','QorperaOS/tables/foo'),
+		pg_temp.p16_write(m, 'QorperaOS/tables/foo/README.md', '"About foo."'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/baz', '{"readme.md":"about baz"}'),
+		pg_temp.p16_write(m, 'QorperaOS/tables/foo/rows.csv', pg_temp.fixture('rows-empty')),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/bar', jsonb_build_object('rows.csv', pg_temp.fixture('rows-empty')))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.expect(r, 3, 'saved');
@@ -277,15 +279,15 @@ begin
 	perform pg_temp.refused(r, 5, 'structured_rule', 'placement');
 	-- A table's files never go alone; the fixed paths and the main interface stay.
 	r := pg_temp.commit(m, 'p16-place-0003', jsonb_build_array(
-		pg_temp.p16_delete('tables/numbers/rows.csv'),
-		pg_temp.p16_move('tables/numbers/table.toml', 'tables/foo/table.toml'),
-		pg_temp.p16_delete('interfaces/order.md'),
-		pg_temp.p16_delete('tables/areas'),
-		pg_temp.p16_delete('interfaces/pulse'),
-		pg_temp.p16_move('interfaces/pulse', 'interfaces/old-pulse'),
-		pg_temp.p16_delete('interfaces/pulse/interface.toml'),
-		pg_temp.p16_delete('tables'),
-		pg_temp.p16_move('interfaces/mailbox', 'interfaces')));
+		pg_temp.p16_delete('QorperaOS/tables/numbers/rows.csv'),
+		pg_temp.p16_move('QorperaOS/tables/numbers/table.toml', 'QorperaOS/tables/foo/table.toml'),
+		pg_temp.p16_delete('QorperaOS/interfaces/order.md'),
+		pg_temp.p16_delete('QorperaOS/tables/areas'),
+		pg_temp.p16_delete('QorperaOS/interfaces/pulse'),
+		pg_temp.p16_move('QorperaOS/interfaces/pulse', 'QorperaOS/interfaces/old-pulse'),
+		pg_temp.p16_delete('QorperaOS/interfaces/pulse/interface.toml'),
+		pg_temp.p16_delete('QorperaOS/tables'),
+		pg_temp.p16_move('QorperaOS/interfaces/mailbox', 'QorperaOS/interfaces')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'placement');
 	perform pg_temp.expect(r, 3, 'refused', 'seeded');
@@ -305,58 +307,58 @@ begin
 		pg_temp.p16_write(m, 'drafts/y/notes.txt', '"notes"')));
 	perform pg_temp.expect(r, 5, 'saved');
 	r := pg_temp.commit(m, 'p16-place-0005', jsonb_build_array(
-		jsonb_build_object('op','copy','from','tables/numbers','to','tables/numbers-copy'),
-		pg_temp.p16_move('drafts/x', 'tables/x'),
-		pg_temp.p16_move('drafts/y', 'tables/y'),
-		pg_temp.p16_move('drafts/y', 'interfaces/y'),
-		pg_temp.p16_move('tables/numbers', 'drafts/numbers')));
+		jsonb_build_object('op','copy','from','QorperaOS/tables/numbers','to','QorperaOS/tables/numbers-copy'),
+		pg_temp.p16_move('drafts/x', 'QorperaOS/tables/x'),
+		pg_temp.p16_move('drafts/y', 'QorperaOS/tables/y'),
+		pg_temp.p16_move('drafts/y', 'QorperaOS/interfaces/y'),
+		pg_temp.p16_move('QorperaOS/tables/numbers', 'drafts/numbers')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_copy');
 	perform pg_temp.expect(r, 2, 'refused', 'kind_change');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 4, 'structured_rule', 'placement');
 	perform pg_temp.expect(r, 5, 'refused', 'kind_change');
 	-- A table folder renamed: its row follows, with its files' new versions; verify holds.
-	r := pg_temp.commit(m, 'p16-place-0006', jsonb_build_array(pg_temp.p16_move('tables/numbers', 'tables/figures')));
+	r := pg_temp.commit(m, 'p16-place-0006', jsonb_build_array(pg_temp.p16_move('QorperaOS/tables/numbers', 'QorperaOS/tables/figures')));
 	perform pg_temp.expect(r, 1, 'saved');
-	t := pg_temp.trow('tables/figures');
-	if t.id <> '86400000-0000-4000-8000-000000000011' or t.folder_path <> 'tables/figures'
-		or t.definition_version <> pg_temp.p16_version('tables/figures/table.toml')
-		or t.rows_version <> pg_temp.p16_version('tables/figures/rows.csv') or t.commit_id::text <> r ->> 'commitId'
-		or (pg_temp.trow('tables/numbers')).id is not null then
+	t := pg_temp.trow('QorperaOS/tables/figures');
+	if t.id <> '86400000-0000-4000-8000-000000000011' or t.folder_path <> 'QorperaOS/tables/figures'
+		or t.definition_version <> pg_temp.p16_version('QorperaOS/tables/figures/table.toml')
+		or t.rows_version <> pg_temp.p16_version('QorperaOS/tables/figures/rows.csv') or t.commit_id::text <> r ->> 'commitId'
+		or (pg_temp.trow('QorperaOS/tables/numbers')).id is not null then
 		raise exception 'A moved table''s row: %', to_jsonb(t); end if;
 	-- Verify checks every row the commit wrote: each field damaged in turn raises.
-	perform pg_temp.raises_like(format('select pg_temp.damaged_verify(%L, %L)', 'tables/figures', set_to), 'XX000',
+	perform pg_temp.raises_like(format('select pg_temp.damaged_verify(%L, %L)', 'QorperaOS/tables/figures', set_to), 'XX000',
 		'A structured index row does not point at its file''s current version')
 	from unnest(array['definition_version = gen_random_uuid()', 'rows_version = gen_random_uuid()', 'rows_version = null',
-		'folder_path = ''tables/Figures''']) set_to;
+		'folder_path = ''QorperaOS/tables/Figures''']) set_to;
 	-- A file never lands on a root (only while a root folder is missing can a unit try it).
 	if public.qorpera_company_state_interface_paths('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', m,
-			null, 'write', 'tables', null, '{}'::jsonb, 'tables', null) -> 'problems' -> 0 ->> 'code' is distinct from 'placement'
+			null, 'write', 'qorperaos/tables', null, '{}'::jsonb, 'QorperaOS/tables', null) -> 'problems' -> 0 ->> 'code' is distinct from 'placement'
 		or public.qorpera_company_state_interface_paths('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', m,
-			null, 'mkdir', 'interfaces', null, '{}'::jsonb, 'interfaces', null) is not null then
+			null, 'mkdir', 'qorperaos/interfaces', null, '{}'::jsonb, 'QorperaOS/interfaces', null) is not null then
 		raise exception 'A file on a root is refused; the root folder itself lands'; end if;
 	-- Other files in a table's folder, and README's spelling.
 	r := pg_temp.commit(m, 'p16-place-0006b', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/figures/other.csv', '"a,b"'),
-		pg_temp.p16_folder(m, 'tables/spell', '{"ReadMe.md":"About."}'),
-		pg_temp.p16_folder(m, 'interfaces/spell', '{"Readme.md":"About."}')));
+		pg_temp.p16_write(m, 'QorperaOS/tables/figures/other.csv', '"a,b"'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/spell', '{"ReadMe.md":"About."}'),
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/spell', '{"Readme.md":"About."}')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'placement');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'placement');
 	if pg_temp.problem(r, 2) <> 'write README.md or readme.md' then raise exception 'README''s spelling: %', r; end if;
 	-- A table folder deleted: its row retires; the same table made again from its text revives it.
 	r := pg_temp.commit(m, 'p16-place-0007', jsonb_build_array(
-		pg_temp.p16_folder(m, 'tables/scratch', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/scratch', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013'),
 			'rows.csv', pg_temp.fixture('rows-empty') || '{"header":["number","at","value","unit","kept_by"]}'))));
 	perform pg_temp.expect(r, 1, 'saved');
-	r := pg_temp.commit(m, 'p16-place-0008', jsonb_build_array(pg_temp.p16_delete('tables/scratch')));
+	r := pg_temp.commit(m, 'p16-place-0008', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/scratch')));
 	perform pg_temp.expect(r, 1, 'saved');
 	if exists (select 1 from public.qorpera_folder_table_index where id = '86400000-0000-4000-8000-000000000013' and retired_at is null) then
 		raise exception 'A deleted table''s row retires'; end if;
 	r := pg_temp.commit(m, 'p16-place-0009', jsonb_build_array(
-		pg_temp.p16_folder(m, 'tables/scratch-2', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013')))));
+		pg_temp.p16_folder(m, 'QorperaOS/tables/scratch-2', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013')))));
 	perform pg_temp.expect(r, 1, 'saved');
-	t := pg_temp.trow('tables/scratch-2');
+	t := pg_temp.trow('QorperaOS/tables/scratch-2');
 	if t.id is distinct from '86400000-0000-4000-8000-000000000013' or t.rows_version is not null then
 		raise exception 'A table made again revives its row, with no rows: %', to_jsonb(t); end if;
 end $$;
@@ -368,21 +370,21 @@ declare
 	v_coding jsonb := '{"kind":"staff_agent","staffAgentId":"63400000-0000-4000-8000-0000000000a1",
 		"requesterUserId":"63400000-0000-4000-8000-000000000002","audience":{"kind":"company"},"sessionKind":"coding","workerAccess":"read"}';
 begin
-	if public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'interfaces', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'interfaces/order.md', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'interfaces/pulse/interface.toml', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'interfaces/pulse/README.md', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'tables/figures/table.toml', 'write')
-		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'Tables/Figures/Table.toml', 'write')
-		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'tables/figures/rows.csv', 'write')
-		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'tables/figures/README.md', 'write')
-		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'interfaces/pulse/interface.toml', 'read') then
+	if public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/interfaces', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/interfaces/order.md', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/interfaces/pulse/interface.toml', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/interfaces/pulse/README.md', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/tables/figures/table.toml', 'write')
+		or public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/Tables/Figures/Table.toml', 'write')
+		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/tables/figures/rows.csv', 'write')
+		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/tables/figures/README.md', 'write')
+		or not public.qorpera_folder_actor_allowed(c_env, c_profile, v_coding, 'QorperaOS/interfaces/pulse/interface.toml', 'read') then
 		raise exception 'The coding rule on interfaces and tables'; end if;
 	-- A new table folder, a table moved or deleted, and a folder moved into interfaces/: each names a protected key.
-	if public.qorpera_folder_actor_keys_allowed(c_env, c_profile, v_coding, 'tables/z', array['tables/z', 'tables/z/table.toml'], 'write')
-		or public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'tables/figures', 'tables/g', 'write')
-		or public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'drafts/y', 'interfaces/y', 'write')
-		or not public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'tables/figures', 'drafts/figures', 'read') then
+	if public.qorpera_folder_actor_keys_allowed(c_env, c_profile, v_coding, 'QorperaOS/tables/z', array['qorperaos/tables/z', 'qorperaos/tables/z/table.toml'], 'write')
+		or public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'qorperaos/tables/figures', 'QorperaOS/tables/g', 'write')
+		or public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'drafts/y', 'QorperaOS/interfaces/y', 'write')
+		or not public.qorpera_folder_actor_subtree_allowed(c_env, c_profile, v_coding, 'qorperaos/tables/figures', 'drafts/figures', 'read') then
 		raise exception 'The coding rule on subtrees'; end if;
 end $$;
 
@@ -392,42 +394,42 @@ do $$
 declare m jsonb := pg_temp.member(2); r jsonb;
 begin
 	r := pg_temp.commit(m, 'p16-main-0001', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', true))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', true))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'main');
 	r := pg_temp.commit(m, 'p16-main-0002', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', false))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', false))));
 	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.commit(m, 'p16-main-0003', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', true))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', true))));
 	perform pg_temp.expect(r, 1, 'saved');
 	-- The other order: the new main's unit is refused and the old main's lands, which leaves none.
 	r := pg_temp.commit(m, 'p16-main-0004', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true)),
-		pg_temp.p16_write(m, 'interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', false))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true)),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', false))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'main');
 	perform pg_temp.expect(r, 2, 'saved');
 	if exists (select 1 from public.qorpera_interface_mains('63400000-0000-4000-8000-000000000020')) then
 		raise exception 'Zero mains in between'; end if;
 	-- Zero mains: an interface that is no longer main is deleted.
 	r := pg_temp.commit(m, 'p16-main-0005', jsonb_build_array(
-		pg_temp.p16_folder(m, 'interfaces/spare', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/spare', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000003', 'Spare', false)))));
 	perform pg_temp.expect(r, 1, 'saved');
-	r := pg_temp.commit(m, 'p16-main-0006', jsonb_build_array(pg_temp.p16_delete('interfaces/spare')));
+	r := pg_temp.commit(m, 'p16-main-0006', jsonb_build_array(pg_temp.p16_delete('QorperaOS/interfaces/spare')));
 	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.commit(m, 'p16-main-0007', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true))));
 	perform pg_temp.expect(r, 1, 'saved');
 	-- A double main, as two promotions at once leave it.
 	perform pg_temp.fx('update public.qorpera_folder_path_versions v set structured = jsonb_set(v.structured, ''{parse,main}'', ''true'')
 		from public.qorpera_folder_entries e where e.environment_id = ''63400000-0000-4000-8000-000000000020''
-			and e.key_text = ''interfaces/mailbox/interface.toml'' and v.version = e.version');
+			and e.key_text = ''qorperaos/interfaces/mailbox/interface.toml'' and v.version = e.version');
 	r := pg_temp.commit(m, 'p16-main-0008', jsonb_build_array(
-		pg_temp.p16_folder(m, 'interfaces/third', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/third', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000004', 'Third', false))),
-		pg_temp.p16_write(m, 'interfaces/pulse/README.md', '"About Pulse, again."'),
-		pg_temp.p16_write(m, 'interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mail', true)),
-		pg_temp.p16_write(m, 'interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', false))));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/README.md', '"About Pulse, again."'),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mail', true)),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/mailbox/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Mailbox', false))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'main');
@@ -443,18 +445,18 @@ declare m jsonb := pg_temp.member(2); o jsonb := pg_temp.member(1); a jsonb := p
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
 begin
 	r := pg_temp.commit(m, 'p16-owners-0001', jsonb_build_array(
-		pg_temp.p16_folder(m, 'interfaces/board', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/board', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false, 'owners'))),
 		pg_temp.p16_write(m, 'drafts/readme.md', '"A note."')));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 	r := pg_temp.commit(m, 'p16-owners-0002', jsonb_build_array(
-		pg_temp.p16_write(m, 'interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board 2', false, 'owners')),
-		pg_temp.p16_write(m, 'interfaces/board/README.md', '"About the board."'),
-		pg_temp.p16_move('drafts/readme.md', 'interfaces/board/readme.md'),
-		pg_temp.p16_move('interfaces/board', 'interfaces/board-2'),
-		pg_temp.p16_delete('interfaces/board'),
-		pg_temp.p16_delete('interfaces/board/interface.toml')));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board 2', false, 'owners')),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/board/README.md', '"About the board."'),
+		pg_temp.p16_move('drafts/readme.md', 'QorperaOS/interfaces/board/readme.md'),
+		pg_temp.p16_move('QorperaOS/interfaces/board', 'QorperaOS/interfaces/board-2'),
+		pg_temp.p16_delete('QorperaOS/interfaces/board'),
+		pg_temp.p16_delete('QorperaOS/interfaces/board/interface.toml')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'owners');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'owners');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'owners');
@@ -462,25 +464,25 @@ begin
 	perform pg_temp.refused(r, 5, 'structured_rule', 'owners');
 	perform pg_temp.refused(r, 6, 'structured_rule', 'owners');
 	r := pg_temp.commit(g -> 'actor', 'p16-owners-0003', jsonb_build_array(
-		pg_temp.p16_write(g -> 'actor', 'interfaces/board/README.md', '"An agent''s note."')));
+		pg_temp.p16_write(g -> 'actor', 'QorperaOS/interfaces/board/README.md', '"An agent''s note."')));
 	-- 20260930510000: an agent changes nothing under interfaces/, owners-only or not (689).
 	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	r := pg_temp.commit(o, 'p16-owners-0004', jsonb_build_array(
-		pg_temp.p16_write(o, 'interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false, 'owners'))));
+		pg_temp.p16_write(o, 'QorperaOS/interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false, 'owners'))));
 	perform pg_temp.expect(r, 1, 'saved');
-	r := pg_temp.commit(a, 'p16-owners-0005', jsonb_build_array(pg_temp.p16_write(a, 'interfaces/board/README.md', '"About the board."')));
+	r := pg_temp.commit(a, 'p16-owners-0005', jsonb_build_array(pg_temp.p16_write(a, 'QorperaOS/interfaces/board/README.md', '"About the board."')));
 	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.commit('{"kind":"platform"}', 'p16-owners-0006', jsonb_build_array(
-		pg_temp.p16_write('{"kind":"platform"}', 'interfaces/board/README.md', '"About the board, by the platform."')));
+		pg_temp.p16_write('{"kind":"platform"}', 'QorperaOS/interfaces/board/README.md', '"About the board, by the platform."')));
 	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.commit(m, 'p16-owners-0006b', jsonb_build_array(
-		jsonb_build_object('op','copy','from','interfaces/board/README.md','to','drafts/board-readme.md')));
+		jsonb_build_object('op','copy','from','QorperaOS/interfaces/board/README.md','to','drafts/board-readme.md')));
 	perform pg_temp.expect(r, 1, 'saved');
 	-- Opened to anyone by an owner: a contributor changes it again.
 	r := pg_temp.commit(o, 'p16-owners-0007', jsonb_build_array(
-		pg_temp.p16_write(o, 'interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false))));
+		pg_temp.p16_write(o, 'QorperaOS/interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false))));
 	perform pg_temp.expect(r, 1, 'saved');
-	r := pg_temp.commit(m, 'p16-owners-0008', jsonb_build_array(pg_temp.p16_write(m, 'interfaces/board/README.md', '"Open now."')));
+	r := pg_temp.commit(m, 'p16-owners-0008', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/interfaces/board/README.md', '"Open now."')));
 	perform pg_temp.expect(r, 1, 'saved');
 end $$;
 
@@ -489,12 +491,12 @@ do $$
 declare m jsonb := pg_temp.member(2); r jsonb;
 begin
 	r := pg_temp.commit(m, 'p16-ids-0001', jsonb_build_array(
-		pg_temp.p16_folder(m, 'interfaces/twin', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/twin', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Twin', false))),
-		pg_temp.p16_folder(m, 'tables/twin', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011'))),
-		pg_temp.p16_write(m, 'tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000019')),
-		pg_temp.p16_write(m, 'interfaces/third/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000009', 'Third', false)),
-		pg_temp.p16_write(m, 'tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"key":["value"]}')));
+		pg_temp.p16_folder(m, 'QorperaOS/tables/twin', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011'))),
+		pg_temp.p16_write(m, 'QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000019')),
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/third/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000009', 'Third', false)),
+		pg_temp.p16_write(m, 'QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"key":["value"]}')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'duplicate');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'duplicate');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'duplicate');
@@ -513,21 +515,21 @@ declare
 	v_review uuid;
 begin
 	for v_case in select * from (values
-		('interfaces/new/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000006', 'New', false), 'delegation'),
-		('interfaces/pulse/interface.toml', v_pulse || '{"name":"Pulse now","about":"What happens."}', 'plain'),
-		('interfaces/pulse/interface.toml', v_pulse || '{"buttons":[]}', 'delegation'),
-		('interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["ask-keeper"]'), 'plain'),
-		('interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["take"]'), 'delegation'),
-		('interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,1,buttons}', '[]'), 'plain'),
-		('interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks}',
+		('QorperaOS/interfaces/new/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000006', 'New', false), 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"name":"Pulse now","about":"What happens."}', 'plain'),
+		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"buttons":[]}', 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["ask-keeper"]'), 'plain'),
+		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["take"]'), 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,1,buttons}', '[]'), 'plain'),
+		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks}',
 			(select jsonb_agg(b order by n desc) from jsonb_array_elements(v_pulse -> 'views' -> 0 -> 'blocks') with ordinality x(b, n))), 'plain'),
-		('interfaces/pulse/interface.toml', v_pulse || '{"access":{"members":"owners","agents":"all","edit":"anyone"}}', 'delegation'),
-		('tables/new/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000016'), 'delegation'),
-		('tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}', 'plain'),
-		('tables/figures/table.toml', jsonb_set(pg_temp.tbl('86400000-0000-4000-8000-000000000011'), '{columns,4,optional}', 'false'), 'delegation'),
-		('tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"write":{"agents":"none","members":"all"}}', 'delegation'),
-		('tables/figures/rows.csv', pg_temp.fixture('rows-empty'), 'plain'),
-		('interfaces/order.md', pg_temp.fixture('order'), 'plain')) as c(path, parse, class) loop
+		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"access":{"members":"owners","agents":"all","edit":"anyone"}}', 'delegation'),
+		('QorperaOS/tables/new/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000016'), 'delegation'),
+		('QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}', 'plain'),
+		('QorperaOS/tables/figures/table.toml', jsonb_set(pg_temp.tbl('86400000-0000-4000-8000-000000000011'), '{columns,4,optional}', 'false'), 'delegation'),
+		('QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"write":{"agents":"none","members":"all"}}', 'delegation'),
+		('QorperaOS/tables/figures/rows.csv', pg_temp.fixture('rows-empty'), 'plain'),
+		('QorperaOS/interfaces/order.md', pg_temp.fixture('order'), 'plain')) as c(path, parse, class) loop
 		v_unit := jsonb_build_object('op','write','path',v_case.path,'structured',jsonb_build_array(pg_temp.p16_entry(v_case.path, v_case.parse)));
 		if public.qorpera_folder_structured_review_class(c_env, v_agent, v_unit, v_case.path, null) is distinct from v_case.class then
 			raise exception 'Review class of % (%): %', v_case.path, v_case.class,
@@ -536,7 +538,7 @@ begin
 	-- A new interface by a run: since 20260930510000 the save check refuses it before any review, and save_interface's
 	-- recorded approval saves it no more (689); a change set reaching outside interfaces/ and tables/ is not one
 	-- save_interface stands for.
-	v_units := jsonb_build_array(pg_temp.p16_folder(g -> 'actor', 'interfaces/agent-page', jsonb_build_object('interface.toml',
+	v_units := jsonb_build_array(pg_temp.p16_folder(g -> 'actor', 'QorperaOS/interfaces/agent-page', jsonb_build_object('interface.toml',
 		pg_temp.iface('86400000-0000-4000-8000-000000000007', 'Agent page', false))));
 	r := pg_temp.commit(g -> 'actor', 'p16-review-0001', v_units);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
@@ -546,14 +548,14 @@ begin
 	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-2', 'allow', 'delegation', 'save_interface'),
-		jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/x'), jsonb_build_object('op','mkdir','path','agents/x'))),
+		jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/x'), jsonb_build_object('op','mkdir','path','QorperaOS/agents/x'))),
 		'42501', 'This change has no approval in this run');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-4', 'allow', 'destructive', 'save_interface'),
-		jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/y'))),
+		jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/y'))),
 		'42501', 'This change has no approval in this run');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-3', 'allow', 'delegation', 'save_interface'),
-		jsonb_build_array(jsonb_build_object('op','move','from','interfaces/agent-page','to','drafts/agent-page'))),
+		jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/interfaces/agent-page','to','drafts/agent-page'))),
 		'42501', 'This change has no approval in this run');
 end $$;

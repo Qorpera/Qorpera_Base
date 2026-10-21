@@ -70,9 +70,9 @@ begin
 	if public.qorpera_folder_worker_dispatch_payload(x, (select t from public.qorpera_runtime_agent_todos t where t.id = x.todo_id))
 			is distinct from jsonb_build_object('schema','qorpera.worker-dispatch/v1','workerId',price,'workerKey','price-check',
 				'sequence',1,'species','in-house','title','Compare suppliers',
-				'todo',jsonb_build_object('todoKey','call-the-bank','title','Call the bank','path','agents/ada/todos/call-the-bank.md'),
+				'todo',jsonb_build_object('todoKey','call-the-bank','title','Call the bank','path','QorperaOS/agents/ada/todos/call-the-bank.md'),
 				'parentRunId',(ada -> 'actor' ->> 'runId')::uuid,'access','write',
-				'outputFolder','agents/ada/todos/call-the-bank/price-check','dispatch',x.dispatch)
+				'outputFolder','QorperaOS/agents/ada/todos/call-the-bank/price-check','dispatch',x.dispatch)
 		or (o.payload #>> '{}') is null then
 		raise exception 'The dispatch payload: %', o.payload; end if;
 	if (pg_temp.w(extra)).occurrence_id is null or (pg_temp.wake((pg_temp.w(extra)).occurrence_id)).status is distinct from 'queued' then
@@ -128,13 +128,13 @@ do $$
 declare ada jsonb := current_setting('qorpera_test.ada2')::jsonb; v jsonb; m jsonb := pg_temp.member(2);
 	a constant uuid := '84000000-0000-4000-8000-000000000111'; b constant uuid := '84000000-0000-4000-8000-000000000112';
 begin
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/plan-the-trip/flights', a, 'drain-dispatch-0001');
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/plan-the-trip/hotels', b, 'drain-dispatch-0002');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/plan-the-trip/flights', a, 'drain-dispatch-0001');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/plan-the-trip/hotels', b, 'drain-dispatch-0002');
 	v := pg_temp.drain();
 	if (v ->> 'started')::integer <> 2 then raise exception 'Fixture: two started: %', v; end if;
 	-- The todo is cancelled (F2-5a allows it with workers at work): both workers stop with it, their queued wakes too.
 	perform pg_temp.expect(pg_temp.commit(m, 'drain-cancel-0001', jsonb_build_array(
-		pg_temp.f2_todo(m, 'agents/ada/todos/plan-the-trip.md', 'Plan the trip', 'cancelled'))), 1, 'saved');
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ada/todos/plan-the-trip.md', 'Plan the trip', 'cancelled'))), 1, 'saved');
 	v := pg_temp.drain();
 	if (v ->> 'cancelled')::integer <> 2 or (pg_temp.w(a)).state is distinct from 'cancelled'
 		or (pg_temp.w(a)).result ->> 'reason' is distinct from 'todo_cancelled'
@@ -149,8 +149,8 @@ declare ada jsonb := current_setting('qorpera_test.ada3')::jsonb; v jsonb; m jso
 	c constant uuid := '84000000-0000-4000-8000-000000000113'; d constant uuid := '84000000-0000-4000-8000-000000000114';
 begin
 	perform pg_temp.expect(pg_temp.commit(m, 'drain-todo-0002', jsonb_build_array(
-		pg_temp.f2_todo(m, 'agents/ada/todos/pay-the-rent.md', 'Pay the rent'))), 1, 'saved');
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/pay-the-rent/landlord', c, 'drain-dispatch-0003');
+		pg_temp.f2_todo(m, 'QorperaOS/agents/ada/todos/pay-the-rent.md', 'Pay the rent'))), 1, 'saved');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/pay-the-rent/landlord', c, 'drain-dispatch-0003');
 	-- The parent is stopped by a person before the drain: the worker stops with it, never started.
 	perform pg_temp.finish((ada -> 'actor' ->> 'runId')::uuid, 'cancelled');
 	v := pg_temp.drain();
@@ -163,7 +163,7 @@ select set_config('qorpera_test.ada4', pg_temp.agent_run('84000000-0000-4000-800
 do $$
 declare ada jsonb := current_setting('qorpera_test.ada4')::jsonb; v jsonb; d constant uuid := '84000000-0000-4000-8000-000000000115';
 begin
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/pay-the-rent/bank', d, 'drain-dispatch-0004');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/pay-the-rent/bank', d, 'drain-dispatch-0004');
 	perform pg_temp.fx($q$delete from public.qorpera_profile_members where profile_id = '63400000-0000-4000-8000-000000000010'
 		and user_id = '63400000-0000-4000-8000-000000000002'$q$);
 	v := pg_temp.drain();
@@ -199,8 +199,8 @@ do $$
 declare ada jsonb := current_setting('qorpera_test.ada5')::jsonb; v jsonb;
 	e constant uuid := '84000000-0000-4000-8000-000000000116'; f constant uuid := '84000000-0000-4000-8000-000000000117';
 begin
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/pay-the-rent/one', e, 'drain-dispatch-0005', 'batch');
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/pay-the-rent/two', f, 'drain-dispatch-0006', 'batch');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/pay-the-rent/one', e, 'drain-dispatch-0005', 'batch');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/pay-the-rent/two', f, 'drain-dispatch-0006', 'batch');
 	perform pg_temp.drain();
 	perform pg_temp.finish((ada -> 'actor' ->> 'runId')::uuid);
 	perform pg_temp.cancel_wake((pg_temp.w(e)).occurrence_id);

@@ -144,7 +144,7 @@ do $$
 declare ada jsonb := current_setting('qorpera_test.ada5')::jsonb; w constant uuid := '84000000-0000-4000-8000-000000000116';
 	x jsonb; r jsonb; v_bundle public.qorpera_active_runtime_bundle%rowtype; v_manifest jsonb;
 begin
-	perform pg_temp.dispatch(ada, 'agents/ada/todos/plan-the-trip/origin', w, 'origin-dispatch-0001');
+	perform pg_temp.dispatch(ada, 'QorperaOS/agents/ada/todos/plan-the-trip/origin', w, 'origin-dispatch-0001');
 	perform pg_temp.drain();
 	if (pg_temp.wake((pg_temp.w(w)).occurrence_id)).origin_run_id is distinct from (ada -> 'actor' ->> 'runId')::uuid then
 		raise exception 'Fixture: the drain starts the worker with Ada''s run as its origin'; end if;

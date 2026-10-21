@@ -578,10 +578,10 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p,
 		pg_temp.worker(c_a, p, 'in-house', 'read')), 'worker-reader', '[{"op":"mkdir","path":"by-reader"}]'), 1, 'denied', 'denied');
 
-	-- A coding session is paid by its owner's login, writes code/ but not agents/, and is never reviewed. One not paid
+	-- A coding session is paid by its owner's login, writes code/ but not QorperaOS/agents/, and is never reviewed. One not paid
 	-- by its owner's login, or whose owner is not its requester, does not act.
 	r := pg_temp.commit(pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p, pg_temp.worker(c_a, p, 'coding', 'read', c_member)),
-		'coding-1', '[{"op":"mkdir","path":"code"},{"op":"mkdir","path":"agents"}]');
+		'coding-1', '[{"op":"mkdir","path":"code"},{"op":"mkdir","path":"QorperaOS/agents"}]');
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	select * into c from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid;
 	if c.session_kind <> 'coding' or c.review_id is not null then raise exception 'Coding commit: %', to_jsonb(c); end if;
@@ -623,25 +623,25 @@ begin
 end $$;
 
 
--- The seeded root and rules/ are fixed: no resource at or under rules/, no change to it or the root, no revoke of
--- either, no grant on rules/.
+-- The seeded root and QorperaOS/rules/ are fixed: no resource at or under QorperaOS/rules/, no change to it or the root,
+-- no revoke of either, no grant on QorperaOS/rules/.
 do $$
 declare c_env constant uuid := '63400000-0000-4000-8000-000000000020'; v_rules uuid;
 begin
-	select id into v_rules from public.qorpera_company_path_resources where environment_id = c_env and path = 'rules';
+	select id into v_rules from public.qorpera_company_path_resources where environment_id = c_env and path = 'QorperaOS/rules';
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
-		'rules', 'subtree', 'company_shared', 'normal'), '42501');
+		'QorperaOS/rules', 'subtree', 'company_shared', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(5),
-		'rules/tone.md', 'exact', 'company_shared', 'normal'), '42501');
+		'QorperaOS/rules/tone.md', 'exact', 'company_shared', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
-		'Rules/Team', 'subtree', 'company_shared', 'normal'), '42501');
+		'qorperaos/Rules/Team', 'subtree', 'company_shared', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
 		'', 'subtree', 'company_shared', 'normal'), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_revoke(%L, %L, %L)', c_env, pg_temp.member(1), v_rules), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_grant(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1), v_rules,
 		'staff_agent', '63400000-0000-4000-8000-0000000000a1', array['read','write']), '42501');
 	if (select scope from public.qorpera_company_path_resources where id = v_rules) <> 'company_rules' then
-		raise exception 'rules/ keeps its scope'; end if;
+		raise exception 'QorperaOS/rules/ keeps its scope'; end if;
 end $$;
 
 
@@ -678,7 +678,7 @@ begin
 		'grantId', null, 'resourceRevision', v_root.authority_revision, 'grantRevision', null)), null, null);
 	if public.qorpera_folder_run_reads_current(c_env, c_profile, pg_temp.resolved(v)) < 1
 		or exists (select 1 from pg_temp.reads(v) x where x.grant_id is null) then
-		raise exception 'A row with no grant outside rules/ is retired: %', (select jsonb_agg(to_jsonb(x)) from pg_temp.reads(v) x); end if;
+		raise exception 'A row with no grant outside QorperaOS/rules/ is retired: %', (select jsonb_agg(to_jsonb(x)) from pg_temp.reads(v) x); end if;
 end $$;
 
 

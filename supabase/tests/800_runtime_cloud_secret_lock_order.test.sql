@@ -79,7 +79,7 @@ create function pg_temp.cs_entry(p_path text, p_kind text, p_text text, p_parse 
 	select jsonb_build_object('path', p_path, 'kind', p_kind, 'text', p_text, 'parse', p_parse, 'parserVersion', 1)
 $$;
 create function pg_temp.cs_version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '80000000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '80000000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.cs_write(p_path text, p_kind text, p_text text, p_parse jsonb, p_expected uuid default null) returns jsonb
 language sql as $$
@@ -91,11 +91,11 @@ create function pg_temp.cs_agent_text(p_id uuid, p_name text, p_kind text) retur
 	select format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: %s\nstatus: active\n---\nSell.\n', p_id, p_name, p_kind)
 $$;
 create function pg_temp.cs_hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.cs_stage(pg_temp.cs_agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.cs_entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.cs_entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.cs_agent_text(p_id, p_name, p_kind),
 			jsonb_build_object('kind','agent','id',p_id,'name',p_name,'role','Sales','agentKind',p_kind,'status','active',
 				'colour',null,'figure',null,'model',null,'effort',null,'instructions','Sell.'))))
@@ -128,12 +128,12 @@ end $$;
 
 -- The creation commit, and the owner's hires of Ada (the run's agent) and Bea, committed.
 select pg_temp.cs_expect(pg_temp.cs_commit('{"kind":"platform"}', 'secret-order-seed', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'),
-	pg_temp.cs_write('vision/vision.md', 'vision', E'# Vault lock order\n\n## What we build\n', '{"kind":"vision","name":"Vault lock order"}',
-		pg_temp.cs_version('vision/vision.md')),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.cs_write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
-	pg_temp.cs_hire('co-founder', '80000000-0000-4000-8000-000000000033', 'Co-Founder', 'co-founder'))), 5, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'),
+	pg_temp.cs_write('QorperaOS/vision/vision.md', 'vision', E'# Vault lock order\n\n## What we build\n', '{"kind":"vision","name":"Vault lock order"}',
+		pg_temp.cs_version('QorperaOS/vision/vision.md')),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.cs_write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	pg_temp.cs_hire('co-founder', '80000000-0000-4000-8000-000000000033', 'Co-Founder', 'co-founder'))), 6, 'saved') \g /dev/null
 do $$
 declare v_result jsonb := pg_temp.cs_commit('{"kind":"member","userId":"80000000-0000-4000-8000-000000000001"}', 'secret-order-hires',
 	jsonb_build_array(pg_temp.cs_hire('ada', '80000000-0000-4000-8000-000000000030', 'Ada'),

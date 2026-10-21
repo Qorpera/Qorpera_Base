@@ -54,9 +54,9 @@ $$;
 
 do $$
 declare
-	root constant text := 'agents/nora-skov/memory/thread'; old constant text := 'agents/nora-dahl/memory/thread';
+	root constant text := 'qorperaos/agents/nora-skov/memory/thread'; old constant text := 'qorperaos/agents/nora-dahl/memory/thread';
 	b constant text := root || '/t0/00000000.jsonl'; c constant text := root || '/t1/00000000.jsonl';
-	t constant text := root || '/tree.toml'; n constant text := 'agents/nora-skov/memory/profile.md';
+	t constant text := root || '/tree.toml'; n constant text := 'QorperaOS/agents/nora-skov/memory/profile.md';
 begin
 	perform pg_temp.service();
 	-- The company never chose Shared context (C5), so this prune runs with the beta off.
@@ -73,7 +73,7 @@ begin
 			pg_temp.v('a0'), pg_temp.v('mo'))) is distinct from array['write','move_in','move_in','move_out'] then
 		raise exception 'The rename: a block and tree.toml start at the new root with a move_in: %', (select jsonb_agg(jsonb_build_array(path, op,
 			created_at, version, prior_version) order by created_at) from public.qorpera_folder_path_versions
-			where environment_id = '70000000-0000-4000-8000-000000000020' and path like 'agents/nora%'); end if;
+			where environment_id = '70000000-0000-4000-8000-000000000020' and path like 'QorperaOS/agents/nora%'); end if;
 	perform pg_temp.keep('b1', pg_temp.put('m3b-prune-b1', pg_temp.block_file(b, pg_temp.nora('b1'), pg_temp.version(b))));
 	perform pg_temp.keep('b2', pg_temp.put('m3b-prune-b2', pg_temp.block_file(b, pg_temp.nora('b2'), pg_temp.version(b))));
 	perform pg_temp.member_put('m3b-prune-copy', jsonb_build_array(jsonb_build_object('op','mkdir','path','reports'),
@@ -133,7 +133,7 @@ begin
 		raise exception 'Pruned: the replaced versions, not the kept ones: %',
 			pg_temp.left_of(array['mi','b1','b2','b3','b4','ti','t1','t2','c0','c1','c2','n0','n1','a0','mo']); end if;
 	if (select count(*) from public.qorpera_folder_path_versions where environment_id = '70000000-0000-4000-8000-000000000020'
-			and public.qorpera_folder_key(path) = 'agents/nora-skov/memory/thread/t1/00000000.jsonl' and op = 'delete') <> 1 then
+			and public.qorpera_folder_key(path) = 'qorperaos/agents/nora-skov/memory/thread/t1/00000000.jsonl' and op = 'delete') <> 1 then
 		raise exception 'The delete stays'; end if;
 	if pg_temp.held() is distinct from array['b2'] then raise exception 'Held: %', pg_temp.held(); end if;
 	if not pg_temp.queued(current_setting('qorpera_test.m_b1')) or not pg_temp.queued(current_setting('qorpera_test.m_t1'))
@@ -201,8 +201,8 @@ end $$;
 do $$
 declare r jsonb;
 begin
-	perform pg_temp.keep('b5', pg_temp.put('m3b-prune-b5', pg_temp.block_file('agents/nora-skov/memory/thread/t0/00000000.jsonl',
-		pg_temp.nora('b5'), pg_temp.version('agents/nora-skov/memory/thread/t0/00000000.jsonl'))));
+	perform pg_temp.keep('b5', pg_temp.put('m3b-prune-b5', pg_temp.block_file('QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl',
+		pg_temp.nora('b5'), pg_temp.version('QorperaOS/agents/nora-skov/memory/thread/t0/00000000.jsonl'))));
 	update public.qorpera_folder_path_versions set created_at = created_at - interval '8 days' where version = pg_temp.v('b5');
 	insert into public.qorpera_memory_tree_prune_held(version, environment_id, profile_id)
 	values (pg_temp.v('b4'), '70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000010');

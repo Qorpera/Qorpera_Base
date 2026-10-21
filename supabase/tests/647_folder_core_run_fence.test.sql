@@ -461,8 +461,8 @@ begin
 		raise exception 'Folder-v2 run context without folders: %', c - 'jobSpecification' - 'job'; end if;
 	-- Both agents have folders: the facts name the agent and the coworker the context lists.
 	perform pg_temp.fx(format('update public.qorpera_profile_staff set folder_environment_id = %L,
-		folder_path = case staff_agent_id when %L then ''agents/ada'' else ''agents/bo'' end, folder_path_version = extensions.gen_random_uuid(),
-		folder_commit_id = extensions.gen_random_uuid() where profile_id = %L', c_env, c_a, c_profile));
+		folder_path = case staff_agent_id when %L then ''QorperaOS/agents/ada/agent.md'' else ''QorperaOS/agents/bo/agent.md'' end,
+		folder_path_version = extensions.gen_random_uuid(), folder_commit_id = extensions.gen_random_uuid() where profile_id = %L', c_env, c_a, c_profile));
 	c := public.qorpera_describe_company_run_context(b);
 	if c -> 'folder' is distinct from jsonb_build_object('agent', 'ada', 'coworkers', jsonb_build_object(c_b, 'bo')) then
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;

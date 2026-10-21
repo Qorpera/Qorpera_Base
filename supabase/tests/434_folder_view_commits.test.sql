@@ -26,7 +26,7 @@ begin
 	c1 := pg_temp.vcommit(d, 'view-commits-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/vc.txt','file',a),
 		jsonb_build_object('op','write','path','secret/vc.txt','file',a)));
 	perform pg_temp.expect(c1, 1, 'saved'); perform pg_temp.expect(c1, 2, 'denied', 'denied');
-	c2 := pg_temp.vcommit(d, 'view-commits-2', jsonb_build_array(jsonb_build_object('op','write','path','rules/vc.txt','file',a)));
+	c2 := pg_temp.vcommit(d, 'view-commits-2', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/rules/vc.txt','file',a)));
 	perform pg_temp.expect(c2, 1, 'denied', 'denied');
 	if c2 ->> 'commitId' is null or c2 ->> 'seq' is not null then raise exception 'A commit that saved nothing: %', c2; end if;
 	-- A run box of another run, between them: its commit is not the desktop's.
@@ -48,7 +48,7 @@ begin
 	if (select count(*) from jsonb_object_keys(x)) <> 6 then raise exception 'A commit''s fields: %', x; end if;
 	x := l -> 'commits' -> 1;
 	if jsonb_typeof(x -> 'seq') is distinct from 'null' or x -> 'units' is distinct from c2 -> 'units'
-		or x -> 'units' -> 0 ->> 'path' is distinct from 'rules/vc.txt' then raise exception 'A commit that saved nothing: %', x; end if;
+		or x -> 'units' -> 0 ->> 'path' is distinct from 'QorperaOS/rules/vc.txt' then raise exception 'A commit that saved nothing: %', x; end if;
 
 	-- The limit counts units and never splits a commit: the first comes whole even over it (c1 has two units).
 	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 1);

@@ -61,11 +61,11 @@ create function pg_temp.agent_text(p_id uuid, p_name text) returns text language
 $$;
 -- A new agent folder with its agent.md, as the view stages and parses it.
 create function pg_temp.hire(p_view jsonb, p_handle text, p_id uuid, p_name text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name), pg_temp.vactor(p_view))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/' || p_handle || '/agent.md', 'kind', 'agent',
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/' || p_handle || '/agent.md', 'kind', 'agent',
 			'text', pg_temp.agent_text(p_id, p_name), 'parserVersion', 1,
 			'parse', jsonb_build_object('kind','agent','id',p_id,'name',p_name,'role','Sales','agentKind','agent','status','active',
 				'colour',null,'figure',null,'model',null,'effort',null,'instructions','Sell.'))))
@@ -340,12 +340,13 @@ do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); r jsonb; p public.qorpera_folder_proposals; v_manifest text;
 	nora constant uuid := '63400000-0000-4000-8000-00000000f040'; v_action jsonb; c jsonb;
 begin
-	-- The fixture has no agents/ folder yet: the owner makes it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40-agents-folder', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved');
+	-- The fixture has no QorperaOS/agents/ folder yet: the owner makes it.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40-agents-folder',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved');
 	r := pg_temp.vcommit(b, 'p40-park-hire', jsonb_build_array(pg_temp.hire(b, 'nora', nora, 'Nora')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	p := pg_temp.parked(r);
-	select q.manifest_sha256 into v_manifest from public.qorpera_folder_proposal_paths q where q.proposal_id = p.id and q.path = 'agents/nora/agent.md';
+	select q.manifest_sha256 into v_manifest from public.qorpera_folder_proposal_paths q where q.proposal_id = p.id and q.path = 'QorperaOS/agents/nora/agent.md';
 	if p.effect <> 'delegation' or v_manifest is null
 		or (select count(*) from public.qorpera_folder_proposal_paths q where q.proposal_id = p.id) <> 4 then
 		raise exception 'The parked hire: % %', to_jsonb(p), (select jsonb_agg(to_jsonb(q)) from public.qorpera_folder_proposal_paths q
@@ -359,8 +360,8 @@ begin
 		raise exception 'The list says the proposal makes an agent: %', pg_temp.list(x -> 'actor'); end if;
 	-- (P40b) It names what the new folder contains, each item by path and kind, for the review to read.
 	perform pg_temp.same((select q -> 'units' -> 0 -> 'contains' from jsonb_array_elements(pg_temp.list(x -> 'actor') -> 'proposals') q
-		where q ->> 'proposalId' = p.id::text), '[{"path":"agents/nora/agent.md","kind":"file"},
-		{"path":"agents/nora/memory","kind":"folder"},{"path":"agents/nora/todos","kind":"folder"}]'::jsonb,
+		where q ->> 'proposalId' = p.id::text), '[{"path":"QorperaOS/agents/nora/agent.md","kind":"file"},
+		{"path":"QorperaOS/agents/nora/memory","kind":"folder"},{"path":"QorperaOS/agents/nora/todos","kind":"folder"}]'::jsonb,
 		'A listed new folder''s items');
 	-- Agent A becomes restricted.
 	perform pg_temp.fx(format('update public.qorpera_company_path_grants set expires_at = clock_timestamp() + interval ''1 day'' where id = %L',

@@ -13,7 +13,7 @@ insert into public.qorpera_profile_members(profile_id, user_id, email, display_n
 	('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000006', 'base-poster@example.test', 'Poster',
 		'contributor');
 select pg_temp.base_commit(pg_temp.base_owner(), 'stall-routine', jsonb_build_array(
-	pg_temp.base_write('agents/bob/routines/tick.md', 'routine', E'---\ntitle: Tick\n---\nLook at the numbers.\n',
+	pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md', 'routine', E'---\ntitle: Tick\n---\nLook at the numbers.\n',
 		jsonb_build_object('kind', 'routine', 'id', '83000000-0000-4000-8000-0000000000e1', 'title', 'Tick', 'status', 'active',
 			'trigger', jsonb_build_object('when', 'every', 'minutes', 60, 'starts', null), 'timezone', null, 'ends', null,
 			'runs', null, 'quiet', null, 'effort', 'medium', 'reply', 'required', 'conclusion', null,

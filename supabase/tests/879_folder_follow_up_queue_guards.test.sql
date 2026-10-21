@@ -11,12 +11,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit(pg_temp.platform(), 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Guards'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Guards'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
 		pg_temp.hire('nora', '87900000-0000-4000-8000-0000000000a1', 'Nora')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
 -- 2. Every patched body carries the marker, and the pause reason is the index's --------------------------------------------
@@ -137,21 +137,21 @@ begin
 	if v_room is null or v_session is null then raise exception 'Fixture: Nora has no thread'; end if;
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70400000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
-		pg_temp.write('agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
-			pg_temp.agent_parse(a1, 'Nora', 'agent', 'archived'), pg_temp.version('agents/nora/agent.md')))) x;
+		pg_temp.write('QorperaOS/agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
+			pg_temp.agent_parse(a1, 'Nora', 'agent', 'archived'), pg_temp.version('QorperaOS/agents/nora/agent.md')))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room::text, 'mode', 'update'),
 			jsonb_build_object('rank', 11, 'tbl', 'qorpera_shared_sessions', 'key', v_session::text, 'mode', 'update')) then
 		raise exception 'An archive names its thread session: %', t; end if;
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70400000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
-		jsonb_build_object('op','delete','path','agents/nora','expectedVersion',pg_temp.version('agents/nora'),'asOfSeq',pg_temp.seq()))) x;
+		jsonb_build_object('op','delete','path','QorperaOS/agents/nora','expectedVersion',pg_temp.version('QorperaOS/agents/nora'),'asOfSeq',pg_temp.seq()))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room::text, 'mode', 'update'),
 			jsonb_build_object('rank', 11, 'tbl', 'qorpera_shared_sessions', 'key', v_session::text, 'mode', 'update')) then
 		raise exception 'A retire names its thread session: %', t; end if;
 	-- The commit holds both: its thread trigger closes the thread itself, before any converge.
 	perform pg_temp.expect(pg_temp.commit_in('70400000-0000-4000-8000-000000000020', pg_temp.owner(), 'archive-nora',
-		jsonb_build_array(pg_temp.write('agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
-			pg_temp.agent_parse(a1, 'Nora', 'agent', 'archived'), pg_temp.version('agents/nora/agent.md')))), 1, 'saved');
+		jsonb_build_array(pg_temp.write('QorperaOS/agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
+			pg_temp.agent_parse(a1, 'Nora', 'agent', 'archived'), pg_temp.version('QorperaOS/agents/nora/agent.md')))), 1, 'saved');
 	if (select status from public.qorpera_shared_sessions where id = v_session) is distinct from 'closed'
 		or not exists (select 1 from public.qorpera_folder_follow_up_marks where subject_id = a1) then
 		raise exception 'The archive''s commit closes the thread and marks the agent'; end if;
@@ -183,8 +183,8 @@ begin
 	v_pair := public.qorpera_agent_pair_session_internal('70400000-0000-4000-8000-000000000010', '70400000-0000-4000-8000-000000000020',
 		'70400000-0000-4000-8000-0000000000c0', a2, '70400000-0000-4000-8000-000000000001');
 	perform pg_temp.expect(pg_temp.commit_in('70400000-0000-4000-8000-000000000020', pg_temp.owner(), 'guards-archive-otto',
-		jsonb_build_array(pg_temp.write('agents/otto/agent.md', 'agent', pg_temp.agent_text(a2, 'Otto', 'agent', 'archived'),
-			pg_temp.agent_parse(a2, 'Otto', 'agent', 'archived'), pg_temp.version('agents/otto/agent.md')))), 1, 'saved');
+		jsonb_build_array(pg_temp.write('QorperaOS/agents/otto/agent.md', 'agent', pg_temp.agent_text(a2, 'Otto', 'agent', 'archived'),
+			pg_temp.agent_parse(a2, 'Otto', 'agent', 'archived'), pg_temp.version('QorperaOS/agents/otto/agent.md')))), 1, 'saved');
 	if not exists (select 1 from public.qorpera_cloud_secret_operation_grants where staff_agent_id = a2 and status = 'active')
 		or (select status from public.qorpera_shared_sessions where id = v_pair) is distinct from 'open' then
 		raise exception 'A staff trigger did the archive''s converge'; end if;
@@ -193,14 +193,14 @@ begin
 		or (select status from public.qorpera_shared_sessions where id = v_pair) is distinct from 'closed' then
 		raise exception 'The queue did not converge the archive'; end if;
 	-- Reactivation, a rename, and a restore of a retired agent name its thread session at rank 11.
-	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.write('agents/otto/agent.md', 'agent',
+	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.write('QorperaOS/agents/otto/agent.md', 'agent',
 		pg_temp.agent_text(a2, 'Otto', 'agent', 'active'), pg_temp.agent_parse(a2, 'Otto', 'agent', 'active'),
-		pg_temp.version('agents/otto/agent.md'))), a2) then raise exception 'A reactivation does not name the thread session'; end if;
-	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.write('agents/otto/agent.md', 'agent',
+		pg_temp.version('QorperaOS/agents/otto/agent.md'))), a2) then raise exception 'A reactivation does not name the thread session'; end if;
+	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.write('QorperaOS/agents/otto/agent.md', 'agent',
 		pg_temp.agent_text(a2, 'Otto Berg', 'agent', 'archived'), pg_temp.agent_parse(a2, 'Otto Berg', 'agent', 'archived'),
-		pg_temp.version('agents/otto/agent.md'))), a2) then raise exception 'A rename does not name the thread session'; end if;
+		pg_temp.version('QorperaOS/agents/otto/agent.md'))), a2) then raise exception 'A rename does not name the thread session'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'guards-retire-nora', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/nora','expectedVersion',pg_temp.version('agents/nora'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+		'path','QorperaOS/agents/nora','expectedVersion',pg_temp.version('QorperaOS/agents/nora'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.hire('nora-back', a1, 'Nora')), a1) then
 		raise exception 'A restore does not name the thread session'; end if;
 end $$;

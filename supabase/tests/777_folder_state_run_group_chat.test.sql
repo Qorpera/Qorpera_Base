@@ -1,6 +1,6 @@
 -- @fixture 769_folder_core_review_recorder.test.sql until "-- The files the runs delete"
 -- Company state files, thin writers W4b (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §5; RUNTIME-COMPANY-FOLDER-C2.md
--- §5): a run's group chat, as create_group_chat saves it. One new folder agents/groups/<handle> with group.md, staged by
+-- §5): a run's group chat, as create_group_chat saves it. One new folder QorperaOS/agents/groups/<handle> with group.md, staged by
 -- the run and saved with the review recorded for exactly that change set. The commit opens the chat's room and
 -- conversation, with its agents and the run's requester as members. Without the review nothing is saved, a run's
 -- chat may add only the member its run works for, and only active agents. Runs are 647's hand-built runs, on 769's helpers.
@@ -18,16 +18,17 @@ create function pg_temp.group_parse(p_id uuid, p_agents uuid[], p_people uuid[])
 $$;
 -- The chat's one unit, staged by the actor that commits it (a version-2 file is held to possession).
 create function pg_temp.chat(p_actor jsonb, p_handle text, p_id uuid, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_array(jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_array(jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_agents, p_people), p_actor))),
-		'structured', jsonb_build_array(jsonb_build_object('path','agents/groups/' || p_handle || '/group.md','kind','group',
+		'structured', jsonb_build_array(jsonb_build_object('path','QorperaOS/agents/groups/' || p_handle || '/group.md','kind','group',
 			'text',pg_temp.group_text(p_id, p_agents, p_people),'parse',pg_temp.group_parse(p_id, p_agents, p_people),'parserVersion',1))))
 $$;
 
 -- The groups folder, as the seeded tree has it.
-select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'run-chat-setup', '[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'),
-	2, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'run-chat-setup', '[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},
+	{"op":"mkdir","path":"QorperaOS/agents/groups"}]'),
+	3, 'saved') \g /dev/null
 
 do $$
 declare

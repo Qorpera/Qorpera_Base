@@ -83,12 +83,12 @@ begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	perform pg_temp.is(pg_temp.message(format($q$select pg_temp.erase(array['docs/a.md'], %L)$q$, 'memtree:' || repeat('0', 64))),
 		'Operation key is reserved for block-history requests', 'a member''s request never takes the memtree: prefix');
-	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['agents/w1a/memory/thread/tree.toml'], 'w1a-tree-toml-1')$q$),
+	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['QorperaOS/agents/w1a/memory/thread/tree.toml'], 'w1a-tree-toml-1')$q$),
 		'A tree''s tree.toml is erased with its tree', 'a member never erases an agent tree''s tree.toml alone');
-	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['docs/a.md', 'Agents/Groups/w1a/Memory/Tree.toml'],
+	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['docs/a.md', 'qorperaOS/Agents/Groups/w1a/Memory/Tree.toml'],
 			'w1a-tree-toml-2')$q$),
 		'A tree''s tree.toml is erased with its tree', 'nor a group tree''s, however it is spelled');
-	perform pg_temp.is((pg_temp.message($q$select pg_temp.erase(array['agents/groups/memory/thread/tree.toml'],
+	perform pg_temp.is((pg_temp.message($q$select pg_temp.erase(array['QorperaOS/agents/groups/memory/thread/tree.toml'],
 			'w1a-tree-toml-3')$q$) = 'A tree''s tree.toml is erased with its tree')::text, 'false',
 		'a file of that name in a group folder called memory is not a tree''s');
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L, %L)', b,

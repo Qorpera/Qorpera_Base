@@ -13,7 +13,7 @@
 -- The queued runs are the owner's posts in Bob's thread, turned into runs by the folder materializer. The coding
 -- workers' todo is a real todo file in Alice's folder, written by the owner's folder commit; the workers, their
 -- machine allocations, a coding executor and a coding session are fixture rows.
-select pg_temp.base_commit(pg_temp.base_owner(), 'runs-switch-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/runs-switch.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'runs-switch-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/runs-switch.md',
 	'todo', E'---\nid: 79500000-0000-4000-8000-000000000200\ntitle: Roll a node\nstatus: open\n---\n\n',
 	'{"kind":"todo","id":"79500000-0000-4000-8000-000000000200","title":"Roll a node","status":"open","requestedBy":null,"detail":""}'))) \g /dev/null
 select pg_temp.base_claims('service_role');

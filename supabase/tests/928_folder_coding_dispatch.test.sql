@@ -133,14 +133,14 @@ end $$;
 
 -- 0. Alice's todo with its folder, written by the owner -------------------------------------------------------------
 select pg_temp.base_commit(pg_temp.base_owner(), 'c3-todos', jsonb_build_array(
-	pg_temp.base_write('agents/alice/todos/fix-login.md', 'todo', E'---\ntitle: Fix the login page\nstatus: open\n---\n',
+	pg_temp.base_write('QorperaOS/agents/alice/todos/fix-login.md', 'todo', E'---\ntitle: Fix the login page\nstatus: open\n---\n',
 		'{"kind":"todo","id":"92800000-0000-4000-8000-0000000000a1","title":"Fix the login page","status":"open","requestedBy":null,"detail":""}'),
-	jsonb_build_object('op', 'mkdir', 'path', 'agents/alice/todos/fix-login'))) \g /dev/null
+	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/fix-login'))) \g /dev/null
 
 -- 1. The refusals, in A1's order (cases 1-6): each a rule refusal with the legacy words, and nothing written ---------
 do $$
 declare
-	v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/session-1';
+	v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1';
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1');
 begin
 	-- 1. No coding executor serves the company for the harness.
@@ -177,7 +177,7 @@ end $$;
 -- 2. Accepted (cases 7-9): the worker, its queued session, its first turn and event; no wake -------------------------
 do $$
 declare
-	v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/session-1';
+	v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1';
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1'); v_result jsonb;
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype; v_run public.qorpera_execution_runs%rowtype;
 	v_events jsonb; v_drain jsonb; v_units jsonb := pg_temp.c3_units(v_alice, v_folder, v_brief); v_review uuid;
@@ -241,7 +241,7 @@ end $$;
 
 -- 4. An in-house worker beside it (case 11): no owner and no session; the drain starts it at once; a cancel takes it out
 do $$
-declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/notes';
+declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/notes';
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b2', 'in-house'); v_result jsonb; v_drain jsonb;
 	w public.qorpera_runtime_workers%rowtype;
 begin
@@ -265,7 +265,7 @@ end $$;
 
 -- 5. A second session for the same owner and harness (case 12) queues beside the first; a cancel ends its session ------
 do $$
-declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/session-2';
+declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-2';
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b3', p_title => 'Fix the logout page'); v_result jsonb;
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 begin
@@ -287,7 +287,7 @@ do $$
 declare v_alice jsonb := pg_temp.c3_alice(); v_folder text; v_base jsonb; v_brief jsonb; v_units jsonb; v_result jsonb;
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 begin
-	foreach v_folder in array array['agents/alice/todos/fix-login/session-1', 'agents/alice/todos/fix-login/session-2'] loop
+	foreach v_folder in array array['QorperaOS/agents/alice/todos/fix-login/session-1', 'QorperaOS/agents/alice/todos/fix-login/session-2'] loop
 		v_base := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
 			where v.version = pg_temp.base_version(v_folder || '/brief.md'));
 		v_brief := v_base || jsonb_build_object('followUps', 1,
@@ -315,13 +315,13 @@ begin
 		end if;
 	end loop;
 	-- Cancelled again, so the claim below takes session 1.
-	perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder', 'agents/alice/todos/fix-login/session-2',
+	perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder', 'QorperaOS/agents/alice/todos/fix-login/session-2',
 		'operationKey', 'c3-cancel-3'));
 end $$;
 
 -- 6b. A member's answer turns a coding session too, without its brief; the agent's next follow-up counts its own -------
 do $$
-declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/session-2'; v_result jsonb;
+declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-2'; v_result jsonb;
 	w public.qorpera_runtime_workers%rowtype;
 begin
 	-- The owner answers the cancelled session in its thread: it works again, at sequence 3; its brief still says 1.
@@ -343,14 +343,14 @@ end $$;
 do $$
 declare v_wakes jsonb; v_pass jsonb; v_bob jsonb; v_result jsonb; v_drain jsonb; v_run public.qorpera_execution_runs%rowtype;
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
-	v_folder text := 'agents/bob/todos/fix-signup/session-b';
+	v_folder text := 'QorperaOS/agents/bob/todos/fix-signup/session-b';
 begin
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000031', pg_temp.c3_repo(), true);
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-bob-todo', jsonb_build_array(
-		pg_temp.base_write('agents/bob/todos/fix-signup.md', 'todo', E'---\ntitle: Fix the signup page\nstatus: open\n---\n',
+		pg_temp.base_write('QorperaOS/agents/bob/todos/fix-signup.md', 'todo', E'---\ntitle: Fix the signup page\nstatus: open\n---\n',
 			'{"kind":"todo","id":"92800000-0000-4000-8000-0000000000a2","title":"Fix the signup page","status":"open","requestedBy":null,"detail":""}'),
-		jsonb_build_object('op', 'mkdir', 'path', 'agents/bob/todos/fix-signup')));
+		jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/bob/todos/fix-signup')));
 	v_wakes := pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Fix the signup page.');
 	v_pass := pg_temp.base_materialize();
 	v_bob := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
@@ -398,14 +398,14 @@ declare v_alice jsonb := pg_temp.c3_alice(); v_claim jsonb; v_begin jsonb; v_pas
 	s public.qorpera_coding_sessions%rowtype; v_token uuid; v_result jsonb; v_drain jsonb; v_written jsonb; v_parse jsonb;
 begin
 	-- The in-house worker of the batch: started by the drain, its run reports.
-	v_result := pg_temp.c3_dispatch(v_alice, 'c3-research-1', 'agents/alice/todos/fix-login/research',
+	v_result := pg_temp.c3_dispatch(v_alice, 'c3-research-1', 'QorperaOS/agents/alice/todos/fix-login/research',
 		pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b5', 'in-house', p_title => 'Read the login code'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the research dispatch: ' || v_result::text);
 	v_drain := public.qorpera_folder_workers_company('92400000-0000-4000-8000-000000000020', 32);
 	perform pg_temp.base_assert((v_drain ->> 'started')::integer = 1, 'the research worker starts: ' || v_drain::text);
 	v_pass := pg_temp.base_materialize();
 	v_research := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
-	v_result := pg_temp.c3_results(v_research, 'c3-research-report', 'agents/alice/todos/fix-login/research');
+	v_result := pg_temp.c3_results(v_research, 'c3-research-report', 'QorperaOS/agents/alice/todos/fix-login/research');
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the research report: ' || v_result::text);
 	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b5')).completion_state = 'waiting', 'it waits');
 	-- The coding turn: the executor claims session 1 and begins it.
@@ -417,16 +417,16 @@ begin
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_begin ->> 'occurrenceId')::uuid;
 	-- Its wake carries the folder-v2 payload: the worker's folder and the todo's file.
 	perform pg_temp.base_assert(v_wake.status = 'queued' and v_wake.source_kind = 'worker-dispatch'
-		and v_wake.payload ->> 'outputFolder' = 'agents/alice/todos/fix-login/session-1'
-		and v_wake.payload #>> '{todo,path}' = 'agents/alice/todos/fix-login.md'
+		and v_wake.payload ->> 'outputFolder' = 'QorperaOS/agents/alice/todos/fix-login/session-1'
+		and v_wake.payload #>> '{todo,path}' = 'QorperaOS/agents/alice/todos/fix-login.md'
 		and v_wake.payload #>> '{coding,branch}' = 'qorpera/coding/92800000-0000-4000-8000-0000000000b1'
 		and v_wake.payload #>> '{dispatch,output}' like 'Finish through coding_finish%', 'the turn''s wake: ' || to_jsonb(v_wake)::text);
 	-- The materializer makes it a run, which a runner leases.
 	v_pass := pg_temp.base_materialize();
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1, 'the turn''s run: ' || v_pass::text);
 	v_turn := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
-	-- report_work is not a coding session's (it finishes through coding_finish): a coding session never writes agents/**.
-	v_result := pg_temp.c3_results(v_turn, 'c3-report-1', 'agents/alice/todos/fix-login/session-1');
+	-- report_work is not a coding session's (it finishes through coding_finish): a coding session never writes QorperaOS/agents/**.
+	v_result := pg_temp.c3_results(v_turn, 'c3-report-1', 'QorperaOS/agents/alice/todos/fix-login/session-1');
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'denied', 'report_work: ' || v_result::text);
 	-- The executor's machine is ready (C1c-3h); the run reads its turn and submits its finish.
 	update public.qorpera_coding_sessions set vm_allocation_id = '92800000-0000-4000-8000-0000000000d2'
@@ -461,7 +461,7 @@ begin
 	v_written := public.qorpera_claim_coding_results_file('92800000-0000-4000-8000-0000000000f1', 60);
 	perform pg_temp.base_assert(v_written ->> 'codingWorkerId' = w.id::text and v_written ->> 'outcome' = 'succeeded'
 		and v_written ->> 'pullRequest' = 'https://github.com/Qorpera/Qorpera_Base/pull/7'
-		and v_written ->> 'path' = 'agents/alice/todos/fix-login/session-1/results.md',
+		and v_written ->> 'path' = 'QorperaOS/agents/alice/todos/fix-login/session-1/results.md',
 		'session 1''s results claim: ' || coalesce(v_written::text, 'none'));
 	v_parse := jsonb_build_object('kind', 'worker-results', 'outcome', 'succeeded', 'reportedAt', v_written ->> 'reportedAt',
 		'decision', null, 'note', null, 'summary', (v_written ->> 'summary') || E'\n\nPull request: ' || (v_written ->> 'pullRequest'),
@@ -484,7 +484,7 @@ end $$;
 
 -- 8b. A worker whose folder or todo was deleted continues only after a restore -----------------------------------------
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb; v_brief jsonb; v_results jsonb;
+declare v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1'; v_result jsonb; v_brief jsonb; v_results jsonb;
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-1', jsonb_build_array(jsonb_build_object('op', 'delete',
 		'path', v_folder, 'expectedVersion', pg_temp.base_version(v_folder), 'asOfSeq', (select last_seq
@@ -496,8 +496,8 @@ begin
 		and (pg_temp.c3_session('92800000-0000-4000-8000-0000000000b1')).phase = 'completed', 'nothing turned');
 	-- The todo's file cannot go before its other workers' folders.
 	v_result := public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', pg_temp.base_owner(), 'c3-delete-2',
-		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'agents/alice/todos/fix-login.md',
-			'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login.md'), 'asOfSeq', (select last_seq
+		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/alice/todos/fix-login.md',
+			'expectedVersion', pg_temp.base_version('QorperaOS/agents/alice/todos/fix-login.md'), 'asOfSeq', (select last_seq
 				from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'refused'
 		and v_result -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' = 'this todo has workers: delete its folder first, or write a new todo'
@@ -506,13 +506,13 @@ begin
 	-- The whole todo goes, its folder and then its file; then session 1's folder alone comes back, whole. It is live
 	-- again under a deleted todo, and does not turn either.
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-3', jsonb_build_array(jsonb_build_object('op', 'delete',
-		'path', 'agents/alice/todos/fix-login', 'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login'),
+		'path', 'QorperaOS/agents/alice/todos/fix-login', 'expectedVersion', pg_temp.base_version('QorperaOS/agents/alice/todos/fix-login'),
 		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-4', jsonb_build_array(jsonb_build_object('op', 'delete',
-		'path', 'agents/alice/todos/fix-login.md', 'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login.md'),
+		'path', 'QorperaOS/agents/alice/todos/fix-login.md', 'expectedVersion', pg_temp.base_version('QorperaOS/agents/alice/todos/fix-login.md'),
 		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-restore-1', jsonb_build_array(jsonb_build_object('op', 'mkdir',
-		'path', 'agents/alice/todos/fix-login')));
+		'path', 'QorperaOS/agents/alice/todos/fix-login')));
 	v_brief := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
 		where v.version = (pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_brief_version);
 	v_results := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v

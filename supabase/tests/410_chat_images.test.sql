@@ -24,11 +24,11 @@ create function pg_temp.agent_parse(p_id uuid, p_name text) returns jsonb langua
 		'colour',null,'figure',null,'model',null,'effort',null,'instructions','Sell.')
 $$;
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name), pg_temp.member(1))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name), pg_temp.agent_parse(p_id, p_name))))
 $$;
 create function pg_temp.group_text(p_id uuid, p_name text, p_agents uuid[]) returns text language sql as $$
@@ -36,10 +36,10 @@ create function pg_temp.group_text(p_id uuid, p_name text, p_agents uuid[]) retu
 		p_id, p_name, (select string_agg(format(E'  - %s\n', a), '') from unnest(p_agents) a))
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents), pg_temp.member(1)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents),
 			jsonb_build_object('kind','group','id',p_id,'name',p_name,'subtitle',null,'agents',to_jsonb(p_agents),
 				'people','["63400000-0000-4000-8000-000000000001"]'::jsonb,'purpose','Plan the launch.'))))
@@ -146,7 +146,8 @@ end $$;
 
 -- The setup: Nora and Otto hired, and a group chat with both. Neither conversation has a tree root yet.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'images-setup',
-	'[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'), 2, 'saved') \g /dev/null
+	'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/groups"}]'), 3, 'saved')
+	\g /dev/null
 do $$
 declare r jsonb; nora constant uuid := pg_temp.id('nora'); otto constant uuid := pg_temp.id('otto');
 begin
@@ -154,8 +155,8 @@ begin
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'images-group', jsonb_build_array(
 		pg_temp.new_group('launch', pg_temp.id('launch'), 'Launch', array[nora, otto]))), 1, 'saved');
-	if pg_temp.thread('nora') is null or pg_temp.chat('launch') is null or pg_temp.version('agents/nora/memory/thread') is not null
-		or pg_temp.version('agents/groups/launch/memory') is not null then
+	if pg_temp.thread('nora') is null or pg_temp.chat('launch') is null or pg_temp.version('qorperaos/agents/nora/memory/thread') is not null
+		or pg_temp.version('qorperaos/agents/groups/launch/memory') is not null then
 		raise exception 'Fixture: Nora''s thread and the group chat, with no tree root'; end if;
 end $$;
 
@@ -175,7 +176,7 @@ begin
 	perform pg_temp.same(pg_temp.begin_image(pg_temp.u(1), ns, pg_temp.cid(1), f), jsonb_build_object('schema', 'qorpera.room-image-begin/v1',
 		'environmentId', '63400000-0000-4000-8000-000000000020', 'sessionId', ns, 'clientInputId', pg_temp.cid(1),
 		'sha256', f ->> 'fileSha256', 'bytes', f -> 'bytes', 'mediaType', 'image/png',
-		'path', format('agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256')), 'The begin');
+		'path', format('qorperaos/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256')), 'The begin');
 	if not exists (select 1 from public.qorpera_room_image_uploads where session_id = ns and client_input_id = pg_temp.cid(1)
 		and user_id = pg_temp.u(1) and environment_id = '63400000-0000-4000-8000-000000000020') then
 		raise exception 'The begin holds the input id for its member'; end if;
@@ -206,9 +207,9 @@ end $$;
 do $$
 declare
 	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); f constant jsonb := pg_temp.image('nora one');
-	g constant jsonb := pg_temp.image('launch one'); root constant text := 'agents/nora/memory/thread';
+	g constant jsonb := pg_temp.image('launch one'); root constant text := 'qorperaos/agents/nora/memory/thread';
 	dir constant text := root || '/images/' || pg_temp.cid(1); v_path constant text := dir || '/' || (f ->> 'fileSha256') || '.png';
-	gpath constant text := format('agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
+	gpath constant text := format('qorperaos/agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
 	r jsonb; v uuid; bad jsonb;
 begin
 	perform pg_temp.path_claims('authenticated', pg_temp.u(1));
@@ -262,7 +263,7 @@ begin
 		'54000', 'Member attachment capacity is reached');
 	perform pg_temp.begin_image(pg_temp.u(1), ns, pg_temp.cid(3), pg_temp.file('three 1'));
 	if (select count(*) from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
-		and parent_key_sha256 = extensions.digest(public.qorpera_folder_key('agents/nora/memory/thread/images/' || pg_temp.cid(3)), 'sha256')
+		and parent_key_sha256 = extensions.digest(public.qorpera_folder_key('qorperaos/agents/nora/memory/thread/images/' || pg_temp.cid(3)), 'sha256')
 		and kind = 'file') <> 5 then
 		raise exception 'An input holds five images'; end if;
 
@@ -338,13 +339,13 @@ declare
 	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); f constant jsonb := pg_temp.file('nora one');
 	g constant jsonb := pg_temp.file('launch one'); inp uuid := current_setting('qorpera_test.nora_input')::uuid;
 	ginp uuid := current_setting('qorpera_test.launch_input')::uuid;
-	gpath constant text := format('agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
+	gpath constant text := format('QorperaOS/agents/groups/launch/memory/images/%s/%s.png', pg_temp.cid(2), g ->> 'fileSha256');
 	n integer; want jsonb;
 begin
 	want := jsonb_build_object('schema', 'qorpera.room-image-download/v1', 'environmentId', '63400000-0000-4000-8000-000000000020',
 		'sessionId', ns, 'inputId', inp, 'sha256', f ->> 'fileSha256', 'bytes', f -> 'bytes', 'mediaType', 'image/png',
 		'manifestSha256', f ->> 'manifestSha256', 'fileSha256', f ->> 'fileSha256',
-		'path', format('agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256'));
+		'path', format('QorperaOS/agents/nora/memory/thread/images/%s/%s.png', pg_temp.cid(1), f ->> 'fileSha256'));
 	foreach n in array array[1, 3] loop
 		perform pg_temp.path_claims('authenticated', pg_temp.u(n));
 		perform pg_temp.same(public.qorpera_room_image_download(ns, inp, f ->> 'fileSha256'), want, 'A download by member ' || n);
@@ -379,7 +380,7 @@ end $$;
 do $$
 declare
 	ns uuid := pg_temp.thread('nora'); ls uuid := pg_temp.chat('launch'); f constant jsonb := pg_temp.file('nora one');
-	x constant jsonb := pg_temp.image('ten'); root constant text := 'agents/nora/memory/thread';
+	x constant jsonb := pg_temp.image('ten'); root constant text := 'qorperaos/agents/nora/memory/thread';
 	dir constant text := root || '/images/' || pg_temp.cid(1); v_path constant text := dir || '/' || (f ->> 'fileSha256') || '.png';
 	platform_only constant text := 'summary trees are written by the platform only';
 	only_tree constant text := 'a summary tree holds only tree.toml, its blocks and its images; only blocks and images are deleted';

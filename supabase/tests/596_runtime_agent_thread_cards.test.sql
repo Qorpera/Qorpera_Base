@@ -50,10 +50,10 @@ declare v_text text := E'---\nid: 59600000-0000-4000-8000-0000000000c1\nname: Di
 		|| E'  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the digest.\n';
 	v_result jsonb; v_binding jsonb;
 begin
-	perform pg_temp.base_commit(pg_temp.base_owner(), 'cd-group-digest', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
-		jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/digest',
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'cd-group-digest', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
+		jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/digest',
 			'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(v_text))),
-			'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/digest/group.md', 'kind', 'group', 'text', v_text,
+			'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/digest/group.md', 'kind', 'group', 'text', v_text,
 				'parse', jsonb_build_object('kind', 'group', 'id', '59600000-0000-4000-8000-0000000000c1', 'name', 'Digest', 'subtitle', null,
 					'agents', '["92400000-0000-4000-8000-000000000031","92400000-0000-4000-8000-000000000032"]'::jsonb,
 					'people', '["92400000-0000-4000-8000-000000000001"]'::jsonb, 'purpose', 'Plan the digest.'), 'parserVersion', 1)))));

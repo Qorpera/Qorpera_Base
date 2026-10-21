@@ -90,7 +90,7 @@ $$;
 do $$
 declare
 	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; s uuid; r jsonb; i integer;
-	root constant text := 'agents/nora-dahl/memory/thread'; cid constant uuid := '96100000-0000-4000-8000-0000000000c7';
+	root constant text := 'qorperaos/agents/nora-dahl/memory/thread'; cid constant uuid := '96100000-0000-4000-8000-0000000000c7';
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-hire-1', jsonb_build_array(pg_temp.hire('nora-dahl', nora, 'Nora Dahl')));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -110,12 +110,12 @@ begin
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	-- Renamed: the tree, its nodes and the image move to the new root; the old paths keep their versions.
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-rename-1', jsonb_build_array(
-		pg_temp.write('agents/nora-dahl/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
-			pg_temp.version('agents/nora-dahl/agent.md')),
-		jsonb_build_object('op','move','from','agents/nora-dahl','to','agents/nora-skov',
-			'expectedVersion',pg_temp.version('agents/nora-dahl'),'asOfSeq',pg_temp.seq())));
+		pg_temp.write('QorperaOS/agents/nora-dahl/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
+			pg_temp.version('QorperaOS/agents/nora-dahl/agent.md')),
+		jsonb_build_object('op','move','from','QorperaOS/agents/nora-dahl','to','QorperaOS/agents/nora-skov',
+			'expectedVersion',pg_temp.version('QorperaOS/agents/nora-dahl'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	if pg_temp.version('agents/nora-skov/memory/thread/images/' || cid) is null
+	if pg_temp.version('QorperaOS/agents/nora-skov/memory/thread/images/' || cid) is null
 		or pg_temp.version(root || '/t0/00000000.jsonl') is not null then
 		raise exception 'The rename moves the tree'; end if;
 	perform pg_temp.same(to_jsonb(pg_temp.nodes(s)), '"0:0:1,0:1:3,0:2:4,0:3:5,0:4:6,0:5:7,1:0:-,1:2:-,2:0:-,3:0:-"', 'The tree');
@@ -126,7 +126,7 @@ end $$;
 do $$
 declare
 	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000a1'); eid uuid; r jsonb; er public.qorpera_memory_message_erases;
-	old constant text := 'agents/nora-dahl/memory/thread'; root constant text := 'agents/nora-skov/memory/thread';
+	old constant text := 'qorperaos/agents/nora-dahl/memory/thread'; root constant text := 'qorperaos/agents/nora-skov/memory/thread';
 	cid constant uuid := '96100000-0000-4000-8000-0000000000c7';
 begin
 	perform pg_temp.service();
@@ -181,13 +181,13 @@ end $$;
 do $$
 declare
 	s uuid := (select e.session_id from public.qorpera_memory_message_erases e limit 1); eid uuid; r jsonb; g bigint;
-	er public.qorpera_memory_message_erases; root constant text := 'agents/nora-skov/memory/thread';
+	er public.qorpera_memory_message_erases; root constant text := 'qorperaos/agents/nora-skov/memory/thread';
 	cid constant uuid := '96100000-0000-4000-8000-0000000000c8';
 begin
 	perform pg_temp.member(s, 8, cid);
 	perform pg_temp.expect(pg_temp.image(root, cid, s), 2, 'saved');
-	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-1', jsonb_build_array(jsonb_build_object('op','delete','path','agents/nora-skov',
-		'expectedVersion',pg_temp.version('agents/nora-skov'),'asOfSeq',pg_temp.seq())));
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-1', jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/nora-skov',
+		'expectedVersion',pg_temp.version('QorperaOS/agents/nora-skov'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
 	if public.qorpera_memory_owner_root('70000000-0000-4000-8000-000000000020', 'agent', '70000000-0000-4000-8000-0000000000a1') is not null
 		or pg_temp.nodes(s) <> '' then raise exception 'Nora is retired with her tree'; end if;
@@ -225,7 +225,7 @@ end $$;
 
 do $$
 declare
-	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; root constant text := 'agents/nora-back/memory/thread';
+	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; root constant text := 'qorperaos/agents/nora-back/memory/thread';
 	s uuid := (select e.session_id from public.qorpera_memory_message_erases e limit 1); eid uuid; r jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-2', jsonb_build_array(pg_temp.hire('nora-back', nora, 'Nora Skov'))),
@@ -246,21 +246,21 @@ begin
 		raise exception 'The restored root: %', to_jsonb(pg_temp.erase(eid)); end if;
 	-- Message 7 drops (0,7) and (3,0); the deleted tree's block, its erasure still in its versions phase, is asked by key.
 	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(root || '/t0/00000000.jsonl:block:2:cut',
-		'agents/nora-skov/memory/thread/t0/00000000.jsonl:block:-:key'), 'The blocks after the restore');
+		'qorperaos/agents/nora-skov/memory/thread/t0/00000000.jsonl:block:-:key'), 'The blocks after the restore');
 	perform pg_temp.same(pg_temp.rewrite(eid) -> 'state', '"rewritten"', 'Step 2 after the restore');
 	perform pg_temp.same(to_jsonb(pg_temp.nodes(s)), '"0:0:1,1:0:-"', 'The kept lines after the restore');
 	-- The deleted tree's block waits for the erasure that covers it, then finds nothing left.
 	perform pg_temp.same(pg_temp.ask_all(eid) -> 'waits', '1', 'Step 3 waits once');
 	perform pg_temp.same((select jsonb_agg(b.erasure_id is not null order by b.block_key collate "C")
 		from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid), '[true, false]', 'The requests after the restore');
-	perform pg_temp.same(to_jsonb(pg_temp.versions_at('agents/nora-skov/memory/thread/t0/00000000.jsonl')), '0', 'The deleted tree''s block');
+	perform pg_temp.same(to_jsonb(pg_temp.versions_at('qorperaos/agents/nora-skov/memory/thread/t0/00000000.jsonl')), '0', 'The deleted tree''s block');
 end $$;
 
 -- 5. Two erases in one conversation: the later one's generation makes the first's rewrite stale; a block live again ----
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	x uuid; y uuid; r jsonb; i integer; g bigint; v_life bigint;
 begin
 	perform pg_temp.events(s, 10);
@@ -312,7 +312,8 @@ begin
 	perform pg_temp.same((select e.block_history - 'for' from public.qorpera_memory_message_erase_blocks b
 			join public.qorpera_folder_erasures e on e.id = b.erasure_id
 			where b.erase_id = x and b.block_key = root || '/t2/00000000.jsonl'),
-		jsonb_build_object('path', root || '/t2/00000000.jsonl', 'lifeSeq', v_life, 'lifeUnit', 1), 'The request keeps the life');
+		jsonb_build_object('path', 'QorperaOS/agents/co-founder/memory/thread/t2/00000000.jsonl', 'lifeSeq', v_life, 'lifeUnit', 1),
+		'The request keeps the life');
 	-- The later erase's block is in the first's versions phase: asked again later.
 	r := public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', y);
 	if r ->> 'state' <> 'rewritten' or (pg_temp.erase(y)).last_error is distinct from 'Block history is being erased; ask again'
@@ -345,7 +346,7 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'qorperaos/agents/co-founder/memory/thread';
 	z uuid; r jsonb; g bigint;
 begin
 	perform pg_temp.service();
@@ -383,8 +384,8 @@ do $$
 declare
 	otto constant uuid := '70000000-0000-4000-8000-0000000000a5'; ida constant uuid := '70000000-0000-4000-8000-0000000000a6';
 	s uuid; s2 uuid; r jsonb; eid uuid; i integer;
-	root constant text := 'agents/otto-lind/memory/thread'; moved constant text := 'agents/otto-berg/memory/thread';
-	other constant text := 'agents/ida-holm/memory/thread';
+	root constant text := 'qorperaos/agents/otto-lind/memory/thread'; moved constant text := 'qorperaos/agents/otto-berg/memory/thread';
+	other constant text := 'qorperaos/agents/ida-holm/memory/thread';
 	cid constant uuid := '96100000-0000-4000-8000-0000000000ca';
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-3', jsonb_build_array(pg_temp.hire('otto-lind', otto, 'Otto Lind'))),
@@ -397,13 +398,13 @@ begin
 		jsonb_build_object('op','mkdir','path',root || '/images')));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-rename-2', jsonb_build_array(
-		pg_temp.write('agents/otto-lind/agent.md', 'agent', pg_temp.agent_text(otto, 'Otto Berg'), pg_temp.agent_parse(otto, 'Otto Berg'),
-			pg_temp.version('agents/otto-lind/agent.md')),
-		jsonb_build_object('op','move','from','agents/otto-lind','to','agents/otto-berg',
-			'expectedVersion',pg_temp.version('agents/otto-lind'),'asOfSeq',pg_temp.seq())));
+		pg_temp.write('QorperaOS/agents/otto-lind/agent.md', 'agent', pg_temp.agent_text(otto, 'Otto Berg'), pg_temp.agent_parse(otto, 'Otto Berg'),
+			pg_temp.version('QorperaOS/agents/otto-lind/agent.md')),
+		jsonb_build_object('op','move','from','QorperaOS/agents/otto-lind','to','QorperaOS/agents/otto-berg',
+			'expectedVersion',pg_temp.version('QorperaOS/agents/otto-lind'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-2', jsonb_build_array(jsonb_build_object('op','delete','path','agents/otto-berg',
-		'expectedVersion',pg_temp.version('agents/otto-berg'),'asOfSeq',pg_temp.seq())));
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-2', jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/otto-berg',
+		'expectedVersion',pg_temp.version('QorperaOS/agents/otto-berg'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
 	-- Ida's conversation has an input with the same client id (unique in its conversation only), its image under her
 	-- root; Ida deleted too. Her images folder began with her conversation's image commit, not Otto's.
@@ -415,8 +416,8 @@ begin
 	r := pg_temp.image(other, cid, s2, jsonb_build_array(jsonb_build_object('op','mkdir','path',other),
 		jsonb_build_object('op','mkdir','path',other || '/images')));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-3', jsonb_build_array(jsonb_build_object('op','delete','path','agents/ida-holm',
-		'expectedVersion',pg_temp.version('agents/ida-holm'),'asOfSeq',pg_temp.seq())));
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-3', jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/ida-holm',
+		'expectedVersion',pg_temp.version('QorperaOS/agents/ida-holm'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.same(coalesce((select jsonb_agg(f.key order by f.key) from public.qorpera_memory_erase_image_folders(
 		'70000000-0000-4000-8000-000000000020', s2, cid) f), '[]'), jsonb_build_array(other || '/images/' || cid),

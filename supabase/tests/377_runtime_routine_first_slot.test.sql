@@ -5,7 +5,7 @@
 -- the version, the active status and the exact millisecond position, which never moves the position and creates no
 -- occurrence. The routine then leaves the scheduler's listing until the slot, shows that slot as its next run, and the
 -- enqueue at the slot compares the same position as before. Routines are the owner's saves of Bob's routine files
--- (agents/bob/routines/<name>.md); "ran" is a slot the scheduler offered that the folder materializer made a run; the
+-- (QorperaOS/agents/bob/routines/<name>.md); "ran" is a slot the scheduler offered that the folder materializer made a run; the
 -- next run is what an agent's routine read shows (qorpera_agent_routine_view) and what a member's list shows.
 
 create function pg_temp.fs_id(p_name text) returns uuid language sql immutable as $$
@@ -26,9 +26,9 @@ $$;
 -- The owner saves Bob's routine file.
 create function pg_temp.fs_save(p_name text, p_trigger jsonb, p_extra jsonb default '{}') returns jsonb language sql as $$
 	select pg_temp.base_commit(pg_temp.base_owner(), 'first-slot:' || extensions.gen_random_uuid(), jsonb_build_array(
-		pg_temp.base_write('agents/bob/routines/' || p_name || '.md', 'routine',
+		pg_temp.base_write('QorperaOS/agents/bob/routines/' || p_name || '.md', 'routine',
 			E'---\n' || pg_temp.fs_parse(p_name, p_trigger, p_extra)::text || E'\n---\n', pg_temp.fs_parse(p_name, p_trigger, p_extra),
-			pg_temp.base_version('agents/bob/routines/' || p_name || '.md'))))
+			pg_temp.base_version('QorperaOS/agents/bob/routines/' || p_name || '.md'))))
 $$;
 create function pg_temp.fs_row(p_name text) returns public.qorpera_cloud_routines language sql as $$
 	select * from public.qorpera_cloud_routines where id = pg_temp.fs_id(p_name)
