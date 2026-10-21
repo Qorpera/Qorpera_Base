@@ -460,15 +460,19 @@ export class AgentRoutines {
 									icon(this.#back ? "back" : "close"),
 								)
 							: null,
+						// In the agent's card the title stands beside the way back; the card already shows whose they are.
+						this.#back ? h("h2", { class: "routine-title" }, t("Routines")) : null,
 						create,
 					)
 				: null,
-			h(
-				"header",
-				{ class: "routine-heading" },
-				this.#figureOf(agent),
-				h("div", null, h("h2", null, t("Routines")), h("p", null, agent.displayName)),
-			),
+			this.#back
+				? null
+				: h(
+						"header",
+						{ class: "routine-heading" },
+						this.#figureOf(agent),
+						h("div", null, h("h2", null, t("Routines")), h("p", null, agent.displayName)),
+					),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
 			rows.length
 				? h("div", { class: "routine-list" }, ...rows)

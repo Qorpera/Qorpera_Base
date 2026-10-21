@@ -16,6 +16,8 @@
 /* The list */
 .routine-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin: 0 0 10px; }
 .routine-top > .routine-create:only-child { margin-left: auto; }
+.routine-title { flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+.routine-top:has(.routine-title) { justify-content: flex-start; gap: 6px; margin-bottom: 8px; }
 .routine-close { margin-left: -6px; }
 .routine-close .icon { width: 16px; height: 16px; }
 .routine-heading { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }

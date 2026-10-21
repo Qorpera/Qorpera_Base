@@ -1333,7 +1333,7 @@ describe("agent routines section", () => {
 		expect(f.view.el.querySelector(".routine-editor, .routine-login")).toBeNull();
 		expect(levers.slice(0, 3).map((lever) => lever.getAttribute("aria-checked"))).toEqual(["false", "false", "true"]);
 	});
-	it("is the agent card's page in back mode: its top-left control steps back to the card", async () => {
+	it("is the agent card's page in back mode: the title beside a way back to the card, no figure or name", async () => {
 		for (const back of [false, true]) {
 			const close = vi.fn();
 			const view = new AgentRoutines(
@@ -1355,6 +1355,10 @@ describe("agent routines section", () => {
 			expect([...control.querySelectorAll("path")].map((path) => path.getAttribute("d"))).toEqual(
 				back ? ["m14 5-7 7 7 7M7 12h14"] : ["m6 6 12 12M6 18 18 6"],
 			);
+			// In the card the title stands beside the way back, with no figure or name: the card is the agent's.
+			expect(view.el.querySelector(".routine-top h2")?.textContent).toBe(back ? "Routines" : undefined);
+			expect(view.el.querySelector(".routine-heading") === null).toBe(back);
+			expect(view.el.querySelector(".routine-top .routine-create")).not.toBeNull();
 			click(view.el, label);
 			expect(close).toHaveBeenCalledTimes(1);
 			view.el.remove();
