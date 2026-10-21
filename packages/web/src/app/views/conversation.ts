@@ -912,6 +912,7 @@ export class ConversationView {
 					this.#identity,
 					this.#lifetime.signal,
 					this.#actions,
+					{ conversationId: this.#sessionId },
 				);
 	}
 
@@ -1810,8 +1811,9 @@ export class ConversationView {
 			!state.team?.capabilities.read ||
 			Boolean(state.accessLost) ||
 			this.#company.signal.aborted;
-		// An agent's own chat has no header on a wide screen: the rail names it, and its card is there.
+		// An agent's own chat and a group chat have no header on a wide screen: the rail names them, and their card is there.
 		this.#header.classList.toggle("is-agent", Boolean(agent));
+		this.#header.classList.toggle("is-group", group);
 		this.#identity.title = opening ? "" : title;
 		this.#identity.setAttribute(
 			"aria-label",

@@ -9,6 +9,7 @@ import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
+import { type CardFootActions, cardFoot } from "./card-foot.ts";
 
 type TextKey = "displayName" | "role" | "charter";
 
@@ -21,14 +22,8 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 
 /** What the card opens or does besides editing the agent. Each is left out where the
  * member can't use it, and the card then shows no control for it. */
-export interface AgentCardActions {
+export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
-	/** Hides the agent from this member's sidebar, or shows it again when `hidden`. */
-	hide?: () => void;
-	hidden?: boolean;
-	remove?: () => void;
-	/** The agent's conversation, whose id the card copies. */
-	conversationId?: string;
 }
 
 /** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
@@ -61,8 +56,6 @@ export class AgentDetails {
 	#drawn = "";
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
-	#copyButton: HTMLButtonElement | null = null;
-	#copiedTimer: ReturnType<typeof setTimeout> | undefined;
 	constructor(
 		company: CompanyController,
 		agent: HostedStaffAgent,
@@ -99,25 +92,6 @@ export class AgentDetails {
 						icon("chevron"),
 					)
 				: null;
-		// Icon-only squares at the card's foot; the name is the tooltip and what a screen reader says.
-		const square = (label: string, glyph: string, act: (() => void) | undefined, danger = false) =>
-			act
-				? h(
-						"button",
-						{
-							type: "button",
-							class: `agent-card-square${danger ? " is-danger" : ""}`,
-							title: label,
-							"aria-label": label,
-							onclick: act,
-						},
-						icon(glyph),
-					)
-				: null;
-		const conversationId = card.conversationId;
-		const copy = conversationId
-			? square(t("Copy conversation ID"), "copy", () => void this.#copy(conversationId))
-			: null;
 		const routines = h(
 			"button",
 			{ type: "button", class: "agent-card-link", onclick: () => this.#showRoutines() },
@@ -127,14 +101,15 @@ export class AgentDetails {
 		) as HTMLButtonElement;
 		this.#routinesLink = routines;
 		const links = [link(t("Computer"), "computer", card.computer), routines];
-		const squares = [
-			copy,
-			card.hidden
-				? square(t("Show in sidebar"), "show", card.hide && then(card.hide))
-				: square(t("Hide from sidebar"), "hide", card.hide && then(card.hide)),
-			square(t("Delete"), "trash", card.remove && then(card.remove), true),
-		];
-		this.#copyButton = copy;
+		const foot = cardFoot(card, {
+			close: () => this.dialog.close(false),
+			copyFailed: () => {
+				this.#say(t("The conversation ID could not be copied."));
+				// Then the edits' own line comes back, a failed save's Try again with it.
+				this.#statusTimer = setTimeout(() => this.#syncEdits(), 2400);
+			},
+			signal: this.#lifetime.signal,
+		});
 
 		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
 		this.#picker = h(
@@ -187,7 +162,7 @@ export class AgentDetails {
 			),
 			this.#field("charter"),
 			links.some(Boolean) ? h("div", { class: "agent-card-links" }, ...links) : null,
-			squares.some(Boolean) ? h("div", { class: "agent-card-squares" }, ...squares) : null,
+			foot,
 			this.#status,
 		);
 		// A click elsewhere in the panel puts the figure picker away.
@@ -232,7 +207,6 @@ export class AgentDetails {
 		}
 		this.#lifetime.abort();
 		clearTimeout(this.#statusTimer);
-		clearTimeout(this.#copiedTimer);
 		this.#unsubscribe();
 		this.#unsubscribeEdits();
 		onClose();
@@ -367,30 +341,6 @@ export class AgentDetails {
 		this.#drawn = "";
 		this.#drawFigure();
 		this.#routinesLink?.focus({ preventScroll: true });
-	}
-
-	/** The card stays open: its button turns into a check for a moment, or the status says it failed. */
-	async #copy(conversationId: string): Promise<void> {
-		const button = this.#copyButton;
-		try {
-			if (!navigator.clipboard) throw new Error("No clipboard");
-			await navigator.clipboard.writeText(conversationId);
-		} catch {
-			this.#say(t("The conversation ID could not be copied."));
-			// Then the edits' own line comes back, a failed save's Try again with it.
-			this.#statusTimer = setTimeout(() => this.#syncEdits(), 2400);
-			return;
-		}
-		if (!button || this.#lifetime.signal.aborted) return;
-		clearTimeout(this.#copiedTimer);
-		replace(button, icon("check"));
-		button.classList.add("is-done");
-		button.setAttribute("aria-label", t("Copied"));
-		this.#copiedTimer = setTimeout(() => {
-			replace(button, icon("copy"));
-			button.classList.remove("is-done");
-			button.setAttribute("aria-label", t("Copy conversation ID"));
-		}, 1600);
 	}
 
 	#say(text: string, fade = false, retry = false): void {

@@ -74,6 +74,8 @@ describe("group chat identity", () => {
 		expect(view.show(staff.id, "computer")).toBe(false);
 		expect(view.el.querySelector(".computer-panel")).toBeNull();
 		expect(view.el.querySelector(".thread-header")?.classList.contains("is-agent")).toBe(false);
+		// A group chat's header goes on a wide screen too, as an agent's does: the rail's card stands in for it.
+		expect(view.el.querySelector(".thread-header")?.classList.contains("is-group")).toBe(true);
 		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("respond in this group chat");
 		expect(view.el.textContent).not.toContain("team rooms");
 		const previousRow = row();
@@ -147,6 +149,7 @@ describe("group chat identity", () => {
 		expect(identity.getAttribute("aria-label")).toBe("Open agent details");
 		expect(identity.getAttribute("aria-haspopup")).toBe("dialog");
 		expect(view.el.querySelector(".thread-header")?.classList.contains("is-agent")).toBe(true);
+		expect(view.el.querySelector(".thread-header")?.classList.contains("is-group")).toBe(false);
 		expect(view.show(staff.id, "computer")).toBe(true);
 		expect(view.el.querySelector(".computer-panel")).not.toBeNull();
 		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("group chat");

@@ -13,6 +13,8 @@ export class SurfaceDialog {
 	readonly tools: HTMLElement;
 	readonly #close: HTMLButtonElement;
 	readonly #previous: HTMLElement | null;
+	/** Where focus goes back when what had it left the page meanwhile (a rail row rebuilt while the card was open). */
+	findOpener: (() => HTMLElement | null) | undefined;
 	readonly #onClose: () => void;
 	readonly #anchor: HTMLElement | undefined;
 	/** Under the anchor (a title), or beside it (a row in the rail). */
@@ -148,7 +150,9 @@ export class SurfaceDialog {
 		this.el.close();
 		this.el.remove();
 		this.#onClose();
-		if (restoreFocus && this.#previous?.isConnected) this.#previous.focus({ preventScroll: true });
+		if (!restoreFocus) return;
+		if (this.#previous?.isConnected) this.#previous.focus({ preventScroll: true });
+		else if (this.#previous) this.findOpener?.()?.focus({ preventScroll: true });
 	}
 }
 

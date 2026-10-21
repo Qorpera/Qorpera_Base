@@ -47,6 +47,7 @@ import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
+import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
@@ -226,8 +227,8 @@ export function mountApplication(
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
-	/** The agent card opened from the rail, and what it asked for once that agent's chat is on screen. */
-	let agentCard: AgentDetails | undefined;
+	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
+	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage } | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
@@ -821,7 +822,7 @@ export function mountApplication(
 			agentPage = { agentId, page };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
 		};
-		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card) => {
+		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
 				controller,
@@ -853,6 +854,24 @@ export function mountApplication(
 				},
 				"beside",
 			);
+			opened.dialog.findOpener = findAnchor;
+			agentCard = opened;
+		};
+		const openGroupCard: ShellContext["openGroupCard"] = (session, anchor, card, findAnchor) => {
+			agentCard?.dispose();
+			const opened = new GroupDetails(
+				controller,
+				session.sessionId,
+				() => {
+					if (agentCard === opened) agentCard = undefined;
+				},
+				anchor,
+				controller.signal,
+				{ ...agentActions, ...groupActions, ...workspaceActions },
+				card,
+				"beside",
+			);
+			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
 		if (!rail.hidden)
@@ -860,6 +879,7 @@ export function mountApplication(
 				...context,
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
+				openGroupCard,
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs

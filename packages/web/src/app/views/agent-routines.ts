@@ -1,4 +1,5 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { cloudRoutineTriggerOfFile } from "@qorpera/cloud-client/cloud-routine-file";
 import {
 	CLOUD_ROUTINE_WEEKDAYS,
 	type CloudRoutine,
@@ -84,10 +85,10 @@ function shapeOf(trigger: CloudRoutineTrigger): Shape | undefined {
 	return "localTime" in trigger ? "weekly" : "interval";
 }
 
-/** The editor shows a routine's one trigger: an interval or days at a time. Anything else (more triggers, a time
- * window, a file change, a hook's events) has no shape here, and a save would drop what the editor cannot show. A
- * file change is not offered: a folder-v2 company's routines do not start on one until the folder's file events reach
- * routines. */
+/** The composer makes a routine's one trigger: an interval or days at a time. Anything else (more triggers, a time
+ * window, a dynamic routine's next run, a hook's events) it keeps as the file has it, shown in words: only the reply
+ * changes (#edit). A file change is never made here: a folder-v2 company's routines do not start on one until the
+ * folder's file events reach routines. */
 function editorShape(routine: CloudRoutine): Shape | undefined {
 	const [trigger, ...more] = routine.triggers;
 	return trigger && !more.length ? shapeOf(trigger) : undefined;
@@ -512,16 +513,14 @@ export class AgentRoutines {
 	 * opens it in the composer, drawn read-only when the member may not change it. */
 	#row(routine: WebRoutine, manage: boolean): HTMLElement {
 		const id = routine.routineId;
-		// A dynamic routine has one next run at a time, chosen by its agent after each run.
-		const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
 		const ended = routine.status === "expired" || routine.status === "concluded";
 		// A routine is its file: one this member does not find (out of their reach, from before the files, or a cloud
 		// that does not list them yet) cannot be changed from here.
 		const known = this.#files.has(id);
 		// An ended routine is read-only: a member save keeps its end (its expiry or run limit), so neither the composer
-		// nor a resume could start it again. Its agent can. The composer has no shape for a dynamic routine: its agent
-		// changes it, and a member may pause and resume it.
-		const editable = manage && known && !ended && !dynamic && editorShape(routine) !== undefined;
+		// nor a resume could start it again. Its agent can. Any other routine opens in the composer: one whose triggers it
+		// does not make keeps how it runs.
+		const editable = manage && known && !ended;
 		const on = this.#runsNow(routine);
 		// A routine whose login cannot pay waits for one (20260930095000): the line says so, and a member who may
 		// write chooses one of their own logins here.
@@ -1034,7 +1033,7 @@ export class AgentRoutines {
 	async #edit(routine: CloudRoutine | undefined, notice = ""): Promise<void> {
 		const access = this.#access;
 		if (this.#held() || !access?.canManage()) return;
-		if (routine && (!editorShape(routine) || !this.#files.has(routine.routineId))) return;
+		if (routine && !this.#files.has(routine.routineId)) return;
 		// The composer owns the screen from here: the list stays while the file and the logins are read, its controls
 		// waiting (the chooser's Cancel too), and nothing draws it over the composer.
 		this.#editing = true;
@@ -1042,10 +1041,15 @@ export class AgentRoutines {
 		const screen = this.#navigate();
 		this.#setControls();
 		let opened: WebRoutineFile | undefined;
+		// The file's trigger as it stays, when the composer does not make it: a time window, a dynamic routine's next
+		// run, a webhook, or a routine listed with more than one trigger. Only its reply changes.
+		let keep: CloudRoutineTrigger | undefined;
 		if (routine) {
 			try {
 				opened = await access.routines.open(routine);
-				if (!opened.trigger) throw new Error("The editor does not make this routine's schedule");
+				if (!opened.trigger || !editorShape(routine)) keep = cloudRoutineTriggerOfFile(opened.file) ?? undefined;
+				// A file change is neither made nor kept here.
+				if (!opened.trigger && !keep) throw new Error("The composer does not open this routine's trigger");
 			} catch {
 				if (this.#signal.aborted || screen !== this.#screen) return;
 				this.#editing = false;
@@ -1065,8 +1069,13 @@ export class AgentRoutines {
 			this.#toList();
 			return;
 		}
-		// The form shows the file: its schedule, name, instructions and reply.
-		const first = opened?.trigger;
+		// The form shows the file: its schedule, name, instructions and reply. A kept trigger has no controls.
+		// Not a conditional: its type would drop days at a time, a subtype of an interval.
+		let made = opened?.trigger;
+		if (keep) made = undefined;
+		const first = made;
+		// A routine that starts on a webhook runs on no ChatGPT plan.
+		const listening = keep?.kind === "listener";
 		const shape: Shape = (first && shapeOf(first)) ?? "weekly";
 		let kind = shape;
 		// A member's new routine runs at low effort, like a conversation; an edit keeps
@@ -1172,7 +1181,7 @@ export class AgentRoutines {
 			maxlength: "128",
 			spellcheck: "false",
 		});
-		let replyPolicy: CloudRoutineReplyPolicy = first?.replyPolicy ?? "required";
+		let replyPolicy: CloudRoutineReplyPolicy = (keep ?? first)?.replyPolicy ?? "required";
 		const replies = REPLIES.map(([value, label]) =>
 			h(
 				"button",
@@ -1213,8 +1222,8 @@ export class AgentRoutines {
 		);
 		// Who pays: the routine runs on the member's own account that works while they're away. Only when none is
 		// switched on does the member choose one here, which saving switches on.
-		const own = this.#accounts.find((item) => canPayForRoutine(item) && item.allowAutonomous === true);
-		const choices = own ? [] : this.#accounts.filter((item) => canPayForRoutine(item));
+		const own = this.#accounts.find((item) => canPayForRoutine(item, listening) && item.allowAutonomous === true);
+		const choices = own ? [] : this.#accounts.filter((item) => canPayForRoutine(item, listening));
 		const labels = accountLabels(choices);
 		const picker = h(
 			"select",
@@ -1224,9 +1233,11 @@ export class AgentRoutines {
 		const payer = () => own ?? choices.find((item) => item.connectionId === picker.value);
 		// Nothing here can pay: connect an account, or turn on a ChatGPT plan (the only kind left once Claude is not).
 		const noPayer = () =>
-			this.#accounts.length
-				? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
-				: t("Connect a model account in Settings first.");
+			!this.#accounts.length
+				? t("Connect a model account in Settings first.")
+				: listening
+					? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
+					: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
 		const shown = h("span", { class: "routine-account" }, labels[0] ?? "");
 		const accountLine = h(
 			"div",
@@ -1264,7 +1275,7 @@ export class AgentRoutines {
 							"p",
 							{ class: "routine-hint" },
 							this.#accounts.length
-								? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+								? noPayer()
 								: t(
 										"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
 									),
@@ -1331,6 +1342,11 @@ export class AgentRoutines {
 		};
 		const trigger = (): CloudRoutineTrigger => {
 			const replied = replyPolicy === "required" ? {} : { replyPolicy };
+			// A kept trigger goes back as the file has it, with the reply the member chose.
+			if (keep) {
+				const { replyPolicy: _reply, ...kept } = keep;
+				return { ...kept, ...replied } as CloudRoutineTrigger;
+			}
 			// Only while the box shows: it belongs to the routine's own kind of schedule.
 			const letGo = !waiting.hidden && !wait.checked;
 			if (kind === "weekly")
@@ -1486,7 +1502,9 @@ export class AgentRoutines {
 				h(
 					"div",
 					{ class: "routine-fields" },
-					field(t("When"), intervalFields, weeklyFields, waiting, kindSwitch),
+					keep
+						? field(t("When"), h("span", { class: "routine-account" }, whenShort(keep)))
+						: field(t("When"), intervalFields, weeklyFields, waiting, kindSwitch),
 					field(t("Reply"), reply),
 					field(t("Runs on"), ...payment),
 				),
