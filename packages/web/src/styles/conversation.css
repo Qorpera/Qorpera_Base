@@ -6,9 +6,9 @@
 .icon-button[hidden] { display: none; }
 .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
 .thread-header { display: flex; align-items: center; gap: 10px; height: var(--titlebar-height); flex: none; min-width: 0; padding: 0 14px; background: var(--header-surface); border-bottom: 1px solid var(--sidebar-divider); }
-/* An agent's own chat has no header on a wide screen: the rail names the agent and right-clicking it opens its card.
+/* An agent's own chat and a group chat have no header on a wide screen: the rail names them and right-clicking opens their card.
  * A phone keeps the header for its navigation button and the card. */
-@media (min-width: 761px) { .thread-header.is-agent { display: none; } }
+@media (min-width: 761px) { .thread-header:is(.is-agent, .is-group) { display: none; } }
 .thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: calc(100% - 42px); padding: 3px 5px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
 .thread-identity:hover:not(:disabled), .thread-identity[aria-expanded=true] { background: var(--hover); }
 .thread-identity:disabled { cursor: default; }
@@ -683,6 +683,11 @@
 .group-details-participants li > .figure, .group-details-participants li > .person-avatar { width: 40px; height: 40px; flex: none; }
 .group-details-participants li > div { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .group-details-participants li span:not(.figure, .person-avatar) { color: var(--text-muted); font-size: 12px; }
+/* A group chat's card: its participants as a short list in the card's own size. */
+.agent-card.group-details section { margin-top: 10px; padding-top: 10px; }
+.agent-card .group-details-participants li { gap: 10px; padding: 4px 0; font-size: 13px; }
+.agent-card .group-details-participants li > .figure, .agent-card .group-details-participants li > .person-avatar { width: 28px; height: 28px; font-size: 11px; }
+.agent-card .group-details-stage > .group-chat-avatar { width: 64px; }
 .group-details-loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
 .group-edit-fields, .group-member-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .group-edit-fields { display: grid; gap: 18px; }

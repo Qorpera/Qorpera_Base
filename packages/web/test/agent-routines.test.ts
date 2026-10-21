@@ -10,6 +10,7 @@ import {
 	CloudRoutineClient,
 	type CloudRoutineOccurrence,
 	type CloudRoutineSaveInput,
+	type CloudRoutineTrigger,
 	describeCloudRoutineTrigger,
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
@@ -751,8 +752,8 @@ describe("agent routines section", () => {
 		// A concluded routine says why instead of how it used to be scheduled.
 		expect(line(rows[1]!)).toBe("Done · The launch went out on 24 September.");
 		expect(controls(rows[1]!)).toEqual(["Open", "switch:false"]);
-		// The composer has no shape for a dynamic routine, and an ended one is not a member's to change: no Edit.
-		expect(editables(f.view)).toEqual([false, false]);
+		// A dynamic routine opens in the composer, which keeps how it runs; an ended one is not a member's to change.
+		expect(editables(f.view)).toEqual([true, false]);
 	});
 	it("saves a new weekday routine on the chosen account, as the same save across a retry", async () => {
 		const f = mount([]);
@@ -803,7 +804,7 @@ describe("agent routines section", () => {
 		).rejects.toThrow("Invalid routine effort");
 		expect(rpc).not.toHaveBeenCalled();
 	});
-	it("offers no Edit for a routine the editor cannot show, so a save cannot drop part of it", async () => {
+	it("offers Edit for a routine whose triggers the composer does not make: it keeps how they run", async () => {
 		const windowed = routine({
 			routineId: "10000000-0000-4000-8000-000000000010",
 			title: "Office hours",
@@ -849,7 +850,7 @@ describe("agent routines section", () => {
 			["Open", "switch:true"],
 		]);
 		expect(rowsOf(f.view.el)[3]!.textContent).toContain("When a hook receives an event");
-		expect(editables(f.view)).toEqual([true, false, false, false]);
+		expect(editables(f.view)).toEqual([true, true, true, true]);
 	});
 	it("offers each account once, by email, and numbers a repeated account", async () => {
 		const connections = [
@@ -2181,6 +2182,119 @@ describe("the routine editor's choices", () => {
 		const options = [...g.view.el.querySelectorAll<HTMLOptionElement>('[aria-label="Model account"] option')];
 		expect(options.map((option) => option.value)).toEqual([account.connectionId]);
 		expect(g.view.el.textContent).not.toContain("This routine runs on your own account");
+	});
+});
+
+describe("an edit that keeps how a routine runs", () => {
+	const HOOK = "10000000-0000-4000-8000-0000000000a1";
+	/** Opens the routine with this file in the composer, changes what it may, saves, and answers the file before and
+	 * after. */
+	async function keepEdited(file: Omit<RoutineFile, "kind">, listed?: (text: string) => CloudRoutine) {
+		const before = writeRoutineFile(file);
+		const f = mountFolder([listed ? listed(before) : indexed(before)], { fake: seeded({ text: before }) });
+		await listed_(f.view);
+		editButton(f.view.el).click();
+		// Edit is there, as for any routine the member may change.
+		expect(f.view.el.querySelector(".routine-edit")).not.toBeNull();
+		click(f.view.el, "Edit");
+		await vi.waitFor(() => expect(f.view.el.querySelector(COMPOSER)).not.toBeNull());
+		// When reads as words: no days, time, interval or switch to another kind.
+		const when = f.view.el.querySelector(".routine-field")!;
+		expect(when.querySelectorAll("input, select, button")).toHaveLength(0);
+		const words = when.textContent?.replace(/\s/g, " ");
+		field(f.view.el, "Routine name").value = "Renamed";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Do it another way.";
+		click(f.view.el, "Never");
+		click(f.view.el, "Save");
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
+		await vi.waitFor(() => expect(f.view.el.querySelector(COMPOSER)).toBeNull());
+		f.stop.abort();
+		document.body.replaceChildren();
+		return { before, after: f.fake.text(PATH)!, words };
+	}
+	const listed_ = (view: AgentRoutines) => vi.waitFor(() => expect(rowsOf(view.el).length).toBeGreaterThan(0));
+	/** The file as the edit should write it: the name, the reply and the instructions, every other byte as it was. */
+	const changed = (before: string) =>
+		before
+			.replace("title: Morning brief", "title: Renamed")
+			.replace(/^reply: \w+$/m, "reply: silent")
+			.replace("Summarise what changed.", "Do it another way.");
+
+	it.each([
+		[
+			"a dynamic routine's next run",
+			routineFile({ trigger: { when: "once", at: "2026-11-02T09:00:00Z" }, reply: "optional" }),
+			/^WhenThe agent picks each next run$/,
+		],
+		[
+			"a time window, with quiet hours",
+			routineFile({
+				trigger: { when: "window", minutes: 30, from: "09:00", to: "17:00", days: ["mon", "tue"], months: null },
+				quiet: { start: "22:00", end: "07:00", timezone: "Europe/Copenhagen" },
+			}),
+			/^WhenEvery 30 minutes between /,
+		],
+		[
+			"a webhook",
+			routineFile({ trigger: { when: "event", hook: HOOK, only: ["order.paid"] }, reply: "optional" }),
+			/^WhenWhen a hook receives order\.paid$/,
+		],
+	] as const)("keeps %s, changing only the name, the instructions and the reply", async (_, file, when) => {
+		const saved = await keepEdited(file);
+		expect(saved.words).toMatch(when);
+		expect(saved.after).toBe(changed(saved.before));
+		expect(parsed(saved.after)).toMatchObject({ trigger: file.trigger, timezone: file.timezone, reply: "silent" });
+	});
+	it("keeps the file's one trigger for a routine listed with two", async () => {
+		const saved = await keepEdited(routineFile(), (text) =>
+			indexed(text, {
+				triggers: [
+					indexed(text).triggers[0]!,
+					{
+						id: "f",
+						kind: "listener",
+						source: "company-file",
+						path: "finance",
+						match: "subtree",
+						timeZone: "UTC",
+					},
+				],
+			}),
+		);
+		expect(saved.words).toMatch(/^WhenMon at 8:30/);
+		expect(saved.after).toBe(changed(saved.before));
+	});
+	it("writes a kept trigger only when it is the file's, and never for a new routine", async () => {
+		const text = routineText({ trigger: { when: "once", at: "2026-11-02T09:00:00Z" } });
+		const fake = seeded({ text });
+		const w = writer(fake);
+		const opened = await w.routines.open(indexed(text));
+		expect(opened.trigger).toBeUndefined();
+		const own = cloudRoutineTriggerOfFile(opened.file)!;
+		const draft = (trigger: CloudRoutineTrigger): WebRoutineDraft => ({
+			clientRoutineId: opened.file.id,
+			staffAgentId: staff.id,
+			title: opened.file.title,
+			prompt: opened.file.instructions,
+			trigger,
+			effort: opened.file.effort,
+			opened,
+		});
+		// Another next run than the file's: the form is no longer the file's, and nothing is written.
+		await expect(
+			w.routines.save(draft({ ...own, at: "2026-11-09T09:00:00.000Z" } as CloudRoutineTrigger), account, "s1"),
+		).rejects.toBeInstanceOf(WebRoutineChangedError);
+		expect(fake.commits).toEqual([]);
+		// The file's own, its id the editor's and its reply changed: only the reply is written.
+		await expect(w.routines.save(draft({ ...own, id: "kept", replyPolicy: "silent" }), account, "s2")).resolves.toBe(
+			"saved",
+		);
+		expect(fake.text(PATH)).toBe(text.replace("reply: required", "reply: silent"));
+		// A new routine is never made with a trigger the composer does not make.
+		await expect(w.routines.save(newDraft({ trigger: own }), account, "s3")).rejects.toThrow(
+			"every few minutes or on chosen days",
+		);
 	});
 });
 

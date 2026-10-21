@@ -510,9 +510,6 @@ export const WORKSPACE: Record<string, string> = {
 	"New section": "Ny sektion",
 	"Section name": "Sektionens navn",
 	"A section called {name} already exists.": "Der findes allerede en sektion, der hedder {name}.",
-	Unpin: "Frigør",
-	Pin: "Fastgør",
-	"Move to": "Flyt til",
 	Rename: "Omdøb",
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
@@ -521,7 +518,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
-	"{name} could not be renamed.": "{name} kunne ikke omdøbes.",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
 		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",
 	"{name} could not be deleted. Hand over the projects it leads first.":
@@ -531,10 +527,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Delete section": "Slet sektion",
 	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
 		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
-	"Rename group chat": "Omdøb gruppechat",
-	"{name} could not be renamed. Update its participants in the group details first.":
-		"{name} kunne ikke omdøbes. Opdater først deltagerne i gruppens detaljer.",
-	"Group chat name": "Gruppechattens navn",
 	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
 		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",
 	"The group chat could not be deleted.": "Gruppechatten kunne ikke slettes.",
