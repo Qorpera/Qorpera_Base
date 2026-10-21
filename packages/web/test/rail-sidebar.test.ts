@@ -78,7 +78,13 @@ afterEach(() => {
 function companyWith(
 	sidebar: CompanySidebar | "missing",
 	actions: ShellContext["agentActions"] = {},
-	extra: { sessions?: HostedSession[]; groups?: Record<string, GroupChatDetails>; roster?: string[] } = {},
+	extra: {
+		sessions?: HostedSession[];
+		groups?: Record<string, GroupChatDetails>;
+		roster?: string[];
+		/** A shell that opens no agent card: a right-click on an agent is the browser's. */
+		cardless?: boolean;
+	} = {},
 ) {
 	const f = fixture();
 	let stored = sidebar === "missing" ? undefined : sidebar;
@@ -102,6 +108,7 @@ function companyWith(
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
 	const route: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+	const openCard = vi.fn<NonNullable<ShellContext["openAgentCard"]>>();
 	const draw = () =>
 		renderRail(rail, company, {
 			profiles: [profileA],
@@ -112,10 +119,11 @@ function companyWith(
 			openSettings: () => {},
 			openFeedback: () => {},
 			agentActions: actions,
+			...(extra.cardless ? {} : { openAgentCard: openCard }),
 		});
 	cleanup.push(company.store.subscribe(draw));
 	draw();
-	return { f, company, rail, draw, manage, read, ready: company.refreshSidebar() };
+	return { f, company, rail, draw, manage, read, openCard, ready: company.refreshSidebar() };
 }
 
 /** A folder-v2 company: its sections are agents/sections.md, whose commit places the sidebar (sections keep their ids
@@ -211,8 +219,16 @@ const rowOf = (rail: HTMLElement, name: string) =>
 		(row) => row.querySelector("strong")?.textContent === name,
 	)!;
 function rightClick(element: Element) {
-	element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+	const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+	element.dispatchEvent(event);
+	return event;
 }
+/** What the rail gave the card it opened last: Hide (or Show) and Delete, where the member can use them. */
+const lastCard = (openCard: ReturnType<typeof companyWith>["openCard"]) => openCard.mock.lastCall![2];
+const openMoveTo = () =>
+	document
+		.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
+		.dispatchEvent(new PointerEvent("pointerenter"));
 const menuItems = () =>
 	[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
 const choose = (label: string) =>
@@ -352,7 +368,7 @@ describe("rail sections and pins", () => {
 	});
 	it("folds hidden agents at the foot of the list, where they can be shown again", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
-		const { rail, manage, ready } = companyWith({ ...demo(), hidden: [cy.id, dee.id], pinned: [] });
+		const { rail, manage, openCard, ready } = companyWith({ ...demo(), hidden: [cy.id, dee.id], pinned: [] });
 		await ready;
 		await settle();
 		const list = rail.querySelector(".rail-scroll")!;
@@ -370,10 +386,10 @@ describe("rail sections and pins", () => {
 		expect(hidden.querySelector<HTMLElement>(".rail-hidden-chevron")!.hidden).toBe(false);
 		expect(names(hidden.querySelectorAll(".rail-hidden-list > a"))).toEqual(["Cy", "Dee"]);
 		expect(localStorage.getItem("qorpera.web.rail-hidden-open")).toBe("1");
-		// A hidden agent's menu shows it again.
+		// A hidden agent's card shows it again.
 		rightClick(rowOf(rail, "Dee"));
-		expect(menuItems()).toContain("Show in sidebar");
-		choose("Show in sidebar");
+		expect(lastCard(openCard)).toMatchObject({ hidden: true });
+		lastCard(openCard).hide!();
 		await settle();
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
 			action: "set_hidden",
@@ -382,18 +398,11 @@ describe("rail sections and pins", () => {
 		});
 		expect(names(hidden.querySelectorAll(".rail-hidden-list > a"))).toEqual(["Cy"]);
 		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Dee", "Fixture conversation"]);
-		// Moving a hidden agent to a section shows it there.
+		// Cy's too, back in its place in Unassigned.
 		rightClick(rowOf(rail, "Cy"));
-		document
-			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
-			.dispatchEvent(new PointerEvent("pointerenter"));
-		choose("Ops");
+		lastCard(openCard).hide!();
 		await settle();
-		expect(manage.mock.calls.slice(-2).map(([, request]) => request)).toEqual([
-			{ action: "set_hidden", staffAgentId: cy.id, hidden: false },
-			{ action: "move_agent", staffAgentId: cy.id, sectionId: ops },
-		]);
-		expect(groups(rail)[1]).toEqual(["Ops", "Cy"]);
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Cy", "Dee", "Fixture conversation"]);
 		// Nothing left hidden: the group leaves the list.
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
 	});
@@ -421,93 +430,64 @@ describe("rail sections and pins", () => {
 	});
 });
 
-describe("rail right-click menus", () => {
-	it("opens the menu on a right-click in the page's first moments", async () => {
+describe("rail right-clicks", () => {
+	it("opens the agent's card on a right-click in the page's first moments", async () => {
 		// The long-press guard swallows the browser's own menu for 800 ms after a
 		// press opened one; with no press yet, nothing is swallowed, however new the page.
 		vi.spyOn(performance, "now").mockReturnValue(100);
-		const { rail, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
+		const { rail, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		await ready;
 		await settle();
 		rightClick(rowOf(rail, "Cy"));
-		expect(menuItems()).toContain("Rename");
+		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), expect.anything());
 	});
-	it("offers Grok Bot's agent menu and sends what is chosen", async () => {
-		const { rail, manage, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
+	it("opens an agent's card beside its row, with Hide and Delete, instead of a menu", async () => {
+		const { rail, manage, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		await ready;
 		await settle();
-		rightClick(rowOf(rail, "Cy"));
-		expect(menuItems()).toEqual(["Pin", "Move to", "Rename", "Hide from sidebar", "Delete"]);
-		expect(rowOf(rail, "Cy").classList.contains("menu-open")).toBe(true);
-		// The submenu lists the sections with the current one checked, then New section.
-		document
-			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
-			.dispatchEvent(new PointerEvent("pointerenter"));
-		const submenu = document.querySelector(".context-submenu")!;
-		expect([...submenu.querySelectorAll("[role^=menuitem]")].map((item) => item.textContent)).toEqual([
-			"Research",
-			"Ops",
-			"Unassigned",
-			"New section",
-		]);
-		expect(submenu.querySelector("[aria-checked=true]")!.textContent).toBe("Unassigned");
-		choose("Ops");
-		await ready;
-		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
-			action: "move_agent",
-			staffAgentId: cy.id,
-			sectionId: ops,
-		});
-		expect(groups(rail)[1]).toEqual(["Ops", "Cy"]);
+		const event = rightClick(rowOf(rail, "Cy"));
+		expect(event.defaultPrevented).toBe(true);
 		expect(openMenu()).toBeUndefined();
-		rightClick(rowOf(rail, "Dee"));
-		expect(menuItems()[0]).toBe("Unpin");
-		choose("Unpin");
-		await ready;
-		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [] });
-		expect(rail.querySelector(".rail-pinned")!.classList.contains("is-empty")).toBe(true);
-	});
-	it("moves a pinned agent out of the pinned row, and leaves an agent where it already is", async () => {
-		const { rail, manage, ready } = companyWith(demo());
-		await ready;
-		await settle();
-		const openMoveTo = (name: string) => {
-			rightClick(rowOf(rail, name));
-			document
-				.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
-				.dispatchEvent(new PointerEvent("pointerenter"));
-		};
-		openMoveTo("Bo");
-		choose("Research");
-		await settle();
-		expect(manage).not.toHaveBeenCalled();
-		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
-		openMoveTo("Dee");
-		choose("Ops");
+		expect(openCard).toHaveBeenCalledOnce();
+		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), {
+			hidden: false,
+			hide: expect.any(Function),
+			remove: expect.any(Function),
+		});
+		lastCard(openCard).hide!();
 		await settle();
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
-			action: "move_agent",
-			staffAgentId: dee.id,
-			sectionId: ops,
-			unpin: true,
+			action: "set_hidden",
+			staffAgentId: cy.id,
+			hidden: true,
 		});
-		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual([]);
-		expect(groups(rail)[1]).toEqual(["Ops", "Dee"]);
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Fixture conversation"]);
+		// A pinned agent's card opens beside its pinned card.
+		const pin = rail.querySelector<HTMLElement>(`.rail-pin[data-agent-id="${dee.id}"]`)!;
+		rightClick(pin);
+		expect(openCard).toHaveBeenLastCalledWith(dee, pin, expect.objectContaining({ hidden: false }));
+	});
+	it("leaves an agent's right-click to the browser where the shell opens no card", async () => {
+		const { rail, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() }, { cardless: true });
+		await ready;
+		await settle();
+		const event = rightClick(rowOf(rail, "Cy"));
+		expect(event.defaultPrevented).toBe(false);
+		expect(openMenu()).toBeUndefined();
 	});
 	it("never shows a network error's text, and leaves Shift+right-click to the browser", async () => {
-		const { rail, manage, ready } = companyWith(demo());
+		const { rail, manage, openCard, ready } = companyWith(demo());
 		await ready;
 		await settle();
 		manage.mockRejectedValueOnce(
 			new CloudRpcError("qorpera_manage_company_sidebar", { message: "TypeError: Failed to fetch" }, 0),
 		);
 		rightClick(rowOf(rail, "Cy"));
-		choose("Pin");
+		lastCard(openCard).hide!();
 		await settle();
 		expect(rail.querySelector(".notice")?.textContent).toContain("The sidebar could not be changed. Try again.");
 		expect(rail.querySelector(".notice")?.textContent).not.toContain("fetch");
+		openCard.mockClear();
 		const shifted = new MouseEvent("contextmenu", {
 			bubbles: true,
 			cancelable: true,
@@ -517,19 +497,10 @@ describe("rail right-click menus", () => {
 		});
 		rowOf(rail, "Cy").dispatchEvent(shifted);
 		expect(shifted.defaultPrevented).toBe(false);
+		expect(openCard).not.toHaveBeenCalled();
 		expect(openMenu()).toBeUndefined();
 	});
-	it("leaves a deleted agent out of the pins it sends", async () => {
-		const { rail, manage, company, ready } = companyWith({ ...demo(), pinned: [dee.id, id(99)] });
-		await ready;
-		await settle();
-		rightClick(rowOf(rail, "Cy"));
-		choose("Pin");
-		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [dee.id, cy.id] });
-		expect(company.store.get().railError).toBeUndefined();
-	});
-	it("moves the focused agent with Alt and an arrow, and returns focus to a rebuilt row", async () => {
+	it("moves the focused agent with Alt and an arrow, and keeps focus on its row when the row is rebuilt", async () => {
 		const { rail, manage, company, ready } = companyWith(demo());
 		await ready;
 		await settle();
@@ -546,19 +517,17 @@ describe("rail right-click menus", () => {
 			order: [ada.id, bo.id],
 		});
 		expect(groups(rail)[0]).toEqual(["Research", "Ada", "Bo"]);
-		// The menu's row is rebuilt while it is open (the agent starts working): Escape still lands on the row.
-		rightClick(rowOf(rail, "Bo"));
+		expect(document.activeElement).toBe(rowOf(rail, "Ada"));
+		// The agent starts working: its row is built anew, and focus moves to the new one.
 		company.store.set({
-			activity: [{ ...activityRow, staffAgentId: bo.id }],
+			activity: [{ ...activityRow, staffAgentId: ada.id }],
 		});
 		await settle();
-		document
-			.querySelector(".context-menu")!
-			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(document.activeElement).toBe(rowOf(rail, "Bo"));
+		expect(rowOf(rail, "Ada")).not.toBe(ada2);
+		expect(document.activeElement).toBe(rowOf(rail, "Ada"));
 	});
-	it("gives the Co-Founder no pin, move, hide or delete", async () => {
-		const { rail, company, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
+	it("gives the Co-Founder's card no hide or delete", async () => {
+		const { rail, company, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		company.store.set({
 			sessions: [
 				{ ...session, sessionId: id(70), staffAgentId: cofounder.id, executionScope: { agentThread: true } },
@@ -566,11 +535,14 @@ describe("rail right-click menus", () => {
 		});
 		await ready;
 		await settle();
-		rightClick(rail.querySelector(".cofounder-home")!);
-		expect(menuItems()).toEqual(["Rename", "Copy conversation ID"]);
+		const home = rail.querySelector<HTMLElement>(".cofounder-home")!;
+		rightClick(home);
+		expect(openCard).toHaveBeenCalledWith(cofounder, home, {});
 	});
-	it("leaves shared sections to members who can write", async () => {
-		const { rail, company, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
+	it("leaves shared sections to members who can write, and deleting agents to owners and admins", async () => {
+		const { rail, company, openCard, ready } = companyWith(
+			...launchCompany({ updateAgent: vi.fn(), deleteAgent: vi.fn(), updateGroup: vi.fn(), deleteGroup: vi.fn() }),
+		);
 		company.store.set({
 			team: {
 				...team,
@@ -580,9 +552,11 @@ describe("rail right-click menus", () => {
 		});
 		await ready;
 		await settle();
+		// A viewer keeps their own pins and hidden agents and group chats.
 		rightClick(rowOf(rail, "Cy"));
-		// A viewer keeps their own pins and hidden agents.
-		expect(menuItems()).toEqual(["Pin", "Hide from sidebar"]);
+		expect(lastCard(openCard)).toEqual({ hidden: false, hide: expect.any(Function) });
+		rightClick(groupRow(rail));
+		expect(menuItems()).toEqual(["Pin", "Copy conversation ID", "Hide from sidebar"]);
 		openMenu()?.close();
 		const title = rail.querySelector(".rail-section-title[data-section-id]")!;
 		const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
@@ -626,19 +600,17 @@ describe("rail right-click menus", () => {
 		expect(rail.querySelector(".notice")?.textContent).toContain('A section called "Labs team" already exists.');
 	});
 	it("puts back what the cloud refused and says why", async () => {
-		const { rail, manage, ready } = companyWith(demo());
+		const { rail, manage, ready } = companyWith(...launchCompany());
 		await ready;
 		await settle();
 		const refusal = deferred<CompanySidebar>();
 		manage.mockImplementationOnce(() => refusal.promise);
-		rightClick(rowOf(rail, "Cy"));
-		document
-			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
-			.dispatchEvent(new PointerEvent("pointerenter"));
+		rightClick(groupRow(rail));
+		openMoveTo();
 		choose("Research");
 		await settle();
 		// Drawn at once, before the cloud answers.
-		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada", "Cy"]);
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada", "Launch"]);
 		refusal.reject(
 			new CloudRpcError(
 				"qorpera_manage_company_sidebar",
@@ -650,29 +622,13 @@ describe("rail right-click menus", () => {
 		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
 		expect(rail.querySelector(".notice")?.textContent).toContain("No section is called that");
 	});
-	it("renames an agent through its document and deletes one after confirming", async () => {
-		const updateAgent = vi.fn(async () => 2);
+	it("deletes an agent from its card after confirming", async () => {
 		const deleteAgent = vi.fn(async () => {});
-		const { rail, f, ready } = companyWith(demo(), { updateAgent, deleteAgent });
+		const { rail, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent });
 		await ready;
 		await settle();
-		const listStaff = vi.spyOn(f.api, "listStaff").mockResolvedValue([cofounder, ada, bo, cy, dee]);
 		rightClick(rowOf(rail, "Cy"));
-		choose("Rename");
-		const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
-		input.value = "Cyra";
-		input.dispatchEvent(new Event("input"));
-		input.form!.requestSubmit();
-		await ready;
-		await settle();
-		expect(updateAgent).toHaveBeenCalledWith(
-			cy,
-			expect.objectContaining({ displayName: "Cyra", role: cy.role }),
-			expect.any(AbortSignal),
-		);
-		expect(listStaff).toHaveBeenCalled();
-		rightClick(rowOf(rail, "Cy"));
-		choose("Delete");
+		lastCard(openCard).remove!();
 		expect(document.querySelector(".modal p")?.textContent).toContain("Delete Cy?");
 		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
 			.find((button) => button.textContent === "Delete")!
@@ -1111,7 +1067,7 @@ describe("group chats in the rail", () => {
 		expect(card().querySelector(".rail-mention")?.textContent).toBe("@");
 		expect(card().title).toContain("You were mentioned");
 	});
-	it("offers the agent's menu on a group chat and sends the group chat's requests", async () => {
+	it("offers a group chat's menu and sends the group chat's requests", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 		const { rail, manage, ready } = companyWith(...launchCompany({ updateGroup: vi.fn(), deleteGroup: vi.fn() }));
 		await ready;
@@ -1120,12 +1076,20 @@ describe("group chats in the rail", () => {
 		rightClick(groupRow(rail));
 		expect(menuItems()).toEqual(["Pin", "Move to", "Rename", "Copy conversation ID", "Hide from sidebar", "Delete"]);
 		expect(groupRow(rail).classList.contains("menu-open")).toBe(true);
-		document
-			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
-			.dispatchEvent(new PointerEvent("pointerenter"));
+		// The submenu lists the sections with the current one checked, then New section.
+		openMoveTo();
+		const submenu = document.querySelector(".context-submenu")!;
+		expect([...submenu.querySelectorAll("[role^=menuitem]")].map((item) => item.textContent)).toEqual([
+			"Research",
+			"Ops",
+			"Unassigned",
+			"New section",
+		]);
+		expect(submenu.querySelector("[aria-checked=true]")!.textContent).toBe("Unassigned");
 		choose("Ops");
 		await ready;
 		await settle();
+		expect(openMenu()).toBeUndefined();
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
 			action: "move_room",
 			roomId: launchRoom,
@@ -1156,7 +1120,104 @@ describe("group chats in the rail", () => {
 		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee", "Launch"]);
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
+		rightClick(rail.querySelector(`.rail-pin[data-room-id="${launchRoom}"]`)!);
+		expect(menuItems()[0]).toBe("Unpin");
+		choose("Unpin");
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [dee.id],
+			groupChats: true,
+		});
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
+	});
+	it("moves a pinned group chat out of the pinned row, and leaves one where it already is", async () => {
+		const [, actions, extra] = launchCompany();
+		const { rail, manage, ready } = companyWith({ ...demo(), groupChats: true, pinned: [] }, actions, extra);
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		openMoveTo();
+		choose("Unassigned");
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Cy", "Dee", "Launch", "Fixture conversation"]);
+		rightClick(groupRow(rail));
+		choose("Pin");
+		await settle();
+		rightClick(rail.querySelector(`.rail-pin[data-room-id="${launchRoom}"]`)!);
+		openMoveTo();
+		choose("Ops");
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_room",
+			roomId: launchRoom,
+			sectionId: ops,
+			unpin: true,
+		});
+		expect(rail.querySelector(".rail-pinned")!.classList.contains("is-empty")).toBe(true);
+		expect(groups(rail)[1]).toEqual(["Ops", "Launch"]);
+	});
+	it("shows a hidden group chat again in the section it is moved to", async () => {
+		localStorage.setItem("qorpera.web.rail-hidden-open", "1");
+		const [, actions, extra] = launchCompany();
+		const { rail, manage, ready } = companyWith(
+			{ ...demo(), groupChats: true, hidden: [launchRoom] },
+			actions,
+			extra,
+		);
+		await ready;
+		await settle();
+		expect(names(rail.querySelectorAll(".rail-hidden-list > a"))).toEqual(["Launch"]);
+		rightClick(groupRow(rail));
+		expect(menuItems()).toContain("Show in sidebar");
+		openMoveTo();
+		choose("Ops");
+		await settle();
+		expect(manage.mock.calls.slice(-2).map(([, request]) => request)).toEqual([
+			{ action: "set_hidden", roomId: launchRoom, hidden: false },
+			{ action: "move_room", roomId: launchRoom, sectionId: ops },
+		]);
+		expect(groups(rail)[1]).toEqual(["Ops", "Launch"]);
+		expect(rail.querySelector(".rail-hidden")).toBeNull();
+		localStorage.removeItem("qorpera.web.rail-hidden-open");
+	});
+	it("leaves a deleted agent out of the pins it sends", async () => {
+		const [, actions, extra] = launchCompany();
+		const { rail, manage, company, ready } = companyWith(
+			{ ...demo(), groupChats: true, pinned: [dee.id, id(99)] },
+			actions,
+			extra,
+		);
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		choose("Pin");
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [dee.id, launchRoom],
+			groupChats: true,
+		});
+		expect(company.store.get().railError).toBeUndefined();
+	});
+	it("returns focus to a group chat's row when its menu closes, though the row was rebuilt", async () => {
+		const { rail, company, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		const row = groupRow(rail);
+		row.focus();
+		rightClick(row);
+		// Someone mentions the member in it while the menu is open.
+		company.store.set({ mentions: { [launchSession.sessionId]: 1 } });
+		await settle();
+		expect(groupRow(rail)).not.toBe(row);
+		document
+			.querySelector(".context-menu")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(document.activeElement).toBe(groupRow(rail));
 	});
 	it("moves the focused group chat with Alt and an arrow", async () => {
 		const { rail, manage, ready } = companyWith(...launchCompany());

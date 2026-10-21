@@ -2,7 +2,6 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import {
 	CLOUD_ROUTINE_WEEKDAYS,
 	type CloudRoutine,
-	type CloudRoutineOccurrence,
 	type CloudRoutineReplyPolicy,
 	type CloudRoutineTrigger,
 	type CloudRoutineWeekday,
@@ -27,13 +26,19 @@ import {
 	type WebRoutines,
 } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { dialogPageHeader } from "../../ui/dialog.ts";
-import { button, fmtDate, fmtTime, h, icon, replace } from "../../ui/dom.ts";
-import { phrase, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
-import { uiScale } from "../../ui/scale.ts";
+import { agentFigure } from "../../ui/avatar.ts";
+import { type Child, fmtDate, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import {
+	phrase,
+	presentationDay,
+	presentationLocale,
+	presentationTimeZone,
+	previousDay,
+	t,
+	timeZoneOption,
+} from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
-import { effortName } from "./composer-models.ts";
 
 export interface AgentRoutineAccess {
 	routines: WebRoutines;
@@ -44,9 +49,9 @@ export interface AgentRoutineAccess {
 	/** Members who may write (contributors and up) choose one of their own logins for a routine whose login can't
 	 * pay; the cloud refuses one without write access to the routine's file. Owners and admins when absent. */
 	canWrite?: () => boolean;
-	/** A member's name, for a routine that started again when they turned on work while away, or whose login pays. */
+	/** A member's name, for a routine whose login waits on that member. */
 	memberName?: (userId: string) => string | undefined;
-	/** The signed-in member: a routine paid by their own login reads "Paid by you". */
+	/** The signed-in member: a routine whose login is their own asks them to sign in again. */
 	memberId?: string;
 }
 
@@ -124,22 +129,6 @@ function accountLabels(accounts: readonly WebMemberConnection[]): string[] {
 	});
 }
 
-const RUN_LABELS: Record<string, string> = {
-	pending: phrase("Waiting to start"),
-	queued: phrase("Waiting to start"),
-	running: phrase("Running"),
-	completed: phrase("Finished"),
-	blocked: phrase("Could not start"),
-	failed: phrase("Failed"),
-	cancelled: phrase("Cancelled"),
-	superseded: phrase("Skipped"),
-};
-
-function runLabel(run: CloudRoutineOccurrence): string {
-	const status = Object.hasOwn(RUN_LABELS, run.status) ? t(RUN_LABELS[run.status]!) : run.status;
-	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
-}
-
 /** Why a paused routine waits, in plain words, or null when the cloud gave no reason this page knows. The reasons are
  * the routine index's (`pause_reason`): a member or its agent paused it, it could not start with the access it had, no
  * model account pays for it, or its agent was archived (F2's P15, which pauses an archived agent's routines; the pause
@@ -181,8 +170,15 @@ function refusalWords(reason: WebRoutineLoginRefusal): string {
 	}
 }
 
+/** What a redraw finds a control by: its own focus key (a row names its routine, whose line may change), else its
+ * label. */
 function controlLabel(control: Element): string {
-	return control.getAttribute("aria-label") ?? control.textContent ?? "";
+	return control.getAttribute("data-focus") ?? control.getAttribute("aria-label") ?? control.textContent ?? "";
+}
+
+/** A text button: words only, no box. */
+function textButton(label: Child, onclick: () => void, className: string, disabled = false): HTMLButtonElement {
+	return h("button", { type: "button", class: `routine-text ${className}`, disabled, onclick }, label);
 }
 
 /** A clock time such as "08:48" as the viewer's language writes it: "8:48 AM", "08.48". */
@@ -220,10 +216,28 @@ function whenShort(trigger: CloudRoutineTrigger): string {
 		: words;
 }
 
-/** Fades the prompt's edges where more of it lies above or below. */
-function markOverflow(prompt: HTMLElement): void {
-	prompt.toggleAttribute("data-above", prompt.scrollTop > 0);
-	prompt.toggleAttribute("data-below", prompt.scrollTop + prompt.clientHeight < prompt.scrollHeight - 1);
+/** When the next run is, in few words: a time today, "tomorrow", or a day such as "26 Oct". */
+function nextWords(iso: string): string {
+	const date = new Date(iso);
+	if (Number.isNaN(date.getTime())) return "";
+	const zone = timeZoneOption();
+	const day = presentationDay(date, zone.timeZone),
+		today = presentationDay(new Date(), zone.timeZone);
+	if (day === today) return fmtTime(iso);
+	if (previousDay(day) === today) return t("tomorrow");
+	return date.toLocaleDateString(presentationLocale(), { month: "short", day: "numeric", ...zone });
+}
+
+/** A day's whole name in the viewer's language, for its one-letter circle: "Monday", "mandag". */
+function dayName(day: CloudRoutineWeekday): string {
+	// 4 January 2026 is a Sunday, the cloud's first day.
+	return new Date(Date.UTC(2026, 0, 4 + CLOUD_ROUTINE_WEEKDAYS.indexOf(day))).toLocaleDateString(
+		presentationLocale(),
+		{
+			weekday: "long",
+			timeZone: "UTC",
+		},
+	);
 }
 
 /** The clock a zone shows at an instant, to the minute, written as a UTC time value. */
@@ -267,39 +281,51 @@ function movedStart(
 		: new Date(Date.parse(startAt) + after - before).toISOString();
 }
 
-/** The Routines page of an agent's details: standing work the cloud starts on a schedule. Each routine is a file in
- * the company's folder, `agents/<handle>/routines/<key>.md`, which the switch and the editor write as the member
- * (folder core C4, P34r). */
+/** What a routine's reply setting is called in the composer. */
+const REPLIES: readonly [CloudRoutineReplyPolicy, string][] = [
+	["required", phrase("Always")],
+	["optional", phrase("When there is news")],
+	["silent", phrase("Never")],
+];
+
+/** "Choose a login" while it is open: the member's own logins that can pay for the routine, the one chosen, and what
+ * the control says (what to do when none can, or why a choice was refused). */
+interface Choice {
+	routineId: string;
+	logins: WebMemberConnection[];
+	chosen: string;
+	note: string;
+}
+
+/** An agent's Routines page, over its conversation: standing work the cloud starts on a schedule. Each routine is a
+ * file in the company's folder, `agents/<handle>/routines/<key>.md`, which the switch and the composer write as the
+ * member (folder core C4, P34r). */
 export class AgentRoutines {
-	readonly el = h("section", { class: "agent-page agent-routines" });
+	readonly el = h("section", { class: "agent-routines" });
 	/** The agent as it is now, so a rename shows here without reopening. */
 	readonly #agent: () => HostedStaffAgent;
 	readonly #access: AgentRoutineAccess | undefined;
 	readonly #signal: AbortSignal;
-	readonly #back: (() => void) | undefined;
+	readonly #close: (() => void) | undefined;
 	#routines: WebRoutine[] = [];
-	#runs: CloudRoutineOccurrence[] = [];
-	/** The routines whose file this member finds: only those have a switch and Edit. */
+	/** The routines whose file this member finds: only those have a switch and open in the composer. */
 	#files: ReadonlySet<string> = new Set();
 	#accounts: WebMemberConnection[] = [];
 	/** Who pays for each listed routine, read after each list read (20260930095000). A routine whose read failed, or
-	 * a cloud without the read, has none, and its card says nothing of it. */
+	 * a cloud without the read, has none, and its row says nothing of it. */
 	#payers: ReadonlyMap<string, WebRoutinePayer> = new Map();
-	/** The routine whose "Choose a login" is open: the member's own logins that can pay for it, the one chosen, and
-	 * what the control says (what to do when none can, or why a choice was refused). */
-	#choosing: { routineId: string; logins: WebMemberConnection[]; chosen: string; note: string } | undefined;
+	/** The routine whose "Choose a login" is open. */
+	#choosing: Choice | undefined;
 	#busy = false;
-	/** An editor is open or opening: it owns the screen, and the list never draws over it (#list) until the editor is
+	/** The composer is open or opening: it owns the screen, and the list never draws over it (#list) until it is
 	 * left (#toList). */
 	#editing = false;
-	/** Counts navigations (the editor opening or closing, the chooser opening or closing). A step that waited on the
+	/** Counts navigations (the composer opening or closing, the chooser opening or closing). A step that waited on the
 	 * cloud navigates, or says why something failed, only while the count is the one it started with. */
 	#screen = 0;
 	/** Until the first read answers, an empty list means "not known yet". */
 	#loaded = false;
 	#message = "";
-	/** The one routine whose card is open. */
-	#open: string | undefined;
 	/** Switches the member moved, shown where they were moved until a list read
 	 * after the change comes back; a change that failed moves its switch back. */
 	readonly #flipped = new Map<string, boolean>();
@@ -310,30 +336,25 @@ export class AgentRoutines {
 	/** Numbers each list read, so an answer older than one already shown is dropped. */
 	#reads = 0;
 	#shown = 0;
-	/** Stops waiting for the last opened card to finish growing. */
-	#opening: AbortController | undefined;
-	readonly #prompts =
-		typeof ResizeObserver === "function"
-			? new ResizeObserver((entries) => {
-					for (const entry of entries) markOverflow(entry.target as HTMLElement);
-				})
-			: undefined;
-	/** `back` leaves the list for the page this one was opened from. */
+	/** What opened the composer (a routine's row or New routine): focus goes back to it when the list returns. */
+	#returnTo: string | undefined;
+	/** The agent's figure, kept through redraws so it does not start over. */
+	#figure: { key: string; el: HTMLElement } | undefined;
+	/** `close` leaves the routines for the conversation. */
 	constructor(
 		agent: () => HostedStaffAgent,
 		access: AgentRoutineAccess | undefined,
 		signal: AbortSignal,
-		back?: () => void,
+		close?: () => void,
 	) {
 		this.#agent = agent;
 		this.#access = access;
 		this.#signal = signal;
-		this.#back = back;
-		signal.addEventListener("abort", () => this.#prompts?.disconnect(), { once: true });
+		this.#close = close;
 		this.#list();
 		if (access) void this.#refresh();
 	}
-	/** Reads the list again, unless a routine is open in the editor. */
+	/** Reads the list again, unless a routine is open in the composer. */
 	refresh(): void {
 		if (!this.#held()) void this.#refresh();
 	}
@@ -344,9 +365,8 @@ export class AgentRoutines {
 		// A read that went out before a switch was moved may predate the change.
 		const changes = this.#changes;
 		try {
-			const [routines, runs, files] = await Promise.all([
+			const [routines, files] = await Promise.all([
 				access.routines.list(),
-				access.routines.runs(),
 				// Routines whose files could not be found are read-only; the list still shows.
 				access.routines
 					.files()
@@ -357,7 +377,6 @@ export class AgentRoutines {
 			this.#routines = routines.filter(
 				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
 			);
-			this.#runs = runs;
 			this.#files = files;
 			if (changes === this.#changes && !this.#busy) this.#flipped.clear();
 			this.#message = "";
@@ -395,7 +414,7 @@ export class AgentRoutines {
 		// Nothing to show before or after (a cloud without the read) draws nothing again.
 		const drawn = this.#payers.size > 0;
 		this.#payers = payers;
-		// A routine whose login pays again needs no choice; not while a change or an editor holds the page (a choice
+		// A routine whose login pays again needs no choice; not while a change or the composer holds the page (a choice
 		// being used ends with its own answer).
 		if (this.#choosing && !this.#held() && payers.get(this.#choosing.routineId)?.canPay !== false) {
 			this.#choosing = undefined;
@@ -404,218 +423,158 @@ export class AgentRoutines {
 		if ((drawn || payers.size > 0) && !this.#busy) this.#list();
 	}
 	/** Draws the list as it stands. Reads that answer redraw it whenever it owns the screen: they draw what is known
-	 * now, never a choice made before. It never draws over an editor that is open or opening. */
+	 * now, never a choice made before. It never draws over a composer that is open or opening. */
 	#list(): void {
 		if (this.#editing) return;
 		const focused = this.#focused();
+		// Back from the composer, focus returns to what opened it.
+		const back = this.#returnTo;
+		this.#returnTo = undefined;
 		const access = this.#access;
 		const manage = access?.canManage() === true;
+		const agent = this.#agent();
 		const create = manage
-			? button([icon("plus"), t("New routine")], () => void this.#edit(undefined), { disabled: this.#busy })
+			? textButton(t("New routine"), () => void this.#edit(undefined), "routine-create", this.#busy)
 			: null;
-		// The open instruction keeps its place through a redraw.
-		const scrolled = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt")?.scrollTop ?? 0;
-		const cards = this.#routines.map((routine) => this.#card(routine, manage));
+		create?.setAttribute("data-focus", "create");
+		const rows = this.#routines.map((routine) => this.#row(routine, manage));
 		replace(
 			this.el,
-			dialogPageHeader(
-				t("Routines"),
-				this.#back,
-				t("Back to agent details"),
-				t("Recurring work, on a schedule or when something happens."),
+			this.#close || create
+				? h(
+						"div",
+						{ class: "routine-top" },
+						this.#close
+							? h(
+									"button",
+									{
+										type: "button",
+										class: "icon-button routine-close",
+										title: t("Close routines"),
+										"aria-label": t("Close routines"),
+										onclick: this.#close,
+									},
+									icon("close"),
+								)
+							: null,
+						create,
+					)
+				: null,
+			h(
+				"header",
+				{ class: "routine-heading" },
+				this.#figureOf(agent),
+				h("div", null, h("h2", null, t("Routines")), h("p", null, agent.displayName)),
 			),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
-			cards.length
-				? [
-						h("div", { class: "routine-list" }, ...cards),
-						create ? h("div", { class: "routine-list-footer" }, create) : null,
-					]
+			rows.length
+				? h("div", { class: "routine-list" }, ...rows)
 				: access && !this.#loaded
-					? h("p", { class: "agent-page-loading", role: "status" }, t("Reading routines…"))
+					? h("p", { class: "routine-quiet", role: "status" }, t("Reading routines…"))
 					: h(
-							"div",
-							{ class: "agent-page-empty" },
-							icon("clock"),
-							h(
-								"p",
-								null,
-								access
-									? t("{name} has no routines yet.", { name: this.#agent().displayName })
-									: t("Routines will appear here."),
-							),
-							create,
+							"p",
+							{ class: "routine-quiet" },
+							access
+								? t("{name} has no routines yet.", { name: agent.displayName })
+								: t("Routines will appear here."),
 						),
 		);
-		const kept = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt");
-		if (kept) kept.scrollTop = scrolled;
-		this.#prompts?.disconnect();
-		for (const prompt of this.el.querySelectorAll<HTMLElement>(".routine-card-prompt")) {
-			markOverflow(prompt);
-			this.#prompts?.observe(prompt);
-		}
-		this.#refocus(focused);
+		if (focused) this.#refocus(focused, back);
+		else if (back && (!document.activeElement || document.activeElement === document.body))
+			this.#controls(back)[0]?.focus({ preventScroll: true });
 	}
-	/** One routine as a card: its name, when it runs and a switch that pauses it.
-	 * Opened, the instruction reads beside the facts and Edit appears by the switch. */
-	#card(routine: WebRoutine, manage: boolean): HTMLElement {
+	/** The agent's figure, drawn anew only when its look changes or it left the page (the composer replaced it). */
+	#figureOf(agent: HostedStaffAgent): HTMLElement {
+		const key = JSON.stringify([agent.id, agent.displayName, agent.appearance, agent.templateId]);
+		if (this.#figure?.key !== key || !this.#figure.el.isConnected)
+			this.#figure = { key, el: agentFigure(agent, agent.displayName, { size: 52 }) };
+		return this.#figure.el;
+	}
+	/** One routine as a row: its name, a line saying when it runs (or why it waits) and a switch that pauses it. A row
+	 * opens it in the composer, drawn read-only when the member may not change it. */
+	#row(routine: WebRoutine, manage: boolean): HTMLElement {
 		const id = routine.routineId;
-		const open = this.#open === id;
-		const last = this.#runs.find((run) => run.routineId === id);
 		// A dynamic routine has one next run at a time, chosen by its agent after each run.
 		const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
 		const ended = routine.status === "expired" || routine.status === "concluded";
 		// A routine is its file: one this member does not find (out of their reach, from before the files, or a cloud
 		// that does not list them yet) cannot be changed from here.
 		const known = this.#files.has(id);
-		// A concluded routine plans no more runs; its agent's reason says why.
-		const concluded = routine.status === "concluded" ? routine.conclusion : null;
-		// Why a paused routine waits, while it is paused as the member sees it.
-		const paused =
-			routine.status === "paused" && !this.#runsNow(routine)
-				? pauseWords(routine.pauseReason, this.#agent().displayName)
-				: null;
-		// Who pays, and since when (20260930095000). A routine whose login cannot pay waits for one: a member who may
+		// An ended routine is read-only: a member save keeps its end (its expiry or run limit), so neither the composer
+		// nor a resume could start it again. Its agent can. The composer has no shape for a dynamic routine: its agent
+		// changes it, and a member may pause and resume it.
+		const editable = manage && known && !ended && !dynamic && editorShape(routine) !== undefined;
+		const on = this.#runsNow(routine);
+		// A routine whose login cannot pay waits for one (20260930095000): the line says so, and a member who may
 		// write chooses one of their own logins here.
 		const paid = this.#payers.get(id);
-		const choice = paid && !paid.canPay && this.#mayChoose() && known && !ended ? this.#loginChoice(routine) : null;
-		const fact = (label: string, ...value: (Node | string | null)[]) =>
-			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
+		const problem = paid && !paid.canPay && !ended ? this.#waitWords(paid) : null;
+		const choosing = this.#choosing?.routineId === id ? this.#choosing : undefined;
+		const choice = problem !== null && this.#mayChoose() && known;
+		const text = [
+			h("strong", null, routine.title),
+			h(
+				"span",
+				{ class: problem ? "routine-row-line is-problem" : "routine-row-line" },
+				problem ?? this.#line(routine, on),
+			),
+		];
+		const main = h(
+			"button",
+			{
+				type: "button",
+				class: "routine-row-main",
+				dataset: { focus: `${editable ? "edit" : "read"}:${id}` },
+				disabled: this.#held(),
+				onclick: () => (editable ? void this.#edit(routine) : this.#read(routine)),
+			},
+			...text,
+		);
 		const lever = h("button", {
 			type: "button",
 			role: "switch",
 			class: "routine-switch",
 			"aria-label": routine.title,
+			dataset: { focus: `switch:${id}` },
 			onclick: () => void this.#toggle(routine),
 		});
 		this.#setLever(lever, routine, manage);
-		const edit = button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy });
-		edit.classList.add("routine-card-edit");
 		return h(
-			"article",
-			{ class: open ? "routine-card is-open" : "routine-card", dataset: { routineId: id } },
-			h(
-				"div",
-				{
-					class: "routine-card-head",
-					// The head's own room around its controls opens the card too.
-					onclick: (event: MouseEvent) => {
-						if (!(event.target as Element).closest("button")) this.#expand(id);
-					},
+			"div",
+			{
+				class: on ? "routine-row" : "routine-row is-quiet",
+				dataset: { routineId: id },
+				// The row's own room around its controls opens the routine too.
+				onclick: (event: MouseEvent) => {
+					if (!(event.target as Element).closest("button, select, .routine-login")) main.click();
 				},
-				h(
-					"button",
-					{
-						type: "button",
-						class: "routine-card-summary",
-						"aria-expanded": String(open),
-						"aria-controls": `routine-${id}`,
-						onclick: () => this.#expand(id),
-					},
-					h("strong", null, routine.title),
-					h("span", null, concluded ?? routine.triggers.map(whenShort).join("; ")),
-					paused ? h("span", { class: "routine-card-paused" }, paused) : null,
-				),
-				// An ended routine is read-only: a member save keeps its end (its expiry or run
-				// limit), so neither Edit nor Resume could start it again. Its agent can. The
-				// editor has no shape for a dynamic routine: its agent changes it, and a member
-				// may pause and resume it.
-				manage && known && !ended && !dynamic && editorShape(routine) ? edit : null,
-				ended
-					? h("span", { class: "routine-card-state" }, routine.status === "concluded" ? t("Done") : t("Ended"))
-					: known
-						? lever
-						: null,
-			),
-			h(
-				"div",
-				{ class: "routine-card-body", id: `routine-${id}`, inert: !open },
-				h(
-					"div",
-					{ class: "routine-card-clip" },
-					h(
-						"div",
-						{ class: "routine-card-inner" },
-						h(
-							"section",
-							{ class: "routine-card-instruction" },
-							h("h3", null, t("Instruction")),
-							h(
-								"div",
-								{
-									class: "routine-card-prompt",
-									role: "region",
-									tabindex: "0",
-									"aria-label": t("Instruction"),
-									onscroll: (event: Event) => markOverflow(event.currentTarget as HTMLElement),
-								},
-								routine.prompt,
-							),
-						),
-						h(
-							"dl",
-							{ class: "routine-card-facts" },
-							routine.status === "concluded"
-								? null
-								: fact(
-										t("When to run"),
-										h(
-											"span",
-											{ class: "routine-card-when" },
-											icon("clock"),
-											h(
-												"span",
-												null,
-												...routine.triggers.map((trigger) =>
-													h(
-														"span",
-														{ class: "routine-card-trigger" },
-														whenWords(trigger),
-														"localTime" in trigger ? h("small", null, trigger.timeZone) : null,
-													),
-												),
-												dynamic && routine.status === "active"
-													? h(
-															"small",
-															null,
-															t("Runs until {name} decides it is done", {
-																name: this.#agent().displayName,
-															}),
-														)
-													: null,
-											),
-										),
-									),
-							routine.status === "active" && routine.nextRunAt
-								? fact(t("Next run"), fmtTime(routine.nextRunAt))
-								: null,
-							concluded ? fact(t("Done"), concluded) : null,
-							// Started again by the platform when its member turned on work while away for the
-							// ChatGPT plan that pays (20260929985000), while that version is current.
-							routine.status === "active" && routine.resumeReason === "plan_turned_on" && routine.resumedAt
-								? fact(
-										t("Resumed"),
-										t("When {name} turned on “Work while you're away”", {
-											name:
-												(routine.resumedByUserId && this.#access?.memberName?.(routine.resumedByUserId)) ||
-												t("a member"),
-										}),
-										" · ",
-										fmtTime(routine.resumedAt),
-									)
-								: null,
-							paid && (paid.payer || choice)
-								? fact(
-										t("Who pays"),
-										paid.payer ? this.#paidBy(paid) : null,
-										paid.payer ? this.#waitWords(paid) : null,
-										choice,
-									)
-								: null,
-							fact(t("Last run"), last ? runLabel(last) : t("Has not run yet")),
-						),
-					),
-				),
-			),
+			},
+			main,
+			choice && !choosing
+				? textButton(t("Choose a login"), () => void this.#openChoice(routine), "routine-choose", this.#busy)
+				: null,
+			!ended && known ? lever : null,
+			choice && choosing ? this.#loginChoice(routine, choosing) : null,
+		);
+	}
+	/** A routine's line: when it runs and when next, or that it is paused and why, or that it ended. */
+	#line(routine: WebRoutine, on: boolean): string {
+		const state = this.#state(routine, on);
+		if (routine.status === "concluded" || routine.status === "expired") return state!;
+		const when = routine.triggers.map(whenShort).join("; ");
+		if (state) return `${when} · ${state}`;
+		const next = routine.status === "active" && routine.nextRunAt ? nextWords(routine.nextRunAt) : "";
+		return next ? `${when} · ${t("next {when}", { when: next })}` : when;
+	}
+	/** Why a routine does not run, or null while it runs: it is done (and why), ended, or paused (and why). */
+	#state(routine: WebRoutine, on: boolean): string | null {
+		if (routine.status === "concluded") return [t("Done"), routine.conclusion].filter(Boolean).join(" · ");
+		if (routine.status === "expired") return t("Ended");
+		if (on) return null;
+		// Paused as the member sees it: the reason belongs to the read that said paused.
+		return (
+			(routine.status === "paused" ? pauseWords(routine.pauseReason, this.#agent().displayName) : null) ??
+			t("Paused")
 		);
 	}
 	/** "Paid by you since 4 Oct": the member's own login, another member's, or a company account. */
@@ -628,35 +587,23 @@ export class AgentRoutines {
 			date,
 		});
 	}
-	/** Why the routine's login can't pay now, under "Paid by" (20260930095000); null when there is nothing to add. The
-	 * routine keeps the login, and its runs wait until it can pay again. */
-	#waitWords(paid: WebRoutinePayer): HTMLElement | null {
-		if (paid.waitsFor === "usage_limit")
-			return h("small", null, t("Runs wait until this login's usage limit resets."));
-		if (paid.waitsFor !== "sign_in") return null;
+	/** Why the routine's login can't pay now (20260930095000). The routine keeps the login, and its runs wait until it
+	 * can pay again, or until someone chooses another. */
+	#waitWords(paid: WebRoutinePayer): string {
+		if (paid.waitsFor === "usage_limit") return t("Runs wait until this login's usage limit resets.");
+		if (paid.waitsFor !== "sign_in") return t("Paused: no model account pays for it");
 		if (paid.payerUserId === this.#access?.memberId)
-			return h("small", null, t("Sign in to this login again in Settings → My connections to let it run."));
+			return t("Sign in to this login again in Settings → My connections to let it run.");
 		const name = paid.payerUserId && this.#access?.memberName?.(paid.payerUserId);
-		return h(
-			"small",
-			null,
-			name
-				? t("Runs wait until {name} signs in to this login again.", { name })
-				: t("Runs wait until this login is signed in again."),
-		);
+		return name
+			? t("Runs wait until {name} signs in to this login again.", { name })
+			: t("Runs wait until this login is signed in again.");
 	}
-	/** "Choose a login" for a routine whose login cannot pay: a button, and once pressed, the member's own logins that
-	 * can pay for it, or what to do when none can. */
-	#loginChoice(routine: WebRoutine): HTMLElement {
-		const choosing = this.#choosing?.routineId === routine.routineId ? this.#choosing : undefined;
-		if (!choosing)
-			return h(
-				"div",
-				{ class: "routine-login" },
-				button(t("Choose a login"), () => void this.#openChoice(routine), { small: true, disabled: this.#busy }),
-			);
+	/** "Choose a login", open under its row: the member's own logins that can pay for the routine, or what to do when
+	 * none can. */
+	#loginChoice(routine: WebRoutine, choosing: Choice): HTMLElement {
 		const note = choosing.note ? h("p", { role: "status" }, choosing.note) : null;
-		const cancel = button(t("Cancel"), () => this.#closeChoice(), { small: true, disabled: this.#busy });
+		const cancel = textButton(t("Cancel"), () => this.#closeChoice(), "routine-login-cancel", this.#busy);
 		if (!choosing.logins.length)
 			return h("div", { class: "routine-login" }, note, h("div", { class: "routine-login-actions" }, cancel));
 		const picker = h(
@@ -670,11 +617,7 @@ export class AgentRoutines {
 		picker.onchange = () => {
 			choosing.chosen = picker.value;
 		};
-		const use = button(t("Use this login"), () => void this.#useLogin(routine), {
-			small: true,
-			primary: true,
-			disabled: this.#busy,
-		});
+		const use = textButton(t("Use this login"), () => void this.#useLogin(routine), "routine-login-use", this.#busy);
 		return h(
 			"div",
 			{ class: "routine-login" },
@@ -688,42 +631,11 @@ export class AgentRoutines {
 				),
 			),
 			note,
-			h("div", { class: "routine-login-actions" }, cancel, use),
-		);
-	}
-	/** Opens one card and closes the one that was open, in place. */
-	#expand(id: string): void {
-		const previous = this.#cardFor(this.#open);
-		this.#open = this.#open === id ? undefined : id;
-		const card = this.#cardFor(this.#open);
-		for (const item of [previous, card]) {
-			if (!item) continue;
-			const open = item === card;
-			item.classList.toggle("is-open", open);
-			item.querySelector(".routine-card-summary")?.setAttribute("aria-expanded", String(open));
-			item.querySelector(".routine-card-body")?.toggleAttribute("inert", !open);
-		}
-		this.#opening?.abort();
-		if (!card) return;
-		this.#reveal(card, previous);
-		// The page cannot scroll past its end while the card is still growing, so a
-		// card near the end is brought the rest of the way once it is open.
-		const body = card.querySelector<HTMLElement>(".routine-card-body");
-		if (!body || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-		const opening = new AbortController();
-		this.#opening = opening;
-		body.addEventListener(
-			"transitionend",
-			(event) => {
-				if (event.target !== body || event.propertyName !== "grid-template-rows") return;
-				opening.abort();
-				if (this.#open === id && card.isConnected) this.#reveal(card, undefined);
-			},
-			{ signal: opening.signal },
+			h("div", { class: "routine-login-actions" }, use, cancel),
 		);
 	}
 	/** A switch as the routine stands, or where the member moved it. While one
-	 * switch moves, or the editor opens, the others wait. */
+	 * switch moves, or the composer opens, the others wait. */
 	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
 		const id = routine.routineId;
 		const on = this.#runsNow(routine);
@@ -743,20 +655,22 @@ export class AgentRoutines {
 		lever.classList.toggle("is-locked", locked);
 		if (locked || (this.#held() && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
+		// The row quiets as its switch moves off, before the read redraws its line.
+		lever.closest(".routine-row")?.classList.toggle("is-quiet", !on);
 	}
 	/** The agent is archived: its routines stay paused until it is active again. */
 	#archived(): boolean {
 		return this.#agent().employmentStatus === "archived";
 	}
 	/** Whether a routine runs, as the member sees it: where its switch was moved,
-	 * else the last read. An editor save keeps this, not the state it opened with. */
+	 * else the last read. A composer save keeps this, not the state it opened with. */
 	#runsNow(routine: CloudRoutine): boolean {
 		const id = routine.routineId;
 		return (
 			this.#flipped.get(id) ?? (this.#routines.find((item) => item.routineId === id) ?? routine).status === "active"
 		);
 	}
-	/** Whether the list's controls wait: a change is under way, or the editor is open or opening over the list. */
+	/** Whether the list's controls wait: a change is under way, or the composer is open or opening over the list. */
 	#held(): boolean {
 		return this.#busy || this.#editing;
 	}
@@ -764,25 +678,25 @@ export class AgentRoutines {
 	#navigate(): number {
 		return ++this.#screen;
 	}
-	/** Leaves the editor for the list: the list owns the screen again. */
+	/** Leaves the composer for the list: the list owns the screen again. */
 	#toList(): void {
 		this.#editing = false;
 		this.#navigate();
 		this.#list();
 	}
 	/** Brings the switches and buttons up to date in place, so a moved switch slides
-	 * instead of being drawn anew in its new place. While the editor opens, the list's controls wait, the chooser's
+	 * instead of being drawn anew in its new place. While the composer opens, the list's controls wait, the chooser's
 	 * Cancel too. */
 	#setControls(): void {
 		const manage = this.#access?.canManage() === true;
 		for (const lever of this.el.querySelectorAll<HTMLElement>(".routine-switch")) {
 			const routine = this.#routines.find(
-				(item) => item.routineId === lever.closest<HTMLElement>(".routine-card")?.dataset.routineId,
+				(item) => item.routineId === lever.closest<HTMLElement>(".routine-row")?.dataset.routineId,
 			);
 			if (routine) this.#setLever(lever, routine, manage);
 		}
 		for (const control of this.el.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(
-			".routine-card-edit, .routine-list-footer .btn, .routine-login .btn, .routine-login select",
+			"button.routine-row-main, .routine-create, .routine-choose, .routine-login button, .routine-login select",
 		))
 			control.disabled = this.#held();
 		if (!this.#message) this.el.querySelector(":scope > .surface-status")?.remove();
@@ -792,33 +706,8 @@ export class AgentRoutines {
 		const access = this.#access;
 		return access ? (access.canWrite ?? access.canManage)() : false;
 	}
-	#cardFor(id: string | undefined): HTMLElement | undefined {
-		return id
-			? [...this.el.querySelectorAll<HTMLElement>(".routine-card")].find((item) => item.dataset.routineId === id)
-			: undefined;
-	}
-	/** Scrolls the page so the opening card will be seen whole, between the heading
-	 * and the bottom edge, as it opens (a closing card above it gives its room back). */
-	#reveal(card: HTMLElement, closing: HTMLElement | undefined): void {
-		const scroller = this.el.parentElement,
-			header = this.el.querySelector(".dialog-page-header");
-		const clip = card.querySelector(".routine-card-clip"),
-			inner = card.querySelector(".routine-card-inner");
-		if (!scroller || !header || !clip || !inner || typeof scroller.scrollBy !== "function") return;
-		const scale = uiScale();
-		const box = card.getBoundingClientRect();
-		const given =
-			closing && closing.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING
-				? (closing.querySelector(".routine-card-clip")?.getBoundingClientRect().height ?? 0)
-				: 0;
-		const top = box.top - given,
-			bottom = top + box.height - clip.getBoundingClientRect().height + inner.getBoundingClientRect().height;
-		const above = header.getBoundingClientRect().bottom + 8 * scale,
-			below = scroller.getBoundingClientRect().bottom - 12 * scale;
-		const by = bottom > below ? Math.min(bottom - below, top - above) : top < above ? top - above : 0;
-		if (Math.abs(by) < 1) return;
-		const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-		scroller.scrollBy({ top: by, behavior: still ? "auto" : "smooth" });
+	#rowFor(id: string): HTMLElement | undefined {
+		return [...this.el.querySelectorAll<HTMLElement>(".routine-row")].find((item) => item.dataset.routineId === id);
 	}
 	/** The focused control as its label and place among controls that share it,
 	 * so a redrawn list can put focus back where it was. */
@@ -828,15 +717,19 @@ export class AgentRoutines {
 		const label = controlLabel(active);
 		return [label, this.#controls(label).indexOf(active)];
 	}
-	#refocus(focused: [string, number] | undefined): void {
-		if (!focused) return;
-		const [label, index] = focused;
+	#refocus([label, index]: [string, number], back: string | undefined): void {
 		const same = this.#controls(label);
-		// A control that changed (Pause became Resume) hands focus to the way back.
-		(same[index] ?? same[0] ?? this.#controls(t("Back to agent details"))[0])?.focus({ preventScroll: true });
+		// A control that is gone (the composer's, or a choice that closed) hands focus to what opened the composer, else
+		// to the way out.
+		(
+			same[index] ??
+			same[0] ??
+			(back ? this.#controls(back)[0] : undefined) ??
+			this.#controls(t("Close routines"))[0]
+		)?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
-		return [...this.el.querySelectorAll<HTMLElement>("button, .routine-card-prompt")].filter(
+		return [...this.el.querySelectorAll<HTMLElement>("button, select")].filter(
 			(item) => controlLabel(item) === label,
 		);
 	}
@@ -869,7 +762,7 @@ export class AgentRoutines {
 		}
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
-		// Not while the editor opens over the list either: a change then would draw the list over it.
+		// Not while the composer opens over the list either: a change then would draw the list over it.
 		if (
 			this.#busy ||
 			this.#editing ||
@@ -884,11 +777,10 @@ export class AgentRoutines {
 		const previous = this.#flipped.get(id);
 		const enabled = !this.#runsNow(routine);
 		// A routine whose login can't pay keeps it on a resume and goes on waiting (20260930095000): the switch opens
-		// its card on "Choose a login" instead. Without that read, the switch resumes as before, and so it does for a
+		// "Choose a login" under its row instead. Without that read, the switch resumes as before, and so it does for a
 		// login that is only at its usage limit or needs a new sign-in: the routine runs on it once it can pay again.
 		const paid = this.#payers.get(id);
 		if (enabled && paid?.canPay === false && paid.waitsFor !== "usage_limit" && paid.waitsFor !== "sign_in") {
-			if (this.#open !== id) this.#expand(id);
 			if (this.#choosing?.routineId === id) this.#focusChoice(id);
 			else void this.#openChoice(routine);
 			return;
@@ -962,7 +854,7 @@ export class AgentRoutines {
 	async #openChoice(routine: CloudRoutine): Promise<void> {
 		if (this.#held() || !this.#mayChoose()) return;
 		const screen = this.#screen;
-		// The read holds the page as a switch's change does: no editor opens over the list meanwhile.
+		// The read holds the page as a switch's change does: no composer opens over the list meanwhile.
 		this.#busy = true;
 		this.#setControls();
 		const loaded = await this.#loadAccounts();
@@ -985,7 +877,7 @@ export class AgentRoutines {
 		this.#list();
 		this.#focusChoice(routine.routineId);
 	}
-	/** Cancel: the choice closes. Not while a change or an editor holds the page. */
+	/** Cancel: the choice closes. Not while a change or the composer holds the page. */
 	#closeChoice(): void {
 		const id = this.#choosing?.routineId;
 		if (this.#held() || !id) return;
@@ -994,15 +886,15 @@ export class AgentRoutines {
 		this.#list();
 		this.#focusChoice(id);
 	}
-	/** Focus stays with the choice as it opens or closes: its first control. */
+	/** Focus stays with the choice as it opens or closes: its first control, or "Choose a login" once it is closed. */
 	#focusChoice(routineId: string): void {
-		this.#cardFor(routineId)
-			?.querySelector<HTMLElement>(".routine-login select, .routine-login .btn")
+		this.#rowFor(routineId)
+			?.querySelector<HTMLElement>(".routine-login select, .routine-login button, .routine-choose")
 			?.focus({ preventScroll: true });
 	}
 	/** Runs the routine on the chosen login: its consent and binding first, as a save's, then the pick. A refused login
-	 * keeps the choice open and says why. The list and who pays are read again either way. Not while a change or an
-	 * editor holds the page. */
+	 * keeps the choice open and says why. The list and who pays are read again either way. Not while a change or the
+	 * composer holds the page. */
 	async #useLogin(routine: WebRoutine): Promise<void> {
 		const access = this.#access;
 		const choosing = this.#choosing;
@@ -1018,8 +910,8 @@ export class AgentRoutines {
 		try {
 			const paid = await access.routines.setLogin(routine.routineId, account);
 			if (this.#signal.aborted || screen !== this.#screen) return;
-			// The choice is done and closes; the card says who pays now at once. Null: the cloud has no pick, and
-			// nothing of it shows.
+			// The choice is done and closes; the row says at once whether the login pays. Null: the cloud has no pick,
+			// and nothing of it shows.
 			this.#choosing = undefined;
 			screen = this.#navigate();
 			if (paid) this.#payers = new Map(this.#payers).set(routine.routineId, paid);
@@ -1045,15 +937,66 @@ export class AgentRoutines {
 			this.#list();
 		}
 	}
-	/** Opens the editor on a new routine, or on a routine's file as it is now: the read whose version a save names.
+	/** Opens a routine the member may not change in the composer's layout, read-only: its name and instruction as text,
+	 * when it runs, its reply and who pays as plain lines, and no Save. It draws what the list read, so it asks the cloud
+	 * nothing. */
+	#read(routine: WebRoutine): void {
+		if (this.#held()) return;
+		// It owns the screen as the composer does: reads that answer meanwhile do not draw the list over it.
+		this.#editing = true;
+		this.#returnTo = `read:${routine.routineId}`;
+		const screen = this.#navigate();
+		const leave = () => {
+			if (!this.#busy && screen === this.#screen) this.#toList();
+		};
+		const back = textButton([icon("chevron"), t("Routines")], leave, "routine-back");
+		const field = (label: string, ...lines: Child[]) =>
+			h("div", { class: "routine-field" }, h("span", { class: "routine-label" }, label), h("div", null, ...lines));
+		const state = this.#state(routine, this.#runsNow(routine));
+		const reply = REPLIES.find(([value]) => value === (routine.triggers[0]?.replyPolicy ?? "required"))?.[1];
+		const paid = this.#payers.get(routine.routineId);
+		const ended = routine.status === "expired" || routine.status === "concluded";
+		replace(
+			this.el,
+			h(
+				"div",
+				{ class: "routine-editor is-reading" },
+				back,
+				h("h2", { class: "routine-name" }, routine.title),
+				h("p", { class: "routine-prompt" }, routine.prompt),
+				h(
+					"div",
+					{ class: "routine-fields" },
+					field(
+						t("When"),
+						...routine.triggers.map((trigger) => h("span", { class: "routine-account" }, whenShort(trigger))),
+						state ? h("p", { class: "routine-hint" }, state) : null,
+					),
+					reply ? field(t("Reply"), h("span", { class: "routine-account" }, t(reply))) : null,
+					paid?.payer
+						? field(
+								t("Runs on"),
+								h("span", { class: "routine-account" }, this.#paidBy(paid)),
+								!paid.canPay && !ended
+									? h("p", { class: "routine-hint is-problem" }, this.#waitWords(paid))
+									: null,
+							)
+						: null,
+				),
+			),
+		);
+		back.focus();
+	}
+	/** Opens the composer on a new routine, or on a routine's file as it is now: the read whose version a save names.
 	 * `notice` stands on its status line, such as why the form opened again. */
 	async #edit(routine: CloudRoutine | undefined, notice = ""): Promise<void> {
 		const access = this.#access;
 		if (this.#held() || !access?.canManage()) return;
 		if (routine && (!editorShape(routine) || !this.#files.has(routine.routineId))) return;
-		// The editor owns the screen from here: the list stays while the file and the logins are read, its controls
-		// waiting (the chooser's Cancel too), and nothing draws it over the editor.
+		// The composer owns the screen from here: the list stays while the file and the logins are read, its controls
+		// waiting (the chooser's Cancel too), and nothing draws it over the composer.
 		this.#editing = true;
+		this.#returnTo = routine ? `edit:${routine.routineId}` : "create";
 		const screen = this.#navigate();
 		this.#setControls();
 		let opened: WebRoutineFile | undefined;
@@ -1083,6 +1026,7 @@ export class AgentRoutines {
 		// The form shows the file: its schedule, name, instructions and reply.
 		const first = opened?.trigger;
 		const shape: Shape = (first && shapeOf(first)) ?? "weekly";
+		let kind = shape;
 		// A member's new routine runs at low effort, like a conversation; an edit keeps
 		// the file's own, which its agent may have set to medium or high.
 		const effort = opened?.file.effort ?? "low";
@@ -1091,30 +1035,39 @@ export class AgentRoutines {
 		const clientRoutineId = opened?.file.id ?? crypto.randomUUID();
 		const saveId = crypto.randomUUID();
 		const zone = presentationTimeZone();
+		const name = this.#agent().displayName;
 		const title = h("input", {
 			type: "text",
+			class: "routine-name",
 			maxlength: "160",
 			value: opened?.file.title ?? "",
+			placeholder: t("Routine name"),
 			"aria-label": t("Routine name"),
 		});
 		// The file allows 32,768 bytes of instructions. Each character is at least one byte, so this bound never cuts text
 		// that fits; the file's parse says when longer characters take it past.
 		const prompt = h(
 			"textarea",
-			{ rows: 5, maxlength: "32768", "aria-label": t("What to do"), value: opened?.file.instructions ?? "" },
+			{
+				class: "routine-prompt",
+				rows: 2,
+				maxlength: "32768",
+				placeholder: t("What should {name} do?", { name }),
+				"aria-label": t("What to do"),
+				value: opened?.file.instructions ?? "",
+			},
 			opened?.file.instructions ?? "",
 		);
-		const when = h(
-			"select",
-			{ "aria-label": t("When it runs") },
-			h("option", { value: "weekly" }, t("On chosen days at a set time")),
-			h("option", { value: "interval" }, t("Every so often")),
-		);
-		when.value = shape;
+		// The instructions grow with what is written, so the page alone scrolls. A page not laid out yet keeps its rows.
+		const grow = () => {
+			prompt.style.height = "auto";
+			if (prompt.scrollHeight) prompt.style.height = `${prompt.scrollHeight}px`;
+		};
+		prompt.addEventListener("input", grow);
 		const minutes = first?.kind === "schedule" && shape === "interval" ? first.intervalMinutes : 60;
 		const unit = h(
 			"select",
-			{ "aria-label": t("Interval unit") },
+			{ class: "routine-unit", "aria-label": t("Interval unit") },
 			h("option", { value: "minutes" }, t("minutes")),
 			h("option", { value: "hours" }, t("hours")),
 			h("option", { value: "days" }, t("days")),
@@ -1122,6 +1075,7 @@ export class AgentRoutines {
 		unit.value = minutes % 1440 === 0 ? "days" : minutes % 60 === 0 ? "hours" : "minutes";
 		const every = h("input", {
 			type: "number",
+			class: "routine-every-count",
 			value: String(minutes / UNITS[unit.value as keyof typeof UNITS]),
 			"aria-label": t("Interval"),
 		});
@@ -1136,43 +1090,93 @@ export class AgentRoutines {
 		const chosen = new Set<CloudRoutineWeekday>(
 			first && "localTime" in first ? first.weekdays : ["monday", "tuesday", "wednesday", "thursday", "friday"],
 		);
+		// Monday first, as a week reads here; the file keeps the cloud's order.
+		const week = [...CLOUD_ROUTINE_WEEKDAYS.slice(1), CLOUD_ROUTINE_WEEKDAYS[0]];
 		const days = h(
 			"div",
 			{ class: "routine-days", role: "group", "aria-label": t("Days") },
-			...CLOUD_ROUTINE_WEEKDAYS.map((day) => {
-				const box = h("input", { type: "checkbox", checked: chosen.has(day) });
-				box.onchange = () => (box.checked ? chosen.add(day) : chosen.delete(day));
-				return h("label", null, box, cloudRoutineWeekdayName(day, t));
+			...week.map((day) => {
+				const circle = h(
+					"button",
+					{
+						type: "button",
+						class: "routine-day",
+						"aria-pressed": String(chosen.has(day)),
+						"aria-label": dayName(day),
+					},
+					cloudRoutineWeekdayName(day, t).slice(0, 1),
+				);
+				circle.onclick = () => {
+					if (chosen.has(day)) chosen.delete(day);
+					else chosen.add(day);
+					circle.setAttribute("aria-pressed", String(chosen.has(day)));
+				};
+				return circle;
 			}),
 		);
 		const time = h("input", {
 			type: "time",
+			class: "routine-time",
 			value: first && "localTime" in first ? first.localTime : "09:00",
 			"aria-label": t("Time"),
 		});
 		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it.
 		const timeZone = h("input", {
 			type: "text",
+			class: "routine-zone",
 			value: opened?.file.timezone ?? zone,
 			"aria-label": t("Time zone"),
 			maxlength: "128",
+			spellcheck: "false",
 		});
-		const reply = h(
-			"select",
-			{ "aria-label": t("Reply") },
-			h("option", { value: "required" }, t("Always post a reply in the conversation")),
-			h("option", { value: "optional" }, t("Reply only when there is something to say")),
-			h("option", { value: "silent" }, t("Work silently")),
+		let replyPolicy: CloudRoutineReplyPolicy = first?.replyPolicy ?? "required";
+		const replies = REPLIES.map(([value, label]) =>
+			h(
+				"button",
+				{ type: "button", role: "radio", class: "routine-choice", onclick: () => setReply(value) },
+				t(label),
+			),
 		);
-		reply.value = first?.replyPolicy ?? "required";
+		const setReply = (value: CloudRoutineReplyPolicy, focus = false) => {
+			replyPolicy = value;
+			for (const [index, choice] of replies.entries()) {
+				const on = REPLIES[index]![0] === value;
+				choice.setAttribute("aria-checked", String(on));
+				choice.tabIndex = on ? 0 : -1;
+				if (on && focus) choice.focus();
+			}
+		};
+		setReply(replyPolicy);
+		const reply = h(
+			"div",
+			{
+				class: "routine-choices",
+				role: "radiogroup",
+				"aria-label": t("Reply"),
+				// Arrows move the choice, as in any radio group.
+				onkeydown: (event: KeyboardEvent) => {
+					const step = ["ArrowRight", "ArrowDown"].includes(event.key)
+						? 1
+						: ["ArrowLeft", "ArrowUp"].includes(event.key)
+							? -1
+							: 0;
+					if (!step) return;
+					event.preventDefault();
+					const at = REPLIES.findIndex(([value]) => value === replyPolicy);
+					setReply(REPLIES[(at + step + REPLIES.length) % REPLIES.length]![0], true);
+				},
+			},
+			...replies,
+		);
 		// Who pays: the routine runs on the member's own account that works while they're away. Only when none is
 		// switched on does the member choose one here, which saving switches on.
 		const own = this.#accounts.find((item) => canPayForRoutine(item) && item.allowAutonomous === true);
 		const choices = own ? [] : this.#accounts.filter((item) => canPayForRoutine(item));
+		const labels = accountLabels(choices);
 		const picker = h(
 			"select",
-			{ "aria-label": t("Model account") },
-			...accountLabels(choices).map((label, index) => h("option", { value: choices[index]!.connectionId }, label)),
+			{ class: "routine-account-picker", "aria-label": t("Model account"), hidden: true },
+			...labels.map((label, index) => h("option", { value: choices[index]!.connectionId }, label)),
 		) as HTMLSelectElement;
 		const payer = () => own ?? choices.find((item) => item.connectionId === picker.value);
 		// Nothing here can pay: connect an account, or turn on a ChatGPT plan (the only kind left once Claude is not).
@@ -1180,38 +1184,66 @@ export class AgentRoutines {
 			this.#accounts.length
 				? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
 				: t("Connect a model account in Settings first.");
-		const payment = own
-			? h("p", { class: "muted" }, t("This routine runs on your own account that works while you're away."))
+		const shown = h("span", { class: "routine-account" }, labels[0] ?? "");
+		const accountLine = h(
+			"div",
+			{ class: "routine-account-line" },
+			shown,
+			// Change reveals the picker in the line's place.
+			choices.length > 1
+				? textButton(
+						t("Change"),
+						() => {
+							accountLine.hidden = true;
+							picker.hidden = false;
+							picker.focus();
+						},
+						"routine-change",
+					)
+				: null,
+		);
+		picker.onchange = () => {
+			shown.textContent = labels[picker.selectedIndex] ?? "";
+		};
+		const payment: Child[] = own
+			? [
+					h("span", { class: "routine-account" }, accountLabel(own)),
+					h(
+						"p",
+						{ class: "routine-hint" },
+						t("This routine runs on your own account that works while you're away."),
+					),
+				]
 			: choices.length
-				? h(
-						"label",
-						null,
-						t("Runs on"),
+				? [
+						accountLine,
 						picker,
 						h(
-							"small",
-							null,
+							"p",
+							{ class: "routine-hint" },
 							t(
 								"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-								{ name: this.#agent().displayName },
+								{ name },
 							),
 						),
-					)
-				: h(
-						"p",
-						{ class: "muted" },
-						this.#accounts.length
-							? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
-							: t(
-									"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
-								),
-					);
-		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
+					]
+				: [
+						h(
+							"p",
+							{ class: "routine-hint" },
+							this.#accounts.length
+								? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+								: t(
+										"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
+									),
+						),
+					];
+		const intervalFields = h("div", { class: "routine-every" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
-			{ class: "routine-when" },
-			days,
-			h("div", { class: "routine-inline" }, t("at"), time, timeZone),
+			{ class: "routine-weekly" },
+			h("div", { class: "routine-week" }, days, h("span", { class: "routine-at" }, t("at"), time)),
+			timeZone,
 		);
 		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
 		const held =
@@ -1238,12 +1270,21 @@ export class AgentRoutines {
 		};
 		time.oninput = timeZone.oninput = showHeld;
 		showHeld();
+		// One quiet way to the other kind of schedule.
+		const kindSwitch = textButton(
+			"",
+			() => {
+				kind = kind === "weekly" ? "interval" : "weekly";
+				sync();
+			},
+			"routine-kind",
+		);
 		const sync = () => {
-			intervalFields.hidden = when.value !== "interval";
-			weeklyFields.hidden = when.value !== "weekly";
-			waiting.hidden = !held || when.value !== shape;
+			intervalFields.hidden = kind !== "interval";
+			weeklyFields.hidden = kind !== "weekly";
+			waiting.hidden = !held || kind !== shape;
+			kindSwitch.textContent = kind === "weekly" ? t("or every few hours") : t("or on chosen days");
 		};
-		when.onchange = sync;
 		sync();
 		const status = h("p", { class: "surface-status", role: "status" }, notice);
 		// A new interval's first run is one interval from the form's first Save, and a new routine's trigger keeps one id,
@@ -1258,10 +1299,10 @@ export class AgentRoutines {
 			return at;
 		};
 		const trigger = (): CloudRoutineTrigger => {
-			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
+			const replied = replyPolicy === "required" ? {} : { replyPolicy };
 			// Only while the box shows: it belongs to the routine's own kind of schedule.
 			const letGo = !waiting.hidden && !wait.checked;
-			if (when.value === "weekly")
+			if (kind === "weekly")
 				return parseCloudRoutineTrigger({
 					id: triggerId,
 					kind: "schedule",
@@ -1271,7 +1312,7 @@ export class AgentRoutines {
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
 					timeZone: timeZone.value.trim(),
-					...replyPolicy,
+					...replied,
 				});
 			const intervalMinutes = Math.round(Number(every.value) * UNITS[unit.value as keyof typeof UNITS]);
 			// While the interval stays, so does the file's first-run time as read (or its absence), and a held one let
@@ -1288,15 +1329,15 @@ export class AgentRoutines {
 				kind: "schedule",
 				intervalMinutes,
 				startAt: kept ? (letGo ? undefined : kept.startAt) : next(intervalMinutes),
-				...replyPolicy,
+				...replied,
 			});
 		};
-		const save = button(t("Save routine"), () => void submit(), { primary: true });
+		const save = h("button", { type: "button", class: "routine-save", onclick: () => void submit() }, t("Save"));
 		// This form's own navigations, and its save's steps, act only while it owns the screen (#screen).
 		const leave = () => {
 			if (!this.#busy && screen === this.#screen) this.#toList();
 		};
-		const cancel = button(t("Cancel"), leave);
+		const cancel = textButton(t("Cancel"), leave, "routine-cancel");
 		const submit = async () => {
 			if (this.#busy || screen !== this.#screen || !access.canManage()) return;
 			let built: CloudRoutineTrigger;
@@ -1304,7 +1345,7 @@ export class AgentRoutines {
 				built = trigger();
 			} catch {
 				status.textContent =
-					when.value === "interval"
+					kind === "interval"
 						? t("Choose an interval between 5 minutes and 7 days.")
 						: t("Choose at least one day, a time and a time zone such as Europe/Copenhagen.");
 				return;
@@ -1374,7 +1415,7 @@ export class AgentRoutines {
 				const notice = t("This routine changed while you were editing it.");
 				this.#editing = false;
 				await this.#edit(routine, notice);
-				// The editor did not open again (the routine is no longer one it opens): the list says why.
+				// The composer did not open again (the routine is no longer one it opens): the list says why.
 				if (this.#signal.aborted || screen !== this.#screen) return;
 				this.#message ||= notice;
 				this.#toList();
@@ -1387,8 +1428,8 @@ export class AgentRoutines {
 				const notice = t("This routine changed while you were editing it.");
 				const made = this.#routines.find((item) => item.clientRoutineId === clientRoutineId);
 				if (made) await this.#edit(made, notice);
-				// The form is still this one: the routine is not listed yet, or not one the editor opens. The list says why
-				// the form closed, unless its read failed.
+				// The form is still this one: the routine is not listed yet, or not one the composer opens. The list says
+				// why the form closed, unless its read failed.
 				if (this.#signal.aborted || screen !== this.#screen) return;
 				this.#message ||= notice;
 				this.#toList();
@@ -1401,25 +1442,28 @@ export class AgentRoutines {
 				this.#list();
 			}
 		};
+		const field = (label: string, ...control: Child[]) =>
+			h("div", { class: "routine-field" }, h("span", { class: "routine-label" }, label), h("div", null, ...control));
 		replace(
 			this.el,
-			dialogPageHeader(routine ? t("Edit routine") : t("New routine"), leave, t("Back to routines")),
 			h(
 				"div",
 				{ class: "routine-editor" },
-				h("label", null, t("Name"), title),
-				h("label", null, t("What should {name} do?", { name: this.#agent().displayName }), prompt),
-				h("label", null, t("When"), when),
-				intervalFields,
-				weeklyFields,
-				waiting,
-				h("label", null, t("Reply"), reply),
-				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
-				payment,
+				textButton([icon("chevron"), t("Routines")], leave, "routine-back"),
+				title,
+				prompt,
+				h(
+					"div",
+					{ class: "routine-fields" },
+					field(t("When"), intervalFields, weeklyFields, waiting, kindSwitch),
+					field(t("Reply"), reply),
+					field(t("Runs on"), ...payment),
+				),
+				h("div", { class: "routine-actions" }, save, cancel),
 				status,
-				h("div", { class: "surface-actions" }, cancel, save),
 			),
 		);
+		grow();
 		title.focus();
 	}
 }

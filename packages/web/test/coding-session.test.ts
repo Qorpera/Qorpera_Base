@@ -13,9 +13,9 @@ import {
 	parseCodingSessions,
 } from "../src/cloud/coding-session.ts";
 import {
+	CodingPill,
 	CodingSessionElement,
 	type CodingSessionNames,
-	CodingSessionSlot,
 	codingSessionActivity,
 	codingSessionLine,
 	codingSessionStandby,
@@ -1118,7 +1118,7 @@ describe("the element in the thread", () => {
 	});
 });
 
-describe("the session in the header", () => {
+describe("the sessions' pill above the composer", () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ now: NOW });
 	});
@@ -1128,38 +1128,141 @@ describe("the session in the header", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("is the agent's figure wearing the harness mark, on its own clock, and unfolds the title", () => {
+	it("is one session's line: the agent's figure wearing the harness mark, its title, status and Open", () => {
 		const motion = stubFigureMotion();
 		const open = vi.fn();
-		const slot = new CodingSessionSlot(WORKER, open);
-		document.body.append(slot.el);
-		slot.update(codingSession({ harness: "codex" }), staff, owner);
-		expect(slot.el.querySelector(".coding-slot-avatar .figure")).not.toBeNull();
-		expect(slot.el.querySelector(".coding-slot-avatar .coding-badge-codex")).not.toBeNull();
-		// The button names the session; the badge carries no title of its own over it.
-		expect(slot.el.querySelector(".coding-badge")?.hasAttribute("title")).toBe(false);
-		expect(slot.el.querySelector(".coding-slot-name")?.textContent).toBe("Fix the delay after send");
-		expect(slot.el.title).toBe(
-			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed",
+		const pill = new CodingPill(open);
+		document.body.append(pill.el);
+		pill.update(
+			[codingSession({ harness: "codex" })],
+			() => staff,
+			() => owner,
 		);
-		expect(slot.el.getAttribute("aria-label")).toBe(
+		expect(pill.el.hidden).toBe(false);
+		expect(pill.el.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);
+		// One session has no rows: the summary is its line.
+		expect(pill.el.querySelector(".coding-pill-rows")?.childElementCount).toBe(0);
+		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(summary.querySelectorAll(".coding-pill-face")).toHaveLength(1);
+		expect(summary.querySelector(".coding-pill-face .figure")).not.toBeNull();
+		expect(summary.querySelector(".coding-pill-face .coding-badge-codex")).not.toBeNull();
+		// The line names the session; the badge carries no title of its own over it.
+		expect(summary.querySelector(".coding-badge")?.hasAttribute("title")).toBe(false);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("Fix the delay after send");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe(
+			"Working · 4 min · running vitest in packages/web · 3 files changed",
+		);
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("working");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		expect(summary.dataset.workerId).toBe(WORKER);
+		expect(summary.hasAttribute("aria-expanded")).toBe(false);
+		expect(summary.getAttribute("aria-label")).toBe(
 			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed. Open the session",
 		);
 		expect(motion).toHaveBeenCalledTimes(1);
-		expect(motion.mock.calls[0]?.[4]).toMatchObject({ activity: "Working", identity: `coding:${WORKER}` });
+		expect(motion.mock.calls[0]?.[4]).toMatchObject({ activity: "Working" });
 		// A new listing with the same motion keeps the figure (and its motion) as it is.
-		slot.update(
-			codingSession({ harness: "codex", lastStep: "npm test", updatedAt: "2026-09-22T10:03:30Z" }),
-			staff,
-			owner,
+		pill.update(
+			[codingSession({ harness: "codex", lastStep: "npm test", updatedAt: "2026-09-22T10:03:30Z" })],
+			() => staff,
+			() => owner,
 		);
 		expect(motion).toHaveBeenCalledTimes(1);
-		// A question makes it wait, as an agent waits on the member.
-		slot.update(codingSession({ harness: "codex", phase: "awaiting_input" }), staff, owner);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toContain("npm test");
+		// A question makes it wait, as an agent waits on the member, and the line asks for the answer.
+		pill.update(
+			[codingSession({ harness: "codex", phase: "awaiting_input" })],
+			() => staff,
+			() => owner,
+		);
 		expect(motion).toHaveBeenCalledTimes(2);
 		expect(motion.mock.calls[1]?.[4]).toMatchObject({ activity: "Waiting" });
-		expect(slot.el.dataset.tone).toBe("attention");
-		slot.el.click();
-		expect(open).toHaveBeenCalledWith(slot.el);
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("attention");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		// A click opens the session; it never unfolds.
+		summary.click();
+		expect(open).toHaveBeenCalledWith(WORKER, summary);
+		expect(pill.el.querySelector<HTMLElement>(".coding-pill")?.dataset.open).not.toBe("true");
+		// With none going the pill hides.
+		pill.update(
+			[],
+			() => staff,
+			() => owner,
+		);
+		expect(pill.el.hidden).toBe(true);
+	});
+
+	it("gathers several sessions under a count, unfolds them into lines and opens each one", () => {
+		stubFigureMotion();
+		const open = vi.fn();
+		const pill = new CodingPill(open);
+		document.body.append(pill.el);
+		const second = codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:01:00Z" });
+		pill.update(
+			[codingSession(), second],
+			() => staff,
+			() => owner,
+		);
+		const box = pill.el.querySelector<HTMLElement>(".coding-pill")!;
+		expect(box.classList.contains("is-single")).toBe(false);
+		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(summary.querySelectorAll(".coding-pill-faces .coding-pill-face")).toHaveLength(2);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("2 coding agents");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("Working");
+		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("");
+		expect(summary.dataset.workerId).toBeUndefined();
+		expect(summary.getAttribute("aria-label")).toBe("2 coding agents · Working");
+		// The lines, oldest first, each with its figure, title, status and Open.
+		const rows = [...pill.el.querySelectorAll<HTMLButtonElement>(".coding-pill-rows > .coding-pill-row")];
+		expect(rows.map((row) => row.dataset.workerId)).toEqual([WORKER, id(902)]);
+		expect(rows[0]?.querySelector(".coding-pill-face .coding-badge-claude-code")).not.toBeNull();
+		expect(rows[0]?.querySelector(".coding-pill-title")?.textContent).toBe("Fix the delay after send");
+		expect(rows[0]?.querySelector(".coding-pill-status")?.textContent).toContain("running vitest");
+		expect(rows[0]?.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+		expect(rows[1]?.getAttribute("aria-label")).toMatch(/^Second · Working.*\. Open the session$/);
+		// The summary unfolds them; Escape folds them and gives focus back to it.
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		expect(summary.getAttribute("aria-expanded")).toBe("true");
+		rows[1]!.focus();
+		rows[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(box.dataset.open).toBe("false");
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(summary);
+		// Focus leaving the pill folds it too.
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+		expect(box.dataset.open).toBe("false");
+		rows[1]!.click();
+		expect(open).toHaveBeenCalledWith(id(902), rows[1]);
+		// Who needs an answer is counted on the summary, and the waiting line asks for it.
+		const asked = (session: CodingSession) => ({ ...session, phase: "awaiting_input" as const });
+		pill.update(
+			[asked(codingSession()), second],
+			() => staff,
+			() => owner,
+		);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("1 needs you");
+		expect(summary.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("attention");
+		expect(rows[0]?.dataset.tone).toBe("attention");
+		expect(rows[0]?.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		pill.update(
+			[asked(codingSession()), asked(second)],
+			() => staff,
+			() => owner,
+		);
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("2 need you");
+		// Down to one, the summary is that session's line again.
+		pill.update(
+			[second],
+			() => staff,
+			() => owner,
+		);
+		expect(pill.el.querySelector(".coding-pill-rows")?.childElementCount).toBe(0);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("Second");
+		expect(summary.hasAttribute("aria-expanded")).toBe(false);
+		expect(summary.dataset.workerId).toBe(id(902));
 	});
 });

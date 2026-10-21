@@ -40,9 +40,10 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
+import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { ComputerPanels } from "./views/computer.ts";
-import { ConversationView } from "./views/conversation.ts";
+import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
@@ -225,6 +226,9 @@ export function mountApplication(
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
+	/** The agent card opened from the rail, and what it asked for once that agent's chat is on screen. */
+	let agentCard: AgentDetails | undefined;
+	let agentPage: { agentId: string; page: AgentPage } | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -368,6 +372,7 @@ export function mountApplication(
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		agentPage = undefined;
 		computer = undefined;
 		computerPanels = undefined;
 		conversation = undefined;
@@ -810,10 +815,37 @@ export function mountApplication(
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
+		// The card's Computer and Routines open in the agent's own chat: here when it is on screen, else once it opens.
+		const showAgentPage = (agentId: string, page: AgentPage) => {
+			if (conversation?.show(agentId, page)) return;
+			agentPage = { agentId, page };
+			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
+		};
+		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card) => {
+			agentCard?.dispose();
+			const opened = new AgentDetails(
+				controller,
+				agent,
+				{ ...agentActions, ...workspaceActions },
+				() => {
+					if (agentCard === opened) agentCard = undefined;
+				},
+				anchor,
+				controller.signal,
+				{
+					computer: () => showAgentPage(agent.id, "computer"),
+					routines: () => showAgentPage(agent.id, "routines"),
+					...card,
+				},
+				"beside",
+			);
+			agentCard = opened;
+		};
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
+				openAgentCard,
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs
@@ -1019,6 +1051,8 @@ export function mountApplication(
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		// A card's request waits only while its agent's chat is on the way.
+		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1291,6 +1325,8 @@ export function mountApplication(
 					if (!frame.inert) conversation.focus();
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
+				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
+				if (agentPage && conversation.show(agentPage.agentId, agentPage.page)) agentPage = undefined;
 				return;
 			}
 			case "staff": {

@@ -15,13 +15,22 @@ export class SurfaceDialog {
 	readonly #previous: HTMLElement | null;
 	readonly #onClose: () => void;
 	readonly #anchor: HTMLElement | undefined;
+	/** Under the anchor (a title), or beside it (a row in the rail). */
+	readonly #beside: boolean;
 	readonly #lifetime = new AbortController();
 	#modal = true;
 	#closed = false;
-	constructor(label: string, className: string, onClose: () => void, anchor?: HTMLElement) {
+	constructor(
+		label: string,
+		className: string,
+		onClose: () => void,
+		anchor?: HTMLElement,
+		placement: "below" | "beside" = "below",
+	) {
 		this.#previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		this.#onClose = onClose;
 		this.#anchor = anchor;
+		this.#beside = placement === "beside";
 		this.#close = h(
 			"button",
 			{
@@ -91,6 +100,12 @@ export class SurfaceDialog {
 		);
 		window.addEventListener("resize", () => this.#layout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#layout(), { signal: this.#lifetime.signal });
+		// A card beside a row stays inside the window when it grows (a longer description, an error line).
+		if (this.#beside && typeof ResizeObserver !== "undefined") {
+			const sizes = new ResizeObserver(() => this.#layout());
+			sizes.observe(this.el);
+			this.#lifetime.signal.addEventListener("abort", () => sizes.disconnect());
+		}
 		this.#close.focus({ preventScroll: true });
 	}
 	#layout(): void {
@@ -102,7 +117,17 @@ export class SurfaceDialog {
 			if (modal) this.el.showModal();
 			else this.el.show();
 		}
-		if (this.#anchor && !modal) {
+		// A row the rail rebuilt meanwhile (its agent started working) is gone: the card stays where it is.
+		if (this.#anchor && !modal && !this.#anchor.isConnected) return;
+		if (this.#anchor && !modal && this.#beside) {
+			// Level with the row's top, kept inside the window as the card grows.
+			const rect = this.#anchor.getBoundingClientRect();
+			const scale = uiScale();
+			const box = this.el.getBoundingClientRect();
+			this.el.style.left = `${Math.min(rect.right + 8 * scale, window.innerWidth - box.width - 12 * scale)}px`;
+			this.el.style.top = `${Math.max(12 * scale, Math.min(rect.top - 8 * scale, window.innerHeight - box.height - 12 * scale))}px`;
+			this.el.style.maxHeight = `${window.innerHeight - 24 * scale}px`;
+		} else if (this.#anchor && !modal) {
 			const rect = this.#anchor.getBoundingClientRect();
 			const scale = uiScale();
 			this.el.style.left = `${Math.max(12 * scale, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12 * scale))}px`;

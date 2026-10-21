@@ -28,7 +28,7 @@ import {
 	renderAuthorizationCard,
 } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { CodingSessionSlot, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
+import { CodingPill, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
 import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import {
@@ -67,6 +67,7 @@ import { type AgentState, answersInteraction, type CompanyController, type Conve
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
+import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 import { ComposerModels } from "./composer-models.ts";
 import {
 	type FieldEdits,
@@ -87,7 +88,7 @@ import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
- * header's figures follow them. Nothing is read once they all settled. */
+ * pill's figures follow them. Nothing is read once they all settled. */
 const CODING_POLL_WORKING_MS = 2_500;
 const CODING_POLL_WAITING_MS = 6_000;
 const CODING_POLL_HIDDEN_MS = 20_000;
@@ -232,6 +233,9 @@ function placeChildren(parent: Element, children: readonly Node[]): void {
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
+/** What an agent's card can open in the agent's chat. */
+export type AgentPage = "computer" | "routines";
+
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
@@ -291,18 +295,16 @@ export class ConversationView {
 	readonly #attach: HTMLButtonElement;
 	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
-	/** The coding sessions still going, beside the agent in the header. */
-	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	/** The coding sessions still going, as a pill above the composer. */
+	readonly #coding = new CodingPill((workerId, opener) => this.#openCodingSession(workerId, opener));
 	/** The other members who have this conversation open right now. */
 	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
 	#hereKey = "";
-	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
 	#codingPoll: ReturnType<typeof setTimeout> | undefined;
 	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
 	#codingReading = false;
 	/** Reads that failed in a row; each one doubles the wait, up to eight times. */
 	#codingFailures = 0;
-	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
@@ -330,6 +332,8 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
+	/** The agent's routines, open over the thread from its card. */
+	#routines: { view: AgentRoutines; el: HTMLElement; lifetime: AbortController } | undefined;
 	/** The chip that opened the transcript; focus returns there when it closes. */
 	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
@@ -652,18 +656,6 @@ export class ConversationView {
 			"aria-expanded": "false",
 			onclick: () => this.#openDetails(),
 		});
-		this.#computer = h(
-			"button",
-			{
-				type: "button",
-				class: "icon-button thread-computer",
-				title: t("Open agent computer"),
-				"aria-label": t("Open agent computer"),
-				"aria-expanded": "false",
-				onclick: () => this.#toggleComputer(),
-			},
-			icon("computer"),
-		);
 		this.#navigation = h(
 			"button",
 			{
@@ -677,30 +669,7 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#here, this.#computer);
-		// An open title pill lies over the figures after it; over one of them it steps aside,
-		// so that figure opens and a click there opens its own session.
-		const yieldTo = (event: PointerEvent) => {
-			const over = [...this.#codingSlots.children].find((slot) => {
-				const box = slot.getBoundingClientRect();
-				return (
-					event.clientX >= box.left &&
-					event.clientX < box.right &&
-					event.clientY >= box.top &&
-					event.clientY < box.bottom
-				);
-			});
-			for (const slot of this.#codingSlots.children)
-				slot.classList.toggle("coding-slot-yield", over !== undefined && slot !== over);
-		};
-		this.#codingSlots.addEventListener("pointermove", yieldTo, { signal: this.#lifetime.signal });
-		this.#codingSlots.addEventListener(
-			"pointerleave",
-			() => {
-				for (const slot of this.#codingSlots.children) slot.classList.remove("coding-slot-yield");
-			},
-			{ signal: this.#lifetime.signal },
-		);
+		this.#header.append(this.#navigation, this.#identity, this.#here);
 		this.#earlierButton = h(
 			"button",
 			{
@@ -749,6 +718,7 @@ export class ConversationView {
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
+			this.#coding.el,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
@@ -800,6 +770,7 @@ export class ConversationView {
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#closePair(false);
+		this.#closeRoutines(false);
 		// The computer stays open, and connected, for the next thread that shows it.
 		if (this.#ownPanels) this.#panels.dispose();
 		else this.#panel?.detach();
@@ -931,7 +902,10 @@ export class ConversationView {
 			this.#identity.setAttribute("aria-expanded", "false");
 		};
 		this.#details = agent
-			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
+			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
+					computer: () => this.show(agent.id, "computer"),
+					routines: () => this.show(agent.id, "routines"),
+				})
 			: new GroupDetails(
 					this.#company,
 					this.#sessionId,
@@ -942,10 +916,57 @@ export class ConversationView {
 				);
 	}
 
+	/** Opens this agent's computer or its routines here, as its card asks. False while the thread is not
+	 * that agent's, or does not know its agent yet: the card's request then waits for it. */
+	show(agentId: string, page: AgentPage): boolean {
+		const state = this.#company.store.get();
+		const agent = this.#company.staffById(
+			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
+		);
+		if (this.#disposed || !agent || agent.id !== agentId) return false;
+		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
+		else this.#openRoutines(agent);
+		return true;
+	}
+
+	/** The agent's routines over this thread, as a page of the chat; closing it goes back to the chat. */
+	#openRoutines(agent: HostedStaffAgent): void {
+		if (this.#routines) {
+			this.#routines.view.refresh();
+			return;
+		}
+		this.#closePair(false);
+		this.#closeCodingSession();
+		const lifetime = new AbortController();
+		const view = new AgentRoutines(
+			() => this.#company.staffById(agent.id) ?? agent,
+			routineAccessFor(this.#company, this.#actions),
+			AbortSignal.any([this.#lifetime.signal, lifetime.signal]),
+			() => this.#closeRoutines(true),
+		);
+		const el = h("section", { class: "thread-routines", "aria-label": t("Routines") }, view.el);
+		this.#routines = { view, el, lifetime };
+		this.#conversationPane.inert = true;
+		this.#body.append(el);
+		el.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+	}
+
+	#closeRoutines(refocus: boolean): void {
+		const open = this.#routines;
+		if (!open) return;
+		this.#routines = undefined;
+		open.lifetime.abort();
+		open.el.remove();
+		this.#conversationPane.inert = Boolean(this.#pair);
+		if (refocus && !this.#composer.disabled && !this.#composerWrap.hidden)
+			this.#composer.focus({ preventScroll: true });
+	}
+
 	/** Lay the two agents' transcript over this thread; the thread waits underneath.
 	 * The coworker reads on the left, this thread's own agent on the right. */
 	#openPair(pairSessionId: string, agentIds: readonly [string, string], opener: HTMLElement): void {
 		this.#closePair(false);
+		this.#closeRoutines(false);
 		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
 		this.#pair = view;
 		this.#pairOpener = opener;
@@ -993,8 +1014,7 @@ export class ConversationView {
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
-			this.#computer.setAttribute("aria-expanded", "false");
-			this.#computer.focus();
+			if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			return;
 		}
 		const state = this.#company.store.get();
@@ -1351,7 +1371,6 @@ export class ConversationView {
 		this.#panel = panel;
 		panel.attach(this.#body, () => this.#toggleComputer());
 		this.#autosize();
-		this.#computer.setAttribute("aria-expanded", "true");
 		return panel;
 	}
 
@@ -1822,7 +1841,8 @@ export class ConversationView {
 			!state.team?.capabilities.read ||
 			Boolean(state.accessLost) ||
 			this.#company.signal.aborted;
-		this.#computer.hidden = !agent;
+		// An agent's own chat has no header on a wide screen: the rail names it, and its card is there.
+		this.#header.classList.toggle("is-agent", Boolean(agent));
 		this.#identity.title = opening ? "" : title;
 		this.#identity.setAttribute(
 			"aria-label",
@@ -1844,7 +1864,6 @@ export class ConversationView {
 				this.#panel = undefined;
 				const shown = agent ? this.#showPanel(agent) : undefined;
 				if (focused) shown ? shown.focus() : this.#composer.focus();
-				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
 				this.#autosize();
 			} else if (this.#panel && agent) this.#panel.retitle(agent.displayName);
 			if (opening) replace(this.#identity, ...threadIdentitySkeleton());
@@ -3147,46 +3166,23 @@ export class ConversationView {
 		);
 	}
 
-	/** The sessions still going sit beside the agent in the header, each a figure
-	 * that works while its session works; the figures are kept across renders so
-	 * their motion runs on. */
+	/** The sessions still going sit in the pill above the composer, each a figure that
+	 * works while its session works; the figures are kept across renders so their motion runs on. */
 	#renderCodingSlots(sessions: readonly CodingSession[], agent: HostedStaffAgent | undefined): void {
 		// The session open as its own thread takes the fresh listing too.
 		const open = this.#codingThread && sessions.find((session) => session.workerId === this.#codingThread?.workerId);
 		if (open) this.#codingThread?.view.update(open);
 		const going = [...sessions].filter(codingSessionGoing).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-		const names = this.#codingNames(agent?.displayName ?? t("Agent"));
-		const slots = going.map((session) => {
-			let slot = this.#codingSlotViews.get(session.workerId);
-			if (!slot) {
-				slot = new CodingSessionSlot(session.workerId, (opener) =>
-					this.#openCodingSession(session.workerId, opener),
-				);
-				this.#codingSlotViews.set(session.workerId, slot);
-			}
-			slot.update(session, this.#company.staffById(session.agentId) ?? agent, names(session));
-			return slot;
-		});
-		for (const workerId of this.#codingSlotViews.keys())
-			if (!going.some((session) => session.workerId === workerId)) this.#codingSlotViews.delete(workerId);
-		const current = [...this.#codingSlots.children];
-		if (current.length !== slots.length || slots.some((slot, index) => current[index] !== slot.el)) {
-			const focused = this.#codingSlots.contains(document.activeElement)
-				? (document.activeElement as HTMLElement)
-				: undefined;
-			replace(this.#codingSlots, ...slots.map((slot) => slot.el));
-			// Moving the nodes drops focus to the page: back to the same figure, or to the agent if it left.
-			if (focused && document.activeElement !== focused)
-				(focused.isConnected ? focused : this.#identity.disabled ? this.#composer : this.#identity).focus({
-					preventScroll: true,
-				});
-		}
-		this.#codingSlots.hidden = !slots.length;
+		this.#coding.update(
+			going,
+			(session) => this.#company.staffById(session.agentId) ?? agent,
+			this.#codingNames(agent?.displayName ?? t("Agent")),
+		);
 		this.#watchCodingSessions();
 	}
 
 	/** Re-reads the thread's coding sessions on a clock while one is still going, so
-	 * the header's figures follow them; stops once they all settled. A new session or
+	 * the pill's figures follow them; stops once they all settled. A new session or
 	 * a follow-up starts it again from the next render. */
 	#watchCodingSessions(): void {
 		if (this.#codingPoll !== undefined || this.#codingReading || this.#disposed) return;
@@ -3278,7 +3274,7 @@ export class ConversationView {
 			...this.#codingOptions(agent, agent?.displayName ?? t("Agent")),
 			close: () => {
 				if (this.#codingThread?.view === view) this.#codingThread = undefined;
-				// Back where the member opened it; the line if the header's figure went away meanwhile.
+				// Back where the member opened it; the thread's line if the pill's line went away meanwhile.
 				(opener?.isConnected
 					? opener
 					: this.#messages.querySelector<HTMLElement>(`.coding-line[data-worker-id="${workerId}"] .peer-chip`)

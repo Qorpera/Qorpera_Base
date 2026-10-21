@@ -69,7 +69,11 @@ describe("group chat identity", () => {
 		expect(identity.disabled).toBe(false);
 		expect(identity.getAttribute("aria-haspopup")).toBe("dialog");
 		expect(identity.getAttribute("aria-expanded")).toBe("false");
-		expect(view.el.querySelector<HTMLButtonElement>(".thread-computer")?.hidden).toBe(true);
+		// A group has no computer; its header stays on every width.
+		expect(view.el.querySelector(".computer-panel")).toBeNull();
+		expect(view.show(staff.id, "computer")).toBe(false);
+		expect(view.el.querySelector(".computer-panel")).toBeNull();
+		expect(view.el.querySelector(".thread-header")?.classList.contains("is-agent")).toBe(false);
 		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("respond in this group chat");
 		expect(view.el.textContent).not.toContain("team rooms");
 		const previousRow = row();
@@ -142,7 +146,9 @@ describe("group chat identity", () => {
 		expect(identity.disabled).toBe(false);
 		expect(identity.getAttribute("aria-label")).toBe("Open agent details");
 		expect(identity.getAttribute("aria-haspopup")).toBe("dialog");
-		expect(view.el.querySelector<HTMLButtonElement>(".thread-computer")?.hidden).toBe(false);
+		expect(view.el.querySelector(".thread-header")?.classList.contains("is-agent")).toBe(true);
+		expect(view.show(staff.id, "computer")).toBe(true);
+		expect(view.el.querySelector(".computer-panel")).not.toBeNull();
 		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("group chat");
 	});
 

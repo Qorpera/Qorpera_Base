@@ -211,7 +211,7 @@ describe("coding sessions in the thread", () => {
 		expect(document.activeElement).toBe(messages.querySelector(".coding-line .peer-chip"));
 	});
 
-	it("a session still going sits beside the agent in the header, working, and leaves when it settles", async () => {
+	it("a session still going shows in the pill above the composer, working, and leaves when it settles", async () => {
 		const f = mount((store) => {
 			store.set({
 				projection: { items: [message(1, "On it.", "2026-09-22T10:00:30Z")], hiddenCount: 0, lastSequence: 1 },
@@ -230,46 +230,42 @@ describe("coding sessions in the thread", () => {
 		vi.mocked(f.api.listCodingSessions).mockResolvedValue([running]);
 		vi.mocked(f.api.readCodingSession).mockResolvedValue({ session: running, isOwner: true, events: [] });
 		await settle();
-		const header = f.view.el.querySelector<HTMLElement>(".thread-header")!;
-		const slots = header.querySelector<HTMLElement>(".thread-coding-sessions")!;
-		// Right after the agent, before who is here and the computer button; only the session still going.
-		expect([...header.children].map((node) => node.className)).toEqual([
-			"mobile-navigation-toggle icon-button",
-			"thread-identity",
-			"thread-coding-sessions",
-			"thread-presence",
-			"icon-button thread-computer",
-		]);
-		expect(slots.hidden).toBe(false);
-		const slot = slots.querySelector<HTMLButtonElement>(".coding-slot")!;
-		expect(slots.querySelectorAll(".coding-slot")).toHaveLength(1);
-		expect(slot.dataset.workerId).toBe(id(900));
-		expect(slot.querySelector(".coding-slot-name")?.textContent).toBe("Fix the delay after send");
-		expect(slot.querySelector(".coding-badge-codex")).not.toBeNull();
-		expect(slot.dataset.tone).toBe("working");
+		// Nothing of it in the header: the dock stands right above the composer.
+		expect(f.view.el.querySelector(".thread-header .coding-pill, .thread-header .coding-badge")).toBeNull();
+		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .coding-dock")!;
+		expect(dock.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		expect(dock.hidden).toBe(false);
+		// Only the session still going, and alone it is the pill's one line.
+		expect(dock.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);
+		expect(dock.querySelectorAll(".coding-pill-row")).toHaveLength(0);
+		const line = dock.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(line.dataset.workerId).toBe(id(900));
+		expect(line.querySelector(".coding-pill-label")?.textContent).toBe("Fix the delay after send");
+		expect(line.querySelector(".coding-badge-codex")).not.toBeNull();
+		expect(line.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("working");
+		expect(line.querySelector(".coding-pill-action")?.textContent).toBe("Open");
 		// It re-reads the sessions on the working clock while one is going.
 		vi.mocked(f.api.listCodingSessions).mockClear();
 		await vi.advanceTimersByTimeAsync(2_500);
 		expect(f.api.listCodingSessions).toHaveBeenCalledWith(session.sessionId);
 		await settle();
-		expect(header.querySelector(".coding-slot")).toBe(slot);
-		expect(slot.title).toContain("npm test");
-		// The figure opens the session; Escape gives focus back to it.
-		slot.click();
+		expect(dock.querySelector(".coding-pill-summary")).toBe(line);
+		expect(line.querySelector(".coding-pill-note")?.textContent).toContain("npm test");
+		// The line opens the session; Escape gives focus back to it.
+		line.click();
 		await settle();
 		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
 		f.view.el
 			.querySelector(".coding-thread")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(document.activeElement).toBe(slot);
-		// Settled: the figure leaves the header and the reads stop.
+		expect(document.activeElement).toBe(line);
+		// Settled: the pill goes and the reads stop.
 		vi.mocked(f.api.listCodingSessions).mockResolvedValue([
 			codingSession({ phase: "completed", workerState: "succeeded", updatedAt: "2026-09-22T10:12:00Z" }),
 		]);
 		await vi.advanceTimersByTimeAsync(2_500);
 		await settle();
-		expect(header.querySelector(".coding-slot")).toBeNull();
-		expect(slots.hidden).toBe(true);
+		expect(dock.hidden).toBe(true);
 		const reads = vi.mocked(f.api.listCodingSessions).mock.calls.length;
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(reads);
@@ -277,52 +273,84 @@ describe("coding sessions in the thread", () => {
 		expect(f.view.el.querySelector(".coding-line")).not.toBeNull();
 	});
 
-	it("an open title pill steps aside over the next figure, so that figure opens its own session", async () => {
+	it("several sessions fold under the pill's count, which unfolds into their lines and folds on Escape", async () => {
+		const sessions = [
+			codingSession(),
+			codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:05:00Z" }),
+		];
 		const f = mount((store) => {
 			store.set({
-				projection: { items: [], hiddenCount: 0, lastSequence: 0 },
-				codingSessions: [
-					codingSession(),
-					codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:05:00Z" }),
-				],
+				projection: { items: [message(1, "On it.", "2026-09-22T10:00:30Z")], hiddenCount: 0, lastSequence: 1 },
+				codingSessions: sessions,
 			});
 		});
 		vi.mocked(f.api.listCodingSessions).mockImplementation(async () => f.store.get().codingSessions ?? []);
+		vi.mocked(f.api.readCodingSession).mockImplementation(async (workerId) => ({
+			session: f.store.get().codingSessions?.find((item) => item.workerId === workerId) ?? sessions[0]!,
+			isOwner: true,
+			events: [],
+		}));
 		await settle();
-		const slots = f.view.el.querySelector<HTMLElement>(".thread-coding-sessions")!;
-		const [first, second] = [...slots.querySelectorAll<HTMLElement>(".coding-slot")];
-		// jsdom lays nothing out: the figures stand 30 px wide, 14 px apart, at the header's height.
-		const box = (left: number) => ({ left, right: left + 30, top: 6, bottom: 42 }) as DOMRect;
-		vi.spyOn(first!, "getBoundingClientRect").mockReturnValue(box(100));
-		vi.spyOn(second!, "getBoundingClientRect").mockReturnValue(box(144));
-		const move = (x: number) =>
-			first!.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: 20 }));
-		// Over the first figure: it keeps the pointer (the others step aside, which changes nothing here).
-		move(120);
-		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
-		expect(second!.classList.contains("coding-slot-yield")).toBe(true);
-		// Over the second figure, under the first one's pill: the first steps aside.
-		move(150);
-		expect(first!.classList.contains("coding-slot-yield")).toBe(true);
-		expect(second!.classList.contains("coding-slot-yield")).toBe(false);
-		// Beyond the figures, on the first pill's title: it takes the pointer again.
-		move(260);
-		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
-		move(150);
-		slots.dispatchEvent(new PointerEvent("pointerleave"));
-		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
+		const pill = f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill")!;
+		const summary = pill.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("2 coding agents");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toBe("Working");
+		const rows = () => [...pill.querySelectorAll<HTMLButtonElement>(".coding-pill-row")];
+		// Oldest first.
+		expect(rows().map((row) => row.dataset.workerId)).toEqual([id(900), id(902)]);
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		summary.focus();
+		summary.click();
+		expect(pill.dataset.open).toBe("true");
+		expect(summary.getAttribute("aria-expanded")).toBe("true");
+		// Escape folds it back onto the summary, and goes no further than the pill.
+		const second = rows()[1]!;
+		second.focus();
+		second.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(pill.dataset.open).toBe("false");
+		expect(summary.getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(summary);
+		// A line opens its own session; focus comes back to the line when it closes.
+		summary.click();
+		second.click();
+		await settle();
+		expect(f.view.el.querySelector(".coding-thread")?.getAttribute("aria-label")).toContain("Second");
+		f.view.el.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
+		expect(document.activeElement).toBe(second);
+		// A line that left while its session was open hands focus to the session's line in the thread.
+		const first = rows()[0]!;
+		first.click();
+		await settle();
+		f.store.set({
+			codingSessions: [
+				codingSession({ phase: "completed", workerState: "succeeded", updatedAt: "2026-09-22T10:12:00Z" }),
+				sessions[1]!,
+			],
+		});
+		await settle();
+		expect(first.isConnected).toBe(false);
+		f.view.el.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
+		expect(document.activeElement).toBe(
+			f.view.el.querySelector(`.coding-line[data-worker-id="${id(900)}"] .peer-chip`),
+		);
+		// One left going: the summary is its line.
+		expect(pill.classList.contains("is-single")).toBe(true);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("Second");
 	});
 
-	it("a session waiting on its owner waits in the header at the slower pace", async () => {
+	it("a session waiting on its owner asks for the answer in the pill, at the slower pace", async () => {
 		const asked = codingSession({ phase: "awaiting_input", workerState: "blocked" });
 		const f = mount((store) => {
 			store.set({ projection: { items: [], hiddenCount: 0, lastSequence: 0 }, codingSessions: [asked] });
 		});
 		vi.mocked(f.api.listCodingSessions).mockResolvedValue([asked]);
 		await settle();
-		const slot = f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")!;
-		expect(slot.dataset.tone).toBe("attention");
-		expect(slot.title).toBe("Fix the delay after send · Needs you · your answer is recorded in this thread");
+		const line = f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill-summary")!;
+		expect(line.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("attention");
+		expect(line.querySelector(".coding-pill-action")?.textContent).toBe("Answer");
+		expect(line.getAttribute("aria-label")).toBe(
+			"Fix the delay after send · Needs you · your answer is recorded in this thread. Open the session",
+		);
 		vi.mocked(f.api.listCodingSessions).mockClear();
 		await vi.advanceTimersByTimeAsync(2_500);
 		expect(f.api.listCodingSessions).not.toHaveBeenCalled();
@@ -348,8 +376,9 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		const messages = f.view.el.querySelector<HTMLElement>(".messages")!;
 		const line = messages.querySelector(".coding-line")!;
-		const slot = f.view.el.querySelector<HTMLButtonElement>(".thread-header .coding-slot")!;
-		slot.focus();
+		const pill = f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill")!;
+		const summary = pill.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		summary.focus();
 		vi.mocked(f.api.listCodingSessions).mockClear();
 		await vi.advanceTimersByTimeAsync(2_500);
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
@@ -357,21 +386,22 @@ describe("coding sessions in the thread", () => {
 		document.dispatchEvent(new Event("visibilitychange"));
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
-		// The session's step changes: the header takes it and the thread keeps its nodes.
+		// The session's step changes: the pill takes it and the thread keeps its nodes.
 		finish([codingSession({ lastStep: "npm test", updatedAt: "2026-09-22T10:10:01Z" })]);
 		await settle();
 		expect(messages.querySelector(".coding-line")).toBe(line);
-		expect(slot.title).toContain("npm test");
+		expect(summary.querySelector(".coding-pill-note")?.textContent).toContain("npm test");
 		await vi.advanceTimersByTimeAsync(2_500);
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(2);
-		// A second session starts: the header takes both, and the focused figure keeps focus.
+		// A second session starts: the pill gathers both as lines, and its focused summary keeps focus.
 		finish([
 			codingSession({ lastStep: "npm test", updatedAt: "2026-09-22T10:10:01Z" }),
 			codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:20:00Z" }),
 		]);
 		await settle();
-		expect(f.view.el.querySelectorAll(".thread-header .coding-slot")).toHaveLength(2);
-		expect(document.activeElement).toBe(slot);
+		expect(pill.querySelectorAll(".coding-pill-row")).toHaveLength(2);
+		expect(summary.querySelector(".coding-pill-label")?.textContent).toBe("2 coding agents");
+		expect(document.activeElement).toBe(summary);
 		await vi.advanceTimersByTimeAsync(2_500);
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(3);
 		// A failed read waits twice as long before the next one.
@@ -421,7 +451,7 @@ describe("coding sessions in the thread", () => {
 		expect(state.error).toBeUndefined();
 		expect(state.codingSessions).toEqual([]);
 		expect(f.view.el.querySelector(".coding-line")).toBeNull();
-		expect(f.view.el.querySelector<HTMLElement>(".thread-coding-sessions")?.hidden).toBe(true);
+		expect(f.view.el.querySelector<HTMLElement>(".coding-dock")?.hidden).toBe(true);
 		expect(f.view.el.querySelector(".messages")?.textContent).toContain("No messages yet.");
 	});
 
@@ -486,6 +516,8 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		expect(f.api.answerCodingSession).toHaveBeenCalledWith(id(900), "Keep it.", expect.any(String));
 		expect(store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2, isOwner: true });
-		expect(f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")?.dataset.tone).toBe("working");
+		expect(
+			f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill-summary .coding-pill-note")?.dataset.tone,
+		).toBe("working");
 	});
 });
