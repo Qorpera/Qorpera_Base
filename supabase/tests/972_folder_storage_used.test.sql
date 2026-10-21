@@ -83,6 +83,10 @@ begin
 	delete from public.qorpera_folder_storage_usage where profile_id = '70700000-0000-4000-8000-000000000010';
 	perform pg_temp.is(pg_temp.used_as('70700000-0000-4000-8000-000000000001'), pg_temp.catalog_bytes(), 'no quota row yet');
 	if pg_temp.catalog_bytes()::bigint <= 7 then raise exception 'The catalog holds the stored files'; end if;
+	-- A count that went below 0 is answered as 0, a size every reader takes.
+	insert into public.qorpera_folder_storage_usage(profile_id, bytes, objects)
+	values ('70700000-0000-4000-8000-000000000010', -5, 0);
+	perform pg_temp.is(pg_temp.used_as('70700000-0000-4000-8000-000000000001'), '0', 'never below 0');
 end $$;
 
 -- 3. A company that is not folder-v2 keeps its column's count -------------------------------------------------------

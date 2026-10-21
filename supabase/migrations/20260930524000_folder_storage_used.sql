@@ -6,10 +6,10 @@
 -- files. For a folder-v2 company the answer now carries the count its folder quota keeps and enforces:
 -- qorpera_folder_storage_usage.bytes (20260928279520 §5). Before that row exists (it is seeded at the company's first
 -- object change after it became folder-v2) the answer is the sum of the company's object catalog, which is what the row
--- seeds itself from. A company that is not folder-v2 keeps the column's count. Every other part of the answer, who may
--- read it, its grants and the column itself are unchanged; so is every caller (qorpera_get_company_file and the
--- profile answers that embed a company file). An exact-text patch; the inserted text names this migration, for deploy
--- guards. SQL test 972.
+-- seeds itself from. The answer is never below 0, as its readers require (the web refuses a negative size). A company
+-- that is not folder-v2 keeps the column's count. Every other part of the answer, who may read it, its grants and the
+-- column itself are unchanged; so is every caller (qorpera_get_company_file and the profile answers that embed a
+-- company file). An exact-text patch; the inserted text names this migration, for deploy guards. SQL test 972.
 
 set local lock_timeout = '3s';
 
@@ -25,9 +25,9 @@ end $$;
 
 select pg_temp.folder_storage_used_replace('public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure,
 	$old$		'storage_used_bytes', p_file.storage_used_bytes,$old$,
-	$new$		-- 20260930524000: a folder-v2 company's stored bytes, as its folder quota counts them.
-		'storage_used_bytes', case when public.qorpera_company_is_folder_v2(p_file.profile_id) then coalesce(
+	$new$		-- 20260930524000: a folder-v2 company's stored bytes, as its folder quota counts them (never below 0).
+		'storage_used_bytes', case when public.qorpera_company_is_folder_v2(p_file.profile_id) then greatest(coalesce(
 			(select usage.bytes from public.qorpera_folder_storage_usage as usage where usage.profile_id = p_file.profile_id),
 			(select coalesce(sum(object.bytes), 0) from public.qorpera_profile_objects as object
 				where object.profile_id = p_file.profile_id)
-		) else p_file.storage_used_bytes end,$new$);
+		), 0) else p_file.storage_used_bytes end,$new$);

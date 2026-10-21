@@ -945,9 +945,11 @@ describe("a folder-v2 company's Company File", () => {
 			this.open = false;
 		};
 		const html = "<h1>Sales</h1><script>1</script>";
-		const { fake, host } = await opened({ embedded: true });
+		const { fake, host, browser } = await opened({ embedded: true });
 		fake.folders.add("designs");
 		fake.contents.set("designs/sales.html", html);
+		browser.showDocuments();
+		await settle();
 		await click(row(host, "designs"));
 		await click(row(host, "sales.html"));
 		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("sales.html");

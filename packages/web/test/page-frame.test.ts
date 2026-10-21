@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
 
-const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
-const frameDocument = readFileSync(new URL("../public/page-preview/index.html", import.meta.url), "utf8");
+// Read from the package root, where the tests run.
+const headers = readFileSync(resolve("public/_headers"), "utf8");
+const frameDocument = readFileSync(resolve("public/page-preview/index.html"), "utf8");
 
 /** A rule's lines in public/_headers, as Pages reads them. */
 function rule(path: string): string[] {
