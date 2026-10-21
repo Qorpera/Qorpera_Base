@@ -63,11 +63,6 @@
 .storage-browser .files-name { display: block; min-width: 0; }
 .storage-browser .files-target { display: block; width: 100%; max-width: 100%; padding-top: 1px; }
 .storage-grid-meta { color: var(--text-soft); font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums; }
-/* A platform folder's one line, and the quiet heading the platform's folders sit under, after the company's own work. */
-.storage-folder-note { display: block; min-width: 0; color: var(--text-soft); font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.storage-group { padding: 18px 10px 6px; color: var(--text-soft); font-size: 12px; font-weight: 600; list-style: none; }
-.storage-group:first-child { padding-top: 2px; }
-.files-list.is-fresh .storage-group { animation: files-row-in 240ms cubic-bezier(0.2, 0.7, 0.2, 1) both; animation-delay: calc(var(--row, 0) * 16ms); }
 .storage-count { margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
 
 /* The icon view's glyphs (tileGlyph): a two-tone folder, and a page whose tag takes the category's colour. */
@@ -96,11 +91,6 @@
 	overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.35;
 }
 .storage-browser .is-grid .files-target { font-size: 11.5px; text-align: center; }
-.storage-browser .is-grid .storage-folder-note {
-	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere;
-	font-size: 11.5px; line-height: 1.35;
-}
-.storage-browser .is-grid .storage-group { grid-column: 1 / -1; }
 .storage-browser .is-grid :is(.storage-modified, .files-size, .storage-kind-label) { display: none; }
 .storage-browser .is-grid .files-empty { grid-column: 1 / -1; }
 
