@@ -1340,6 +1340,7 @@ export function mountApplication(
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
 					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
+					openSettings: () => openSettings("company-connections"),
 				});
 				return;
 			case "team":

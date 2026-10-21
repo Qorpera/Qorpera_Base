@@ -772,6 +772,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   admins and the member is one, and the member can write that conversation. Without `sessionId`, show the send without
   a way to answer it. With it, the answer can still be refused (a closed conversation, a paused company, a folder-v2
   card outside an agent thread); show that error.
+  Since 20260930522000 each thread of `qorpera_member_mail_threads` may carry `snippet`, the start of its newest
+  message's text on one line (at most 200 characters; never for account mail; absent once the text is no longer kept),
+  and each send of `qorpera_member_mail_waiting` may carry `snippet`, the start of the text the agent wants to send,
+  and `cc`, its cc recipients as the agent gave them.
+  Both are outside words to show as text only; a client must also work without them.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
