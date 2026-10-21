@@ -11,6 +11,7 @@ import {
 	applySidebarRequest,
 	type CompanySidebar,
 	containerOrder,
+	PIN_LIMIT,
 	parseCompanySidebar,
 	type SidebarRequest,
 } from "../src/cloud/sidebar.ts";
@@ -439,6 +440,55 @@ describe("rail right-clicks", () => {
 		rightClick(rowOf(rail, "Cy"));
 		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), expect.anything(), expect.any(Function));
 	});
+	it("pins and unpins from a card against the pins as they are when clicked, not when the card opened", async () => {
+		const { rail, manage, company, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn() });
+		await ready;
+		await settle();
+		rightClick(rowOf(rail, "Cy"));
+		const card = lastCard(openCard);
+		expect(card.pinned).toBe(false);
+		// Another tab pins Bo while Cy's card is open; the sidebar refreshes under it.
+		company.store.set({ sidebar: { ...company.store.get().sidebar!, pinned: [dee.id, bo.id] } });
+		card.pin!();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ action: "set_pins", order: [dee.id, bo.id, cy.id] }),
+		);
+		// Unpin keeps every other pin as it is now, too.
+		rightClick(rowOf(rail, "Dee"));
+		const unpin = lastCard(openCard);
+		expect(unpin.pinned).toBe(true);
+		company.store.set({ sidebar: { ...company.store.get().sidebar!, pinned: [dee.id, bo.id, cy.id, ada.id] } });
+		unpin.pin!();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ action: "set_pins", order: [bo.id, cy.id, ada.id] }),
+		);
+		// Done elsewhere meanwhile: nothing to send.
+		manage.mockClear();
+		rightClick(rowOf(rail, "Bo"));
+		const again = lastCard(openCard);
+		company.store.set({ sidebar: { ...company.store.get().sidebar!, pinned: [cy.id, ada.id] } });
+		again.pin!();
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+	});
+	it("says the pinned row is full when it filled up while the card was open", async () => {
+		const { rail, manage, company, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn() });
+		await ready;
+		await settle();
+		rightClick(rowOf(rail, "Cy"));
+		const card = lastCard(openCard);
+		const others = Array.from({ length: PIN_LIMIT }, (_, index) => id(500 + index));
+		company.store.set({ sidebar: { ...company.store.get().sidebar!, pinned: others } });
+		vi.spyOn(company, "sidebarRoster").mockReturnValue([...roster, ...others]);
+		card.pin!();
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(company.store.get().railError).toBe("The pinned row is full. Unpin something first.");
+	});
 	it("opens an agent's card beside its row, with Hide and Delete, instead of a menu", async () => {
 		const { rail, manage, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		await ready;
@@ -451,6 +501,8 @@ describe("rail right-clicks", () => {
 			cy,
 			rowOf(rail, "Cy"),
 			{
+				pinned: false,
+				pin: expect.any(Function),
 				hidden: false,
 				hide: expect.any(Function),
 				remove: expect.any(Function),
@@ -565,10 +617,25 @@ describe("rail right-clicks", () => {
 		await settle();
 		// A viewer keeps their own pins and hidden agents and group chats.
 		rightClick(rowOf(rail, "Cy"));
-		expect(lastCard(openCard)).toEqual({ hidden: false, hide: expect.any(Function) });
+		expect(lastCard(openCard)).toEqual({
+			pinned: false,
+			pin: expect.any(Function),
+			hidden: false,
+			hide: expect.any(Function),
+		});
+		// Pinning is theirs too: a tap on the card's Pin works with no edit rights and no drag (a phone).
+		lastCard(openCard).pin!();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ action: "set_pins", order: expect.arrayContaining([cy.id]) }),
+		);
+		manage.mockClear();
 		rightClick(groupRow(rail));
 		expect(lastCard(openGroup)).toEqual({
 			conversationId: launchSession.sessionId,
+			pinned: false,
+			pin: expect.any(Function),
 			hidden: false,
 			hide: expect.any(Function),
 		});
@@ -1156,6 +1223,8 @@ describe("group chats in the rail", () => {
 			groupRow(rail),
 			{
 				conversationId: launchSession.sessionId,
+				pinned: false,
+				pin: expect.any(Function),
 				hidden: false,
 				hide: expect.any(Function),
 				remove: expect.any(Function),
@@ -1267,6 +1336,8 @@ describe("group chats in the rail", () => {
 		rightClick(groupRow(rail));
 		expect(lastCard(openGroup)).toEqual({
 			conversationId: launchSession.sessionId,
+			pinned: false,
+			pin: expect.any(Function),
 			hidden: false,
 			hide: expect.any(Function),
 		});

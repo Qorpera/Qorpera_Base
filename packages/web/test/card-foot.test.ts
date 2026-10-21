@@ -21,30 +21,43 @@ describe("a card's foot", () => {
 			"Hide from sidebar",
 			"Delete",
 		]);
+		expect(labels(cardFoot({ pin: vi.fn(), conversationId: "c", hide: vi.fn(), remove: vi.fn() }, options))).toEqual([
+			"Pin",
+			"Copy conversation ID",
+			"Hide from sidebar",
+			"Delete",
+		]);
 		expect(labels(cardFoot({ hidden: true, hide: vi.fn() }, options))).toEqual(["Show in sidebar"]);
+		expect(labels(cardFoot({ pinned: true, pin: vi.fn() }, options))).toEqual(["Unpin"]);
 		expect(cardFoot({}, options)).toBeNull();
 		const foot = cardFoot({ conversationId: "c", remove: vi.fn() }, options)!;
 		expect([...foot.querySelectorAll("button")].every((item) => item.textContent === "" && item.title)).toBe(true);
 		expect(foot.querySelector(".agent-card-square:last-child")?.classList.contains("is-danger")).toBe(true);
 	});
 
-	it("closes the card before Hide and Delete act, and keeps it open while copying", async () => {
+	it("closes the card before Pin, Hide and Delete act, and keeps it open while copying", async () => {
 		vi.useFakeTimers();
 		const order: string[] = [];
 		const writeText = vi.fn(async (_text: string) => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 		const foot = cardFoot(
-			{ conversationId: "c-1", hide: () => order.push("hide"), remove: () => order.push("remove") },
+			{
+				pin: () => order.push("pin"),
+				conversationId: "c-1",
+				hide: () => order.push("hide"),
+				remove: () => order.push("remove"),
+			},
 			{ close: () => order.push("close"), copyFailed: vi.fn(), signal: new AbortController().signal },
 		)!;
-		const [copy, hide, remove] = [...foot.querySelectorAll<HTMLButtonElement>("button")];
+		const [pin, copy, hide, remove] = [...foot.querySelectorAll<HTMLButtonElement>("button")];
+		pin!.click();
 		hide!.click();
 		remove!.click();
-		expect(order).toEqual(["close", "hide", "close", "remove"]);
+		expect(order).toEqual(["close", "pin", "close", "hide", "close", "remove"]);
 		copy!.click();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(writeText).toHaveBeenCalledWith("c-1");
-		expect(order).toHaveLength(4);
+		expect(order).toHaveLength(6);
 		expect(copy!.getAttribute("aria-label")).toBe("Copied");
 		await vi.advanceTimersByTimeAsync(1600);
 		expect(copy!.getAttribute("aria-label")).toBe("Copy conversation ID");

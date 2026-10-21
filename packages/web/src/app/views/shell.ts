@@ -1442,8 +1442,37 @@ function canOrganize(company: CompanyController): boolean {
 	return Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
 }
 
-/** An agent's card from the rail: its conversation's id to copy, Hide (or Show, for a hidden agent) where
- * the member arranges the sidebar, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+/** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
+ * sidebar, its conversation's id to copy, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+/** Pin or unpin from a card: this member's own pins, so no edit rights are needed, and a tap works where a drag
+ * can't (a phone). Nothing to offer when the pinned row is full and the item is not in it. The click reads the
+ * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
+function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
+	const pinned = sidebar.pinned.includes(itemId);
+	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
+	return {
+		pinned,
+		pin: () => {
+			const now = company.store.get();
+			const current = now.sidebarUnavailable ? undefined : now.sidebar;
+			if (!current) return;
+			// A pin list can still name an item deleted since it was read; the cloud refuses those.
+			const roster = company.sidebarRoster();
+			const pins = current.pinned.filter((pin) => roster.includes(pin));
+			// What the card offered: already done elsewhere meanwhile is nothing to send.
+			if (pinned !== pins.includes(itemId)) return;
+			if (!pinned && pins.length >= PIN_LIMIT) {
+				company.reportRailError(t("The pinned row is full. Unpin something first."));
+				return;
+			}
+			void company.changeSidebar({
+				action: "set_pins",
+				order: pinned ? pins.filter((pin) => pin !== itemId) : [...pins, itemId],
+			});
+		},
+	};
+}
+
 function agentCard(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): AgentCardActions {
 	const state = company.store.get();
 	const actions = parts.context?.agentActions;
@@ -1454,6 +1483,7 @@ function agentCard(company: CompanyController, parts: RailParts, agent: HostedSt
 	const conversationId = company.primarySessionFor(agent.id)?.sessionId;
 	return {
 		...(conversationId ? { conversationId } : {}),
+		...(sidebar && !isCofounder ? pinActions(company, sidebar, agent.id) : {}),
 		...(sidebar && !isCofounder
 			? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) }
 			: {}),
@@ -1463,8 +1493,8 @@ function agentCard(company: CompanyController, parts: RailParts, agent: HostedSt
 	};
 }
 
-/** A group chat's card from the rail: its conversation's id to copy, Hide (or Show) where the cloud places group
- * chats, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+/** A group chat's card from the rail: its conversation's id to copy, Pin or Unpin and Hide (or Show) where the
+ * cloud places group chats, and Delete for owners and admins. Moving is a drag; the name edits on the card. */
 function groupCard(
 	company: CompanyController,
 	parts: RailParts,
@@ -1479,6 +1509,7 @@ function groupCard(
 	const hidden = Boolean(sidebar?.hidden.includes(roomId));
 	return {
 		conversationId: session.sessionId,
+		...(placeable ? pinActions(company, sidebar!, roomId) : {}),
 		...(placeable ? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) } : {}),
 		...(canAuthorize && parts.context?.agentActions?.deleteGroup
 			? { remove: () => void deleteGroup(company, parts, session, roomId) }
