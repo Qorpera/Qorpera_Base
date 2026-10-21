@@ -67,7 +67,6 @@ import { type AgentState, answersInteraction, type CompanyController, type Conve
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
-import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 import { ComposerModels } from "./composer-models.ts";
 import {
 	type FieldEdits,
@@ -234,7 +233,7 @@ function placeChildren(parent: Element, children: readonly Node[]): void {
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /** What an agent's card can open in the agent's chat. */
-export type AgentPage = "computer" | "routines";
+export type AgentPage = "computer";
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -335,8 +334,6 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
-	/** The agent's routines, open over the thread from its card. */
-	#routines: { view: AgentRoutines; el: HTMLElement; lifetime: AbortController } | undefined;
 	/** The chip that opened the transcript; focus returns there when it closes. */
 	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
@@ -773,7 +770,6 @@ export class ConversationView {
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#closePair(false);
-		this.#closeRoutines(false);
 		// The computer stays open, and connected, for the next thread that shows it.
 		if (this.#ownPanels) this.#panels.dispose();
 		else this.#panel?.detach();
@@ -907,7 +903,6 @@ export class ConversationView {
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
-					routines: () => this.show(agent.id, "routines"),
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -920,8 +915,8 @@ export class ConversationView {
 				);
 	}
 
-	/** Opens this agent's computer or its routines here, as its card asks. False while the thread is not
-	 * that agent's, or does not know its agent yet: the card's request then waits for it. */
+	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does
+	 * not know its agent yet: the card's request then waits for it. */
 	show(agentId: string, page: AgentPage): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
@@ -930,52 +925,17 @@ export class ConversationView {
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
 		if (page === "computer") {
 			// The computer sits under the pages laid over the thread: they close for it.
-			this.#closeRoutines(false);
 			this.#closePair(false);
 			this.#closeCodingSession();
 			(this.#panel ?? this.#showPanel(agent))?.focus();
-		} else this.#openRoutines(agent);
-		return true;
-	}
-
-	/** The agent's routines over this thread, as a page of the chat; closing it goes back to the chat. */
-	#openRoutines(agent: HostedStaffAgent): void {
-		if (this.#routines) {
-			this.#routines.view.refresh();
-			return;
 		}
-		this.#closePair(false);
-		this.#closeCodingSession();
-		const lifetime = new AbortController();
-		const view = new AgentRoutines(
-			() => this.#company.staffById(agent.id) ?? agent,
-			routineAccessFor(this.#company, this.#actions),
-			AbortSignal.any([this.#lifetime.signal, lifetime.signal]),
-			() => this.#closeRoutines(true),
-		);
-		const el = h("section", { class: "thread-routines", "aria-label": t("Routines") }, view.el);
-		this.#routines = { view, el, lifetime };
-		this.#conversationPane.inert = true;
-		this.#body.append(el);
-		el.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
-	}
-
-	#closeRoutines(refocus: boolean): void {
-		const open = this.#routines;
-		if (!open) return;
-		this.#routines = undefined;
-		open.lifetime.abort();
-		open.el.remove();
-		this.#conversationPane.inert = Boolean(this.#pair);
-		if (refocus && !this.#composer.disabled && !this.#composerWrap.hidden)
-			this.#composer.focus({ preventScroll: true });
+		return true;
 	}
 
 	/** Lay the two agents' transcript over this thread; the thread waits underneath.
 	 * The coworker reads on the left, this thread's own agent on the right. */
 	#openPair(pairSessionId: string, agentIds: readonly [string, string], opener: HTMLElement): void {
 		this.#closePair(false);
-		this.#closeRoutines(false);
 		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
 		this.#pair = view;
 		this.#pairOpener = opener;

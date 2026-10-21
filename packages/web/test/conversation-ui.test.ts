@@ -1232,8 +1232,7 @@ describe("conversation UI boundaries", () => {
 	it("opens nothing for another agent, or before the thread knows its agent", () => {
 		const f = setup();
 		expect(f.view.show(id(97), "computer")).toBe(false);
-		expect(f.view.show(id(97), "routines")).toBe(false);
-		expect(f.view.el.querySelector(".computer-panel, .thread-routines")).toBeNull();
+		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
 		const unknown = new ConversationView(f.company, id(90));
 		document.body.append(unknown.el);
 		expect(unknown.show(staff.id, "computer")).toBe(false);
@@ -1315,44 +1314,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.view.el.querySelector(".computer-panel")).toBe(replaced);
 	});
 
-	it("lays the agent's routines over the chat from its card, once, and closes them back to the composer", () => {
-		const f = setup();
-		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
-		expect(f.view.show(staff.id, "routines")).toBe(true);
-		const routines = f.view.el.querySelector<HTMLElement>(".thread-routines")!;
-		expect(routines.tagName).toBe("SECTION");
-		expect(routines.getAttribute("aria-label")).toBe("Routines");
-		expect(routines.parentElement).toBe(f.view.el.querySelector(".thread-body"));
-		expect(pane.inert).toBe(true);
-		// Asked again, the same page stays; there is never a second.
-		expect(f.view.show(staff.id, "routines")).toBe(true);
-		expect(f.view.el.querySelectorAll(".thread-routines")).toHaveLength(1);
-		expect(f.view.el.querySelector(".thread-routines")).toBe(routines);
-		button(routines, "Close routines").click();
-		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
-		expect(pane.inert).toBe(false);
-		expect(document.activeElement).toBe(f.view.el.querySelector(".composer-input"));
-		// Leaving the thread takes them with it.
-		f.view.show(staff.id, "routines");
-		expect(f.view.el.querySelector(".thread-routines")).not.toBeNull();
-		f.view.dispose();
-		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
-	});
-
-	it("closes the routines for the computer the card asks for, and gives the computer the keyboard", () => {
-		const f = setup();
-		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
-		f.view.show(staff.id, "routines");
-		expect(pane.inert).toBe(true);
-		expect(f.view.show(staff.id, "computer")).toBe(true);
-		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
-		expect(pane.inert).toBe(false);
-		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
-		expect(panel).not.toBeNull();
-		expect(document.activeElement).toBe(panel);
-	});
-
-	it("shows one overlay at a time: routines and a coworker's transcript replace each other", async () => {
+	it("closes a coworker's transcript open over the chat for the computer the card asks for", async () => {
 		const f = setup();
 		const coworker = { ...staff, id: id(97), displayName: "Helper" };
 		f.company.store.set({ staff: [staff, coworker] });
@@ -1377,25 +1339,12 @@ describe("conversation UI boundaries", () => {
 		});
 		f.view.update();
 		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
-		f.view.show(staff.id, "routines");
-		// The chip under the routines cannot be reached by the member; the thread still keeps one overlay if it is.
-		f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!.click();
-		await settle();
-		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
-		expect(f.view.el.querySelector(".pair-transcript")).not.toBeNull();
-		expect(pane.inert).toBe(true);
-		// The card's Routines over an open transcript: the transcript goes, the routines come.
-		f.view.show(staff.id, "routines");
-		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
-		expect(f.view.el.querySelectorAll(".thread-routines")).toHaveLength(1);
-		expect(pane.inert).toBe(true);
-		button(f.view.el, "Close routines").click();
-		expect(pane.inert).toBe(false);
-		// The computer closes an open transcript too.
 		f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!.click();
 		await settle();
 		expect(f.view.el.querySelector(".pair-transcript")).not.toBeNull();
-		f.view.show(staff.id, "computer");
+		expect(pane.inert).toBe(true);
+		// The computer sits under the pages laid over the thread: the transcript closes for it.
+		expect(f.view.show(staff.id, "computer")).toBe(true);
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		expect(pane.inert).toBe(false);
 		expect(document.activeElement).toBe(f.view.el.querySelector(".computer-panel"));

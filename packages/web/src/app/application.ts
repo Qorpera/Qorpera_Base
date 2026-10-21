@@ -815,7 +815,7 @@ export function mountApplication(
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		// The card's Computer and Routines open in the agent's own chat: here when it is on screen, else once it opens.
+		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
 			if (conversation?.show(agentId, page)) return;
 			agentPage = { agentId, page };
@@ -826,7 +826,22 @@ export function mountApplication(
 			const opened = new AgentDetails(
 				controller,
 				agent,
-				{ ...agentActions, ...workspaceActions },
+				{
+					...agentActions,
+					...workspaceActions,
+					// The card's routines page: routines are files, written through the member's own folder client, with
+					// the company's own checks (the chat's routines check the conversation instead).
+					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+						memberFolder(companyCurrent, t("Company access changed.")),
+					),
+					nativeSubscription: createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					),
+				},
 				() => {
 					if (agentCard === opened) agentCard = undefined;
 				},
@@ -834,7 +849,6 @@ export function mountApplication(
 				controller.signal,
 				{
 					computer: () => showAgentPage(agent.id, "computer"),
-					routines: () => showAgentPage(agent.id, "routines"),
 					...card,
 				},
 				"beside",

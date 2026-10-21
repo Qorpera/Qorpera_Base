@@ -307,6 +307,7 @@ export class AgentRoutines {
 	readonly #access: AgentRoutineAccess | undefined;
 	readonly #signal: AbortSignal;
 	readonly #close: (() => void) | undefined;
+	readonly #back: boolean;
 	#routines: WebRoutine[] = [];
 	/** The routines whose file this member finds: only those have a switch and open in the composer. */
 	#files: ReadonlySet<string> = new Set();
@@ -340,13 +341,15 @@ export class AgentRoutines {
 	#returnTo: string | undefined;
 	/** The agent's figure, kept through redraws so it does not start over. */
 	#figure: { key: string; el: HTMLElement } | undefined;
-	/** `close` leaves the routines for the conversation. */
+	/** `close` leaves the routines: back to the agent's card when `back` (they are its page), else closes them. */
 	constructor(
 		agent: () => HostedStaffAgent,
 		access: AgentRoutineAccess | undefined,
 		signal: AbortSignal,
 		close?: () => void,
+		back = false,
 	) {
+		this.#back = back;
 		this.#agent = agent;
 		this.#access = access;
 		this.#signal = signal;
@@ -434,7 +437,18 @@ export class AgentRoutines {
 		const manage = access?.canManage() === true;
 		const agent = this.#agent();
 		const create = manage
-			? textButton(t("New routine"), () => void this.#edit(undefined), "routine-create", this.#busy)
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button routine-create",
+						title: t("New routine"),
+						"aria-label": t("New routine"),
+						disabled: this.#busy,
+						onclick: () => void this.#edit(undefined),
+					},
+					icon("plus"),
+				)
 			: null;
 		create?.setAttribute("data-focus", "create");
 		const rows = this.#routines.map((routine) => this.#row(routine, manage));
@@ -450,22 +464,26 @@ export class AgentRoutines {
 									{
 										type: "button",
 										class: "icon-button routine-close",
-										title: t("Close routines"),
-										"aria-label": t("Close routines"),
+										title: this.#back ? t("Back to agent details") : t("Close routines"),
+										"aria-label": this.#back ? t("Back to agent details") : t("Close routines"),
 										onclick: this.#close,
 									},
-									icon("close"),
+									icon(this.#back ? "back" : "close"),
 								)
 							: null,
+						// In the agent's card the title stands beside the way back; the card already shows whose they are.
+						this.#back ? h("h2", { class: "routine-title" }, t("Routines")) : null,
 						create,
 					)
 				: null,
-			h(
-				"header",
-				{ class: "routine-heading" },
-				this.#figureOf(agent),
-				h("div", null, h("h2", null, t("Routines")), h("p", null, agent.displayName)),
-			),
+			this.#back
+				? null
+				: h(
+						"header",
+						{ class: "routine-heading" },
+						this.#figureOf(agent),
+						h("div", null, h("h2", null, t("Routines")), h("p", null, agent.displayName)),
+					),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
 			rows.length
 				? h("div", { class: "routine-list" }, ...rows)
@@ -524,9 +542,9 @@ export class AgentRoutines {
 			{
 				type: "button",
 				class: "routine-row-main",
-				dataset: { focus: `${editable ? "edit" : "read"}:${id}` },
+				dataset: { focus: `row:${id}` },
 				disabled: this.#held(),
-				onclick: () => (editable ? void this.#edit(routine) : this.#read(routine)),
+				onclick: () => this.#read(routine, editable),
 			},
 			...text,
 		);
@@ -553,7 +571,7 @@ export class AgentRoutines {
 			choice && !choosing
 				? textButton(t("Choose a login"), () => void this.#openChoice(routine), "routine-choose", this.#busy)
 				: null,
-			!ended && known ? lever : null,
+			lever,
 			choice && choosing ? this.#loginChoice(routine, choosing) : null,
 		);
 	}
@@ -641,17 +659,27 @@ export class AgentRoutines {
 		const on = this.#runsNow(routine);
 		// A routine never runs under an archived agent: turned on, it is paused again at once.
 		const archived = this.#archived();
-		lever.setAttribute("aria-checked", String(on));
-		lever.title = !manage
-			? t("Only owners and admins can pause or resume routines.")
-			: archived && !on
-				? t("Reactivate the agent first")
-				: on
-					? t("Pause routine")
-					: t("Resume routine");
+		// An ended routine's switch stays, off and locked: a member save keeps its end, so only its agent starts it
+		// again. One whose file this member doesn't find can't be changed from here either.
+		const ended = routine.status === "expired" || routine.status === "concluded";
+		const known = this.#files.has(id);
+		lever.setAttribute("aria-checked", String(on && !ended));
+		lever.title = ended
+			? routine.status === "concluded"
+				? t("Done: {name} ended this routine", { name: this.#agent().displayName })
+				: t("This routine has ended")
+			: !known
+				? t("This routine can't be changed from here")
+				: !manage
+					? t("Only owners and admins can pause or resume routines.")
+					: archived && !on
+						? t("Reactivate the agent first")
+						: on
+							? t("Pause routine")
+							: t("Resume routine");
 		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
 		else lever.removeAttribute("aria-busy");
-		const locked = !manage || (archived && !on);
+		const locked = ended || !known || !manage || (archived && !on);
 		lever.classList.toggle("is-locked", locked);
 		if (locked || (this.#held() && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
@@ -725,7 +753,7 @@ export class AgentRoutines {
 			same[index] ??
 			same[0] ??
 			(back ? this.#controls(back)[0] : undefined) ??
-			this.#controls(t("Close routines"))[0]
+			this.el.querySelector<HTMLElement>(".routine-close")
 		)?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
@@ -768,6 +796,8 @@ export class AgentRoutines {
 			this.#editing ||
 			!this.#access?.canManage() ||
 			!this.#files.has(routine.routineId) ||
+			routine.status === "expired" ||
+			routine.status === "concluded" ||
 			(this.#archived() && !this.#runsNow(routine))
 		)
 			return;
@@ -937,19 +967,31 @@ export class AgentRoutines {
 			this.#list();
 		}
 	}
-	/** Opens a routine the member may not change in the composer's layout, read-only: its name and instruction as text,
-	 * when it runs, its reply and who pays as plain lines, and no Save. It draws what the list read, so it asks the cloud
-	 * nothing. */
-	#read(routine: WebRoutine): void {
+	/** Opens a routine in the composer's layout, read-only: its name and instruction as text, when it runs, its reply and
+	 * who pays as plain lines, and no Save. Edit opens the composer on it where the member may change it. It draws what
+	 * the list read, so it asks the cloud nothing. */
+	#read(routine: WebRoutine, editable: boolean): void {
 		if (this.#held()) return;
 		// It owns the screen as the composer does: reads that answer meanwhile do not draw the list over it.
 		this.#editing = true;
-		this.#returnTo = `read:${routine.routineId}`;
+		this.#returnTo = `row:${routine.routineId}`;
 		const screen = this.#navigate();
 		const leave = () => {
 			if (!this.#busy && screen === this.#screen) this.#toList();
 		};
 		const back = textButton([icon("chevron"), t("Routines")], leave, "routine-back");
+		const edit = editable
+			? textButton(
+					t("Edit"),
+					() => {
+						if (this.#busy || screen !== this.#screen) return;
+						// The read view hands the screen to the composer, which holds it from here (#edit).
+						this.#editing = false;
+						void this.#edit(routine);
+					},
+					"routine-edit",
+				)
+			: null;
 		const field = (label: string, ...lines: Child[]) =>
 			h("div", { class: "routine-field" }, h("span", { class: "routine-label" }, label), h("div", null, ...lines));
 		const state = this.#state(routine, this.#runsNow(routine));
@@ -961,7 +1003,7 @@ export class AgentRoutines {
 			h(
 				"div",
 				{ class: "routine-editor is-reading" },
-				back,
+				h("div", { class: "routine-read-top" }, back, edit),
 				h("h2", { class: "routine-name" }, routine.title),
 				h("p", { class: "routine-prompt" }, routine.prompt),
 				h(
@@ -996,7 +1038,7 @@ export class AgentRoutines {
 		// The composer owns the screen from here: the list stays while the file and the logins are read, its controls
 		// waiting (the chooser's Cancel too), and nothing draws it over the composer.
 		this.#editing = true;
-		this.#returnTo = routine ? `edit:${routine.routineId}` : "create";
+		this.#returnTo = routine ? `row:${routine.routineId}` : "create";
 		const screen = this.#navigate();
 		this.#setControls();
 		let opened: WebRoutineFile | undefined;
@@ -1120,7 +1162,8 @@ export class AgentRoutines {
 			value: first && "localTime" in first ? first.localTime : "09:00",
 			"aria-label": t("Time"),
 		});
-		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it.
+		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it. Not shown: a new
+		// routine takes the viewer's zone, and an edit keeps the file's.
 		const timeZone = h("input", {
 			type: "text",
 			class: "routine-zone",
@@ -1215,18 +1258,7 @@ export class AgentRoutines {
 					),
 				]
 			: choices.length
-				? [
-						accountLine,
-						picker,
-						h(
-							"p",
-							{ class: "routine-hint" },
-							t(
-								"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-								{ name },
-							),
-						),
-					]
+				? [accountLine, picker]
 				: [
 						h(
 							"p",
@@ -1243,7 +1275,6 @@ export class AgentRoutines {
 			"div",
 			{ class: "routine-weekly" },
 			h("div", { class: "routine-week" }, days, h("span", { class: "routine-at" }, t("at"), time)),
-			timeZone,
 		);
 		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
 		const held =
