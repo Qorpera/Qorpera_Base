@@ -981,12 +981,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	};
 	const mentionedIn = (sessionId: string | undefined) => Boolean(sessionId && state.mentions?.[sessionId]);
 	const agentModel = (agent: HostedStaffAgent): AgentModel => {
+		// A figure or colour just picked on the agent's card shows here before its save lands.
+		const look = state.looks?.[agent.id];
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
 			role: agent.role,
 			templateId: agent.templateId,
-			appearance: agent.appearance,
+			appearance: look ? { ...agent.appearance, creature: look.figure, color: look.color } : agent.appearance,
 			// State is part of the cache key, including idle/failed transitions with the same figure and role.
 			state: company.agentState(agent.id),
 			mentioned: mentionedIn(

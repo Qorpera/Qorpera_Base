@@ -58,6 +58,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
+import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
@@ -186,6 +187,9 @@ export interface CompanyState {
 	/** Failed runs a member dismissed here, by run id. They stop standing in for the
 	 * agent at once; the cloud records the same acknowledgment durably. */
 	acknowledgedRuns?: Record<string, true>;
+	/** A figure and colour picked on an agent's card and still being saved, by agent id. The
+	 * rail draws them at once instead of after the save and the roster read (agent-edits.ts). */
+	looks?: Readonly<Record<string, FigureChoice>>;
 	/** The rail's sections (the company's) and pins and hidden agents (this member's). */
 	sidebar?: CompanySidebar;
 	/** The deployed cloud has no sidebar yet: the rail shows no sections, pins or hiding. */
@@ -1319,6 +1323,18 @@ export class CompanyController {
 		return room.members.flatMap((member) => {
 			const agent = member.kind === "staff_agent" ? this.staffById(member.id) : undefined;
 			return agent?.employmentStatus === "active" && agent.profileId === this.profile.profileId ? [agent] : [];
+		});
+	}
+
+	/** Shows an agent in a figure and colour not saved yet, or (`undefined`) as the roster has it. */
+	showLook(agentId: string, look: FigureChoice | undefined): void {
+		const shown = this.store.get().looks?.[agentId];
+		if (shown?.figure === look?.figure && shown?.color === look?.color) return;
+		this.store.set((state) => {
+			const looks = { ...(state.looks ?? {}) };
+			if (look) looks[agentId] = look;
+			else delete looks[agentId];
+			return { looks };
 		});
 	}
 
