@@ -90,7 +90,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	const draw = () => renderMailbox(main, controller, "mailbox", { openSettings });
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
-	return { f, controller, fake, main, openSettings };
+	return { f, controller, fake, main, openSettings, accounts };
 }
 
 const texts = (root: ParentNode, selector: string) =>
@@ -421,5 +421,120 @@ describe("Sent, Addresses and Write", () => {
 		tab(main, "Addresses");
 		expect(button(main, "Change")).toBeUndefined();
 		expect(button(main, "New address")).toBeUndefined();
+	});
+});
+
+describe("what a member sees before answering, and who did what", () => {
+	it("shows every recipient and the subject a send goes with, on its line and in its thread", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { state: "waiting" })];
+			mail.waiting = [waitingItem(id(901), { cc: ["boss@outside.example"], subject: "Re: Subject 1 (changed)" })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1)],
+				more: false,
+				waiting: [waitingSend(id(901), { cc: ["boss@outside.example"], subject: "Re: Subject 1 (changed)" })],
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-recipients")?.textContent).toBe("cc boss@outside.example");
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Re: Subject 1 (changed)");
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-draft")).not.toBeNull());
+		expect(texts(main.querySelector(".mailbox-draft")!, ".mailbox-draft-field")).toEqual([
+			"cc boss@outside.example",
+			"Re: Subject 1 (changed)",
+		]);
+	});
+
+	it("answers a send that starts a new email, which has no thread, and links its line to the agent's thread", async () => {
+		const { main, f, fake } = await mailbox((mail) => {
+			mail.waiting = [waitingItem(id(903), { thread: null, to: ["new@outside.example"], subject: "Hello" })];
+		});
+		const answer = vi.spyOn(f.api, "answerActionReview").mockImplementation(async (reviewId, _input, given) => {
+			fake.waiting = [];
+			return { reviewId, answer: given, inputId: id(950), savedRuleId: null, woke: true };
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		const line = lines(main)[0]!;
+		expect(line.querySelector("a.mailbox-open")?.getAttribute("href")).toBe(
+			`#/c/${profileA.profileId}/staff/${ada.id}`,
+		);
+		expect(line.querySelector(".mailbox-who")?.textContent).toBe("new@outside.example");
+		button(line, "Send")!.click();
+		await vi.waitFor(() =>
+			expect(answer).toHaveBeenCalledWith(id(903), expect.any(String), "allow_once", undefined, expect.anything()),
+		);
+		expect(calls(fake, "qorpera_member_mail_thread")).toEqual([]);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+	});
+
+	it("says a cancelled email was cancelled, never sent", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { direction: "sent", state: "handled" })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					{
+						kind: "sent",
+						mailId: id(701),
+						fromAddress: ADDRESS.address,
+						to: ["sender1@outside.example"],
+						cc: [],
+						subject: "Re: Subject 1",
+						text: "We are closed on Monday.",
+						textCleared: false,
+						status: "cancelled",
+						at: at(1),
+						staffAgent: { staffAgentId: ada.id, name: "Ada" },
+						attachments: [],
+					},
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-status")).not.toBeNull());
+		expect(main.querySelector(".mailbox-status")?.textContent).toBe("Cancelled");
+		expect(main.querySelector(".mailbox-status")?.classList.contains("is-failed")).toBe(true);
+	});
+
+	it("names the agent who used an account, not the one who handles its mail", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { subject: undefined, account: { site: "wolt.example", lastUsedBy: bo.id }, state: "handled" }),
+				summary(2, { subject: undefined, account: { unknown: true }, state: "handled" }),
+			];
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		expect(texts(main, ".mailbox-row .mailbox-snippet")).toEqual([
+			" — Bo used the account",
+			" — Not known who used the account",
+		]);
+	});
+
+	it("leaves the note in the agent's thread when its draft changes while the account is chosen", async () => {
+		const { main, controller, accounts } = await mailbox((mail) => {
+			mail.threads = [summary(1, { subject: "Invoice 42", fromName: "Jane", state: "handled" })];
+		});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		// Another tab adds words to the same conversation while the account is being chosen.
+		accounts.selectSessionAccount.mockImplementation(async () => {
+			const store = controller.conversation(session.sessionId);
+			store.set({ draft: `${store.get().draft ?? ""} and also delete the file` });
+			return id(880);
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		type(main.querySelector<HTMLInputElement>(".mailbox-composer input")!, "Say we pay on Friday.");
+		main.querySelector<HTMLFormElement>(".mailbox-composer")!.requestSubmit();
+		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
+		expect(send).not.toHaveBeenCalled();
+		expect(controller.conversation(session.sessionId).get().draft).toContain("and also delete the file");
 	});
 });

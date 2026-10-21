@@ -546,7 +546,12 @@ export class CompanyMail {
 	 * which says on that conversation why an answer is refused). An answer wakes the agent on the member's model
 	 * account once the agent no longer waits for it, so the conversation's account is chosen first, as its thread
 	 * chooses it. The thread, its lists and the waiting sends are then read again. */
-	async answer(thread: string, sessionId: string, reviewId: string, answer: ActionReviewAnswer): Promise<void> {
+	async answer(
+		thread: string | undefined,
+		sessionId: string,
+		reviewId: string,
+		answer: ActionReviewAnswer,
+	): Promise<void> {
 		if (this.#state?.answers[reviewId]?.pending) return;
 		const set = (given: MailAnswer) =>
 			this.#set((state) => ({ ...state, answers: { ...state.answers, [reviewId]: given } }));
@@ -561,12 +566,13 @@ export class CompanyMail {
 				error: said ?? describeError(error),
 				...(needsModelAccount(error) ? { needsAccount: true } : {}),
 			});
-			void this.#readThread(thread);
+			if (thread) void this.#readThread(thread);
 			return;
 		}
 		set({ pending: false, answered: answer });
 		await Promise.all([
-			this.#readThread(thread),
+			// A send that starts a new email has no thread to read again (no `inReplyTo`).
+			...(thread ? [this.#readThread(thread)] : []),
 			this.#refreshCompany(),
 			...[...this.#watched.lists].map(([key, request]) => this.#readFirst(key, request)),
 		]);
@@ -592,12 +598,38 @@ export class CompanyMail {
 			if (agent?.employmentStatus !== "active") throw new Error(t("That agent is no longer at work."));
 			sessionId = await company.openStaffConversation(agent);
 		}
-		const before = company.conversation(sessionId, false).get();
-		const empty = !(before.draft ?? "").trim() && !before.attachments?.length && !before.sending && !before.retrySend;
+		// What is drafted there decides: the member's own draft as this browser has it and, where drafts are shared,
+		// as the room has it now. Only a note into nothing drafted goes from here.
+		const room = company.roomDrafts.room(sessionId);
+		if (room) await room.refresh();
+		if (this.#closed) return { sent: false, href };
+		const conversation = () => company.conversation(sessionId, false).get();
+		const shared = () => room?.draft(company.userId)?.body ?? "";
+		const before = conversation();
+		const empty =
+			(!room || room.usable()) &&
+			!shared().trim() &&
+			!(before.draft ?? "").trim() &&
+			!before.attachments?.length &&
+			!before.sending &&
+			!before.retrySend;
 		company.addToDraft(sessionId, note);
+		// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
+		// merged shared draft, an attachment) leaves it in the composer for the member to send.
+		const intended = conversation().draft ?? "";
 		if (!empty || this.#closed) return { sent: false, href };
 		await this.#chooseAccount(sessionId);
-		const sent = await company.sendPrompt(sessionId, company.conversation(sessionId, false).get().draft ?? "");
+		const now = conversation();
+		if (
+			this.#closed ||
+			now.draft !== intended ||
+			now.attachments?.length ||
+			now.sending ||
+			now.retrySend ||
+			![intended, ""].includes(shared())
+		)
+			return { sent: false, href };
+		const sent = await company.sendPrompt(sessionId, intended);
 		return { sent, href };
 	}
 

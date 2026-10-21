@@ -158,6 +158,8 @@ export interface MailWaitingItem {
 	readonly address?: string;
 	readonly staffAgent?: MailAgent;
 	readonly to: readonly string[];
+	/** Its cc recipients; none before migration 20260930522000. */
+	readonly cc: readonly string[];
 	readonly subject?: string;
 	/** The start of the text the agent wants to send, on one line. Absent before migration 20260930522000. */
 	readonly snippet?: string;
@@ -356,6 +358,7 @@ function parseWaitingItem(value: unknown): MailWaitingItem {
 		...optional("address", shownText(item.address, 320)),
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
+		cc: recipients(item.cc),
 		...optional("subject", shownText(item.subject, 2048)),
 		...optional("snippet", shownText(item.snippet, 200)),
 		createdAt: timestamp(item.createdAt, "mail waiting time"),

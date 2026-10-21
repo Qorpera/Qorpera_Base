@@ -2,7 +2,8 @@
 -- - qorpera_member_mail_threads gives each thread a `snippet`: the start of its newest message's text (a received
 --   message's while its body is kept, a sent one's while the outbox keeps it), on one line, at most 200 characters.
 --   Account mail has none, as it has no subject.
--- - qorpera_member_mail_waiting gives each waiting send a `snippet` of the text the agent wants to send, the same way.
+-- - qorpera_member_mail_waiting gives each waiting send a `snippet` of the text the agent wants to send, the same way,
+--   and its `cc` recipients as the agent gave them, so a send answered from its list line shows every recipient.
 -- Who may call, and every other part of both answers, are unchanged; the thread read keeps its full texts. A snippet
 -- that can't be read (a body that isn't JSON or UTF-8) is left out; it never fails the list. Exact-text patches; each
 -- inserted text names this migration (20260930522000), for deploy guards.
@@ -66,7 +67,8 @@ begin
 	perform pg_temp.mail_snippet_patch('public.qorpera_member_mail_waiting(uuid)',
 		E'\t\t\t''to'', open_send.arguments -> ''to'', ''subject'', open_send.arguments -> ''subject'',\n',
 		E'\t\t\t''to'', open_send.arguments -> ''to'', ''subject'', open_send.arguments -> ''subject'',\n'
-		|| E'\t\t\t-- 20260930522000: the start of the text the agent wants to send.\n'
+		|| E'\t\t\t-- 20260930522000: every recipient, and the start of the text the agent wants to send.\n'
+		|| E'\t\t\t''cc'', open_send.arguments -> ''cc'',\n'
 		|| E'\t\t\t''snippet'', case when jsonb_typeof(open_send.arguments -> ''text'') = ''string''\n'
 		|| E'\t\t\t\tthen public.qorpera_mail_snippet(open_send.arguments ->> ''text'') end,\n');
 end $$;

@@ -93,6 +93,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
 .mailbox-state { flex: none; font-size: 14px; font-weight: 600; }
 .mailbox-state.is-waiting { color: var(--mailbox-waiting); }
+.mailbox-recipients { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; color: var(--mailbox-waiting); font-size: 14px; }
 .mailbox-state.is-new { color: var(--mailbox-send); }
 .mailbox-row.is-unread .mailbox-who, .mailbox-row.is-unread .mailbox-subject, .mailbox-row.is-unread .mailbox-time {
 	color: var(--text); font-weight: 700;
@@ -154,6 +155,9 @@ span.mailbox-open { cursor: default; }
 .mailbox-draft-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .mailbox-draft-head strong { color: var(--mailbox-waiting); font-weight: 650; }
 .mailbox-draft-actions { display: flex; gap: 22px; }
+.mailbox-draft-field { margin: 0; color: var(--text-muted); font-size: 14.5px; }
+.mailbox-draft-field.is-subject { color: var(--text); font-weight: 600; }
+a.mailbox-open { color: inherit; text-decoration: none; }
 
 /* The line to the handling agent, at the foot of a thread. */
 .mailbox-composer {

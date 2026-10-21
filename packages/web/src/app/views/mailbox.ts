@@ -469,6 +469,12 @@ function accountSite(account: MailAccount | undefined): string {
 	return account && !account.unknown && account.site ? account.site : t("unknown account");
 }
 
+/** Who last used an account, as its mail says; the handler of the mail may be another agent. */
+function accountUse(page: Page, account: MailAccount): string {
+	const used = account.unknown ? undefined : account.lastUsedBy;
+	return used ? t("{name} used the account", { name: agentName(page, used) }) : t("Not known who used the account");
+}
+
 function openThread(page: Page, thread: string): void {
 	page.ui.open = thread;
 	page.ui.note = "";
@@ -496,7 +502,7 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				"span",
 				{ class: "mailbox-line" },
 				h("span", { class: "mailbox-subject" }, accountSite(summary.account)),
-				h("span", { class: "mailbox-snippet" }, ` — ${t("{name} used the account", { name: agent })}`),
+				h("span", { class: "mailbox-snippet" }, ` — ${accountUse(page, summary.account)}`),
 			)
 		: h(
 				"span",
@@ -551,7 +557,7 @@ function answerButtons(
 ): HTMLElement[] {
 	const mail = page.company.store.get().mail;
 	const given = mail?.answers[reviewId];
-	if (!thread || !sessionId || !canWrite(page)) return [];
+	if (!sessionId || !canWrite(page)) return [];
 	const pending = given?.pending === true;
 	const answer = (choice: "allow_once" | "deny") => () =>
 		void CompanyMail.of(page.company)?.answer(thread, sessionId, reviewId, choice);
@@ -581,17 +587,19 @@ function answerButtons(
 	];
 }
 
+/** An agent's thread, while the agent is at work. */
+function agentHref(page: Page, agentId: string | undefined): string | null {
+	const agent = activeAgent(page, agentId);
+	if (!agent) return null;
+	return agent.id === page.company.cofounderId() ? `#/c/${page.profileId}` : `#/c/${page.profileId}/staff/${agent.id}`;
+}
+
 /** What went wrong with an answer, and the agent's thread when the answer needs the member's model account there. */
 function answerError(page: Page, reviewId: string, agentId: string | undefined, given?: string): HTMLElement | null {
 	const answer = page.company.store.get().mail?.answers[reviewId];
 	if (!answer?.error) return null;
-	const agent = activeAgent(page, agentId);
 	const name = agentName(page, agentId, given);
-	const href = agent
-		? agent.id === page.company.cofounderId()
-			? `#/c/${page.profileId}`
-			: `#/c/${page.profileId}/staff/${agent.id}`
-		: null;
+	const href = agentHref(page, agentId);
 	return h(
 		"p",
 		{ class: "mailbox-error", role: "alert" },
@@ -607,6 +615,7 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 	const agent = agentName(page, agentId, item.staffAgent?.name);
 	const answered = page.company.store.get().mail?.answers[item.reviewId]?.answered !== undefined;
 	const to = summary ? partyText(summary) : (item.to[0] ?? t("New email"));
+	const href = agentHref(page, agentId);
 	const content = [
 		h("span", { class: "mailbox-dot", "aria-hidden": "true" }),
 		h(
@@ -619,6 +628,19 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 			"span",
 			{ class: "mailbox-line" },
 			h("span", { class: "mailbox-state is-waiting" }, t("Waiting for you")),
+			// Every recipient beyond the first shows on the line it is answered from.
+			item.to.length > 1 || item.cc.length
+				? h(
+						"span",
+						{ class: "mailbox-recipients" },
+						[
+							item.to.length > 1 ? t("to {who}", { who: item.to.join(", ") }) : null,
+							item.cc.length ? t("cc {who}", { who: item.cc.join(", ") }) : null,
+						]
+							.filter((part): part is string => part !== null)
+							.join(" · "),
+					)
+				: null,
 			h("span", { class: "mailbox-subject" }, item.subject || summary?.subject || t("(no subject)")),
 			item.snippet ? h("span", { class: "mailbox-snippet" }, ` — ${agent}: ${item.snippet}`) : null,
 		),
@@ -638,7 +660,19 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 					},
 					...content,
 				)
-			: h("span", { class: "mailbox-open" }, ...content),
+			: href
+				? // A new email has no thread: its whole card waits in the agent's conversation.
+					h(
+						"a",
+						{
+							class: "mailbox-open",
+							href,
+							title: t("Open {name}'s thread", { name: agent }),
+							"data-focus-key": `row:${item.reviewId}`,
+						},
+						...content,
+					)
+				: h("span", { class: "mailbox-open" }, ...content),
 		h("span", { class: "mailbox-actions" }, ...answerButtons(page, thread, item.reviewId, item.sessionId)),
 		h(
 			"span",
@@ -821,11 +855,13 @@ function messageItem(
 		);
 	const status = received
 		? null
-		: message.status === "failed"
-			? h("span", { class: "mailbox-status is-failed" }, t("Not sent"))
-			: message.status === "queued"
-				? h("span", { class: "mailbox-status" }, t("Sending"))
-				: h("span", { class: "mailbox-status" }, t("Sent"));
+		: message.status === "sent"
+			? h("span", { class: "mailbox-status" }, t("Sent"))
+			: message.status === "failed"
+				? h("span", { class: "mailbox-status is-failed" }, t("Not sent"))
+				: message.status === "cancelled"
+					? h("span", { class: "mailbox-status is-failed" }, t("Cancelled"))
+					: h("span", { class: "mailbox-status" }, t("Sending"));
 	const notes = [
 		received && message.automated ? t("Automated email") : null,
 		received && message.textTruncated ? t("This email is longer; only its start is shown.") : null,
@@ -895,6 +931,8 @@ function draftItem(page: Page, thread: string, send: MailWaitingSend): HTMLEleme
 				h("strong", null, t("{name} wants to send this", { name: agent })),
 				send.to.length ? h("span", { class: "mailbox-muted" }, t("to {who}", { who: send.to.join(", ") })) : null,
 			),
+			send.cc.length ? h("p", { class: "mailbox-draft-field" }, t("cc {who}", { who: send.cc.join(", ") })) : null,
+			h("p", { class: "mailbox-draft-field is-subject" }, send.subject || t("(no subject)")),
 			send.text ? h("p", { class: "mailbox-text-body" }, send.text) : null,
 			files ? h("p", { class: "mailbox-files" }, icon("attach"), h("span", null, files)) : null,
 			buttons.length

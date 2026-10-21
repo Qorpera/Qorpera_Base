@@ -2,7 +2,8 @@
 -- The Mailbox's list lines (20260930522000), on the folder-v2 runtime base. Each thread in the threads call carries the
 -- start of its newest message's text on one line, at most 200 characters: a received message's while its body is
 -- kept, an agent's reply once it is the newest. Account mail carries none, and a body that can't be read leaves the
--- snippet out without failing the list. Each waiting send carries the start of the text the agent wants to send.
+-- snippet out without failing the list. Each waiting send carries the start of the text the agent wants to send, and
+-- its cc recipients.
 
 select pg_temp.base_claims('service_role');
 -- A received email as the mail door stores it: the delivery of its first recipient.
@@ -72,7 +73,7 @@ where id = current_setting('qorpera_test.ms_e')::uuid;
 update public.qorpera_event_deliveries set body = null where id = current_setting('qorpera_test.ms_f')::uuid;
 -- A send the agent wants to make in thread A, waiting for a person.
 select set_config('qorpera_test.ms_card', pg_temp.ms_card('ms-card', jsonb_build_object('from', 'hej@mail.example.test',
-	'to', jsonb_build_array('mette@example.org'), 'subject', 'Re: Catering',
+	'to', jsonb_build_array('mette@example.org'), 'cc', jsonb_build_array('boss@example.org'), 'subject', 'Re: Catering',
 	'text', E'Hi Mette,\n\nGreat, we''ll bring cutlery for 40.', 'inReplyTo', current_setting('qorpera_test.ms_a')))::text,
 	true) \g /dev/null
 select pg_temp.base_assert((select count(*) = 6 from public.qorpera_mail_threads
@@ -102,8 +103,9 @@ from (select pg_temp.ms_listed(pg_temp.ms_thread_of(current_setting('qorpera_tes
 	pg_temp.ms_listed(pg_temp.ms_thread_of(current_setting('qorpera_test.ms_f')::uuid)) as f) as two;
 select pg_temp.base_assert(jsonb_array_length(waiting) = 1
 		and waiting #>> '{0,reviewId}' = current_setting('qorpera_test.ms_card')
-		and waiting #>> '{0,snippet}' = 'Hi Mette, Great, we''ll bring cutlery for 40.',
-	'A waiting send carries the start of the text the agent wants to send: ' || waiting::text)
+		and waiting #>> '{0,snippet}' = 'Hi Mette, Great, we''ll bring cutlery for 40.'
+		and waiting -> 0 -> 'cc' = '["boss@example.org"]'::jsonb,
+	'A waiting send carries the start of the text the agent wants to send, and its cc: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('92400000-0000-4000-8000-000000000020') as waiting) as answer;
 select pg_temp.base_assert(public.qorpera_mail_snippet(E' \n\t ') is null and public.qorpera_mail_snippet(null) is null
 		and public.qorpera_mail_snippet('a  b') = 'a b',

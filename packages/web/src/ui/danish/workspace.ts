@@ -250,6 +250,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Back to Inbox": "Tilbage til Indbakke",
 	outside: "udefra",
 	"to {who}": "til {who}",
+	"cc {who}": "cc {who}",
+	"Not known who used the account": "Det vides ikke, hvem der brugte kontoen",
 	"Tell {name} what to answer": "Fortæl {name}, hvad der skal svares",
 	"About the email {subject} from {from_name}: ": "Om e-mailen {subject} fra {from_name}: ",
 	"{name} has your note": "{name} har fået din besked",
