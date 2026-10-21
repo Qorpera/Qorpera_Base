@@ -8,6 +8,7 @@ export const AGENTS: Record<string, string> = {
 	"Agent details": "Agentdetaljer",
 	Routines: "Rutiner",
 	Copied: "Kopieret",
+	Edit: "Rediger",
 	"Back to agent details": "Tilbage til agentdetaljer",
 	"Done: {name} ended this routine": "Færdig: {name} afsluttede rutinen",
 	"This routine has ended": "Rutinen er slut",
@@ -139,8 +140,6 @@ export const AGENTS: Record<string, string> = {
 	Never: "Aldrig",
 	When: "Hvornår",
 	"Runs on": "Kører på",
-	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
-		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
 		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
 

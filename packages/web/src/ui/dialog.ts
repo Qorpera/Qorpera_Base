@@ -17,6 +17,8 @@ export class SurfaceDialog {
 	readonly #anchor: HTMLElement | undefined;
 	/** Under the anchor (a title), or beside it (a row in the rail). */
 	readonly #beside: boolean;
+	/** Where the anchor last stood, for when the rail has rebuilt it (its agent started working). */
+	#anchorRect: DOMRect | undefined;
 	readonly #lifetime = new AbortController();
 	#modal = true;
 	#closed = false;
@@ -117,18 +119,18 @@ export class SurfaceDialog {
 			if (modal) this.el.showModal();
 			else this.el.show();
 		}
-		// A row the rail rebuilt meanwhile (its agent started working) is gone: the card stays where it is.
-		if (this.#anchor && !modal && !this.#anchor.isConnected) return;
-		if (this.#anchor && !modal && this.#beside) {
+		// A row the rail rebuilt meanwhile is gone: the card keeps to where it stood, still inside the window as it grows.
+		if (this.#anchor?.isConnected) this.#anchorRect = this.#anchor.getBoundingClientRect();
+		if (this.#anchor && !modal && this.#beside && this.#anchorRect) {
 			// Level with the row's top, kept inside the window as the card grows.
-			const rect = this.#anchor.getBoundingClientRect();
+			const rect = this.#anchorRect;
 			const scale = uiScale();
 			const box = this.el.getBoundingClientRect();
 			this.el.style.left = `${Math.min(rect.right + 8 * scale, window.innerWidth - box.width - 12 * scale)}px`;
 			this.el.style.top = `${Math.max(12 * scale, Math.min(rect.top - 8 * scale, window.innerHeight - box.height - 12 * scale))}px`;
 			this.el.style.maxHeight = `${window.innerHeight - 24 * scale}px`;
-		} else if (this.#anchor && !modal) {
-			const rect = this.#anchor.getBoundingClientRect();
+		} else if (this.#anchor && !modal && this.#anchorRect) {
+			const rect = this.#anchorRect;
 			const scale = uiScale();
 			this.el.style.left = `${Math.max(12 * scale, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12 * scale))}px`;
 			this.el.style.top = `${rect.bottom + 8 * scale}px`;

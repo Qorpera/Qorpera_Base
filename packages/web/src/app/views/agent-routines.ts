@@ -437,7 +437,18 @@ export class AgentRoutines {
 		const manage = access?.canManage() === true;
 		const agent = this.#agent();
 		const create = manage
-			? textButton(t("New routine"), () => void this.#edit(undefined), "routine-create", this.#busy)
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button routine-create",
+						title: t("New routine"),
+						"aria-label": t("New routine"),
+						disabled: this.#busy,
+						onclick: () => void this.#edit(undefined),
+					},
+					icon("plus"),
+				)
 			: null;
 		create?.setAttribute("data-focus", "create");
 		const rows = this.#routines.map((routine) => this.#row(routine, manage));
@@ -531,9 +542,9 @@ export class AgentRoutines {
 			{
 				type: "button",
 				class: "routine-row-main",
-				dataset: { focus: `${editable ? "edit" : "read"}:${id}` },
+				dataset: { focus: `row:${id}` },
 				disabled: this.#held(),
-				onclick: () => (editable ? void this.#edit(routine) : this.#read(routine)),
+				onclick: () => this.#read(routine, editable),
 			},
 			...text,
 		);
@@ -956,19 +967,31 @@ export class AgentRoutines {
 			this.#list();
 		}
 	}
-	/** Opens a routine the member may not change in the composer's layout, read-only: its name and instruction as text,
-	 * when it runs, its reply and who pays as plain lines, and no Save. It draws what the list read, so it asks the cloud
-	 * nothing. */
-	#read(routine: WebRoutine): void {
+	/** Opens a routine in the composer's layout, read-only: its name and instruction as text, when it runs, its reply and
+	 * who pays as plain lines, and no Save. Edit opens the composer on it where the member may change it. It draws what
+	 * the list read, so it asks the cloud nothing. */
+	#read(routine: WebRoutine, editable: boolean): void {
 		if (this.#held()) return;
 		// It owns the screen as the composer does: reads that answer meanwhile do not draw the list over it.
 		this.#editing = true;
-		this.#returnTo = `read:${routine.routineId}`;
+		this.#returnTo = `row:${routine.routineId}`;
 		const screen = this.#navigate();
 		const leave = () => {
 			if (!this.#busy && screen === this.#screen) this.#toList();
 		};
 		const back = textButton([icon("chevron"), t("Routines")], leave, "routine-back");
+		const edit = editable
+			? textButton(
+					t("Edit"),
+					() => {
+						if (this.#busy || screen !== this.#screen) return;
+						// The read view hands the screen to the composer, which holds it from here (#edit).
+						this.#editing = false;
+						void this.#edit(routine);
+					},
+					"routine-edit",
+				)
+			: null;
 		const field = (label: string, ...lines: Child[]) =>
 			h("div", { class: "routine-field" }, h("span", { class: "routine-label" }, label), h("div", null, ...lines));
 		const state = this.#state(routine, this.#runsNow(routine));
@@ -980,7 +1003,7 @@ export class AgentRoutines {
 			h(
 				"div",
 				{ class: "routine-editor is-reading" },
-				back,
+				h("div", { class: "routine-read-top" }, back, edit),
 				h("h2", { class: "routine-name" }, routine.title),
 				h("p", { class: "routine-prompt" }, routine.prompt),
 				h(
@@ -1015,7 +1038,7 @@ export class AgentRoutines {
 		// The composer owns the screen from here: the list stays while the file and the logins are read, its controls
 		// waiting (the chooser's Cancel too), and nothing draws it over the composer.
 		this.#editing = true;
-		this.#returnTo = routine ? `edit:${routine.routineId}` : "create";
+		this.#returnTo = routine ? `row:${routine.routineId}` : "create";
 		const screen = this.#navigate();
 		this.#setControls();
 		let opened: WebRoutineFile | undefined;
@@ -1139,7 +1162,8 @@ export class AgentRoutines {
 			value: first && "localTime" in first ? first.localTime : "09:00",
 			"aria-label": t("Time"),
 		});
-		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it.
+		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it. Not shown: a new
+		// routine takes the viewer's zone, and an edit keeps the file's.
 		const timeZone = h("input", {
 			type: "text",
 			class: "routine-zone",
@@ -1234,18 +1258,7 @@ export class AgentRoutines {
 					),
 				]
 			: choices.length
-				? [
-						accountLine,
-						picker,
-						h(
-							"p",
-							{ class: "routine-hint" },
-							t(
-								"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-								{ name },
-							),
-						),
-					]
+				? [accountLine, picker]
 				: [
 						h(
 							"p",
@@ -1262,7 +1275,6 @@ export class AgentRoutines {
 			"div",
 			{ class: "routine-weekly" },
 			h("div", { class: "routine-week" }, days, h("span", { class: "routine-at" }, t("at"), time)),
-			timeZone,
 		);
 		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
 		const held =

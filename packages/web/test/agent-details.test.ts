@@ -543,6 +543,35 @@ describe("agent pages", () => {
 });
 
 describe("the card's frame", () => {
+	it("keeps a card beside a rebuilt row inside the window as it grows", () => {
+		vi.stubGlobal("innerHeight", 800);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		document.body.append(row);
+		vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 600, 200, 40));
+		const card = new AgentDetails(company, staff, {}, () => {}, row, company.signal, {}, "beside");
+		cleanup.push(() => {
+			card.dispose();
+			company.stop();
+		});
+		let height = 120;
+		vi.spyOn(card.dialog.el, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, 340, height));
+		window.dispatchEvent(new Event("resize"));
+		const top = () => Number.parseFloat(card.dialog.el.style.top);
+		// Level with the row while it fits.
+		expect(top()).toBeLessThan(600);
+		expect(top() + height).toBeLessThanOrEqual(800);
+		// The rail rebuilds the row (its agent started working), then the card grows (its routines' composer).
+		row.remove();
+		height = 700;
+		window.dispatchEvent(new Event("resize"));
+		expect(top()).toBeGreaterThan(0);
+		expect(top() + height).toBeLessThanOrEqual(800);
+		expect(card.dialog.el.style.left).not.toBe("");
+	});
+
 	it("sizes the agent card to its content, beside its row, and leaves the group popup's frame alone", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");

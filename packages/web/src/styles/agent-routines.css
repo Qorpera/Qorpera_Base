@@ -10,12 +10,16 @@
 .routine-text { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 0; border: 0; background: none; color: var(--text-muted); font-size: 13px; line-height: 1.4; cursor: pointer; }
 .routine-text:hover:not(:disabled) { color: var(--text); }
 .routine-text:disabled { opacity: .45; cursor: default; }
-.routine-create, .routine-choose, .routine-change, .routine-login-use { color: var(--blue); font-weight: 600; }
-.routine-create:hover:not(:disabled), .routine-choose:hover:not(:disabled), .routine-change:hover:not(:disabled), .routine-login-use:hover:not(:disabled) { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+.routine-edit, .routine-choose, .routine-change, .routine-login-use { color: var(--blue); font-weight: 600; }
+.routine-edit:hover:not(:disabled), .routine-choose:hover:not(:disabled), .routine-change:hover:not(:disabled), .routine-login-use:hover:not(:disabled) { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
 
 /* The list */
 .routine-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin: 0 0 10px; }
 .routine-top > .routine-create:only-child { margin-left: auto; }
+/* New routine: a plain + at the row's end. */
+.routine-create { flex: none; margin-right: -6px; color: var(--text-muted); }
+.routine-create:hover:not(:disabled) { color: var(--text); }
+.routine-create .icon { width: 17px; height: 17px; }
 .routine-title { flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
 .routine-top:has(.routine-title) { justify-content: flex-start; gap: 6px; margin-bottom: 8px; }
 .routine-close { margin-left: -6px; }
@@ -58,6 +62,9 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 /* Its rows set their own display, so hidden ones need saying again. */
 .routine-editor [hidden] { display: none; }
 .routine-back { justify-self: start; margin: 0 0 12px -2px; }
+/* Reading a routine: the way back, and Edit where the member may change it. */
+.routine-read-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+.routine-read-top > .routine-back { margin: 0 0 0 -2px; }
 .routine-back .icon { width: 15px; height: 15px; transform: scaleX(-1); }
 .routine-editor input, .routine-editor select, .routine-editor textarea { min-height: 0; border: 0; border-radius: 0; background: none; }
 .routine-editor input:focus-visible, .routine-editor textarea:focus-visible { outline: none; }
@@ -88,10 +95,10 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 .routine-kind { font-size: 12.5px; color: var(--text-soft); }
 .routine-wait { display: flex; flex-direction: row; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12.5px; font-weight: 400; }
 .routine-wait input[type=checkbox] { width: 14px; height: 14px; margin: 0; padding: 0; }
-.routine-choices { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.routine-choice { min-height: 0; padding: 0 0 3px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-soft); font-size: 13px; cursor: pointer; transition: color 140ms ease, border-color 140ms ease; }
+.routine-choices { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -10px; }
+.routine-choice { min-height: 0; padding: 3px 10px; border: 0; border-radius: 999px; background: none; color: var(--text-soft); font-size: 13px; cursor: pointer; transition: color 140ms ease, background-color 140ms ease; }
 .routine-choice:hover { color: var(--text); }
-.routine-choice[aria-checked="true"] { border-bottom-color: var(--text); color: var(--text); font-weight: 600; }
+.routine-choice[aria-checked="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-weight: 600; }
 .routine-account-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
 .routine-account { color: var(--text); overflow-wrap: anywhere; }
 .routine-editor .routine-account-picker { max-width: 100%; padding: 0 0 1px; border-bottom: 1px dotted var(--text-soft); color: var(--text); font-size: 13px; }
