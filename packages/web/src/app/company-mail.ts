@@ -18,7 +18,9 @@ import {
 } from "../cloud/mail.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
+import { t } from "../ui/preferences.ts";
 import { type CompanyController, needsModelAccount } from "./company.ts";
+import type { QuotedText } from "./quotes.ts";
 
 /* The company's mail as this member reads it (Interfaces step I5c; the member mail read of step I5a, cloud/mail.ts),
  * for the Mailbox page and the `mail` and `mail_addresses` sources (RUNTIME-INTERFACES.md §4).
@@ -568,6 +570,35 @@ export class CompanyMail {
 			this.#refreshCompany(),
 			...[...this.#watched.lists].map(([key, request]) => this.#readFirst(key, request)),
 		]);
+	}
+
+	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's
+	 * "Tell Ida what to answer", "Write an email" and an address's new handler, views/mailbox.ts). It goes from here
+	 * only into a conversation with nothing drafted in it, on the account the cloud chooses for that conversation (as an
+	 * answer does); otherwise, or when the send doesn't go, the note waits in that conversation's composer, and `href`
+	 * is the agent's thread where it waits. Throws when the agent's thread can't be opened or the note can't be added. */
+	async tell(agentId: string, note: QuotedText): Promise<{ readonly sent: boolean; readonly href: string }> {
+		const company = this.#company;
+		const profileId = company.profile.profileId;
+		const cofounder = agentId === company.cofounderId();
+		const href = cofounder ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
+		let sessionId: string;
+		if (cofounder) {
+			const opened = await company.openCofounderConversation();
+			if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+			sessionId = opened.sessionId;
+		} else {
+			const agent = company.staffById(agentId);
+			if (agent?.employmentStatus !== "active") throw new Error(t("That agent is no longer at work."));
+			sessionId = await company.openStaffConversation(agent);
+		}
+		const before = company.conversation(sessionId, false).get();
+		const empty = !(before.draft ?? "").trim() && !before.attachments?.length && !before.sending && !before.retrySend;
+		company.addToDraft(sessionId, note);
+		if (!empty || this.#closed) return { sent: false, href };
+		await this.#chooseAccount(sessionId);
+		const sent = await company.sendPrompt(sessionId, company.conversation(sessionId, false).get().draft ?? "");
+		return { sent, href };
 	}
 
 	/** Gives the conversation the model account the cloud chooses for it, as its thread does when it opens

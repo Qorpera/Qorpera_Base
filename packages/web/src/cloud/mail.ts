@@ -78,6 +78,9 @@ export interface MailThreadSummary {
 	readonly unread: boolean;
 	readonly messages: number;
 	readonly account?: MailAccount;
+	/** The start of the newest message's text on one line (at most 200 characters), while its text is kept; never for
+	 * account mail. Absent before migration 20260930522000. */
+	readonly snippet?: string;
 }
 
 export interface MailThreadPage {
@@ -156,6 +159,8 @@ export interface MailWaitingItem {
 	readonly staffAgent?: MailAgent;
 	readonly to: readonly string[];
 	readonly subject?: string;
+	/** The start of the text the agent wants to send, on one line. Absent before migration 20260930522000. */
+	readonly snippet?: string;
 	readonly createdAt: string;
 }
 
@@ -282,7 +287,7 @@ function parseSummary(value: unknown): MailThreadSummary {
 		direction: oneOf(item.direction, MAIL_DIRECTIONS, "mail thread direction"),
 		unread: flag(item.unread, "mail thread unread"),
 		messages: absent(item.messages) ? 0 : boundedInteger(item.messages, "mail count", 0, Number.MAX_SAFE_INTEGER),
-		...(found ? { account: found } : {}),
+		...(found ? { account: found } : optional("snippet", shownText(item.snippet, 200))),
 	};
 }
 
@@ -352,6 +357,7 @@ function parseWaitingItem(value: unknown): MailWaitingItem {
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
 		...optional("subject", shownText(item.subject, 2048)),
+		...optional("snippet", shownText(item.snippet, 200)),
 		createdAt: timestamp(item.createdAt, "mail waiting time"),
 	};
 }
