@@ -1479,7 +1479,7 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("Fixture agent did not finish this run");
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"The computer running this run stopped answering. The problem is on Qorpera's side.",
+			"Qorpera lost contact with this run. The problem is on Qorpera's side.",
 		);
 		// The cloud's own error text stays out of the card; the reason is in the member's words.
 		expect(card()?.textContent).not.toContain(details.lastError);

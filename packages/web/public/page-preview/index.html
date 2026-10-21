@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- The frame an HTML page from the Company File runs in (src/ui/page-frame.ts). Its frame and public/_headers
+     sandbox it with no origin, so the page reaches none of this site's cookies, storage or sign-in. This policy lets
+     the page's own inline styles and scripts run and loads nothing from the network; eval adds nothing a page's own
+     scripts can't do in here, and some inlined libraries need it. The frame waits for its page from the app that
+     framed it, then becomes that page. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page</title>
+<script>
+"use strict";
+(() => {
+	// Only a frame shows a page, and only the one its own app hands it.
+	if (window.parent === window) return;
+	const app = window.parent;
+	addEventListener("message", function take(event) {
+		const data = event.data;
+		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
+		removeEventListener("message", take);
+		document.open();
+		document.write(data.html);
+		document.close();
+	});
+	app.postMessage({ type: "qorpera-page-ready" }, "*");
+})();
+</script>
+</head>
+<body></body>
+</html>

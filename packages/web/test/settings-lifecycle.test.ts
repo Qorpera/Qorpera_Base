@@ -10,6 +10,7 @@ import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
 import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
+import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
@@ -629,6 +630,68 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector("#settings-storage-recents")?.getAttribute("aria-selected")).toBe("true");
 		expect(f.root.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
 		expect(folder.history).toHaveBeenCalledOnce();
+	});
+	it("opens Storage at a folder link's file or folder, over the conversation", async () => {
+		const folder = storageFixture();
+		const html = "<p>Dashboard</p>";
+		const fileOf = (text: string) => ({
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: text.length,
+			mediaType: "text/html",
+			executable: false,
+		});
+		const read = vi.fn(async (path: string) => ({
+			asOfSeq: 1,
+			entry:
+				path === "operations"
+					? { path, kind: "folder", version: id(103), seq: 1, updatedAt: timestamp, file: null, target: null }
+					: {
+							path,
+							kind: "file",
+							version: id(102),
+							seq: 1,
+							updatedAt: timestamp,
+							file: fileOf(html),
+							target: null,
+						},
+		}));
+		const readFile = vi.fn(async () => new TextEncoder().encode(html));
+		vi.mocked(WebCompanyFiles.prototype.folder).mockImplementation(function (this: WebCompanyFiles) {
+			folder.source.push(this);
+			return { list: folder.list, history: folder.history, read, readFile } as never;
+		});
+		const f = await setup();
+		const prose = markdown("See [the dashboard](folder:notes/dashboard.html) and [operations](folder:operations).");
+		f.root.querySelector("main")!.append(prose);
+		const [dashboard, operations] = prose.querySelectorAll<HTMLButtonElement>(".folder-link");
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		dashboard!.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		await draw();
+		await draw();
+		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(f.root.querySelector("#settings-storage-documents")?.getAttribute("aria-selected")).toBe("true");
+		expect(read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
+		expect(folder.list).toHaveBeenLastCalledWith("notes", null, 200, expect.any(AbortSignal));
+		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")?.textContent).toBe(
+			"dashboard.html",
+		);
+		expect(f.root.querySelector(".settings-storage-content iframe.files-page-frame")?.getAttribute("sandbox")).toBe(
+			"allow-scripts",
+		);
+		// The conversation stays where it was, below Settings.
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(prose.isConnected).toBe(true);
+		// Closed and followed again, a folder link opens the folder it names.
+		click(f.root, ".settings-close");
+		operations!.click();
+		await draw();
+		await draw();
+		expect(read).toHaveBeenLastCalledWith("operations", expect.any(AbortSignal));
+		expect(folder.list).toHaveBeenLastCalledWith("operations", null, 200, expect.any(AbortSignal));
+		expect(f.root.querySelector(".settings-storage-content .storage-title")?.textContent).toBe("operations");
+		expect(f.root.querySelector(".settings-storage-content .files-preview")?.hasAttribute("hidden")).toBe(true);
 	});
 	it("keeps Tab inside the available Settings controls while a storage folder read is pending", async () => {
 		const folder = storageFixture();

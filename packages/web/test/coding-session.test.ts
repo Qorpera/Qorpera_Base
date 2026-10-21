@@ -1000,7 +1000,7 @@ describe("the element in the thread", () => {
 		expect(notes).toEqual([
 			"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
 			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
-			"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
+			"Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again.",
 		]);
 	});
 

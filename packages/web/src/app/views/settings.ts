@@ -155,6 +155,8 @@ export class SettingsView {
 	#mode: "settings" | "storage" = "settings";
 	#storageSection: "documents" | "recents" = "documents";
 	#folder: CompanyFolderBrowser | undefined;
+	/** A folder link's path, shown once Storage has its browser (openFolderPath). */
+	#folderPath: string | undefined;
 	#folderStop = new AbortController();
 	#folderAuthority: string | undefined;
 	#account: AccountViewState = { loading: true };
@@ -406,6 +408,16 @@ export class SettingsView {
 		(this.#mode === "storage" ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#tab))?.focus();
 	}
 
+	/** A folder link (ui/folder-links.ts): Storage shows what it names, a folder in the list or a file in the preview,
+	 * once the company's folder is open. */
+	openFolderPath(path: string): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#folderPath = path;
+		this.#storageSection = "documents";
+		if (this.#mode === "storage") this.#drawStorage();
+		else this.#switchMode("storage");
+	}
+
 	/** Settings opened on a company's page show the company that page has open
 	 * and no other, while the account lists it; none when the page has no
 	 * company to lend (access lost, not available). Opened elsewhere, they keep
@@ -568,6 +580,7 @@ export class SettingsView {
 		if (this.#folder) {
 			// Settings may have changed the time zone while Storage was hidden.
 			if (shown) this.#folder.redraw();
+			this.#revealFolderPath(this.#folder);
 			return;
 		}
 		const signal = AbortSignal.any([
@@ -631,6 +644,13 @@ export class SettingsView {
 			);
 		});
 		if (section === "recents") browser.showRecents();
+		this.#revealFolderPath(browser);
+	}
+
+	#revealFolderPath(browser: CompanyFolderBrowser): void {
+		const path = this.#folderPath;
+		this.#folderPath = undefined;
+		if (path !== undefined) browser.reveal(path);
 	}
 
 	/** The company's storage under Storage's navigation: what is used of what the plan includes. */
@@ -867,6 +887,8 @@ export class SettingsView {
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
+		// A folder link names a path in the company Settings showed when it was followed.
+		if (company !== this.#company) this.#folderPath = undefined;
 		this.#folderStop.abort();
 		this.#folder?.dispose();
 		this.#folder = undefined;
