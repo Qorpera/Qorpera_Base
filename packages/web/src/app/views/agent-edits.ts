@@ -59,6 +59,15 @@ export class AgentEdits {
 				this.store.set({ draft: {}, status: "", failed: false, saved: false });
 			} else this.#reconcile();
 		});
+		// The rail shows the figure and colour being saved, and drops them once the roster has
+		// them or the save failed.
+		this.store.subscribe(({ draft, failed }) => {
+			if (failed || (draft.figure === undefined && draft.color === undefined)) company.showLook(agent.id, undefined);
+			else {
+				const saved = savedAgentDraft(company.staffById(agent.id) ?? agent);
+				company.showLook(agent.id, { figure: draft.figure ?? saved.figure, color: draft.color ?? saved.color });
+			}
+		});
 		for (const signal of [company.signal, scope]) {
 			if (signal.aborted) this.dispose();
 			else signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
@@ -143,6 +152,7 @@ export class AgentEdits {
 		if (this.signal.aborted) return;
 		this.#lifetime.abort();
 		this.#unsubscribe();
+		this.#company.showLook(this.#agent.id, undefined);
 		this.store.set({ draft: {}, status: "", failed: false, saved: false });
 		this.store.dispose();
 		if (edits.get(this.#company)?.get(this.#agent.id) === this) edits.get(this.#company)?.delete(this.#agent.id);
