@@ -6,6 +6,11 @@ before any machine writes through the folder. It serves contract 5.6 and the
 machine-side design in [the company folder on every machine](RUNTIME-COMPANY-FOLDER.md).
 Where they differ, the contract governs.
 
+Since 20260930527000 every platform path is under `QorperaOS/` (contract 5.6): `rules/` is
+`QorperaOS/rules/`, `agents/<name>/agent.md` is `QorperaOS/agents/<name>/agent.md`, and so on.
+§§1–10 say so; the build plan (§11) keeps the paths as they were built. The root is seeded,
+written `QorperaOS`, keyed `qorperaos`, and never moved or deleted.
+
 Founder decisions it relies on:
 - the folder is the company (contract 5.6);
 - everything is approved by default, and the automatic review is unchanged
@@ -76,9 +81,9 @@ gains `folder-v2` columns and guards:
 | `qorpera_company_rooms` and room members | the index of `group.md` |
 | routines, their versions and schedule cursors | the index of routine files; cursors stay runtime state |
 | todos (which workers reference) | the index of todo files |
-| review rules | company rules: the index of `rules/*.md`. Personal rules: rows, as today |
-| sidebar sections and placements | the index of `agents/sections.md` |
-| connection records (`qorpera_cloud_secrets`) | described by `connections/*.md`; the vault stays the authority (5.6) |
+| review rules | company rules: the index of `QorperaOS/rules/*.md`. Personal rules: rows, as today |
+| sidebar sections and placements | the index of `QorperaOS/agents/sections.md` |
+| connection records (`qorpera_cloud_secrets`) | described by `QorperaOS/connections/*.md`; the vault stays the authority (5.6) |
 | path resources and grants | gain the revisions of §4 |
 | wake occurrences and claims | gain commit and sequence references |
 | read observations, read confirmations, context views | gain path-version and commit references (§4) |
@@ -373,7 +378,7 @@ is never upgraded. The steps:
      Rows the commit only references are taken `FOR KEY SHARE`.
    - The index rows of every structured file inside a subtree unit (staff,
      rooms, room members and the rest) are locked here, from the unit's
-     `asOfSeq` listing. So a subtree delete of `agents/x` never locks staff X
+     `asOfSeq` listing. So a subtree delete of `QorperaOS/agents/x` never locks staff X
      after an entry.
    - Unique keys a unit introduces (a new agent `id`, a new handle) are
      claimed with `INSERT … ON CONFLICT DO NOTHING`, so a clash becomes an
@@ -516,7 +521,7 @@ Every writer uses the same commit function, as service_role:
 - the vault's connection-file writer in the object gateway, for connection
   files (P22: after the vault change, from its due marks);
 - the reviewed-card approvals;
-- a card's "Always allow" answer, which writes `rules/<rule>.md` as the
+- a card's "Always allow" answer, which writes `QorperaOS/rules/<rule>.md` as the
   answering owner or admin (2026-09-25 amendment, item 5); and
 - company creation.
 
@@ -590,13 +595,13 @@ order go away.
 Every basis becomes an explicit resource or named basis, seeded when the
 company is created:
 - the root, with the default agent read/write grant (2026-09-26);
-- `rules/`: owners and admins write it, every member and agent reads it;
+- `QorperaOS/rules/`: owners and admins write it, every member and agent reads it;
 - the code rules, each becoming a named basis that follows the agent's folder
   by `id`:
   - the notebook rule;
   - the worker/todo rule;
   - the hiring rule, whose create-only basis is the precondition "absent";
-- **by session kind:** in a coding session, `agents/**` and `rules/**` are
+- **by session kind:** in a coding session, `QorperaOS/agents/**` and `QorperaOS/rules/**` are
   read-only (contract 5.6).
 
 `snapshot-v1`'s implicit `members/<id>/private` rule is not carried over:
@@ -611,7 +616,7 @@ parse. The class is one of:
 
 - **plain:** applies at once. This covers:
   - every member change;
-  - every coding-session change that passes the `agents/**` and `rules/**`
+  - every coding-session change that passes the `QorperaOS/agents/**` and `QorperaOS/rules/**`
     refusal (coding sessions are never reviewed, contract 5.6);
   - a routine run's own end-of-run decision: the run's wake is that routine's
     occurrence, and only the decision fields (next run, conclusion, effort,
@@ -655,17 +660,17 @@ versions and commit ids instead of snapshots.
 
 `qorpera_structured_path_kind(path)` recognises the files that contract 5.6
 gives a fixed format:
-- `agents/<name>/agent.md`;
-- `agents/sections.md`;
-- `agents/<name>/routines/*.md` and `agents/<name>/todos/*.md`;
-- `agents/groups/<name>/group.md`;
-- `connections/*.md`;
-- `rules/*.md`;
-- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, indexed since H2);
-- `interfaces/order.md`, `interfaces/*/interface.toml`, `tables/*/table.toml` and `tables/*/rows.csv` (P16;
+- `QorperaOS/agents/<name>/agent.md`;
+- `QorperaOS/agents/sections.md`;
+- `QorperaOS/agents/<name>/routines/*.md` and `QorperaOS/agents/<name>/todos/*.md`;
+- `QorperaOS/agents/groups/<name>/group.md`;
+- `QorperaOS/connections/*.md`;
+- `QorperaOS/rules/*.md`;
+- `QorperaOS/human-tasks/*.md` and `QorperaOS/contacts/*.md` (F2's H1; STATE-FILES §2, indexed since H2);
+- `QorperaOS/interfaces/order.md`, `QorperaOS/interfaces/*/interface.toml`, `QorperaOS/tables/*/table.toml` and `QorperaOS/tables/*/rows.csv` (P16;
   RUNTIME-INTERFACES.md §6.1, with a table index and no interface index before I7).
 
-STATE-FILES §1 also lists `vision/vision.md` and the worker files. The same table is exported to
+STATE-FILES §1 also lists `QorperaOS/vision/vision.md` and the worker files. The same table is exported to
 TypeScript. An ordinary file pays for one
 pattern match and nothing else.
 
@@ -692,8 +697,8 @@ The writer passes each structured file's text and parse into the commit.
 
 - Deleting or moving a seeded folder or file.
 - Deleting a lone `agent.md` or `group.md`.
-- Moving an agent's folder out of `agents/` or into `agents/groups/`, or a
-  group's folder out of `agents/groups/`.
+- Moving an agent's folder out of `QorperaOS/agents/` or into `QorperaOS/agents/groups/`, or a
+  group's folder out of `QorperaOS/agents/groups/`.
 - The Co-Founder:
   - deleting its folder or `agent.md`;
   - archiving it;
@@ -703,9 +708,9 @@ The writer passes each structured file's text and parse into the commit.
 - Changing any agent's `id`, or copying one into a second folder.
 - Deleting a connection file while its account is connected. Writing a
   connection's platform-only fields from anywhere but the vault.
-- Writing `rules/` other than as an owner or admin. An agent's Ask first
+- Writing `QorperaOS/rules/` other than as an owner or admin. An agent's Ask first
   personal rule stays in the database.
-- Writing `agents/**` or `rules/**` from a coding session.
+- Writing `QorperaOS/agents/**` or `QorperaOS/rules/**` from a coding session.
 
 ### Index effect of each unit
 
@@ -722,13 +727,13 @@ The writer passes each structured file's text and parse into the commit.
 
 The indexes cover the agent roster (`qorpera_profile_staff`), group chats
 (rooms and members), sidebar sections, routines, todos, connections, company
-rules, and the company name read from `vision/vision.md`.
+rules, and the company name read from `QorperaOS/vision/vision.md`.
 
 ### Company creation is one commit
 
 Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the Co-Founder's folder and `agent.md`;
-- `vision/vision.md` and `agents/sections.md`;
+- `QorperaOS/vision/vision.md` and `QorperaOS/agents/sections.md`;
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
@@ -838,7 +843,7 @@ check reports drift.
     `last_seq` reveals only that something changed.
   - On a hint, the web client asks the feed what changed instead of listing
     everything again.
-  - A saved `agents/sections.md` updates the sidebar index in the same step.
+  - A saved `QorperaOS/agents/sections.md` updates the sidebar index in the same step.
 - **Presence** already keys by covering resource
   (`presence_path_routes`, 20260908002700:28-63). It uses the actor's
   `folder-v2` branch and takes no company locks.

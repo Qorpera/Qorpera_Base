@@ -161,8 +161,8 @@ machine has the same authority (below).
 ## Views and machines
 
 **Which sessions share a machine.** A coding machine holds one member's sessions for one coding agent, one repository
-and one setup digest (Q1). Every view on it then has the same authority: the coding agent ∩ the member, with `agents/`
-and `rules/` read-only (contract 5.6; C1b's actor rule). Root can read every pass and mount on its machine, so a machine
+and one setup digest (Q1). Every view on it then has the same authority: the coding agent ∩ the member, with `QorperaOS/agents/`
+and `QorperaOS/rules/` read-only (contract 5.6; C1b's actor rule). Root can read every pass and mount on its machine, so a machine
 that mixed agents would let one agent read through another agent's view, which breaks item 11's "each session mounts
 with its own authority". One repository per machine is item 11's "the repository's machine": the setup file sets it up
 and its snapshot is built from that repository (below). A session whose setup names `repositoryDependencies` uses its
@@ -222,7 +222,7 @@ VM's CID (`{project, name, physicalId}` from LXD):
 
 **Access.** A coding worker's `workerAccess` is always `read`, and there it names the dispatch's sources, not folder
 writes (the core's actor rule, `20260928259230_folder_core_views.sql:272`). A coding view reads and writes what both
-the coding agent and the member may, with `agents/` and `rules/` read-only (the same rule), within the code area rules
+the coding agent and the member may, with `QorperaOS/agents/` and `QorperaOS/rules/` read-only (the same rule), within the code area rules
 (5b).
 
 **The service that served a view** is named on it (`served_by`, new in 5a, set by the first renewal and cleared by a

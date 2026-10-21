@@ -3,7 +3,7 @@
 Part of [the company folder core](RUNTIME-COMPANY-FOLDER-CORE.md), §6 ("Clients") and §11 C4: "the members' and
 clients' hint" and the member routes. Slices P27 and P30 of the folder core plan (coordinator audit, 2 October 2026),
 moved from F3 to the Interfaces session on 3 October 2026. The web file page and history on folder-v2 (P33) are built
-on them. Member writes (§5, P34a) are open everywhere but `human-tasks/`, which waits until human-task wakes run
+on them. Member writes (§5, P34a) are open everywhere but `QorperaOS/human-tasks/`, which waits until human-task wakes run
 on the listener (P31).
 
 Everything here serves folder-v2 companies only. A snapshot-v1 company never reaches it: each function refuses an
@@ -127,9 +127,9 @@ governed Company File, so they refuse now. P34a gives members a write route and 
 suggestions onto the folder (the coordinator, 3 October). P34b, the other editors (rules, sections, routines), follows
 P31.
 
-**The hold** (H2; F2, 3 October). A member's save under `human-tasks/` queues a wake for the agent that only P31
+**The hold** (H2; F2, 3 October). A member's save under `QorperaOS/human-tasks/` queues a wake for the agent that only P31
 delivers. Until P31 the route refuses the whole request (403, before any byte is staged) when any unit is at or under
-`human-tasks/`: a write, a mkdir, a new folder, a delete, and either end of a move. The test is on the folder key
+`QorperaOS/human-tasks/`: a write, a mkdir, a new folder, a delete, and either end of a move. The test is on the folder key
 (`companyPathKey`, the same fold as `qorpera_folder_key`). Everything else is open. Contacts queue no wake, and their
 rules already run in SQL.
 
@@ -197,9 +197,9 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
 
 **The web (P34a-2).**
 - **Agents:**
-  - *Create* is one `new_folder` `agents/<handle>` holding `agent.md` (`writeAgentFile`), `memory/`, `skills/`,
+  - *Create* is one `new_folder` `QorperaOS/agents/<handle>` holding `agent.md` (`writeAgentFile`), `memory/`, `skills/`,
     `routines/` and `todos/`, as the runtime's hire makes it, without a first todo (see *Fields*). The handle comes
-    from the name (`freeCompanyStateName` over the listed `agents/`); one taken since the listing is `exists`, and the
+    from the name (`freeCompanyStateName` over the listed `QorperaOS/agents/`); one taken since the listing is `exists`, and the
     next handle is tried with a new key.
   - *Edit* rewrites `agent.md`: its settings with `setCompanyStateSettings` and its body (the instructions), with
     `expectedVersion` from the read. The handle stays.
@@ -218,23 +218,23 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
   A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message. A deleted
   agent is fenced at once (no run, routine or message wakes it); until P15 its routines still read `active` in the
   index, though none can fire (F2, 4 October).
-- **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
+- **Group chats:** *create* is a `new_folder` `QorperaOS/agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
   members' list becomes `agents` (at least two) and `people`. *Edit* rewrites `group.md` with `expectedVersion` from
   the read; the room's version number and key go, and a lost answer is found by reading the file again (each try
   has its own key). *Delete* removes
   the folder (with `asOfSeq`), which closes the chat.
 - **Who may:** the web keeps today's owner-or-admin gates for agents and group chats, and the core's `denied` answers
   for anything a path's authority refuses.
-- **Skill suggestions** read `skills/` and `agents/<handle>/skills/` through the folder client.
+- **Skill suggestions** read `QorperaOS/skills/` and `QorperaOS/agents/<handle>/skills/` through the folder client.
 - **What goes:** `WebCompanyFiles.files()` and `mode()` (these three editors are their only callers; P34b's editors
   are written on the folder), the web's use of the governed editor client, and the agent JSON document.
 
 ## 6. The web's routine editor on the folder (P34r)
 
-Every company is folder-v2, so a routine is a file, `agents/<handle>/routines/<key>.md`
+Every company is folder-v2, so a routine is a file, `QorperaOS/agents/<handle>/routines/<key>.md`
 (RUNTIME-COMPANY-STATE-FILES.md, "routines"), and `qorpera_upsert_cloud_routine` refuses a member's save there ("edit
 those files"). So the agent routines page's switch, Edit and New routine do nothing on a folder-v2 company. The
-coordinator moved the routine editor ahead of P31 (4 October): routines are not under `human-tasks/`, and a founder
+coordinator moved the routine editor ahead of P31 (4 October): routines are not under `QorperaOS/human-tasks/`, and a founder
 tries them at milestone acceptance. The rest of P34b (rules, sections) waits for P31. Design review r1 (4 October) is
 folded in below.
 
@@ -278,7 +278,7 @@ it:
 **The writes**, each through §5's member commit route, as the member:
 - **New routine:** the routines folder is read first; when it is missing, a `mkdir` comes first in the same change
   set (each unit's outcome is read; a `mkdir` `exists` reads again and retries without it). Then one `write` of
-  `agents/<handle>/routines/<key>.md` (`writeRoutineFile`) with a new id, `reply` (today's default, `required`) and
+  `QorperaOS/agents/<handle>/routines/<key>.md` (`writeRoutineFile`) with a new id, `reply` (today's default, `required`) and
   `effort` (`low`, as today) written out. The key comes from the title (`freeCompanyStateName` over the listed
   routines' file stems, at most 64 characters); the write's `exists` takes the next key with a new operation key,
   unless the file at that path already carries this draft's id (a lost answer: it is saved).

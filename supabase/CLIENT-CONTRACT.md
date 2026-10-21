@@ -134,7 +134,7 @@ they answer 42501 "native host call is refused".
 
 - `qorpera_list_cloud_routines`
 - `qorpera_upsert_cloud_routine`: a folder-v2 company keeps its routines in
-  `agents/<handle>/routines/` files: saving a new routine, or one that comes
+  `QorperaOS/agents/<handle>/routines/` files: saving a new routine, or one that comes
   from a file, is refused with 55000; a routine saved before the company became
   folder-v2 is saved as before.
 
@@ -260,13 +260,13 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
   `sectionId` or null for Unassigned, `position`), and the caller's own
   `pinned` (ordered) and `hidden` agent ids. Any member. Since `20260930519000`
-  also `unassignedOrder: true`: on folder-v2, `agents/sections.md` keeps the order
+  also `unassignedOrder: true`: on folder-v2, `QorperaOS/agents/sections.md` keeps the order
   of Unassigned (its id lines before the first section), and placements with a
   null `sectionId` carry that order. Before it, a folder-v2 sidebar has no
   Unassigned positions.
 - On folder-v2 the RPC below refuses section changes and moves (55000,
   `20260928249100`): the web makes them as the member's edits of
-  `agents/sections.md` through the member commit route, and writes the Unassigned
+  `QorperaOS/agents/sections.md` through the member commit route, and writes the Unassigned
   order only where the sidebar says `unassignedOrder`.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Shared, owner/admin/contributor:
@@ -278,7 +278,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   Section names are 1-60 characters, unique per company ignoring case; any
   number of sections (at most 40 until bundle v95). The Co-Founder is never
   placed, pinned or hidden. Agents change the same shared sections through the
-  runtime tool `organize_sidebar`, which saves `agents/sections.md` (its old row
+  runtime tool `organize_sidebar`, which saves `QorperaOS/agents/sections.md` (its old row
   writer, `qorpera_manage_agent_sidebar`, was dropped in legacy sweep D6,
   `20260930335000`).
 - Group chats (migration `20260928030000`, no bundle): a group chat (an active
@@ -308,7 +308,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
   `settings|card|agent|folder` (`folder`: a company rule from the company's
-  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
+  `QorperaOS/rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -320,11 +320,11 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
   the reviewer reads for one action). Returns the rule. A folder-v2 company
-  keeps its company rules in `rules/` files: saving a company rule there is
+  keeps its company rules in `QorperaOS/rules/` files: saving a company rule there is
   refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
-  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  A rule that comes from a `QorperaOS/rules/` file (`createdVia: folder`) is refused with
   55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
@@ -518,7 +518,7 @@ charged before it (20260930010000).
   p_client_start_id)` (needs a confirmed email): any joined founder, once every
   joined founder is Ready with a usable account of their own. One step, repeat-safe: every founder at
   the table becomes `owner`, unanswered invitations are withdrawn, and the
-  description and roles become the company's first files (`vision/vision.md`
+  description and roles become the company's first files (`QorperaOS/vision/vision.md`
   and the Co-Founder's first todo). The first run is paid by the caller's own
   account, read again when the company is set up: with no usable account then,
   the Co-Founder's first run waits until its starter starts it
@@ -646,8 +646,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md`. Since
   20260928489180_folder_core_hooks_mailboxes (E1) a `folder-v2` company
   creates, pauses and removes hooks and mailboxes with these same calls; its
-  folder describes each in `connections/hook-<name>.md` or
-  `connections/mailbox-<name>.md`, never with its address or a signing
+  folder describes each in `QorperaOS/connections/hook-<name>.md` or
+  `QorperaOS/connections/mailbox-<name>.md`, never with its address or a signing
   secret. The intake is built switched off.
 - Settings (step E4, `packages/web/src/app/views/settings-hooks.ts`): Company
   connections lists the company's webhooks and mailboxes to every member, each
@@ -839,7 +839,13 @@ answers 42501 "Company folder is unavailable" for a caller who is not a member o
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Members write through the object gateway's member commit route (P34a,
 `20260928479130_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
-a write under `human-tasks/` waits for P31.
+a write under `QorperaOS/human-tasks/` waits for P31.
+
+Since `20260930527000` the platform's folders (vision, agents, rules, connections, skills, contacts, human tasks,
+interfaces and tables) are under `QorperaOS/` at the top, beside `code/`, `hooks/` and the company's own work (runtime
+contract 5.6). The folder is written exactly `QorperaOS` and its key is `qorperaos`; below it, structured paths are
+written in lowercase. An entry's `path` keeps the stored spelling (`QorperaOS/agents/...`), so a client compares paths
+by their keys, never with a lowercase literal.
 
 - `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
   `20260928469270_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
@@ -897,7 +903,7 @@ a write under `human-tasks/` waits for P31.
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
 two pages in its Interfaces tab, Mailbox and Members, each off until an owner or admin switches it on. A client draws
-them from the definitions it ships, never from a definition in the folder's `interfaces/`: Pulse, a page an agent wrote
+them from the definitions it ships, never from a definition in the folder's `QorperaOS/interfaces/`: Pulse, a page an agent wrote
 and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
 data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a
 caller who is not a member of a folder-v2 company with that environment.
@@ -945,7 +951,7 @@ for a cell's offer; an agent's id is an agent offered to an area's supervisor ("
 ### Supervision consent (20260928549360_interface_supervision)
 
 Folder-v2 companies only (Interfaces I9b; `deploy/first-node/RUNTIME-INTERFACES.md` §5.1 "Supervision"). A member
-supervises the agents of an area (a row of `tables/areas`) by consent: their own save of the areas' rows that puts them
+supervises the agents of an area (a row of `QorperaOS/tables/areas`) by consent: their own save of the areas' rows that puts them
 in a row's `supervisor` cell (a take, or an offer of the cell they accept) consents. While the consent is live, the
 agents the row's `agents` cell holds take and release claimed cells as that member. A `supervisor` cell with no live
 consent decides nothing: its agents act for no one. A consent ends `released` (a save leaves the cell naming someone
@@ -969,7 +975,7 @@ environment.
   a paused company.
 - `qorpera_member_interface_supervisions(environment)`: `{schema: "qorpera.member-interface-supervisions/v1",
   supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
-  first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
+  first, at most 500. Read it again after a folder change to `QorperaOS/tables/areas` and on focus. A row whose `supervisor` cell
   names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
 - Agents join a supervised area by its supervisor (20260928549370_interface_supervision_agents). While an area's
   consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
@@ -1015,7 +1021,7 @@ environment.
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
 the conversation's summary-tree root: `<root>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, the root being
-`agents/<handle>/memory/thread` for a thread and `agents/groups/<handle>/memory` for a group chat. The input lists each
+`QorperaOS/agents/<handle>/memory/thread` for a thread and `QorperaOS/agents/groups/<handle>/memory` for a group chat. The input lists each
 image as before, `{objectSha256, bytes, mediaType}`, the hash being the file's. An input holds at most 5 images and
 8 MiB, each PNG, JPEG, GIF or WebP (the web's limits). Only the platform writes these paths (a summary tree is the
 platform's; a member's commit is refused `platform_only`), and an agent reads them as folder files. A conversation with

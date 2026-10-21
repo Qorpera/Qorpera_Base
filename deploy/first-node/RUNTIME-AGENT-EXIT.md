@@ -305,7 +305,7 @@ under qorpera.com and a page that explains the traffic with an abuse contact.
 
 ## 10. Company rules (E8, choice 4)
 
-`rules/network.toml` in the company folder:
+`QorperaOS/rules/network.toml` in the company folder (since 20260930527000; it was `rules/network.toml`):
 
 ```toml
 mode = "open"                                     # or "only-listed"

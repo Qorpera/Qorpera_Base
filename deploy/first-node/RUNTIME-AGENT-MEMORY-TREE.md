@@ -30,6 +30,10 @@ ratified.
 > The text below stays as the record of what was approved on 5 and 6 October. Where it says otherwise, the scope
 > amendment wins. Part 1's step 10 and decisions 1 and 4, and §§11, 13, 14 and 16 carry a mark.
 
+> Since 20260930527000 every platform path is under `QorperaOS/` (contract 5.6): a thread's tree root is
+> `QorperaOS/agents/<agent>/memory/thread/` and a group chat's `QorperaOS/agents/groups/<group>/memory/`. Part 1
+> and §§3–13 say so. §1's facts and §§14–17 keep the paths as they were.
+
 Revised on 5 October:
 - **Company-first and agent-first, with no compromise.** Members are not a boundary. Everything is stored as if all
   members were one, and every agent may read every conversation (§9, §15).
@@ -166,8 +170,8 @@ one.**
 ## Where it lives
 
 The trees are ordinary files in the company folder, next to what they belong to:
-- `agents/<agent>/memory/thread/` holds an agent's thread;
-- `agents/groups/<group>/memory/` holds a group chat;
+- `QorperaOS/agents/<agent>/memory/thread/` holds an agent's thread;
+- `QorperaOS/agents/groups/<group>/memory/` holds a group chat;
 - `runs/<run>/` inside either holds the work of one answer.
 
 Only the platform writes them. Members, agents and machines read and search them like any other company file. The
@@ -455,8 +459,8 @@ Each conversation has a tree root:
 
 | Conversation | Tree root |
 | --- | --- |
-| an agent's thread | `agents/<agent>/memory/thread/` |
-| a group chat | `agents/groups/<group>/memory/` |
+| an agent's thread | `QorperaOS/agents/<agent>/memory/thread/` |
+| a group chat | `QorperaOS/agents/groups/<group>/memory/` |
 
 So a tree moves with its folder and is erased with it. P18b's agent-folder erasure therefore covers a deleted agent's
 thread tree. A member's restore writes a folder back without its tree files. The restore leaves out every path under a
@@ -561,9 +565,9 @@ the tree holds the same content.
   the block and merges by position: a node already built is kept, and the newer duplicate is dropped. It retries up
   to 3 times. Folder commits are transactional, so OptChat's `fsync` and lock rules have no counterpart here.
 - **Platform-only paths.** Writes, moves and deletes at or under a tree root by members, agents or machines are
-  refused (`platform_only`), like owner-only `rules/`. So is a move or a delete of a folder between a tree root and
-  its owning folder: `agents/<agent>/memory/`, the notebook's folder, which holds the thread's root (a group's root,
-  `agents/groups/<group>/memory/`, sits right under its folder). A move counts by its source and its target. So a
+  refused (`platform_only`), like owner-only `QorperaOS/rules/`. So is a move or a delete of a folder between a tree root and
+  its owning folder: `QorperaOS/agents/<agent>/memory/`, the notebook's folder, which holds the thread's root (a group's root,
+  `QorperaOS/agents/groups/<group>/memory/`, sits right under its folder). A move counts by its source and its target. So a
   tree moves or goes only with its owning folder: an agent rename, a group folder delete, or erasure. A restore of the
   owning folder does not bring the tree back (§4.2).
   Each of those rewrites or retires the owner's index row, which an erase locks before it reads the root (§10 step
@@ -927,7 +931,7 @@ never a permission: every agent may zoom into every conversation of the company 
 
 The head is the fixed top of every request, in the developer message after the stable part (§6.1). It takes the
 place of files like `AGENTS.md`, which Codex never loads here (§1).
-- **The company head**: the approved `vision/vision.md`, whole. C:928 asks every run to read it in full; no composer
+- **The company head**: the approved `QorperaOS/vision/vision.md`, whole. C:928 asks every run to read it in full; no composer
   does today (§1).
 - **The agent head**: its job specification (the body of its `agent.md`, today in the prompt's hire overlay) and its
   profile page (at most 6 KiB, today in the prompt's `memory`). Once pins are built, they take the profile page's
@@ -1322,11 +1326,11 @@ one** (Jonas, 5 October: company-first and agent-first, with no compromise).
   release the blocks as the platform's read references (`qorpera_memory_release`, §4.4, §8). They check the company
   and nothing else: not the member the run works for, not the participants, and not the agent's folder grants.
   Conversation memory is the company's, and every agent gets it.
-- **Ordinary files too.** Tree files sit under `agents/`, a shared root that every member reads, and every agent with
+- **Ordinary files too.** Tree files sit under `QorperaOS/agents/`, a shared root that every member reads, and every agent with
   the default access (a read grant on every live shared root, `RUNTIME-COMPANY-STATE-FILES.md:1128-1130`). The tree
   adds no path resource, not even for a group chat's root. So `company_read`, `company_list`, `company_search`, the
   web app and the folder copies on machines ([the company folder on every machine](RUNTIME-COMPANY-FOLDER.md)) read
-  them exactly like any other file under `agents/`.
+  them exactly like any other file under `QorperaOS/agents/`.
 - **Group chats are company-wide.** `qorpera_can_read_session` already lets every member read every company
   conversation, group chats included (§1), and the tree keeps it that way. Who is in a group decides who takes part
   and whom a post wakes, not who may read.
@@ -1415,7 +1419,7 @@ Then, for event `i` of conversation C:
      whichever bundle wrote it and whatever NODE was then. The erase computes all 1,024 from C's id and looks them up
      in the manifest index of path versions (`qorpera_folder_path_versions_manifest`, which P18's copy warning uses),
      which lists every path that ever held one. Each such path that is a tree root's `tree.toml`
-     (`agents/<agent>/memory/thread/tree.toml` or `agents/groups/<group>/memory/tree.toml`), other than under the
+     (`QorperaOS/agents/<agent>/memory/thread/tree.toml` or `QorperaOS/agents/groups/<group>/memory/tree.toml`), other than under the
      root above, is an earlier root. Each candidate block under it that has versions is recorded by key alone, live
      or not: a live one there is another tree's block at a reused name, and step 3 keeps its life. A root that a
      rename moved on to the current one is found too, and its requests overlap the current root's. Each is asked in
@@ -1605,7 +1609,7 @@ step 5).
   little. Once the copy is erased by its path, the next prune takes the version.
 - A path's current version is always kept. A restore of a deleted group folder, or an agent's, still leaves its tree
   out (§4.2): the next run builds it again.
-- Only tree roots are covered. The notebook (`agents/<agent>/memory/` outside `thread/`) and every other file keep all
+- Only tree roots are covered. The notebook (`QorperaOS/agents/<agent>/memory/` outside `thread/`) and every other file keep all
   their versions.
 - A pruned version can no longer be restored, the same trade as for git objects. A tree is derived from the
   transcript, so a node that is missing is rebuilt by the next run in the conversation (step 6 above).
@@ -1797,7 +1801,7 @@ same day: the tree is the agents' whole context, so it also replaces Codex's own
 | --- | --- |
 | `history`: the last 32 events, 2 KiB each (C §9.1 "recent canonical transcript") | the view (§5); `history` and `historyTruncated` leave the prompt |
 | Codex's own history inside a run, and its own compaction | the run's own work, folded (§5.7), in every request (§6, W2) |
-| `vision/vision.md`, which the role text tells some agents to read with a tool | the company head, in every request of every run (§5.6, W3) |
+| `QorperaOS/vision/vision.md`, which the role text tells some agents to read with a tool | the company head, in every request of every run (§5.6, W3) |
 | notebook `profile` tier, composed whole (6 KiB) | **kept**, as part of the agent head (§5.6): standing instructions and facts the agent must never lose |
 | notebook `log` tier (two months, 8 KiB composed) | removed: the conversation lives in the tree, and the work in run logs |
 | notebook `note` tier (fades after 7 days) | removed |
