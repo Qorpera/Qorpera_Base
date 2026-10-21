@@ -665,6 +665,55 @@ select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::r
 select pg_temp.os527_replace('public.qorpera_memory_run_log_targets(uuid,jsonb)'::regprocedure,
 	$old$v_key !~ '^agents(/|$)'$old$, $new$v_key !~ '^qorperaos/agents(/|$)'$new$);
 
+-- A summary tree's paths are written below the root as their keys; the root keeps the folder's spelling, from which a
+-- new path's parent spelling comes.
+select pg_temp.os527_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
+	$old$		if v_touch.op <> 'delete' and v_touch.path is distinct from v_touch.key then
+			return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
+				public.qorpera_company_state_problem('name', null, null, 'write the path in lowercase, as ' || left(v_touch.key, 100))));$old$,
+	$new$		if v_touch.op <> 'delete'
+			and public.qorpera_os_relative(v_touch.path) is distinct from public.qorpera_os_relative(v_touch.key) then
+			return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
+				public.qorpera_company_state_problem('name', null, null, 'write the path below QorperaOS/ in lowercase, as QorperaOS/'
+					|| left(public.qorpera_os_relative(v_touch.key), 100))));$new$);
+
+-- Paths the database hands out to be written or shown are spelled QorperaOS/..., as the folder stores them; the roots
+-- it compares stay keys. A run's log before it exists, and the folders on the way to it:
+select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+	$old$return jsonb_build_object('path', v_root || '/runs/' || p_run_id, 'exists', false,$old$,
+	$new$return jsonb_build_object('path', 'QorperaOS/' || public.qorpera_os_relative(v_root) || '/runs/' || p_run_id, 'exists', false,$new$);
+select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+	$old$jsonb_agg(m.p order by m.n)$old$, $new$jsonb_agg('QorperaOS/' || public.qorpera_os_relative(m.p) order by m.n)$new$);
+
+-- A member's chat image, where company_read opens it and the commit saves it.
+create or replace function public.qorpera_room_image_path(p_session_id uuid, p_client_input_id uuid, p_image jsonb)
+returns text language sql stable set search_path = '' as $$
+	-- 20260930527000: spelled QorperaOS/..., below the conversation's root key.
+	select 'QorperaOS/' || public.qorpera_os_relative(public.qorpera_room_image_root(p_session_id)) || '/images/'
+		|| p_client_input_id::text || '/' || (p_image ->> 'objectSha256')
+		|| '.' || case p_image ->> 'mediaType' when 'image/png' then 'png' when 'image/jpeg' then 'jpg' when 'image/gif' then 'gif'
+			when 'image/webp' then 'webp' end
+	where p_client_input_id is not null and jsonb_typeof(p_image) = 'object'
+		and coalesce(p_image ->> 'objectSha256', '') ~ '^[0-9a-f]{64}$'
+		and p_image ->> 'mediaType' in ('image/png','image/jpeg','image/gif','image/webp')
+$$;
+
+-- A link's refusal names the path as people see it.
+create or replace function public.qorpera_folder_link_problems(p_key text)
+returns jsonb language sql immutable set search_path = '' as $$
+	-- 20260930380000 (LK1); 20260930527000: a path under the root is named QorperaOS/....
+	select case when v.what is null then '[]'::jsonb else jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
+		format('%s is %s; a link cannot stand there', left(coalesce('QorperaOS/' || public.qorpera_os_relative(p_key), p_key), 100),
+			v.what))) end
+	from (select case
+		when public.qorpera_memory_tree_root_key(p_key) is not null then 'in a summary tree'
+		when public.qorpera_structured_path_kind(p_key) is not null then 'the path of a structured file'
+		when public.qorpera_company_state_seeded(p_key) then 'a folder the company keeps'
+		when x.n is not null then coalesce(substr(x.n[cardinality(x.n)], strpos(x.n[cardinality(x.n)], ':') + 1),
+			'a folder the company keeps')
+	end as what from (select public.qorpera_structured_folder_names(p_key) as n) x) v
+$$;
+
 -- Paths the platform writes: connection and hook files, the Co-Founder's first todo, the rules/ resource.
 select pg_temp.os527_replace('public.qorpera_folder_connection_file_state(uuid)'::regprocedure,
 	$old$v_path := 'connections/' || v_name || '.md';$old$, $new$v_path := 'QorperaOS/connections/' || v_name || '.md';$new$);
