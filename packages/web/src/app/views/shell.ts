@@ -1445,22 +1445,31 @@ function canOrganize(company: CompanyController): boolean {
 /** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
  * sidebar, its conversation's id to copy, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
 /** Pin or unpin from a card: this member's own pins, so no edit rights are needed, and a tap works where a drag
- * can't (a phone). Nothing to offer when the pinned row is full and the item is not in it. */
+ * can't (a phone). Nothing to offer when the pinned row is full and the item is not in it. The click reads the
+ * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
 function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
 	const pinned = sidebar.pinned.includes(itemId);
 	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
-	// A pin list can still name an item deleted since it was read; the cloud refuses those.
-	const livePins = () => {
-		const roster = company.sidebarRoster();
-		return sidebar.pinned.filter((pin) => roster.includes(pin));
-	};
 	return {
 		pinned,
-		pin: () =>
+		pin: () => {
+			const now = company.store.get();
+			const current = now.sidebarUnavailable ? undefined : now.sidebar;
+			if (!current) return;
+			// A pin list can still name an item deleted since it was read; the cloud refuses those.
+			const roster = company.sidebarRoster();
+			const pins = current.pinned.filter((pin) => roster.includes(pin));
+			// What the card offered: already done elsewhere meanwhile is nothing to send.
+			if (pinned !== pins.includes(itemId)) return;
+			if (!pinned && pins.length >= PIN_LIMIT) {
+				company.reportRailError(t("The pinned row is full. Unpin something first."));
+				return;
+			}
 			void company.changeSidebar({
 				action: "set_pins",
-				order: pinned ? livePins().filter((pin) => pin !== itemId) : [...livePins(), itemId],
-			}),
+				order: pinned ? pins.filter((pin) => pin !== itemId) : [...pins, itemId],
+			});
+		},
 	};
 }
 
