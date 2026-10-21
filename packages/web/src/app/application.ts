@@ -131,7 +131,8 @@ export function mountApplication(
 		frame.inert = false;
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
-	function openSettings(tab?: SettingsTab): void {
+	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
+	function openSettings(tab?: SettingsTab, folderPath?: string): void {
 		if (settings || feedback || !auth.userId) return;
 		settings = new SettingsView(
 			api,
@@ -149,8 +150,19 @@ export function mountApplication(
 		);
 		frame.inert = true;
 		root.append(settings.el);
+		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
+	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
+	// stays where it was below Settings. Storage answers the links in the documents it shows itself.
+	function onFolderLink(event: MouseEvent): void {
+		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
+		const path = link?.dataset.folderPath;
+		if (path === undefined || event.defaultPrevented) return;
+		event.preventDefault();
+		openSettings("storage", path);
+	}
+	root.addEventListener("click", onFolderLink);
 	let routeRevision = 0;
 	let accountRevision = 0;
 	// Taken from the page hash once at startup and on every route change; the
@@ -1461,6 +1473,7 @@ export function mountApplication(
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
+		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
 	};

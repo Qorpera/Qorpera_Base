@@ -27,4 +27,29 @@ export const STORAGE: Record<string, string> = {
 	"{shown} of {count} items": "{shown} af {count} elementer",
 	Yesterday: "I går",
 	"No recent changes match your search.": "Ingen seneste ændringer matcher din søgning.",
+
+	// HTML pages, folder links and the platform's folders (app/views/company-folder.ts, ui/markdown.ts)
+	Page: "Side",
+	Source: "Kilde",
+	"Show the page or its source": "Vis siden eller dens kilde",
+	"Page: {name}": "Side: {name}",
+	"Show {name} large": "Vis {name} stort",
+	"This page can't be shown live, so its source is shown.": "Siden kan ikke vises direkte, så dens kilde vises.",
+	"Open {path} in Storage": "Åbn {path} i Lager",
+	"{name} could not be found in the Company File.": "{name} findes ikke i Virksomhedsfilen.",
+	"Qorpera folders": "Qorpera-mapper",
+	"What the company is and where it is going. Every agent reads it.":
+		"Hvad virksomheden er, og hvor den er på vej hen. Alle agenter læser den.",
+	"The team: each agent's settings, memory, skills, routines and tasks.":
+		"Holdet: hver agents indstillinger, hukommelse, færdigheder, rutiner og opgaver.",
+	"Rules for agents. Only owners and admins change them.":
+		"Regler for agenter. Kun ejere og administratorer ændrer dem.",
+	"Services the company has connected. Secrets are kept elsewhere.":
+		"Tjenester, virksomheden har forbundet. Hemmeligheder opbevares et andet sted.",
+	"Know-how every agent can use.": "Viden, som alle agenter kan bruge.",
+	"People and companies the company deals with.": "Personer og virksomheder, som virksomheden har med at gøre.",
+	"Jobs agents have handed to people.": "Opgaver, som agenter har givet videre til mennesker.",
+	"Settings for the pages in the app.": "Indstillinger for siderne i appen.",
+	"The company's tables.": "Virksomhedens tabeller.",
+	"Code projects (git repositories).": "Kodeprojekter (git-repositorier).",
 };

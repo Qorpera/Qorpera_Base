@@ -315,6 +315,12 @@ const restoreButtons = (host: HTMLElement) =>
 			null,
 	);
 const status = (host: HTMLElement) => visibleText(host.querySelector(".files-status"));
+/** The frame document's word that it is ready (public/page-preview/index.html), from that frame's window. */
+function ready(frame: HTMLIFrameElement) {
+	const event = new MessageEvent("message", { data: { type: "qorpera-page-ready" } });
+	Object.defineProperty(event, "source", { value: frame.contentWindow });
+	window.dispatchEvent(event);
+}
 const retries = (host: HTMLElement) => visibleText(host.querySelector(".files-retries"));
 
 describe("a folder-v2 company's Company File", () => {
@@ -929,6 +935,215 @@ describe("a folder-v2 company's Company File", () => {
 		await click(row(host, "plan.md"));
 		expect(host.querySelector(".files-doc h2")?.textContent).toBe("Plan");
 		expect(visibleText(host.querySelector(".files-preview-actions"))).toContain("Download");
+	});
+
+	it("shows an HTML page live in a locked-down frame, its source, and the page across the window", async () => {
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+		};
+		const html = "<h1>Sales</h1><script>1</script>";
+		const { fake, host, browser } = await opened({ embedded: true });
+		fake.folders.add("designs");
+		fake.contents.set("designs/sales.html", html);
+		browser.showDocuments();
+		await settle();
+		await click(row(host, "designs"));
+		await click(row(host, "sales.html"));
+		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("sales.html");
+		const frame = host.querySelector<HTMLIFrameElement>(".files-preview iframe.files-page-frame")!;
+		// Scripts run; no origin, no windows, forms, dialogs or moving the app's page; nothing in the frame's address.
+		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(frame.getAttribute("src")).toBe("./page-preview/");
+		expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
+		expect(frame.title).toBe("Page: sales.html");
+		expect(frame.hidden).toBe(false);
+		const views = [...host.querySelectorAll<HTMLButtonElement>(".files-page-toggle button")];
+		expect(views.map((view) => [view.textContent, view.getAttribute("aria-pressed")])).toEqual([
+			["Page", "true"],
+			["Source", "false"],
+		]);
+		// The frame asks for its page once it is ready, and gets this one.
+		const send = vi.spyOn(frame.contentWindow!, "postMessage");
+		ready(frame);
+		expect(send).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		// Its source, and back to the same frame, which keeps the page's state.
+		views[1]!.click();
+		const source = host.querySelector<HTMLElement>(".files-page-source")!;
+		expect(source.hidden).toBe(false);
+		expect(source.textContent).toBe(html);
+		expect(frame.hidden).toBe(true);
+		expect(views.map((view) => view.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+		views[0]!.click();
+		expect(host.querySelector(".files-page-frame")).toBe(frame);
+		expect(frame.hidden).toBe(false);
+		expect(source.hidden).toBe(true);
+		// Across the window, in a dialog of its own with a frame of its own.
+		await click(host.querySelector('.files-preview-head [aria-label="Show sales.html large"]'));
+		const dialog = document.querySelector<HTMLDialogElement>("dialog.page-preview-dialog")!;
+		expect(dialog.open).toBe(true);
+		expect(dialog.querySelector("h2")?.textContent).toBe("sales.html");
+		const large = dialog.querySelector<HTMLIFrameElement>("iframe.page-preview-frame")!;
+		expect(large.getAttribute("sandbox")).toBe("allow-scripts");
+		const sendLarge = vi.spyOn(large.contentWindow!, "postMessage");
+		ready(large);
+		expect(sendLarge).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		dialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
+		// Another file shows as it did; the page's view starts as the page again for the next page.
+		views[1]!.click();
+		await click(row(host, "sales.html"));
+		expect(host.querySelector<HTMLElement>(".files-page-source")?.hidden).toBe(false);
+		fake.contents.set("designs/other.htm", "<p>Other</p>");
+		await click(host.querySelector(".files-crumb"));
+		await click(row(host, "designs"));
+		await click(row(host, "other.htm"));
+		expect(host.querySelector<HTMLIFrameElement>(".files-page-frame")?.hidden).toBe(false);
+		await click(row(host, "sales.html"));
+		expect(host.querySelector(".files-page-toggle [aria-pressed=true]")?.textContent).toBe("Page");
+		expect(host.querySelector(".files-text.files-page-source")?.textContent).toBe(html);
+		expect(host.querySelector('.files-preview-head [aria-label="Show sales.html large"]')).not.toBeNull();
+		// A text file has no page view and nothing to show large.
+		await click(host.querySelector(".files-crumb"));
+		await click(row(host, "readme.txt"));
+		expect(host.querySelector(".files-page-toggle")).toBeNull();
+		expect(host.querySelector(".files-preview-head [aria-label^='Show']")).toBeNull();
+		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
+	});
+
+	it("shows a page it can't run live as its source, and says so", async () => {
+		// The page written out again (XMLSerializer's doctype) parses as something unfit: it isn't run.
+		const parse = DOMParser.prototype.parseFromString;
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (this: DOMParser, text, type) {
+			return Reflect.apply(parse, this, [
+				text.startsWith("<!DOCTYPE html>") ? "<noscript></noscript>" : text,
+				type,
+			]) as Document;
+		});
+		const html = '<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>';
+		const { fake, host, browser } = await opened({ embedded: true });
+		fake.contents.set("hinted.html", html);
+		browser.reveal("hinted.html");
+		await settle();
+		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("hinted.html");
+		expect(visibleText(host.querySelector(".files-page-view .files-note"))).toBe(
+			"This page can't be shown live, so its source is shown.",
+		);
+		expect(host.querySelector(".files-page-source")?.textContent).toBe(html);
+		expect(host.querySelector(".files-preview iframe")).toBeNull();
+		expect(host.querySelector(".files-page-toggle")).toBeNull();
+		expect(host.querySelector(".files-preview-head [aria-label^='Show']")).toBeNull();
+	});
+
+	it("tells the platform's folders apart at the top, after the company's own work, each with its one line", async () => {
+		const { fake, host, browser } = await opened({ embedded: true });
+		for (const name of ["vision", "agents", "human-tasks", "code"]) fake.folders.add(name);
+		fake.folders.add("notes/agents");
+		browser.showDocuments();
+		await settle();
+		const items = () =>
+			[...host.querySelectorAll<HTMLElement>(".files-list > li")].map((item) =>
+				item.classList.contains("storage-group")
+					? `# ${item.textContent}`
+					: `${item.querySelector(".files-name")?.textContent}${item.querySelector(".storage-folder-note") ? ` — ${item.querySelector(".storage-folder-note")?.textContent}` : ""}`,
+			);
+		expect(items()).toEqual([
+			"big",
+			"notes",
+			"logo.png",
+			"readme.txt",
+			"# Qorpera folders",
+			"agents — The team: each agent's settings, memory, skills, routines and tasks.",
+			"code — Code projects (git repositories).",
+			"human-tasks — Jobs agents have handed to people.",
+			"vision — What the company is and where it is going. Every agent reads it.",
+		]);
+		expect(host.querySelector(".storage-group")?.getAttribute("role")).toBe("presentation");
+		expect(host.querySelector<HTMLElement>(".storage-folder-note")?.title).toBe(
+			"The team: each agent's settings, memory, skills, routines and tasks.",
+		);
+		expect(host.querySelector(".storage-count")?.textContent).toBe("8 items");
+		// The list view keeps both the order and the lines.
+		await click(host.querySelector('[aria-label="List view"]'));
+		expect(items().at(4)).toBe("# Qorpera folders");
+		expect(items().at(-1)).toBe("vision — What the company is and where it is going. Every agent reads it.");
+		// Filters apply first: the heading shows only above a platform folder.
+		const filter = host.querySelector<HTMLSelectElement>('[aria-label="File type"]')!;
+		filter.value = "document";
+		filter.dispatchEvent(new Event("change"));
+		expect(host.querySelector(".storage-group")).toBeNull();
+		filter.value = "folder";
+		filter.dispatchEvent(new Event("change"));
+		expect(items()).toEqual([
+			"big",
+			"notes",
+			"# Qorpera folders",
+			"agents — The team: each agent's settings, memory, skills, routines and tasks.",
+			"code — Code projects (git repositories).",
+			"human-tasks — Jobs agents have handed to people.",
+			"vision — What the company is and where it is going. Every agent reads it.",
+		]);
+		// Only at the top: a folder of the same name further down is the company's own.
+		filter.value = "all";
+		filter.dispatchEvent(new Event("change"));
+		await click(row(host, "notes"));
+		expect(items()).toEqual(["agents", "log.txt", "plan.md"]);
+		expect(host.querySelector(".storage-group")).toBeNull();
+	});
+
+	it("opens what a folder link names: a file in its folder with its preview, a folder, or says it isn't there", async () => {
+		const { fake, host, browser } = await opened({ embedded: true });
+		fake.folders.add("designs");
+		fake.contents.set("designs/sales.html", "<p>Sales</p>");
+		browser.reveal("designs/sales.html");
+		await settle();
+		expect(fake.client.read).toHaveBeenLastCalledWith("designs/sales.html", expect.any(AbortSignal));
+		expect(host.querySelector(".storage-title")?.textContent).toBe("designs");
+		expect(rows(host)).toEqual(["sales.html"]);
+		expect(host.querySelector(".files-row.is-open .files-name")?.textContent).toBe("sales.html");
+		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("sales.html");
+		expect(host.querySelector<HTMLIFrameElement>(".files-page-frame")?.hidden).toBe(false);
+		// A folder opens in the list.
+		browser.reveal("notes");
+		await settle();
+		expect(host.querySelector(".storage-title")?.textContent).toBe("notes");
+		expect(host.classList.contains("has-preview")).toBe(false);
+		// From Recents too, back in Documents; a file at the top opens there.
+		browser.showRecents();
+		await settle();
+		browser.reveal("readme.txt");
+		await settle();
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
+		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
+		// Something that isn't there is said so, and nothing else changes.
+		browser.reveal("designs/gone.html");
+		await settle();
+		expect(status(host)).toBe("gone.html could not be found in the Company File.");
+		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
+	});
+
+	it("opens a folder link in a document it shows, here", async () => {
+		const { fake, host } = await opened({ embedded: true });
+		fake.contents.set(
+			"notes/plan.md",
+			"# Plan\n\nSee [the log](folder:notes/log.txt) and [nothing](folder:../log.txt).",
+		);
+		await click(row(host, "notes"));
+		await click(row(host, "plan.md"));
+		const links = [...host.querySelectorAll<HTMLButtonElement>(".files-doc .folder-link")];
+		expect(links.map((link) => link.dataset.folderPath)).toEqual(["notes/log.txt"]);
+		const outside = vi.fn();
+		document.body.addEventListener("click", outside);
+		await click(links[0]);
+		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("log.txt");
+		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
+		// The click was answered here: an app listening above sees it as handled.
+		expect(outside.mock.calls[0]?.[0].defaultPrevented).toBe(true);
+		document.body.removeEventListener("click", outside);
 	});
 
 	it("reveals an embedded file after input is enabled, including from Recents, without scrolling for a refresh", async () => {

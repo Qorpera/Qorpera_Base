@@ -12,9 +12,11 @@ import {
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
+import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
-import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
+import { framePage, PageFrames } from "../../ui/page-frame.ts";
+import { phrase, presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
@@ -164,6 +166,22 @@ const IMAGE_TYPES: Record<string, string> = {
 	avif: "image/avif",
 };
 const MARKDOWN = new Set(["md", "markdown", "mdown"]);
+/** HTML pages: shown live, in a locked-down frame (ui/page-frame.ts), or as their source. */
+const PAGES = new Set(["html", "htm"]);
+/** The platform's own folders at the top of a company's Company File, each with its one line (the words the agents'
+ * prompt and each folder's README use). They are listed after the company's own work. */
+const PLATFORM_FOLDERS: ReadonlyMap<string, string> = new Map([
+	["vision", phrase("What the company is and where it is going. Every agent reads it.")],
+	["agents", phrase("The team: each agent's settings, memory, skills, routines and tasks.")],
+	["rules", phrase("Rules for agents. Only owners and admins change them.")],
+	["connections", phrase("Services the company has connected. Secrets are kept elsewhere.")],
+	["skills", phrase("Know-how every agent can use.")],
+	["contacts", phrase("People and companies the company deals with.")],
+	["human-tasks", phrase("Jobs agents have handed to people.")],
+	["interfaces", phrase("Settings for the pages in the app.")],
+	["tables", phrase("The company's tables.")],
+	["code", phrase("Code projects (git repositories).")],
+]);
 /** Kinds that are never text: no read is spent finding that out. */
 const BINARY = new Set(
 	"pdf zip gz tgz 7z rar doc docx xls xlsx ppt pptx key numbers pages mp3 m4a wav ogg mp4 mov webm avi heic ico woff woff2 ttf otf exe dmg svg".split(
@@ -176,6 +194,10 @@ function baseName(path: string): string {
 }
 function parentOf(path: string): string {
 	return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+}
+/** A platform folder's one line, only for the folder itself at the top of the Company File. */
+function platformNote(item: Pick<CloudMemberFolderEntry, "kind" | "path">): string | undefined {
+	return item.kind === "folder" && !item.path.includes("/") ? PLATFORM_FOLDERS.get(item.path) : undefined;
 }
 function extension(path: string): string {
 	const name = baseName(path);
@@ -222,6 +244,11 @@ export class CompanyFolderBrowser {
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
 	readonly #preview = h("aside", { class: "files-preview" });
 	readonly #search: HTMLInputElement;
+	readonly #frames: PageFrames;
+	/** A page's view, kept while the same page stays open. */
+	#pageView: "page" | "source" = "page";
+	/** The open page across the window. */
+	#large: SurfaceDialog | undefined;
 	#client?: Client;
 	#downloads?: WebFileDownloads;
 	#hints?: { close(): Promise<void> };
@@ -234,6 +261,8 @@ export class CompanyFolderBrowser {
 	#recentNext: number | null = null;
 	#ready = false;
 	#pendingSection: "documents" | "recents" | null = null;
+	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
+	#pendingPath: string | null = null;
 	#revealPreview = false;
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
@@ -267,7 +296,21 @@ export class CompanyFolderBrowser {
 				spellcheck: "false",
 			});
 		this.#stop = new AbortController();
+		this.#frames = new PageFrames(this.#stop.signal);
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
+		// A folder link in a document shown here opens what it names here.
+		this.#preview.addEventListener(
+			"click",
+			(event) => {
+				const link =
+					event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
+				const path = link?.dataset.folderPath;
+				if (path === undefined || event.defaultPrevented) return;
+				event.preventDefault();
+				this.reveal(path);
+			},
+			{ signal: this.#stop.signal },
+		);
 		this.#search.addEventListener(
 			"input",
 			() => (this.#section === "recents" ? this.#drawRecents() : this.#drawList(false)),
@@ -414,6 +457,11 @@ export class CompanyFolderBrowser {
 		this.#navigate();
 	}
 
+	/** Whether the folder's top has been read: from then on, what reveal is handed is shown. */
+	get opened(): boolean {
+		return this.#ready;
+	}
+
 	/** Settings' Documents navigation returns to the top of the company folder. */
 	showDocuments(): void {
 		this.#pendingSection = "documents";
@@ -426,9 +474,27 @@ export class CompanyFolderBrowser {
 		this.#navigate();
 	}
 
+	/** A folder link (ui/folder-links.ts): opens what it names, a folder in the list or a file or a link in the
+	 * preview (a page as a page), once the folder is open and no other action runs. */
+	reveal(path: string): void {
+		this.#pendingPath = path;
+		this.#pendingSection = null;
+		this.#navigate();
+	}
+
 	/** Keep the last navigation request while opening or another folder action is still in flight. */
 	#navigate(): void {
-		if (!this.#ready || this.#busy || this.#disposed || !this.#pendingSection) return;
+		if (!this.#ready || this.#busy || this.#disposed) return;
+		const path = this.#pendingPath;
+		if (path !== null) {
+			this.#pendingPath = null;
+			void this.#run(
+				() => this.#reveal(path),
+				() => this.#reveal(path),
+			);
+			return;
+		}
+		if (!this.#pendingSection) return;
 		const section = this.#pendingSection;
 		this.#pendingSection = null;
 		void this.#run(
@@ -470,6 +536,7 @@ export class CompanyFolderBrowser {
 		clearTimeout(this.#syncTimer);
 		void this.#hints?.close();
 		this.#downloads?.close();
+		this.#large?.close(false);
 		this.#forget(this.#opened);
 		this.#opened = null;
 		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
@@ -623,11 +690,19 @@ export class CompanyFolderBrowser {
 		for (const control of this.#views.querySelectorAll<HTMLButtonElement>("button"))
 			control.setAttribute("aria-pressed", String(control.dataset.view === this.#view));
 		this.#list.classList.toggle("is-fresh", fresh);
-		const rows = items.map((item, index) => {
+		// At the top, the platform's folders come after the company's own work, under a heading of their own.
+		const platform = this.#dir === "" ? items.filter((item) => platformNote(item) !== undefined) : [];
+		const own = platform.length ? items.filter((item) => platformNote(item) === undefined) : items;
+		const rows = [...own, ...platform].map((item, index) => {
 			const row = this.#entryRow(item);
 			row.style.setProperty("--row", String(Math.min(index, 14)));
 			return row;
 		});
+		if (platform.length) {
+			const heading = h("li", { class: "storage-group", role: "presentation" }, t("Qorpera folders"));
+			heading.style.setProperty("--row", String(Math.min(own.length, 14)));
+			rows.splice(own.length, 0, heading);
+		}
 		if (rows.length === 0)
 			rows.push(
 				h(
@@ -665,6 +740,7 @@ export class CompanyFolderBrowser {
 						? "table"
 						: "file";
 		const label = fileKind(item);
+		const note = platformNote(item);
 		return h(
 			"li",
 			{
@@ -694,6 +770,7 @@ export class CompanyFolderBrowser {
 								`→ ${item.target}`,
 							)
 						: null,
+					note ? h("span", { class: "storage-folder-note", title: t(note) }, t(note)) : null,
 					item.file ? h("span", { class: "storage-grid-meta" }, fmtBytes(item.file.bytes)) : null,
 				),
 				h(
@@ -852,6 +929,7 @@ export class CompanyFolderBrowser {
 			if (type) opened.image = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type }));
 			else opened.text = decodeText(bytes);
 		}
+		if (this.#opened?.path !== opened.path) this.#pageView = "page";
 		this.#forget(this.#opened);
 		this.#opened = opened;
 		this.#drawFile();
@@ -879,13 +957,15 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	#panel(title: string, ...children: (HTMLElement | null)[]): void {
+	/** `tools`: icon buttons before Close. */
+	#panel(title: string, children: (HTMLElement | null)[], tools: HTMLElement[] = []): void {
 		replace(
 			this.#preview,
 			h(
 				"header",
 				{ class: "files-preview-head" },
 				h("h2", { title }, title),
+				...tools,
 				this.#iconButton("close", t("Close {name}", { name: title }), () => {
 					if (!this.#busy) this.#close();
 				}),
@@ -910,8 +990,12 @@ export class CompanyFolderBrowser {
 				row.querySelector<HTMLElement>(".files-row-main")?.dataset.path === opened.path,
 			);
 		const file = opened.file;
+		const page = opened.text !== undefined && PAGES.has(extension(opened.path)) ? opened.text : undefined;
+		// What the frame is handed, or null when the page can't be shown live (ui/page-frame.ts).
+		const live = page !== undefined ? framePage(page) : null;
 		let body: HTMLElement;
 		if (opened.image) body = h("img", { class: "files-image", src: opened.image, alt: name });
+		else if (page !== undefined) body = this.#page(page, live, name);
 		else if (opened.text !== undefined)
 			body = MARKDOWN.has(extension(opened.path))
 				? h("div", { class: "files-doc" }, markdown(opened.text))
@@ -955,16 +1039,81 @@ export class CompanyFolderBrowser {
 		}
 		this.#panel(
 			name,
-			opened.version
-				? h(
-						"p",
-						{ class: "files-note" },
-						t("An earlier version, from {when}.", { when: this.#format(opened.version.at) }),
-					)
-				: null,
-			h("div", { class: "files-preview-body" }, body),
-			h("div", { class: "files-preview-actions" }, ...actions),
+			[
+				opened.version
+					? h(
+							"p",
+							{ class: "files-note" },
+							t("An earlier version, from {when}.", { when: this.#format(opened.version.at) }),
+						)
+					: null,
+				h("div", { class: "files-preview-body" }, body),
+				h("div", { class: "files-preview-actions" }, ...actions),
+			],
+			live !== null
+				? [this.#iconButton("expand", t("Show {name} large", { name }), () => this.#showLarge(live, name))]
+				: [],
 		);
+	}
+
+	/** A page, live in its frame or as its source. The frame is made the first time the page shows and kept while the
+	 * source shows, so the page keeps its state. A page that can't be shown live shows its source, and says so. */
+	#page(html: string, live: string | null, name: string): HTMLElement {
+		const stage = h("div", { class: "files-page-stage" });
+		const source = h("pre", { class: "files-text files-page-source" }, html);
+		if (live === null)
+			return h(
+				"div",
+				{ class: "files-page-view" },
+				h("p", { class: "files-note" }, t("This page can't be shown live, so its source is shown.")),
+				source,
+			);
+		const views = h("div", {
+			class: "storage-view-toggle files-page-toggle",
+			role: "group",
+			"aria-label": t("Show the page or its source"),
+		});
+		let frame: HTMLIFrameElement | undefined;
+		const show = (view: "page" | "source") => {
+			this.#pageView = view;
+			if (view === "page" && !frame) {
+				frame = this.#frames.frame(live, t("Page: {name}", { name }), "files-page-frame");
+				stage.prepend(frame);
+			}
+			if (frame) frame.hidden = view !== "page";
+			source.hidden = view !== "source";
+			for (const control of views.querySelectorAll<HTMLButtonElement>("button"))
+				control.setAttribute("aria-pressed", String(control.dataset.view === view));
+		};
+		for (const [view, label] of [
+			["page", t("Page")],
+			["source", t("Source")],
+		] as const)
+			views.append(
+				h(
+					"button",
+					{ type: "button", class: "storage-view-button is-text", "data-view": view, onclick: () => show(view) },
+					label,
+				),
+			);
+		stage.append(source);
+		show(this.#pageView);
+		return h("div", { class: "files-page-view" }, views, stage);
+	}
+
+	/** The page across the window, run afresh, in the dialog the attachment preview uses. `live`: what framePage handed
+	 * over. */
+	#showLarge(live: string, name: string): void {
+		this.#large?.close(false);
+		const dialog = new SurfaceDialog(name, "file-preview-dialog page-preview-dialog", () => {
+			if (this.#large === dialog) this.#large = undefined;
+		});
+		this.#large = dialog;
+		dialog.content.append(
+			h("h2", null, name),
+			this.#frames.frame(live, t("Page: {name}", { name }), "page-preview-frame"),
+		);
+		dialog.open();
 	}
 
 	async #reopen(path: string): Promise<void> {
@@ -1065,8 +1214,7 @@ export class CompanyFolderBrowser {
 			);
 		});
 		const title = t("History of {name}", { name: baseName(path) });
-		this.#panel(
-			title,
+		this.#panel(title, [
 			rows.length
 				? h("ul", { class: "folder-history" }, ...rows)
 				: h("p", { class: "files-note" }, t("No history to show.")),
@@ -1075,7 +1223,7 @@ export class CompanyFolderBrowser {
 						small: true,
 					})
 				: null,
-		);
+		]);
 	}
 
 	/** Opens an earlier version in place of the latest; its name says which. */
@@ -1356,15 +1504,38 @@ export class CompanyFolderBrowser {
 		const sets = [...shown, ...page.items];
 		const title = t("Recent changes");
 		const rows = this.#changeRows(sets);
-		this.#panel(
-			title,
+		this.#panel(title, [
 			rows.length
 				? h("ul", { class: "folder-history" }, ...rows)
 				: h("p", { class: "files-note" }, t("Nothing has changed yet.")),
 			page.next !== null
 				? button(t("Show older"), () => void this.#run(() => this.#showChanges(page.next, sets)), { small: true })
 				: null,
-		);
+		]);
+	}
+
+	/** What a folder link names: a folder opens in the list; a file or a link opens in the preview, in its folder. */
+	async #reveal(path: string): Promise<void> {
+		const read = await this.#client!.read(path, this.#signal());
+		this.#live();
+		const entry = read.entry;
+		this.#search.value = "";
+		this.#filter.value = "all";
+		if (entry?.kind === "folder") {
+			await this.#enter(path);
+			return;
+		}
+		this.#close();
+		this.#setSection("documents");
+		if (!entry || (!entry.file && entry.target === null)) {
+			this.#drawList(false);
+			this.#say(t("{name} could not be found in the Company File.", { name: baseName(path) }));
+			return;
+		}
+		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
+		else this.#drawList(false);
+		await this.#show({ path, file: entry.file, target: entry.target });
+		if (this.#options.embedded) this.#revealPreview = true;
 	}
 
 	/** Opens a file's or a link's folder and the file or link, when it is still there. */

@@ -63,7 +63,8 @@ export class SurfaceDialog {
 		this.el.addEventListener("keydown", (event) => {
 			if (this.#modal && matchesKey(event, "tab")) {
 				const controls = [
-					...this.el.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select, [tabindex]"),
+					// A frame takes Tab into its own page, and back out after its last control.
+					...this.el.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select, iframe, [tabindex]"),
 				].filter(
 					(control) =>
 						control.tabIndex >= 0 && !control.matches(":disabled") && control.getClientRects().length > 0,

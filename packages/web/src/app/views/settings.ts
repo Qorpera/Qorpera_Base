@@ -155,6 +155,8 @@ export class SettingsView {
 	#mode: "settings" | "storage" = "settings";
 	#storageSection: "documents" | "recents" = "documents";
 	#folder: CompanyFolderBrowser | undefined;
+	/** A folder link's path, shown once Storage has its browser (openFolderPath). */
+	#folderPath: string | undefined;
 	#folderStop = new AbortController();
 	#folderAuthority: string | undefined;
 	#account: AccountViewState = { loading: true };
@@ -406,6 +408,16 @@ export class SettingsView {
 		(this.#mode === "storage" ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#tab))?.focus();
 	}
 
+	/** A folder link (ui/folder-links.ts): Storage shows what it names, a folder in the list or a file in the preview,
+	 * once the company's folder is open. */
+	openFolderPath(path: string): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#folderPath = path;
+		this.#storageSection = "documents";
+		if (this.#mode === "storage") this.#drawStorage();
+		else this.#switchMode("storage");
+	}
+
 	/** Settings opened on a company's page show the company that page has open
 	 * and no other, while the account lists it; none when the page has no
 	 * company to lend (access lost, not available). Opened elsewhere, they keep
@@ -455,6 +467,9 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
+		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
+		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
+			return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
 				this.#search.value = "";
@@ -568,6 +583,7 @@ export class SettingsView {
 		if (this.#folder) {
 			// Settings may have changed the time zone while Storage was hidden.
 			if (shown) this.#folder.redraw();
+			this.#revealFolderPath(this.#folder);
 			return;
 		}
 		const signal = AbortSignal.any([
@@ -620,17 +636,33 @@ export class SettingsView {
 		);
 		this.#folder = browser;
 		this.#folderAuthority = authority;
-		void browser.open().catch(() => {
-			if (signal.aborted || this.#folder !== browser) return;
-			browser.dispose();
-			this.#folder = undefined;
-			replace(
-				this.#storageContent,
-				notice("danger", t("The Company File could not be read just now.")),
-				button(t("Retry opening Company File"), () => this.#drawStorage()),
-			);
-		});
+		void browser.open().then(
+			() => {
+				// The browser has taken the link's path: it shows it from here, or says why it can't.
+				if (this.#folder === browser) this.#folderPath = undefined;
+			},
+			() => {
+				if (signal.aborted || this.#folder !== browser) return;
+				browser.dispose();
+				this.#folder = undefined;
+				replace(
+					this.#storageContent,
+					notice("danger", t("The Company File could not be read just now.")),
+					button(t("Retry opening Company File"), () => this.#drawStorage()),
+				);
+			},
+		);
 		if (section === "recents") browser.showRecents();
+		this.#revealFolderPath(browser);
+	}
+
+	/** Hands a folder link's path to the browser. It is kept until a browser has opened, so Retry after a failed open
+	 * still shows what the link names. */
+	#revealFolderPath(browser: CompanyFolderBrowser): void {
+		const path = this.#folderPath;
+		if (path === undefined) return;
+		browser.reveal(path);
+		if (browser.opened) this.#folderPath = undefined;
 	}
 
 	/** The company's storage under Storage's navigation: what is used of what the plan includes. */
@@ -867,6 +899,8 @@ export class SettingsView {
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
+		// A folder link names a path in the company Settings showed when it was followed.
+		if (company !== this.#company) this.#folderPath = undefined;
 		this.#folderStop.abort();
 		this.#folder?.dispose();
 		this.#folder = undefined;
