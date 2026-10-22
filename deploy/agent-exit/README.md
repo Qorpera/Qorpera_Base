@@ -529,6 +529,16 @@ python3 deploy/agent-exit/rules-reader-login.py --check   checks everything, cha
 python3 deploy/agent-exit/rules-reader-login.py           makes a new login and places it
 ```
 
+Direct mode, for a self-hosted database (opt-in; without its flags the script works as described here):
+`--direct-host HOST --direct-port PORT --direct-ca FILE --direct-ca-sha256 SHA256 --direct-admin ROLE`, all five or
+none, with or without `--check`. The SQL then runs through `psql` over a direct admin connection instead of the
+Supabase API, and the keychain is not read. The script takes the CA only when its sha256 is the pin, and psql connects
+with `sslmode=verify-full` against a copy of exactly those bytes (and GSSAPI encryption off); no input turns the check
+off. psql finds the admin's password itself (`PGPASSWORD`, `PGPASSFILE` or `~/.pgpass`, never a prompt) and gets no
+other libpq setting from the environment. The login is
+`postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full`, and each node's reader CA must
+already be the pinned CA: installing that CA, and the reader's own CA pin, are not this script's.
+
 It checks the project's pooler (one primary, with SCRAM), the role as the migration makes it, and on each node the
 root helper, the exit's tool, the reader's unit and CA as this checkout's, the reader's program and the client map.
 Then:
