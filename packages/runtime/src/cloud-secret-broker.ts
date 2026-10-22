@@ -2115,6 +2115,24 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	heldDigitalPostLetters(
+		input: Parameters<DigitalPostSyncAuthority["heldDigitalPostLetters"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_digital_post_held_among($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				JSON.stringify(input.memoIds),
+			],
+			signal,
+		);
+	}
+
 	stageDigitalPostChunk(
 		input: Parameters<DigitalPostSyncAuthority["stageDigitalPostChunk"]>[0],
 		signal: AbortSignal,

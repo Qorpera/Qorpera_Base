@@ -48,6 +48,11 @@ export interface DigitalPostSyncAuthority {
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** Which of a page's letters (at most 100) the company holds. */
+	heldDigitalPostLetters(
+		input: DigitalPostSyncLease & { memoIds: readonly string[] },
+		signal: AbortSignal,
+	): Promise<unknown>;
 	stageDigitalPostChunk(
 		input: DigitalPostSyncLease & { letterId: string; fileIndex: number; chunkIndex: number; content: Uint8Array },
 		signal: AbortSignal,
@@ -96,7 +101,6 @@ interface Claim extends DigitalPostSyncLease {
 	readonly keyId: string;
 	readonly encryptedEnvelopeBase64: string;
 	readonly envelopeSha256: string;
-	readonly held: ReadonlySet<string>;
 	readonly scanPage: number;
 }
 
@@ -109,7 +113,7 @@ function parseClaim(value: unknown): Claim | null {
 		!input ||
 		typeof input !== "object" ||
 		Object.keys(input).sort().join() !==
-			"companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,held,keyId,lease,scanPage,schema,secretId,secretVersion" ||
+			"companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,keyId,lease,scanPage,schema,secretId,secretVersion" ||
 		input.schema !== "qorpera.digital-post-sync-claim/v1" ||
 		![input.companyId, input.environmentId, input.secretId, input.lease].every(
 			(id) => typeof id === "string" && UUID.test(id),
@@ -122,9 +126,6 @@ function parseClaim(value: unknown): Claim | null {
 		!BASE64.test(base64) ||
 		typeof input.envelopeSha256 !== "string" ||
 		!SHA.test(input.envelopeSha256) ||
-		!Array.isArray(input.held) ||
-		input.held.length > 100_000 ||
-		input.held.some((id) => typeof id !== "string" || !UUID.test(id)) ||
 		!Number.isSafeInteger(input.scanPage) ||
 		(input.scanPage as number) < 0 ||
 		(input.scanPage as number) > MAX_SCAN_PAGE
@@ -139,9 +140,21 @@ function parseClaim(value: unknown): Claim | null {
 		keyId: input.keyId,
 		encryptedEnvelopeBase64: base64,
 		envelopeSha256: input.envelopeSha256,
-		held: new Set(input.held as string[]),
 		scanPage: input.scanPage as number,
 	};
+}
+
+function parseHeld(value: unknown, asked: readonly string[]): ReadonlySet<string> {
+	const input = value as Record<string, unknown>;
+	if (
+		!input ||
+		typeof input !== "object" ||
+		input.schema !== "qorpera.digital-post-held-among/v1" ||
+		!Array.isArray(input.held) ||
+		input.held.some((id) => typeof id !== "string" || !asked.includes(id))
+	)
+		throw new DigitalPostSyncError("the database did not say which letters are held");
+	return new Set(input.held as string[]);
 }
 
 function parseKept(value: unknown): { letterId: string; state: "staging" | "kept" } {
@@ -302,9 +315,16 @@ export class CloudDigitalPostSyncs {
 		const last = Math.min(claim.scanPage + LIST_PAGES, MAX_SCAN_PAGE);
 		for (let page = claim.scanPage; page < last; page += 1) {
 			const available = await this.#post.available(key, signal, page);
+			// Asked per page, so the answer is whole however many letters are held.
+			const held = available.ids.length
+				? parseHeld(
+						await this.#authority.heldDigitalPostLetters({ ...lease, memoIds: available.ids }, database()),
+						available.ids,
+					)
+				: new Set<string>();
 			let took = false;
 			for (const memoId of available.ids) {
-				if (claim.held.has(memoId)) continue;
+				if (held.has(memoId)) continue;
 				// Out of time: the next pass reads this page again; what this one held there it skips, what it receipted is
 				// gone from the list.
 				if (spent()) return { outcome: "more", scanPage: page };

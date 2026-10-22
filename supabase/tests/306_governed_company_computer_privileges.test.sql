@@ -82,6 +82,7 @@ begin
 		'qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
+		'qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
