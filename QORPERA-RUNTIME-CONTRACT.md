@@ -2211,6 +2211,22 @@ the host passes it to Codex and verifies Codex applied it. Routines,
 coworker wakes, coding turns, other providers and runs under a bundle without
 fast mode run at standard speed; the latter pin no tier.
 
+2026-10-22 amendment: core work runs deep (founder, 22 October: core work
+runs at high effort, and a conversation is the quick way into the company).
+A run no member is waiting on runs at high effort: a worker's own run, an
+agent's first run, a coworker's message and a member's finished task. The
+`effort` of the agent's agent.md, when it names one, sets these runs instead.
+Work that carries on a chain (a worker's report, a machine event or check-in,
+an office start) keeps the effort its chain's first run was pinned with, so a
+chain a member's turn started keeps that conversation's effort, a routine's
+chain its routine's, and any other chain high. A member's turn keeps its
+conversation's Model menu effort and fast tier, and a routine run its
+routine's effort. The bundle's model policy declares `unattended: high`; the
+kernel resolves the effort when it creates the run and pins it as before
+(migration 20260930532000). Runs under a bundle without `unattended` keep the
+rules above. Built, not live: it goes live with the release cut whose bundle
+declares it.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are
@@ -5984,7 +6000,8 @@ while Azure backup/overflow remains disabled.
 3. Creating a company atomically seeds its Company File schema, one Co-Founder
    agent, synchronized enforcement projections, and one silent first-run wake.
 4. Creating an agent seeds exactly one startup wake, creates no template
-   artifact, and starts on the resolved low-effort thread policy.
+   artifact, and starts on the resolved effort policy (17: high, or its
+   agent.md's effort, since the 2026-10-22 amendment; low before it).
 5. Archive and permanent delete are distinct; authorized deletion applies one
    coherent Company File operation and removes the agent's owned artifacts and
    dependent enforcement state.
