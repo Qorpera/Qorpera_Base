@@ -28,7 +28,6 @@ export const SHARED: Record<string, string> = {
 	"Company File": "Virksomhedsfilen",
 	"Account and settings": "Konto og indstillinger",
 	Friends: "Venner",
-	Invitations: "Invitationer",
 	"New agent": "Ny agent",
 	Cancel: "Annuller",
 	Back: "Tilbage",

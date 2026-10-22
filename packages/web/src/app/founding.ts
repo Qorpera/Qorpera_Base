@@ -50,6 +50,19 @@ export interface FoundingOptions {
 	onCompanyReady?: () => void;
 }
 
+/** What the new-company box asked for as it opened a table: the friends list open at once, and the idea, if
+ * saving it with the opening failed. The table's page reads it once. */
+export interface FoundingIntent {
+	friends?: boolean;
+	vision?: string;
+}
+
+const intents = new Map<string, FoundingIntent>();
+
+export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
+	intents.set(profileId, intent);
+}
+
 /** The hint the Co-Founder's arrival reads once, so it plays from the start (agreed with Interfaces, 4 October 2026):
  * set when this tab's founder presses Start; the arrival removes it and ignores one older than ten minutes. */
 export function cofounderArrivalKey(profileId: string): string {
@@ -85,6 +98,8 @@ export class FoundingController {
 	#epoch = 0;
 	/** Revisions this tab's own edits produced, each mapped to the revision it was made on. */
 	readonly #ownRevisions = new Map<number, number>();
+	/** The idea the new-company box could not save as it opened this table, saved on the first read. */
+	#pendingVision: string | undefined;
 
 	constructor(api: CloudApi, userId: string, profileId: string, options: FoundingOptions) {
 		this.#api = api;
@@ -93,6 +108,10 @@ export class FoundingController {
 		this.#options = options;
 		this.profileId = profileId;
 		this.#startKey = `qorpera-web-founding-start/v1/${api.cloud.config.projectUrl}/${userId}/${profileId}`;
+		const intent = intents.get(profileId);
+		intents.delete(profileId);
+		this.#pendingVision = intent?.vision?.trim() || undefined;
+		if (intent?.friends) this.openFriends(true);
 		const resume = () => {
 			if (!document.hidden) void this.refresh();
 		};
@@ -171,6 +190,11 @@ export class FoundingController {
 			...(panelDone ? { connectOpen: false } : {}),
 		});
 		if (panelDone) this.#closeConnections();
+		if (this.#pendingVision !== undefined && table.phase === "open" && table.me.state === "joined") {
+			const vision = this.#pendingVision;
+			this.#pendingVision = undefined;
+			if (!table.vision) void this.describe(vision);
+		}
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
 		// 2026). A first run that waits for a login or failed keeps the page, which says why.
 		const firstRun = table.start?.firstRun;
@@ -281,6 +305,13 @@ export class FoundingController {
 			const expected = revision === seenRevision ? table.revision : seenRevision;
 			return this.#founding.setReady(this.profileId, expected, ready);
 		});
+	}
+
+	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
+	async startAlone(seenRevision: number): Promise<void> {
+		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
+			await this.setReady(seenRevision, true);
+		if (this.store.get().table?.me.canStart) await this.start();
 	}
 
 	async invite(friendUserId: string): Promise<void> {

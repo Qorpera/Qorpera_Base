@@ -25,7 +25,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
-import { AuthController } from "./auth.ts";
+import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
@@ -51,6 +51,7 @@ import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { keepWebsiteIdea, renderNewCompany, type Viewer } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
@@ -165,6 +166,7 @@ export function mountApplication(
 	root.addEventListener("click", onFolderLink);
 	let routeRevision = 0;
 	let accountRevision = 0;
+	holdWebsiteIdea();
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
@@ -211,6 +213,7 @@ export function mountApplication(
 		}
 	}
 	function onRouteChange(): void {
+		holdWebsiteIdea();
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
@@ -618,8 +621,12 @@ export function mountApplication(
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			if (route.name !== "found") teardownFounding();
+			const viewer: Viewer | undefined =
+				authState.user && auth.userId ? { userId: auth.userId, name: displayName(authState.user) } : undefined;
 			if (route.name === "hub") {
-				renderHub(hub, main);
+				renderHub(hub, main, viewer);
+			} else if (route.name === "new") {
+				renderNewCompany(hub, main, viewer);
 			} else if (route.name === "found") {
 				const userId = auth.userId!;
 				if (founding?.controller.profileId !== route.profileId) {
@@ -1477,4 +1484,13 @@ export function mountApplication(
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
 	};
+}
+
+/** qorpera.com's box sends its idea as `#/new?idea=…`. It is kept for the new-company box (a sign-in may
+ * come first) and taken out of the address at once, so it never stays in the history or a copied link. */
+function holdWebsiteIdea(): void {
+	const route = currentRoute();
+	if (route.name !== "new" || !route.idea) return;
+	keepWebsiteIdea(route.idea);
+	history.replaceState(null, "", routeHash({ name: "new" }));
 }

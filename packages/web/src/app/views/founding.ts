@@ -5,13 +5,17 @@ import {
 	FOUNDING_ROLE_MAX_CHARACTERS,
 	type FounderSeat,
 } from "../../cloud/company-founding.ts";
-import { button, confirmDialog, h, notice, personAvatar, spinner } from "../../ui/dom.ts";
+import { button, confirmDialog, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FoundingController } from "../founding.ts";
 import { navigate } from "../router.ts";
+import { mountCrown } from "./crown.ts";
 
-/* The founding table (table v3): one seat per co-founder, a role each, Connect ChatGPT, then Ready,
- * and one Start. People only; no agents, no billing.
+/* The founding table, drawn as writing the first message together (Jonas, 22 October 2026, hub round 3):
+ * the company's name as the page's heading, then one box like qorpera.com's, with the Co-Founder's crown
+ * looking over its edge and the people at the table beside it. The box holds the idea, which every founder
+ * may edit, and each founder's own line (their role) in their colour. Under it, one chip per seat, then
+ * Ready and Start. People only; no agents, no billing.
  *
  * The page is built once and updated in place while the table refreshes every few seconds: text
  * fields are never replaced, so typing, an accent or IME composition, the caret, focus and the
@@ -41,6 +45,12 @@ class Slot {
 	}
 }
 
+/** A text box that grows with its text, as qorpera.com's does. */
+function growToText(field: HTMLTextAreaElement): void {
+	field.style.height = "auto";
+	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
+}
+
 /** A text field that shows the server's text unless you are editing it, and saves when you leave
  * it. Unsaved or refused text stays in the field; leaving it again tries again. */
 class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
@@ -64,6 +74,7 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 			event.preventDefault();
 			el.blur();
 		});
+		if (el instanceof HTMLTextAreaElement) element.addEventListener("input", () => growToText(el));
 	}
 	/** You changed the field's words (being typed, being saved, or refused); only then does leaving it
 	 * save. Spaces and new lines at the ends alone are no edit. */
@@ -75,6 +86,10 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 		return this.dirty ? this.el.value : undefined;
 	}
 	show(value: string): void {
+		this.#apply(value);
+		if (this.el instanceof HTMLTextAreaElement) growToText(this.el);
+	}
+	#apply(value: string): void {
 		this.#server = value;
 		if (this.#carried !== undefined) {
 			this.el.value = this.#carried;
@@ -116,132 +131,70 @@ function names(table: CompanyFounding, userIds: readonly string[], me: string): 
 	return t("{names} and {last}", { names: list.slice(0, -1).join(", "), last: list[list.length - 1]! });
 }
 
-/** One seat. Your own role field and Ready button are made once; the rest follows the seat. */
-class SeatCard {
+/** One seat under the box: who, and where they are (Ready, not yet, invited); Remove or Withdraw when you may. */
+class SeatChip {
 	readonly el: HTMLElement;
-	readonly #top = new Slot();
-	readonly #role = new Slot();
-	readonly #foot = new Slot();
+	readonly #body = new Slot();
 	readonly #founding: FoundingController;
 	readonly #mine: boolean;
-	#field: SyncedField<HTMLTextAreaElement> | undefined;
-	#ready: HTMLButtonElement | undefined;
-	#seat: FounderSeat | undefined;
-	#revision = 0;
 
-	readonly #carriedRole: string | undefined;
-
-	constructor(founding: FoundingController, seat: FounderSeat, carriedRole?: string) {
+	constructor(founding: FoundingController, seat: FounderSeat) {
 		this.#founding = founding;
 		this.#mine = seat.userId === founding.userId;
-		this.#carriedRole = carriedRole;
 		this.el = h(
 			"article",
 			{ class: this.#mine ? "founding-seat founding-seat-mine" : "founding-seat", "data-user": seat.userId },
-			this.#top.el,
-			this.#role.el,
-			h("div", { class: "founding-seat-foot" }, this.#foot.el),
+			this.#body.el,
 		);
-	}
-
-	/** Your unsaved role, if any. */
-	get draft(): string | undefined {
-		return this.#field?.draft;
 	}
 
 	update(table: CompanyFounding, seat: FounderSeat): void {
-		this.#seat = seat;
-		this.#revision = table.revision;
 		const founding = this.#founding;
-		this.#top.show(`${seat.displayName}\n${seat.state}`, () =>
-			h(
-				"div",
-				{ class: "founding-seat-top" },
-				personAvatar(seat.displayName, seat.userId),
-				h(
-					"div",
-					{ class: "founding-who" },
-					h("strong", null, seat.displayName),
-					this.#mine ? h("small", null, t("You")) : null,
-				),
-				h("span", { class: "founding-kind" }, seat.state === "joined" ? t("Co-founder") : t("Invited")),
-			),
-		);
-		if (this.#mine && seat.state === "joined") {
-			this.#role.show("mine", () => {
-				const field = h("textarea", {
-					class: "founding-role founding-role-mine",
-					rows: 3,
-					maxlength: FOUNDING_ROLE_MAX_CHARACTERS,
-					placeholder: t("What will you do? Optional — one sentence is plenty."),
-					"aria-label": t("Your role"),
-				});
-				this.#field = new SyncedField(field, (value) => void founding.setRole(value), this.#carriedRole);
-				return field;
-			});
-			this.#field?.show(seat.role);
-			this.#foot.show("mine", () => {
-				// One button for the seat's one step: Connect ChatGPT, then Ready. It is never replaced,
-				// so a click that lands while the table refreshes still counts.
-				this.#ready = button("", () => {
-					// Ready as shown when clicked: a double click asks for the same thing twice.
-					if (!this.#seat?.modelLoginReady) founding.openConnect(true);
-					else void founding.setReady(this.#revision, !this.#seat.ready);
-				});
-				return this.#ready;
-			});
-			const ready = this.#ready!;
-			const label = !seat.modelLoginReady ? t("Connect ChatGPT") : seat.ready ? t("Ready ✓") : t("Ready");
-			if (ready.textContent !== label) ready.textContent = label;
-			ready.className = `btn ${seat.modelLoginReady ? (seat.ready ? "founding-ready-on" : "founding-ready") : "founding-connect-button"}`;
-			ready.title = !seat.modelLoginReady
-				? t("Connect your own ChatGPT account to be Ready")
-				: seat.ready
-					? t("Not ready after all")
-					: t("I'm ready for the table as it is now");
-			return;
-		}
-		this.#field = undefined;
-		this.#ready = undefined;
-		this.#role.show(`${seat.state}\n${seat.role}`, () =>
-			h(
-				"p",
-				{ class: seat.role ? "founding-role" : "founding-role founding-role-empty" },
-				seat.role || (seat.state === "invited" ? t("Not joined yet") : t("No role written")),
-			),
-		);
 		const canRemove = table.me.canManage && seat.state === "joined" && !this.#mine;
 		const canWithdraw =
 			seat.state === "invited" && !this.#mine && (table.me.canManage || seat.invitedByUserId === founding.userId);
-		this.#foot.show([seat.state, seat.ready, seat.modelLoginReady, canRemove, canWithdraw].join("\n"), () => {
-			const parts: HTMLElement[] = [];
-			if (seat.state === "joined")
-				parts.push(
-					h(
-						"span",
-						{ class: seat.ready ? "founding-status founding-status-ready" : "founding-status" },
-						seat.ready ? t("Ready ✓") : seat.modelLoginReady ? t("Not ready yet") : t("ChatGPT not connected"),
-					),
-				);
-			if (canRemove)
-				parts.push(
-					button(
-						t("Remove"),
-						() =>
-							void confirmDialog(
-								t("Remove {name} from the table?", { name: seat.displayName }),
-								t("Remove"),
-								true,
-							).then((yes) => {
-								if (yes) void founding.removeSeat(seat.userId);
-							}),
-						{ small: true },
-					),
-				);
-			if (canWithdraw)
-				parts.push(button(t("Withdraw"), () => void founding.removeSeat(seat.userId), { small: true }));
-			return h("div", { class: "founding-foot-row" }, ...parts);
-		});
+		this.el.classList.toggle("founding-seat-invited", seat.state === "invited");
+		const status =
+			seat.state === "invited"
+				? t("Invited")
+				: seat.ready
+					? t("Ready ✓")
+					: seat.modelLoginReady
+						? t("Not ready yet")
+						: t("ChatGPT not connected");
+		this.#body.show([seat.displayName, seat.state, status, canRemove, canWithdraw].join("\n"), () =>
+			h(
+				"div",
+				{ class: "founding-seat-row" },
+				personAvatar(seat.displayName, seat.userId),
+				h("strong", null, this.#mine ? t("You") : seat.displayName),
+				h(
+					"span",
+					{
+						class:
+							seat.ready && seat.state === "joined"
+								? "founding-status founding-status-ready"
+								: "founding-status",
+					},
+					status,
+				),
+				canRemove
+					? button(
+							t("Remove"),
+							() =>
+								void confirmDialog(
+									t("Remove {name} from the table?", { name: seat.displayName }),
+									t("Remove"),
+									true,
+								).then((yes) => {
+									if (yes) void founding.removeSeat(seat.userId);
+								}),
+							{ small: true },
+						)
+					: null,
+				canWithdraw ? button(t("Withdraw"), () => void founding.removeSeat(seat.userId), { small: true }) : null,
+			),
+		);
 	}
 }
 
@@ -253,13 +206,21 @@ export class FoundingView {
 	readonly #page = new Slot();
 	// The open table's parts, kept across refreshes.
 	readonly #nameSlot = new Slot();
+	readonly #sub = h("p", { class: "founding-sub" });
 	readonly #visionSlot = new Slot();
 	#name: SyncedField<HTMLInputElement> | undefined;
 	#vision: SyncedField<HTMLTextAreaElement> | undefined;
+	#role: SyncedField<HTMLTextAreaElement> | undefined;
+	readonly #roleSlot = new Slot();
+	readonly #lines = new Slot();
+	readonly #heads = new Slot();
+	readonly #crownStage = h("span", { class: "founding-crown", "aria-hidden": "true" });
 	readonly #invitation = new Slot();
 	readonly #seatList = h("div", { class: "founding-seats" });
-	readonly #seats = new Map<string, SeatCard>();
-	readonly #inviteTile: HTMLButtonElement;
+	readonly #seats = new Map<string, SeatChip>();
+	readonly #invite: HTMLButtonElement;
+	readonly #inviteFaces = new Slot();
+	readonly #boxFoot: HTMLElement;
 	readonly #friends: HTMLElement;
 	readonly #friendList = new Slot();
 	readonly #friendNote = new Slot();
@@ -269,6 +230,7 @@ export class FoundingView {
 	readonly #connectBody = h("div");
 	readonly #connectText = h("p", { class: "muted small" });
 	readonly #error = new Slot();
+	readonly #ready: HTMLButtonElement;
 	readonly #start: HTMLButtonElement;
 	readonly #waiting = h("p", { class: "founding-hint" });
 	readonly #owners = h("p", { class: "founding-hint" });
@@ -276,7 +238,14 @@ export class FoundingView {
 	readonly #bar: HTMLElement;
 	readonly #exit = new Slot();
 	readonly #startedSlot = new Slot();
-	readonly #opened = { friends: false, connect: false };
+	readonly #opened = { connect: false };
+	/** The table as the Ready and Start buttons were last drawn: a click asks for what it showed. */
+	#seen: { revision: number; alone: boolean; ready: boolean; connected: boolean } = {
+		revision: 0,
+		alone: false,
+		ready: false,
+		connected: false,
+	};
 
 	/** Unsaved text brought over from the page this one replaces (a language change). */
 	readonly #carried: FoundingDrafts;
@@ -285,16 +254,18 @@ export class FoundingView {
 		this.#founding = founding;
 		this.#carried = carried;
 		this.el.append(this.#page.el);
-		this.#inviteTile = h(
+		this.#invite = h(
 			"button",
 			{
 				type: "button",
-				class: "founding-seat founding-seat-invite",
+				class: "founding-invite",
 				onclick: () => founding.openFriends(!founding.store.get().friendsOpen),
 			},
-			h("span", { class: "founding-plus", "aria-hidden": "true" }, "+"),
-			h("strong", null, t("Invite Co-founder")),
+			this.#inviteFaces.el,
+			h("span", { class: "founding-plus", "aria-hidden": "true" }, icon("plus")),
+			t("Invite friends"),
 		);
+		this.#boxFoot = h("div", { class: "founding-box-foot" }, this.#invite);
 		this.#friendEmail = h("input", {
 			id: "foundingFriendEmail",
 			type: "email",
@@ -304,11 +275,12 @@ export class FoundingView {
 		this.#friendAdd = h("button", { type: "submit", class: "btn" }, t("Add friend"));
 		this.#friends = h(
 			"section",
-			{ class: "founding-sheet", "aria-label": t("Invite a co-founder"), hidden: true },
+			{ class: "founding-sheet founding-friends-sheet", "aria-label": t("Invite friends"), hidden: true },
 			h(
 				"div",
 				{ class: "founding-sheet-head" },
-				h("h2", null, t("Invite a co-founder")),
+				h("h2", null, t("Invite friends")),
+				h("span", { class: "muted small" }, t("They join as co-founders.")),
 				h(
 					"button",
 					{
@@ -317,7 +289,7 @@ export class FoundingView {
 						"aria-label": t("Close"),
 						onclick: () => founding.openFriends(false),
 					},
-					"×",
+					icon("close"),
 				),
 			),
 			this.#friendList.el,
@@ -352,27 +324,48 @@ export class FoundingView {
 						"aria-label": t("Close"),
 						onclick: () => founding.openConnect(false),
 					},
-					"×",
+					icon("close"),
 				),
 			),
 			this.#connectText,
 			this.#connectBody,
 		);
+		// One button for your seat's one step: Connect ChatGPT, then Ready. Never replaced, so a click that
+		// lands while the table refreshes still counts; it asks for what it showed.
+		this.#ready = h("button", {
+			type: "button",
+			class: "btn founding-ready",
+			onclick: () => {
+				const seen = this.#seen;
+				if (!seen.connected) founding.openConnect(true);
+				else void founding.setReady(seen.revision, !seen.ready);
+			},
+		});
 		this.#start = h("button", {
 			type: "button",
 			class: "btn btn-primary founding-start",
-			onclick: () => void founding.start(),
+			onclick: () => {
+				// Alone at the table, Start is one press: Ready, then Start.
+				if (this.#seen.alone) void founding.startAlone(this.#seen.revision);
+				else void founding.start();
+			},
 		});
-		this.#bar = h("div", { class: "founding-bar" }, this.#start, this.#waiting, this.#owners, this.#withdrawn);
+		this.#bar = h(
+			"div",
+			{ class: "founding-bar" },
+			h("div", { class: "founding-actions" }, this.#ready, this.#start),
+			this.#waiting,
+			this.#owners,
+			this.#withdrawn,
+		);
 	}
 
 	/** Text typed here and not saved yet, to carry over when the page is built again. */
 	drafts(): FoundingDrafts {
-		const role = [...this.#seats.values()].map((card) => card.draft).find((draft) => draft !== undefined);
 		return {
 			...(this.#name?.draft !== undefined ? { name: this.#name.draft } : {}),
 			...(this.#vision?.draft !== undefined ? { vision: this.#vision.draft } : {}),
-			...(role !== undefined ? { role } : {}),
+			...(this.#role?.draft !== undefined ? { role: this.#role.draft } : {}),
 		};
 	}
 
@@ -389,6 +382,11 @@ export class FoundingView {
 		if (mode !== this.#mode) {
 			this.#mode = mode;
 			this.#page.show(mode, () => this.#build(mode));
+			// The crown stops when it leaves the page; the open table gets a new one each time it is built.
+			if (mode === "open") {
+				this.#crownStage.replaceChildren();
+				mountCrown(this.#crownStage, { mirrored: false });
+			}
 		}
 		if (mode === "loading")
 			this.#error.show(state.readError ?? "", () => (state.readError ? notice("danger", state.readError) : null));
@@ -417,10 +415,17 @@ export class FoundingView {
 		return h(
 			"div",
 			{ class: "founding-page" },
-			h("header", { class: "founding-head" }, this.#nameSlot.el, this.#visionSlot.el),
+			h("header", { class: "founding-head" }, this.#nameSlot.el, this.#sub),
 			this.#invitation.el,
+			h(
+				"div",
+				{ class: "founding-ask" },
+				this.#crownStage,
+				this.#heads.el,
+				h("div", { class: "founding-box" }, this.#visionSlot.el, this.#lines.el, this.#roleSlot.el, this.#boxFoot),
+				this.#friends,
+			),
 			this.#seatList,
-			this.#friends,
 			this.#connect,
 			this.#error.el,
 			this.#bar,
@@ -433,6 +438,7 @@ export class FoundingView {
 		const state = founding.store.get();
 		const me = founding.userId;
 		const joined = table.me.state === "joined";
+		const mySeat = table.seats.find((seat) => seat.userId === me);
 
 		this.#nameSlot.show(joined ? "field" : `title\n${table.companyName}`, () => {
 			if (!joined) {
@@ -458,6 +464,26 @@ export class FoundingView {
 			return field;
 		});
 		this.#name?.show(table.companyName);
+
+		const invitedBy = mySeat?.invitedByUserId;
+		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
+		const sub = joined
+			? t("Your first message to the Co-Founder. Write it together.")
+			: inviter
+				? t("{name} invited you to start {company} together.", { name: inviter, company: table.companyName })
+				: t("You are invited to start {company} together.", { company: table.companyName });
+		if (this.#sub.textContent !== sub) this.#sub.textContent = sub;
+		this.#invitation.show(`${table.me.state}`, () =>
+			table.me.state === "invited"
+				? h(
+						"div",
+						{ class: "founding-invitation" },
+						button(t("Decline"), () => void founding.respond(false)),
+						button(t("Join the table"), () => void founding.respond(true), { primary: true }),
+					)
+				: null,
+		);
+
 		this.#visionSlot.show(joined ? "field" : `text\n${table.vision}`, () => {
 			if (!joined) {
 				this.#vision = undefined;
@@ -465,7 +491,7 @@ export class FoundingView {
 			}
 			const field = h("textarea", {
 				class: "founding-vision",
-				rows: 2,
+				rows: 1,
 				maxlength: VISION_MAX_UNITS,
 				placeholder: t("What is the company for? One line is enough to start."),
 				"aria-label": t("What the company is for"),
@@ -475,55 +501,85 @@ export class FoundingView {
 		});
 		this.#vision?.show(table.vision);
 
-		const invitedBy = table.seats.find((seat) => seat.userId === me)?.invitedByUserId;
-		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
-		this.#invitation.show(`${table.me.state}\n${inviter}\n${table.companyName}`, () =>
-			table.me.state === "invited"
-				? h(
+		// Every other founder's own line, in their colour; yours is the field under them.
+		const others = table.seats.filter((seat) => seat.userId !== me && seat.state === "joined" && seat.role);
+		this.#lines.show(others.map((seat) => `${seat.userId}:${seat.displayName}:${seat.role}`).join("\n"), () =>
+			others.length === 0
+				? null
+				: h(
 						"div",
-						{ class: "founding-invitation" },
-						h(
-							"p",
-							null,
-							inviter
-								? t("{name} invited you to start {company} together.", {
-										name: inviter,
-										company: table.companyName,
-									})
-								: t("You are invited to start {company} together.", { company: table.companyName }),
-						),
-						h(
-							"div",
-							{ class: "row" },
-							button(t("Decline"), () => void founding.respond(false)),
-							button(t("Join the table"), () => void founding.respond(true), { primary: true }),
-						),
-					)
-				: null,
+						{ class: "founding-lines" },
+						...others.map((seat) => {
+							const line = h(
+								"p",
+								{ class: "founding-line" },
+								h("span", { class: "founding-line-who" }, seat.displayName),
+								h("span", null, seat.role),
+							);
+							line.style.setProperty("--line-color", personColor(seat.userId));
+							return line;
+						}),
+					),
+		);
+		this.#roleSlot.show(joined ? "mine" : "none", () => {
+			if (!joined) {
+				this.#role = undefined;
+				return null;
+			}
+			const field = h("textarea", {
+				class: "founding-role founding-role-mine",
+				rows: 1,
+				maxlength: FOUNDING_ROLE_MAX_CHARACTERS,
+				placeholder: t("What will you do? Optional — one sentence is plenty."),
+				"aria-label": t("Your role"),
+			});
+			field.style.setProperty("--line-color", personColor(me));
+			this.#role = new SyncedField(field, (value) => void founding.setRole(value), this.#carried.role);
+			return field;
+		});
+		if (mySeat && joined) this.#role?.show(mySeat.role);
+
+		// The people at the table look over the box's edge, as the crown does.
+		this.#heads.show(table.seats.map((seat) => `${seat.userId}:${seat.displayName}:${seat.state}`).join("\n"), () =>
+			h(
+				"div",
+				{ class: "founding-heads", "aria-hidden": "true" },
+				...table.seats.map((seat) => {
+					const face = personAvatar(seat.displayName, seat.userId);
+					face.classList.toggle("founding-head-invited", seat.state === "invited");
+					face.style.setProperty("--line-color", personColor(seat.userId));
+					return face;
+				}),
+			),
+		);
+		const full = table.seats.length >= FOUNDING_MAX_SEATS;
+		this.#boxFoot.hidden = !joined || full;
+		this.#invite.setAttribute("aria-expanded", String(state.friendsOpen === true));
+		this.#inviteFaces.show(table.seats.map((seat) => `${seat.userId}:${seat.displayName}`).join("\n"), () =>
+			h(
+				"span",
+				{ class: "founding-invite-faces" },
+				...table.seats.slice(0, 4).map((seat) => personAvatar(seat.displayName, seat.userId)),
+			),
 		);
 
-		// Seats in the server's order. A card is kept per person and moved only when the order changes.
-		const cards = table.seats.map((seat) => {
-			let card = this.#seats.get(seat.userId);
-			if (!card) {
-				card = new SeatCard(founding, seat, seat.userId === me ? this.#carried.role : undefined);
-				this.#seats.set(seat.userId, card);
+		// Seats in the server's order. A chip is kept per person and moved only when the order changes.
+		const chips = table.seats.map((seat) => {
+			let chip = this.#seats.get(seat.userId);
+			if (!chip) {
+				chip = new SeatChip(founding, seat);
+				this.#seats.set(seat.userId, chip);
 			}
-			card.update(table, seat);
-			return card.el;
+			chip.update(table, seat);
+			return chip.el;
 		});
 		for (const userId of [...this.#seats.keys()])
 			if (!table.seats.some((seat) => seat.userId === userId)) this.#seats.delete(userId);
-		// Only the cards that change place move, so your own card (and the role you are typing in it)
-		// stays put when someone joins, leaves or is invited.
-		const wanted: Element[] =
-			joined && table.seats.length < FOUNDING_MAX_SEATS ? [...cards, this.#inviteTile] : cards;
-		for (const child of [...this.#seatList.children]) if (!wanted.includes(child)) child.remove();
-		wanted.forEach((node, index) => {
+		for (const child of [...this.#seatList.children]) if (!chips.includes(child as HTMLElement)) child.remove();
+		chips.forEach((node, index) => {
 			const at = this.#seatList.children[index];
 			if (at !== node) this.#seatList.insertBefore(node, at ?? null);
 		});
-		this.#inviteTile.setAttribute("aria-expanded", String(state.friendsOpen === true));
 
 		this.#friendsPanel(table, joined && state.friendsOpen === true);
 		this.#connectPanel(table, joined && state.connectOpen === true);
@@ -540,19 +596,36 @@ export class FoundingView {
 		);
 
 		this.#bar.hidden = !joined;
+		const alone = table.seats.length === 1 && mySeat?.state === "joined";
+		const connected = mySeat?.modelLoginReady === true;
+		const ready = mySeat?.ready === true;
+		this.#seen = { revision: table.revision, alone, ready, connected };
+		// Alone, Ready is part of Start; with others, each founder says Ready first.
+		this.#ready.hidden = alone && connected;
+		const readyLabel = !connected ? t("Connect ChatGPT") : ready ? t("Ready ✓") : t("Ready");
+		if (this.#ready.textContent !== readyLabel) this.#ready.textContent = readyLabel;
+		this.#ready.classList.toggle("founding-ready-on", connected && ready);
+		this.#ready.classList.toggle("founding-connect-button", !connected);
+		this.#ready.title = !connected
+			? t("Connect your own ChatGPT account to be Ready")
+			: ready
+				? t("Not ready after all")
+				: t("I'm ready for the table as it is now");
 		const startLabel = state.busy === "start" ? t("Starting…") : t("Start {name}", { name: table.companyName });
 		if (this.#start.textContent !== startLabel) this.#start.textContent = startLabel;
-		this.#start.disabled = !table.me.canStart || state.busy === "start";
+		this.#start.disabled = state.busy === "start" || (alone ? !connected : !table.me.canStart);
+		this.#waiting.hidden = alone;
 		this.#waiting.textContent =
 			table.waitingFor.length > 0
 				? t("Waiting for {names} to be ready", { names: names(table, table.waitingFor, me) })
 				: t("Everyone is ready.");
+		this.#owners.hidden = alone;
 		this.#owners.textContent = t("Everyone at the table becomes a founder of {name}.", { name: table.companyName });
 		this.#withdrawn.textContent = t("Invitations nobody has answered are withdrawn at Start.");
 		this.#withdrawn.hidden = !table.seats.some((seat) => seat.state === "invited");
 
-		const alone = table.seats.filter((seat) => seat.state === "joined").length === 1;
-		this.#exit.show(`${joined}\n${table.me.canManage}\n${alone}\n${table.companyName}`, () => {
+		const joinedCount = table.seats.filter((seat) => seat.state === "joined").length;
+		this.#exit.show(`${joined}\n${table.me.canManage}\n${joinedCount === 1}\n${table.companyName}`, () => {
 			if (!joined) return null;
 			if (!table.me.canManage)
 				return h(
@@ -574,7 +647,7 @@ export class FoundingView {
 			return h(
 				"div",
 				{ class: "founding-exit" },
-				alone
+				joinedCount === 1
 					? button(
 							t("Close the table"),
 							() =>
@@ -595,8 +668,6 @@ export class FoundingView {
 	#friendsPanel(table: CompanyFounding, open: boolean): void {
 		const state = this.#founding.store.get();
 		this.#friends.hidden = !open;
-		if (open && !this.#opened.friends) this.#friends.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-		this.#opened.friends = open;
 		if (!open) return;
 		const seats = new Map(table.seats.map((seat) => [seat.userId, seat.state]));
 		const friends = (state.friends ?? []).filter((friend) => friend.status === "accepted");
@@ -628,6 +699,7 @@ export class FoundingView {
 								? h("span", { class: "founding-status" }, seat === "joined" ? t("At the table") : t("Invited"))
 								: button(t("Invite"), () => void this.#founding.invite(friend.userId), {
 										small: true,
+										primary: true,
 										disabled: full,
 									}),
 						);
@@ -705,7 +777,7 @@ export class FoundingView {
 					),
 					h(
 						"p",
-						{ class: "founding-vision" },
+						{ class: "founding-sub" },
 						seats.length === 1
 							? t("{name} owns it now.", { name: owners })
 							: t("{names} own it now.", { names: owners }),
@@ -720,12 +792,12 @@ export class FoundingView {
 							{ class: "founding-seat" },
 							h(
 								"div",
-								{ class: "founding-seat-top" },
+								{ class: "founding-seat-row" },
 								personAvatar(seat.displayName, seat.userId),
-								h("div", { class: "founding-who" }, h("strong", null, seat.displayName)),
-								h("span", { class: "founding-kind founding-kind-owner" }, t("Founder")),
+								h("strong", null, seat.displayName),
+								h("span", { class: "founding-status founding-status-ready" }, t("Founder")),
 							),
-							seat.role ? h("p", { class: "founding-role" }, seat.role) : null,
+							seat.role ? h("p", { class: "founding-seat-role" }, seat.role) : null,
 						),
 					),
 				),
