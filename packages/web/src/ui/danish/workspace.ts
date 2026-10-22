@@ -590,7 +590,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Loan from {name}": "Lån fra {name}",
 	"the owner": "ejeren",
 	"Share capital, {name}": "Selskabskapital, {name}",
-	Copied: "Kopieret",
 	"How much": "Hvor meget",
 	"Amount in kroner": "Beløb i kroner",
 	kr: "kr.",
