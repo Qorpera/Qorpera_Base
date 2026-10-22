@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { createSecretCapture } from "./connectors.ts";
+import { createKeptReplacements, createSecretCapture, type SecretCaptureTarget } from "./connectors.ts";
 import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
 
 /* The company's Digital Post as a member reads it (deploy/first-node/RUNTIME-DIGITAL-POST.md; supabase/CLIENT-CONTRACT.md
@@ -14,8 +14,8 @@ export const DIGITAL_POST_INDEX_PATH = "digital-post/letters.json";
 export const DIGITAL_POST_CONNECTOR = "digital_post";
 /** The most the index may be: what the platform's writer keeps it under (240 KiB), with room. */
 export const DIGITAL_POST_INDEX_MAX_BYTES = 256 * 1024;
-/** A letter's `letter.md` as the Mailbox reads it. */
-export const DIGITAL_POST_LETTER_MAX_BYTES = 256 * 1024;
+/** The longest `letter.md` the Mailbox shows; a longer letter opens from its folder. */
+export const DIGITAL_POST_LETTER_MAX_BYTES = 1024 * 1024;
 
 export type DigitalPostStatus = "waiting" | "current" | "failed" | "refused" | "disconnected";
 const STATUSES = ["waiting", "current", "failed", "refused", "disconnected"] as const;
@@ -199,7 +199,16 @@ export function parseDigitalPostLetterText(markdown: string): DigitalPostLetterT
 		// A document is a file of the letter's own folder.
 		if (name && !name.includes("/") && name !== "." && name !== "..") documents.push(name);
 	}
-	return { text: textAt < 0 ? "" : lines.slice(textAt + 1).join("\n").trim(), documents };
+	return {
+		text:
+			textAt < 0
+				? ""
+				: lines
+						.slice(textAt + 1)
+						.join("\n")
+						.trim(),
+		documents,
+	};
 }
 
 /**
@@ -246,18 +255,24 @@ export function createDigitalPostKeys(
 	fetchImplementation: typeof fetch = fetch,
 ): DigitalPostKeys {
 	const capture = createSecretCapture(cloud, profile, fetchImplementation);
+	// A new key whose send failed keeps its ticket for the next try (connectors.ts): SQL allows one open replacement.
+	const replace = createKeptReplacements(capture);
 	return {
 		async save(apiKey, existingSecretId, signal) {
-			const issued = await capture.ticket({
+			signal?.throwIfAborted();
+			const target: SecretCaptureTarget = {
 				ownerKind: "company",
 				ownerUserId: null,
 				connectorId: DIGITAL_POST_CONNECTOR,
 				secretName: "primary",
 				purpose: "Digital Post",
-				...(existingSecretId ? { existingSecretId } : {}),
-			});
-			signal?.throwIfAborted();
-			await capture.send(issued, { api_key: apiKey.trim() }, signal);
+				existingSecretId,
+			};
+			const fields = { api_key: apiKey.trim() };
+			// A first connection asks for a fresh ticket each try: one an earlier try saved is refused at the start
+			// (23505), and Settings reads the connection again either way.
+			if (existingSecretId === undefined) await capture.send(await capture.ticket(target), fields, signal);
+			else await replace(existingSecretId, target, fields, signal);
 		},
 		async disconnect(secretId, signal) {
 			signal?.throwIfAborted();

@@ -1,10 +1,10 @@
+import { CloudRpcError } from "../../cloud/client.ts";
 import {
 	type DigitalPostConnection,
 	type DigitalPostKeys,
 	digitalPostAdminUrl,
 	digitalPostKeyLooksValid,
 } from "../../cloud/digital-post.ts";
-import { CloudRpcError } from "../../cloud/client.ts";
 import { button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
@@ -40,6 +40,8 @@ export class DigitalPostView {
 	#error: string | undefined;
 	#working = false;
 	#entering = false;
+	/** Whether the card was last drawn for a member who may connect it. */
+	#drawnManage: boolean | undefined;
 	#outcome: { tone: "ok" | "error"; text: string } | undefined;
 
 	constructor(client: DigitalPostClient, signal: AbortSignal, options: { access: DigitalPostAccess }) {
@@ -49,6 +51,11 @@ export class DigitalPostView {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#read();
+	}
+
+	/** Draws again when what the member may do changed: the team read landing after the card, or a new role. */
+	update(): void {
+		if (!this.#lifetime.signal.aborted && this.#access.canManage() !== this.#drawnManage) this.#draw();
 	}
 
 	dispose(): void {
@@ -314,6 +321,8 @@ export class DigitalPostView {
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#drawnManage = this.#access.canManage();
+		if (!this.#drawnManage) this.#entering = false;
 		this.el.hidden = this.#missing || (this.#loading && !this.#connection);
 		if (this.el.hidden) {
 			replace(this.el);

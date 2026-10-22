@@ -1161,6 +1161,14 @@ function letterView(page: Page, folder: string): HTMLElement {
 	if (read === undefined) parts.push(spinner(t("Reading the letter")));
 	else if (read.status === "gone")
 		parts.push(h("p", { class: "mailbox-none" }, t("This letter is no longer in the company folder.")));
+	else if (read.status === "large")
+		parts.push(
+			h(
+				"p",
+				{ class: "mailbox-none" },
+				t("This letter is too long to show here. Open its folder to read it and its documents."),
+			),
+		);
 	else if (read.status === "error") parts.push(notice("danger", h("p", null, read.error)));
 	else {
 		parts.push(

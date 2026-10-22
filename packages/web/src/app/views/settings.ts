@@ -964,6 +964,7 @@ export class SettingsView {
 				}
 				this.#memberEnvironment?.update();
 				this.#services?.update();
+				this.#digitalPost?.update();
 				this.#companyEnvironment?.update();
 				this.#hooks?.update();
 				this.#rules?.update();

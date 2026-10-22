@@ -85,7 +85,8 @@ export function waitingSend(reviewId: string, more: Record<string, unknown> = {}
 /** A Digital Post letter's id: lowercase, as the index keeps it. */
 export const letterId = (n: number) => `0b6c3c3e-${String(n).padStart(4, "0")}-4000-8000-000000000000`;
 /** A letter's folder, under its year. */
-export const letterFolder = (n: number) => `digital-post/2026/2026-10-06 Skattestyrelsen - Letter ${n} (${letterId(n)})`;
+export const letterFolder = (n: number) =>
+	`digital-post/2026/2026-10-06 Skattestyrelsen - Letter ${n} (${letterId(n)})`;
 
 /** A letter as the folder's index lists it, received `n` minutes before nine. */
 export function letter(n: number, more: Record<string, unknown> = {}): Record<string, unknown> {

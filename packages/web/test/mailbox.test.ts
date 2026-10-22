@@ -6,8 +6,8 @@ import { CompanyMail } from "../src/app/company-mail.ts";
 import { renderMailbox } from "../src/app/views/mailbox.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
-import { type FolderFake, folderFake } from "./folder-fake.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { type FolderFake, folderFake } from "./folder-fake.ts";
 import {
 	ADDRESS,
 	accountsFake,
@@ -627,12 +627,14 @@ describe("Digital Post", () => {
 		);
 		expect(main.querySelector(".mailbox-letter-text")?.getAttribute("title")).toBe("From outside the company");
 		expect(main.querySelector(".mailbox-thread-head h1")?.textContent).toBe("Letter 3");
-		expect(main.querySelector(".mailbox-flags")?.textContent).toBe("Legal effect · Mandatory post · Case SKAT-2026-1");
+		expect(main.querySelector(".mailbox-flags")?.textContent).toBe(
+			"Legal effect · Mandatory post · Case SKAT-2026-1",
+		);
 		// The documents and the letter's folder open in Storage.
 		expect(texts(main, ".mailbox-documents li")).toEqual(["Afgørelse.pdf", "Bilag 1.pdf"]);
-		expect([...main.querySelectorAll<HTMLElement>("[data-folder-path]")].map((each) => each.dataset.folderPath)).toEqual(
-			[`${letterFolder(3)}/Afgørelse.pdf`, `${letterFolder(3)}/Bilag 1.pdf`, letterFolder(3)],
-		);
+		expect(
+			[...main.querySelectorAll<HTMLElement>("[data-folder-path]")].map((each) => each.dataset.folderPath),
+		).toEqual([`${letterFolder(3)}/Afgørelse.pdf`, `${letterFolder(3)}/Bilag 1.pdf`, letterFolder(3)]);
 		expect(main.querySelector<HTMLSelectElement>(".mailbox-agent-pick")?.value).toBe(cofounder.id);
 		const note = main.querySelector<HTMLInputElement>(".mailbox-composer input")!;
 		expect(note.placeholder).toBe("Tell Co-Founder what to do with this letter");
@@ -688,7 +690,9 @@ describe("Digital Post", () => {
 			),
 		);
 		await vi.waitFor(() =>
-			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Asked Co-Founder to have Bo read Digital Post"),
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe(
+				"Asked Co-Founder to have Bo read Digital Post",
+			),
 		);
 	});
 
@@ -743,8 +747,34 @@ describe("Digital Post", () => {
 		folder.remove(letterFolder(1));
 		await vi.advanceTimersByTimeAsync(20_000);
 		await vi.waitFor(() =>
-			expect(main.querySelector(".mailbox-none")?.textContent).toBe("This letter is no longer in the company folder."),
+			expect(main.querySelector(".mailbox-none")?.textContent).toBe(
+				"This letter is no longer in the company folder.",
+			),
 		);
+	});
+
+	it("says a letter too long to show here opens from its folder", async () => {
+		const folder = postFolder([3]);
+		folder.put(`${letterFolder(3)}/letter.md`, letterMarkdown(3, "x".repeat(1024 * 1024)));
+		const { main } = await mailbox(
+			(mail) => {
+				mail.digitalPost = digitalPostConnected();
+			},
+			"owner",
+			folder,
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-none")?.textContent).toBe(
+				"This letter is too long to show here. Open its folder to read it and its documents.",
+			),
+		);
+		expect(main.querySelector<HTMLElement>(".mailbox-folder [data-folder-path]")?.dataset.folderPath).toBe(
+			letterFolder(3),
+		);
+		// Only the index was downloaded.
+		expect(folder.folder.readFile).toHaveBeenCalledTimes(1);
 	});
 
 	it("draws no note or Choose for a viewer", async () => {

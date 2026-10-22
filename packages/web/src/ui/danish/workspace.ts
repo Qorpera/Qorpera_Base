@@ -234,9 +234,11 @@ export const WORKSPACE: Record<string, string> = {
 		"Lav en, og vælg den agent, der svarer på det, der kommer ind.",
 	"Make an address": "Lav en adresse",
 	// Digital Post in the Mailbox (app/views/mailbox.ts)
-	"Letters from public authorities come here too, once Digital Post is connected in Settings.": "Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet under Indstillinger.",
+	"Letters from public authorities come here too, once Digital Post is connected in Settings.":
+		"Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet under Indstillinger.",
 	"No Digital Post yet": "Ingen Digital Post endnu",
-	"Letters from public authorities come here as Digital Post delivers them.": "Breve fra offentlige myndigheder kommer her, efterhånden som Digital Post leverer dem.",
+	"Letters from public authorities come here as Digital Post delivers them.":
+		"Breve fra offentlige myndigheder kommer her, efterhånden som Digital Post leverer dem.",
 	"Legal effect": "Retsvirkning",
 	"Digital Post": "Digital Post",
 	"Mandatory post": "Obligatorisk post",
@@ -244,21 +246,25 @@ export const WORKSPACE: Record<string, string> = {
 	"Case {id}": "Sag {id}",
 	"Reading the letter": "Læser brevet",
 	"This letter is no longer in the company folder.": "Brevet ligger ikke længere i virksomhedens mappe.",
+	"This letter is too long to show here. Open its folder to read it and its documents.":
+		"Brevet er for langt til at blive vist her. Åbn dets mappe for at læse det og dets dokumenter.",
 	"The letter's text is in its documents.": "Brevets tekst står i dets dokumenter.",
 	"Open the letter's folder": "Åbn brevets mappe",
 	"Tell {name} what to do with this letter": "Fortæl {name}, hvad der skal ske med brevet",
-	"About the Digital Post letter {id} (its folder in {folder} ends with its id): ": "Om Digital Post-brevet {id} (dets mappe i {folder} slutter med dets id): ",
+	"About the Digital Post letter {id} (its folder in {folder} ends with its id): ":
+		"Om Digital Post-brevet {id} (dets mappe i {folder} slutter med dets id): ",
 	"Who the note goes to": "Hvem beskeden går til",
 	"Not connected": "Ikke forbundet",
 	"Digital Post refused the key": "Digital Post afviste nøglen",
 	"Not reached at the last try": "Kunne ikke nås ved sidste forsøg",
 	"Checked {when}": "Tjekket {when}",
 	"Letters from public authorities": "Breve fra offentlige myndigheder",
-	"letters": "breve",
-	"letter": "brev",
+	letters: "breve",
+	letter: "brev",
 	"Choose who reads it": "Vælg, hvem der læser den",
 	"Who should read it?": "Hvem skal læse den?",
-	"Please have {name} read the company's Digital Post: a routine that wakes on new letters in digital-post/ (a file change, the whole folder), reads each letter's letter.md and acts on it.": "Lad {name} læse virksomhedens Digital Post: en rutine, der vågner ved nye breve i digital-post/ (en filændring, hele mappen), læser hvert brevs letter.md og handler på det.",
+	"Please have {name} read the company's Digital Post: a routine that wakes on new letters in digital-post/ (a file change, the whole folder), reads each letter's letter.md and acts on it.":
+		"Lad {name} læse virksomhedens Digital Post: en rutine, der vågner ved nye breve i digital-post/ (en filændring, hele mappen), læser hvert brevs letter.md og handler på det.",
 	"Asked {cofounder} to have {name} read Digital Post": "Bad {cofounder} om at lade {name} læse Digital Post",
 	"No mail matches.": "Ingen post passer.",
 	"Nothing has been sent yet.": "Der er ikke sendt noget endnu.",

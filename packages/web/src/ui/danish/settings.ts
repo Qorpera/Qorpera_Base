@@ -362,10 +362,13 @@ export const SETTINGS: Record<string, string> = {
 	"Save token": "Gem token",
 	// Digital Post (app/views/settings-digital-post.ts)
 	"Digital Post could not be read.": "Digital Post kunne ikke læses.",
-	"This is not a Digital Post API key. Copy the key from the receipt Administrativ Adgang shows.": "Det er ikke en API-nøgle til Digital Post. Kopiér nøglen fra kvitteringen i Administrativ Adgang.",
-	"Digital Post is connected. Letters arrive in the Mailbox within a few minutes.": "Digital Post er forbundet. Breve kommer i Postkassen inden for få minutter.",
+	"This is not a Digital Post API key. Copy the key from the receipt Administrativ Adgang shows.":
+		"Det er ikke en API-nøgle til Digital Post. Kopiér nøglen fra kvitteringen i Administrativ Adgang.",
+	"Digital Post is connected. Letters arrive in the Mailbox within a few minutes.":
+		"Digital Post er forbundet. Breve kommer i Postkassen inden for få minutter.",
 	"The key could not be saved. Check it and try again.": "Nøglen kunne ikke gemmes. Tjek den, og prøv igen.",
-	"Digital Post is disconnected. Remove the Qorpera system in Administrativ Adgang too, or Digital Post keeps sending to it and moves the letters to Virk after seven days.": "Digital Post er afbrudt. Fjern også Qorpera-systemet i Administrativ Adgang, ellers bliver Digital Post ved med at sende til det og flytter brevene til Virk efter syv dage.",
+	"Digital Post is disconnected. Remove the Qorpera system in Administrativ Adgang too, or Digital Post keeps sending to it and moves the letters to Virk after seven days.":
+		"Digital Post er afbrudt. Fjern også Qorpera-systemet i Administrativ Adgang, ellers bliver Digital Post ved med at sende til det og flytter brevene til Virk efter syv dage.",
 	"Digital Post could not be disconnected. Try again.": "Digital Post kunne ikke afbrydes. Prøv igen.",
 	"Connected. Checking Digital Post…": "Forbundet. Tjekker Digital Post …",
 	"Digital Post refused the key. Save the key again.": "Digital Post afviste nøglen. Gem nøglen igen.",
@@ -375,26 +378,38 @@ export const SETTINGS: Record<string, string> = {
 	"system {id}": "system {id}",
 	"{count} letters": "{count} breve",
 	"1 letter": "1 brev",
-	"Set Qorpera up as the company's Digital Post system, in Digital Post's own Administrativ Adgang:": "Opsæt Qorpera som virksomhedens Digital Post-system i Digital Posts egen Administrativ Adgang:",
+	"Set Qorpera up as the company's Digital Post system, in Digital Post's own Administrativ Adgang:":
+		"Opsæt Qorpera som virksomhedens Digital Post-system i Digital Posts egen Administrativ Adgang:",
 	"Open Administrativ Adgang": "Åbn Administrativ Adgang",
-	"and sign in with MitID Erhverv. You need Digital Post's system administrator right, which the company's rights administrator gives in Rettighedsportalen.": "og log ind med MitID Erhverv. Du skal have rettigheden Systemadministrator i Digital Post, som virksomhedens rettighedsadministrator giver i Rettighedsportalen.",
-	"Choose Systemtilslutning, Opret system, Opsæt et nyt system. Name it Qorpera and set it up as a Modtagersystem.": "Vælg Systemtilslutning, Opret system, Opsæt et nyt system. Kald det Qorpera, og opsæt det som Modtagersystem.",
+	"and sign in with MitID Erhverv. You need Digital Post's system administrator right, which the company's rights administrator gives in Rettighedsportalen.":
+		"og log ind med MitID Erhverv. Du skal have rettigheden Systemadministrator i Digital Post, som virksomhedens rettighedsadministrator giver i Rettighedsportalen.",
+	"Choose Systemtilslutning, Opret system, Opsæt et nyt system. Name it Qorpera and set it up as a Modtagersystem.":
+		"Vælg Systemtilslutning, Opret system, Opsæt et nyt system. Kald det Qorpera, og opsæt det som Modtagersystem.",
 	"Choose REST PULL and add these IP addresses:": "Vælg REST PULL, og tilføj disse IP-adresser:",
-	"Under Giv din systemleverandør fuldmagt, type Qorpera's CVR:": "Skriv Qorperas CVR under Giv din systemleverandør fuldmagt:",
-	"Activate it now, give a contact email, and press Tilslut.": "Aktivér det nu, angiv en kontakt-e-mail, og tryk Tilslut.",
+	"Under Giv din systemleverandør fuldmagt, type Qorpera's CVR:":
+		"Skriv Qorperas CVR under Giv din systemleverandør fuldmagt:",
+	"Activate it now, give a contact email, and press Tilslut.":
+		"Aktivér det nu, angiv en kontakt-e-mail, og tryk Tilslut.",
 	"Copy the API key from the receipt and paste it here.": "Kopiér API-nøglen fra kvitteringen, og indsæt den her.",
-	"From then on, the company's public post comes to Qorpera instead of e-Boks, mit.dk and Virk. A letter Qorpera can't read goes to Virk after seven days.": "Herefter kommer virksomhedens offentlige post til Qorpera i stedet for e-Boks, mit.dk og Virk. Et brev, Qorpera ikke kan læse, går til Virk efter syv dage.",
+	"From then on, the company's public post comes to Qorpera instead of e-Boks, mit.dk and Virk. A letter Qorpera can't read goes to Virk after seven days.":
+		"Herefter kommer virksomhedens offentlige post til Qorpera i stedet for e-Boks, mit.dk og Virk. Et brev, Qorpera ikke kan læse, går til Virk efter syv dage.",
 	"Paste the API key": "Indsæt API-nøglen",
 	"Digital Post API key": "API-nøgle til Digital Post",
 	"Save key": "Gem nøgle",
 	"Replace key": "Udskift nøgle",
-	"Letters from public authorities, in the Mailbox and the company folder.": "Breve fra offentlige myndigheder, i Postkassen og virksomhedens mappe.",
-	"Letters from public authorities (Skattestyrelsen, Erhvervsstyrelsen, the municipality) arrive in the Mailbox and the company folder, where the agents read them.": "Breve fra offentlige myndigheder (Skattestyrelsen, Erhvervsstyrelsen, kommunen) kommer i Postkassen og virksomhedens mappe, hvor agenterne læser dem.",
-	"Not available yet: Qorpera's Digital Post connection is being set up.": "Ikke tilgængelig endnu: Qorperas forbindelse til Digital Post er ved at blive sat op.",
-	"{count} letters couldn't be read here; Digital Post puts them in the company's Virk mailbox.": "{count} breve kunne ikke læses her; Digital Post lægger dem i virksomhedens postkasse på Virk.",
-	"1 letter couldn't be read here; Digital Post puts it in the company's Virk mailbox.": "1 brev kunne ikke læses her; Digital Post lægger det i virksomhedens postkasse på Virk.",
+	"Letters from public authorities, in the Mailbox and the company folder.":
+		"Breve fra offentlige myndigheder, i Postkassen og virksomhedens mappe.",
+	"Letters from public authorities (Skattestyrelsen, Erhvervsstyrelsen, the municipality) arrive in the Mailbox and the company folder, where the agents read them.":
+		"Breve fra offentlige myndigheder (Skattestyrelsen, Erhvervsstyrelsen, kommunen) kommer i Postkassen og virksomhedens mappe, hvor agenterne læser dem.",
+	"Not available yet: Qorpera's Digital Post connection is being set up.":
+		"Ikke tilgængelig endnu: Qorperas forbindelse til Digital Post er ved at blive sat op.",
+	"{count} letters couldn't be read here; Digital Post puts them in the company's Virk mailbox.":
+		"{count} breve kunne ikke læses her; Digital Post lægger dem i virksomhedens postkasse på Virk.",
+	"1 letter couldn't be read here; Digital Post puts it in the company's Virk mailbox.":
+		"1 brev kunne ikke læses her; Digital Post lægger det i virksomhedens postkasse på Virk.",
 	"Every agent in the company can read the letters.": "Alle agenter i virksomheden kan læse brevene.",
-	"Only founders and admins can connect or disconnect it.": "Kun stiftere og administratorer kan forbinde eller afbryde den.",
+	"Only founders and admins can connect or disconnect it.":
+		"Kun stiftere og administratorer kan forbinde eller afbryde den.",
 	"Finishing the {service} connection…": "Afslutter forbindelsen til {service}…",
 	"{service} is connected. The company's agents can use it from their next run.":
 		"{service} er forbundet. Virksomhedens agenter kan bruge den fra deres næste kørsel.",

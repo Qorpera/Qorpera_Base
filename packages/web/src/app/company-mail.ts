@@ -103,6 +103,8 @@ export type MailAccounts = Pick<WebNativeSubscription, "listConnections" | "sele
 export type DigitalPostLetterRead =
 	| { readonly status: "ready"; readonly letter: DigitalPostLetterText }
 	| { readonly status: "gone" }
+	/** Longer than the Mailbox shows: it opens from its folder. */
+	| { readonly status: "large" }
 	| { readonly status: "error"; readonly error: string };
 
 /** The company's Digital Post, as the Mailbox shows it. */
@@ -356,8 +358,12 @@ export class CompanyMail {
 				const folder = this.#folder(signal);
 				const read = await folder.read(`${folderPath}/letter.md`, signal);
 				const file = read.entry?.kind === "file" ? read.entry.file : null;
-				if (!file || file.bytes > DIGITAL_POST_LETTER_MAX_BYTES) {
+				if (!file) {
 					put({ status: "gone" });
+					return;
+				}
+				if (file.bytes > DIGITAL_POST_LETTER_MAX_BYTES) {
+					put({ status: "large" });
 					return;
 				}
 				const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES);

@@ -51,7 +51,9 @@ describe("the Digital Post read", () => {
 			waitingForFolder: 0,
 			held: 2,
 		});
-		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_member_digital_post", { p_environment_id: profile.environmentId });
+		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_member_digital_post", {
+			p_environment_id: profile.environmentId,
+		});
 		const none = cloudWith(() => ({
 			schema: "qorpera.member-digital-post/v1",
 			connected: false,
@@ -88,7 +90,10 @@ describe("the Digital Post read", () => {
 			),
 		).rejects.toBeInstanceOf(CloudShapeError);
 		await expect(
-			readDigitalPost(cloudWith(() => digitalPostConnected({ status: "lost" })), profile.environmentId),
+			readDigitalPost(
+				cloudWith(() => digitalPostConnected({ status: "lost" })),
+				profile.environmentId,
+			),
 		).rejects.toBeInstanceOf(CloudShapeError);
 	});
 });
@@ -175,6 +180,45 @@ describe("a pasted key", () => {
 		});
 	});
 
+	it("keeps a replacement's ticket when its send fails, and the next try sends with it", async () => {
+		const origin = "https://company41-node-01.tailbb15c7.ts.net:10000";
+		let tickets = 0;
+		const cloud = cloudWith((name) => {
+			if (name !== "qorpera_begin_cloud_secret_capture") return null;
+			tickets += 1;
+			return {
+				schema: "qorpera.cloud-secret-capture/v1",
+				ticketId: id(20 + tickets),
+				captureCapability: "c".repeat(43),
+				serviceOrigin: origin,
+				expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+				scope: { companyId: id(10) },
+			};
+		});
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+			.mockResolvedValueOnce(Response.json({}, { status: 409 }))
+			.mockResolvedValue(Response.json({}));
+		const keys = createDigitalPostKeys(cloud, profile, fetch);
+		const url = (ticket: number) => `${origin}/v1/captures/${id(ticket)}?company=${id(10)}`;
+		// The answer is lost: SQL keeps the replacement open, so the next try sends with the same ticket.
+		await expect(keys.save(apiKey(), id(870))).rejects.toThrow();
+		// The broker refuses it: the earlier try may have saved, so a fresh ticket saves this key.
+		await keys.save(apiKey(), id(870));
+		expect(tickets).toBe(2);
+		expect(fetch.mock.calls.map(([target]) => target)).toEqual([url(21), url(21), url(22)]);
+		// A first connection asks for a fresh ticket on each try.
+		fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+		await expect(keys.save(apiKey(), undefined)).rejects.toThrow();
+		await keys.save(apiKey(), undefined);
+		expect(tickets).toBe(4);
+		expect(cloud.rpc).toHaveBeenLastCalledWith(
+			"qorpera_begin_cloud_secret_capture",
+			expect.objectContaining({ p_existing_secret_id: null }),
+		);
+	});
+
 	it("opens Administrativ Adgang of the environment the platform uses", () => {
 		expect(digitalPostAdminUrl("test")).toBe("https://admin.test.digitalpost.dk/login");
 		expect(digitalPostAdminUrl("production")).toBe("https://admin.digitalpost.dk/login");
@@ -203,14 +247,14 @@ describe("the Settings card", () => {
 		held: 1,
 	};
 
-	function card(read: () => Promise<DigitalPostConnection>, manage = true) {
+	function card(read: () => Promise<DigitalPostConnection>, manage: () => boolean = () => true) {
 		const client = {
 			read: vi.fn(read),
 			save: vi.fn(async (_key: string, _secretId: string | undefined) => {}),
 			disconnect: vi.fn(async (_secretId: string) => {}),
 		};
 		const lifetime = new AbortController();
-		const view = new DigitalPostView(client, lifetime.signal, { access: { canManage: () => manage } });
+		const view = new DigitalPostView(client, lifetime.signal, { access: { canManage: manage } });
 		document.body.append(view.el);
 		return { client, view, lifetime, el: view.el };
 	}
@@ -299,15 +343,42 @@ describe("the Settings card", () => {
 		expect(buttonOf(unset.el, "Connect")).toBeUndefined();
 		unset.view.dispose();
 		document.body.replaceChildren();
-		const member = card(async () => connected, false);
+		const member = card(
+			async () => connected,
+			() => false,
+		);
 		await settle();
 		expect(small(member.el)).toContain("Only founders and admins can connect or disconnect it.");
 		expect(member.el.querySelectorAll(".connection-actions button")).toHaveLength(0);
 	});
 
+	it("draws an owner's actions once the role arrives after the card, and takes them away when it goes", async () => {
+		const role = { manage: false };
+		const { view, el } = card(
+			async () => notConnected,
+			() => role.manage,
+		);
+		await settle();
+		expect(buttonOf(el, "Connect")).toBeUndefined();
+		expect(small(el)).toContain("Only founders and admins can connect or disconnect it.");
+		role.manage = true;
+		view.update();
+		buttonOf(el, "Connect")!.click();
+		expect(el.querySelector("form")).not.toBeNull();
+		role.manage = false;
+		view.update();
+		expect(el.querySelector("form")).toBeNull();
+		expect(buttonOf(el, "Connect")).toBeUndefined();
+	});
+
 	it("shows once read, says when Digital Post could not be read, and stays hidden on a cloud without it", async () => {
 		let release: (value: DigitalPostConnection) => void = () => {};
-		const slow = card(() => new Promise((resolve) => (release = resolve)));
+		const slow = card(
+			() =>
+				new Promise((resolve) => {
+					release = resolve;
+				}),
+		);
 		expect(slow.el.hidden).toBe(true);
 		release(connected);
 		await settle();
@@ -323,7 +394,11 @@ describe("the Settings card", () => {
 		failed.view.dispose();
 		document.body.replaceChildren();
 		const before = card(async () => {
-			throw new CloudRpcError("qorpera_member_digital_post", { message: "Could not find the function", code: "PGRST202" }, 404);
+			throw new CloudRpcError(
+				"qorpera_member_digital_post",
+				{ message: "Could not find the function", code: "PGRST202" },
+				404,
+			);
 		});
 		await settle();
 		expect(before.el.hidden).toBe(true);
@@ -332,7 +407,12 @@ describe("the Settings card", () => {
 
 	it("stops when Settings closes", async () => {
 		let release: (value: DigitalPostConnection) => void = () => {};
-		const slow = card(() => new Promise((resolve) => (release = resolve)));
+		const slow = card(
+			() =>
+				new Promise((resolve) => {
+					release = resolve;
+				}),
+		);
 		slow.lifetime.abort();
 		release(connected);
 		await settle();
