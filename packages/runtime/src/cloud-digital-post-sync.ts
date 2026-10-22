@@ -81,8 +81,9 @@ const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DATABASE_DEADLINE_MS = 10_000;
-/** One pass: the list, then every letter on it. The claim's lease is fifteen minutes. */
-const PASS_DEADLINE_MS = 10 * 60_000;
+/** One pass: the list, then every letter on it. The claim's lease is fifteen minutes; past the budget below, a pass still
+ * finishes the letter it is on (a fetch of at most three minutes, its keep and its receipt). */
+const PASS_DEADLINE_MS = 13 * 60_000;
 /** A pass starts no new letter after this long, and leaves the rest to the next pass from where it got to, so a slow
  * Digital Post never makes a pass run out of time and start over. */
 const PASS_BUDGET_MS = 6 * 60_000;
@@ -300,8 +301,8 @@ export class CloudDigitalPostSyncs {
 	 * leaves the next one the page after them (`more`), so every letter is reached however many are held before it; one
 	 * that reached the end of the list is `current`, and the next pass starts again from the first page. A page that
 	 * moved meanwhile (Digital Post moving letters to Virk) is read again once the list has been read to its end. A pass
-	 * that has run `PASS_BUDGET_MS` starts no new letter and leaves the next pass the page it is on (`more`), so a slow
-	 * Digital Post costs passes, never progress.
+	 * that has run `PASS_BUDGET_MS` starts no new page or letter and leaves the next pass the page it is on (`more`), so a
+	 * slow Digital Post costs passes, never progress.
 	 */
 	async #take(
 		claim: Claim,
@@ -314,6 +315,8 @@ export class CloudDigitalPostSyncs {
 		const spent = () => this.#now().getTime() - started >= PASS_BUDGET_MS;
 		const last = Math.min(claim.scanPage + LIST_PAGES, MAX_SCAN_PAGE);
 		for (let page = claim.scanPage; page < last; page += 1) {
+			// Out of time before a page: the next pass starts at it.
+			if (spent()) return { outcome: "more", scanPage: page };
 			const available = await this.#post.available(key, signal, page);
 			// Asked per page, so the answer is whole however many letters are held.
 			const held = available.ids.length

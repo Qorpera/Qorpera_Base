@@ -377,6 +377,49 @@ it("keeps its place through a slow Digital Post, over passes and a second sweep"
 	expect(f.post.letter).toHaveBeenCalledTimes(2001);
 });
 
+it("keeps its place when the list and the held answers are slow", async () => {
+	// A thousand held letters (twenty pages), then one the vault can take; each list call takes 29 seconds and each held
+	// answer 2. A pass starts no page after six minutes and leaves the next pass that page.
+	const held = Array.from(
+		{ length: 1000 },
+		(_, index) => `0f100000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+	);
+	const pages = [
+		...Array.from({ length: 20 }, (_, page) => ({ ids: held.slice(page * 50, page * 50 + 50), complete: false })),
+		{ ids: [MEMO_B], complete: true },
+	];
+	let scanPage = 0;
+	let clock = NOW.getTime();
+	const f = fixture({
+		held,
+		claim: () => claim({ scanPage }),
+		letters: { [MEMO_B]: letter(MESSAGE_B) },
+		now: () => new Date(clock),
+	});
+	f.post.available.mockImplementation(async (_key: unknown, _signal: AbortSignal, page = 0) => {
+		clock += 29_000;
+		return pages[page] ?? { ids: [], complete: true };
+	});
+	const answerHeld = f.authority.heldDigitalPostLetters;
+	f.authority.heldDigitalPostLetters = vi.fn(async (input, signal) => {
+		clock += 2000;
+		return answerHeld(input, signal);
+	});
+	f.authority.finishDigitalPostSync = vi.fn(async (input) => {
+		f.finished.push(input);
+		scanPage = input.scanPage;
+		return { schema: "qorpera.digital-post-sync-result/v1" };
+	});
+	const outcomes: string[] = [];
+	for (let pass = 0; pass < 5 && !f.post.receipt.mock.calls.length; pass += 1) {
+		clock = NOW.getTime();
+		outcomes.push(await f.syncs.pass(signal));
+	}
+	expect(outcomes).toEqual(["more", "current"]);
+	expect(f.finished.map((finish) => finish.scanPage)).toEqual([12, 0]);
+	expect(f.post.letter).toHaveBeenCalledExactlyOnceWith(expect.anything(), MEMO_B, expect.anything());
+});
+
 it("asks for more at once when the list was full and it took a letter, or when it read its pages", async () => {
 	const took = fixture({ complete: false });
 	expect(await took.syncs.pass(signal)).toBe("more");
