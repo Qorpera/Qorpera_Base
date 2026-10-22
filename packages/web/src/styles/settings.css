@@ -1,3 +1,6 @@
+@import "./settings-storage.css";
+@import "./company-storage.css";
+
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
 .settings-dialog { position: relative; display: grid; grid-template-columns: 358px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 /* The rail's font size sets the whole rail: search, tabs, count and the way

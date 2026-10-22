@@ -452,6 +452,8 @@ export type CompanyStateFileResult =
  * on the path's key, as the folder decides which entry a path is; the names as written are
  * checked by {@link parseCompanyStateFile}. */
 export function companyStatePath(path: string): CompanyStatePath | null {
+	// A platform folder's README.md is a note for people and agents, never a rule, a connection, a contact or a task.
+	if (isCompanyFolderReadme(path)) return null;
 	const parts = companyPathKey(path).split("/");
 	const none = { agent: null, group: null, name: null, todo: null, worker: null };
 	const stem = (part: string | undefined) => (part?.endsWith(".md") ? part.slice(0, -3) : null);
@@ -2727,13 +2729,145 @@ export function setCompanyStateSettings(text: string, changes: Readonly<Record<s
 }
 
 // ---------------------------------------------------------------------------------------------
+// What each platform folder is for (contract 5.6; Jonas, 21 October 2026).
+
+/** Each platform folder's purpose in one line. A seeded README.md starts with its folder's line, and the agents' prompt
+ * and the web's Storage view say the same. */
+export const COMPANY_FOLDER_ABOUT = Object.freeze({
+	vision: "What the company is and where it is going. Every agent reads it.",
+	agents: "The team: each agent's settings, memory, skills, routines and tasks.",
+	rules: "Rules for agents. Only owners and admins change them.",
+	connections: "Services the company has connected. Secrets are kept elsewhere.",
+	skills: "Know-how every agent can use.",
+	contacts: "People and companies the company deals with.",
+	"human-tasks": "Jobs agents have handed to people.",
+	interfaces: "Settings for the pages in the app.",
+	tables: "The company's tables.",
+	code: "Code projects (git repositories).",
+} as const);
+
+/** The platform folders seeded with a README.md that says what the folder is for. vision/ has none: vision.md says it,
+ * and every agent reads it in full at every run. code/ is made when coding starts, without one. */
+export const COMPANY_FOLDER_README_ROOTS = Object.freeze([
+	"agents",
+	"connections",
+	"human-tasks",
+	"contacts",
+	"skills",
+	"rules",
+	"interfaces",
+	"tables",
+] as const);
+const README_ROOTS: ReadonlySet<string> = new Set(COMPANY_FOLDER_README_ROOTS);
+
+/** Whether `path` is a platform folder's README.md, in any spelling with that key (`agents/readme.md` too). It is an
+ * ordinary file that no reader takes for data: not an agent, a group, a connection, a rule, a contact, a human task, a
+ * skill, an interface or a table. The database decides the same (20260930526000). It is not a seeded path: the company
+ * may change or delete it. */
+export function isCompanyFolderReadme(path: string): boolean {
+	const parts = companyPathKey(path).split("/");
+	return parts.length === 2 && parts[1] === "readme.md" && README_ROOTS.has(parts[0] ?? "");
+}
+
+/** The last line of every README: where the company's own work goes. */
+const OWN_WORK =
+	"Don't put the company's own work here. It goes in its own folders at the top, such as designs/ or documents/.";
+
+/** Each README.md the platform seeds, by folder: the folder's line, what it holds, who writes in it, and what goes
+ * elsewhere. Plain words, for people and agents alike. */
+export const COMPANY_FOLDER_READMES: Readonly<Record<(typeof COMPANY_FOLDER_README_ROOTS)[number], string>> =
+	Object.freeze({
+		agents: `${COMPANY_FOLDER_ABOUT.agents}
+
+Each agent has its own folder here, named after the agent:
+- agent.md: the agent's settings and instructions
+- memory/: what the agent has learned
+- skills/: the agent's own know-how
+- routines/: work the agent repeats, such as a check every morning
+- todos/: the work the agent is doing now
+
+groups/ holds the group chats. sections.md sorts the team into sections in the sidebar.
+
+A new agent gets its folder here when it is hired. Each agent keeps its own folder up to date.
+
+Apart from groups/, every folder here is an agent, so don't add other folders. The company's own work goes in its own folders at the top, such as designs/ or documents/.
+`,
+		connections: `${COMPANY_FOLDER_ABOUT.connections}
+
+There is one file for each connected account, such as an email account, a website login, a mailbox or a webhook. Qorpera writes and updates the settings at the top of each file. Below them, you can write what the account is for.
+
+Passwords, keys and codes are never kept here. They stay in the company's vault, and agents never see them.
+
+Adding or deleting a file here doesn't connect or disconnect anything. A file stays while its account is connected.
+
+${OWN_WORK}
+`,
+		"human-tasks": `${COMPANY_FOLDER_ABOUT["human-tasks"]}
+
+When an agent needs a person, for example to sign, pay or meet someone, it writes a task here. There is one file for each task. What the person sends back, such as a photo or a note, goes in a folder with the same name.
+
+The person ticks off the steps and marks the task done, or says they can't do it. The agent that asked, or a member, then accepts the task, sends it back or cancels it. skills/human-task/ tells agents how to write a good task.
+
+${OWN_WORK}
+`,
+		contacts: `${COMPANY_FOLDER_ABOUT.contacts}
+
+There is one file for each contact, such as anna-berg.md. At the top are their name, company, email and phone, and what they may be asked to do. Notes go below.
+
+Members and agents can add and change contacts. A contact can't be deleted while a task for them is still going.
+
+${OWN_WORK}
+`,
+		skills: `${COMPANY_FOLDER_ABOUT.skills}
+
+Each skill is a folder with a SKILL.md file. At the top, it says when to use the skill. Below that are the steps.
+
+Agents see the list of skills, and read a skill when a task needs it. Members and agents can add and change skills. An agent's own skills are in its folder in agents/.
+
+${OWN_WORK}
+`,
+		rules: `${COMPANY_FOLDER_ABOUT.rules}
+
+Each rule is one file, such as ask-before-paying.md. A rule names something agents may want to do, and says whether they must ask first or may go ahead.
+
+If there is a network.toml, it says which websites the company's computers may reach.
+
+Agents read these rules but never change them.
+
+${OWN_WORK}
+`,
+		interfaces: `${COMPANY_FOLDER_ABOUT.interfaces}
+
+Each page has a folder here, such as mailbox/ or members/, with its settings in interface.toml. order.md lists the pages in order.
+
+Qorpera writes these files. Agents can read them but not change them.
+
+${OWN_WORK}
+`,
+		tables: `${COMPANY_FOLDER_ABOUT.tables}
+
+Each table is a folder. table.toml names the table's columns, and rows.csv holds its rows. areas/ lists the company's areas: who owns each one, who supervises it, and which agents work in it.
+
+Members can change tables. Agents can change rows, but they can't make tables or change columns.
+
+${OWN_WORK}
+`,
+	});
+
+/** A platform folder's README.md as the seed writes it. */
+function seedReadme(root: (typeof COMPANY_FOLDER_README_ROOTS)[number]): CompanyStateSeedEntry {
+	return { path: `${root}/README.md`, kind: "file", text: COMPANY_FOLDER_READMES[root] };
+}
+
+// ---------------------------------------------------------------------------------------------
 // The seeded tree (contract 5.6): what a new company's folder holds when it is created.
 
 /** The Co-Founder's folder name. It can be renamed later, never deleted. */
 export const COMPANY_STATE_COFOUNDER_HANDLE = "co-founder";
 
 /** Seeded paths that cannot be deleted or moved (contract 5.6, "Approval"). The Co-Founder's folder
- * and its `agent.md` are protected by the Co-Founder rules instead, since they may be renamed. */
+ * and its `agent.md` are protected by the Co-Founder rules instead, since they may be renamed. The platform folders'
+ * README.md files are seeded but not listed: the company may change or delete them. */
 export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
 	"vision",
 	"vision/vision.md",
@@ -2841,6 +2975,7 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 		{ path: "vision", kind: "folder" },
 		{ path: "vision/vision.md", kind: "file", text: seedVision(options) },
 		{ path: "agents", kind: "folder" },
+		seedReadme("agents"),
 		{ path: "agents/sections.md", kind: "file", text: writeSectionsFile({ sections: [] }) },
 		{ path: cofounder, kind: "folder" },
 		{
@@ -2881,23 +3016,29 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 			: []),
 		{ path: "agents/groups", kind: "folder" },
 		{ path: "connections", kind: "folder" },
+		seedReadme("connections"),
 		{ path: "human-tasks", kind: "folder" },
+		seedReadme("human-tasks"),
 		{ path: "contacts", kind: "folder" },
+		seedReadme("contacts"),
 		{ path: "skills", kind: "folder" },
+		seedReadme("skills"),
 		{ path: "skills/human-task", kind: "folder" },
 		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
 		{ path: "rules", kind: "folder" },
+		seedReadme("rules"),
 		...seedLibrary(options.newId ?? (() => globalThis.crypto.randomUUID())),
 	];
 }
 
-/** interfaces/ and tables/ with the library's pages and tables (RUNTIME-INTERFACES.md §8), parents before children. */
+/** interfaces/ and tables/ with their README.md and the library's pages and tables (RUNTIME-INTERFACES.md §8), parents
+ * before children. */
 function seedLibrary(newId: () => string): CompanyStateSeedEntry[] {
 	const files = interfaceLibraryFiles(newId);
 	const entries: CompanyStateSeedEntry[] = [];
 	const folders = new Set<string>();
-	for (const root of ["interfaces", "tables"]) {
-		entries.push({ path: root, kind: "folder" });
+	for (const root of ["interfaces", "tables"] as const) {
+		entries.push({ path: root, kind: "folder" }, seedReadme(root));
 		folders.add(root);
 		for (const path of Object.keys(files).filter((file) => file.startsWith(`${root}/`))) {
 			const folder = path.slice(0, path.lastIndexOf("/"));

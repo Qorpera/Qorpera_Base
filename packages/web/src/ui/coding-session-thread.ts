@@ -1,9 +1,9 @@
 /* A coding session as its own thread, opened from its line in the agent's
- * conversation (or its figure in the header) the way a message to a coworker opens: over the thread,
- * with its own header ("Bo ⇄ Claude Code", the session's title under it) and the
- * session as a conversation under it, its composer pinned to the bottom. The owner
- * types into the session here; everyone else reads it behind a lock line. The back
- * arrow and Escape return to the conversation (Escape not while a draft is in the composer). */
+ * conversation (or the pill above its composer) the way a message to a coworker opens: over the thread,
+ * the session as a conversation, its composer pinned to the bottom. No header bar: a pill floats at the
+ * top ("Bo ⇄ Claude Code" and the session's title) with the transcript scrolling under it, and a labelled
+ * "Back to Bo" beside it. The owner types into the session here; everyone else reads it behind a lock
+ * line. Back and Escape return to the conversation (Escape not while a draft is in the composer). */
 import type { CodingSession } from "../cloud/coding-session.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
@@ -67,29 +67,25 @@ export class CodingSessionThreadView {
 			"button",
 			{
 				type: "button",
-				class: "icon-button coding-thread-back",
-				"aria-label": t("Back to the conversation"),
+				class: "coding-thread-back",
 				title: t("Back to the conversation"),
 				onclick: () => this.close(),
 			},
-			glyph(BACK_GLYPH, 18, "icon"),
+			glyph(BACK_GLYPH, 16, "icon"),
+			h("span", null, t("Back to {name}", { name: names.agent })),
 		);
 		const header = h(
 			"header",
-			{ class: "thread-header coding-thread-header" },
+			{ class: "coding-thread-header" },
 			back,
 			h(
 				"div",
-				{ class: "coding-thread-identity" },
-				agentFigure(options.agent, names.agent, { size: 28 }),
-				glyph(SWAP_GLYPH, 14, "coding-thread-swap"),
+				{ class: "coding-thread-identity", title: `${names.agent} ⇄ ${harness} · ${session.title}` },
+				agentFigure(options.agent, names.agent, { size: 22 }),
+				glyph(SWAP_GLYPH, 12, "coding-thread-swap"),
 				h("span", { class: "coding-thread-harness" }, harnessBadge(session.harness)),
-				h(
-					"div",
-					{ class: "coding-thread-names" },
-					h("h1", null, `${names.agent} ⇄ ${harness}`),
-					h("div", { class: "coding-thread-subtitle", title: session.title }, session.title),
-				),
+				h("h1", null, `${names.agent} ⇄ ${harness}`),
+				h("span", { class: "coding-thread-subtitle" }, session.title),
 			),
 		);
 		this.el = h(

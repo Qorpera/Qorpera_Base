@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
+import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebEventHooks } from "../../cloud/event-hooks.ts";
@@ -18,6 +19,7 @@ import { PlanPayments } from "../plan-payments.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
+import { CompanyFolderBrowser } from "./company-folder.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
@@ -82,7 +84,8 @@ const TABS = [
 			"services accounts gmail google drive github token secrets agents environment variables webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler postkasser hændelser",
 	},
 ] as const;
-export type SettingsTab = (typeof TABS)[number]["id"];
+type SettingsCategory = (typeof TABS)[number]["id"];
+export type SettingsTab = SettingsCategory | "storage" | "recents";
 
 /** A connections tab: its title, the rule that sorts a connection into it, then its lists. */
 function connectionsPage(title: string, rule: string, ...content: HTMLElement[]): HTMLElement {
@@ -112,16 +115,50 @@ export class SettingsView {
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
 	readonly #search = h("input", {
 		type: "search",
+		class: "settings-search-input",
 		placeholder: t("Search settings"),
 		"aria-label": t("Search settings"),
 	});
-	readonly #panels = new Map<SettingsTab, HTMLElement>();
-	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
+	readonly #storageSearch = h("input", {
+		type: "search",
+		class: "settings-search-input",
+		placeholder: t("Search this folder"),
+		"aria-label": t("Search this folder"),
+		autocomplete: "off",
+		spellcheck: "false",
+		hidden: true,
+	});
+	readonly #nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") });
+	readonly #storageNav = h("nav", {
+		class: "settings-nav settings-storage-nav",
+		"aria-label": t("Storage"),
+		hidden: true,
+	});
+	readonly #storageCompany = h("div", { class: "settings-nav-heading" });
+	readonly #storageUsage = h("div", { class: "settings-storage-usage" });
+	readonly #storageContent = h("div", {
+		class: "settings-storage-content",
+		id: "settings-storage-content",
+		role: "tabpanel",
+		tabindex: "0",
+		hidden: true,
+	});
+	readonly #modeButtons = new Map<"settings" | "storage", HTMLButtonElement>();
+	readonly #storageTabs = new Map<"documents" | "recents", HTMLButtonElement>();
+	readonly #panels = new Map<SettingsCategory, HTMLElement>();
+	readonly #tabs = new Map<SettingsCategory, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
 	/** Opened on a company's page, even one whose company is not available. */
 	readonly #overCompany: boolean;
 	#profiles: HostedProfile[] = [];
-	#tab: SettingsTab = "general";
+	#tab: SettingsCategory = "general";
+	#mode: "settings" | "storage" = "settings";
+	#storageSection: "documents" | "recents" = "documents";
+	#folder: CompanyFolderBrowser | undefined;
+	/** A folder link's path, shown once Storage has its browser (openFolderPath). */
+	#folderPath: string | undefined;
+	#folderStop = new AbortController();
+	#folderAuthority: string | undefined;
 	#account: AccountViewState = { loading: true };
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
@@ -188,7 +225,7 @@ export class SettingsView {
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
 		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
-		const nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") }, search);
+		const nav = this.#nav;
 		const tablist = h("div", {
 			role: "tablist",
 			"aria-label": t("Settings sections"),
@@ -249,6 +286,60 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
+		const modes = h("div", { class: "settings-modes", role: "group", "aria-label": t("Settings and storage") });
+		for (const [mode, label] of [
+			["settings", phrase("Settings")],
+			["storage", phrase("Storage")],
+		] as const) {
+			const control = h(
+				"button",
+				{
+					type: "button",
+					class: "settings-mode",
+					"data-mode": mode,
+					"aria-pressed": String(mode === "settings"),
+					onclick: () => this.#switchMode(mode),
+				},
+				uiText(label),
+			);
+			this.#modeButtons.set(mode, control);
+			modes.append(control);
+		}
+		const storageTabs = h("div", { role: "tablist", "aria-label": t("Storage"), "aria-orientation": "vertical" });
+		for (const [section, label, glyph] of [
+			["documents", phrase("Documents"), "folder"],
+			["recents", phrase("Recents"), "clock"],
+		] as const) {
+			const control = h(
+				"button",
+				{
+					type: "button",
+					role: "tab",
+					id: `settings-storage-${section}`,
+					"aria-controls": "settings-storage-content",
+					onclick: () => this.#selectStorage(section),
+				},
+				icon(glyph),
+				uiText(label),
+			);
+			this.#storageTabs.set(section, control);
+			storageTabs.append(control);
+		}
+		storageTabs.onkeydown = (event: KeyboardEvent) => {
+			if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+			event.preventDefault();
+			const section =
+				event.key === "Home"
+					? "documents"
+					: event.key === "End"
+						? "recents"
+						: this.#storageSection === "documents"
+							? "recents"
+							: "documents";
+			this.#selectStorage(section);
+			this.#storageTabs.get(section)?.focus();
+		};
+		this.#storageNav.append(this.#storageCompany, storageTabs, this.#storageUsage);
 		this.el = h(
 			"div",
 			{
@@ -260,19 +351,31 @@ export class SettingsView {
 			},
 			h(
 				"section",
-				{ class: "settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("Settings") },
-				nav,
-				this.#content,
+				{
+					class: "settings-dialog settings-unified",
+					role: "dialog",
+					"aria-modal": "true",
+					"aria-label": t("Settings"),
+				},
 				h(
-					"button",
-					{ type: "button", class: "settings-close", "aria-label": t("Close settings"), onclick: close },
-					"×",
+					"header",
+					{ class: "settings-header" },
+					h("div", { class: "settings-search", role: "search" }, icon("search"), search, this.#storageSearch),
+					modes,
+					h(
+						"button",
+						{ type: "button", class: "settings-close", "aria-label": t("Close settings"), onclick: close },
+						icon("close"),
+					),
 				),
+				h("div", { class: "settings-body" }, nav, this.#storageNav, this.#content, this.#storageContent),
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
 		// The tab asked for is drawn first: General's rules load only if Settings opens on General.
-		this.#tab = tab;
+		this.#tab = tab === "storage" || tab === "recents" ? "general" : tab;
+		this.#mode = tab === "storage" || tab === "recents" ? "storage" : "settings";
+		this.#storageSection = tab === "recents" ? "recents" : "documents";
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		void api
@@ -293,16 +396,26 @@ export class SettingsView {
 			}),
 		);
 		this.#countInvitations();
-		this.#select(tab);
+		this.#switchMode(this.#mode);
 	}
 
 	/** The open tab, so a language change can reopen Settings where it was. */
 	get tab(): SettingsTab {
-		return this.#tab;
+		return this.#mode === "storage" ? (this.#storageSection === "recents" ? "recents" : "storage") : this.#tab;
 	}
 
 	focus(): void {
-		this.#tabs.get(this.#tab)?.focus();
+		(this.#mode === "storage" ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#tab))?.focus();
+	}
+
+	/** A folder link (ui/folder-links.ts): Storage shows what it names, a folder in the list or a file in the preview,
+	 * once the company's folder is open. */
+	openFolderPath(path: string): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#folderPath = path;
+		this.#storageSection = "documents";
+		if (this.#mode === "storage") this.#drawStorage();
+		else this.#switchMode("storage");
 	}
 
 	/** Settings opened on a company's page show the company that page has open
@@ -332,6 +445,8 @@ export class SettingsView {
 	}
 
 	dispose(): void {
+		this.#folderStop.abort();
+		this.#folder?.dispose();
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
@@ -350,8 +465,18 @@ export class SettingsView {
 	}
 
 	#onKey = (event: KeyboardEvent): void => {
+		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
+		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
+		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
+			return;
 		if (event.key === "Escape") {
+			if (document.activeElement === this.#search && this.#search.value) {
+				this.#search.value = "";
+				this.#search.dispatchEvent(new Event("input"));
+				event.preventDefault();
+				return;
+			}
 			event.preventDefault();
 			event.stopPropagation();
 			this.#close();
@@ -365,7 +490,9 @@ export class SettingsView {
 		].filter((field) => {
 			const closed = field.closest("details:not([open])");
 			return (
-				!field.closest("[hidden]") && field.tabIndex >= 0 && (!closed || field === closed.querySelector("summary"))
+				!field.closest("[hidden], [inert]") &&
+				field.tabIndex >= 0 &&
+				(!closed || field === closed.querySelector("summary"))
 			);
 		});
 		if (
@@ -377,7 +504,178 @@ export class SettingsView {
 		}
 	};
 
-	#select(tab: SettingsTab): void {
+	#switchMode(mode: "settings" | "storage"): void {
+		this.#mode = mode;
+		const storage = mode === "storage";
+		this.#nav.hidden = storage;
+		this.#content.hidden = storage;
+		this.#search.hidden = storage;
+		this.#storageNav.hidden = !storage;
+		this.#storageContent.hidden = !storage;
+		this.#storageSearch.hidden = !storage;
+		for (const [value, control] of this.#modeButtons) control.setAttribute("aria-pressed", String(mode === value));
+		if (storage) this.#drawStorage(true);
+		else this.#select(this.#tab);
+	}
+
+	#selectStorage(section: "documents" | "recents"): void {
+		this.#storageSection = section;
+		this.#markStorageSection(section);
+		if (section === "documents") this.#folder?.showDocuments();
+		else this.#folder?.showRecents();
+	}
+
+	#markStorageSection(section: "documents" | "recents"): void {
+		this.#storageSection = section;
+		for (const [value, control] of this.#storageTabs) {
+			control.setAttribute("aria-selected", String(value === section));
+			control.tabIndex = value === section ? 0 : -1;
+		}
+		this.#storageContent.setAttribute("aria-labelledby", `settings-storage-${section}`);
+	}
+
+	/** The modal owns the browser, but company membership remains its authority. A role or capability change
+	 * tears down in-flight reads and downloads before a browser with the new authority is opened. `shown`: Storage is
+	 * being shown again, so its dates are drawn again in the time zone chosen meanwhile; a company update alone redraws
+	 * nothing in an open browser, so a focused file row keeps its focus. */
+	#drawStorage(shown = false): void {
+		if (this.#lifetime.signal.aborted) return;
+		const company = this.#company;
+		const state = company?.store.get();
+		const team = state?.team;
+		const authority =
+			company && team?.capabilities.read && !state?.accessLost
+				? JSON.stringify([company.profile.profileId, team.role, team.capabilities.read, team.capabilities.write])
+				: undefined;
+		if (authority !== this.#folderAuthority || !authority) {
+			this.#folderStop.abort();
+			this.#folder?.dispose();
+			this.#folder = undefined;
+			this.#folderAuthority = undefined;
+			this.#folderStop = new AbortController();
+			replace(this.#storageContent);
+		}
+		if (this.#mode !== "storage") return;
+		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
+		this.#drawStorageUsage();
+		if (company && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
+		this.#markStorageSection(this.#storageSection);
+		if (!company) {
+			replace(this.#storageContent, notice("neutral", t("Open a company to see its storage.")));
+			return;
+		}
+		if (!authority || !team) {
+			replace(
+				this.#storageContent,
+				state?.loading
+					? notice("neutral", t("Opening Company File"))
+					: h(
+							"div",
+							null,
+							notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
+							button(t("Retry company"), () => {
+								if (!company.store.get().loading) void company.refreshAll();
+							}),
+						),
+			);
+			return;
+		}
+		if (this.#folder) {
+			// Settings may have changed the time zone while Storage was hidden.
+			if (shown) this.#folder.redraw();
+			this.#revealFolderPath(this.#folder);
+			return;
+		}
+		const signal = AbortSignal.any([
+			this.#lifetime.signal,
+			this.#companyLifetime.signal,
+			this.#folderStop.signal,
+			company.signal,
+		]);
+		const source = new WebCompanyFiles(
+			this.#api.cloud,
+			company.profile,
+			company.userId,
+			team.role,
+			signal,
+			() => {
+				const current = company.store.get();
+				const membership = current.team;
+				if (
+					this.#company !== company ||
+					this.#auth.userId !== company.userId ||
+					current.accessLost ||
+					!membership?.capabilities.read ||
+					JSON.stringify([
+						company.profile.profileId,
+						membership.role,
+						membership.capabilities.read,
+						membership.capabilities.write,
+					]) !== authority
+				)
+					throw new Error(t("Company File access changed."));
+			},
+			team.capabilities.write,
+		);
+		const host = h("section", { class: "settings-storage-browser" });
+		replace(this.#storageContent, host);
+		const section = this.#storageSection;
+		const browser = new CompanyFolderBrowser(
+			host,
+			source,
+			() => ({
+				me: company.userId,
+				members: company.store.get().team?.members ?? [],
+				staff: company.store.get().staff,
+			}),
+			{
+				search: this.#storageSearch,
+				embedded: true,
+				onSectionChange: (value) => this.#markStorageSection(value),
+			},
+		);
+		this.#folder = browser;
+		this.#folderAuthority = authority;
+		void browser.open().then(
+			() => {
+				// The browser has taken the link's path: it shows it from here, or says why it can't.
+				if (this.#folder === browser) this.#folderPath = undefined;
+			},
+			() => {
+				if (signal.aborted || this.#folder !== browser) return;
+				browser.dispose();
+				this.#folder = undefined;
+				replace(
+					this.#storageContent,
+					notice("danger", t("The Company File could not be read just now.")),
+					button(t("Retry opening Company File"), () => this.#drawStorage()),
+				);
+			},
+		);
+		if (section === "recents") browser.showRecents();
+		this.#revealFolderPath(browser);
+	}
+
+	/** Hands a folder link's path to the browser. It is kept until a browser has opened, so Retry after a failed open
+	 * still shows what the link names. */
+	#revealFolderPath(browser: CompanyFolderBrowser): void {
+		const path = this.#folderPath;
+		if (path === undefined) return;
+		browser.reveal(path);
+		if (browser.opened) this.#folderPath = undefined;
+	}
+
+	/** The company's storage under Storage's navigation: what is used of what the plan includes. */
+	#drawStorageUsage(): void {
+		if (!this.#company) {
+			replace(this.#storageUsage);
+			return;
+		}
+		const storage = storageSummary(this.#file, this.#fileError);
+		replace(this.#storageUsage, storage.meter, h("small", null, storage.text));
+	}
+
+	#select(tab: SettingsCategory): void {
 		this.#tab = tab;
 		for (const [id, button] of this.#tabs) {
 			button.setAttribute("aria-selected", String(tab === id));
@@ -601,6 +899,13 @@ export class SettingsView {
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
+		// A folder link names a path in the company Settings showed when it was followed.
+		if (company !== this.#company) this.#folderPath = undefined;
+		this.#folderStop.abort();
+		this.#folder?.dispose();
+		this.#folder = undefined;
+		this.#folderAuthority = undefined;
+		this.#storageSearch.value = "";
 		this.#companyLifetime.abort();
 		this.#companyLifetime = new AbortController();
 		this.#unsubscribe?.();
@@ -646,12 +951,14 @@ export class SettingsView {
 				this.#memory?.update();
 				this.#pages?.update();
 				this.#drawCompany();
+				if (this.#folder || this.#mode === "storage") this.#drawStorage();
 				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
 				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
 			});
 			if (owned) void company.start();
 		}
-		this.#select(this.#tab);
+		if (this.#mode === "storage") this.#drawStorage();
+		else this.#select(this.#tab);
 	}
 
 	#drawCompany(): void {
@@ -728,13 +1035,18 @@ export class SettingsView {
 		replace(
 			panel.querySelector(".settings-file")!,
 			h(
-				"a",
-				{ class: "settings-card settings-file-card", href: `#/c/${company.profile.profileId}/file` },
-				icon("file"),
+				"button",
+				{
+					type: "button",
+					class: "settings-card settings-file-card",
+					"data-profile-id": company.profile.profileId,
+					onclick: () => this.#switchMode("storage"),
+				},
+				icon("folder"),
 				h(
 					"div",
 					{ class: "settings-copy" },
-					h("strong", null, uiText("Company File")),
+					h("strong", null, uiText("Storage")),
 					h("small", null, storage.text),
 					storage.meter,
 				),
@@ -824,6 +1136,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
+				if (this.#mode === "storage") this.#drawStorageUsage();
 				if (this.#panels.has("plan")) this.#plan();
 			}
 		}

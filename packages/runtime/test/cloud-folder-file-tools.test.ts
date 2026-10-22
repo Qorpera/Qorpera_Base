@@ -49,14 +49,21 @@ async function refuses(
 	expect((error as Error).message).toContain(text);
 }
 
-it("offers the five tools as Company File tools, with the legacy names", async () => {
+it("offers the seven tools as Company File tools, with the legacy names", async () => {
 	const f = await fixture();
 	expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([
 		["company_read", "company_file"],
 		["company_list", "company_file"],
 		["company_write", "company_file"],
+		["company_edit", "company_file"],
+		["company_move", "company_file"],
 		["company_mkdir", "company_file"],
 		["company_delete", "company_file"],
+	]);
+	// A write or an edit carries a file's text, up to 512 KiB of it, escaped: their own argument bound.
+	expect(f.tools.filter((tool) => tool.maxArgumentBytes !== undefined).map((tool) => tool.name)).toEqual([
+		"company_write",
+		"company_edit",
 	]);
 });
 
@@ -852,7 +859,7 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	// gets its note.
 	const commits = f.commits.length;
 	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
-	const again = tools[4] as CloudNativeTool;
+	const again = tools.find((tool) => tool.name === "company_delete") as CloudNativeTool;
 	expect(parse(await again.execute(again.parseArguments(deletion), f.context))).toMatchObject({ state: "applied" });
 	expect(f.commits).toHaveLength(commits);
 	expect(f.notes).toEqual([asked, asked, asked]);
@@ -902,4 +909,249 @@ it("tells the model the company's work is stopped, or the folder unavailable, an
 		"READ_REVOKED",
 	);
 	expect(f.releases).toHaveLength(0);
+});
+
+// The 21 October 2026 amendment "how agents start work and use the company folder", item 5.
+it("reads a window of up to 8 KiB, shown as far as one result holds, and writes a file of up to 512 KiB", async () => {
+	const prose = "Sales by region and month. ".repeat(400);
+	const f = await fixture({ files: { "sales/notes.md": prose }, folders: ["sales"] });
+	const content = await f.call("company_read", { path: "sales/notes.md", offset: 0, limit: 8192 });
+	const answer = parse(content);
+	expect(fitsOneResult(String(content.value))).toBe(true);
+	expect(answer.bytesRead).toBeGreaterThan(4096);
+	expect(answer.text).toBe(prose.slice(0, answer.bytesRead));
+	expect(answer.nextOffset).toBe(answer.bytesRead);
+	expect(() => f.tool("company_read").parseArguments({ path: "sales/notes.md", offset: 0, limit: 8193 })).toThrow(
+		CloudToolArgumentRefusal,
+	);
+	const page = `<!doctype html><html><body>${"<div>row</div>\n".repeat(30000)}</body></html>`;
+	expect(Buffer.byteLength(page)).toBeGreaterThan(400 * 1024);
+	expect(
+		parse(
+			await f.call("company_write", {
+				path: "sales/sales-dashboard.html",
+				operationKey: "write-page",
+				expectedVersion: null,
+				text: page,
+			}),
+		),
+	).toMatchObject({ state: "applied" });
+	expect(f.text("sales/sales-dashboard.html")).toBe(page);
+	expect(() =>
+		f.tool("company_write").parseArguments({
+			path: "sales/too-large.html",
+			operationKey: "write-too-large",
+			expectedVersion: null,
+			text: "x".repeat(512 * 1024 + 1),
+		}),
+	).toThrow(CloudToolArgumentRefusal);
+});
+
+it("edits one exact span of a file under the version read, and replays the same call from its receipt", async () => {
+	const f = await fixture({ files: { "sales/page.html": "<h1>Sales</h1>\n<p>Q3</p>\n" } });
+	const expectedVersion = f.files.get("sales/page.html")?.version as string;
+	const edit = {
+		path: "sales/page.html",
+		operationKey: "edit-1",
+		expectedVersion,
+		oldText: "<p>Q3</p>",
+		newText: "<p>Q4</p>",
+	};
+	const answer = parse(await f.call("company_edit", edit));
+	expect(answer).toMatchObject({
+		schema: "qorpera.company-folder-result/v1",
+		state: "applied",
+		operationKey: "edit-1",
+		path: "sales/page.html",
+		version: f.files.get("sales/page.html")?.version,
+		outcome: "saved",
+	});
+	expect(f.text("sales/page.html")).toBe("<h1>Sales</h1>\n<p>Q4</p>\n");
+	expect(f.commits).toHaveLength(1);
+	expect(f.commits[0]).toMatchObject({ key: `company_edit:${sha("edit-1")}`, receiptId: answer.receiptId });
+	expect(f.commits[0]?.units).toEqual([
+		{ op: "write", path: "sales/page.html", file: expect.any(Object), expectedVersion },
+	]);
+	// The same call, again: the file is at a new version now, and the receipt answers; nothing is committed twice.
+	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	const again = tools.find((tool) => tool.name === "company_edit") as CloudNativeTool;
+	expect(parse(await again.execute(again.parseArguments(edit), f.context))).toEqual(answer);
+	expect(f.commits).toHaveLength(1);
+});
+
+it("refuses an edit whose text is not found once, and answers a stale version as the core's conflict", async () => {
+	const f = await fixture({ files: { "docs/list.md": "- a\n- a\n- b\n" } });
+	const version = (path: string) => f.files.get(path)?.version as string;
+	const edit = (oldText: string, operationKey: string, expectedVersion = version("docs/list.md")) =>
+		f.call("company_edit", { path: "docs/list.md", operationKey, expectedVersion, oldText, newText: "- c" });
+	await refuses(edit("- z", "edit-none"), CloudToolRefusal, "COMPANY_EDIT_NOT_FOUND");
+	await refuses(edit("- a", "edit-twice"), CloudToolRefusal, "COMPANY_EDIT_NOT_UNIQUE");
+	expect(f.commits).toHaveLength(0);
+	const stale = parse(await edit("- b", "edit-stale", randomUUID()));
+	expect(stale).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "version_changed", version: null });
+	expect(stale.next).toContain("COMPANY_FILE_VERSION_CHANGED");
+	const gone = parse(
+		await f.call("company_edit", {
+			path: "docs/gone.md",
+			operationKey: "edit-gone",
+			expectedVersion: randomUUID(),
+			oldText: "a",
+			newText: "b",
+		}),
+	);
+	expect(gone).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "missing" });
+	expect(f.text("docs/list.md")).toBe("- a\n- a\n- b\n");
+	const folder = parse(await f.call("company_read", { path: "docs", offset: 0, limit: 4 })).version as string;
+	await refuses(
+		f.call("company_edit", {
+			path: "docs",
+			operationKey: "edit-folder",
+			expectedVersion: folder,
+			oldText: "a",
+			newText: "b",
+		}),
+		CloudToolRefusal,
+		"COMPANY_FILE_NOT_A_FILE",
+	);
+	for (const value of [
+		{ oldText: "", newText: "x" },
+		{ oldText: "same", newText: "same" },
+		{ oldText: "a", newText: "x".repeat(512 * 1024 + 1) },
+	])
+		expect(() =>
+			f.tool("company_edit").parseArguments({
+				path: "docs/list.md",
+				operationKey: "edit-bad",
+				expectedVersion: version("docs/list.md"),
+				...value,
+			}),
+		).toThrow(CloudToolArgumentRefusal);
+});
+
+it("moves a file or a folder with the review its call was approved under", async () => {
+	const f = await fixture({
+		files: { "sales/acme-proposal.md": "plan", "work/a.md": "a" },
+		folders: ["sales/proposals"],
+	});
+	const expectedVersion = f.files.get("sales/acme-proposal.md")?.version as string;
+	const answer = parse(
+		await f.call("company_move", {
+			from: "sales/acme-proposal.md",
+			to: "sales/proposals/acme-proposal.md",
+			operationKey: "move-1",
+			expectedVersion,
+			asOfSeq: null,
+		}),
+	);
+	expect(answer).toMatchObject({
+		state: "applied",
+		outcome: "saved",
+		path: "sales/acme-proposal.md",
+		to: "sales/proposals/acme-proposal.md",
+	});
+	expect(f.text("sales/proposals/acme-proposal.md")).toBe("plan");
+	expect(f.files.has("sales/acme-proposal.md")).toBe(false);
+	expect(f.recordings[0]?.p_request).toMatchObject({
+		actionReviewId: f.context.actionReviewId,
+		tool: "company_move",
+		argumentSha256: f.context.argumentSha256,
+	});
+	expect(f.commits[0]?.units).toEqual([
+		{ op: "move", from: "sales/acme-proposal.md", to: "sales/proposals/acme-proposal.md", expectedVersion },
+	]);
+	// A folder moves as of the model's own listing of it, which its call carries, with everything in it, under its own
+	// call's approval.
+	const folder = parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version as string;
+	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(listing.asOfSeq).toEqual(expect.any(Number));
+	const second = { ...f.context, callId: "move-call-2", actionReviewId: randomUUID() };
+	expect(
+		parse(
+			await f.call(
+				"company_move",
+				{ from: "work", to: "projects", operationKey: "move-2", expectedVersion: folder, asOfSeq: listing.asOfSeq },
+				second,
+			),
+		),
+	).toMatchObject({ state: "applied" });
+	expect(f.commits[1]?.units).toEqual([
+		{ op: "move", from: "work", to: "projects", expectedVersion: folder, asOfSeq: listing.asOfSeq },
+	]);
+	expect(f.text("projects/a.md")).toBe("a");
+	// A target that is taken is refused by the core, and nothing moves.
+	const taken = parse(
+		await f.call(
+			"company_move",
+			{
+				from: "sales/proposals/acme-proposal.md",
+				to: "projects/a.md",
+				operationKey: "move-3",
+				expectedVersion: f.files.get("sales/proposals/acme-proposal.md")?.version as string,
+				asOfSeq: null,
+			},
+			{ ...f.context, callId: "move-call-3", actionReviewId: randomUUID() },
+		),
+	);
+	expect(taken).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
+	expect(taken.next).toContain("COMPANY_FILE_EXISTS: nothing was moved");
+	const refused: { [key: string]: JsonValue }[] = [
+		{ from: "a.md", to: "a.md", operationKey: "move-4", expectedVersion, asOfSeq: null },
+		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion },
+		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion, asOfSeq: -1 },
+	];
+	for (const value of refused)
+		expect(() => f.tool("company_move").parseArguments(value)).toThrow(CloudToolArgumentRefusal);
+	// Without the automatic review's approval nothing is moved.
+	const { actionReviewId: _approval, ...unreviewed } = f.context;
+	await refuses(
+		f.call(
+			"company_move",
+			{
+				from: "sales/proposals/acme-proposal.md",
+				to: "sales/proposals/acme-offer.md",
+				operationKey: "move-5",
+				expectedVersion,
+				asOfSeq: null,
+			},
+			unreviewed,
+		),
+		CloudToolRefusal,
+		"A move needs the automatic review's approval",
+	);
+});
+
+it("moves a folder only as of the model's own listing, so a change in it since stops the move", async () => {
+	const f = await fixture({ files: { "work/a.md": "a" } });
+	const folder = parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version as string;
+	const move = (operationKey: string, asOfSeq: number | null) =>
+		f.call(
+			"company_move",
+			{ from: "work", to: "projects", operationKey, expectedVersion: folder, asOfSeq },
+			{ ...f.context, callId: operationKey, actionReviewId: randomUUID() },
+		);
+	// A folder needs the listing: refused before anything is written.
+	await refuses(move("move-unlisted", null), CloudToolRefusal, "COMPANY_MOVE_NEEDS_LISTING");
+	expect(f.commits).toHaveLength(0);
+	// The model listed the folder, then someone changed something in it: the folder's own version is the same, and the
+	// move as of the listing is the core's conflict. Nothing moves.
+	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(
+		parse(
+			await f.call("company_write", {
+				path: "work/b.md",
+				operationKey: "write-b",
+				expectedVersion: null,
+				text: "b",
+			}),
+		),
+	).toMatchObject({ state: "applied" });
+	expect(parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version).toBe(folder);
+	const stale = parse(await move("move-stale", listing.asOfSeq));
+	expect(stale).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "unseen_change" });
+	expect(stale.next).toContain("something in the folder changed after your listing");
+	expect(f.files.has("work/b.md") && !f.folders.has("projects")).toBe(true);
+	// Listed again, it moves.
+	const again = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(parse(await move("move-listed", again.asOfSeq))).toMatchObject({ state: "applied" });
+	expect(f.text("projects/b.md")).toBe("b");
 });

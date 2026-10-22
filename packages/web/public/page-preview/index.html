@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- The frame an HTML page from the Company File runs in (src/ui/page-frame.ts). Its frame and public/_headers
+     sandbox it with no origin, so the page reaches none of this site's cookies, storage or sign-in. This policy lets
+     the page's own inline styles and scripts run and loads nothing from the network; eval adds nothing a page's own
+     scripts can't do in here, and some inlined libraries need it. No browser lets a policy stop WebRTC, so before the
+     page runs its WebRTC interfaces go, and a frame put into the page goes before it loads (a frame would be a window of
+     its own, with them). The frame waits for its page from the app that framed it, then becomes that page. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page</title>
+<script>
+"use strict";
+(() => {
+	// Only a frame shows a page, and only the one its own app hands it.
+	if (window.parent === window) return;
+	const app = window.parent;
+	// Every function used below is taken now, before the page runs, so the page can't change what it does.
+	const apply = Reflect.apply;
+	const define = (target, name, value) =>
+		Object.defineProperty(target, name, { value, writable: false, configurable: false });
+	const getter = (prototype, name) => Object.getOwnPropertyDescriptor(prototype, name).get;
+	const nodeType = getter(Node.prototype, "nodeType");
+	const addedNodes = getter(MutationRecord.prototype, "addedNodes");
+	const count = getter(NodeList.prototype, "length");
+	const item = NodeList.prototype.item;
+	const matches = Element.prototype.matches;
+	const within = Element.prototype.querySelectorAll;
+	const withinFragment = DocumentFragment.prototype.querySelectorAll;
+	const remove = Element.prototype.remove;
+	const observe = MutationObserver.prototype.observe;
+	const attachShadow = Element.prototype.attachShadow;
+	const [open, write, close] = ["open", "write", "close"].map((name) => Document.prototype[name]);
+	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
+	// (`clonable`, a throwing `attributeFilter`) is never read from them.
+	const create = Object.create;
+	const watching = create(null);
+	watching.childList = true;
+	watching.subtree = true;
+
+	// WebRTC reaches the network whatever the policy says (STUN and TURN servers, and the names they are given), so its
+	// interfaces are gone for good.
+	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
+	// A picture-in-picture window would be a window of its own too.
+	if ("documentPictureInPicture" in window) define(window, "documentPictureInPicture", undefined);
+
+	// A frame inside the page would be a window of its own, with WebRTC. Each one is taken out as soon as it is put
+	// into the page or into a shadow tree, before it loads: the document and every shadow root are watched from the
+	// start. A shadow root is only ever made by attachShadow (watched at once, and never cloned along with its host);
+	// the ways to make one from markup are gone: the app takes declarative shadow roots out of the page it hands over,
+	// and the page can't write into its own parse (a write could start a template the rest of the page finishes).
+	const frames = "iframe, frame, object, embed, portal, fencedframe";
+	const each = (list, act) => {
+		for (let index = apply(count, list, []) - 1; index >= 0; index--) act(apply(item, list, [index]));
+	};
+	const strip = (node) => {
+		const type = apply(nodeType, node, []);
+		if (type === 1 && apply(matches, node, [frames])) apply(remove, node, []);
+		else if (type === 1) each(apply(within, node, [frames]), (inner) => apply(remove, inner, []));
+		else if (type === 11) each(apply(withinFragment, node, [frames]), (inner) => apply(remove, inner, []));
+	};
+	const watcher = new MutationObserver((records) => {
+		for (let index = 0; index < records.length; index++) each(apply(addedNodes, records[index], []), strip);
+	});
+	const watch = (target) => apply(observe, watcher, [target, watching]);
+	watch(document);
+	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
+		const options = create(null);
+		options.mode = init?.mode;
+		options.delegatesFocus = init?.delegatesFocus;
+		options.slotAssignment = init?.slotAssignment;
+		const root = apply(attachShadow, this, [options]);
+		watch(root);
+		return root;
+	});
+	for (const [target, name] of [
+		[Element.prototype, "setHTMLUnsafe"],
+		[ShadowRoot.prototype, "setHTMLUnsafe"],
+		[Element.prototype, "setHTML"],
+		[ShadowRoot.prototype, "setHTML"],
+		[Document, "parseHTMLUnsafe"],
+		[Document, "parseHTML"],
+	])
+		if (name in target) define(target, name, undefined);
+
+	// The page can't write into itself, during its parse or after.
+	define(Document.prototype, "write", function writeRefused() {});
+	define(Document.prototype, "writeln", function writelnRefused() {});
+	define(Document.prototype, "open", function openRefused() {
+		return this;
+	});
+	define(Document.prototype, "close", function closeRefused() {});
+
+	addEventListener("message", function take(event) {
+		const data = event.data;
+		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
+		removeEventListener("message", take);
+		apply(open, document, []);
+		apply(write, document, [data.html]);
+		apply(close, document, []);
+	});
+	app.postMessage({ type: "qorpera-page-ready" }, "*");
+})();
+</script>
+</head>
+<body></body>
+</html>

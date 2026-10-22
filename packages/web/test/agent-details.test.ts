@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { AgentDetails } from "../src/app/views/agent-details.ts";
+import { type AgentCardActions, AgentDetails } from "../src/app/views/agent-details.ts";
 import type { AgentDraft, WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
@@ -32,14 +32,19 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff, scope?: AbortSignal) {
+function open(
+	actions: WorkspaceActions = {},
+	agent: HostedStaffAgent = staff,
+	scope?: AbortSignal,
+	card?: AgentCardActions,
+) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [agent], loading: false });
 	const anchor = document.createElement("button");
 	document.body.append(anchor);
 	const onClose = vi.fn();
-	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope);
+	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope, card);
 	cleanup.push(() => {
 		details.dispose();
 		company.stop();
@@ -399,7 +404,30 @@ describe("agent pages", () => {
 		],
 		projects: [],
 	};
-	it("opens routines from the corner with a way back; responsibilities are the description, not a page", async () => {
+	it("offers the computer and routines as lines and Hide and Delete as squares; the computer closes the card", () => {
+		const card = { computer: vi.fn(), hide: vi.fn(), remove: vi.fn() };
+		const f = open({}, staff, undefined, card);
+		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
+			item.getAttribute("aria-label"),
+		);
+		expect(tools).toEqual(["Close agent details"]);
+		expect([...f.dialog.querySelectorAll(".agent-card-link")].map((item) => item.textContent)).toEqual([
+			"Computer",
+			"Routines",
+		]);
+		// Icon-only squares, named by their tooltips.
+		const squares = [...f.dialog.querySelectorAll<HTMLButtonElement>(".agent-card-square")];
+		expect(squares.map((item) => item.getAttribute("aria-label"))).toEqual(["Hide from sidebar", "Delete"]);
+		expect(squares.map((item) => item.title)).toEqual(["Hide from sidebar", "Delete"]);
+		expect(squares.every((item) => item.textContent === "" && item.querySelector("svg"))).toBe(true);
+		expect(f.dialog.querySelector(".agent-card-square:last-child")?.classList.contains("is-danger")).toBe(true);
+		named("Computer").click();
+		expect(card.computer).toHaveBeenCalledTimes(1);
+		expect(f.dialog.open).toBe(false);
+		expect(f.onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("opens the routines as a page of the card, wider, with a way back to the details", async () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
@@ -416,45 +444,153 @@ describe("agent pages", () => {
 			listConnections: vi.fn(async () => ({ connections: [] })),
 		} as unknown as WebNativeSubscription;
 		const f = open({ routines, nativeSubscription });
-		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
-			item.getAttribute("aria-label"),
-		);
-		expect(tools).toEqual(["Routines", "Close agent details"]);
-		const toRoutines = named("Routines");
-		toRoutines.click();
-		// Until the first read answers, the page does not claim there are none.
-		expect(f.dialog.textContent).toContain("Reading routines…");
-		expect(f.dialog.textContent).not.toContain("has no routines yet");
+		expect(f.dialog.dataset.page).toBe("details");
+		const link = named("Routines");
+		link.click();
 		await settle();
+		// The card stays open and becomes the routines page.
+		expect(f.dialog.open).toBe(true);
 		expect(f.dialog.dataset.page).toBe("routines");
-		expect(toRoutines.getAttribute("aria-pressed")).toBe("true");
-		expect(f.dialog.querySelector("h2")?.textContent).toBe("Routines");
+		expect(f.dialog.querySelector(".agent-routines")).not.toBeNull();
 		expect(f.dialog.textContent).toContain(`${staff.displayName} has no routines yet.`);
-		expect(named("New routine")).toBeDefined();
-		expect(document.activeElement).toBe(named("Back to agent details"));
-		named("Back to agent details").click();
+		const back = f.dialog.querySelector<HTMLButtonElement>(".routine-close")!;
+		expect(back.getAttribute("aria-label")).toBe("Back to agent details");
+		expect(document.activeElement).toBe(back);
+		back.click();
 		expect(f.dialog.dataset.page).toBe("details");
 		expect(f.dialog.contains(field("Agent name"))).toBe(true);
-		expect(document.activeElement).toBe(toRoutines);
+		expect(document.activeElement).toBe(link);
+		// The list is read again each time the page opens.
+		link.click();
+		await settle();
+		expect(routines.list).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows a hidden agent's square as Show, and leaves out what the member can't do", () => {
+		const f = open({}, staff, undefined, { hidden: true, hide: vi.fn() });
+		expect(
+			[...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.getAttribute("aria-label")),
+		).toEqual(["Show in sidebar"]);
+		// Routines are always there; the computer only where the card was given one.
+		expect([...f.dialog.querySelectorAll(".agent-card-link")].map((item) => item.textContent)).toEqual(["Routines"]);
+		const bare = open();
+		expect(bare.dialog.querySelector(".agent-card-squares")).toBeNull();
+	});
+
+	it("copies the conversation ID in place: a check for a moment, or a line when the clipboard refuses", async () => {
+		vi.useFakeTimers();
+		cleanup.push(() => vi.useRealTimers());
+		const writeText = vi.fn(async (_text: string) => {});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		cleanup.push(() => Reflect.deleteProperty(navigator, "clipboard"));
+		const f = open({}, staff, undefined, { conversationId: id(77), hide: vi.fn() });
+		const squares = [...f.dialog.querySelectorAll<HTMLButtonElement>(".agent-card-square")];
+		expect(squares.map((item) => item.getAttribute("aria-label"))).toEqual([
+			"Copy conversation ID",
+			"Hide from sidebar",
+		]);
+		const copy = squares[0]!;
+		copy.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(writeText).toHaveBeenCalledWith(id(77));
+		// The card stays open, and the button says it worked.
+		expect(f.dialog.open).toBe(true);
+		expect(copy.classList.contains("is-done")).toBe(true);
+		expect(copy.getAttribute("aria-label")).toBe("Copied");
+		await vi.advanceTimersByTimeAsync(1600);
+		expect(copy.classList.contains("is-done")).toBe(false);
+		expect(copy.getAttribute("aria-label")).toBe("Copy conversation ID");
+		writeText.mockRejectedValueOnce(new Error("denied"));
+		copy.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.dialog.textContent).toContain("The conversation ID could not be copied.");
+		expect(copy.classList.contains("is-done")).toBe(false);
+	});
+
+	it("brings a failed save's line and Try again back after a clipboard failure's line", async () => {
+		const updateAgent = saving().mockRejectedValueOnce(new Error("offline"));
+		const writeText = vi.fn(async (_text: string) => {
+			throw new Error("denied");
+		});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		cleanup.push(() => Reflect.deleteProperty(navigator, "clipboard"));
+		const f = open({ updateAgent }, staff, undefined, { conversationId: id(77) });
+		press(type("Agent name", "Unsaved name"), "Enter");
+		await settle();
+		expect(status()).toContain("could not be saved");
+		expect(named("Try again")).toBeDefined();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		cleanup.push(() => vi.useRealTimers());
+		f.dialog.querySelector<HTMLButtonElement>('[aria-label="Copy conversation ID"]')!.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(status()).toBe("The conversation ID could not be copied.");
+		await vi.advanceTimersByTimeAsync(2400);
+		expect(status()).toContain("could not be saved");
+		expect(named("Try again")).toBeDefined();
+		expect(field("Agent name").value).toBe("Unsaved name");
+	});
+
+	it("keeps responsibilities as the description, not a page of their own", async () => {
+		const f = open();
 		f.company.store.set({ organization });
 		await settle();
 		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
 		expect(f.dialog.textContent).not.toContain("Product quality");
 		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
 		expect(field("Responsibilities").value).toBe(staff.charter);
-		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
-		await settle();
-		toRoutines.click();
-		await settle();
-		// The list is read again each time the page opens, under the agent's current name.
-		expect(routines.list).toHaveBeenCalledTimes(2);
-		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 });
 
-describe("the popup's frame", () => {
-	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+describe("the card's frame", () => {
+	it("gives focus back to the row the rail rebuilt while the card was open", () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		row.href = "#row";
+		document.body.append(row);
+		row.focus();
+		const card = new AgentDetails(company, staff, {}, () => {}, row, company.signal, {}, "beside");
+		cleanup.push(() => company.stop());
+		const rebuilt = document.createElement("a");
+		rebuilt.href = "#row";
+		row.replaceWith(rebuilt);
+		card.dialog.findOpener = () => rebuilt;
+		card.dialog.close();
+		expect(document.activeElement).toBe(rebuilt);
+	});
+
+	it("keeps a card beside a rebuilt row inside the window as it grows", () => {
+		vi.stubGlobal("innerHeight", 800);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		document.body.append(row);
+		vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 600, 200, 40));
+		const card = new AgentDetails(company, staff, {}, () => {}, row, company.signal, {}, "beside");
+		cleanup.push(() => {
+			card.dispose();
+			company.stop();
+		});
+		let height = 120;
+		vi.spyOn(card.dialog.el, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, 340, height));
+		window.dispatchEvent(new Event("resize"));
+		const top = () => Number.parseFloat(card.dialog.el.style.top);
+		// Level with the row while it fits.
+		expect(top()).toBeLessThan(600);
+		expect(top() + height).toBeLessThanOrEqual(800);
+		// The rail rebuilds the row (its agent started working), then the card grows (its routines' composer).
+		row.remove();
+		height = 700;
+		window.dispatchEvent(new Event("resize"));
+		expect(top()).toBeGreaterThan(0);
+		expect(top() + height).toBeLessThanOrEqual(800);
+		expect(card.dialog.el.style.left).not.toBe("");
+	});
+
+	it("sizes the agent card to its content, beside its row, and leaves the group popup's frame alone", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
 		document.head.append(style);
@@ -463,23 +599,22 @@ describe("the popup's frame", () => {
 		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
 		const declared = (selector: string, property: string) =>
 			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
-		// The agent popup carries the class with the static height; the shared
-		// frame class does not, so the group popup keeps sizing itself.
-		expect(f.dialog.classList.contains("staff-details")).toBe(true);
-		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
-		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
+		expect(f.dialog.classList.contains("agent-card")).toBe(true);
 		expect(declared(".agent-details", "height")).toBeFalsy();
-		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
-		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
-		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
-			"none",
+		expect(declared(".agent-card", "height")).toBeFalsy();
+		expect(declared(".agent-card-square", "width")).toBe("32px");
+		expect(declared(".agent-card-square", "background")).toBe("transparent");
+		expect(declared(".agent-card-squares", "justify-content")).toBe("flex-end");
+		// The description grows with its text up to five lines and uses the card's width; elsewhere the sizer still
+		// grows it to 13.
+		expect(declared(".agent-card .agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/5 \* 1\.5em|7\.5em/,
 		);
+		expect(declared(".agent-card .agent-inline-description", "padding-right")).toBe("10px");
+		expect(declared(".agent-card, .agent-card *", "scrollbar-width")).toBe("none");
 		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
 			/13 \* 1\.6em|20\.8em/,
 		);
 		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
-		named("Routines").click();
-		expect(f.dialog.dataset.page).toBe("routines");
-		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

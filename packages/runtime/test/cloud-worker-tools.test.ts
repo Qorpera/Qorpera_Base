@@ -11,6 +11,7 @@ import {
 	cloudWorkerTools,
 	describeCloudAgentOpenWork,
 	fitsOneResult,
+	workerSaveToText,
 } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -381,6 +382,50 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("tells a worker where the finished files belong when the dispatch names a folder (saveTo)", async () => {
+		const f = await fixture();
+		try {
+			const sent = await f.boundary.invoke("s1", "qorpera", "manage_worker", {
+				...dispatch,
+				saveTo: "product/designs/",
+			});
+			expect(body(sent).status).toBe("ok");
+			expect(f.folderWorkers.change).toHaveBeenCalledWith(
+				{
+					...dispatch,
+					context: `${dispatch.context}\n\n${workerSaveToText("product/designs")}`,
+					saveTo: "product/designs",
+					revival: "batch",
+				},
+				expect.objectContaining({ callId: "s1" }),
+			);
+			expect(workerSaveToText("product/designs")).toBe(
+				"Save the finished files in product/designs/ in the company folder, where they belong, and list them in your report.",
+			);
+			// Without context, the sentence is the context.
+			const { context: _context, ...bare } = dispatch;
+			await f.boundary.invoke("s2", "qorpera", "manage_worker", {
+				...bare,
+				operationKey: "d2",
+				saveTo: "product/designs",
+			});
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0].context).toBe(workerSaveToText("product/designs"));
+			const calls = f.writerCalls();
+			for (const [index, hostile] of [
+				{ ...dispatch, operationKey: "d3", saveTo: "product/designs", access: "read" },
+				{ ...dispatch, operationKey: "d4", saveTo: "../outside" },
+				{ ...dispatch, operationKey: "d5", saveTo: "/product/designs" },
+				{ ...dispatch, operationKey: "d6", saveTo: "product/designs", context: "c".repeat(3990) },
+			].entries()) {
+				const refused = await f.boundary.invoke(`save_bad_${index}`, "qorpera", "manage_worker", hostile);
+				expect(body(refused).status).toBe("denied");
+			}
+			expect(f.writerCalls()).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("answers the writer's refusal in its words, once, and any other failure as an unknown outcome", async () => {
 		const f = await fixture();
 		try {
@@ -473,9 +518,15 @@ describe("agent todo and worker tools", () => {
 		const parent = cloudWorkerToolFilter({ ...parentWake, payload: {} });
 		expect([readOnly.isWorker, writer.isWorker, parent.isWorker]).toEqual([true, true, false]);
 		expect(
-			["company_read", "company_list", "company_write", "company_mkdir", "company_delete"].filter((name) =>
-				readOnly.companyFile(tool(name)),
-			),
+			[
+				"company_read",
+				"company_list",
+				"company_write",
+				"company_edit",
+				"company_move",
+				"company_mkdir",
+				"company_delete",
+			].filter((name) => readOnly.companyFile(tool(name))),
 		).toEqual(["company_read", "company_list"]);
 		expect(writer.companyFile(tool("company_write")) && parent.companyFile(tool("company_delete"))).toBe(true);
 		// Rows of a table are written as files are.

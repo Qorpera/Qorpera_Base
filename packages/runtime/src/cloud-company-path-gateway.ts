@@ -28,6 +28,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
 	| "qorpera_read_company_run_context"
+	// A card a room wake's answer answers, when the run's history no longer holds it (20260930525000).
+	| "qorpera_read_company_run_card"
 	| "qorpera_record_native_context_view"
 	| "qorpera_fence_native_context"
 	| "qorpera_assert_company_path_reads"

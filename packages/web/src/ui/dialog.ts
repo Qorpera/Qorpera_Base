@@ -13,15 +13,28 @@ export class SurfaceDialog {
 	readonly tools: HTMLElement;
 	readonly #close: HTMLButtonElement;
 	readonly #previous: HTMLElement | null;
+	/** Where focus goes back when what had it left the page meanwhile (a rail row rebuilt while the card was open). */
+	findOpener: (() => HTMLElement | null) | undefined;
 	readonly #onClose: () => void;
 	readonly #anchor: HTMLElement | undefined;
+	/** Under the anchor (a title), or beside it (a row in the rail). */
+	readonly #beside: boolean;
+	/** Where the anchor last stood, for when the rail has rebuilt it (its agent started working). */
+	#anchorRect: DOMRect | undefined;
 	readonly #lifetime = new AbortController();
 	#modal = true;
 	#closed = false;
-	constructor(label: string, className: string, onClose: () => void, anchor?: HTMLElement) {
+	constructor(
+		label: string,
+		className: string,
+		onClose: () => void,
+		anchor?: HTMLElement,
+		placement: "below" | "beside" = "below",
+	) {
 		this.#previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		this.#onClose = onClose;
 		this.#anchor = anchor;
+		this.#beside = placement === "beside";
 		this.#close = h(
 			"button",
 			{
@@ -50,7 +63,8 @@ export class SurfaceDialog {
 		this.el.addEventListener("keydown", (event) => {
 			if (this.#modal && matchesKey(event, "tab")) {
 				const controls = [
-					...this.el.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select, [tabindex]"),
+					// A frame takes Tab into its own page, and back out after its last control.
+					...this.el.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select, iframe, [tabindex]"),
 				].filter(
 					(control) =>
 						control.tabIndex >= 0 && !control.matches(":disabled") && control.getClientRects().length > 0,
@@ -91,6 +105,12 @@ export class SurfaceDialog {
 		);
 		window.addEventListener("resize", () => this.#layout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#layout(), { signal: this.#lifetime.signal });
+		// A card beside a row stays inside the window when it grows (a longer description, an error line).
+		if (this.#beside && typeof ResizeObserver !== "undefined") {
+			const sizes = new ResizeObserver(() => this.#layout());
+			sizes.observe(this.el);
+			this.#lifetime.signal.addEventListener("abort", () => sizes.disconnect());
+		}
 		this.#close.focus({ preventScroll: true });
 	}
 	#layout(): void {
@@ -102,8 +122,18 @@ export class SurfaceDialog {
 			if (modal) this.el.showModal();
 			else this.el.show();
 		}
-		if (this.#anchor && !modal) {
-			const rect = this.#anchor.getBoundingClientRect();
+		// A row the rail rebuilt meanwhile is gone: the card keeps to where it stood, still inside the window as it grows.
+		if (this.#anchor?.isConnected) this.#anchorRect = this.#anchor.getBoundingClientRect();
+		if (this.#anchor && !modal && this.#beside && this.#anchorRect) {
+			// Level with the row's top, kept inside the window as the card grows.
+			const rect = this.#anchorRect;
+			const scale = uiScale();
+			const box = this.el.getBoundingClientRect();
+			this.el.style.left = `${Math.min(rect.right + 8 * scale, window.innerWidth - box.width - 12 * scale)}px`;
+			this.el.style.top = `${Math.max(12 * scale, Math.min(rect.top - 8 * scale, window.innerHeight - box.height - 12 * scale))}px`;
+			this.el.style.maxHeight = `${window.innerHeight - 24 * scale}px`;
+		} else if (this.#anchor && !modal && this.#anchorRect) {
+			const rect = this.#anchorRect;
 			const scale = uiScale();
 			this.el.style.left = `${Math.max(12 * scale, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12 * scale))}px`;
 			this.el.style.top = `${rect.bottom + 8 * scale}px`;
@@ -121,7 +151,9 @@ export class SurfaceDialog {
 		this.el.close();
 		this.el.remove();
 		this.#onClose();
-		if (restoreFocus && this.#previous?.isConnected) this.#previous.focus({ preventScroll: true });
+		if (!restoreFocus) return;
+		if (this.#previous?.isConnected) this.#previous.focus({ preventScroll: true });
+		else if (this.#previous) this.findOpener?.()?.focus({ preventScroll: true });
 	}
 }
 

@@ -1,0 +1,190 @@
+/* The company folder inside the shared Settings / Storage window (company-folder.ts, embedded): a title row with the
+ * type filter, sort and view switch; an icon or list view; a preview beside the files when there is room, or in their
+ * place when there is not; and Recents, grouped by day. Rules that size by room use the `storage` container, in em of its 14px text so they follow the UI size. */
+.storage-browser, .files-page.storage-browser {
+	--files-folder: #4a8ef0;
+	--storage-doc: #3f78d8; --storage-pdf: #d8473e; --storage-sheet: #23955a; --storage-image: #8460d4; --storage-other: #7d7d78;
+	--storage-page: #ffffff; --storage-page-edge: rgba(18, 18, 17, 0.2); --storage-page-line: rgba(18, 18, 17, 0.16);
+	--storage-folder-back: #5b9cf3; --storage-folder-front: #84b6f8;
+	--storage-selected: color-mix(in srgb, #4a8ef0 15%, transparent);
+}
+:root[data-theme="dark"] .storage-browser.files-page {
+	--files-folder: #6ea4ff;
+	--storage-doc: #6b9ff0; --storage-pdf: #f0726a; --storage-sheet: #4cc285; --storage-image: #a98bf0; --storage-other: #a3a29d;
+	--storage-page: #ecebe7; --storage-page-edge: rgba(0, 0, 0, 0.35); --storage-page-line: rgba(18, 18, 17, 0.2);
+	--storage-folder-back: #4d8ae0; --storage-folder-front: #74a9f2;
+	--storage-selected: color-mix(in srgb, #6ea4ff 18%, transparent);
+}
+.storage-browser.is-embedded { max-width: none; padding: 0; }
+.storage-browser [hidden] { display: none !important; }
+
+/* ---- title row ---- */
+.storage-browser .files-crumbs { margin: 0 0 2px; min-height: 22px; }
+.storage-browser .files-crumb-trail { gap: 2px; font-size: 12.5px; color: var(--text-muted); }
+.storage-browser .files-crumb { padding: 2px 5px; font-weight: 400; overflow-wrap: normal; white-space: nowrap; }
+.storage-browser .files-crumb:first-child { margin-left: -5px; }
+.storage-browser .files-crumb.is-current { font-weight: 500; }
+.storage-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; min-height: 36px; margin-bottom: 16px; }
+.storage-title { flex: 1 1 160px; min-width: 0; margin: 0; color: var(--text); font-size: 20px; line-height: 1.3; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-controls { display: flex; align-items: center; gap: 8px; }
+.storage-select {
+	height: 30px; max-width: 160px; padding: 0 28px 0 10px; border: 1px solid var(--border); border-radius: 8px;
+	appearance: none; -webkit-appearance: none; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23908f8a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+	background-repeat: no-repeat; background-position: right 9px center; background-size: 12px;
+	transition: background-color var(--motion-fast, 120ms) ease, border-color var(--motion-fast, 120ms) ease;
+}
+.storage-select:hover { background-color: var(--hover); border-color: var(--border-strong); }
+.storage-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.storage-select option { background: var(--overlay); color: var(--text); }
+.storage-view-toggle { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--hover); }
+.storage-view-button {
+	display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 26px; border: 0;
+	border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.storage-view-button:hover { color: var(--text); }
+.storage-view-button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(0 0 0 / 10%); }
+:root[data-theme="dark"] .storage-view-button[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); box-shadow: none; }
+.storage-view-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.storage-view-button .icon { width: 16px; height: 16px; }
+
+/* ---- rows, both views ---- */
+.storage-browser .files-row { border-radius: 8px; }
+.storage-browser .files-row:hover, .storage-browser .files-row:focus-within { background: var(--hover); }
+.storage-browser .files-row.is-open { background: var(--storage-selected); }
+.storage-browser .files-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.storage-browser .files-kind { position: relative; align-items: center; justify-content: center; color: var(--storage-other); }
+.storage-browser .files-kind.is-folder { color: var(--files-folder); }
+.storage-browser .files-kind.is-document { color: var(--storage-doc); }
+.storage-browser .files-kind.is-pdf { color: var(--storage-pdf); }
+.storage-browser .files-kind.is-spreadsheet { color: var(--storage-sheet); }
+.storage-browser .files-kind.is-image { color: var(--storage-image); }
+.storage-name-cell { display: flex; flex-direction: column; min-width: 0; }
+.storage-browser .files-name { display: block; min-width: 0; }
+.storage-browser .files-target { display: block; width: 100%; max-width: 100%; padding-top: 1px; }
+.storage-grid-meta { color: var(--text-soft); font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.storage-count { margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
+
+/* The icon view's glyphs (tileGlyph): a two-tone folder, and a page whose tag takes the category's colour. */
+.storage-glyph { display: block; width: 100%; height: 100%; overflow: visible; }
+.storage-glyph-back { fill: var(--storage-folder-back); }
+.storage-glyph-front { fill: var(--storage-folder-front); }
+.storage-glyph-page { fill: var(--storage-page); stroke: var(--storage-page-edge); stroke-width: 1; }
+.storage-glyph-fold { fill: none; stroke: var(--storage-page-edge); stroke-width: 1; stroke-linejoin: round; }
+.storage-glyph-line { fill: none; stroke: var(--storage-page-line); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.files-kind.is-link .storage-glyph-line { stroke: var(--storage-other); }
+.storage-glyph-mark { fill: currentColor; opacity: 0.75; }
+.storage-glyph-tag { fill: currentColor; }
+.storage-glyph-tag-text { fill: #fff; font: 700 7.5px/1 var(--font-sans); letter-spacing: 0.04em; }
+
+/* ---- icon view ---- */
+.storage-browser .files-list.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 6px; }
+.storage-browser .is-grid .files-row { align-self: stretch; }
+.storage-browser .is-grid .files-row-main {
+	flex-direction: column; justify-content: start; gap: 8px; width: 100%; height: 100%; padding: 14px 8px 12px; text-align: center; border-radius: 8px;
+}
+.storage-browser .is-grid .files-kind { width: 60px; height: 60px; transition: transform var(--motion-fast, 120ms) var(--ease-out, ease); }
+.storage-browser .is-grid .files-row-main:hover .files-kind { transform: translateY(-1px); }
+.storage-browser .is-grid .storage-name-cell { width: 100%; align-items: center; gap: 2px; }
+.storage-browser .is-grid .files-name {
+	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal;
+	overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.35;
+}
+.storage-browser .is-grid .files-target { font-size: 11.5px; text-align: center; }
+.storage-browser .is-grid :is(.storage-modified, .files-size, .storage-kind-label) { display: none; }
+.storage-browser .is-grid .files-empty { grid-column: 1 / -1; }
+
+/* ---- list view ---- */
+.storage-columns, .storage-browser .is-list .files-row-main { display: grid; grid-template-columns: minmax(0, 1fr) 150px 72px 96px; gap: 14px; align-items: center; }
+.storage-columns {
+	position: sticky; top: -22px; z-index: 1; padding: 8px 10px 8px 42px; border-bottom: 1px solid var(--border);
+	background: var(--bg); color: var(--text-soft); font-size: 11.5px; font-weight: 500;
+}
+.storage-columns span:nth-child(3) { text-align: right; }
+.storage-browser .is-list { display: flex; flex-direction: column; gap: 1px; padding-top: 4px; }
+.storage-browser .is-list .files-row-main { position: relative; width: 100%; min-height: 38px; padding: 7px 10px 7px 42px; }
+.storage-browser .is-list .files-kind { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); }
+.storage-browser .is-list .files-kind .icon { width: 18px; height: 18px; }
+.storage-browser .is-list .files-kind.is-folder .icon { fill: color-mix(in srgb, var(--files-folder) 30%, transparent); }
+.storage-browser .is-list .files-name { font-size: 13px; }
+.storage-browser .is-list .storage-grid-meta { display: none; }
+.storage-modified, .storage-kind-label { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-browser .files-size { width: auto; color: var(--text-muted); font-size: 12px; }
+
+/* ---- preview: beside the files when there is room ---- */
+.storage-browser.is-embedded .files-body { gap: 0; }
+.storage-browser.is-embedded .files-preview { min-width: 0; }
+.storage-browser.is-embedded .files-preview-head { min-height: 34px; }
+.storage-browser.is-embedded .files-preview-head h2 { font-size: 15px; }
+.storage-browser.is-embedded :is(.files-doc, .files-text, .files-image) { max-height: none; }
+.storage-browser.is-embedded .files-doc { font-size: 13.5px; line-height: 1.6; }
+.storage-browser.is-embedded .files-image { margin-inline: auto; }
+.storage-browser.is-embedded .files-doc :is(ul, ol) { padding-left: 1.4em; }
+
+@container storage (min-width: 50em) {
+	.storage-browser.is-embedded.has-preview .files-body { grid-template-columns: minmax(0, 1fr) clamp(260px, 38%, 360px); }
+	.storage-browser.is-embedded.has-preview .files-main { padding-right: 20px; }
+	.storage-browser.is-embedded .files-preview {
+		position: sticky; top: 0; max-height: min(560px, calc(100dvh - 210px)); overflow: auto;
+		padding: 0 2px 8px 20px; border-left: 1px solid var(--border);
+	}
+	.storage-browser.is-embedded.has-preview .storage-columns, .storage-browser.is-embedded.has-preview .is-list .files-row-main { grid-template-columns: minmax(0, 1fr) 72px; }
+	.storage-browser.is-embedded.has-preview :is(.storage-columns span:nth-child(2), .storage-columns span:nth-child(4), .is-list .storage-modified, .is-list .storage-kind-label) { display: none; }
+}
+/* Narrow: the preview takes the files' place, and its close button brings them back. */
+@container storage (max-width: 49.99em) {
+	.storage-browser.is-embedded.has-preview .files-body { grid-template-columns: minmax(0, 1fr); }
+	.storage-browser.is-embedded.has-preview :is(.files-main, .files-crumbs, .storage-toolbar) { display: none; }
+	.storage-browser.is-embedded .files-preview { position: static; padding: 0; border: 0; }
+}
+@container storage (max-width: 40em) {
+	.storage-columns, .storage-browser .is-list .files-row-main { grid-template-columns: minmax(0, 1fr) 64px 72px; gap: 10px; }
+	.storage-columns span:nth-child(2), .storage-browser .is-list .storage-modified { display: none; }
+	.storage-browser .files-list.is-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; }
+	.storage-browser .is-grid .files-kind { width: 52px; height: 52px; }
+	.storage-title { flex-basis: 100%; }
+	.storage-controls { width: 100%; }
+	.storage-select { flex: 1; max-width: none; min-width: 0; }
+}
+@container storage (max-width: 28.5em) {
+	.storage-columns, .storage-browser .is-list .files-row-main { grid-template-columns: minmax(0, 1fr) 64px; }
+	.storage-columns span:nth-child(4), .storage-browser .is-list .storage-kind-label { display: none; }
+}
+
+/* ---- an HTML page: live in its frame (ui/page-frame.ts) or as its source, and across the window ---- */
+.files-page-toggle { width: fit-content; margin-bottom: 10px; }
+.storage-view-button.is-text { width: auto; padding: 0 12px; font: inherit; font-size: 12.5px; font-weight: 500; }
+/* A page draws on white, as it would on its own, whatever the app's theme. */
+.files-page-frame, .page-preview-frame { display: block; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; color-scheme: light; }
+.files-page-frame { height: min(460px, 58dvh); }
+.storage-browser .files-page-source { margin: 0; }
+/* Over the attachment preview's own rules (conversation.css comes later). */
+.file-preview-dialog.page-preview-dialog[open] { display: flex; }
+.file-preview-dialog.page-preview-dialog { flex-direction: column; width: calc(100vw - 48px); height: calc(100dvh - 48px); max-width: none; max-height: none; overflow: hidden; }
+.file-preview-dialog.page-preview-dialog > .surface-dialog-content { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 18px 20px 20px; }
+.file-preview-dialog.page-preview-dialog h2 { margin-right: 40px; }
+.page-preview-frame { flex: 1; min-height: 0; }
+
+/* ---- Recents: a heading per day, then each change with its file's icon, name and folder, and who and when ---- */
+.storage-recent-list { margin: 0; }
+.storage-recent-day { padding: 18px 10px 6px; color: var(--text-soft); font-size: 12px; font-weight: 600; list-style: none; }
+.storage-recent-day:first-child { padding-top: 2px; }
+.storage-recents .folder-history-row.storage-recent-row {
+	display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: 2px 12px; padding: 9px 10px;
+	border: 0; border-radius: 8px;
+}
+.storage-recent-row:hover { background: var(--hover); }
+.storage-recent-row .files-kind { padding-top: 1px; }
+.storage-recent-row .files-kind .icon { width: 18px; height: 18px; }
+.storage-recent-row .folder-history-paths { margin: 0; display: grid; gap: 2px; }
+.storage-recent-row .folder-history-path { padding: 0; font-size: 13px; line-height: 1.45; text-align: left; overflow-wrap: anywhere; }
+.storage-recent-row button.folder-history-path:hover { text-decoration: none; }
+.storage-recent-row button.folder-history-path:hover .storage-recent-name { text-decoration: underline; text-underline-offset: 2px; }
+.storage-recent-folder { color: var(--text-soft); }
+.storage-recent-row .folder-history-path.is-gone .storage-recent-name { text-decoration: line-through; }
+.storage-recent-when { padding-top: 2px; color: var(--text-soft); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.storage-recents .files-list-more { padding: 12px 10px 0; }
+@container storage (max-width: 34em) {
+	.storage-recents .folder-history-row.storage-recent-row { grid-template-columns: 20px minmax(0, 1fr); }
+	.storage-recent-when { grid-column: 2; padding-top: 0; }
+}

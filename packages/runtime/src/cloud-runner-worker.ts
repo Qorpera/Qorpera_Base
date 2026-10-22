@@ -88,6 +88,17 @@ export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
 	);
 }
 
+/** A failure that is safe to try again from the start, and is tried again (the 21 October 2026 amendment, item 7): the
+ * native host timed out reading the run's context or composing its prompt, before the run's start was recorded and
+ * before any model request or tool call. The database still decides: it queues the job again only while nothing of the
+ * attempt is durable and fewer than eight attempts were made, as for any retryable failure. Any other failure is not
+ * retried here: once execution starts, a lost answer does not prove that nothing happened. */
+const RETRYABLE_BEFORE_START =
+	/ \[code=NATIVE_(?:COMPANY_CONTEXT|WAKE_ENVELOPE|CONNECTOR_TOOLS|PROMPT_COMPOSITION):TIMEOUT\]$/;
+export function cloudRunnerJobFailureBeforeStartIsRetryable(error: unknown): boolean {
+	return error instanceof Error && RETRYABLE_BEFORE_START.test(error.message);
+}
+
 export class EphemeralCloudRunnerWorker {
 	readonly #options: EphemeralCloudRunnerWorkerOptions;
 	readonly #idlePollMs: number;
@@ -399,8 +410,9 @@ export class EphemeralCloudRunnerWorker {
 				const failed = await this.#options.runner.fail(
 					job.jobId,
 					safeFailure(error),
-					// A network error after execution started does not prove no external effects occurred.
-					this.#options.retryable?.(error) ?? false,
+					// A network error after execution started does not prove no external effects occurred; a timeout while the
+					// run's context or prompt was composed comes before any of it.
+					(this.#options.retryable ?? cloudRunnerJobFailureBeforeStartIsRetryable)(error),
 				);
 				return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
 			}

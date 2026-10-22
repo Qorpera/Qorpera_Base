@@ -334,6 +334,24 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
 	});
 
+	it("tries a run again when its context or prompt timed out before it started, and nothing else", async () => {
+		for (const [code, retried] of [
+			["NATIVE_PROMPT_COMPOSITION:TIMEOUT", true],
+			["NATIVE_COMPANY_CONTEXT:TIMEOUT", true],
+			["NATIVE_PROMPT_COMPOSITION:UNKNOWN", false],
+			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
+			["NATIVE_CODING_SESSION:TIMEOUT", false],
+		] as const) {
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			const result = await worker(runner, async () => {
+				throw new Error(`Native provider bridge request failed (422) [code=${code}]`);
+			}).runNext(assignment);
+			expect(result.status).toBe(retried ? "requeued" : "failed");
+			expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: retried });
+		}
+	});
+
 	it("destroys execution on shutdown without falsely failing the leased job, and revokes the native lease", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
