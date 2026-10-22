@@ -1,6 +1,6 @@
 import type { Cloud } from "./client.ts";
 import { createKeptReplacements, createSecretCapture, type SecretCaptureTarget } from "./connectors.ts";
-import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, UUID_PATTERN, uuid } from "./parse.ts";
 
 /* The company's Digital Post as a member reads it (deploy/first-node/RUNTIME-DIGITAL-POST.md; supabase/CLIENT-CONTRACT.md
  * "Digital Post"): the connection's state (`qorpera_member_digital_post`), the letters the folder holds (its index,
@@ -62,7 +62,10 @@ export interface DigitalPostLetter {
 	readonly snippet?: string;
 }
 
-const LETTER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A letter's id as the index keeps it: a UUID in lower case. */
+function letterId(value: string): boolean {
+	return UUID_PATTERN.test(value) && value === value.toLowerCase();
+}
 const FOLDER = /^digital-post\/[0-9]{4}\/[^/]+$/;
 
 function absent(value: unknown): boolean {
@@ -121,7 +124,7 @@ function parseLetter(value: unknown): DigitalPostLetter | null {
 	const sender = text(input.sender, 2000);
 	const received = typeof input.received === "string" ? input.received : "";
 	if (
-		!LETTER_ID.test(messageUuid) ||
+		!letterId(messageUuid) ||
 		!FOLDER.test(folder) ||
 		!title ||
 		!sender ||
@@ -232,9 +235,7 @@ export function digitalPostKeyLooksValid(pasted: string): boolean {
 	}
 	const colon = decoded.indexOf(":");
 	return (
-		colon > 0 &&
-		LETTER_ID.test(decoded.slice(0, colon).toLowerCase()) &&
-		/^[\x21-\x7e]{8,512}$/.test(decoded.slice(colon + 1))
+		colon > 0 && UUID_PATTERN.test(decoded.slice(0, colon)) && /^[\x21-\x7e]{8,512}$/.test(decoded.slice(colon + 1))
 	);
 }
 
