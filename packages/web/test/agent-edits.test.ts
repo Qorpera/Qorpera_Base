@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { editsFor } from "../src/app/views/agent-edits.ts";
+import { renderRail } from "../src/app/views/shell.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
-import { deferred, fixture, profileA, settle, staff, team, userA } from "./fixtures.ts";
+import { deferred, fixture, profileA, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
 	for (const stop of cleanup.splice(0)) stop();
+	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
+	document.body.replaceChildren();
 });
 
 function setup(updateAgent: NonNullable<WorkspaceActions["updateAgent"]>) {
@@ -110,5 +115,98 @@ describe("agent edit reconciliation", () => {
 		expect(update).toHaveBeenCalledTimes(2);
 		await f.reopen().save();
 		expect(update.mock.calls[2]![1]).toMatchObject({ displayName: "New remote name", role: "Unsaved title" });
+	});
+});
+
+describe("a figure being saved", () => {
+	// The palette's real hex, as the roster's `qorpera-<colour>` names resolve to them.
+	const gold = "#fcb51b";
+	const coral = "#ff365e";
+	const heartShade = "#ff2994";
+
+	function railSetup(update: NonNullable<WorkspaceActions["updateAgent"]>) {
+		const mount = stubFigureMotion();
+		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [{ id: "heart", color: heartShade }] });
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", {
+			palette: [
+				{ name: "Gold", color: gold },
+				{ name: "Coral", color: coral },
+			],
+		});
+		const f = setup(update);
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const drawn = () => {
+			mount.mockClear();
+			renderRail(rail, f.company, {
+				profiles: [profileA],
+				user: userA,
+				auth,
+				invitations: 0,
+				route: { name: "company", profileId: profileA.profileId, section: "file" },
+				openSettings() {},
+				openFeedback() {},
+			});
+			return mount.mock.calls.map(([, figure, color]) => ({ figure, color }));
+		};
+		return { ...f, drawn };
+	}
+
+	it.each([
+		["a palette colour, saved as its name", gold, "qorpera-gold"],
+		["the figure's own shade, saved as no colour", heartShade, ""],
+	])("shows %s in the rail at once and keeps the row once the roster has it", async (_case, picked, stored) => {
+		const write = deferred<number>();
+		const f = railSetup(vi.fn<NonNullable<WorkspaceActions["updateAgent"]>>().mockReturnValueOnce(write.promise));
+		f.company.store.set({
+			staff: [{ ...staff, appearance: { color: "qorpera-coral", shape: "circle", creature: "crown" } }],
+		});
+		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
+
+		f.edits.change({ figure: "heart", color: picked });
+		await settle();
+		expect(f.company.store.get().looks?.[staff.id]).toEqual({ figure: "heart", color: picked });
+		expect(f.drawn()).toEqual([{ figure: "heart", color: picked }]);
+
+		const saved = {
+			...staff,
+			version: staff.version + 1,
+			appearance: { color: stored, shape: "circle", creature: "heart" },
+		};
+		vi.mocked(f.api.listStaff).mockResolvedValue([saved]);
+		write.resolve(saved.version);
+		await settle();
+		expect(f.edits.store.get().status).toBe("Saved");
+		expect(f.company.store.get().looks?.[staff.id]).toBeUndefined();
+		// The saved roster draws the same row, so the row stays and its figure is not built again.
+		expect(f.drawn()).toEqual([]);
+	});
+
+	it("leaves the rail as saved when the save fails, and when the card's edits end", async () => {
+		const f = railSetup(
+			vi
+				.fn<NonNullable<WorkspaceActions["updateAgent"]>>()
+				.mockRejectedValueOnce(new Error("offline"))
+				.mockReturnValue(new Promise(() => {})),
+		);
+		f.company.store.set({
+			staff: [{ ...staff, appearance: { color: "qorpera-coral", shape: "circle", creature: "crown" } }],
+		});
+		f.edits.change({ color: gold });
+		await settle();
+		expect(f.edits.store.get().failed).toBe(true);
+		expect(f.company.store.get().looks?.[staff.id]).toBeUndefined();
+		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
+
+		void f.edits.save();
+		await settle();
+		expect(f.company.store.get().looks?.[staff.id]).toEqual({ figure: "crown", color: gold });
+		expect(f.drawn()).toEqual([{ figure: "crown", color: gold }]);
+		f.edits.dispose();
+		await settle();
+		expect(f.company.store.get().looks?.[staff.id]).toBeUndefined();
+		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
 	});
 });

@@ -16,7 +16,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { framePage, PageFrames } from "../../ui/page-frame.ts";
-import { phrase, presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
+import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
@@ -168,20 +168,6 @@ const IMAGE_TYPES: Record<string, string> = {
 const MARKDOWN = new Set(["md", "markdown", "mdown"]);
 /** HTML pages: shown live, in a locked-down frame (ui/page-frame.ts), or as their source. */
 const PAGES = new Set(["html", "htm"]);
-/** The platform's own folders at the top of a company's Company File, each with its one line (the words the agents'
- * prompt uses). They are listed after the company's own work. */
-const PLATFORM_FOLDERS: ReadonlyMap<string, string> = new Map([
-	["vision", phrase("What the company is and where it is going. Every agent reads it.")],
-	["agents", phrase("The team: each agent's settings, memory, skills, routines and tasks.")],
-	["rules", phrase("Rules for agents. Only owners and admins change them.")],
-	["connections", phrase("Services the company has connected. Secrets are kept elsewhere.")],
-	["skills", phrase("Know-how every agent can use.")],
-	["contacts", phrase("People and companies the company deals with.")],
-	["human-tasks", phrase("Jobs agents have handed to people.")],
-	["interfaces", phrase("Settings for the pages in the app.")],
-	["tables", phrase("The company's tables.")],
-	["code", phrase("Code projects (git repositories).")],
-]);
 /** Kinds that are never text: no read is spent finding that out. */
 const BINARY = new Set(
 	"pdf zip gz tgz 7z rar doc docx xls xlsx ppt pptx key numbers pages mp3 m4a wav ogg mp4 mov webm avi heic ico woff woff2 ttf otf exe dmg svg".split(
@@ -194,10 +180,6 @@ function baseName(path: string): string {
 }
 function parentOf(path: string): string {
 	return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-}
-/** A platform folder's one line, only for the folder itself at the top of the Company File. */
-function platformNote(item: Pick<CloudMemberFolderEntry, "kind" | "path">): string | undefined {
-	return item.kind === "folder" && !item.path.includes("/") ? PLATFORM_FOLDERS.get(item.path) : undefined;
 }
 function extension(path: string): string {
 	const name = baseName(path);
@@ -690,19 +672,11 @@ export class CompanyFolderBrowser {
 		for (const control of this.#views.querySelectorAll<HTMLButtonElement>("button"))
 			control.setAttribute("aria-pressed", String(control.dataset.view === this.#view));
 		this.#list.classList.toggle("is-fresh", fresh);
-		// At the top, the platform's folders come after the company's own work, under a heading of their own.
-		const platform = this.#dir === "" ? items.filter((item) => platformNote(item) !== undefined) : [];
-		const own = platform.length ? items.filter((item) => platformNote(item) === undefined) : items;
-		const rows = [...own, ...platform].map((item, index) => {
+		const rows = items.map((item, index) => {
 			const row = this.#entryRow(item);
 			row.style.setProperty("--row", String(Math.min(index, 14)));
 			return row;
 		});
-		if (platform.length) {
-			const heading = h("li", { class: "storage-group", role: "presentation" }, t("Qorpera folders"));
-			heading.style.setProperty("--row", String(Math.min(own.length, 14)));
-			rows.splice(own.length, 0, heading);
-		}
 		if (rows.length === 0)
 			rows.push(
 				h(
@@ -740,7 +714,6 @@ export class CompanyFolderBrowser {
 						? "table"
 						: "file";
 		const label = fileKind(item);
-		const note = platformNote(item);
 		return h(
 			"li",
 			{
@@ -770,7 +743,6 @@ export class CompanyFolderBrowser {
 								`→ ${item.target}`,
 							)
 						: null,
-					note ? h("span", { class: "storage-folder-note", title: t(note) }, t(note)) : null,
 					item.file ? h("span", { class: "storage-grid-meta" }, fmtBytes(item.file.bytes)) : null,
 				),
 				h(

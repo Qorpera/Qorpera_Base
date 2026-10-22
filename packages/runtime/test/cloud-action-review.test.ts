@@ -51,7 +51,7 @@ describe("which calls are reviewed", () => {
 		["update_memory", {}, "internal"],
 		["company_delete", {}, "destructive"],
 		// A move takes its source away, so it is reviewed as a deletion; an edit writes as company_write does (21 Oct).
-		["company_move", { from: "drafts/plan.md", to: "documents/plan.md" }, "destructive"],
+		["company_move", { from: "sales/acme-proposal.md", to: "sales/proposals/acme-proposal.md" }, "destructive"],
 		["company_edit", {}, "internal"],
 		// Deleting a skill is a deletion; creating or changing one stays internal (P20).
 		["update_skill", { action: "delete", name: "call-the-bank" }, "destructive"],
@@ -250,24 +250,24 @@ describe("what the card shows", () => {
 	it("names a move's two paths, and where a worker saves its files (21 October 2026)", () => {
 		expect(
 			describeCloudAction(tool("company_move"), {
-				from: "drafts/plan.md",
-				to: "documents/plan.md",
+				from: "sales/acme-proposal.md",
+				to: "sales/proposals/acme-proposal.md",
 				operationKey: "k",
 				expectedVersion: RULE,
 			}),
 		).toEqual({
 			title: "Move or rename in the Company File",
-			target: "drafts/plan.md",
-			details: { to: "documents/plan.md" },
+			target: "sales/acme-proposal.md",
+			details: { to: "sales/proposals/acme-proposal.md" },
 		});
 		expect(
 			describeCloudAction(tool("manage_worker"), {
 				action: "dispatch",
 				title: "Sales dashboard",
 				goal: "Prototype a sales dashboard.",
-				saveTo: "designs",
+				saveTo: "product/designs",
 			}).details,
-		).toMatchObject({ "saves in": "designs" });
+		).toMatchObject({ "saves in": "product/designs" });
 	});
 
 	it("names what a routine change does", () => {

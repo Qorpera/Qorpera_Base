@@ -385,30 +385,37 @@ describe("agent todo and worker tools", () => {
 	it("tells a worker where the finished files belong when the dispatch names a folder (saveTo)", async () => {
 		const f = await fixture();
 		try {
-			const sent = await f.boundary.invoke("s1", "qorpera", "manage_worker", { ...dispatch, saveTo: "designs/" });
+			const sent = await f.boundary.invoke("s1", "qorpera", "manage_worker", {
+				...dispatch,
+				saveTo: "product/designs/",
+			});
 			expect(body(sent).status).toBe("ok");
 			expect(f.folderWorkers.change).toHaveBeenCalledWith(
 				{
 					...dispatch,
-					context: `${dispatch.context}\n\n${workerSaveToText("designs")}`,
-					saveTo: "designs",
+					context: `${dispatch.context}\n\n${workerSaveToText("product/designs")}`,
+					saveTo: "product/designs",
 					revival: "batch",
 				},
 				expect.objectContaining({ callId: "s1" }),
 			);
-			expect(workerSaveToText("designs")).toBe(
-				"Save the finished files in designs/ in the company folder, where they belong, and list them in your report.",
+			expect(workerSaveToText("product/designs")).toBe(
+				"Save the finished files in product/designs/ in the company folder, where they belong, and list them in your report.",
 			);
 			// Without context, the sentence is the context.
 			const { context: _context, ...bare } = dispatch;
-			await f.boundary.invoke("s2", "qorpera", "manage_worker", { ...bare, operationKey: "d2", saveTo: "designs" });
-			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0].context).toBe(workerSaveToText("designs"));
+			await f.boundary.invoke("s2", "qorpera", "manage_worker", {
+				...bare,
+				operationKey: "d2",
+				saveTo: "product/designs",
+			});
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0].context).toBe(workerSaveToText("product/designs"));
 			const calls = f.writerCalls();
 			for (const [index, hostile] of [
-				{ ...dispatch, operationKey: "d3", saveTo: "designs", access: "read" },
+				{ ...dispatch, operationKey: "d3", saveTo: "product/designs", access: "read" },
 				{ ...dispatch, operationKey: "d4", saveTo: "../outside" },
-				{ ...dispatch, operationKey: "d5", saveTo: "/designs" },
-				{ ...dispatch, operationKey: "d6", saveTo: "designs", context: "c".repeat(3990) },
+				{ ...dispatch, operationKey: "d5", saveTo: "/product/designs" },
+				{ ...dispatch, operationKey: "d6", saveTo: "product/designs", context: "c".repeat(3990) },
 			].entries()) {
 				const refused = await f.boundary.invoke(`save_bad_${index}`, "qorpera", "manage_worker", hostile);
 				expect(body(refused).status).toBe("denied");

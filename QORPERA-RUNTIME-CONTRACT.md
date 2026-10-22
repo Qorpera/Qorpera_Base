@@ -5834,8 +5834,6 @@ an agent starts work and where the results go.
      repository.
 
    Every agent also follows these rules:
-   - Look before making anything: list the folder and reuse what fits.
-   - Name a folder for a kind of thing (`designs/`, `documents/`), never for a team (`growth/`) or one task.
    - Ask only when the answer changes what happens. Never guess the answer in the message that asks; an
      `ask_member` card's text only introduces the card.
    - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
@@ -5847,12 +5845,41 @@ an agent starts work and where the results go.
      the network). Members open them live in the app.
 
    The instructions name the platform's top-level folders once, one line each: `vision/`, `agents/`, `rules/`,
-   `connections/`, `skills/`, `contacts/`, `human-tasks/`, `interfaces/`, `tables/` and `code/`. Everything else is
-   the company's own work, in category folders the agents create. The constitution is v3. Its law 2 now says
+   `connections/`, `skills/`, `contacts/`, `human-tasks/`, `interfaces/`, `tables/` and `code/`. They belong to the
+   platform: an agent changes them only through their own files, as its instructions and tools describe, and never
+   puts the company's work in them. `code/` holds git repositories only. The constitution is v3. Its law 2 now says
    "company folder" where it said "Company File". Its law 6 no longer names public websites, because web search is
    off; the company's browser reaches them.
+
+   Everything else is the company's own work, kept by area of the business first, then by kind (Jonas, 21 October
+   2026). This replaces the kind-first rule this amendment first gave ("name a folder for a kind of thing, never for
+   a team"), and §5.6's "one folder per category of files". Every run's instructions, a worker's and a routine's
+   included, carry these rules:
+   - Keep the work so a person finds anything in a few clicks. Look before making anything, and reuse a file or
+     folder that fits. A place a member or the assignment names always wins.
+   - The top level holds areas of the business: `sales/`, `marketing/`, `product/`, `finance/`, `legal/`,
+     `operations/`, `people/` and so on. An area's folder is made when its first file arrives. An existing area is
+     used when one fits, and no area gets two folders (no `selling/` beside `sales/`).
+   - Files sit directly in their area's folder. When an area gets crowded (about 15 files), its files are grouped
+     into subfolders by kind (`sales/proposals/`, `product/designs/`), and the agent moves the files it made into
+     them.
+   - Work on one project or customer that spans many files may get its own folder in its area
+     (`marketing/spring-launch/`).
+   - Names are lowercase words joined by hyphens, in plain words a person would search for, and say what the thing
+     is (`sales-dashboard.html`, `price-list.md`). A name has a date only when the date is part of what the thing is
+     (`board-meeting-2026-10.md`), and never "final", "v2", "copy", "new" or the agent's own name.
+   - One file per thing: the agent updates the file instead of making a new copy. The folder keeps every version.
+   - An agent's own notes and scratch go in its memory, not in the company's folders. It deletes scratch files it
+     made that nobody needs.
+   - An agent may move or rename its own misplaced files. Before it moves or renames anyone else's work, or
+     deletes, overwrites or reorganizes it on an unclear instruction, it says what it would change and waits for a
+     yes.
+   - It links every file it made or changed (item 2).
+
+   The tools say the same: a missing folder is made when it is the file's area or a place a member or the
+   assignment named, and `company_mkdir` names those cases.
 2. **Links to files.** An agent links a file it made or changed as a markdown link to `folder:` and the file's
-   company path, such as `[sales-dashboard.html](folder:designs/sales-dashboard.html)`. The web app opens it in the
+   company path, such as `[sales-dashboard.html](folder:sales/sales-dashboard.html)`. The web app opens it in the
    folder's view.
 3. **A post is the request.** A run woken by a post in a conversation gets the post its wake names as `request` in
    its context. For a card answer, it also gets the card the answer is for. Each is read in full, up to one 16 KiB
@@ -5860,10 +5887,10 @@ an agent starts work and where the results go.
    its id (`qorpera_read_company_run_card`, migration `20260930525000`), and `read_context` reads on from it. A page
    that cannot be read leaves the history's 2 KiB excerpt, which `read_context` reads on from.
 4. **Workers save into the real folder.** `manage_worker` dispatch takes `saveTo`, a company folder such as
-   `designs/`, and only with write access. The brief's context then says where the finished files belong. The worker
-   saves them there and lists them in its report. The folder core already lets a writing worker write wherever its
-   agent and member may, so no SQL changes. Review by path is unchanged. Without `saveTo`, a worker saves in its own
-   folder, as before.
+   `product/designs/`, and only with write access. The brief's context then says where the finished files belong.
+   The worker saves them there and lists them in its report. The folder core already lets a writing worker write
+   wherever its agent and member may, so no SQL changes. Review by path is unchanged. Without `saveTo`, a worker
+   saves in its own folder, as before.
 5. **File tools.** These apply in every run, chat, worker and routine alike:
    - `company_read` asks for up to 8 KiB a call and shows as much as fits one tool result. The result fence stays at
      8 KiB: the patched Codex pins it, and the run log and context views check it. Raising it needs a Codex rebuild

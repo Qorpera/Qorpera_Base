@@ -99,7 +99,7 @@ button.folder-history-path:hover { text-decoration: underline; }
 .folder-history-more { color: var(--text-soft); font-size: 12px; }
 
 @media (prefers-reduced-motion: reduce) {
-	.files-list.is-fresh .files-row, .files-list.is-fresh .storage-group, .files-preview, .folder-history-row { animation: none; }
+	.files-list.is-fresh .files-row, .files-preview, .folder-history-row { animation: none; }
 }
 @media (max-width: 860px) {
 	.files-tools { flex: 1 1 100%; }

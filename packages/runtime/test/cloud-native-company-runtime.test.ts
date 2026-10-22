@@ -2883,7 +2883,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the scope reset (C6b) the catalog has no
 	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
 	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
-	// saveTo), so they moved again; every other tool is as on master.
+	// saveTo), so they moved again. When the company's own work was kept by area first (21 October 2026), company_write's,
+	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again;
+	// every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2918,9 +2920,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ecf6d6b1ce729c2015921446223ee6271f0e411327fee9d1285ac3ef6a7a8f8f",
+		"1e373027873aeabbfc9fcb08449396abced664ccff71855c6b712676d6b22078",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"e435848034b07f20d7aba94a2cd5b519ca7a8f521b3307543fce8d867d2de88f",
+		"7c656698748e42e1418cafd730fcd96846e8c5aa9d99904d4fc63e2f062cccac",
 	);
 });

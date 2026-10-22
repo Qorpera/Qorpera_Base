@@ -9,7 +9,7 @@ import {
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
-import { agentColor, agentFigure } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -981,12 +981,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	};
 	const mentionedIn = (sessionId: string | undefined) => Boolean(sessionId && state.mentions?.[sessionId]);
 	const agentModel = (agent: HostedStaffAgent): AgentModel => {
+		// A figure or colour just picked on the agent's card shows here before its save lands.
+		const look = state.looks?.[agent.id];
+		const shown = look
+			? { ...agent, appearance: { ...agent.appearance, creature: look.figure, color: look.color } }
+			: agent;
+		const figure = figureFor(shown);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
 			role: agent.role,
 			templateId: agent.templateId,
-			appearance: agent.appearance,
+			// Resolved, so the pick and the roster's words for it once saved (a colour's name, no colour for the
+			// figure's own shade) are one cache key, and the row is kept when the save lands.
+			appearance: { color: agentColor(shown, figure), shape: "", creature: figure },
 			// State is part of the cache key, including idle/failed transitions with the same figure and role.
 			state: company.agentState(agent.id),
 			mentioned: mentionedIn(
