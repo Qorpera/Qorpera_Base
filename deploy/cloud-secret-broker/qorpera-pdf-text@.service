@@ -5,9 +5,12 @@ Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-n
 CollectMode=inactive-or-failed
 
 [Service]
-# Standard input is the PDF the vault sends; its end is the vault closing its side. Standard output is the text, back
-# on the same connection. A PDF is outside content: whatever it does to pdftotext stays in this instance.
-ExecStart=/usr/bin/pdftotext -q -enc UTF-8 -eol unix -l 200 - -
+# Standard input is a one-time code on a line of its own, then the PDF the vault sends; its end is the vault closing
+# its side. Standard output is the text, back on the same connection, and then the code, written only when pdftotext
+# exited cleanly: text without it is never kept. pdftotext reads 201 pages, one more than the vault keeps, so the vault
+# can tell a longer PDF. A PDF is outside content: whatever it does to pdftotext stays in this instance.
+# ($$ is systemd's escape for a literal $.)
+ExecStart=/usr/bin/sh -ec 'IFS= read -r code; case "$$code" in *[!0-9a-f]*|"") exit 64;; esac; test "$${#code}" -eq 32; /usr/bin/pdftotext -q -enc UTF-8 -eol unix -l 201 - -; echo; echo "$$code"'
 StandardInput=socket
 StandardOutput=socket
 StandardError=null

@@ -20,8 +20,12 @@ afterEach(async () => {
 	for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
-/** A stand-in for the socket: reads the PDF until the vault closes its side, then `answer`s on the same connection. */
-async function service(answer: (pdf: Buffer, socket: Socket) => void, onConnect?: (socket: Socket) => void) {
+/** A stand-in for the socket: reads the code line and the PDF until the vault closes its side, then `answer`s on the
+ * same connection; `done` writes text and the code after it, as the service does after a clean exit. */
+async function service(
+	answer: (pdf: Buffer, done: (text: string) => void, socket: Socket) => void,
+	onConnect?: (socket: Socket) => void,
+) {
 	const folder = mkdtempSync(join(tmpdir(), "pdf-text-"));
 	folders.push(folder);
 	const path = join(folder, "socket");
@@ -30,7 +34,13 @@ async function service(answer: (pdf: Buffer, socket: Socket) => void, onConnect?
 		onConnect?.(socket);
 		const chunks: Buffer[] = [];
 		socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-		socket.on("end", () => answer(Buffer.concat(chunks), socket));
+		socket.on("end", () => {
+			const input = Buffer.concat(chunks);
+			const line = input.indexOf(10);
+			const code = input.subarray(0, line).toString();
+			expect(code).toMatch(/^[0-9a-f]{32}$/);
+			answer(input.subarray(line + 1), (text) => socket.end(`${text}\n${code}\n`), socket);
+		});
 		socket.on("error", () => {});
 	});
 	servers.push(server);
@@ -41,12 +51,12 @@ async function service(answer: (pdf: Buffer, socket: Socket) => void, onConnect?
 const signal = new AbortController().signal;
 
 describe("the reader", () => {
-	it("sends the PDF whole and reads its text back, cleaned for letter.md", async () => {
+	it("sends a fresh code and the PDF whole, and reads its text back, cleaned for letter.md", async () => {
 		const pdf = Buffer.alloc(3 * 1024 * 1024, 1);
 		const received: Buffer[] = [];
-		const path = await service((input, socket) => {
+		const path = await service((input, done) => {
 			received.push(input);
-			socket.end("Skattestyrelsen  \r\nAfgørelse\f\fSide 2\u0007\n\n\n\nSlut\n");
+			done("Skattestyrelsen  \r\nAfgørelse\f\fSide 2\u0007\n\n\n\nSlut\n");
 		});
 		const log = vi.fn();
 		expect(await new DigitalPostPdfText({ path, log }).read(pdf, signal)).toBe(
@@ -57,17 +67,36 @@ describe("the reader", () => {
 	});
 
 	it("gives no text for a PDF that has none, as a scan", async () => {
-		const path = await service((_input, socket) => socket.end("\f\n  \n"));
+		const path = await service((_input, done) => done("\f\n  \n"));
 		const log = vi.fn();
 		expect(await new DigitalPostPdfText({ path, log }).read(Buffer.from("%PDF-1.4"), signal)).toBeNull();
 		expect(log).not.toHaveBeenCalled();
 	});
 
-	it("cuts long text at the limit, at a whole character, and says so", async () => {
-		const path = await service((_input, socket) => socket.end("æææææææææ"));
+	it("keeps no text that came without its code: pdftotext crashed or a limit ended it partway", async () => {
+		const crashed = await service((_input, _done, socket) => socket.end("The first half of the letter"));
+		const forged = await service((_input, _done, socket) => socket.end(`The letter\n${"0".repeat(32)}\n`));
+		const log = vi.fn();
+		for (const path of [crashed, forged])
+			expect(await new DigitalPostPdfText({ path, log }).read(Buffer.from("%PDF"), signal)).toBeNull();
+		expect(log.mock.calls.map(([failure]) => failure)).toEqual(["failed", "failed"]);
+	});
+
+	it("cuts long text at the byte limit, at a whole character, and says so", async () => {
+		const path = await service((_input, done) => done("æ".repeat(60)));
 		expect(await new DigitalPostPdfText({ path, maxBytes: 11 }).read(Buffer.from("%PDF"), signal)).toBe(
 			"æææææ\n\n[The text stops here. The rest is in the PDF.]",
 		);
+	});
+
+	it("cuts a PDF longer than 200 pages after page 200, and says so", async () => {
+		const pages = (count: number) => Array.from({ length: count }, (_, page) => `Page ${page + 1}\f`).join("");
+		const longer = await service((_input, done) => done(pages(201)));
+		const text = await new DigitalPostPdfText({ path: longer }).read(Buffer.from("%PDF"), signal);
+		expect(text?.endsWith("Page 200\n\n[The text stops here. The rest is in the PDF.]")).toBe(true);
+		expect(text).not.toContain("Page 201");
+		const whole = await service((_input, done) => done(pages(200)));
+		expect(await new DigitalPostPdfText({ path: whole }).read(Buffer.from("%PDF"), signal)).toMatch(/Page 200$/);
 	});
 
 	it("gives no text and says once when the service is not installed", async () => {

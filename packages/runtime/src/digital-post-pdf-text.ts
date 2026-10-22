@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { type DigitalPostFile, type DigitalPostLetter, digitalPostLetterText } from "./digital-post-memo.ts";
 
@@ -9,6 +10,11 @@ import { type DigitalPostFile, type DigitalPostLetter, digitalPostLetterText } f
  * seconds. A PDF is outside content and its parser is where an attack would land, so it never runs in the vault's
  * process or as the vault's user, who can read the vault's keys.
  *
+ * The vault sends a one-time code on a line of its own, then the PDF. Inside the sandbox a shell reads the code, runs
+ * pdftotext and only when it exits cleanly writes the code back after the text. Text without its code (pdftotext
+ * crashed, or a limit ended it partway) is never kept. pdftotext reads one page past the most kept, so a longer PDF's
+ * text is cut at that page and says so, as text past the byte limit does.
+ *
  * Reading is best effort: a letter whose PDF has no text (a scan), or whose reading fails or takes too long, is kept
  * without it, as before part 5. Nothing here logs a letter's content.
  */
@@ -17,9 +23,11 @@ import { type DigitalPostFile, type DigitalPostLetter, digitalPostLetterText } f
 export const DIGITAL_POST_PDF_TEXT_SOCKET = "/run/qorpera-pdf-text/socket";
 /** The most text kept from one PDF, so letter.md stays well under what the Mailbox shows (1 MiB). */
 export const DIGITAL_POST_PDF_TEXT_MAX_BYTES = 256 * 1024;
+/** The pages kept; the service reads one more (`-l 201`) to tell a longer PDF. */
+export const DIGITAL_POST_PDF_TEXT_MAX_PAGES = 200;
 /** Longer than the service's own limit (RuntimeMaxSec=30), which ends a pdftotext that hangs. */
 const DEADLINE_MS = 40_000;
-/** Said after text cut at the limit. */
+/** Said after text cut at a limit. */
 const CUT = "[The text stops here. The rest is in the PDF.]";
 
 /** Why a PDF gave no text, for the log: no socket (not installed), too slow, or pdftotext failed or closed early. */
@@ -42,11 +50,18 @@ export function digitalPostPdfToRead(letter: DigitalPostLetter): DigitalPostFile
 }
 
 /** pdftotext's output as letter.md shows it: page breaks as blank lines, no control characters, no blank runs. Null
- * when nothing is left (a scanned PDF has no text). `cut`: the output went past the limit and was cut there. */
+ * when nothing is left (a scanned PDF has no text). `cut`: the output went past the byte limit and was cut there. Text
+ * past the page limit is cut too. */
 export function digitalPostPdfTextOf(bytes: Uint8Array, cut: boolean): string | null {
 	let text = new TextDecoder().decode(bytes);
 	// A character the limit cut in two decodes as U+FFFD.
 	if (cut) text = text.replace(/�+$/, "");
+	// pdftotext ends each page with a form feed.
+	const pages = text.split("\f");
+	if (pages.length > DIGITAL_POST_PDF_TEXT_MAX_PAGES + 1) {
+		text = pages.slice(0, DIGITAL_POST_PDF_TEXT_MAX_PAGES).join("\f");
+		cut = true;
+	}
 	text = [...text.replace(/\r\n?/g, "\n").replace(/\f/g, "\n\n")]
 		.filter((character) => {
 			const code = character.codePointAt(0) ?? 0;
@@ -91,12 +106,16 @@ export class DigitalPostPdfText implements DigitalPostPdfTextReader {
 		return digitalPostPdfTextOf(answer.bytes, answer.cut);
 	}
 
-	/** Sends the PDF and closes the sending side, which is pdftotext's end of input; reads its text until it closes. */
+	/** Sends the code and the PDF and closes the sending side, which is pdftotext's end of input; reads its text and the
+	 * code until it closes. Text past the limit is kept to the limit and needs no code: it says it was cut. */
 	#ask(
 		pdf: Uint8Array,
 		signal: AbortSignal,
 	): Promise<{ bytes: Buffer; cut: boolean } | { failure: DigitalPostPdfTextFailure }> {
 		return new Promise((resolve, reject) => {
+			const code = randomBytes(16).toString("hex");
+			const trailer = Buffer.from(`\n${code}\n`);
+			const limit = this.#maxBytes + trailer.byteLength;
 			const chunks: Buffer[] = [];
 			let size = 0;
 			let connected = false;
@@ -122,22 +141,27 @@ export class DigitalPostPdfText implements DigitalPostPdfTextReader {
 			signal.addEventListener("abort", abort, { once: true });
 			socket.on("connect", () => {
 				connected = true;
+				socket.write(`${code}\n`);
 				socket.end(pdf, () => {
 					sent = true;
 				});
 			});
 			socket.on("data", (chunk: Buffer) => {
-				const room = this.#maxBytes - size;
-				if (chunk.byteLength > room) {
-					chunks.push(chunk.subarray(0, room));
-					finish({ bytes: Buffer.concat(chunks), cut: true });
-					return;
-				}
 				chunks.push(chunk);
 				size += chunk.byteLength;
+				if (size > limit) finish({ bytes: Buffer.concat(chunks).subarray(0, this.#maxBytes), cut: true });
 			});
-			// Closed before it had the whole PDF: pdftotext ended early.
-			socket.on("end", () => finish(sent ? { bytes: Buffer.concat(chunks), cut: false } : { failure: "failed" }));
+			socket.on("end", () => {
+				const answer = Buffer.concat(chunks);
+				// Closed before it had the whole PDF, or without the code: pdftotext ended early or did not finish.
+				if (
+					!sent ||
+					answer.byteLength < trailer.byteLength ||
+					!answer.subarray(-trailer.byteLength).equals(trailer)
+				)
+					finish({ failure: "failed" });
+				else finish({ bytes: answer.subarray(0, -trailer.byteLength), cut: false });
+			});
 			// A socket that is not there or refuses is the service not installed; an error once connected is pdftotext
 			// ending before it read the whole PDF.
 			socket.on("error", () => finish({ failure: connected ? "failed" : "unavailable" }));

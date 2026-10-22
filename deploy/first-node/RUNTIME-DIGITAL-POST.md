@@ -110,13 +110,18 @@ the code that parses it is where an attack would land, so it never runs in the v
 who can read the vault's keys:
 
 - `qorpera-pdf-text.socket` listens at `/run/qorpera-pdf-text/socket`, root's and the `qorpera-shared-vault` group's,
-  mode 0660: only the vault connects. Each connection starts its own `qorpera-pdf-text@.service`, which runs
-  `pdftotext -q -enc UTF-8 -eol unix -l 200 - -` with the connection as its input and output.
+  mode 0660: only the vault connects. Each connection starts its own `qorpera-pdf-text@.service`, with the connection
+  as its input and output.
+- The vault sends a one-time code (32 hex digits) on a line of its own, then the PDF, and closes its side. In the
+  sandbox a shell reads the code, runs `pdftotext -q -enc UTF-8 -eol unix -l 201 - -` on the rest, and writes the code
+  back after the text only when pdftotext exited cleanly. Text without its code (pdftotext crashed, or a limit ended it
+  partway) is never kept, so a letter never gets half its text unmarked. pdftotext reads 201 pages, one more than the
+  vault keeps: a longer PDF's text is cut after page 200 and says so.
 - An instance has a throwaway user (`DynamicUser`), no network (`PrivateNetwork`, no address family), a read-only
   system, an empty private `/tmp`, files limited to 0 bytes, no capabilities, the system-service system calls only,
   256 MiB, 4 tasks, one CPU and 30 seconds. `systemd-analyze security` rates it 0.2 (SAFE).
-- The vault (`digital-post-pdf-text.ts`) sends the PDF, closes its side (pdftotext's end of input), and reads at most
-  256 KiB of text for 40 seconds; text cut there says so. It drops control characters and runs of blank lines.
+- The vault (`digital-post-pdf-text.ts`) reads at most 256 KiB of text for 40 seconds; text cut there says so, and
+  needs no code. It drops control characters and runs of blank lines.
 - It is best effort: a PDF with no text, a failure, a timeout or no service gives no text, and the letter is kept and
   receipted as before. The vault logs a fixed phrase, never content, and a missing service once.
 
@@ -126,11 +131,13 @@ who can read the vault's keys:
 2. Both units from `deploy/cloud-secret-broker/` into `/etc/systemd/system/`, `install -m 0644 -o root -g root`.
 3. `systemctl daemon-reload` and `systemctl enable --now qorpera-pdf-text.socket`.
 4. Check: copy `deploy/cloud-secret-broker/test/prove-pdf-text.mjs` to the host and run it as root with
-   `/usr/bin/node`; it must print `ALL PASSED`. It checks the socket's owner and mode, a PDF's text with Danish letters,
-   no text from a file that is not a PDF, the 30-second limit on a PDF never finished, that a user outside the vault's
-   group cannot connect, and that a running instance has its own user, network and mounts. On a test machine,
-   `--transient` adds poppler-utils, the group and the units for the run alone and takes them away after (node 1's
-   test machine, 22 Oct 2026: all passed, rated 0.2).
+   `/usr/bin/node`; it must print `ALL PASSED`. It checks the socket's owner and mode; a PDF's text with Danish letters
+   and the code after it; 201 pages read and no more; no text and no code from a file that is not a PDF or after a
+   first line that is not a code; no code from an instance killed partway; the 30-second limit on a PDF never finished;
+   that a user outside the vault's group cannot connect; and that a running instance has its own user, network and
+   mounts. On a test machine, `--transient` adds poppler-utils, the group and the units for the run alone and takes
+   away exactly what it added; it refuses a host that has any of the units or the socket's folder already (node 1's
+   test machine, 22 Oct 2026: all 12 checks passed, rated 0.2).
 
 Until then the vault keeps PDF letters without their text. Letters already written are not read again.
 
