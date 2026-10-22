@@ -17,6 +17,11 @@ import {
 } from "./computer-billing.ts";
 import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
 import {
+	type FoundingPresenceHandle,
+	type FoundingPresenceListener,
+	joinFoundingPresence,
+} from "./founding-presence.ts";
+import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
 	type MemberPicture,
@@ -402,6 +407,11 @@ export class CloudApi {
 		onHealth: (health: PresenceHealth) => void,
 	): CloudPresenceHandle {
 		return joinCompanyPresence(this.cloud, requiredUuid(profileId, "Profile id"), onMembers, onHealth);
+	}
+
+	/** Who is at a founding table now and what they are writing, live (the table's presence topic). */
+	joinFoundingPresence(profileId: string, listener: FoundingPresenceListener): FoundingPresenceHandle {
+		return joinFoundingPresence(this.cloud, requiredUuid(profileId, "Profile id").toLowerCase(), listener);
 	}
 
 	/** The conversations where the signed-in member was mentioned and has not looked yet. */

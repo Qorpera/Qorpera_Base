@@ -89,4 +89,5 @@ export const FOUNDING: Record<string, string> = {
 	"They join as co-founders.": "De bliver medstiftere.",
 	"Your first message to the Co-Founder. Write it together.":
 		"Jeres første besked til Co-Founderen. Skriv den sammen.",
+	"{names} are writing": "{names} skriver",
 };

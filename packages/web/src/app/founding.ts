@@ -1,6 +1,17 @@
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import { type CompanyFounding, CompanyFoundingApi } from "../cloud/company-founding.ts";
+import {
+	type CompanyFounding,
+	CompanyFoundingApi,
+	FOUNDING_NAME_MAX_CHARACTERS,
+	FOUNDING_ROLE_MAX_CHARACTERS,
+} from "../cloud/company-founding.ts";
+import type {
+	FoundingField,
+	FoundingLive,
+	FoundingPresenceHandle,
+	FoundingPresenceTab,
+} from "../cloud/founding-presence.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
@@ -18,6 +29,38 @@ const CONNECT_POLL_MS = 1500;
 /** After the company is made, the table is read a little longer while the Co-Founder's first run is queued, so a
  * first run that fails (or starts) is shown; never past this. */
 const FIRST_RUN_WATCH_MS = 120_000;
+
+/** Someone counts as writing for this long after their words last changed. */
+export const FOUNDING_WRITING_MS = 4000;
+/** Your words and caret go to the others at most this often while you write, */
+const LIVE_SEND_MS = 200;
+/** and again this often while you stay in the field, for anyone who came since. */
+const LIVE_REPEAT_MS = 5000;
+/** Someone's words stay in the box this long after they leave the field, until their save shows. */
+const LIVE_HOLD_MS = 6000;
+
+/** Someone else at the table now (live presence). */
+export interface FounderPresence {
+	userId: string;
+	/** One of their tabs has the table on screen. */
+	here: boolean;
+	/** They changed words in a field in the last few seconds. */
+	writing: boolean;
+}
+
+/** Someone else's words in a field and their caret there, as they write. */
+export interface FounderLive {
+	userId: string;
+	field: FoundingField;
+	text: string;
+	/** Their caret, while they are in the field. */
+	caret: number | null;
+	/** Their own words, and they differ from the table's: written and not saved yet (or saved and not read here yet).
+	 * A box follows only these. */
+	unsaved: boolean;
+	/** When their words last changed; the newest writer's words are the ones a box follows. */
+	typedAt: number;
+}
 
 export type FoundingAction = "name" | "vision" | "role" | "ready" | "invite" | "remove" | "respond" | "start" | "close";
 
@@ -39,6 +82,12 @@ export interface FoundingState {
 	addingFriend?: boolean;
 	friendAdded?: string;
 	connectOpen?: boolean;
+	/** Live presence works at this table: this tab is on its topic. Without it the table only reads itself. */
+	live?: boolean;
+	/** The others at the table now, in seat order. */
+	present?: FounderPresence[];
+	/** What the others are writing: one per person and field, newest first. */
+	liveText?: FounderLive[];
 }
 
 export interface FoundingOptions {
@@ -139,6 +188,23 @@ export class FoundingController {
 	#savingVision = false;
 	/** The page's check for words in its fields that the table on the server does not have (FoundingView). */
 	#unsaved: (() => boolean) | undefined;
+	// Live presence: this tab on the table's topic, the other tabs there, and what each of them writes.
+	#presence: FoundingPresenceHandle | undefined;
+	/** The cloud has no presence for this table, or the table is over: not joined again. */
+	#presenceOver = false;
+	#tabs: FoundingPresenceTab[] = [];
+	readonly #lives = new Map<
+		string,
+		{ live: FoundingLive; seenAt: number; typedAt: number; leftAt: number | undefined }
+	>();
+	#presenceTimer: ReturnType<typeof setTimeout> | undefined;
+	/** The field this tab writes in, and what it last sent from it. */
+	#myField: FoundingField | null = null;
+	#pendingLive: Omit<FoundingLive, "clientId" | "userId"> | undefined;
+	#lastLive: Omit<FoundingLive, "clientId" | "userId"> | undefined;
+	#lastSentAt = 0;
+	#sendTimer: ReturnType<typeof setTimeout> | undefined;
+	#repeatTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(api: CloudApi, userId: string, profileId: string, options: FoundingOptions) {
 		this.#api = api;
@@ -153,6 +219,7 @@ export class FoundingController {
 		setFoundingIntent(profileId, this.#pendingVision ? { vision: this.#pendingVision } : {});
 		if (intent?.friends) this.openFriends(true);
 		const resume = () => {
+			this.#presence?.setState(!document.hidden, this.#myField);
 			if (!document.hidden) void this.refresh();
 		};
 		window.addEventListener("focus", resume, { signal: this.#lifetime.signal });
@@ -168,6 +235,7 @@ export class FoundingController {
 		this.#lifetime.abort();
 		clearTimeout(this.#timer);
 		this.#closeConnections();
+		this.#leavePresence();
 		this.store.dispose();
 	}
 
@@ -230,6 +298,9 @@ export class FoundingController {
 			...(panelDone ? { connectOpen: false } : {}),
 		});
 		if (panelDone) this.#closeConnections();
+		if (table.phase === "open") this.#joinPresence();
+		else this.#leavePresence();
+		this.#showPresence();
 		this.#savePendingVision(table);
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
 		// 2026). A first run that waits for a login or failed keeps the page, which says why.
@@ -545,9 +616,191 @@ export class FoundingController {
 		this.#connections = undefined;
 	}
 
+	/** On the table's topic while it is open: once, unless the cloud has no presence for it. */
+	#joinPresence(): void {
+		if (this.#presence || this.#presenceOver || this.disposed) return;
+		try {
+			this.#presence = this.#api.joinFoundingPresence(this.profileId, {
+				tabs: (tabs) => {
+					this.#tabs = tabs;
+					this.#showPresence();
+				},
+				live: (live) => this.#takeLive(live),
+				health: (health) => {
+					if (health === "unavailable") this.#presenceOver = true;
+					if (this.disposed) return;
+					const live = health === "connected";
+					if (this.store.get().live !== live) this.store.set({ live });
+				},
+			});
+		} catch {
+			this.#presenceOver = true;
+			return;
+		}
+		this.#presence.setState(!document.hidden, this.#myField);
+	}
+
+	/** Off the topic for good: the table started, you left it, or the page closed. */
+	#leavePresence(): void {
+		this.#presenceOver = true;
+		const presence = this.#presence;
+		this.#presence = undefined;
+		void presence?.stop().catch(() => undefined);
+		clearTimeout(this.#presenceTimer);
+		clearTimeout(this.#sendTimer);
+		clearTimeout(this.#repeatTimer);
+		this.#sendTimer = undefined;
+		this.#tabs = [];
+		this.#lives.clear();
+		if (
+			!this.disposed &&
+			(this.store.get().live || this.store.get().present?.length || this.store.get().liveText?.length)
+		)
+			this.store.set({ live: false, present: [], liveText: [] });
+	}
+
+	/** Another tab's words: only a founder's at this table, in a field they may write in (a role line is its own),
+	 * and no longer than the field takes. */
+	#takeLive(live: FoundingLive): void {
+		if (this.disposed || live.userId === this.userId) return;
+		const limit =
+			live.field === "name"
+				? FOUNDING_NAME_MAX_CHARACTERS
+				: live.field === "role"
+					? FOUNDING_ROLE_MAX_CHARACTERS
+					: Number.POSITIVE_INFINITY;
+		if ([...live.text].length > limit) return;
+		const seat = this.store.get().table?.seats.find((item) => item.userId === live.userId);
+		if (seat?.state !== "joined") return;
+		const now = Date.now();
+		const prior = this.#lives.get(live.clientId);
+		const same = prior?.live.field === live.field;
+		// Only changed words count as writing; a caret that moves keeps when they last wrote.
+		const typedAt = live.typing ? now : same ? prior.typedAt : 0;
+		this.#lives.set(live.clientId, { live, seenAt: now, typedAt, leftAt: same ? prior.leftAt : undefined });
+		this.#showPresence();
+	}
+
+	/** Who is here and what they write, from the tabs and their words; again when someone stops counting as writing,
+	 * or their words have been held long enough after they left the field. */
+	#showPresence(): void {
+		clearTimeout(this.#presenceTimer);
+		if (this.disposed) return;
+		const table = this.store.get().table;
+		if (!table || table.phase !== "open") return;
+		const now = Date.now();
+		const seats = new Map(table.seats.map((seat) => [seat.userId, seat]));
+		const tabs = new Map(this.#tabs.map((tab) => [tab.clientId, tab]));
+		let next = Number.POSITIVE_INFINITY;
+		const writers = new Set<string>();
+		const texts = new Map<string, FounderLive & { seenAt: number }>();
+		for (const [clientId, entry] of this.#lives) {
+			const { live } = entry;
+			// A tab that left the field, or the table, keeps its words a while: its save is on its way.
+			if (tabs.get(clientId)?.field === live.field) entry.leftAt = undefined;
+			else entry.leftAt ??= now;
+			const writing = now - entry.typedAt < FOUNDING_WRITING_MS;
+			const held = entry.leftAt === undefined || now - entry.leftAt < LIVE_HOLD_MS;
+			if (seats.get(live.userId)?.state !== "joined" || (!writing && !held)) {
+				this.#lives.delete(clientId);
+				continue;
+			}
+			if (writing) {
+				writers.add(live.userId);
+				next = Math.min(next, entry.typedAt + FOUNDING_WRITING_MS);
+			}
+			if (!held) continue;
+			if (entry.leftAt !== undefined) next = Math.min(next, entry.leftAt + LIVE_HOLD_MS);
+			const saved =
+				live.field === "vision"
+					? table.vision
+					: live.field === "name"
+						? table.companyName
+						: (seats.get(live.userId)?.role ?? "");
+			const key = `${live.userId}:${live.field}`;
+			const prior = texts.get(key);
+			if (prior && prior.seenAt > entry.seenAt) continue;
+			texts.set(key, {
+				userId: live.userId,
+				field: live.field,
+				text: live.text,
+				caret: entry.leftAt === undefined ? live.caret : null,
+				unsaved: live.own && live.text.trim() !== saved,
+				typedAt: entry.typedAt,
+				seenAt: entry.seenAt,
+			});
+		}
+		const here = new Set(this.#tabs.filter((tab) => tab.visible).map((tab) => tab.userId));
+		const people = new Set([...this.#tabs.map((tab) => tab.userId), ...writers]);
+		const present = table.seats
+			.filter((seat) => seat.userId !== this.userId && people.has(seat.userId))
+			.map((seat) => ({ userId: seat.userId, here: here.has(seat.userId), writing: writers.has(seat.userId) }));
+		const liveText = [...texts.values()]
+			.sort((a, b) => b.typedAt - a.typedAt || b.seenAt - a.seenAt)
+			.map(({ seenAt: _seenAt, ...live }) => live);
+		const state = this.store.get();
+		if (
+			JSON.stringify(present) !== JSON.stringify(state.present ?? []) ||
+			JSON.stringify(liveText) !== JSON.stringify(state.liveText ?? [])
+		)
+			this.store.set({ present, liveText });
+		if (Number.isFinite(next))
+			this.#presenceTimer = setTimeout(() => this.#showPresence(), Math.max(0, next - now) + 1);
+	}
+
+	/** The field you are writing in now, or none: the others see where you are. */
+	noteField(field: FoundingField | null): void {
+		if (this.#myField === field) return;
+		// Your last words go before you leave the field, so the others hold all of them until your save shows.
+		const pending = this.#pendingLive;
+		if (pending) this.#presence?.sendLive(pending.field, pending.text, pending.caret, pending.typing, pending.own);
+		this.#myField = field;
+		this.#presence?.setState(!document.hidden, field);
+		clearTimeout(this.#sendTimer);
+		clearTimeout(this.#repeatTimer);
+		this.#sendTimer = undefined;
+		this.#pendingLive = undefined;
+		this.#lastLive = undefined;
+		this.#lastSentAt = 0;
+	}
+
+	/** Your words and caret in a field, for the others to follow as you write (a founder's only). `own`: the words
+	 * are your edit, not the table's text or another writer's words your field follows. */
+	noteLive(field: FoundingField, text: string, caret: number | null, typing: boolean, own: boolean): void {
+		if (!this.#presence || this.store.get().table?.me.state !== "joined" || this.#myField !== field) return;
+		// A keystroke not sent yet still counts when a caret move replaces it.
+		const typed = typing || (this.#pendingLive?.field === field && this.#pendingLive.typing);
+		this.#pendingLive = { field, text, caret, typing: typed, own };
+		this.#sendLive();
+	}
+
+	#sendLive(): void {
+		if (this.#sendTimer || !this.#pendingLive) return;
+		const wait = this.#lastSentAt + LIVE_SEND_MS - Date.now();
+		if (wait > 0) {
+			this.#sendTimer = setTimeout(() => {
+				this.#sendTimer = undefined;
+				this.#sendLive();
+			}, wait);
+			return;
+		}
+		const live = this.#pendingLive;
+		this.#pendingLive = undefined;
+		this.#lastSentAt = Date.now();
+		this.#presence?.sendLive(live.field, live.text, live.caret, live.typing, live.own);
+		this.#lastLive = { ...live, typing: false };
+		clearTimeout(this.#repeatTimer);
+		this.#repeatTimer = setTimeout(() => {
+			if (!this.#lastLive || this.#myField !== this.#lastLive.field) return;
+			this.#pendingLive ??= this.#lastLive;
+			this.#sendLive();
+		}, LIVE_REPEAT_MS);
+	}
+
 	#gone(reason: NonNullable<FoundingState["gone"]>): void {
 		clearTimeout(this.#timer);
 		this.#closeConnections();
+		this.#leavePresence();
 		this.store.set({ gone: reason, connectOpen: false, friendsOpen: false, loading: false });
 		this.#options.onSeatChanged?.();
 	}
