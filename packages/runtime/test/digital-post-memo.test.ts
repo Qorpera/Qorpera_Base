@@ -176,6 +176,21 @@ describe("readDigitalPostLetter", () => {
 		expect(JSON.stringify(letter.record)).not.toContain(b64(PDF));
 	});
 
+	it("keeps text in the record exactly as written", () => {
+		const letter = readDigitalPostLetter(
+			bytes(
+				memo({
+					header: `<memo:ReplyData><memo:messageID> MSG-1 </memo:messageID><memo:AdditionalReplyData><memo:label>Ref</memo:label><memo:value>&#xA0;abc&#xA0;</memo:value></memo:AdditionalReplyData></memo:ReplyData>`,
+				}),
+			),
+		);
+		const header = (letter.record as Record<string, Record<string, Record<string, Record<string, unknown>>>>).Message
+			?.MessageHeader?.ReplyData;
+		expect(header?.messageID).toBe(" MSG-1 ");
+		expect(header?.AdditionalReplyData).toEqual({ label: "Ref", value: "\u00a0abc\u00a0" });
+		expect(letter.messageId).toBe("SKAT-2026-118");
+	});
+
 	it("reads any prefix, a default namespace, a byte order mark, entities and character references", () => {
 		const plain = memo({ prefix: "" });
 		expect(readDigitalPostLetter(bytes(plain)).title).toBe("Årsopgørelse 2025 & rettelser");

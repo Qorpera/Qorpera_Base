@@ -59,7 +59,7 @@ says how many letters went that way.
 digital-post/
   letters.json                       the index the Mailbox reads (platform-written; newest first)
   2026/
-    2026-10-22 Skattestyrelsen - Årsopgørelse 2025 (6f1d3c2a)/
+    2026-10-22 Skattestyrelsen - Årsopgørelse 2025 (6f1d3c2a-9b8e-4d7c-8a6b-5e4f3d2c1b0a)/
       letter.md                      who, when, flags, deadlines, links, documents, the text
       letter.json                    every field Digital Post delivered (files by size and SHA-256)
       aarsopgoerelse.pdf             the documents, under the sender's names made safe

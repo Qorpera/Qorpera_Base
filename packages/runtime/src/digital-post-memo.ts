@@ -104,7 +104,8 @@ export interface DigitalPostLetter {
 }
 
 /** An element as JSON: `@name` attributes, child elements by name (an array when repeated), and `#text` (or the
- * element is just its text). Names outside the MeMo namespace carry the prefix MeMo's own examples use. */
+ * element is just its text, exactly as written). Names outside the MeMo namespace carry the prefix MeMo's own examples
+ * use. */
 export type MemoRecord = string | { readonly [key: string]: MemoRecord | readonly MemoRecord[] };
 
 interface XmlElement {
@@ -282,7 +283,9 @@ function memoRecord(element: XmlElement, digest: (bytes: Uint8Array) => string):
 		const bytes = base64Bytes(element.text);
 		return { bytes: String(bytes.byteLength), sha256: digest(bytes) };
 	}
-	const text = element.text.trim();
+	// Text is kept exactly as written (ReplyData, for one, must go back to its sender unchanged); only the layout
+	// whitespace between child elements is left out.
+	const text = element.text;
 	if (element.children.length === 0 && element.attributes.size === 0) return text;
 	const record: Record<string, MemoRecord | MemoRecord[]> = {};
 	for (const [name, value] of element.attributes) record[`@${name}`] = value;
@@ -294,7 +297,7 @@ function memoRecord(element: XmlElement, digest: (bytes: Uint8Array) => string):
 		else if (Array.isArray(existing)) existing.push(value);
 		else record[name] = [existing as MemoRecord, value];
 	}
-	if (text !== "") record["#text"] = text;
+	if (element.children.length === 0 ? text !== "" : text.trim() !== "") record["#text"] = text;
 	return record;
 }
 

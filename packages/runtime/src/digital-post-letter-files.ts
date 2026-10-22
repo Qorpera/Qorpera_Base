@@ -4,7 +4,7 @@ import { type DigitalPostLetter, digitalPostLetterText, sha256Hex } from "./digi
 
 /**
  * How a Digital Post letter lies in the company folder. Each letter is one folder,
- * `digital-post/<year>/<yyyy-mm-dd> <sender> - <title> (<first 8 of its id>)`, holding:
+ * `digital-post/<year>/<yyyy-mm-dd> <sender> - <title> (<its message id>)`, holding:
  *
  * - `letter.md`: who sent it, when, its flags, deadlines and links, and the main document's text when there is one;
  *   what an agent reads first;
@@ -110,6 +110,16 @@ function oneLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
+/** A Markdown link's text: brackets and backslashes escaped. */
+function markdownLabel(text: string): string {
+	return text.replace(/[\\[\]]/g, (character) => `\\${character}`);
+}
+
+/** A URL inside `<...>`: what would end it (spaces, angle brackets) percent-encoded. */
+function autolink(url: string): string {
+	return oneLine(url).replace(/[<>\s]/g, (character) => encodeURIComponent(character));
+}
+
 function party(name: string | null, idType: string, id: string): string {
 	const label = idType ? `${idType} ${id}` : id;
 	return name ? `${oneLine(name)} (${label})` : label;
@@ -146,7 +156,7 @@ function letterMarkdown(
 	lines.push("", "## Documents", "");
 	for (const document of documents)
 		lines.push(
-			`- [${document.name}](<${document.name}>) (${document.role}${document.label ? `: ${oneLine(document.label)}` : ""})`,
+			`- [${markdownLabel(document.name)}](<${encodeURIComponent(document.name)}>) (${document.role}${document.label ? `: ${oneLine(document.label)}` : ""})`,
 		);
 	const actions = letter.documents.flatMap((document) => document.actions);
 	if (actions.length > 0) {
@@ -156,7 +166,7 @@ function letterMarkdown(
 			const when = window[1] ? `, until ${window[1]}` : window[0] ? `, from ${window[0]}` : "";
 			const label = oneLine(action.label || action.actionCode || "Link");
 			lines.push(
-				`- ${label} (${action.actionCode || "link"}${when})${action.url ? `: <${oneLine(action.url)}>` : ""}`,
+				`- ${label} (${action.actionCode || "link"}${when})${action.url ? `: <${autolink(action.url)}>` : ""}`,
 			);
 		}
 	}
@@ -184,7 +194,7 @@ export function layOutDigitalPostLetter(
 	const sender = digitalPostSafeName(letter.sender.name ?? letter.sender.id, "Sender", SENDER_CHARACTERS);
 	const title = digitalPostSafeName(letter.title, "Letter", TITLE_CHARACTERS);
 	const date = day(letter.created, received);
-	const folder = `${DIGITAL_POST_FOLDER}/${date.slice(0, 4)}/${date} ${sender} - ${title} (${letter.messageUuid.slice(0, 8)})`;
+	const folder = `${DIGITAL_POST_FOLDER}/${date.slice(0, 4)}/${date} ${sender} - ${title} (${letter.messageUuid})`;
 	parseCloudCompanyPath(folder);
 	const taken = new Set([folderKey("letter.md"), folderKey("letter.json")]);
 	const files: DigitalPostLetterFile[] = [];
