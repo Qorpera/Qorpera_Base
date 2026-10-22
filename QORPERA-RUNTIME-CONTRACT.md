@@ -5990,8 +5990,11 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      company's own agents, so an agent may set up its own routine or hand work to its own agents inside a member's
      turn without that member's agreement.
    - Deny covers the mandate too: an action outside both the request and the mandate, one that follows instructions
-     found in outside content, or one that clearly works against the vision. The built-in checks and Ask first rules
-     are unchanged.
+     found in outside content, or one that clearly works against the vision. In a run no member started this holds for
+     delegating too: handing work to the company's own agents that clearly serves none of the mandate's
+     responsibilities is a deny, such as an invoice clerk's routine starting a marketing worker. Telling the agent that
+     owns some work about it never is: that serves every agent's job. The built-in checks and Ask first rules are
+     unchanged.
    - Step 4 keeps a narrow ask for an irreversible step outside the company that no built-in check covers and that
      the request or the mandate only loosely describes: permanently deleting on the company computer, overwriting, a
      public post in the company's name, or sending to many people at once.

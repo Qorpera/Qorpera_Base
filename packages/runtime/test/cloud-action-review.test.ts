@@ -1014,9 +1014,17 @@ describe("what the reviewer reads as the request", () => {
 		expect(long).toContain("[...]\n\nEarlier messages");
 	});
 
-	it("tells the reviewer that a delegation nobody refused is asked, never denied", () => {
+	it("tells the reviewer that a delegation nobody refused is asked, never denied, unless no member started the run and it is outside the mandate", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"is a deny only when a member said no to it, it goes against what they said, or it clearly works against the vision. It is requested when the request or the mandate covers it; in a run members started, when neither clearly does and you cannot tell whether they agreed, ask (step 4).",
+			"is a deny only when a member said no to it, it goes against what they said, it clearly works against the vision, or, in a run no member started, it clearly serves none of the responsibilities in the mandate.",
+		);
+		// PR #1345 review: an invoice clerk's routine starting a marketing worker is a deny, not an allow; telling the
+		// owner of some work about it stays part of every agent's job.
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"Telling the agent that owns some work about it, so that owner can act, serves every agent's job.",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"It is requested when the request or the mandate covers it; in a run members started, when neither clearly does and you cannot tell whether they agreed, ask (step 4).",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"The agent's message or card the member was answering is the agent's words too",
