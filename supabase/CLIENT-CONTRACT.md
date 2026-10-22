@@ -778,6 +778,23 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   and `cc`, its cc recipients as the agent gave them.
   Both are outside words to show as text only; a client must also work without them.
 
+
+### Digital Post (20260930529000_digital_post_sync)
+
+- Design `deploy/first-node/RUNTIME-DIGITAL-POST.md`. A company's public post (Danish Digital Post) reaches the company
+  folder through the company vault: an owner or admin saves the API key of the company's Digital Post recipient system
+  with the vault's capture (`qorpera_begin_cloud_secret_capture`, `owner_kind` `company`, connector `digital_post`,
+  secret name `primary`, one field `api_key`). The vault seals only a key that reads as one (the Basic credential of
+  the system's id and its key) and labels the connection with the system id; anything else fails the capture. A new
+  key replaces the old (`p_existing_secret_id`); Disconnect is the secret's revoke, as for every connection.
+- `qorpera_member_digital_post(environment)` → `{schema: "qorpera.member-digital-post/v1", connected, status,
+  systemId, fetchedAt, lastError, letters, waitingForFolder, held}` for any member of the company (viewers too; 42501
+  for anyone else). `status` is `waiting` (connected, not fetched yet), `current`, `failed` (tried again; `lastError`
+  says why in a fixed phrase), `refused` (Digital Post refused the key: connect again) or `disconnected`. `letters`
+  counts the letters kept, `waitingForFolder` those not yet in the folder, `held` the letters of the last eight days
+  the vault could not take (Digital Post moves them to the Virk mailbox).
+- The letters, their staged files and the sync are closed to every API role; the vault reaches them through its own
+  functions.
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
 Built switched off with plan logins. Show none of it while plan logins are switched off for the company

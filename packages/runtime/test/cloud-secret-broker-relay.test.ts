@@ -786,6 +786,72 @@ describe("the broker's relay sign-ins", () => {
 	});
 });
 
+describe("capturing a Digital Post key", () => {
+	const SYSTEM = "e545b339-8542-4a30-ae75-c67e4d2a7b99";
+	const API_KEY = Buffer.from(`${SYSTEM}:15632a8d-407c-4c3a-b7b1-aebaa514fcab`).toString("base64");
+	function captureFixture() {
+		const keyring = new CloudSecretKeyring({ [KEY]: randomBytes(32) });
+		keyrings.push(keyring);
+		const description = {
+			schema: "qorpera.cloud-secret-capture-description/v1",
+			ticketId: randomUUID(),
+			companyId: randomUUID(),
+			environmentId: randomUUID(),
+			secretId: randomUUID(),
+			version: 1,
+			ownerKind: "company",
+			ownerUserId: null,
+			connectorId: "digital_post",
+			secretName: "primary",
+			purpose: "Digital Post",
+			keyId: KEY,
+			expiresAt: "2099-08-29T12:00:00.000Z",
+		};
+		const describeCapture = vi.fn(async () => description);
+		const completeCapture = vi.fn(async () => ({
+			schema: "qorpera.cloud-secret-descriptor/v1",
+			secretId: description.secretId,
+			version: description.version,
+			connectorId: "digital_post",
+			secretName: description.secretName,
+			purpose: description.purpose,
+			ownerKind: "company",
+			ownerUserId: null,
+			status: "active",
+		}));
+		const broker = new CloudSecretBroker({
+			authority: { ...unusedAuthority(), describeCapture, completeCapture },
+			keyring,
+			adapters: [],
+		});
+		const capture = (fields: Readonly<Record<string, string>>) =>
+			broker.capture(
+				{ ticketId: description.ticketId, captureCapability: randomBytes(32).toString("base64url"), fields },
+				signal(),
+			);
+		return { capture, describeCapture, completeCapture };
+	}
+
+	it("seals only an API key Administrativ Adgang could show, labelled with its system id", async () => {
+		const f = captureFixture();
+		await f.capture({ api_key: ` Basic ${API_KEY} ` });
+		expect(f.completeCapture).toHaveBeenCalledTimes(1);
+		expect(f.completeCapture.mock.calls[0]?.[4]).toBe(SYSTEM);
+		for (const fields of [
+			{ value: API_KEY },
+			{ api_key: API_KEY, other: "x" },
+			{ api_key: "not a key" },
+			{ api_key: Buffer.from(`${SYSTEM}:short`).toString("base64") },
+		] as Record<string, string>[]) {
+			const refused = captureFixture();
+			const error = await refused.capture(fields).catch((failure: unknown) => failure);
+			expect((error as Error).message).toBe("Cloud secret capture was not confirmed");
+			expect(String(error)).not.toContain(API_KEY);
+			expect(refused.completeCapture).not.toHaveBeenCalled();
+		}
+	});
+});
+
 describe("capturing an MCP sign-in", () => {
 	function captureFixture() {
 		const keyring = new CloudSecretKeyring({ [KEY]: randomBytes(32) });

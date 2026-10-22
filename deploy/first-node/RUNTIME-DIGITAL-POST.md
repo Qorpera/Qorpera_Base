@@ -53,6 +53,19 @@ A letter the vault cannot read (malformed, too large, not a MeMo letter) is held
 it and moves it to Virk after seven days. The sync records it so it is not fetched again on every pass, and Settings
 says how many letters went that way.
 
+**The sync (part 2, migration `20260930529000`).** One row a company in `qorpera_digital_post_syncs`, following its
+`digital_post` secret: a connect or a new key is due at once (`waiting`); a pass that took every letter listed is
+`current` and due again in ten minutes; a full list (50) from which it took a letter is due again in thirty seconds;
+a failure is tried again after five minutes, doubling to two hours, with a fixed phrase for Settings; a key Digital
+Post refuses (401) is `refused` and nothing is due until the member saves a key again; a Disconnect (the secret's
+revoke) is `disconnected`. A pass holds a fifteen-minute lease; a late answer from an earlier claim is refused.
+Letters are kept in `qorpera_digital_post_letters` by message id (unique per company, as is the folder by its key):
+`staging`, then `kept` once every file's staged chunks give its size and SHA-256 (`qorpera_seal_digital_post_letter`),
+then `written` (part 3). The staged bytes sit in `qorpera_digital_post_chunks`, 1 MiB each, until the folder writer
+has them; a letter left `staging` by a pass that stopped starts again when it is next delivered. Held letters are in
+`qorpera_digital_post_held` and forgotten after eight days. `qorpera_member_digital_post` gives any member the
+connection's state (supabase/CLIENT-CONTRACT.md, "Digital Post").
+
 ## In the company folder
 
 ```
