@@ -1794,6 +1794,21 @@ company-visible and answerable:
   same way, it wakes nobody; the recipient reads it, as data, at the start of
   its next wake of any kind. Held messages extend no chain. Thanks, status
   and FYIs are sent held.
+- **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
+  of a run in a conversation (7.3) ends that run's whole chain: every live run
+  with the same causal root (the other agent's, the agents' workers'), every
+  wake still queued in it, and every held message a run of the chain sent that
+  no run has read yet. The root is recorded as stopped, so a wake the chain
+  would still cause (a late worker report, a machine event, a file change it
+  made) is cancelled at admission. Who may stop is unchanged: the Stop cancels
+  only runs the member could stop one by one. An outside action already sent
+  keeps its receipt state; nothing is undone or sent again. Cards the chain
+  raised stay open and say that their chain was stopped; an answer to one
+  wakes the agent in a new run, reviewed against the answer, never as a
+  continuation of the stopped work. A member's post, a routine's slot and a
+  card answer start new roots, so an earlier Stop never fences them. A
+  worker's own Stop (7.3, 2026-10-03) still ends that run alone, and its
+  parent hears.
 
 ### 14.7 Rooms
 
