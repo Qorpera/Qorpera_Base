@@ -20,7 +20,8 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * as the platform under the claim's operation key, in one change set: `digital-post/` and the year's folder when they
  * are missing, the letter's folder with all its files (one unit, so a letter is in the folder whole or not at all), and
  * the index `digital-post/letters.json` at the version the claim read. A letter's folder that is already there (an
- * earlier commit whose finish was lost) gets only the files it lacks; nothing is overwritten. Problems are reported as
+ * earlier commit whose finish was lost) gets only the files it lacks; nothing is overwritten, and a path that holds
+ * something else (`blocked`) writes nothing. Problems are reported as
  * codes, never with a message. Built switched off: the gateway runs it only with QORPERA_DIGITAL_POST_WRITER=1.
  */
 
@@ -35,6 +36,7 @@ const CLAIM_KEYS = [
 	"rootPresent",
 	"yearPresent",
 	"folderPresent",
+	"blocked",
 	"files",
 	"indexVersion",
 	"index",
@@ -70,6 +72,8 @@ export interface DigitalPostLetterClaim {
 	readonly rootPresent: boolean;
 	readonly yearPresent: boolean;
 	readonly folderPresent: boolean;
+	/** A path the letter needs holds something else: a folder or a link where a file goes, or the other way round. */
+	readonly blocked: boolean;
 	readonly files: readonly DigitalPostLetterFile[];
 	readonly indexVersion: string | null;
 	readonly index: readonly Record<string, unknown>[];
@@ -152,6 +156,7 @@ export function parseDigitalPostLetterClaim(value: unknown): DigitalPostLetterCl
 		rootPresent: flag(input.rootPresent),
 		yearPresent: flag(input.yearPresent),
 		folderPresent: flag(input.folderPresent),
+		blocked: flag(input.blocked),
 		files,
 		indexVersion: version(input.indexVersion),
 		index,
@@ -238,6 +243,8 @@ export class DigitalPostLetterWriter {
 	}
 
 	async #write(claim: DigitalPostLetterClaim, signal: AbortSignal): Promise<void> {
+		// Something else stands where the letter goes: nothing is written, and the letter keeps its bytes and backs off.
+		if (claim.blocked) problem("path_taken");
 		const missing = claim.files.map((file, index) => ({ file, index })).filter(({ file }) => file.version === null);
 		const staged = new Map<number, unknown>();
 		// Only what the folder lacks is read and staged: the whole letter, or the files an earlier write did not leave.

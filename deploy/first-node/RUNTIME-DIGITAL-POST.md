@@ -94,7 +94,9 @@ lease; reads each file's chunks back in pieces of at most 512 KiB and checks its
 platform, under `digital-post:<letter>:<attempt>`, one change set: `digital-post/` and `digital-post/<year>` when they
 are missing, the letter's folder as one `new_folder` unit (in the folder whole or not at all), and the index at the
 version the claim read. A letter's folder already there (an earlier commit whose finish was lost) gets only the files
-it lacks; nothing in it is overwritten. A unit not saved backs off (a minute, doubling to an hour) and the next claim
+it lacks; nothing in it is overwritten, and a path that holds something else (a folder or link where a file goes)
+writes nothing and backs off. A company's letters are written one at a time, so each is finished before the next reads
+the index. A unit not saved backs off (a minute, doubling to an hour) and the next claim
 reads the folder again. A written letter's staged chunks are deleted. `letter.md` says the letter is outside content. The main
 document's text comes from its text or HTML version; a letter that is only a PDF says so until PDF text is read (step
 5).

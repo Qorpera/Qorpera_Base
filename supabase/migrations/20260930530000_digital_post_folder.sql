@@ -7,8 +7,12 @@
 -- finishes the claim: written (the staged bytes are deleted), or a problem code after which the letter backs off.
 --
 -- A letter's folder already in the folder (an earlier write that committed but never finished) gets only the files it
--- lacks; nothing there is overwritten. The index lists the newest written letters (and this one), each with the summary
--- the vault kept; it is the platform's, rewritten with every letter, so a member's edit lasts until the next letter.
+-- lacks; nothing there is overwritten. A path the letter needs that holds something else (a folder or a link where a
+-- file goes, a file or a link where a folder goes) is `blocked`: nothing is written and the letter backs off, its bytes
+-- kept. The index lists the newest written letters (and this one), each with the summary the vault kept; it is the
+-- platform's, rewritten with every letter, so a member's edit lasts until the next letter. One letter of a company is
+-- written at a time (a company's claims are serialized and a company with a live lease is passed over), so a letter is
+-- written or finished before the next one reads the index.
 
 alter table public.qorpera_digital_post_letters
 	add column write_lease_owner uuid,
@@ -33,9 +37,10 @@ $$;
 revoke all on function public.qorpera_digital_post_entry(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- One due letter, leased to p_worker: where it goes, which of its folders and files the folder has already, the index's
--- version now, and the index's letters (the newest 200 written, and this one). Null when nothing is due. Only folder-v2
--- companies that are not being deleted.
+-- One due letter, leased to p_worker: where it goes, which of its folders and files the folder has already (a file's
+-- version only for a file), whether a path it needs holds something else, the index's version now, and the index's
+-- letters (the newest 200 written, and this one). Null when nothing is due. Only folder-v2 companies that are not being
+-- deleted, and only a company none of whose letters another writer holds.
 create function public.qorpera_claim_digital_post_letter_file(p_worker uuid, p_lease_seconds integer)
 returns jsonb
 language plpgsql
@@ -45,10 +50,12 @@ set lock_timeout = '2s'
 as $$
 declare
 	v_letter public.qorpera_digital_post_letters%rowtype;
+	v_candidate record;
 	v_now timestamptz := clock_timestamp();
 	v_year text;
 	v_files jsonb;
 	v_index jsonb;
+	v_blocked boolean;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501';
@@ -56,16 +63,32 @@ begin
 	if p_worker is null or p_lease_seconds is null or p_lease_seconds not between 30 and 900 then
 		raise exception 'Digital Post letter claim is invalid' using errcode = '22023';
 	end if;
-	select letter.* into v_letter
-	from public.qorpera_digital_post_letters as letter
-	where letter.status = 'kept'
-		and (letter.write_lease_until is null or letter.write_lease_until <= v_now)
-		and (letter.write_not_before is null or letter.write_not_before <= v_now)
-		and public.qorpera_environment_is_folder_v2(letter.environment_id)
-		and not public.qorpera_company_deleting(letter.profile_id)
-	order by letter.kept_at, letter.id
-	limit 1
-	for update of letter skip locked;
+	for v_candidate in
+		select letter.id, letter.profile_id
+		from public.qorpera_digital_post_letters as letter
+		where letter.status = 'kept'
+			and (letter.write_lease_until is null or letter.write_lease_until <= v_now)
+			and (letter.write_not_before is null or letter.write_not_before <= v_now)
+			and public.qorpera_environment_is_folder_v2(letter.environment_id)
+			and not public.qorpera_company_deleting(letter.profile_id)
+		order by letter.kept_at, letter.id
+		limit 20
+	loop
+		-- One claim of a company at a time; then a company whose letter another writer holds is passed over. The check runs
+		-- after the lock, so it sees a lease the claim before this one committed.
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.digital-post-write:' || v_candidate.profile_id::text, 0));
+		continue when exists (
+			select 1 from public.qorpera_digital_post_letters as other
+			where other.profile_id = v_candidate.profile_id and other.id <> v_candidate.id and other.status = 'kept'
+				and other.write_lease_until > clock_timestamp()
+		);
+		select letter.* into v_letter
+		from public.qorpera_digital_post_letters as letter
+		where letter.id = v_candidate.id and letter.status = 'kept'
+			and (letter.write_lease_until is null or letter.write_lease_until <= clock_timestamp())
+		for update skip locked;
+		exit when v_letter.id is not null;
+	end loop;
 	if v_letter.id is null then
 		return null;
 	end if;
@@ -75,10 +98,19 @@ begin
 	where id = v_letter.id
 	returning * into v_letter;
 	v_year := split_part(v_letter.folder, '/', 1) || '/' || split_part(v_letter.folder, '/', 2);
-	select jsonb_agg(file.value || jsonb_build_object('version',
-		(public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder || '/' || (file.value->>'name'))).version)
-		order by file.position) into v_files
-	from jsonb_array_elements(v_letter.files) with ordinality as file(value, position);
+	select jsonb_agg(file.value || jsonb_build_object('version', case when entry.kind = 'file' then entry.version end)
+			order by file.position),
+		bool_or(entry.kind is not null and entry.kind <> 'file')
+	into v_files, v_blocked
+	from jsonb_array_elements(v_letter.files) with ordinality as file(value, position)
+	left join lateral public.qorpera_digital_post_entry(v_letter.environment_id,
+		v_letter.folder || '/' || (file.value->>'name')) as entry on true;
+	v_blocked := v_blocked
+		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind <> 'folder', false)
+		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind <> 'folder', false)
+		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind <> 'folder', false)
+		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json')).kind <> 'file',
+			false);
 	select coalesce(jsonb_agg(listed.summary order by listed.received_at desc, listed.id), '[]'::jsonb) into v_index
 	from (
 		select letter.summary, letter.received_at, letter.id
@@ -99,8 +131,11 @@ begin
 		'rootPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind = 'folder', false),
 		'yearPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind = 'folder', false),
 		'folderPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind = 'folder', false),
+		'blocked', v_blocked,
 		'files', v_files,
-		'indexVersion', (public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json')).version,
+		'indexVersion', (select entry.version
+			from public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json') as entry
+			where entry.kind = 'file'),
 		'index', v_index,
 		'leaseUntil', v_letter.write_lease_until
 	);

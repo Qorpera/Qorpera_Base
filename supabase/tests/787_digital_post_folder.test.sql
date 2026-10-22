@@ -197,4 +197,51 @@ end $$;
 select pg_temp.dp_refused($$select public.qorpera_finish_digital_post_letter_file('78700000-0000-4000-8000-00000000000a',
 	'78700000-0000-4000-8000-0000000000a2', 'Not A Code')$$, '22023');
 
+-- 4. Where something else stands (a folder where a file goes, a link where a file goes), the claim says blocked, names no
+-- version for it, and a finish with the problem keeps the letter's bytes.
+do $$
+declare v jsonb; v_folder text := (pg_temp.dp_letter_row('78700000-0000-4000-8000-0000000000a2')).folder;
+begin
+	perform pg_temp.dp_check(pg_temp.dp_finish('78700000-0000-4000-8000-0000000000a2', 'stale'), 'released');
+	update public.qorpera_digital_post_letters set write_not_before = clock_timestamp() - interval '1 second'
+	where id = '78700000-0000-4000-8000-0000000000a2';
+	perform pg_temp.expect(public.qorpera_folder_commit('70400000-0000-4000-8000-000000000020', pg_temp.platform(),
+		'digital-post-test:obstruct', jsonb_build_array(
+			jsonb_build_object('op', 'mkdir', 'path', v_folder || '/brev.pdf'),
+			jsonb_build_object('op', 'symlink', 'path', v_folder || '/letter.json', 'target', 'letter.md'))), 1, 'saved');
+	v := pg_temp.dp_claim();
+	perform pg_temp.dp_check(v ->> 'letterId' = '78700000-0000-4000-8000-0000000000a2' and (v ->> 'blocked')::boolean
+		and v -> 'files' -> 0 ->> 'version' is not null and v -> 'files' -> 1 -> 'version' = 'null'::jsonb
+		and v -> 'files' -> 2 -> 'version' = 'null'::jsonb, 'blocked, with no version for what is not a file: ' || v::text);
+	perform pg_temp.dp_check(pg_temp.dp_finish('78700000-0000-4000-8000-0000000000a2', 'path_taken')
+		and (pg_temp.dp_letter_row('78700000-0000-4000-8000-0000000000a2')).status = 'kept'
+		and exists (select 1 from public.qorpera_digital_post_chunks where letter_id = '78700000-0000-4000-8000-0000000000a2'),
+		'the blocked letter keeps its bytes');
+	-- Out of the way for what follows.
+	update public.qorpera_digital_post_letters set write_not_before = clock_timestamp() + interval '1 day'
+	where id = '78700000-0000-4000-8000-0000000000a2';
+end $$;
+
+-- 5. One letter of a company at a time: while one writer holds a letter, another writer gets none of that company's;
+-- once the first is finished, the second's index lists the first.
+select pg_temp.dp_letter('78700000-0000-4000-8000-0000000000a3', '7a000000-0000-4000-8000-000000000003',
+	'2026-10-22 08:00:00+00', '\x255044462d33'::bytea);
+select pg_temp.dp_letter('78700000-0000-4000-8000-0000000000a4', '7a000000-0000-4000-8000-000000000004',
+	'2026-10-22 09:00:00+00', '\x255044462d34'::bytea);
+do $$
+declare v jsonb := pg_temp.dp_claim(); v_second jsonb;
+begin
+	perform pg_temp.dp_check(v ->> 'letterId' = '78700000-0000-4000-8000-0000000000a3', 'the older letter first: ' || v::text);
+	perform pg_temp.dp_check(pg_temp.dp_claim('78700000-0000-4000-8000-00000000000b') is null,
+		'another writer gets nothing of the company while the first holds a letter');
+	perform pg_temp.expect(pg_temp.dp_commit(v), 1, 'saved');
+	perform pg_temp.dp_check(pg_temp.dp_finish('78700000-0000-4000-8000-0000000000a3'), 'the first finishes');
+	v_second := pg_temp.dp_claim('78700000-0000-4000-8000-00000000000b');
+	perform pg_temp.dp_check(v_second ->> 'letterId' = '78700000-0000-4000-8000-0000000000a4'
+		and v_second -> 'index' -> 0 ->> 'messageUuid' = '7a000000-0000-4000-8000-000000000004'
+		and v_second -> 'index' -> 1 ->> 'messageUuid' = '7a000000-0000-4000-8000-000000000003'
+		and (v_second ->> 'indexVersion')::uuid = pg_temp.version('digital-post/letters.json'),
+		'the second''s index lists the first: ' || v_second::text);
+end $$;
+
 rollback;

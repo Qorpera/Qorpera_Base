@@ -51,6 +51,7 @@ function claim(overrides: Record<string, unknown> = {}) {
 		rootPresent: false,
 		yearPresent: false,
 		folderPresent: false,
+		blocked: false,
 		files,
 		indexVersion: null,
 		index: [summary],
@@ -231,6 +232,14 @@ describe("DigitalPostLetterWriter", () => {
 		await changed.writer.writeOne();
 		expect(changed.finishes()).toEqual(["chunk_invalid"]);
 		expect(changed.commits()).toEqual([]);
+	});
+
+	it("writes nothing where something else stands, and keeps the letter's bytes", async () => {
+		const f = folder({ claims: [claim({ folderPresent: true, blocked: true })] });
+		await f.writer.writeOne();
+		expect(f.finishes()).toEqual(["path_taken"]);
+		expect(f.commits()).toEqual([]);
+		expect(f.calls.some((call) => call.method === "qorpera_read_digital_post_chunk")).toBe(false);
 	});
 
 	it("finishes a claim it cannot read with its problem when it names the letter", async () => {
