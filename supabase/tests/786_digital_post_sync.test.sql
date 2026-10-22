@@ -127,6 +127,16 @@ begin
 	return v;
 end
 $$;
+create function pg_temp.held_among(p_secret uuid, p_ids jsonb) returns jsonb language plpgsql as $$
+declare v jsonb; v_lease uuid := pg_temp.lease(p_secret);
+begin
+	set local session authorization qorpera_secret_broker;
+	v := public.qorpera_digital_post_held_among('78600000-0000-4000-8000-0000000000d1', repeat('1', 64), p_secret, 1,
+		v_lease, p_ids);
+	reset session authorization;
+	return v;
+end
+$$;
 create function pg_temp.due(p_principal uuid, p_capability text) returns jsonb language plpgsql as $$
 declare v jsonb;
 begin
@@ -138,7 +148,8 @@ end
 $$;
 grant execute on function pg_temp.claim(uuid, text), pg_temp.keep(uuid, uuid, jsonb, jsonb, uuid),
 	pg_temp.stage(uuid, uuid, integer, integer, bytea, uuid), pg_temp.seal(uuid, uuid), pg_temp.hold(uuid, uuid, text),
-	pg_temp.finish(uuid, text, jsonb, text, uuid, bigint, integer), pg_temp.due(uuid, text), pg_temp.lease(uuid)
+	pg_temp.finish(uuid, text, jsonb, text, uuid, bigint, integer), pg_temp.due(uuid, text), pg_temp.lease(uuid),
+	pg_temp.held_among(uuid, jsonb)
 	to qorpera_secret_broker;
 -- A member's read, signed in, then as the service again; an error answers its SQLSTATE.
 create function pg_temp.member(p_user uuid, p_environment uuid) returns jsonb language plpgsql as $$
@@ -197,6 +208,7 @@ begin
 		'public.qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
 		'public.qorpera_hold_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid,text)',
 		'public.qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
+		'public.qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'public.qorpera_broker_principal_digital_post_syncs_due(uuid,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			perform pg_temp.check(not has_function_privilege(v_role, v_function, 'execute'), v_role || ' may not call ' || v_function);
@@ -258,7 +270,7 @@ begin
 	v := pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
 	perform pg_temp.check(v->>'schema' = 'qorpera.digital-post-sync-claim/v1'
 		and v->>'secretId' = '78600000-0000-4000-8000-0000000000e1' and (v->>'secretVersion')::int = 1
-		and v->'held' = '[]'::jsonb and (v->>'scanPage')::int = 0 and v->>'keyId' = 'key-1'
+		and not v ? 'held' and (v->>'scanPage')::int = 0 and v->>'keyId' = 'key-1'
 		and v->>'encryptedEnvelopeBase64' !~ E'\n'
 		and v->>'lease' = pg_temp.lease('78600000-0000-4000-8000-0000000000e1')::text, 'the claim');
 	perform pg_temp.check(pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64)) is null,
@@ -381,7 +393,14 @@ declare v jsonb;
 begin
 	perform pg_temp.past();
 	v := pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
-	perform pg_temp.check(v->'held' = '["0a000000-0000-4000-8000-000000000005"]'::jsonb, 'the held letter is listed');
+	perform pg_temp.check(pg_temp.held_among('78600000-0000-4000-8000-0000000000e1', jsonb_build_array(
+		'0a000000-0000-4000-8000-000000000005', '0a000000-0000-4000-8000-000000000001', '0a000000-0000-4000-8000-0000000000aa'))
+		= '{"schema": "qorpera.digital-post-held-among/v1", "held": ["0a000000-0000-4000-8000-000000000005"]}'::jsonb,
+		'of a page''s letters, only the held one is named');
+	perform pg_temp.refused(format('select pg_temp.held_among(%L, %L)', '78600000-0000-4000-8000-0000000000e1',
+		(select jsonb_agg(extensions.gen_random_uuid()) from generate_series(1, 101))), '22023');
+	perform pg_temp.refused(format('select pg_temp.held_among(%L, %L)', '78600000-0000-4000-8000-0000000000e1',
+		'["not-a-uuid"]'), '22023');
 	perform pg_temp.refused(format('select pg_temp.finish(%L, %L, %L, %L, %L, %L, %L)', '78600000-0000-4000-8000-0000000000e1',
 		'current', '[]', null, null, 1, 3), '22023');
 	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'more', '[]', null, null, 1, 7);

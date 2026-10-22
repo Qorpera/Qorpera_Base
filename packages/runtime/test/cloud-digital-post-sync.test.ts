@@ -28,7 +28,6 @@ function claim(overrides: Record<string, unknown> = {}) {
 		keyId: "k1",
 		encryptedEnvelopeBase64: envelope.toString("base64"),
 		envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-		held: [],
 		scanPage: 0,
 		...overrides,
 	};
@@ -73,6 +72,8 @@ function fixture(
 		pages?: { ids: string[]; complete: boolean }[];
 		letterErrors?: Record<string, Error>;
 		now?: () => Date;
+		/** The letters the database holds already. */
+		held?: string[];
 	} = {},
 ) {
 	const log: string[] = [];
@@ -81,6 +82,7 @@ function fixture(
 	const chunks: Parameters<DigitalPostSyncAuthority["stageDigitalPostChunk"]>[0][] = [];
 	const held: Parameters<DigitalPostSyncAuthority["holdDigitalPostLetter"]>[0][] = [];
 	const letterIds = new Map<string, string>();
+	const heldSet = new Set(options.held ?? []);
 	const authority: DigitalPostSyncAuthority = {
 		claimDigitalPostSync: vi.fn(async () =>
 			typeof options.claim === "function" ? options.claim() : options.claim === undefined ? claim() : options.claim,
@@ -97,6 +99,10 @@ function fixture(
 				state: options.kept?.[input.summary.messageUuid] ?? "staging",
 			};
 		}),
+		heldDigitalPostLetters: vi.fn(async (input) => ({
+			schema: "qorpera.digital-post-held-among/v1",
+			held: input.memoIds.filter((id: string) => heldSet.has(id)),
+		})),
 		stageDigitalPostChunk: vi.fn(async (input) => {
 			chunks.push({ ...input, content: new Uint8Array(input.content) });
 			log.push(`stage ${input.fileIndex}/${input.chunkIndex}`);
@@ -108,6 +114,7 @@ function fixture(
 		}),
 		holdDigitalPostLetter: vi.fn(async (input) => {
 			held.push(input);
+			heldSet.add(input.memoId);
 			log.push(`hold ${input.memoId}`);
 			return { schema: "qorpera.digital-post-held/v1", held: true };
 		}),
@@ -156,7 +163,7 @@ function fixture(
 		post,
 		now: options.now ?? (() => NOW),
 	});
-	return { syncs, authority, keyring, post, log, finished, kept, chunks, held, opened, letterIds };
+	return { syncs, authority, keyring, post, log, finished, kept, chunks, held, heldSet, opened, letterIds };
 }
 
 it("is idle when nothing is due and refuses a claim it cannot read", async () => {
@@ -219,7 +226,7 @@ it("receipts a letter already kept without staging it again, skips held and gone
 	const gone = "0a000000-0000-4000-8000-0000000000ff";
 	const held = "0a000000-0000-4000-8000-0000000000ee";
 	const f = fixture({
-		claim: claim({ held: [held] }),
+		held: [held],
 		ids: [held, MEMO_A, gone],
 		letters: { [MEMO_A]: letter(MESSAGE_A), [gone]: null, [held]: letter(MESSAGE_B) },
 		kept: { [MESSAGE_A]: "kept" },
@@ -268,7 +275,7 @@ it("holds a letter Digital Post answers larger than Qorpera keeps, and takes the
 it("reads past a page of held letters to the letters after them", async () => {
 	const held = Array.from({ length: 50 }, (_, index) => `0b000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
 	const f = fixture({
-		claim: claim({ held }),
+		held,
 		pages: [
 			{ ids: held, complete: false },
 			{ ids: [MEMO_B], complete: true },
@@ -296,25 +303,20 @@ it("reads past a page of held letters to the letters after them", async () => {
 	expect(later.post.available).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.anything(), 7);
 });
 
-it("reaches a letter behind two thousand unreadable ones over passes, with the claim's held list capped", async () => {
-	// Digital Post's list: 2000 letters the vault cannot read, then one it can (page 40). The database keeps every hold
-	// but its claim lists only the newest 1000, as qorpera_claim_digital_post_sync does, and keeps the scan page.
+it("reaches a letter behind two thousand unreadable ones over passes", async () => {
+	// Digital Post's list: 2000 letters the vault cannot read, then one it can (page 40). The database keeps every hold,
+	// answers per page which are held, and keeps the scan page.
 	const bad = Array.from({ length: 2000 }, (_, index) => `0d000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
 	const pages = [
 		...Array.from({ length: 40 }, (_, page) => ({ ids: bad.slice(page * 50, page * 50 + 50), complete: false })),
 		{ ids: [MEMO_B], complete: true },
 	];
-	const holds: string[] = [];
 	let scanPage = 0;
 	const malformed = new Uint8Array(Buffer.from("<memo:Message>not closed"));
 	const f = fixture({
-		claim: () => claim({ held: [...new Set(holds)].slice(-1000), scanPage }),
+		claim: () => claim({ scanPage }),
 		pages,
 		letters: { ...Object.fromEntries(bad.map((id) => [id, malformed])), [MEMO_B]: letter(MESSAGE_B) },
-	});
-	f.authority.holdDigitalPostLetter = vi.fn(async (input) => {
-		holds.push(input.memoId);
-		return { schema: "qorpera.digital-post-held/v1", held: true };
 	});
 	f.authority.finishDigitalPostSync = vi.fn(async (input) => {
 		f.finished.push(input);
@@ -342,11 +344,10 @@ it("keeps its place through a slow Digital Post, over passes and a second sweep"
 		...Object.fromEntries(bad.map((id) => [id, malformed])),
 		[MEMO_B]: letter(MESSAGE_B),
 	};
-	const holds = new Set<string>();
 	const gone = new Set<string>();
 	let scanPage = 0;
 	let clock = NOW.getTime();
-	const f = fixture({ claim: () => claim({ held: [...holds], scanPage }), now: () => new Date(clock) });
+	const f = fixture({ claim: () => claim({ scanPage }), now: () => new Date(clock) });
 	f.post.available.mockImplementation(async (_key: unknown, _signal: AbortSignal, page = 0) => {
 		const listed = pages[page] ?? { ids: [], complete: true };
 		return { ids: listed.ids.filter((id) => !gone.has(id)), complete: listed.complete };
@@ -359,10 +360,6 @@ it("keeps its place through a slow Digital Post, over passes and a second sweep"
 		gone.add(id);
 		return "receipted" as const;
 	});
-	f.authority.holdDigitalPostLetter = vi.fn(async (input) => {
-		holds.add(input.memoId);
-		return { schema: "qorpera.digital-post-held/v1", held: true };
-	});
 	f.authority.finishDigitalPostSync = vi.fn(async (input) => {
 		f.finished.push(input);
 		scanPage = input.scanPage;
@@ -371,7 +368,7 @@ it("keeps its place through a slow Digital Post, over passes and a second sweep"
 	const outcomes: string[] = [];
 	for (let pass = 0; pass < 10 && !gone.has(MEMO_B); pass += 1) outcomes.push(await f.syncs.pass(signal));
 	expect(outcomes).toEqual(["more", "more", "more", "more", "more", "current"]);
-	expect(holds.size).toBe(2000);
+	expect(f.heldSet.size).toBe(2000);
 	expect(f.post.letter).toHaveBeenCalledTimes(2001);
 	// The second sweep reads past every held letter without fetching one.
 	const sweep: string[] = [];
@@ -385,10 +382,21 @@ it("asks for more at once when the list was full and it took a letter, or when i
 	expect(await took.syncs.pass(signal)).toBe("more");
 	expect(took.finished[0]?.scanPage).toBe(0);
 	// A list that never ends is read for twenty pages; the next pass reads on from there.
-	const allHeld = fixture({ complete: false, claim: claim({ held: [MEMO_A], scanPage: 3 }) });
+	const allHeld = fixture({ complete: false, held: [MEMO_A], claim: claim({ scanPage: 3 }) });
 	expect(await allHeld.syncs.pass(signal)).toBe("more");
 	expect(allHeld.post.available).toHaveBeenCalledTimes(20);
 	expect(allHeld.finished[0]).toMatchObject({ outcome: "more", scanPage: 23 });
+});
+
+it("refuses a held answer that names a letter it did not ask about", async () => {
+	const f = fixture();
+	f.authority.heldDigitalPostLetters = vi.fn(async () => ({
+		schema: "qorpera.digital-post-held-among/v1",
+		held: ["0f000000-0000-4000-8000-000000000000"],
+	}));
+	expect(await f.syncs.pass(signal)).toBe("failed");
+	expect(f.finished[0]?.error).toBe("the database did not say which letters are held");
+	expect(f.post.letter).not.toHaveBeenCalled();
 });
 
 it("stops on a refused key, and on a key that is not one", async () => {

@@ -14,9 +14,10 @@
 -- - qorpera_digital_post_chunks: the staged files' bytes, in 1 MiB chunks (each vault call stays small). The folder
 --   writer deletes them once the letter is written.
 -- - qorpera_digital_post_held: letters the vault could not read (malformed, too large). They are never receipted, so
---   Digital Post moves them to the company's mailbox on Virk after seven days; the vault skips them meanwhile. Held
---   letters stay on Digital Post's list, so the sync remembers the page a pass stopped at (scan_page) and the next pass
---   reads on from there: every letter is reached, however many are held before it.
+--   Digital Post moves them to the company's mailbox on Virk after seven days; the vault skips them meanwhile, asking
+--   for each page of Digital Post's list which of its letters are held. Held letters stay on that list, so the sync
+--   remembers the page a pass stopped at (scan_page) and the next pass reads on from there: every letter is reached,
+--   however many are held before it.
 -- - qorpera_digital_post_settings: the platform's one row, set by operators: the Digital Post environment, Qorpera's
 --   CVR (the supplier a company names) and the vault's public addresses (the IPs a company lists), which Settings shows
 --   in the setup steps. Without it, Settings says Digital Post is not available yet.
@@ -201,8 +202,8 @@ $$;
 revoke all on function public.qorpera_digital_post_leased(uuid, uuid, bigint, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The company's due sync, leased for fifteen minutes to this claim, with its sealed key, every letter held (not to be
--- fetched again) and the page to start at: null when nothing is due. A secret no longer active, or sealed by another authority, stops the
+-- The company's due sync, leased for fifteen minutes to this claim, with its sealed key and the page to start at: null
+-- when nothing is due. Held letters older than eight days are forgotten: Digital Post moved them to Virk after seven. A secret no longer active, or sealed by another authority, stops the
 -- sync here. Held letters older than eight days are forgotten: Digital Post moved them to Virk after seven.
 create function public.qorpera_claim_digital_post_sync(p_broker_authority_id uuid, p_broker_capability_sha256 text)
 returns jsonb
@@ -216,7 +217,6 @@ declare
 	v_row record;
 	v_now timestamptz := clock_timestamp();
 	v_lease uuid := extensions.gen_random_uuid();
-	v_held jsonb;
 begin
 	v_authority := public.qorpera_digital_post_authority(p_broker_authority_id, p_broker_capability_sha256);
 	select sync.secret_id, sync.secret_version, sync.scan_page, secret.status as secret_status, secret.current_version,
@@ -245,15 +245,6 @@ begin
 	where profile_id = v_authority.profile_id;
 	delete from public.qorpera_digital_post_held
 	where profile_id = v_authority.profile_id and held_at < v_now - interval '8 days';
-	-- Every held letter: they live at most eight days, and Digital Post keeps a letter at most seven. The bound is only a
-	-- guard; past it the vault fetches the oldest again and holds them again, reading on all the same.
-	select coalesce(jsonb_agg(held.memo_id order by held.memo_id), '[]'::jsonb) into v_held
-	from (
-		select memo_id from public.qorpera_digital_post_held
-		where profile_id = v_authority.profile_id
-		order by held_at desc
-		limit 100000
-	) as held;
 	return jsonb_build_object(
 		'schema', 'qorpera.digital-post-sync-claim/v1',
 		'companyId', v_authority.profile_id, 'environmentId', v_row.environment_id,
@@ -261,7 +252,6 @@ begin
 		-- Postgres breaks base64 lines at 76 characters; the claim carries one line.
 		'encryptedEnvelopeBase64', translate(encode(v_row.encrypted_envelope, 'base64'), E'\n', ''),
 		'envelopeSha256', v_row.envelope_sha256,
-		'held', v_held,
 		'scanPage', v_row.scan_page
 	);
 end
@@ -269,6 +259,46 @@ $$;
 revoke all on function public.qorpera_claim_digital_post_sync(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_claim_digital_post_sync(uuid, text) to qorpera_secret_broker;
+
+-- Which of a page of Digital Post's letters (at most 100 ids) the company holds (this claim's lease only): the vault skips
+-- them. Asked per page, so it is complete however many letters are held.
+create function public.qorpera_digital_post_held_among(
+	p_broker_authority_id uuid,
+	p_broker_capability_sha256 text,
+	p_secret_id uuid,
+	p_secret_version bigint,
+	p_lease_id uuid,
+	p_memo_ids jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set lock_timeout = '2s'
+as $$
+declare
+	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
+	v_held jsonb;
+begin
+	v_authority := public.qorpera_digital_post_authority(p_broker_authority_id, p_broker_capability_sha256);
+	if jsonb_typeof(p_memo_ids) is distinct from 'array' or jsonb_array_length(p_memo_ids) > 100
+		or exists (select 1 from jsonb_array_elements(p_memo_ids) as item(value)
+			where jsonb_typeof(item.value) <> 'string'
+				or item.value #>> '{}' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
+		raise exception 'Digital Post letter ids are invalid' using errcode = '22023';
+	end if;
+	perform public.qorpera_digital_post_leased(v_authority.profile_id, p_secret_id, p_secret_version, p_lease_id);
+	select coalesce(jsonb_agg(held.memo_id order by held.memo_id), '[]'::jsonb) into v_held
+	from public.qorpera_digital_post_held as held
+	where held.profile_id = v_authority.profile_id
+		and held.memo_id in (select (item.value #>> '{}')::uuid from jsonb_array_elements(p_memo_ids) as item(value));
+	return jsonb_build_object('schema', 'qorpera.digital-post-held-among/v1', 'held', v_held);
+end
+$$;
+revoke all on function public.qorpera_digital_post_held_among(uuid, text, uuid, bigint, uuid, jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_digital_post_held_among(uuid, text, uuid, bigint, uuid, jsonb)
+	to qorpera_secret_broker;
 
 -- Whether a letter's summary has the shape the Mailbox and the folder's index read (digital-post-letter-files.ts,
 -- DigitalPostLetterSummary).
