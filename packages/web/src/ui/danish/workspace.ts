@@ -570,6 +570,7 @@ export const WORKSPACE: Record<string, string> = {
 		"Saldo og det, der går ind og ud, vises her inden for få minutter.",
 	"An owner or admin can connect the company's bank.": "En ejer eller administrator kan forbinde virksomhedens bank.",
 	"Connect the bank": "Forbind banken",
+	"The bank connection could not be read.": "Bankforbindelsen kunne ikke læses.",
 	"Connect again": "Forbind igen",
 	"Connect the company's bank": "Forbind virksomhedens bank",
 	"Which bank does the company use?": "Hvilken bank bruger virksomheden?",

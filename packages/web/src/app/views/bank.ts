@@ -192,6 +192,8 @@ class BankView {
 	readonly #lifetime = new AbortController();
 	/** The company's bank connection: undefined until read (or with no client), null when there is none. */
 	#bank: HostedConnectorConnection | null | undefined;
+	/** The last read of the connection failed: the page says so and offers to read it again. */
+	#bankUnread = false;
 	/** A sign-in that came back is being finished. */
 	#finishing = false;
 	/** What the last connect did, said under the page's heading. */
@@ -225,11 +227,46 @@ class BankView {
 						(item) => item.connectorId === "bank" && item.status === "active" && item.ownerKind === "company",
 					)
 					.sort((left, right) => right.version - left.version)[0] ?? null;
+			this.#bankUnread = false;
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#bank = undefined;
+			this.#bankUnread = true;
 		}
 		this.#redraw();
+	}
+
+	/** What the page says about the bank connection beside its numbers or its empty state: a sign-in being finished,
+	 * how the last one went, or a connection that could not be read, with Try again. */
+	#connectionLines(): HTMLElement[] {
+		const lines: HTMLElement[] = [];
+		if (this.#finishing)
+			lines.push(h("div", { class: "bank-note-line" }, spinner(t("Finishing the bank connection"))));
+		if (this.#note)
+			lines.push(h("p", { class: `bank-note-line is-${this.#note.tone}`, role: "status" }, this.#note.text));
+		if (this.#bankUnread && this.#canConnect())
+			lines.push(
+				h(
+					"p",
+					{ class: "bank-note-line is-error", role: "status" },
+					t("The bank connection could not be read."),
+					" ",
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
+							onclick: () => {
+								this.#bankUnread = false;
+								this.#redraw();
+								void this.#readConnection();
+							},
+						},
+						t("Try again"),
+					),
+				),
+			);
+		return lines;
 	}
 
 	/** The bank sent the member back: the vault seals the session only for this tab's proof. */
@@ -259,7 +296,9 @@ class BankView {
 
 	/** Draws the summary when its text, the language or the company's state it shows changed. */
 	update(text: string | undefined, loading: boolean): void {
-		const key = JSON.stringify([text ?? null, loading, presentationLocale()]);
+		// The connect controls depend on the member's role, so a role change draws the page again.
+		const role = this.#company.store.get().team?.role ?? null;
+		const key = JSON.stringify([text ?? null, loading, presentationLocale(), role]);
 		if (key === this.el.dataset.drawn) return;
 		this.el.dataset.drawn = key;
 		if (text !== this.#text) {
@@ -336,6 +375,7 @@ class BankView {
 				h(
 					"div",
 					{ class: "bank-column" },
+					...this.#connectionLines(),
 					summary.pausedSince ? this.#paused(summary) : null,
 					h("div", { class: summary.pausedSince ? "bank-dimmed" : "" }, body),
 				),
@@ -350,9 +390,7 @@ class BankView {
 	}
 
 	#empty(unreadable: boolean): HTMLElement {
-		const note = this.#note
-			? h("p", { class: `bank-note-line is-${this.#note.tone}`, role: "status" }, this.#note.text)
-			: null;
+		const note = this.#connectionLines();
 		if (unreadable)
 			return h(
 				"div",
@@ -360,20 +398,20 @@ class BankView {
 				h("h1", null, t("The bank summary can't be read")),
 				h("p", null, t("Its file in the company folder doesn't follow the bank summary format.")),
 			);
-		if (this.#finishing) return h("div", { class: "bank-empty" }, spinner(t("Finishing the bank connection")));
+		if (this.#finishing) return h("div", { class: "bank-empty" }, ...note);
 		if (this.#bank)
 			return h(
 				"div",
 				{ class: "bank-empty" },
 				h("h1", null, t("The bank is connected")),
-				note,
+				...note,
 				h("p", null, t("Its saldo and what comes in and goes out show here within a few minutes.")),
 			);
 		return h(
 			"div",
 			{ class: "bank-empty" },
 			h("h1", null, t("No bank yet")),
-			note,
+			...note,
 			h(
 				"p",
 				null,
@@ -427,10 +465,14 @@ class BankView {
 		let step = 1;
 		let starting = false;
 		let failed = false;
+		// The sign-in this dialog starts: closing the dialog (or leaving the page, which closes it) ends it, so a late
+		// answer never sends the member to the bank.
+		const attempt = new AbortController();
 		const gone = new MutationObserver(() => {
 			if (!this.el.isConnected) dialog.close(false);
 		});
 		const dialog = new SurfaceDialog(t("Connect the company's bank"), "bank-connect-dialog", () => {
+			attempt.abort();
 			gone.disconnect();
 			if (this.#dialog === dialog) this.#dialog = null;
 		});
@@ -439,16 +481,17 @@ class BankView {
 			starting = true;
 			failed = false;
 			draw();
+			const signal = AbortSignal.any([this.#lifetime.signal, attempt.signal]);
 			try {
-				const url = await client.beginSignIn("bank", existingSecretId, this.#lifetime.signal, {
+				const url = await client.beginSignIn("bank", existingSecretId, signal, {
 					name: chosen,
 					country: "DK",
 					psuType: personal ? "personal" : "business",
 				});
-				if (this.#lifetime.signal.aborted) return;
+				if (signal.aborted) return;
 				this.#navigate(url);
 			} catch {
-				if (this.#lifetime.signal.aborted) return;
+				if (signal.aborted) return;
 				starting = false;
 				failed = true;
 				draw();

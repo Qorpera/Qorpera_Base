@@ -472,6 +472,84 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 		expect(none.finishSignIn).not.toHaveBeenCalled();
 	});
 
+	it("never sends the member to the bank once the dialog is closed while the sign-in starts", async () => {
+		const bank = client();
+		let answer: (url: string) => void = () => {};
+		bank.beginSignIn.mockImplementationOnce(
+			() =>
+				new Promise<string>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const { container, navigate } = await connectable(bank);
+		click(container, "Connect the bank");
+		click(dialog() as HTMLElement, "Continue");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		const signal = bank.beginSignIn.mock.calls[0]?.[2] as AbortSignal;
+		expect(signal.aborted).toBe(false);
+		dialog()?.querySelector<HTMLButtonElement>(".surface-close")?.click();
+		expect(signal.aborted).toBe(true);
+		answer("https://tilisy.enablebanking.com/ais/start?sessionid=late");
+		await settle();
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("says how a Connect again went beside the paused numbers", async () => {
+		const signIn = {
+			ticketId: id(20),
+			connectorId: "bank" as const,
+			companyId: profileA.profileId,
+			serviceOrigin: "https://company41-node-01.tailbb15c7.ts.net:10000",
+			browserProof: "p".repeat(43),
+			startedAt: Date.now(),
+		};
+		const paused = JSON.stringify(summary({ pausedSince: "2026-10-20" }));
+		noteBankReturn({ connector: "bank", connection: "confirm", confirmation: "c".repeat(43), signIn });
+		const renewed = await connectable(client([connection()]), paused);
+		expect(renewed.container.textContent).toContain(
+			"The bank is connected. Its numbers arrive here within a few minutes.",
+		);
+		expect(renewed.container.textContent).toContain("282.730 kr");
+		noteBankReturn({ connector: "bank", connection: "failed", reason: "declined", signIn });
+		const declined = await connectable(client([connection()]), paused);
+		expect(declined.container.textContent).toContain(
+			"The bank was not connected. No account was shared with Qorpera.",
+		);
+		const refused = client([connection()]);
+		refused.finishSignIn.mockRejectedValueOnce(Object.assign(new Error("refused"), { reason: "expired" }));
+		noteBankReturn({ connector: "bank", connection: "confirm", confirmation: "c".repeat(43), signIn });
+		const late = await connectable(refused, paused);
+		expect(late.container.textContent).toContain("The bank was not connected. The sign-in took too long. Try again.");
+	});
+
+	it("says the connection could not be read, and reads it again on Try again", async () => {
+		const bank = client();
+		bank.list.mockRejectedValueOnce(new Error("rpc"));
+		const { container } = await connectable(bank);
+		expect(container.textContent).toContain("The bank connection could not be read.");
+		expect(container.textContent).not.toContain("Connect the bank");
+		click(container, "Try again");
+		await settle();
+		expect(bank.list).toHaveBeenCalledTimes(2);
+		expect(container.textContent).not.toContain("could not be read");
+		click(container, "Connect the bank");
+		expect(dialog()).not.toBeNull();
+	});
+
+	it("shows or hides Connect the bank as the member's role changes", async () => {
+		const bank = client();
+		const { container, controller } = await connectable(bank, undefined, "contributor");
+		const buttons = () => [...container.querySelectorAll("button")].map((button) => button.textContent?.trim());
+		expect(buttons()).not.toContain("Connect the bank");
+		const team = controller.store.get().team;
+		if (team) controller.store.set({ team: { ...team, role: "admin" } });
+		renderBank(container, controller, { connection: () => bank });
+		expect(buttons()).toContain("Connect the bank");
+		if (team) controller.store.set({ team: { ...team, role: "contributor" as "owner" } });
+		renderBank(container, controller, { connection: () => bank });
+		expect(buttons()).not.toContain("Connect the bank");
+	});
+
 	it("offers Connect again when the bank paused sharing, replacing the company's connection", async () => {
 		const bank = client([connection()]);
 		const { container } = await connectable(bank, JSON.stringify(summary({ pausedSince: "2026-10-20" })));

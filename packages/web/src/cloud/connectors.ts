@@ -402,6 +402,8 @@ export function createWebConnectors(
 		},
 		async beginSignIn(connectorId, existingSecretId, signal, bank) {
 			if ((connectorId === "bank") !== (bank !== undefined)) throw new Error("Invalid bank sign-in.");
+			// The page the sign-in was started on, read now: the member may move on while the ticket is issued.
+			const returnTo = `${location.origin}/${location.hash}`;
 			const issued = await ticket(connectorId, existingSecretId);
 			// This tab's proof: only its hash goes to the broker now; the proof
 			// itself only with the confirmation after the provider sends us back.
@@ -413,7 +415,7 @@ export function createWebConnectors(
 						schema: "qorpera.cloud-connector-oauth-start/v2",
 						captureCapability: issued.captureCapability,
 						// The broker returns only to the app's root page; the route is in the hash.
-						returnTo: `${location.origin}/${location.hash}`,
+						returnTo,
 						browserProofSha256: await sha256Hex(browserProof),
 						...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
 					},

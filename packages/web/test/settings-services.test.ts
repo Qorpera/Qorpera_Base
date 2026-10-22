@@ -443,6 +443,30 @@ describe("connector client", () => {
 		expect(location.hash).toBe(`#/c/${id(10)}/i/bank`);
 	});
 
+	it("returns to the page the sign-in was started on, even when the member moved on meanwhile", async () => {
+		history.replaceState(null, "", `#/c/${id(10)}/i/bank`);
+		const cloud = cloudWith(() => {
+			// The member moves to another page while the ticket is issued.
+			history.replaceState(null, "", `#/c/${id(10)}/i/members`);
+			return ticket;
+		});
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({
+				schema: "qorpera.cloud-connector-oauth-started/v1",
+				connectorId: "bank",
+				authorizationUrl: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
+				expiresAt: timestamp,
+			}),
+		);
+		await createWebConnectors(cloud, profile, fetch).beginSignIn("bank", undefined, undefined, {
+			name: "Danske Bank",
+			country: "DK",
+			psuType: "business",
+		});
+		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+		expect(body.returnTo).toBe(`${location.origin}/#/c/${id(10)}/i/bank`);
+	});
+
 	it("finishes the sign-in with this tab's proof once and forgets it", async () => {
 		startedHere("gmail");
 		history.replaceState(null, "", `#/?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`);
