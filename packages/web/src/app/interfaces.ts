@@ -29,6 +29,7 @@ import type { MemberInterfaceOffer } from "../cloud/interface-offers.ts";
 import { INTERFACE_PAGES } from "../cloud/interface-pages.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
+import { mailShown } from "./company-mail.ts";
 import type { FolderProblem, FolderTable } from "./interface-folder.ts";
 import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -444,9 +445,9 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 		// listed and its table says it can't be read.
 		if (need.startsWith("table:"))
 			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
-		// The company has a live mailbox when the member mail read lists an address (step I5c); its answer is empty while
-		// the company's mail is off. No member can read the company's connections here yet.
-		if (need === "mail") return (company.store.get().mail?.addresses.length ?? 0) > 0;
+		// The company has mail when the member mail read lists an address (step I5c; its answer is empty while the
+		// company's mail is off), or when its Digital Post is connected or holds letters (RUNTIME-DIGITAL-POST.md).
+		if (need === "mail") return mailShown(company.store.get().mail);
 		return false;
 	});
 }

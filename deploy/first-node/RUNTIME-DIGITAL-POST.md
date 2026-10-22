@@ -150,10 +150,25 @@ documents with the folder tools. Like event and file-change routines, such a rou
 
 ## The Mailbox
 
-The Mailbox lists letters from `digital-post/letters.json` in its Inbox among the email threads, newest first, with
-the sender as the name and a Digital Post mark, and opens a letter from its `letter.md` with its documents. The
-Addresses tab has a "Digital Post" row with the agents whose routines watch `digital-post`. It works whether company
-email is switched on or not.
+The Mailbox (`packages/web/src/app/views/mailbox.ts`) lists the letters of `digital-post/letters.json` in its Inbox
+among the email threads by when they came, as far back as the threads are read: the authority as the sender, the
+title and the start of the text, a Digital Post mark, and "Legal effect" where the letter has it. Search finds letters
+too. A letter opens from its `letter.md`: its flags, its text, its documents (which open in Storage) and a line to send
+a note about it to an agent the member picks, the Co-Founder at first. The note names the letter by its message id and
+its year's folder, never by its title or sender, since a member's message quotes outside words only from email.
+While Digital Post is connected or holds letters, the Addresses tab has a "Digital Post" row: how it stands, how many
+letters, and "Choose who reads it", which asks the Co-Founder to set the routine up. The Mailbox shows while the
+company has an email address, or Digital Post connected or holding letters, so it works whether company email is
+switched on or not. The index is read with the member's own folder access, again on the Mailbox's 20-second read only
+when its version changed; an open letter is read again then too.
+
+Settings → Company connections has a Digital Post card (`views/settings-digital-post.ts`): how the connection stands
+(when it last checked, the system, how many letters, how many Digital Post moved to Virk) and, for an owner or admin,
+Connect with the steps in Administrativ Adgang (Qorpera's CVR and the vault's addresses from
+`qorpera_digital_post_settings`) and the key's field, then Replace key and Disconnect. Disconnect revokes the key and
+says to remove the system in Administrativ Adgang too. A pasted key is checked to be base64 of a system id and its key
+before it goes to the vault. Until operators set the settings row the card says Digital Post is not available yet. On
+a cloud without `qorpera_member_digital_post`, the card and the Mailbox's Digital Post stay hidden.
 
 ## Security
 
