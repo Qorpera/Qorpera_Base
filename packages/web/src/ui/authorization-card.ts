@@ -1,5 +1,6 @@
 import { ACTION_REVIEW_SCHEMA, type ActionReviewAnswer, type ActionReviewCard } from "../cloud/review-rules.ts";
 import type { JsonValue } from "../cloud/types.ts";
+import { stoppedCardNote } from "./card-notes.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
 import { phrase, t } from "./preferences.ts";
 
@@ -274,6 +275,8 @@ export function renderActionReviewCard(
 		memberName: (userId: string) => string;
 		/** An earlier answer never reached the agent: the card is open again. */
 		answerFailed?: boolean;
+		/** A member stopped the work that raised the card: it stays open, and an answer starts new work. */
+		chainStopped?: boolean;
 		draft?: ActionReviewDraft;
 		onDraft?: (draft: ActionReviewDraft) => void;
 	},
@@ -382,6 +385,9 @@ export function renderActionReviewCard(
 		options.answerFailed && options.answer
 			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
 			: null;
+	const stopped = options.chainStopped
+		? h("p", { class: "review-stopped" }, stoppedCardNote(Boolean(options.answer)))
+		: null;
 	const alwaysButton = card.alwaysAllow
 		? h(
 				"button",
@@ -442,6 +448,7 @@ export function renderActionReviewCard(
 			),
 			reasons,
 			failed,
+			stopped,
 			options.answer
 				? h(
 						"div",
@@ -470,6 +477,7 @@ export function renderActionReviewCard(
 		reviewChange(card),
 		reasons,
 		failed,
+		stopped,
 		options.answer
 			? h(
 					"div",

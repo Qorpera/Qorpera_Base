@@ -1798,9 +1798,9 @@ company-visible and answerable:
   of a run in a conversation (7.3) ends that run's whole chain: every live run
   with the same causal root (the other agent's, the agents' workers'), every
   wake still queued in it, and every held message a run of the chain sent that
-  no run has read yet. The root is recorded as stopped, so a wake the chain
-  would still cause (a late worker report, a machine event, a file change it
-  made) is cancelled at admission. Who may stop is unchanged: the Stop cancels
+  is still waiting to be read. The root is recorded as stopped, so a wake the
+  chain would still cause (a late worker report, a machine event, a file change
+  it made) is cancelled at admission. Who may stop is unchanged: the Stop cancels
   only runs the member could stop one by one. An outside action already sent
   keeps its receipt state; nothing is undone or sent again. Cards the chain
   raised stay open and say that their chain was stopped; an answer to one

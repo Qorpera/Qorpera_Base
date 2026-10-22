@@ -220,6 +220,28 @@ describe("interaction cards", () => {
 		const other = renderInteractionCard({ ...item(question), answerFailed: true }, context({ canAnswer: false }));
 		expect(other.textContent).not.toContain("did not reach");
 	});
+
+	it("says a member stopped the work behind an open card, which stays answerable", () => {
+		const card = renderInteractionCard({ ...item(question), chainStopped: true }, context());
+		expect(card.dataset.state).toBe("waiting");
+		expect(card.textContent).toContain(
+			"A member stopped the work that raised this card. Answering it starts new work.",
+		);
+		expect(card.querySelectorAll(".interaction-options .btn")).toHaveLength(2);
+		// Whoever cannot answer reads only that the work was stopped.
+		const other = renderInteractionCard({ ...item(question), chainStopped: true }, context({ canAnswer: false }));
+		expect(other.textContent).toContain("A member stopped the work that raised this card.");
+		expect(other.textContent).not.toContain("Answering it");
+		// An answered card shows its answer, not the note.
+		const answered = renderInteractionCard(
+			{
+				...item(question, { outcome: "answered", answer: { values: ["general"] }, answeredBy: MEMBER }),
+				chainStopped: true,
+			},
+			context(),
+		);
+		expect(answered.textContent).not.toContain("stopped");
+	});
 });
 
 describe("who answers a card", () => {
