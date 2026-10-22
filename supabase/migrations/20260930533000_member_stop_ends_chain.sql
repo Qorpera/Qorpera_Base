@@ -7,13 +7,15 @@
 -- worker's start and report, a machine event and a file change a run made carry their parent run's root.
 --
 -- 1. qorpera_stopped_chains records a stopped root: who stopped it, the run they named, when.
--- 2. The conversation Stop, after the member's own cancel (who may stop is unchanged), calls qorpera_stop_run_chain:
+-- 2. The conversation Stop takes the chain's lock (an advisory lock on the profile and root) before it locks the job it
+--    names, so two Stops of one chain run one after the other instead of each holding a job the other needs. After the
+--    member's own cancel (who may stop is unchanged) it calls qorpera_stop_run_chain:
 --    a. it records the root;
---    b. it cancels every wake of the root still queued (a coworker message that has not woken anyone, a worker's start
---       not yet run);
+--    b. it cancels every wake of the root still queued that no one holds (a coworker message that has not woken anyone,
+--       a worker's start not yet run); one the materializer holds is refused by it (3);
 --    c. it cancels every other live run of the root through the cancel's own terminal step and audit, recording the
---       member, but only a run the member could stop alone (they created its job and may write its conversation, or
---       they are an owner or admin). After (b): a wake the materializer holds is waited for, and its run is found here;
+--       member, but only a run the member could stop alone (they may write its conversation, and they created its job
+--       or are an owner or admin);
 --    d. it withdraws the held messages a run of the chain sent that no live run has read (they would be read at the
 --       recipient's next wake); the pair transcript keeps them;
 --    e. it adds one session_info event, qorpera.chain-stopped/v1, to each open conversation where a run of the chain
@@ -21,8 +23,15 @@
 --    A Stop on a run that already ended still ends its chain when the member may stop that run; a retried Stop finds
 --    nothing left to cancel and adds no second note.
 -- 3. The chain stays stopped: the pin trigger cancels a new wake whose root is stopped at admission (as the company pause
---    does), and a wake admitted while the Stop committed is refused when the materializer makes it a run (it cancels a
---    wake whose update raises 42501, with the reason).
+--    does). A wake admitted beside a Stop, before its record was visible, meets the materializer, the one step that
+--    makes wakes runs: its update takes the chain's lock shared without waiting. While a Stop holds the lock the update
+--    raises 55P03 and the materializer leaves the wake queued for its next pass; once the Stop committed, a stopped root
+--    raises 42501 and the materializer cancels the wake with the reason. A materializer that took the lock first holds
+--    it until it commits, so the Stop waits for it and then finds the new run in (c). The materializer never waits on
+--    a Stop, and a Stop takes the lock before any other, so neither waits on the other in a cycle.
+--    The steps that carry a parent run's machine events and check-ins (qorpera_folder_parent_continuation) and its
+--    office start (qorpera_folder_office_wakes_company) treat a parent whose chain was stopped as stopped, so they put
+--    their items away instead of trying a wake that admission cancels on every pass.
 -- 4. An outside action already sent keeps its receipt: nothing here touches run receipts, the mail outbox or effects.
 -- 5. An answer to a card of a stopped chain starts a new reviewed run instead of reviving the stopped one:
 --    qorpera_answer_action_review wakes the agent whenever the card's run has ended (before, an answer given within the
@@ -50,10 +59,20 @@ revoke all on table public.qorpera_stopped_chains from public, anon, authenticat
 create index qorpera_wake_occurrences_causal_root on public.qorpera_wake_occurrences(profile_id, causal_root_id)
 	where causal_root_id is not null;
 
+-- The chain's lock: a Stop takes it before any job lock, the materializer takes it shared without waiting.
+create function public.qorpera_causal_chain_key(p_profile_id uuid, p_root uuid)
+returns bigint language sql immutable set search_path = '' as $$
+	select pg_catalog.hashtextextended('qorpera.causal-chain:' || p_profile_id::text || ':' || p_root::text, 0)
+$$;
 create function public.qorpera_causal_chain_stopped(p_profile_id uuid, p_root uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select p_root is not null and exists (select 1 from public.qorpera_stopped_chains stopped
 		where stopped.profile_id = p_profile_id and stopped.causal_root_id = p_root)
+$$;
+create function public.qorpera_run_chain_stopped(p_run_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (select 1 from public.qorpera_wake_occurrences wake
+		where wake.run_id = p_run_id and public.qorpera_causal_chain_stopped(wake.profile_id, wake.causal_root_id))
 $$;
 
 -- Ends the chain of the run a member just stopped (or tried to stop after it ended), as that member. Called by the
@@ -69,15 +88,20 @@ declare
 begin
 	select wake.* into v_wake from public.qorpera_wake_occurrences wake where wake.run_id = p_run_id;
 	if v_user is null or v_wake.causal_root_id is null then return null; end if;
+	-- The Stop took it before its job; taken again it is the same lock.
+	perform pg_advisory_xact_lock(public.qorpera_causal_chain_key(v_wake.profile_id, v_wake.causal_root_id));
 	select member.role into v_role from public.qorpera_profile_members member
 	where member.profile_id = v_wake.profile_id and member.user_id = v_user;
 	-- a. The root, first: from here on the chain admits nothing new.
 	insert into public.qorpera_stopped_chains(profile_id, causal_root_id, stopped_run_id, stopped_by_user_id)
 	values (v_wake.profile_id, v_wake.causal_root_id, p_run_id, v_user) on conflict do nothing;
 	v_recorded := found;
-	-- b. Its wakes still queued.
+	-- b. Its wakes still queued. One a step holds (the materializer making it a run) is left to it: the materializer
+	-- refuses it, or it took the chain's lock first and the Stop found its run already.
 	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(), blocked_reason = v_reason
-	where profile_id = v_wake.profile_id and causal_root_id = v_wake.causal_root_id and status = 'queued';
+	where id in (select wake.id from public.qorpera_wake_occurrences wake
+		where wake.profile_id = v_wake.profile_id and wake.causal_root_id = v_wake.causal_root_id and wake.status = 'queued'
+		order by wake.id for update skip locked);
 	get diagnostics v_wakes = row_count;
 	-- c. Its other live runs, each one the member could stop alone, in job order.
 	select array_agg(s.id order by s.id) into v_jobs from (
@@ -129,16 +153,22 @@ begin
 		'cardNotes', v_notes);
 end
 $$;
-revoke all on function public.qorpera_causal_chain_stopped(uuid, uuid), public.qorpera_stop_run_chain(uuid)
+revoke all on function public.qorpera_causal_chain_key(uuid, uuid), public.qorpera_causal_chain_stopped(uuid, uuid),
+	public.qorpera_run_chain_stopped(uuid), public.qorpera_stop_run_chain(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- 3. A wake the materializer would make a run of a stopped chain is refused; the materializer cancels it with the reason.
+-- 3. The materializer's update of a wake with an older root (one with a parent run): the chain's lock shared, without
+-- waiting (55P03 leaves the wake queued for the next pass), then a stopped root refuses (42501 cancels it).
 create function public.qorpera_refuse_stopped_chain_run()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
-	if old.status = 'queued' and new.status = 'materialized'
-		and public.qorpera_causal_chain_stopped(new.profile_id, new.causal_root_id) then
-		raise exception 'A member stopped this chain of agent work' using errcode = '42501'; end if;
+	if old.status = 'queued' and new.status = 'materialized' and new.parent_run_id is not null
+		and new.causal_root_id is not null then
+		if not pg_try_advisory_xact_lock_shared(public.qorpera_causal_chain_key(new.profile_id, new.causal_root_id)) then
+			raise exception 'A member is stopping this chain of agent work' using errcode = '55P03'; end if;
+		if public.qorpera_causal_chain_stopped(new.profile_id, new.causal_root_id) then
+			raise exception 'A member stopped this chain of agent work' using errcode = '42501'; end if;
+	end if;
 	return new;
 end
 $$;
@@ -156,10 +186,22 @@ begin
 end
 $$;
 
--- 2. The conversation Stop ends the run's chain.
+-- 2. The conversation Stop takes the chain's lock before the job it names, and ends the run's chain.
+select pg_temp.chain_patch('public.qorpera_cancel_session_run_profile_scope(uuid,uuid)',
+	$old$	select job.* into v_job
+	from public.qorpera_runner_jobs as job$old$,
+	$new$	-- 20260930533000: the run's chain lock first, so two Stops of one chain never hold a job the other waits for.
+	perform pg_advisory_xact_lock(public.qorpera_causal_chain_key(wake.profile_id, wake.causal_root_id))
+	from public.qorpera_execution_runs as run join public.qorpera_wake_occurrences as wake on wake.run_id = run.id
+	where run.id = p_run_id and run.session_id = v_session.id and run.profile_id = v_session.profile_id
+		and wake.causal_root_id is not null;
+	select job.* into v_job
+	from public.qorpera_runner_jobs as job$new$);
 select pg_temp.chain_patch('public.qorpera_cancel_session_run_profile_scope(uuid,uuid)',
 	$old$	return jsonb_build_object('session_id', p_session_id, 'run_id', p_run_id, 'status', v_job.status);$old$,
-	$new$	-- 20260930533000 (2026-10-22 amendment, item 4): one Stop ends the run's whole chain.
+	$new$	-- 20260930533000 (2026-10-22 amendment, item 4): one Stop ends the run's whole chain. A late click, on a run that
+	-- ended first, still ends it: the cancel above is not redirected, but the chain is the member's to stop. A retry
+	-- finds nothing left to end.
 	perform public.qorpera_stop_run_chain(p_run_id);
 	return jsonb_build_object('session_id', p_session_id, 'run_id', p_run_id, 'status', v_job.status);$new$);
 
@@ -187,3 +229,16 @@ select pg_temp.chain_patch('public.qorpera_wake_origin(public.qorpera_wake_occur
 	$new$		and card.staff_agent_id = p_wake.staff_agent_id and card.requested_by_user_id = p_wake.requested_by_user_id
 		-- 20260930533000: the answer to a stopped chain's card starts new work, reviewed against the answer.
 		and not public.qorpera_causal_chain_stopped(card.profile_id, card_wake.causal_root_id)$new$);
+
+-- 3. A parent whose chain was stopped is stopped for the steps that continue it: its machine events and check-ins are put
+-- away, and its office start's waiter is cancelled, instead of a wake that admission cancels on every pass.
+select pg_temp.chain_patch('public.qorpera_folder_parent_continuation(uuid,text)',
+	$old$		else public.qorpera_machine_revival_stopped(v_run.id) end) then return 'stopped'; end if;$old$,
+	$new$		else public.qorpera_machine_revival_stopped(v_run.id) end)
+		-- 20260930533000: a parent whose chain a member stopped.
+		or public.qorpera_run_chain_stopped(v_run.id) then return 'stopped'; end if;$new$);
+select pg_temp.chain_patch('public.qorpera_folder_office_wakes_company(uuid,integer)',
+	$old$			if v_job_status in ('failed', 'cancelled') or v_intent.state = 'cancelled'$old$,
+	$new$			if v_job_status in ('failed', 'cancelled') or v_intent.state = 'cancelled'
+				-- 20260930533000: a parent whose chain a member stopped.
+				or public.qorpera_run_chain_stopped(v_parent.id)$new$);

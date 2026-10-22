@@ -1,12 +1,14 @@
 -- @fixture 605_runtime_auto_review_rules.test.sql until "-- A member's post in the agent's thread; its run reviews acting calls."
 -- One Stop ends a whole chain of agent work (20260930533000; 2026-10-22 amendment, item 4; contract 14.6). The base's run
--- of Alice's (the owner's post in her thread) sends an email with a receipt, messages Bob and leaves Carol a held message;
--- Bob's run, started on a real runner, raises a question card and an approval card in his thread and answers Alice, whose
--- wake waits in the queue. The owner stops Bob's run: Alice's live run and her queued wake end too, the held message is
--- withdrawn, the sent email keeps its receipt, the cards stay open and Bob's thread says their chain was stopped, and
--- answering a card wakes Bob in a new run that is reviewed against the answer. A later wake of the chain is cancelled at
--- admission, or by the materializer when it slipped in beside the Stop. Who may stop is unchanged, and another chain
--- (the owner's post in Carol's thread) runs on. Runs on 605's fixture part (596's card helpers, 605's rules).
+-- of Alice's (the owner's post in her thread) sends an email with a receipt, messages Bob, leaves Carol a held message
+-- and ends. Bob's run, started on a real runner, raises a question card and an approval card in his thread and answers
+-- Alice twice: the first answer is her new run, the second a wake waiting in the queue. The owner stops Bob's run:
+-- Alice's live run and her queued wake end too, the held message is withdrawn, the sent email keeps its receipt, the
+-- cards stay open and Bob's thread says their chain was stopped, and answering a card wakes Bob in a new run that is
+-- reviewed against the answer. A later wake of the chain is cancelled at admission, or by the materializer when it
+-- slipped in beside the Stop, and a machine event of Alice's ended run is put away, pass after pass, waking nobody. Who
+-- may stop is unchanged, and another chain (the owner's post in Carol's thread) runs on. Runs on 605's fixture part
+-- (596's card helpers, 605's rules). 791 runs the Stop against another Stop and against the materializer.
 select pg_temp.base_claims('service_role');
 
 create function pg_temp.cs_job(p_run uuid) returns public.qorpera_runner_jobs language sql as $$
@@ -38,11 +40,14 @@ create function pg_temp.cs_notes(p_session uuid) returns jsonb language sql as $
 		and event.body ->> 'schema' = 'qorpera.chain-stopped/v1'
 $$;
 
--- The shape: the four patched functions carry the change, and the new functions and table are internal.
+-- The shape: the patched functions carry the change, and the new functions and table are internal.
 do $$
+declare v_stop text := (select prosrc from pg_proc
+	where oid = 'public.qorpera_cancel_session_run_profile_scope(uuid,uuid)'::regprocedure);
 begin
-	perform pg_temp.base_assert(position('qorpera_stop_run_chain(p_run_id)' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_cancel_session_run_profile_scope(uuid,uuid)'::regprocedure)) > 0
+	perform pg_temp.base_assert(position('qorpera_stop_run_chain(p_run_id)' in v_stop) > 0
+		and position('pg_advisory_xact_lock(public.qorpera_causal_chain_key(' in v_stop) > 0
+		and position('pg_advisory_xact_lock(public.qorpera_causal_chain_key(' in v_stop) < position('for update of job' in v_stop)
 		and position('run.source_kind in (''session_turn'',''room_delivery'',''wake'')' in (select prosrc from pg_proc
 			where oid = 'public.qorpera_cancel_session_run_profile_scope(uuid,uuid)'::regprocedure)) > 0
 		and position('20260930533000' in (select prosrc from pg_proc
@@ -52,12 +57,19 @@ begin
 		and position('20260930533000' in (select prosrc from pg_proc
 			where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regprocedure)) > 0
 		and position('20260930518000' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regprocedure)) > 0,
-		'The Stop, admission, the approval answer and the origin carry the chain Stop; the earlier patches stay');
+			where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regprocedure)) > 0
+		and position('qorpera_run_chain_stopped(v_run.id)' in (select prosrc from pg_proc
+			where oid = 'public.qorpera_folder_parent_continuation(uuid,text)'::regprocedure)) > 0
+		and position('qorpera_run_chain_stopped(v_parent.id)' in (select prosrc from pg_proc
+			where oid = 'public.qorpera_folder_office_wakes_company(uuid,integer)'::regprocedure)) > 0,
+		'The Stop (its chain lock before the job), admission, the approval answer, the origin, the parent continuation and '
+		|| 'the office start carry the chain Stop; the earlier patches stay');
 	perform pg_temp.base_assert(not has_function_privilege('authenticated', 'public.qorpera_stop_run_chain(uuid)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_stop_run_chain(uuid)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_stop_run_chain(uuid)', 'execute')
 		and not has_function_privilege('authenticated', 'public.qorpera_causal_chain_stopped(uuid,uuid)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_run_chain_stopped(uuid)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_causal_chain_key(uuid,uuid)', 'execute')
 		and not has_table_privilege('authenticated', 'public.qorpera_stopped_chains', 'select')
 		and not has_table_privilege('service_role', 'public.qorpera_stopped_chains', 'select')
 		and has_function_privilege('authenticated', 'public.qorpera_cancel_session_run(uuid,uuid)', 'execute'),
@@ -65,7 +77,7 @@ begin
 end $$;
 
 -- Alice's run (the base's): its acknowledgement, an email it sent (a completed receipt), a message to Bob and a held
--- message to Carol. Bob's run in his thread starts on a real runner.
+-- message to Carol, its final report, and its end. Bob's run in his thread starts on a real runner.
 do $$
 declare v_alice jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_send jsonb; v_held jsonb; v_pass jsonb;
 	v_bob_run uuid; v_receipt uuid := '79000000-0000-4000-8000-0000000000e1';
@@ -81,6 +93,9 @@ begin
 		'FYI: prices change on Monday.', false);
 	perform pg_temp.base_assert(v_send ->> 'status' = 'queued' and v_held ->> 'status' = 'held',
 		'Fixture: Bob is woken, Carol''s message is held: ' || v_send::text || v_held::text);
+	perform pg_temp.base_public_send(v_alice, 'final', 'cs-final');
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}'::jsonb, finished_at = statement_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null where id = (v_alice ->> 'jobId')::uuid;
 	v_pass := pg_temp.base_materialize();
 	select run_id into strict v_bob_run from public.qorpera_wake_occurrences
 	where id = (v_send ->> 'occurrenceId')::uuid and status = 'materialized';
@@ -90,10 +105,11 @@ begin
 end $$;
 
 -- Bob's run raises a question card and an approval card in his thread (the approval's holder heartbeat lies ahead). The
--- owner's post in Carol's thread is another chain, made a run. Then Bob answers Alice: her wake waits in the queue.
+-- owner's post in Carol's thread is another chain, made a run. Then Bob answers Alice: the answer is her new run, still
+-- queued, and his second answer a wake waiting in the queue.
 do $$
 declare v_bob jsonb := current_setting('qorpera_test.cs_bob')::jsonb; v_card jsonb; v_review uuid; v_reply jsonb;
-	v_carol jsonb; v_pass jsonb; v_carol_run uuid;
+	v_carol jsonb; v_pass jsonb; v_carol_run uuid; v_answer jsonb; v_alice_run uuid;
 begin
 	v_card := pg_temp.cd_card(v_bob, '79000000-0000-4000-8000-0000000000c1');
 	perform pg_temp.base_assert(v_card ->> 'session_id' = pg_temp.cs_session('92400000-0000-4000-8000-000000000031')::text
@@ -108,11 +124,19 @@ begin
 	v_pass := pg_temp.base_materialize();
 	select run_id into strict v_carol_run from public.qorpera_wake_occurrences where id = (v_carol ->> 0)::uuid;
 	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array(v_carol_run), 'Fixture: Carol''s run: ' || v_pass::text);
-	v_reply := public.qorpera_send_coworker_message(v_bob, '92400000-0000-4000-8000-000000000030', 'cs-reply',
+	v_answer := public.qorpera_send_coworker_message(v_bob, '92400000-0000-4000-8000-000000000030', 'cs-answer',
 		'The price list is checked.');
+	v_pass := pg_temp.base_materialize();
+	select run_id into strict v_alice_run from public.qorpera_wake_occurrences
+	where id = (v_answer ->> 'occurrenceId')::uuid and status = 'materialized';
+	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array(v_alice_run)
+		and (pg_temp.cs_job(v_alice_run)).status = 'queued', 'Fixture: Bob''s answer is Alice''s new run: ' || v_pass::text);
+	v_reply := public.qorpera_send_coworker_message(v_bob, '92400000-0000-4000-8000-000000000030', 'cs-reply',
+		'And the discount table too.');
 	perform pg_temp.base_assert(v_reply ->> 'status' = 'queued' and (select status = 'queued'
 		from public.qorpera_wake_occurrences where id = (v_reply ->> 'occurrenceId')::uuid),
-		'Fixture: Bob answers Alice, and her wake waits: ' || v_reply::text);
+		'Fixture: Bob answers Alice again, and her wake waits: ' || v_reply::text);
+	perform set_config('qorpera_test.cs_alice2', v_alice_run::text, false);
 	perform set_config('qorpera_test.cs_review', v_review::text, false);
 	perform set_config('qorpera_test.cs_reply', v_reply ->> 'occurrenceId', false);
 	perform set_config('qorpera_test.cs_carol_run', v_carol_run::text, false);
@@ -130,7 +154,7 @@ select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-00000000000
 select pg_temp.cs_denied(pg_temp.cs_session('92400000-0000-4000-8000-000000000031'),
 	(current_setting('qorpera_test.cs_bob')::jsonb ->> 'runId')::uuid);
 reset role;
-select pg_temp.base_assert((pg_temp.cs_job((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid)).status = 'leased'
+select pg_temp.base_assert((pg_temp.cs_job(current_setting('qorpera_test.cs_alice2')::uuid)).status = 'queued'
 	and (pg_temp.cs_job((current_setting('qorpera_test.cs_bob')::jsonb ->> 'runId')::uuid)).status = 'leased'
 	and (select status = 'queued' from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.cs_reply')::uuid)
 	and not exists (select 1 from public.qorpera_stopped_chains), 'Refused Stops end nothing');
@@ -149,30 +173,33 @@ select pg_temp.base_assert(public.qorpera_get_session_run_control(pg_temp.cs_ses
 reset role;
 do $$
 declare v_alice uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+	v_alice2 uuid := current_setting('qorpera_test.cs_alice2')::uuid;
 	v_bob uuid := (current_setting('qorpera_test.cs_bob')::jsonb ->> 'runId')::uuid; v_root uuid;
 	v_reply public.qorpera_wake_occurrences%rowtype;
 begin
 	select causal_root_id into strict v_root from public.qorpera_wake_occurrences where run_id = v_alice;
-	perform pg_temp.base_assert((select causal_root_id from public.qorpera_wake_occurrences where run_id = v_bob) = v_root,
-		'Fixture: Bob''s run is in the chain the owner''s post started');
-	-- The other agent's live run ends, as the member's.
-	perform pg_temp.base_assert((pg_temp.cs_job(v_alice)).status = 'cancelled'
-		and (pg_temp.cs_job(v_alice)).cancelled_by_user_id = '92400000-0000-4000-8000-000000000001'
-		and (pg_temp.cs_job(v_alice)).lease_token_sha256 is null
-		-- The cancel's own wording follows: Alice's run left durable output (its email), which the review keeps.
-		and (pg_temp.cs_job(v_alice)).last_error
-			= 'A member stopped this chain of agent work; durable attempt output requires review'
+	perform pg_temp.base_assert((select causal_root_id from public.qorpera_wake_occurrences where run_id = v_bob) = v_root
+		and (select causal_root_id from public.qorpera_wake_occurrences where run_id = v_alice2) = v_root,
+		'Fixture: Bob''s and Alice''s new runs are in the chain the owner''s post started');
+	-- The other agent's live run ends, as the member's own Stop ends a run.
+	perform pg_temp.base_assert((pg_temp.cs_job(v_alice2)).status = 'cancelled'
+		and (pg_temp.cs_job(v_alice2)).cancelled_by_user_id = '92400000-0000-4000-8000-000000000001'
+		and (pg_temp.cs_job(v_alice2)).last_error = 'A member stopped this chain of agent work'
 		and (pg_temp.cs_job(v_bob)).status = 'cancelled'
 		and (pg_temp.cs_job(v_bob)).cancelled_by_user_id = '92400000-0000-4000-8000-000000000001',
-		'Alice''s live run is stopped with Bob''s, by the owner: ' || to_jsonb(pg_temp.cs_job(v_alice))::text);
+		'Alice''s live run is stopped with Bob''s, by the owner: ' || to_jsonb(pg_temp.cs_job(v_alice2))::text);
 	perform pg_temp.base_assert((select count(*) = 1 from public.qorpera_runner_audit_receipts receipt
-		where receipt.job_id = (pg_temp.cs_job(v_alice)).id and receipt.event_type = 'job_cancelled'
+		where receipt.job_id = (pg_temp.cs_job(v_alice2)).id and receipt.event_type = 'job_cancelled'
 			and receipt.actor_user_id = '92400000-0000-4000-8000-000000000001'
 			and receipt.payload = jsonb_build_object('chainRootId', v_root, 'stoppedRunId', v_bob)),
 		'Its cancellation is audited as the chain''s');
-	perform pg_temp.base_assert((select status = 'cancelled' from public.qorpera_wake_occurrences where run_id = v_alice)
+	perform pg_temp.base_assert((select status = 'cancelled' from public.qorpera_wake_occurrences where run_id = v_alice2)
 		and (select status = 'cancelled' from public.qorpera_wake_occurrences where run_id = v_bob),
 		'Both runs'' wakes end cancelled');
+	-- A run of the chain that had ended stays as it ended.
+	perform pg_temp.base_assert((pg_temp.cs_job(v_alice)).status = 'completed' and (pg_temp.cs_job(v_alice)).cancelled_by_user_id is null
+		and (select status = 'completed' from public.qorpera_wake_occurrences where run_id = v_alice),
+		'Alice''s ended run stays completed');
 	-- Bob's answer to Alice, still queued, never wakes her.
 	select * into strict v_reply from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.cs_reply')::uuid;
 	perform pg_temp.base_assert(v_reply.status = 'cancelled' and v_reply.run_id is null and v_reply.finished_at is not null
@@ -228,13 +255,14 @@ select pg_temp.base_assert(public.qorpera_cancel_session_run(pg_temp.cs_session(
 reset role;
 select pg_temp.base_assert((select count(*) = 2 from public.qorpera_runner_audit_receipts receipt
 	where receipt.event_type = 'job_cancelled' and receipt.job_id in (
-		(pg_temp.cs_job((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid)).id,
+		(pg_temp.cs_job(current_setting('qorpera_test.cs_alice2')::uuid)).id,
 		(pg_temp.cs_job((current_setting('qorpera_test.cs_bob')::jsonb ->> 'runId')::uuid)).id))
 	and jsonb_array_length(pg_temp.cs_notes(pg_temp.cs_session('92400000-0000-4000-8000-000000000031'))) = 1,
 	'The retry repeats no cancellation and no note');
 
 -- 6. The chain stays stopped. A wake it would still cause (Bob's message to Alice landing late) is cancelled at
---    admission; one admitted beside the Stop, before the record was visible, is refused by the materializer.
+--    admission; one admitted beside the Stop, before the record was visible, is refused by the materializer (791 runs
+--    that race with two connections).
 do $$
 declare v_bob uuid := (current_setting('qorpera_test.cs_bob')::jsonb ->> 'runId')::uuid; v_late public.qorpera_wake_occurrences;
 	v_stopped public.qorpera_stopped_chains; v_pass jsonb;
@@ -267,6 +295,38 @@ begin
 		and v_late.blocked_reason = 'The run could not start: A member stopped this chain of agent work'
 		and v_pass -> 'run_ids' = '[]'::jsonb and (v_pass ->> 'cancelled')::integer = 1,
 		'The materializer refuses a run of the stopped chain: ' || to_jsonb(v_late)::text || v_pass::text);
+end $$;
+
+-- 6b. A machine of Alice's ended run reports after the Stop. The step that carries a parent's events sees the parent's
+--     chain stopped and puts the event away; its next pass has nothing left, and no wake is ever tried.
+do $$
+declare v_alice public.qorpera_execution_runs; v_event uuid := '79000000-0000-4000-8000-0000000000d1'; v_first jsonb;
+	v_second jsonb;
+begin
+	select * into strict v_alice from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+	perform pg_temp.base_assert(public.qorpera_folder_parent_continuation(v_alice.id, 'machine-event') = 'stopped'
+		and public.qorpera_folder_parent_continuation(v_alice.id, 'machine-checkin') = 'stopped',
+		'An ended parent whose chain was stopped is stopped for its machines');
+	-- A machine Alice's run started (its row only: no node, no placement) and its report, as the machine's step writes it.
+	perform set_config('session_replication_role', 'replica', true);
+	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id,
+		started_by_run_id, started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime)
+	values ('79000000-0000-4000-8000-0000000000d2', v_alice.profile_id, v_alice.environment_id, 'price-check', 'Check the prices.',
+		v_alice.staff_agent_id, v_alice.id, extensions.gen_random_uuid(), v_alice.requested_by_user_id, 1, 1073741824, 10737418240,
+		'standard', 'task');
+	insert into public.qorpera_company_machine_events(id, machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind)
+	values (v_event, '79000000-0000-4000-8000-0000000000d2', v_alice.profile_id, v_alice.environment_id, v_alice.staff_agent_id,
+		v_alice.id, 'running');
+	perform set_config('session_replication_role', 'origin', true);
+	v_first := public.qorpera_folder_machine_events_company('92400000-0000-4000-8000-000000000020', 8);
+	v_second := public.qorpera_folder_machine_events_company('92400000-0000-4000-8000-000000000020', 8);
+	perform pg_temp.base_assert(v_first ->> 'state' = 'done' and (v_first ->> 'suppressed')::integer = 1
+		and (v_first ->> 'delivered')::integer = 0 and v_second ->> 'state' = 'idle'
+		and (select delivery = 'suppressed' from public.qorpera_company_machine_events where id = v_event)
+		and not exists (select 1 from public.qorpera_wake_occurrences where parent_run_id = v_alice.id
+			and source_kind = 'machine-event'),
+		'The event is put away once and no wake is tried: ' || v_first::text || v_second::text);
 end $$;
 
 -- 7. An answer starts new work. The approval card's holder is gone, so Allow once wakes Bob although the holder's
