@@ -71,6 +71,46 @@ textarea.founding-role-mine:focus-visible { background: var(--hover); }
 .founding-invite-faces .person-avatar { width: 30px; height: 30px; font-size: 11px; box-shadow: 0 0 0 2px var(--overlay); }
 .founding-invite-faces .person-avatar + .person-avatar { margin-left: -12px; }
 
+/* Live presence (founding-presence.ts): the people here now have a ring in their colour over the box, someone writing
+ * a pulsing one; carets with name flags stand in the idea box, and the newest writer's new words are tinted. Without
+ * live presence the faces keep their colours. */
+.founding-heads-live .person-avatar { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 3px var(--border-strong); }
+.founding-heads-live .founding-head-here { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color, var(--border-strong)); }
+.founding-heads-live .founding-head-writing {
+	animation: founding-peek var(--motion-spring) var(--ease-spring) both, founding-live 1.8s ease-in-out infinite;
+}
+@keyframes founding-live {
+	0%, 100% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color); }
+	50% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 7px color-mix(in srgb, var(--line-color) 30%, transparent); }
+}
+.founding-writing { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 0 auto; padding: 0 8px; color: var(--text-soft); font-size: 14px; }
+.founding-dots { display: inline-flex; align-items: center; gap: 3px; color: var(--line-color, var(--text-soft)); }
+.founding-dots b { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: founding-dot 1.4s infinite; }
+.founding-dots b:nth-child(2) { animation-delay: 0.2s; }
+.founding-dots b:nth-child(3) { animation-delay: 0.4s; }
+@keyframes founding-dot { 0%, 60%, 100% { opacity: 0.35; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
+.founding-vision-field { position: relative; }
+/* A copy of the idea box's words laid exactly over it: only the carets and the tint show. */
+.founding-carets {
+	position: absolute; inset: 0; padding: 0 12px; pointer-events: none; color: transparent;
+	font: 18px / 28px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.founding-them {
+	color: inherit; border-radius: 5px; background: color-mix(in srgb, var(--line-color) 18%, transparent);
+	box-decoration-break: clone; -webkit-box-decoration-break: clone;
+}
+/* Above the faces over the box, so a flag on the first line stays readable. */
+.founding-caret { position: relative; z-index: 3; }
+.founding-caret::before { content: ""; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--line-color); }
+.founding-caret b {
+	position: absolute; left: -1px; bottom: 100%; margin-bottom: 1px; padding: 0 6px; border-radius: 5px 5px 5px 0;
+	background: var(--line-color); color: #fff; font: 700 11.5px / 16px var(--font-sans); white-space: nowrap;
+}
+/* A flag that would leave the box at its right edge hangs to the left of its caret. */
+.founding-caret-left b { left: auto; right: -1px; border-radius: 5px 5px 0 5px; }
+.founding-seat-here .founding-seat-row .person-avatar { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color, var(--border-strong)); }
+.founding-status.founding-status-writing { color: var(--line-color, var(--text-soft)); }
+
 /* The friends list opens under Invite friends; the ChatGPT panel under the seats. */
 .founding-sheet {
 	display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); padding: 16px 16px 18px;
@@ -130,6 +170,10 @@ textarea.founding-role-mine:focus-visible { background: var(--hover); }
 .founding-started .founding-head { padding-top: 24px; }
 .founding-started .founding-seats { flex-direction: column; align-items: center; }
 .founding-gone { align-items: center; text-align: center; padding-top: 64px; }
+
+@media (prefers-reduced-motion: reduce) {
+	.founding-heads-live .founding-head-writing, .founding-dots b { animation: none; }
+}
 
 @media (max-width: 760px) {
 	.founding { padding: 4px 16px 32px; }

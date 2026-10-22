@@ -34,6 +34,7 @@ import {
 import { SharedCloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { databaseTls } from "./database-ca.ts";
+import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -356,6 +357,7 @@ export async function runCloudSecretBrokerServiceMain(
 				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
 				...(connectors?.digitalPost ? { digitalPost: connectors.digitalPost } : {}),
+				...(connectors?.digitalPostPdfText ? { digitalPostPdfText: connectors.digitalPostPdfText } : {}),
 				runtimeToken,
 				proveBinding,
 				port: config.port as number,
@@ -419,7 +421,12 @@ export async function runCloudSecretBrokerServiceMain(
 		// The company's Digital Post, fetched into the database when the vault has Qorpera's certificate.
 		const digitalPostSyncs = connectors?.digitalPost
 			? new CloudDigitalPostSyncUpkeep({
-					syncs: new CloudDigitalPostSyncs({ authority, keyring, post: connectors.digitalPost }),
+					syncs: new CloudDigitalPostSyncs({
+						authority,
+						keyring,
+						post: connectors.digitalPost,
+						...(connectors.digitalPostPdfText ? { pdfText: connectors.digitalPostPdfText } : {}),
+					}),
 				})
 			: undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
@@ -479,6 +486,7 @@ async function runSharedVault(options: {
 	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
 	digitalPost?: DigitalPostClient;
+	digitalPostPdfText?: DigitalPostPdfTextReader;
 	runtimeToken: string;
 	proveBinding: NativeBindingProof;
 	port: number;
@@ -494,6 +502,7 @@ async function runSharedVault(options: {
 		...(options.chatGptPlan ? { chatGptPlan: options.chatGptPlan } : {}),
 		revoker: options.revoker,
 		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
+		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",
