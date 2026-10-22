@@ -259,6 +259,66 @@ describe("live presence at the founding table", () => {
 		expect(field.value).toBe("Specialty coffee and cake.");
 	});
 
+	it("keeps your unsaved words yours when another founder's words are the same, and Ready and Start wait", async () => {
+		const { presence, named } = mount(undefined, (name) => {
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
+			return undefined;
+		});
+		await settle();
+		presence().health("connected");
+		await settle();
+		const field = box();
+		field.focus();
+		field.value = "Specialty coffee and cake.";
+		field.dispatchEvent(new Event("input"));
+		field.blur();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(named("qorpera_update_company_founding")).toHaveLength(1);
+		// Bo happens to write exactly your words: they are still not on the table, so still yours and unsaved.
+		presence().tabs([tab()]);
+		await settle();
+		presence().live(live({ text: "Specialty coffee and cake.", caret: 26 }));
+		await settle();
+		expect(field.value).toBe("Specialty coffee and cake.");
+		await controller!.setReady(4, true);
+		await controller!.start();
+		expect(named("qorpera_set_founder_ready")).toEqual([]);
+		expect(named("qorpera_start_company_founding")).toEqual([]);
+		// His next words do not replace yours.
+		presence().live(live({ text: "Specialty coffee and cake. Roasted.", caret: 35 }));
+		await settle();
+		expect(field.value).toBe("Specialty coffee and cake.");
+		// Leaving the field again tries your save again.
+		field.focus();
+		field.blur();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(named("qorpera_update_company_founding")).toHaveLength(2);
+		expect(named("qorpera_update_company_founding")[1]).toMatchObject({ p_vision: "Specialty coffee and cake." });
+	});
+
+	it("keeps a writer's words in the idea box when they move to their role line, for the hold", async () => {
+		const { presence } = mount();
+		await settle();
+		presence().health("connected");
+		await settle();
+		presence().tabs([tab()]);
+		await settle();
+		presence().live(live());
+		await settle();
+		// Bo leaves the idea box for his role line; his idea is on its way to the table.
+		presence().tabs([tab({ field: "role" })]);
+		await settle();
+		presence().live(live({ field: "role", text: "Wholesale.", caret: 10, typing: false, own: false }));
+		await settle();
+		expect(box().value).toBe("Specialty coffee. Roasted in Aarhus.");
+		expect(container.querySelector(".founding-line .founding-caret")).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(box().value).toBe("Specialty coffee. Roasted in Aarhus.");
+		// His save never showed: after the hold the box shows the table's words again.
+		await vi.advanceTimersByTimeAsync(1100);
+		expect(box().value).toBe("Specialty coffee.");
+	});
+
 	it("sends your words and caret as you write, at most every 200 ms, and your last words before you leave", async () => {
 		const { handle } = mount();
 		await settle();

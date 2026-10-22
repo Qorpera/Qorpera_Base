@@ -168,11 +168,13 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 	get draft(): string | undefined {
 		return this.dirty ? this.el.value : undefined;
 	}
-	show(value: string): void {
-		this.#apply(value);
+	/** Shows the server's text, or, while you have not changed the field, `follow`: another founder's words as they
+	 * write them. Only the server's text ever counts as having what you wrote. */
+	show(value: string, follow?: string): void {
+		this.#apply(value, follow);
 		if (this.el instanceof HTMLTextAreaElement) growToText(this.el);
 	}
-	#apply(value: string): void {
+	#apply(value: string, follow: string | undefined): void {
 		this.#server = value;
 		if (this.#carried !== undefined) {
 			this.el.value = this.#carried;
@@ -181,23 +183,23 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 		}
 		// The server has what the field says (spaces at the ends aside): nothing is unsaved, and a
 		// space or new line you just typed stays.
-		if (this.el.value.trim() === value) {
-			this.#base = this.el.value;
-			return;
-		}
+		if (this.el.value.trim() === value) this.#base = this.el.value;
+		// Words you changed stay, even when another founder's words are the same.
 		if (this.dirty) return;
-		// An untouched field (spaces at the ends aside) follows the server, even while it has focus; its
-		// caret stays where it can.
+		const shown = follow ?? value;
+		if (this.el.value.trim() === shown) return;
+		// An untouched field (spaces at the ends aside) follows the server, or the founder writing in it, even
+		// while it has focus; its caret stays where it can.
 		const focused = document.activeElement === this.el;
 		const start = this.el.selectionStart;
 		const end = this.el.selectionEnd;
 		// A caret at the end stays at the end of the new text, so the next letters follow it.
 		const atEnd = start === this.el.value.length && end === start;
-		this.el.value = value;
-		this.#base = value;
-		if (focused && atEnd) this.el.setSelectionRange(value.length, value.length);
+		this.el.value = shown;
+		this.#base = shown;
+		if (focused && atEnd) this.el.setSelectionRange(shown.length, shown.length);
 		else if (focused && start !== null && end !== null)
-			this.el.setSelectionRange(Math.min(start, value.length), Math.min(end, value.length));
+			this.el.setSelectionRange(Math.min(start, shown.length), Math.min(end, shown.length));
 	}
 	/** Puts the server's text back (a name cannot be empty). */
 	reset(): void {
@@ -622,7 +624,8 @@ export class FoundingView {
 		const joined = table.me.state === "joined";
 		const mySeat = table.seats.find((seat) => seat.userId === me);
 
-		const name = this.#following("name")?.text ?? table.companyName;
+		const followedName = this.#following("name")?.text;
+		const name = followedName ?? table.companyName;
 		this.#nameSlot.show(joined ? "field" : `title\n${name}`, () => {
 			if (!joined) {
 				this.#name = undefined;
@@ -648,7 +651,7 @@ export class FoundingView {
 			this.#watchLive(syncedName, "name");
 			return field;
 		});
-		this.#name?.show(name);
+		this.#name?.show(table.companyName, followedName);
 
 		const invitedBy = mySeat?.invitedByUserId;
 		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
@@ -669,7 +672,8 @@ export class FoundingView {
 				: null,
 		);
 
-		const vision = this.#following("vision")?.text ?? table.vision;
+		const followedVision = this.#following("vision")?.text;
+		const vision = followedVision ?? table.vision;
 		this.#visionSlot.show(joined ? "field" : "text", () => {
 			if (!joined) {
 				this.#vision = undefined;
@@ -694,7 +698,7 @@ export class FoundingView {
 			field.addEventListener("input", () => this.#paintVision(this.#carets, field.value));
 			return h("div", { class: "founding-vision-field" }, field, this.#carets);
 		});
-		this.#vision?.show(vision);
+		this.#vision?.show(table.vision, followedVision);
 		const shownVision = this.#vision?.el.value ?? vision;
 		const visionText = this.#visionSlot.el.querySelector<HTMLElement>("p.founding-vision");
 		if (visionText) {

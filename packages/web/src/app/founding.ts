@@ -193,6 +193,8 @@ export class FoundingController {
 	/** The cloud has no presence for this table, or the table is over: not joined again. */
 	#presenceOver = false;
 	#tabs: FoundingPresenceTab[] = [];
+	/** Each other tab's words, by tab and field: a tab that moves to another field keeps its words in the first
+	 * one until they are held long enough. */
 	readonly #lives = new Map<
 		string,
 		{ live: FoundingLive; seenAt: number; typedAt: number; leftAt: number | undefined }
@@ -673,11 +675,11 @@ export class FoundingController {
 		const seat = this.store.get().table?.seats.find((item) => item.userId === live.userId);
 		if (seat?.state !== "joined") return;
 		const now = Date.now();
-		const prior = this.#lives.get(live.clientId);
-		const same = prior?.live.field === live.field;
+		const key = `${live.clientId}:${live.field}`;
+		const prior = this.#lives.get(key);
 		// Only changed words count as writing; a caret that moves keeps when they last wrote.
-		const typedAt = live.typing ? now : same ? prior.typedAt : 0;
-		this.#lives.set(live.clientId, { live, seenAt: now, typedAt, leftAt: same ? prior.leftAt : undefined });
+		const typedAt = live.typing ? now : (prior?.typedAt ?? 0);
+		this.#lives.set(key, { live, seenAt: now, typedAt, leftAt: prior?.leftAt });
 		this.#showPresence();
 	}
 
@@ -694,15 +696,15 @@ export class FoundingController {
 		let next = Number.POSITIVE_INFINITY;
 		const writers = new Set<string>();
 		const texts = new Map<string, FounderLive & { seenAt: number }>();
-		for (const [clientId, entry] of this.#lives) {
+		for (const [entryKey, entry] of this.#lives) {
 			const { live } = entry;
 			// A tab that left the field, or the table, keeps its words a while: its save is on its way.
-			if (tabs.get(clientId)?.field === live.field) entry.leftAt = undefined;
+			if (tabs.get(live.clientId)?.field === live.field) entry.leftAt = undefined;
 			else entry.leftAt ??= now;
 			const writing = now - entry.typedAt < FOUNDING_WRITING_MS;
 			const held = entry.leftAt === undefined || now - entry.leftAt < LIVE_HOLD_MS;
 			if (seats.get(live.userId)?.state !== "joined" || (!writing && !held)) {
-				this.#lives.delete(clientId);
+				this.#lives.delete(entryKey);
 				continue;
 			}
 			if (writing) {
