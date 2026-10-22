@@ -78,6 +78,9 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DATABASE_DEADLINE_MS = 10_000;
 /** One pass: the list, then every letter on it. The claim's lease is fifteen minutes. */
 const PASS_DEADLINE_MS = 10 * 60_000;
+/** A pass starts no new letter after this long, and leaves the rest to the next pass from where it got to, so a slow
+ * Digital Post never makes a pass run out of time and start over. */
+const PASS_BUDGET_MS = 6 * 60_000;
 const PASS_EVERY_MS = 60_000;
 /** Pages of Digital Post's list a pass reads at most (50 letters each); the next pass reads on from where it stopped. */
 const LIST_PAGES = 20;
@@ -120,7 +123,7 @@ function parseClaim(value: unknown): Claim | null {
 		typeof input.envelopeSha256 !== "string" ||
 		!SHA.test(input.envelopeSha256) ||
 		!Array.isArray(input.held) ||
-		input.held.length > 1000 ||
+		input.held.length > 100_000 ||
 		input.held.some((id) => typeof id !== "string" || !UUID.test(id)) ||
 		!Number.isSafeInteger(input.scanPage) ||
 		(input.scanPage as number) < 0 ||
@@ -283,7 +286,9 @@ export class CloudDigitalPostSyncs {
 	 * that page, and the next pass reads that page again (`more`). A pass that read its pages without reaching the end
 	 * leaves the next one the page after them (`more`), so every letter is reached however many are held before it; one
 	 * that reached the end of the list is `current`, and the next pass starts again from the first page. A page that
-	 * moved meanwhile (Digital Post moving letters to Virk) is read again once the list has been read to its end.
+	 * moved meanwhile (Digital Post moving letters to Virk) is read again once the list has been read to its end. A pass
+	 * that has run `PASS_BUDGET_MS` starts no new letter and leaves the next pass the page it is on (`more`), so a slow
+	 * Digital Post costs passes, never progress.
 	 */
 	async #take(
 		claim: Claim,
@@ -292,12 +297,17 @@ export class CloudDigitalPostSyncs {
 		receipted: string[],
 		signal: AbortSignal,
 	): Promise<{ readonly outcome: "current" | "more"; readonly scanPage: number }> {
+		const started = this.#now().getTime();
+		const spent = () => this.#now().getTime() - started >= PASS_BUDGET_MS;
 		const last = Math.min(claim.scanPage + LIST_PAGES, MAX_SCAN_PAGE);
 		for (let page = claim.scanPage; page < last; page += 1) {
 			const available = await this.#post.available(key, signal, page);
 			let took = false;
 			for (const memoId of available.ids) {
 				if (claim.held.has(memoId)) continue;
+				// Out of time: the next pass reads this page again; what this one held there it skips, what it receipted is
+				// gone from the list.
+				if (spent()) return { outcome: "more", scanPage: page };
 				if (await this.#takeOne(lease, key, memoId, receipted, signal)) took = true;
 			}
 			if (available.complete) return { outcome: "current", scanPage: 0 };
