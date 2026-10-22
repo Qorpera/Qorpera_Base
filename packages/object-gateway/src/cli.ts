@@ -6,6 +6,7 @@ import { BankSummaryWriter } from "./bank-summary-files.ts";
 import { CodingResultsWriter } from "./coding-results-files.ts";
 import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
+import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
@@ -82,6 +83,21 @@ const bankSummaries =
 	process.env.QORPERA_BANK_SUMMARY_WRITER === "1"
 		? new BankSummaryWriter({
 				workerId: process.env.QORPERA_BANK_SUMMARY_WORKER_ID?.trim() || randomUUID(),
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
+			})
+		: undefined;
+// The Digital Post letters' writer (RUNTIME-DIGITAL-POST.md part 3): off unless QORPERA_DIGITAL_POST_WRITER=1; the
+// coordinator turns it on. Its own database client and its own loop, as the connection-file writer's.
+const digitalPostLetters =
+	process.env.QORPERA_DIGITAL_POST_WRITER === "1"
+		? new DigitalPostLetterWriter({
+				workerId: process.env.QORPERA_DIGITAL_POST_WORKER_ID?.trim() || randomUUID(),
 				authority: new SupabaseMemberCompanyAuthority({
 					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -247,6 +263,23 @@ if (process.argv[2] === "migrate") {
 	const bankSummaryWrites = setInterval(() => {
 		void writeBankSummaries();
 	}, 15_000);
+	// The Digital Post letters' own loop, every 15 s (a company gets a few letters a month; the vault fetches every ten
+	// minutes): one drain at a time, at most five letters and 120 s per tick.
+	let writingLetters = false;
+	const writeDigitalPostLetters = async (): Promise<void> => {
+		if (!digitalPostLetters || writingLetters) return;
+		writingLetters = true;
+		try {
+			await digitalPostLetters.writeDue(5, AbortSignal.timeout(120_000));
+		} catch {
+			process.stderr.write("Digital Post letter writer requires operator attention\n");
+		} finally {
+			writingLetters = false;
+		}
+	};
+	const digitalPostWrites = setInterval(() => {
+		void writeDigitalPostLetters();
+	}, 15_000);
 	// The memory message eraser's own loop, every 5 s, as the coding results writer's: one pass at a time, at most ten
 	// erases and 30 s per tick.
 	let erasing = false;
@@ -290,6 +323,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
 			clearInterval(bankSummaryWrites);
+			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			server.close(() => process.exit(0));

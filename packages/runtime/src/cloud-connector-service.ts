@@ -1,5 +1,6 @@
 import { createPrivateKey } from "node:crypto";
 import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import { type DigitalPostApp, DigitalPostClient, parseDigitalPostApp } from "./cloud-connector-digital-post.ts";
 import { type EnableBankingApp, EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import { createGitHubConnectorAdapters } from "./cloud-connector-github.ts";
 import {
@@ -10,6 +11,7 @@ import {
 import { BANK_CONNECTOR_ID, CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
 import { CloudConnectorTokenRevoker } from "./cloud-connector-token-revocation.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
+import { DigitalPostPdfText, type DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
  * Composition of the production connectors inside the cloud secret broker.
@@ -27,6 +29,11 @@ import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
  * `enableBanking` is Qorpera's Enable Banking application (its id and RSA
  * private key, PEM): with it the vault connects companies' banks and keeps
  * their bank summaries current (cloud-bank-sync.ts).
+ *
+ * `digitalPost` is Qorpera's Digital Post certificate (OCES3, as the companies' system supplier: environment,
+ * certificate and key, PEM): with it the vault fetches the Digital Post of every company that connected it
+ * (cloud-digital-post-sync.ts, RUNTIME-DIGITAL-POST.md), and reads a PDF-only letter's text through the host's
+ * pdftotext socket when it is installed (digital-post-pdf-text.ts).
  */
 
 export interface CloudConnectorServiceConfig {
@@ -38,6 +45,7 @@ export interface CloudConnectorServiceConfig {
 	readonly google?: GoogleOAuthClient;
 	readonly github?: GoogleOAuthClient;
 	readonly enableBanking?: EnableBankingApp;
+	readonly digitalPost?: DigitalPostApp;
 }
 
 export interface CloudConnectorService {
@@ -48,6 +56,10 @@ export interface CloudConnectorService {
 	readonly revoker: CloudConnectorTokenRevoker;
 	/** Enable Banking, when the vault has the application: the bank sync's client. */
 	readonly bank?: EnableBankingClient;
+	/** Digital Post, when the vault has Qorpera's certificate: the Digital Post sync's client. */
+	readonly digitalPost?: DigitalPostClient;
+	/** With it, the reader of PDF-only letters' text. */
+	readonly digitalPostPdfText?: DigitalPostPdfTextReader;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -96,7 +108,9 @@ export function parseCloudConnectorServiceConfig(text: string): CloudConnectorSe
 	const keys = Object.keys(input).sort();
 	if (
 		input.schema !== "qorpera.cloud-connector-service/v1" ||
-		keys.some((key) => !["schema", "publicOrigin", "google", "github", "enableBanking"].includes(key)) ||
+		keys.some(
+			(key) => !["schema", "publicOrigin", "google", "github", "enableBanking", "digitalPost"].includes(key),
+		) ||
 		typeof input.publicOrigin !== "string"
 	)
 		throw new Error("Cloud connector service configuration is invalid");
@@ -106,7 +120,8 @@ export function parseCloudConnectorServiceConfig(text: string): CloudConnectorSe
 	const google = client(input.google, "Google OAuth client");
 	const github = client(input.github, "GitHub OAuth client");
 	const enableBanking = enableBankingApp(input.enableBanking);
-	if (!google && !github && !enableBanking)
+	const digitalPost = parseDigitalPostApp(input.digitalPost);
+	if (!google && !github && !enableBanking && !digitalPost)
 		throw new Error("Cloud connector service configuration names no OAuth client");
 	return Object.freeze({
 		schema: "qorpera.cloud-connector-service/v1",
@@ -114,6 +129,7 @@ export function parseCloudConnectorServiceConfig(text: string): CloudConnectorSe
 		...(google ? { google } : {}),
 		...(github ? { github } : {}),
 		...(enableBanking ? { enableBanking } : {}),
+		...(digitalPost ? { digitalPost } : {}),
 	});
 }
 
@@ -138,6 +154,8 @@ export function composeCloudConnectorService(
 	}
 	const bank = config.enableBanking ? new EnableBankingClient(config.enableBanking, fetchImplementation) : undefined;
 	if (bank) connectors.push(BANK_CONNECTOR_ID);
+	const digitalPost = config.digitalPost ? new DigitalPostClient(config.digitalPost) : undefined;
+	if (digitalPost) connectors.push("digital_post");
 	const oauth = new CloudConnectorOAuthFlows({
 		clients: {
 			...(config.google ? { google: config.google } : {}),
@@ -158,5 +176,6 @@ export function composeCloudConnectorService(
 			...(bank ? { bank } : {}),
 		}),
 		...(bank ? { bank } : {}),
+		...(digitalPost ? { digitalPost, digitalPostPdfText: new DigitalPostPdfText() } : {}),
 	});
 }

@@ -30,14 +30,9 @@ const YAML_ESCAPES: Readonly<Record<string, string>> = {
 	P: String.fromCodePoint(0x2029),
 };
 
-/** Names no skill takes: `readme` is the skills folder's own note, skills/README.md (contract 5.6), which a folder's
- * key matches in any spelling. So the agents' skill tools and the web's skill list never read, list, create, change
- * or delete it as a skill named `readme`, and no `readme/` skill sits beside it. */
-export const CLOUD_SKILL_RESERVED_NAMES: readonly string[] = Object.freeze(["readme"]);
-
 /** Whether a folder or mention names a skill. */
 export function isCloudSkillName(value: string): boolean {
-	return value.length <= CLOUD_SKILL_NAME_MAX_CHARS && NAME.test(value) && !CLOUD_SKILL_RESERVED_NAMES.includes(value);
+	return value.length <= CLOUD_SKILL_NAME_MAX_CHARS && NAME.test(value);
 }
 
 interface FrontField {

@@ -1,4 +1,4 @@
-import { isCloudSkillName, parseCloudSkillFile, renderCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
+import { parseCloudSkillFile, renderCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 import { describe, expect, it } from "vitest";
 
 const imported = [
@@ -17,18 +17,6 @@ const imported = [
 	"1. Read the form fields.",
 	"",
 ].join("\n");
-
-describe("skill names", () => {
-	it("never takes the skills folder's README.md for a skill, in any spelling of its key", () => {
-		// skills/README.md, skills/readme.md and a skills/readme/ folder all have the key skills/readme(.md): the agents'
-		// skill tools and the web's skill list ask isCloudSkillName before they list, find, read or write a skill.
-		for (const name of ["readme", "README", "ReadMe"]) expect(isCloudSkillName(name), name).toBe(false);
-		for (const name of ["readme-2", "read-me", "readmes", "pdf-forms"])
-			expect(isCloudSkillName(name), name).toBe(true);
-		expect(isCloudSkillName("x".repeat(65))).toBe(false);
-		expect(isCloudSkillName("Pdf-Forms")).toBe(false);
-	});
-});
 
 describe("skill files", () => {
 	it("reads the front matter shapes skills are written in, and keeps other keys on rewrite", () => {

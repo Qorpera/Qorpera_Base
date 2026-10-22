@@ -1,0 +1,18 @@
+[Unit]
+Description=Qorpera PDF text (one locked-down pdftotext per Digital Post PDF)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-DIGITAL-POST.md
+
+[Socket]
+# The shared vault connects here (packages/runtime/src/digital-post-pdf-text.ts). Its group alone may.
+ListenStream=/run/qorpera-pdf-text/socket
+SocketUser=root
+SocketGroup=qorpera-shared-vault
+SocketMode=0660
+DirectoryMode=0755
+# Each connection gets its own pdftotext in its own service (qorpera-pdf-text@.service).
+Accept=yes
+# The vault reads one letter at a time; a connection past these is closed unread and its letter kept without text.
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

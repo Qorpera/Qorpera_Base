@@ -25,7 +25,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
-import { AuthController } from "./auth.ts";
+import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
@@ -52,6 +52,13 @@ import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import {
+	hasWebsiteIdea,
+	keepWebsiteIdea,
+	relabelNewCompany,
+	renderNewCompany,
+	type Viewer,
+} from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
@@ -166,6 +173,7 @@ export function mountApplication(
 	root.addEventListener("click", onFolderLink);
 	let routeRevision = 0;
 	let accountRevision = 0;
+	holdWebsiteIdea();
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
@@ -212,6 +220,7 @@ export function mountApplication(
 		}
 	}
 	function onRouteChange(): void {
+		holdWebsiteIdea();
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
@@ -349,7 +358,9 @@ export function mountApplication(
 	 * so that stays until it is left. */
 	function redrawScreens(): void {
 		if (disposed) return;
-		// The founding table's page keeps its text between refreshes; a new language builds it again.
+		// The founding table's page and the new-company box keep their text between refreshes; a new language
+		// builds them again.
+		relabelNewCompany(hub);
 		if (founding)
 			founding = {
 				controller: founding.controller,
@@ -623,8 +634,15 @@ export function mountApplication(
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			if (route.name !== "found") teardownFounding();
-			if (route.name === "hub") {
-				renderHub(hub, main);
+			const viewer: Viewer | undefined =
+				authState.user && auth.userId ? { userId: auth.userId, name: displayName(authState.user) } : undefined;
+			if (route.name === "hub" && hasWebsiteIdea()) {
+				// qorpera.com's idea is waiting (a sign-in came back to the app's root): show it in its box.
+				navigate({ name: "new" }, true);
+			} else if (route.name === "hub") {
+				renderHub(hub, main, viewer);
+			} else if (route.name === "new") {
+				renderNewCompany(hub, main, viewer);
 			} else if (route.name === "found") {
 				const userId = auth.userId!;
 				if (founding?.controller.profileId !== route.profileId) {
@@ -1483,4 +1501,26 @@ export function mountApplication(
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
 	};
+}
+
+/** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
+ * "kind", not "type": the sign-in callback takes a type parameter. */
+const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
+
+/** qorpera.com's arrow opens `app.qorpera.com/?ide=…&kind=…`; a link may also say `#/new?idea=…`. What it carries
+ * is kept for the new-company box (a sign-in may come first), the page goes to that box, and the words leave the
+ * address at once, so they never stay in the history or a copied link. */
+function holdWebsiteIdea(): void {
+	const route = currentRoute();
+	const url = new URL(location.href);
+	const fromLink = route.name === "new" && location.hash !== routeHash(route);
+	const fromQuery = WEBSITE_KEYS.some((key) => url.searchParams.has(key));
+	if (!fromLink && !fromQuery) return;
+	const idea =
+		(route.name === "new" ? route.idea : undefined) || url.searchParams.get("ide") || url.searchParams.get("idea");
+	const kind = url.searchParams.get("kind");
+	keepWebsiteIdea({ ...(idea ? { idea } : {}), ...(kind ? { kind } : {}) });
+	for (const key of WEBSITE_KEYS) url.searchParams.delete(key);
+	url.hash = routeHash({ name: "new" });
+	history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }

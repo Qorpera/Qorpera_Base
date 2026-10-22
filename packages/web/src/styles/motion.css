@@ -269,14 +269,14 @@
 
 /* ---- presses: every button answers the finger ---- */
 
-.btn, .icon-button, .hub-create-submit {
+.btn, .icon-button, .hero-go {
 	transition-property: background-color, border-color, color, box-shadow, transform;
 	transition-duration: var(--motion-fast), var(--motion-fast), var(--motion-fast), var(--motion-fast), var(--motion-base);
 	transition-timing-function: ease, ease, ease, ease, var(--ease-spring);
 }
 .btn:active:not(:disabled, [aria-disabled="true"]),
 .icon-button:active:not(:disabled),
-.hub-create-submit:active:not(:disabled) { transform: scale(0.95); }
+.hero-go:active:not(:disabled) { transform: scale(0.95); }
 .context-menu-item, .composer-menu button, .preference-picker-option { transition: background-color var(--motion-fast) ease; }
 
 /* ---- theme: the new look washes out from where it was chosen (ui/appearance.ts) ---- */

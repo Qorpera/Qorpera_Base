@@ -64,6 +64,7 @@ it("calls the principal's functions with its own capability hash and registers w
 	await principal.companies(new AbortController().signal);
 	await principal.eventVerificationsDue(new AbortController().signal);
 	await principal.bankSyncsDue(new AbortController().signal);
+	await principal.digitalPostSyncsDue(new AbortController().signal);
 	await principal.register(company, new AbortController().signal);
 	const own = createHash("sha256").update(sharedBrokerCapability(secret)).digest("hex");
 	expect(db.queries).toEqual([
@@ -77,6 +78,10 @@ it("calls the principal's functions with its own capability hash and registers w
 		},
 		{
 			text: "select public.qorpera_broker_principal_bank_syncs_due($1::uuid,$2::text) as result",
+			values: [principalId, own],
+		},
+		{
+			text: "select public.qorpera_broker_principal_digital_post_syncs_due($1::uuid,$2::text) as result",
 			values: [principalId, own],
 		},
 		{
@@ -105,6 +110,7 @@ function principalFixture(
 		unregistered?: string[];
 		due?: string[];
 		bankDue?: string[];
+		digitalPostDue?: string[];
 		keyId?: string;
 		principalKeyId?: string;
 	} = {},
@@ -138,6 +144,10 @@ function principalFixture(
 		bankSyncsDue: vi.fn(async () => ({
 			schema: "qorpera.broker-principal-bank-syncs/v1",
 			companyIds: [...(options.bankDue ?? [])],
+		})),
+		digitalPostSyncsDue: vi.fn(async () => ({
+			schema: "qorpera.broker-principal-digital-post-syncs/v1",
+			companyIds: [...(options.digitalPostDue ?? [])],
 		})),
 		register: vi.fn(async (companyId: string) => {
 			state.unregistered = state.unregistered.filter((id) => id !== companyId);
@@ -492,6 +502,42 @@ it("syncs the bank of each served company that has one due, on the company's own
 	expect(claims.get(idle)).not.toHaveBeenCalled();
 	principal.bankSyncsDue.mockResolvedValueOnce({ schema: "other", companyIds: [] });
 	await expect(companies.syncBanks()).rejects.toThrow("Shared vault bank syncs are invalid");
+	await Promise.all([without.close(), companies.close()]);
+});
+
+it("fetches the Digital Post of each served company that has a sync due, on its own authority, only with the certificate", async () => {
+	const one = randomUUID();
+	const idle = randomUUID();
+	const { principal } = principalFixture({ registered: [one, idle], digitalPostDue: [one, randomUUID()] });
+	const claims = new Map<string, ReturnType<typeof vi.fn>>();
+	principal.authority.mockImplementation((companyId: string) => {
+		const claim = vi.fn(async () => null);
+		claims.set(companyId, claim);
+		return { claimDigitalPostSync: claim } as unknown as PostgresCloudSecretBrokerAuthority;
+	});
+	const options = {
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke: vi.fn() },
+	};
+	// Without Qorpera's Digital Post certificate nothing is asked.
+	const without = new SharedCloudSecretBrokerCompanies(options);
+	await without.refresh(new AbortController().signal);
+	await without.syncDigitalPost();
+	expect(principal.digitalPostSyncsDue).not.toHaveBeenCalled();
+	const companies = new SharedCloudSecretBrokerCompanies({
+		...options,
+		digitalPost: { available: vi.fn(), letter: vi.fn(), receipt: vi.fn() },
+	});
+	claims.clear();
+	await companies.refresh(new AbortController().signal);
+	await companies.syncDigitalPost();
+	expect(principal.digitalPostSyncsDue).toHaveBeenCalledOnce();
+	expect(claims.get(one)).toHaveBeenCalledOnce();
+	expect(claims.get(idle)).not.toHaveBeenCalled();
+	principal.digitalPostSyncsDue.mockResolvedValueOnce({ schema: "other", companyIds: [] });
+	await expect(companies.syncDigitalPost()).rejects.toThrow("Shared vault Digital Post syncs are invalid");
 	await Promise.all([without.close(), companies.close()]);
 });
 
