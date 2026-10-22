@@ -97,6 +97,13 @@ describe("the reader", () => {
 		expect(text).not.toContain("Page 201");
 		const whole = await service((_input, done) => done(pages(200)));
 		expect(await new DigitalPostPdfText({ path: whole }).read(Buffer.from("%PDF"), signal)).toMatch(/Page 200$/);
+		// The byte limit cutting inside page 201 still ends the text after page 200.
+		const inside = await service((_input, done) => done(pages(201)));
+		const both = await new DigitalPostPdfText({ path: inside, maxBytes: Buffer.byteLength(pages(200)) + 3 }).read(
+			Buffer.from("%PDF"),
+			signal,
+		);
+		expect(both?.endsWith("Page 200\n\n[The text stops here. The rest is in the PDF.]")).toBe(true);
 	});
 
 	it("gives no text and says once when the service is not installed", async () => {

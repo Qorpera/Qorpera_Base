@@ -56,9 +56,13 @@ export function digitalPostPdfTextOf(bytes: Uint8Array, cut: boolean): string | 
 	let text = new TextDecoder().decode(bytes);
 	// A character the limit cut in two decodes as U+FFFD.
 	if (cut) text = text.replace(/�+$/, "");
-	// pdftotext ends each page with a form feed.
+	// pdftotext ends each page with a form feed, so anything after the 200th is page 201: read whole, or cut inside it
+	// by the byte limit.
 	const pages = text.split("\f");
-	if (pages.length > DIGITAL_POST_PDF_TEXT_MAX_PAGES + 1) {
+	if (
+		pages.length > DIGITAL_POST_PDF_TEXT_MAX_PAGES + 1 ||
+		(pages.length > DIGITAL_POST_PDF_TEXT_MAX_PAGES && (pages[DIGITAL_POST_PDF_TEXT_MAX_PAGES] ?? "").trim() !== "")
+	) {
 		text = pages.slice(0, DIGITAL_POST_PDF_TEXT_MAX_PAGES).join("\f");
 		cut = true;
 	}
