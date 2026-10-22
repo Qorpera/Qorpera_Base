@@ -1,4 +1,16 @@
+import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
+import {
+	DIGITAL_POST_INDEX_MAX_BYTES,
+	DIGITAL_POST_INDEX_PATH,
+	DIGITAL_POST_LETTER_MAX_BYTES,
+	type DigitalPostConnection,
+	type DigitalPostLetter,
+	type DigitalPostLetterText,
+	parseDigitalPostLetters,
+	parseDigitalPostLetterText,
+	readDigitalPost,
+} from "../cloud/digital-post.ts";
 import {
 	MAIL_PAGE_SIZE,
 	type MailAddress,
@@ -36,7 +48,12 @@ import type { QuotedText } from "./quotes.ts";
  * A thread opened is marked read once its read lands, and its list's unread mark goes when that mark lands. A thread
  * the cloud no longer has (22023) is gone. A read that fails keeps what was read before, and says so where nothing
  * was. A thread's older messages are read a page at a time when the member asks (`olderMessages`); the 20-second read
- * of its newest page keeps them, until the thread is closed, and reads back to them when more than a page came since. */
+ * of its newest page keeps them, until the thread is closed, and reads back to them when more than a page came since.
+ *
+ * The company's Digital Post (deploy/first-node/RUNTIME-DIGITAL-POST.md) is read with the addresses: the connection's
+ * state, and, once there is one, the letters the folder's index lists (digital-post/letters.json, read again only when
+ * its version changed). A letter a page has open is read from its `letter.md`, again on the page's 20-second read. Both
+ * are files of the company folder, read with the member's own access. */
 
 /** The lists a page can ask for: the threads call's own filters. */
 export interface MailListRequest {
@@ -82,6 +99,22 @@ export interface MailAnswer {
 /** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
 export type MailAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
 
+/** A letter's `letter.md` as the Mailbox reads it. */
+export type DigitalPostLetterRead =
+	| { readonly status: "ready"; readonly letter: DigitalPostLetterText }
+	| { readonly status: "gone" }
+	| { readonly status: "error"; readonly error: string };
+
+/** The company's Digital Post, as the Mailbox shows it. */
+export interface DigitalPostState {
+	/** The connection's state; unset until read, and on a cloud without the call. */
+	readonly connection?: DigitalPostConnection;
+	/** The letters the folder holds, newest first. */
+	readonly letters: readonly DigitalPostLetter[];
+	/** The open letters' texts, by folder. A letter not here is still being read. */
+	readonly open: Readonly<Record<string, DigitalPostLetterRead>>;
+}
+
 export interface MailState {
 	/** The company's addresses; none while its mail is off. */
 	readonly addresses: readonly MailAddress[];
@@ -92,7 +125,26 @@ export interface MailState {
 	readonly threads: Readonly<Record<string, MailThreadRead>>;
 	/** A waiting send's answer on its way, given or refused, by review id. */
 	readonly answers: Readonly<Record<string, MailAnswer>>;
+	/** Unset until the controller first reads it. */
+	readonly digitalPost?: DigitalPostState;
 }
+
+const NO_DIGITAL_POST: DigitalPostState = { letters: [], open: {} };
+
+/** The company's Digital Post as last read: none before the first read. */
+export function digitalPostOf(mail: MailState | undefined): DigitalPostState {
+	return mail?.digitalPost ?? NO_DIGITAL_POST;
+}
+
+/** Whether the company has mail to show: an email address, or Digital Post connected or holding letters. */
+export function mailShown(mail: MailState | undefined): boolean {
+	if (!mail) return false;
+	const post = digitalPostOf(mail);
+	return mail.addresses.length > 0 || post.connection?.connected === true || post.letters.length > 0;
+}
+
+/** The member's own folder client: the company's Digital Post letters are files of its folder. */
+export type MailFolder = (signal: AbortSignal) => Pick<CloudMemberFolderClient, "read" | "readFile">;
 
 export function mailListKey(request: MailListRequest): string {
 	return JSON.stringify([request.address ?? null, request.state ?? null, request.direction ?? null]);
@@ -101,7 +153,14 @@ export function mailListKey(request: MailListRequest): string {
 const COMPANY_POLL_MS = 60_000;
 const PAGE_POLL_MS = 20_000;
 
-const EMPTY: MailState = { addresses: [], waiting: [], lists: {}, threads: {}, answers: {} };
+const EMPTY: MailState = {
+	addresses: [],
+	waiting: [],
+	lists: {},
+	threads: {},
+	answers: {},
+	digitalPost: NO_DIGITAL_POST,
+};
 
 const readers = new WeakMap<CompanyController, CompanyMail>();
 
@@ -127,24 +186,40 @@ export class CompanyMail {
 	readonly #cloud: Cloud;
 	readonly #accounts: MailAccounts;
 	readonly #publish: (state: MailState) => void;
+	readonly #folder: MailFolder | undefined;
 	#state: MailState | undefined;
+	/** The version of the letters index last read: it is read again only when it changed. */
+	#indexVersion: string | undefined;
 	#disposed = false;
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
-	#watched: { lists: Map<string, MailListRequest>; threads: Set<string>; shown: () => boolean } = {
+	#watched: {
+		lists: Map<string, MailListRequest>;
+		threads: Set<string>;
+		letters: Set<string>;
+		shown: () => boolean;
+	} = {
 		lists: new Map(),
 		threads: new Set(),
+		letters: new Set(),
 		shown: () => false,
 	};
 	/** The threads marked read while open, so a mark is sent once per opening unless newer mail arrives. */
 	#marked = new Set<string>();
 
-	constructor(company: CompanyController, cloud: Cloud, accounts: MailAccounts, publish: (state: MailState) => void) {
+	constructor(
+		company: CompanyController,
+		cloud: Cloud,
+		accounts: MailAccounts,
+		publish: (state: MailState) => void,
+		folder?: MailFolder,
+	) {
 		this.#company = company;
 		this.#cloud = cloud;
 		this.#accounts = accounts;
 		this.#publish = publish;
+		this.#folder = folder;
 		readers.set(company, this);
 	}
 
@@ -218,28 +293,109 @@ export class CompanyMail {
 					// The badge keeps its last count.
 				}
 			}),
+			this.#readDigitalPost(),
 		]);
 	}
 
-	/** What a page draws now: its lists and its open threads. Called as it draws; reads start after the draw, and the
-	 * threads it no longer has open are let go. */
-	watch(requests: readonly MailListRequest[], threads: readonly string[], shown: () => boolean): void {
+	/** The Digital Post connection, then the letters index when there may be letters. */
+	#readDigitalPost(): Promise<void> {
+		return this.#once("digital-post", async () => {
+			let connection: DigitalPostConnection;
+			try {
+				connection = await readDigitalPost(this.#cloud, this.#environmentId);
+			} catch {
+				// A cloud without the call has no Digital Post; another failure keeps what was read.
+				return;
+			}
+			this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), connection } }));
+			if (connection.connected || connection.letters > 0) await this.#readIndex();
+		});
+	}
+
+	/** The letters the folder's index lists, read again only when its version changed. */
+	async #readIndex(): Promise<void> {
+		if (!this.#folder || this.#closed) return;
+		try {
+			const signal = AbortSignal.any([this.#company.signal, AbortSignal.timeout(30_000)]);
+			const folder = this.#folder(signal);
+			const read = await folder.read(DIGITAL_POST_INDEX_PATH, signal);
+			const file = read.entry?.kind === "file" ? read.entry.file : null;
+			if (!read.entry || !file || file.bytes > DIGITAL_POST_INDEX_MAX_BYTES) {
+				this.#indexVersion = undefined;
+				this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters: [] } }));
+				return;
+			}
+			if (read.entry.version === this.#indexVersion) return;
+			const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
+			const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
+			this.#indexVersion = read.entry.version;
+			this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters } }));
+		} catch {
+			// The list keeps what was read before.
+		}
+	}
+
+	/** An open letter's `letter.md`. */
+	#readLetter(folderPath: string): Promise<void> {
+		return this.#once(`letter:${folderPath}`, async () => {
+			if (!this.#folder) return;
+			const put = (read: DigitalPostLetterRead) =>
+				this.#set((state) =>
+					this.#watched.letters.has(folderPath)
+						? {
+								...state,
+								digitalPost: {
+									...digitalPostOf(state),
+									open: { ...digitalPostOf(state).open, [folderPath]: read },
+								},
+							}
+						: state,
+				);
+			try {
+				const signal = AbortSignal.any([this.#company.signal, AbortSignal.timeout(30_000)]);
+				const folder = this.#folder(signal);
+				const read = await folder.read(`${folderPath}/letter.md`, signal);
+				const file = read.entry?.kind === "file" ? read.entry.file : null;
+				if (!file || file.bytes > DIGITAL_POST_LETTER_MAX_BYTES) {
+					put({ status: "gone" });
+					return;
+				}
+				const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES);
+				put({ status: "ready", letter: parseDigitalPostLetterText(new TextDecoder().decode(bytes)) });
+			} catch (error) {
+				// A letter already shown stays as it was; one never read says why.
+				const was = this.#state?.digitalPost?.open[folderPath];
+				if (was?.status !== "ready") put({ status: "error", error: describeError(error) });
+			}
+		});
+	}
+
+	/** What a page draws now: its lists, its open threads and its open Digital Post letters (by folder). Called as it
+	 * draws; reads start after the draw, and the threads and letters it no longer has open are let go. */
+	watch(
+		requests: readonly MailListRequest[],
+		threads: readonly string[],
+		shown: () => boolean,
+		letters: readonly string[] = [],
+	): void {
 		if (this.#closed) return;
 		const lists = new Map(requests.map((request) => [mailListKey(request), request]));
 		const opened = new Set(threads);
+		const openLetters = new Set(letters);
+		const freshLetters = [...openLetters].filter((letter) => !this.#watched.letters.has(letter));
 		// A list or a thread drawn now, and not on the last draw, is read again (and a thread marked read), even when it
 		// was read before: coming back to a view shows its list as it is.
 		const was = this.#watched;
 		const freshLists = new Set([...lists.keys()].filter((key) => !was.lists.has(key)));
 		const fresh = new Set([...opened].filter((thread) => !was.threads.has(thread)));
 		for (const thread of this.#marked) if (!opened.has(thread)) this.#marked.delete(thread);
-		this.#watched = { lists, threads: opened, shown };
-		if (!this.#pageTimer && (lists.size > 0 || opened.size > 0))
+		this.#watched = { lists, threads: opened, letters: openLetters, shown };
+		if (!this.#pageTimer && (lists.size > 0 || opened.size > 0 || openLetters.size > 0))
 			this.#pageTimer = setInterval(() => {
 				if (!this.#watched.shown()) {
 					clearInterval(this.#pageTimer);
 					this.#pageTimer = undefined;
-					this.#watched = { lists: new Map(), threads: new Set(), shown: () => false };
+					this.#watched = { lists: new Map(), threads: new Set(), letters: new Set(), shown: () => false };
 					return;
 				}
 				if (document.visibilityState === "visible") void this.#refreshPage();
@@ -249,6 +405,19 @@ export class CompanyMail {
 			for (const [key, request] of lists)
 				if (freshLists.has(key) || !state.lists[key]) void this.#readFirst(key, request);
 			for (const thread of opened) if (fresh.has(thread) || !state.threads[thread]) void this.#readThread(thread);
+			for (const letter of openLetters)
+				if (freshLetters.includes(letter) || !digitalPostOf(state).open[letter]) void this.#readLetter(letter);
+			// A closed letter's read is let go too.
+			if (Object.keys(digitalPostOf(state).open).some((letter) => !openLetters.has(letter)))
+				this.#set((now) => ({
+					...now,
+					digitalPost: {
+						...digitalPostOf(now),
+						open: Object.fromEntries(
+							Object.entries(digitalPostOf(now).open).filter(([letter]) => openLetters.has(letter)),
+						),
+					},
+				}));
 			// A closed thread's read is let go: opening it again reads it again anyway.
 			const open = this.#watched.threads;
 			if (Object.keys(state.threads).some((thread) => !open.has(thread)))
@@ -260,9 +429,14 @@ export class CompanyMail {
 	}
 
 	async #refreshPage(): Promise<void> {
-		const { lists, threads } = this.#watched;
+		const { lists, threads, letters } = this.#watched;
 		await Promise.all([...lists].map(([key, request]) => this.#readFirst(key, request)));
 		await Promise.all([...threads].map((thread) => this.#readThread(thread)));
+		// The letters list follows the page too: a letter written into the folder shows within the page's read.
+		const connection = this.#state?.digitalPost?.connection;
+		if (connection?.connected || (connection?.letters ?? 0) > 0)
+			await this.#once("digital-post-index", () => this.#readIndex());
+		await Promise.all([...letters].map((letter) => this.#readLetter(letter)));
 	}
 
 	/** Reads a list's first page, and as many pages after it as the list shows, each from where the one before ends: a

@@ -4,6 +4,7 @@ import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
+import { createDigitalPostKeys, readDigitalPost } from "../../cloud/digital-post.ts";
 import { createWebEventHooks } from "../../cloud/event-hooks.ts";
 import { interfacePageCalls } from "../../cloud/interface-pages.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
@@ -25,6 +26,7 @@ import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { DigitalPostView } from "./settings-digital-post.ts";
 import { HooksView } from "./settings-hooks.ts";
 import { MemoryView } from "./settings-memory.ts";
 import { PagesView } from "./settings-pages.ts";
@@ -168,6 +170,7 @@ export class SettingsView {
 	/** The member's own coding environment variables, on My connections. */
 	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
+	#digitalPost: DigitalPostView | undefined;
 	/** The company's coding environment variables, on Company connections. */
 	#companyEnvironment: CodingEnvironmentView | undefined;
 	#hooks: HooksView | undefined;
@@ -453,6 +456,7 @@ export class SettingsView {
 		this.#connections?.dispose();
 		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
+		this.#digitalPost?.dispose();
 		this.#companyEnvironment?.dispose();
 		this.#hooks?.dispose();
 		this.#rules?.dispose();
@@ -754,6 +758,18 @@ export class SettingsView {
 							undefined,
 					},
 				});
+				// The company's public post (RUNTIME-DIGITAL-POST.md): its state, and the key an owner or admin saves.
+				const cloud = this.#api.cloud;
+				const keys = createDigitalPostKeys(cloud, environment);
+				this.#digitalPost = new DigitalPostView(
+					{
+						read: () => readDigitalPost(cloud, environment.environmentId),
+						save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
+						disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
+					},
+					signal(),
+					{ access: { canManage } },
+				);
 				// Where a company variable is given decides where a member's own of that name is used, so My
 				// connections reads its list again after each change here (opened later, it reads one anyway).
 				this.#companyEnvironment = new CodingEnvironmentView(
@@ -772,6 +788,7 @@ export class SettingsView {
 							"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
 						),
 						this.#services.el,
+						this.#digitalPost.el,
 						this.#companyEnvironment.el,
 						this.#hooks.el,
 					),
@@ -915,6 +932,8 @@ export class SettingsView {
 		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
+		this.#digitalPost?.dispose();
+		this.#digitalPost = undefined;
 		this.#companyEnvironment?.dispose();
 		this.#companyEnvironment = undefined;
 		this.#hooks?.dispose();

@@ -198,6 +198,20 @@ a.mailbox-open { color: inherit; text-decoration: none; }
 .mailbox-pick.is-current > :first-child { transform: scale(1.08); }
 .mailbox-new { margin: 18px var(--mailbox-gutter); color: var(--text-muted); }
 
+/* ---- Digital Post: letters from public authorities --------------------------------- */
+.mailbox-state.is-legal { color: var(--mailbox-waiting); }
+.mailbox-post { color: var(--text-soft); }
+.mailbox-post svg { width: 18px; height: 18px; }
+.mailbox-thread.is-letter .mailbox-handled svg { width: 16px; height: 16px; }
+.mailbox-flags { display: block; margin-top: 4px; }
+.mailbox-letter-text { margin: 18px 0 0; padding: 0 var(--mailbox-gutter); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15.5px; line-height: 1.6; }
+.mailbox-documents { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 20px 0 0; padding: 0 var(--mailbox-gutter); list-style: none; }
+.mailbox-documents svg, .mailbox-folder svg { width: 16px; height: 16px; }
+.mailbox-folder { margin: 14px 0 0; padding: 0 var(--mailbox-gutter); }
+.mailbox-agent-pick { flex: none; max-width: 160px; margin-top: 8px; border: 0; background: none; color: var(--text); font: inherit; font-size: 14px; font-weight: 600; }
+.mailbox-address.is-digital-post strong { display: inline-flex; align-items: center; gap: 6px; }
+.mailbox-address.is-digital-post strong svg { width: 17px; height: 17px; }
+
 /* ---- Write: the one panel, floating ------------------------------------------ */
 .mailbox-write-panel {
 	position: absolute; right: var(--mailbox-gutter); bottom: 24px; z-index: 3; display: flex; flex-direction: column;

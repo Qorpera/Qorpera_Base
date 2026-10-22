@@ -1,3 +1,4 @@
+import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
 import type {
 	MailAccount,
 	MailAddress,
@@ -11,7 +12,14 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { fmtTime, h, icon, notice, spinner } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
-import { CompanyMail, type MailList, type MailListRequest, mailListKey } from "../company-mail.ts";
+import {
+	CompanyMail,
+	digitalPostOf,
+	type MailList,
+	type MailListRequest,
+	mailListKey,
+	mailShown,
+} from "../company-mail.ts";
 import { mailList, mailRow, mailSummary } from "../interface-mail.ts";
 import type { QuotedText } from "../quotes.ts";
 import { messageText, show } from "./interface.ts";
@@ -32,6 +40,12 @@ import { messageText, show } from "./interface.ts";
  * - Write: a member asks an agent to write an email; the agent writes and sends it, and its review decides as for any
  *   send.
  *
+ * - Digital Post (deploy/first-node/RUNTIME-DIGITAL-POST.md): the letters the company folder holds from public
+ *   authorities are lines of the Inbox among the threads, newest first, each with the authority as its sender and a
+ *   Digital Post mark. A letter opens to its text and its documents (which open in Storage), with a line to ask an agent
+ *   about it. Addresses has a Digital Post row, and its Choose asks the Co-Founder to give it an agent. The Mailbox shows
+ *   while the company has an email address, or Digital Post connected or holding letters.
+ *
  * What came from outside the company (a sender, a subject, a snippet, a message's text) is only ever set as text, and
  * carries the title that says so. Account mail shows only that it is account mail, for which site, who used the
  * account and when. */
@@ -46,6 +60,10 @@ interface MailboxUi {
 	readonly profileId: string;
 	tab: Tab;
 	open: string | null;
+	/** The open Digital Post letter, by its folder. */
+	letter: string | null;
+	/** Who a note about the open letter goes to; the Co-Founder until the member picks another. */
+	letterAgent: string | null;
 	search: string;
 	/** Messages opened or folded by the member, by `thread:kind:id`; the rest follow the default (the newest open). */
 	expanded: Record<string, boolean>;
@@ -84,6 +102,8 @@ export function renderMailbox(
 			profileId,
 			tab: "inbox",
 			open: null,
+			letter: null,
+			letterAgent: null,
 			search: "",
 			expanded: {},
 			writing: false,
@@ -110,6 +130,7 @@ export function renderMailbox(
 	const request = ui.tab === "sent" ? SENT : INBOX;
 	const lists = ui.tab === "addresses" ? [] : [request];
 	const threads = ui.open ? [ui.open] : [];
+	const letters = ui.letter ? [ui.letter] : [];
 	const staff = state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]);
 	const key = JSON.stringify([
 		profileId,
@@ -129,12 +150,15 @@ export function renderMailbox(
 					mail.answers,
 					lists.map((each) => mail.lists[mailListKey(each)] ?? null),
 					threads.map((thread) => [mail.threads[thread] ?? null, mailSummary(company, thread) ?? null]),
+					digitalPostOf(mail).connection ?? null,
+					digitalPostOf(mail).letters,
+					letters.map((letter) => digitalPostOf(mail).open[letter] ?? null),
 				]
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
 	show(container, key, () => drawPage(page), moveFocus);
-	CompanyMail.of(company)?.watch(lists, threads, stillShown);
+	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
 }
 
 interface Page {
@@ -210,16 +234,18 @@ function threadAgent(page: Page, summary: MailThreadSummary | undefined): string
 function drawPage(page: Page): HTMLElement {
 	const { ui, company } = page;
 	const mail = company.store.get().mail;
-	const off = mail !== undefined && mail.addresses.length === 0;
+	const off = mail !== undefined && !mailShown(mail);
 	const body = !mail
 		? spinner(t("Reading the mail"))
 		: off
 			? noAddress(page)
-			: ui.open
-				? threadView(page, ui.open)
-				: ui.tab === "addresses"
-					? addressesView(page)
-					: listView(page);
+			: ui.letter
+				? letterView(page, ui.letter)
+				: ui.open
+					? threadView(page, ui.open)
+					: ui.tab === "addresses"
+						? addressesView(page)
+						: listView(page);
 	return h(
 		"section",
 		{ class: "mailbox", "data-interface": page.name, "data-profile": page.profileId },
@@ -229,11 +255,12 @@ function drawPage(page: Page): HTMLElement {
 			"div",
 			{
 				class: "mailbox-scroll",
-				"data-scroll-key": JSON.stringify([page.profileId, ui.tab, ui.open]),
+				"data-scroll-key": JSON.stringify([page.profileId, ui.tab, ui.open, ui.letter]),
 			},
 			body,
 		),
-		ui.open && mail && !off ? composer(page, ui.open) : null,
+		ui.letter && mail && !off ? letterComposer(page, ui.letter) : null,
+		ui.open && !ui.letter && mail && !off ? composer(page, ui.open) : null,
 		ui.writing && canWrite(page) && mail && !off ? writePanel(page) : null,
 		ui.toast ? toast(page, ui.toast.text, ui.toast.agent) : null,
 	);
@@ -265,6 +292,7 @@ function bar(page: Page): HTMLElement {
 						onclick: () => {
 							ui.tab = tab;
 							ui.open = null;
+							ui.letter = null;
 							ui.changing = null;
 							page.redraw(`tab:${tab}`);
 						},
@@ -281,7 +309,7 @@ function bar(page: Page): HTMLElement {
 			),
 		),
 		h("span", { class: "mailbox-spacer" }),
-		ui.tab === "addresses" && !ui.open
+		ui.tab === "addresses" && !ui.open && !ui.letter
 			? null
 			: h(
 					"label",
@@ -296,11 +324,12 @@ function bar(page: Page): HTMLElement {
 						oninput: (event: Event) => {
 							ui.search = (event.target as HTMLInputElement).value;
 							ui.open = null;
+							ui.letter = null;
 							page.redraw();
 						},
 					}),
 				),
-		canWrite(page)
+		canWrite(page) && (page.company.store.get().mail?.addresses.length ?? 0) > 0
 			? h(
 					"button",
 					{
@@ -335,6 +364,7 @@ function noAddress(page: Page): HTMLElement {
 		{ class: "mailbox-empty" },
 		h("h1", null, t("The company has no email address yet")),
 		h("p", null, t("Make one, and pick the agent who answers what comes in.")),
+		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected in Settings.")),
 		settings && page.company.store.get().team?.capabilities.authorize === true
 			? h("button", { type: "button", class: "mailbox-primary", onclick: settings }, t("Make an address"))
 			: null,
@@ -376,7 +406,22 @@ function listView(page: Page): HTMLElement {
 			!waitingThreads.has(item.thread) &&
 			matches(ui.search, item.fromName, item.fromAddress, item.subject, item.snippet, item.address),
 	);
-	const rows = rest.map((item) => threadLine(page, item));
+	// Digital Post's letters join the Inbox by when they came, as far back as its threads are read.
+	const oldest = list.next ? list.threads.at(-1)?.lastAt : undefined;
+	const letters =
+		ui.tab === "inbox"
+			? digitalPostOf(mail).letters.filter(
+					(letter) =>
+						(oldest === undefined || Date.parse(letter.received) >= Date.parse(oldest)) &&
+						matches(ui.search, letter.sender, letter.title, letter.snippet, letter.caseId),
+				)
+			: [];
+	const rows = [
+		...rest.map((item) => ({ at: Date.parse(item.lastAt), row: threadLine(page, item) })),
+		...letters.map((letter) => ({ at: Date.parse(letter.received), row: letterLine(page, letter) })),
+	]
+		.sort((a, b) => b.at - a.at)
+		.map((entry) => entry.row);
 	if (list.status === "ready" && !rows.length && !waitingRows.length && !list.next) {
 		if (ui.search.trim()) return h("p", { class: "mailbox-none" }, t("No mail matches."));
 		if (ui.tab === "sent") return h("p", { class: "mailbox-none" }, t("Nothing has been sent yet."));
@@ -420,6 +465,13 @@ function listView(page: Page): HTMLElement {
 
 function fresh(page: Page, addresses: readonly MailAddress[]): HTMLElement {
 	const [first] = addresses;
+	if (!first)
+		return h(
+			"div",
+			{ class: "mailbox-empty" },
+			h("h1", null, t("No Digital Post yet")),
+			h("p", null, t("Letters from public authorities come here as Digital Post delivers them.")),
+		);
 	const agent = first?.handledBy[0];
 	return h(
 		"div",
@@ -1021,6 +1073,312 @@ async function tell(page: Page, agentId: string, note: QuotedText, done: string,
 	page.redraw();
 }
 
+// Digital Post ------------------------------------------------------------------------------------------------------
+
+function openLetter(page: Page, folder: string): void {
+	page.ui.letter = folder;
+	page.ui.open = null;
+	page.ui.note = "";
+	page.redraw("back");
+}
+
+function letterOf(page: Page, folder: string): DigitalPostLetter | undefined {
+	return digitalPostOf(page.company.store.get().mail).letters.find((letter) => letter.folder === folder);
+}
+
+/** A letter's line in the Inbox: the authority that sent it, its title, the start of its text, the Digital Post mark. */
+function letterLine(page: Page, letter: DigitalPostLetter): HTMLElement {
+	return h(
+		"li",
+		{ class: "mailbox-row is-letter" },
+		h(
+			"button",
+			{
+				type: "button",
+				class: "mailbox-open",
+				"data-focus-key": `letter:${letter.messageUuid}`,
+				onclick: () => openLetter(page, letter.folder),
+			},
+			h("span", { class: "mailbox-dot", "aria-hidden": "true" }),
+			h("span", { class: "mailbox-who" }, outside(letter.sender)),
+			h(
+				"span",
+				{ class: "mailbox-line" },
+				letter.legalNotification ? h("span", { class: "mailbox-state is-legal" }, t("Legal effect")) : null,
+				outside(letter.title, "span", "mailbox-subject"),
+				letter.snippet ? h("span", { class: "mailbox-snippet" }, " — ", outside(letter.snippet)) : null,
+			),
+		),
+		h("span", { class: "mailbox-actions" }),
+		h("span", { class: "mailbox-handler mailbox-post", title: t("Digital Post") }, icon("company")),
+		h("time", { class: "mailbox-time", datetime: letter.received }, when(letter.received)),
+	);
+}
+
+/** An open letter: who sent it and when, its flags, its text, and its documents, which open in Storage. */
+function letterView(page: Page, folder: string): HTMLElement {
+	const { company, ui } = page;
+	const letter = letterOf(page, folder);
+	const read = digitalPostOf(company.store.get().mail).open[folder];
+	const back = h(
+		"button",
+		{
+			type: "button",
+			class: "mailbox-icon",
+			"aria-label": t("Back to Inbox"),
+			"data-focus-key": "back",
+			onclick: () => {
+				ui.letter = null;
+				page.redraw(letter ? `letter:${letter.messageUuid}` : undefined);
+			},
+		},
+		icon("back"),
+	);
+	const flags = letter
+		? [
+				letter.legalNotification ? t("Legal effect") : null,
+				letter.mandatory ? t("Mandatory post") : null,
+				letter.replyBy ? t("Reply by {when}", { when: fmtTime(letter.replyBy) }) : null,
+				letter.caseId ? t("Case {id}", { id: letter.caseId }) : null,
+			].filter((flag): flag is string => flag !== null)
+		: [];
+	const head = h(
+		"header",
+		{ class: "mailbox-thread-head" },
+		letter ? outside(letter.title, "h1") : h("h1", null, t("Digital Post")),
+		letter
+			? h(
+					"span",
+					{ class: "mailbox-muted mailbox-handled" },
+					icon("company"),
+					outside(letter.sender),
+					` · ${t("Digital Post")} · ${fmtTime(letter.received)}`,
+				)
+			: null,
+		flags.length ? h("span", { class: "mailbox-muted mailbox-flags" }, flags.join(" · ")) : null,
+	);
+	const parts: (HTMLElement | null)[] = [h("div", { class: "mailbox-back" }, back), head];
+	if (read === undefined) parts.push(spinner(t("Reading the letter")));
+	else if (read.status === "gone")
+		parts.push(h("p", { class: "mailbox-none" }, t("This letter is no longer in the company folder.")));
+	else if (read.status === "error") parts.push(notice("danger", h("p", null, read.error)));
+	else {
+		parts.push(
+			read.letter.text
+				? outside(read.letter.text, "div", "mailbox-letter-text")
+				: h("p", { class: "mailbox-muted" }, t("The letter's text is in its documents.")),
+		);
+		if (read.letter.documents.length)
+			parts.push(
+				h(
+					"ul",
+					{ class: "mailbox-documents", "aria-label": t("Documents") },
+					...read.letter.documents.map((name) =>
+						h(
+							"li",
+							null,
+							h(
+								"button",
+								{ type: "button", class: "mailbox-text", "data-folder-path": `${folder}/${name}` },
+								icon("file"),
+								outside(name),
+							),
+						),
+					),
+				),
+			);
+	}
+	parts.push(
+		h(
+			"p",
+			{ class: "mailbox-muted mailbox-folder" },
+			h(
+				"button",
+				{ type: "button", class: "mailbox-text is-quiet", "data-folder-path": folder },
+				icon("folder"),
+				t("Open the letter's folder"),
+			),
+		),
+	);
+	return h("div", { class: "mailbox-thread is-letter" }, ...parts);
+}
+
+/** A note about the open letter to an agent the member picks (the Co-Founder at first), with the letter as quotes. */
+function letterComposer(page: Page, folder: string): HTMLElement | null {
+	const { company, ui } = page;
+	const letter = letterOf(page, folder);
+	if (!canWrite(page) || !letter) return null;
+	const cofounder = company.cofounderId();
+	const agents = company.store.get().staff.filter((agent) => agent.employmentStatus === "active");
+	const agentId =
+		ui.letterAgent && agents.some((agent) => agent.id === ui.letterAgent)
+			? ui.letterAgent
+			: (cofounder ?? agents[0]?.id);
+	if (!agentId) return null;
+	const agent = agentName(page, agentId);
+	const placeholder = t("Tell {name} what to do with this letter", { name: agent });
+	const send = async () => {
+		const words = ui.note.trim();
+		if (!words || ui.busy) return;
+		// The letter is named by its message id and its year's folder, never by its title or sender: those are an
+		// authority's words, and a member's message quotes outside words only from email (contract, "quoted outside
+		// content in a member's message").
+		const note: QuotedText = {
+			text: `${t("About the Digital Post letter {id} (its folder in {folder} ends with its id): ", {
+				id: letter.messageUuid,
+				folder: folder.split("/").slice(0, 2).join("/"),
+			})}${words}`,
+			quotes: [],
+		};
+		await tell(page, agentId, note, t("{name} has your note", { name: agent }), () => {
+			ui.note = "";
+		});
+	};
+	return h(
+		"form",
+		{
+			class: "mailbox-composer",
+			onsubmit: (event: Event) => {
+				event.preventDefault();
+				void send();
+			},
+		},
+		h(
+			"select",
+			{
+				class: "mailbox-agent-pick",
+				"aria-label": t("Who the note goes to"),
+				disabled: ui.busy,
+				onchange: (event: Event) => {
+					ui.letterAgent = (event.target as HTMLSelectElement).value;
+					page.redraw("note");
+				},
+			},
+			...agents.map((each) => h("option", { value: each.id, selected: each.id === agentId }, each.displayName)),
+		),
+		h("label", { class: "visually-hidden", for: "mailbox-note" }, placeholder),
+		h("input", {
+			id: "mailbox-note",
+			placeholder,
+			value: ui.note,
+			disabled: ui.busy,
+			autocomplete: "off",
+			"data-focus-key": "note",
+			oninput: (event: Event) => {
+				ui.note = (event.target as HTMLInputElement).value;
+			},
+		}),
+		h(
+			"button",
+			{
+				type: "submit",
+				class: "mailbox-icon",
+				"aria-label": t("Send to {name}", { name: agent }),
+				disabled: ui.busy,
+			},
+			icon("send"),
+		),
+	);
+}
+
+/** The Digital Post row of Addresses, while Digital Post is connected or holds letters: how it stands, and Choose,
+ * which asks the Co-Founder to have an agent read the letters as they come. */
+function digitalPostAddress(page: Page, agents: readonly HostedStaffAgent[]): HTMLElement | null {
+	const { company, ui } = page;
+	const post = digitalPostOf(company.store.get().mail);
+	const connection = post.connection;
+	if (!connection?.connected && !post.letters.length) return null;
+	const cofounder = company.cofounderId();
+	const choosing = ui.changing === "digital-post";
+	const standing = !connection?.connected
+		? t("Not connected")
+		: connection.status === "refused"
+			? t("Digital Post refused the key")
+			: connection.status === "failed"
+				? t("Not reached at the last try")
+				: connection.status === "waiting"
+					? t("Connecting")
+					: connection.fetchedAt
+						? t("Checked {when}", { when: when(connection.fetchedAt) })
+						: t("Connected");
+	return h(
+		"li",
+		{ class: "mailbox-address is-digital-post" },
+		h(
+			"div",
+			{ class: "mailbox-address-row" },
+			h(
+				"span",
+				{ class: "mailbox-address-name" },
+				h("strong", null, icon("company"), t("Digital Post")),
+				h("span", { class: "mailbox-muted" }, t("Letters from public authorities")),
+			),
+			h("span", { class: "mailbox-address-agent mailbox-muted" }, standing),
+			h(
+				"span",
+				{ class: "mailbox-muted" },
+				h("strong", { class: "mailbox-week" }, String(post.letters.length)),
+				` ${post.letters.length === 1 ? t("letter") : t("letters")}`,
+			),
+			canWrite(page) && cofounder
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-text is-quiet",
+							"aria-expanded": String(choosing),
+							"data-focus-key": "change:digital-post",
+							onclick: () => {
+								ui.changing = choosing ? null : "digital-post";
+								page.redraw("change:digital-post");
+							},
+						},
+						t("Choose who reads it"),
+					)
+				: null,
+		),
+		choosing && cofounder
+			? h(
+					"div",
+					{ class: "mailbox-picks", role: "group", "aria-label": t("Who should read it?") },
+					h("span", { class: "mailbox-muted" }, t("Who should read it?")),
+					...agents.map((agent) =>
+						h(
+							"button",
+							{
+								type: "button",
+								class: "mailbox-pick",
+								disabled: ui.busy,
+								onclick: () => {
+									void tell(
+										page,
+										cofounder,
+										{
+											text: t(
+												"Please have {name} read the company's Digital Post: a routine that wakes on new letters in digital-post/ (a file change, the whole folder), reads each letter's letter.md and acts on it.",
+												{ name: agent.displayName },
+											),
+											quotes: [],
+										},
+										t("Asked {cofounder} to have {name} read Digital Post", {
+											cofounder: agentName(page, cofounder),
+											name: agent.displayName,
+										}),
+										() => {
+											ui.changing = null;
+										},
+									);
+								},
+							},
+							figure(page, agent.id, agent.displayName, 30),
+							agent.displayName,
+						),
+					),
+				)
+			: null,
+	);
+}
+
 // Addresses ---------------------------------------------------------------------------------------------------------
 
 function addressesView(page: Page): HTMLElement {
@@ -1129,10 +1487,11 @@ function addressesView(page: Page): HTMLElement {
 				: null,
 		);
 	});
+	const post = digitalPostAddress(page, agents);
 	return h(
 		"div",
 		{ class: "mailbox-addresses" },
-		h("ul", { class: "mailbox-address-list" }, ...rows),
+		h("ul", { class: "mailbox-address-list" }, ...rows, ...(post ? [post] : [])),
 		page.options.openSettings && company.store.get().team?.capabilities.authorize === true
 			? h(
 					"button",

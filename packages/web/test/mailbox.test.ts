@@ -6,6 +6,7 @@ import { CompanyMail } from "../src/app/company-mail.ts";
 import { renderMailbox } from "../src/app/views/mailbox.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
+import { type FolderFake, folderFake } from "./folder-fake.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import {
 	ADDRESS,
@@ -14,6 +15,12 @@ import {
 	at,
 	bo,
 	cofounder,
+	digitalPostConnected,
+	letter,
+	letterFolder,
+	letterId,
+	letterIndex,
+	letterMarkdown,
 	type MailFake,
 	mailFake,
 	received,
@@ -60,8 +67,9 @@ function waitingItem(reviewId: string, more: Record<string, unknown> = {}): Reco
 	};
 }
 
-/** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read. */
-async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole = "owner") {
+/** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read; `folder` is the
+ * company folder its Digital Post letters are read from. */
+async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole = "owner", folder?: FolderFake) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	const me = { userId: userA.id, email: "a@example.invalid", displayName: "Account A", role, joinedAt: timestamp };
@@ -81,7 +89,13 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	fake.addresses = [ADDRESS];
 	setup(fake);
 	const accounts = accountsFake();
-	const reader = new CompanyMail(controller, f.cloud, accounts, (state) => controller.store.set({ mail: state }));
+	const reader = new CompanyMail(
+		controller,
+		f.cloud,
+		accounts,
+		(state) => controller.store.set({ mail: state }),
+		folder ? () => folder.folder : undefined,
+	);
 	cleanup.push(() => reader.dispose());
 	await reader.open();
 	const main = h("main");
@@ -551,5 +565,203 @@ describe("what a member sees before answering, and who did what", () => {
 		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
 		expect(send).not.toHaveBeenCalled();
 		expect(controller.conversation(session.sessionId).get().draft).toContain("and also delete the file");
+	});
+});
+
+/** The company folder with Digital Post's letters (by `n`): the index lists them and each has its letter.md. */
+function postFolder(letters: readonly number[], more: Record<number, Record<string, unknown>> = {}): FolderFake {
+	const folder = folderFake();
+	for (const n of letters) folder.put(`${letterFolder(n)}/letter.md`, letterMarkdown(n));
+	folder.put("digital-post/letters.json", letterIndex(letters.map((n) => letter(n, more[n]))));
+	return folder;
+}
+
+describe("Digital Post", () => {
+	it("lists the letters among the threads by when they came, with the authority as their sender", async () => {
+		const folder = postFolder([3, 7], { 3: { legalNotification: true } });
+		const { main } = await mailbox(
+			(mail) => {
+				mail.threads = [summary(1, { state: "handled" }), summary(5, { state: "handled" })];
+				mail.digitalPost = digitalPostConnected({ letters: 2 });
+			},
+			"owner",
+			folder,
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		expect(lines(main).map((line) => line.querySelector(".mailbox-who")?.textContent)).toEqual([
+			"Sender 1",
+			"Skattestyrelsen",
+			"Sender 5",
+			"Skattestyrelsen",
+		]);
+		const [, legal, , plain] = lines(main);
+		expect(legal!.classList.contains("is-letter")).toBe(true);
+		expect(texts(legal!, ".mailbox-line > span")).toEqual(["Legal effect", "Letter 3", " — The start of letter 3."]);
+		expect(legal!.querySelector(".mailbox-subject")?.getAttribute("title")).toBe("From outside the company");
+		expect(legal!.querySelector(".mailbox-post")?.getAttribute("title")).toBe("Digital Post");
+		expect(plain!.querySelector(".mailbox-state")).toBeNull();
+		// The search finds letters by their sender, title and text too.
+		type(main.querySelector<HTMLInputElement>(".mailbox-search input")!, "letter 7");
+		expect(lines(main).map((line) => line.querySelector(".mailbox-subject")?.textContent)).toEqual(["Letter 7"]);
+		// Sent lists only what the company wrote.
+		type(main.querySelector<HTMLInputElement>(".mailbox-search input")!, "");
+		tab(main, "Sent");
+		expect(main.querySelector(".is-letter")).toBeNull();
+	});
+
+	it("opens a letter to its text and documents, and a note about it goes to the Co-Founder by its id", async () => {
+		const folder = postFolder([3], { 3: { legalNotification: true, mandatory: true, caseId: "SKAT-2026-1" } });
+		const { main, controller } = await mailbox(
+			(mail) => {
+				mail.digitalPost = digitalPostConnected();
+			},
+			"owner",
+			folder,
+		);
+		vi.spyOn(controller, "openCofounderConversation").mockResolvedValue({ sessionId: session.sessionId });
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-letter-text")?.textContent).toBe("Dear company,\n\nPay by 1 November."),
+		);
+		expect(main.querySelector(".mailbox-letter-text")?.getAttribute("title")).toBe("From outside the company");
+		expect(main.querySelector(".mailbox-thread-head h1")?.textContent).toBe("Letter 3");
+		expect(main.querySelector(".mailbox-flags")?.textContent).toBe("Legal effect · Mandatory post · Case SKAT-2026-1");
+		// The documents and the letter's folder open in Storage.
+		expect(texts(main, ".mailbox-documents li")).toEqual(["Afgørelse.pdf", "Bilag 1.pdf"]);
+		expect([...main.querySelectorAll<HTMLElement>("[data-folder-path]")].map((each) => each.dataset.folderPath)).toEqual(
+			[`${letterFolder(3)}/Afgørelse.pdf`, `${letterFolder(3)}/Bilag 1.pdf`, letterFolder(3)],
+		);
+		expect(main.querySelector<HTMLSelectElement>(".mailbox-agent-pick")?.value).toBe(cofounder.id);
+		const note = main.querySelector<HTMLInputElement>(".mailbox-composer input")!;
+		expect(note.placeholder).toBe("Tell Co-Founder what to do with this letter");
+		type(note, "Pay it on Friday.");
+		main.querySelector<HTMLFormElement>(".mailbox-composer")!.requestSubmit();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+		// The letter is named by its id and its year's folder: an authority's words are never the member's.
+		expect(send).toHaveBeenCalledWith(
+			session.sessionId,
+			`About the Digital Post letter ${letterId(3)} (its folder in digital-post/2026 ends with its id): Pay it on Friday.`,
+		);
+		expect(controller.draftQuotes(session.sessionId)).toEqual([]);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Co-Founder has your note"),
+		);
+		// Another agent can take the next note.
+		const pick = main.querySelector<HTMLSelectElement>(".mailbox-agent-pick")!;
+		pick.value = ada.id;
+		pick.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(main.querySelector<HTMLInputElement>(".mailbox-composer input")?.placeholder).toBe(
+			"Tell Ada what to do with this letter",
+		);
+		button(main, "Back to Inbox")!.click();
+		expect(lines(main)).toHaveLength(1);
+		expect(main.querySelector(".mailbox-composer")).toBeNull();
+	});
+
+	it("shows the Mailbox for Digital Post alone, without Write, and its row in Addresses asks for a reader", async () => {
+		const { main, controller } = await mailbox(
+			(mail) => {
+				mail.addresses = [];
+				mail.digitalPost = digitalPostConnected({ letters: 0 });
+			},
+			"owner",
+			folderFake(),
+		);
+		vi.spyOn(controller, "openCofounderConversation").mockResolvedValue({ sessionId: session.sessionId });
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-empty h1")?.textContent).toBe("No Digital Post yet"));
+		expect(main.querySelector(".mailbox-tabs")).not.toBeNull();
+		expect(button(main, "Write")).toBeUndefined();
+		tab(main, "Addresses");
+		const row = () => main.querySelector<HTMLElement>(".mailbox-address.is-digital-post")!;
+		expect(row().querySelector(".mailbox-address-name strong")?.textContent).toBe("Digital Post");
+		expect(row().querySelector(".mailbox-address-agent")?.textContent).toMatch(/^Checked /);
+		expect(row().querySelector(".mailbox-week")?.textContent).toBe("0");
+		button(row(), "Choose who reads it")!.click();
+		button(row(), "Bo")!.click();
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				session.sessionId,
+				"Please have Bo read the company's Digital Post: a routine that wakes on new letters in digital-post/ (a file change, the whole folder), reads each letter's letter.md and acts on it.",
+			),
+		);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Asked Co-Founder to have Bo read Digital Post"),
+		);
+	});
+
+	it("says Digital Post can be connected while the mail is off, and reads no folder for it", async () => {
+		const folder = folderFake();
+		const { main } = await mailbox(
+			(mail) => {
+				mail.addresses = [];
+				mail.digitalPost = digitalPostConnected({
+					connected: false,
+					status: "disconnected",
+					secretId: null,
+					systemId: null,
+					fetchedAt: null,
+					letters: 0,
+				});
+			},
+			"owner",
+			folder,
+		);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-empty h1")?.textContent).toBe("The company has no email address yet"),
+		);
+		expect(texts(main, ".mailbox-empty p")).toContain(
+			"Letters from public authorities come here too, once Digital Post is connected in Settings.",
+		);
+		expect(folder.folder.read).not.toHaveBeenCalled();
+	});
+
+	it("reads the index again only when it changed, and says when an open letter left the folder", async () => {
+		vi.useFakeTimers();
+		const folder = postFolder([3]);
+		const { main } = await mailbox(
+			(mail) => {
+				mail.digitalPost = digitalPostConnected();
+			},
+			"owner",
+			folder,
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(folder.folder.readFile).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(folder.folder.read.mock.calls.filter(([path]) => path === "digital-post/letters.json").length).toBe(2);
+		expect(folder.folder.readFile).toHaveBeenCalledTimes(1);
+		// A letter written into the folder shows on the page's next read.
+		folder.put(`${letterFolder(1)}/letter.md`, letterMarkdown(1));
+		folder.put("digital-post/letters.json", letterIndex([letter(1), letter(3)]));
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-letter-text")).not.toBeNull());
+		folder.remove(letterFolder(1));
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-none")?.textContent).toBe("This letter is no longer in the company folder."),
+		);
+	});
+
+	it("draws no note or Choose for a viewer", async () => {
+		const { main } = await mailbox(
+			(mail) => {
+				mail.digitalPost = digitalPostConnected();
+			},
+			"viewer",
+			postFolder([3]),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-letter-text")).not.toBeNull());
+		expect(main.querySelector(".mailbox-composer")).toBeNull();
+		button(main, "Back to Inbox")!.click();
+		tab(main, "Addresses");
+		expect(main.querySelector(".mailbox-address.is-digital-post")).not.toBeNull();
+		expect(button(main, "Choose who reads it")).toBeUndefined();
 	});
 });

@@ -1086,9 +1086,27 @@ export function mountApplication(
 						throw new Error(t("Company access changed."));
 				},
 			);
-			const reader = new CompanyMail(controller, cloud, accounts, (read) => {
-				if (mail === reader) controller.store.set({ mail: read });
-			});
+			// The company's Digital Post letters are files of its folder, read with the member's own access.
+			const mailFolder = (signal: AbortSignal) => {
+				const current = () => {
+					const now = controller.store.get();
+					if (disposed || company !== controller || auth.userId !== controller.userId || now.accessLost)
+						throw new Error(t("Company access changed."));
+				};
+				current();
+				const role = controller.store.get().team?.role;
+				if (!role) throw new Error(t("Company access changed."));
+				return new WebCompanyFiles(cloud, controller.profile, controller.userId, role, signal, current).folder();
+			};
+			const reader = new CompanyMail(
+				controller,
+				cloud,
+				accounts,
+				(read) => {
+					if (mail === reader) controller.store.set({ mail: read });
+				},
+				mailFolder,
+			);
 			mail = reader;
 			void reader.open();
 		}
