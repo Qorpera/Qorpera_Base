@@ -38,8 +38,9 @@ const CLAIM_KEYS = [
 export const BANK_SUMMARY_FOLDER = "bank";
 export const BANK_SUMMARY_PATH = "bank/summary.json";
 const MEDIA_TYPE = "application/json";
-/** The database keeps a summary of at most 256 KiB. */
-const MAX_FILE_BYTES = 512 * 1024;
+/** The most the Bank page reads of a `file:` source (packages/web/src/app/interface-folder.ts FILE_MAX_BYTES,
+ * RUNTIME-INTERFACES.md §4): a larger file would be written and never shown, so it is not written. */
+export const BANK_SUMMARY_MAX_BYTES = 256 * 1024;
 /** A claim and a finish get their own short deadline, so a drain that ran out of time still takes and closes a claim
  * whole. */
 const FINISH_MS = 15_000;
@@ -97,9 +98,10 @@ export function parseBankSummaryClaim(value: unknown): BankSummaryClaim | null {
 	};
 }
 
-/** The file's text: the summary as the vault recorded it, two-space JSON with a final line break. */
+/** The file's text: the summary as the vault recorded it, compact JSON with a final line break, so all of the page's
+ * read limit holds data. */
 export function bankSummaryText(summary: Record<string, unknown>): string {
-	return `${JSON.stringify(summary, null, 2)}\n`;
+	return `${JSON.stringify(summary)}\n`;
 }
 
 export interface BankSummaryWriterOptions {
@@ -176,7 +178,7 @@ export class BankSummaryWriter {
 			if (made.outcome !== "saved" && made.reason !== "exists") problem(reasonCode(made.reason ?? made.outcome));
 		}
 		const bytes = new TextEncoder().encode(bankSummaryText(claim.summary));
-		if (bytes.byteLength > MAX_FILE_BYTES) problem("file_too_large");
+		if (bytes.byteLength > BANK_SUMMARY_MAX_BYTES) problem("file_too_large");
 		const file = await this.#folder.stage(
 			claim.environmentId,
 			bytes,

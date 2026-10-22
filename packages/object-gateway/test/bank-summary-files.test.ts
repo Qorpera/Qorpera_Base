@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	BANK_SUMMARY_MAX_BYTES,
 	BANK_SUMMARY_PATH,
 	BankSummaryWriter,
 	bankSummaryText,
@@ -207,6 +209,24 @@ describe("BankSummaryWriter", () => {
 		expect(run.finishes()).toEqual(["stale", "refused"]);
 		// The second claim stopped at bank/: no file was written.
 		expect(run.commits()).toHaveLength(2);
+	});
+
+	it("writes a summary up to the Bank page's read limit, and backs off without writing one past it", async () => {
+		// The page reads a file: source up to its own limit; the writer keeps to exactly that one.
+		const reader = readFileSync(new URL("../../web/src/app/interface-folder.ts", import.meta.url), "utf8");
+		expect(/const FILE_MAX_BYTES = 256 \* 1024;/.test(reader)).toBe(true);
+		expect(BANK_SUMMARY_MAX_BYTES).toBe(256 * 1024);
+		// A summary whose file is exactly the limit: the filler fills what the rest leaves.
+		const rest = bankSummaryText({ ...summary, filler: "" }).length;
+		const fits = { ...summary, filler: "x".repeat(BANK_SUMMARY_MAX_BYTES - rest) };
+		const over = { ...summary, filler: "x".repeat(BANK_SUMMARY_MAX_BYTES - rest + 1) };
+		const run = folder({ claims: [claim({ summary: fits }), claim({ summary: over })] });
+		await run.writer.writeOne();
+		const unit = (run.commits()[0]?.args.p_units as Record<string, unknown>[])[0] as { file: { bytes: number } };
+		expect(unit.file.bytes).toBe(BANK_SUMMARY_MAX_BYTES);
+		await run.writer.writeOne();
+		expect(run.commits()).toHaveLength(1);
+		expect(run.finishes()).toEqual([null, "file_too_large"]);
 	});
 
 	it("finishes a malformed claim that names its company with the problem, and refuses a malformed finish", async () => {
