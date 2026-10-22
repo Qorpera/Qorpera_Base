@@ -1076,6 +1076,99 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(calls).toContain("qorpera_set_founder_ready");
 	});
 
+	it("keeps the save check across a page built again for a new language, before it is drawn", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		const save = deferred<never>();
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") return save.promise;
+			return mine({ ready: false, modelLoginReady: true });
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		const unsubscribe = controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		// A new language builds the page again; it is not drawn before the save fails.
+		unsubscribe();
+		new FoundingView(controller, view.drafts());
+		save.reject(new Error("Failed to fetch"));
+		await settle();
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+	});
+
+	it("alone and already Ready, one press saves the field you left, makes you Ready again, and starts", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		const save = deferred<void>();
+		let vision = "Specialty coffee.";
+		let ready = true;
+		let revision = 4;
+		let started = false;
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") {
+				await save.promise;
+				vision = String(args.p_vision);
+				ready = false;
+				revision++;
+			}
+			if (name === "qorpera_set_founder_ready") ready = args.p_ready === true;
+			if (name === "qorpera_start_company_founding") {
+				if (!ready) throw new Error("Every founder must be ready.");
+				started = true;
+			}
+			if (started)
+				return wire({
+					phase: "started",
+					vision: "",
+					seats: [{ ...(wire().seats as Wire[])[0], role: "", ready: false, modelLoginReady: true }],
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: { startedAt: "2026-10-22T18:00:00Z", startedByUserId: me, revision, companyReady: false },
+				});
+			return wire({
+				vision,
+				revision,
+				seats: [{ ...(wire().seats as Wire[])[0], ready, modelLoginReady: true }],
+				waitingFor: ready ? [] : [me],
+				me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: ready },
+			});
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		save.resolve();
+		await settle();
+		await settle();
+		expect(calls.filter((name) => name !== "qorpera_read_company_founding")).toEqual([
+			"qorpera_update_company_founding",
+			"qorpera_set_founder_ready",
+			"qorpera_start_company_founding",
+		]);
+		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+	});
+
 	it("never lets the opening idea's retry overwrite newer text you saved first", async () => {
 		const { api, cloud } = fixture();
 		const sent: unknown[] = [];

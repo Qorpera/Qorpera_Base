@@ -402,7 +402,9 @@ export class FoundingController {
 
 	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
 	async startAlone(seenRevision: number): Promise<void> {
-		// Ready and Start each wait for the field you left as you pressed: if its save failed, nothing happens.
+		// The field you left as you pressed saves first; a save clears Ready, so Ready is read after it. If the
+		// save failed, nothing happens (Ready and Start check that too).
+		if (!(await this.#editsSaved())) return;
 		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
 			await this.setReady(seenRevision, true);
 		if (this.store.get().table?.me.canStart) await this.start();
