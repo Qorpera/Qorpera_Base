@@ -10,9 +10,11 @@
 -- lacks; nothing there is overwritten. A path the letter needs that holds something else (a folder or a link where a
 -- file goes, a file or a link where a folder goes) is `blocked`: nothing is written and the letter backs off, its bytes
 -- kept. The index lists the newest written letters (and this one), each with the summary the vault kept; it is the
--- platform's, rewritten with every letter, so a member's edit lasts until the next letter. One letter of a company is
--- written at a time (a company's claims are serialized and a company with a live lease is passed over), so a letter is
--- written or finished before the next one reads the index.
+-- platform's, rewritten with every letter, so a member's edit lasts until the next letter. Its letters are those the
+-- folder holds: every written letter, and every kept one whose folder is already there (committed, its finish not yet
+-- landed), so a letter committed before a claim reads the index is listed whatever its finish does; one committed after
+-- it changes the index, and the claim's write at the old version backs off. One letter of a company is written at a time
+-- (a company's claims are serialized and a company with a live lease is passed over).
 
 alter table public.qorpera_digital_post_letters
 	add column write_lease_owner uuid,
@@ -116,7 +118,9 @@ begin
 		select letter.summary, letter.received_at, letter.id
 		from public.qorpera_digital_post_letters as letter
 		where letter.profile_id = v_letter.profile_id
-			and (letter.status = 'written' or letter.id = v_letter.id)
+			and (letter.status = 'written' or letter.id = v_letter.id
+				or (letter.status = 'kept' and coalesce(
+					(public.qorpera_digital_post_entry(letter.environment_id, letter.folder)).kind = 'folder', false)))
 		order by letter.received_at desc, letter.id
 		limit 200
 	) as listed;

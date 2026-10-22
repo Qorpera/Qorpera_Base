@@ -242,6 +242,36 @@ begin
 		and v_second -> 'index' -> 1 ->> 'messageUuid' = '7a000000-0000-4000-8000-000000000003'
 		and (v_second ->> 'indexVersion')::uuid = pg_temp.version('digital-post/letters.json'),
 		'the second''s index lists the first: ' || v_second::text);
+	-- Out of the way for what follows.
+	perform pg_temp.dp_check(pg_temp.dp_finish('78700000-0000-4000-8000-0000000000a4', 'stale',
+		'78700000-0000-4000-8000-00000000000b'), 'the second releases');
+	update public.qorpera_digital_post_letters set write_not_before = clock_timestamp() + interval '1 day'
+	where id = '78700000-0000-4000-8000-0000000000a4';
+end $$;
+
+-- 6. A letter committed whose finish has not landed (its lease ran out, or its finish waits on a lock) is listed in the
+-- next claim's index all the same: the index lists what the folder holds.
+select pg_temp.dp_letter('78700000-0000-4000-8000-0000000000a5', '7a000000-0000-4000-8000-000000000005',
+	'2026-10-22 10:00:00+00', '\x255044462d35'::bytea);
+select pg_temp.dp_letter('78700000-0000-4000-8000-0000000000a6', '7a000000-0000-4000-8000-000000000006',
+	'2026-10-22 11:00:00+00', '\x255044462d36'::bytea);
+do $$
+declare v jsonb := pg_temp.dp_claim(); v_next jsonb;
+begin
+	perform pg_temp.dp_check(v ->> 'letterId' = '78700000-0000-4000-8000-0000000000a5', 'a5 first: ' || v::text);
+	perform pg_temp.expect(pg_temp.dp_commit(v), 1, 'saved');
+	-- No finish; a5's lease ends, and a5 is not claimable now (as if its row were held by its own finish).
+	update public.qorpera_digital_post_letters set write_lease_until = clock_timestamp() - interval '1 second',
+		write_not_before = clock_timestamp() + interval '1 hour'
+	where id = '78700000-0000-4000-8000-0000000000a5';
+	v_next := pg_temp.dp_claim('78700000-0000-4000-8000-00000000000b');
+	perform pg_temp.dp_check(v_next ->> 'letterId' = '78700000-0000-4000-8000-0000000000a6'
+		and v_next -> 'index' -> 0 ->> 'messageUuid' = '7a000000-0000-4000-8000-000000000006'
+		and v_next -> 'index' -> 1 ->> 'messageUuid' = '7a000000-0000-4000-8000-000000000005',
+		'a committed letter is in the index before its finish: ' || v_next::text);
+	-- a4, kept and claimed once but never committed, is not.
+	perform pg_temp.dp_check(not (v_next -> 'index') @> '[{"messageUuid": "7a000000-0000-4000-8000-000000000004"}]',
+		'a letter not in the folder is not listed');
 end $$;
 
 rollback;
