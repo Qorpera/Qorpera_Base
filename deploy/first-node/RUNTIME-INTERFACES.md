@@ -58,11 +58,13 @@ with `interface_read`, and changes one with `save_interface` (§7).
 
 ```
 interfaces/                       seeded; can't be deleted or moved
+  README.md                       seeded: what the folder is for (contract 5.6)
   order.md                        the Interfaces tab's order
   <interface>/                    named like an agent's folder (contract 5.6)
     interface.toml                the page
     README.md                     optional: what it is for
 tables/                           seeded; can't be deleted or moved
+  README.md                       seeded: what the folder is for (contract 5.6)
   <table>/                        one folder per table, created, moved and deleted as one unit
     table.toml                    the table: its columns, key and writers
     rows.csv                      its rows
@@ -70,8 +72,8 @@ tables/                           seeded; can't be deleted or moved
 
 - **Names.** Folder names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most 64
   characters, `-2`, `-3` when taken. A table's name is its folder's name.
-- **Seeded at founding** (§8): `interfaces/`, `tables/`, Pulse (the main interface), Mailbox and Members, with the
-  tables `numbers`, `areas` and `cards`.
+- **Seeded at founding** (§8): `interfaces/` and `tables/`, each with its `README.md`, Mailbox and Members, and the
+  `areas` table. Pulse and the `numbers` and `cards` tables were seeded until 21 October 2026.
 - **Cannot be deleted or moved:**
   - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
   - `tables/`, and the `tables/areas/` folder, which the platform reads supervision from (§5.1);
@@ -813,8 +815,9 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
 - **Adding one** copies its files into `interfaces/` and `tables/` in one change set. The copy is marked with
   `[template] from` and `version`, and from then on it is the company's to change. The platform never relies on
   `[template]`: supervision is read from `tables/areas/` by its path.
-- **Seeding.** At founding the platform copies the three first ones and lists them in `interfaces/order.md`. Mailbox
-  needs `mail`; Members needs `team`.
+- **Seeding.** At founding the platform copies Mailbox and Members with the `areas` table and lists the two in
+  `interfaces/order.md` (until 21 October 2026 also Pulse with `numbers`, and `cards`). Mailbox needs `mail`; Members
+  needs `team`.
 - **Updates.** When the library has a newer version, the platform offers it and never applies it by itself. Lines the
   company didn't change update. A line both sides changed becomes a choice with both versions side by side. Removing
   `[template]` stops the offers.

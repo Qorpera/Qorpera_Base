@@ -66,7 +66,8 @@ export interface WebRoutineDraft {
 	staffAgentId: string;
 	title: string;
 	prompt: string;
-	/** Every N minutes, or days at a time; no `replyPolicy` is `required`. */
+	/** Every N minutes, or days at a time; no `replyPolicy` is `required`. An edit that keeps how its routine runs sends
+	 * the opened file's own trigger (`cloudRoutineTriggerOfFile`), its reply the only change. */
 	trigger: CloudRoutineTrigger;
 	/** A new routine's. An edit keeps the file's own (an agent may have chosen medium or high). */
 	effort: CompanyStateEffort;
@@ -334,9 +335,30 @@ interface RoutineEdit {
 	readonly instructions: string;
 }
 
+/** A trigger as a file keeps it, without the editor's id or the reply, which an edit may change. */
+function keptTrigger(trigger: CloudRoutineTrigger): string {
+	const { id: _id, replyPolicy: _reply, ...rest } = trigger;
+	return JSON.stringify(rest);
+}
+
 function editOf(draft: WebRoutineDraft, file: RoutineFile | null): RoutineEdit {
 	const mapped = routineFileTrigger(draft.trigger);
-	if (!mapped) throw new Error("A member's routine runs every few minutes or on chosen days.");
+	if (!mapped) {
+		// An edit that keeps how its routine runs (a window, a dynamic routine's next run, a webhook): the draft's trigger
+		// is the file's as `cloudRoutineTriggerOfFile` reads it, and the file's trigger and zone stay as they are; only
+		// the reply is the draft's. A new routine, or a trigger that is not the file's, is never written.
+		const own = file && cloudRoutineTriggerOfFile(file);
+		if (!file || !own) throw new Error("A member's routine runs every few minutes or on chosen days.");
+		if (keptTrigger(own) !== keptTrigger(draft.trigger))
+			throw new WebRoutineChangedError("This routine's file has changed.");
+		return {
+			title: draft.title.trim(),
+			trigger: file.trigger,
+			timezone: null,
+			reply: draft.trigger.replyPolicy ?? "required",
+			instructions: draft.prompt.trim(),
+		};
+	}
 	let trigger = mapped.trigger;
 	// The same days in another order are no change: the file keeps its own order.
 	const before = file?.trigger;

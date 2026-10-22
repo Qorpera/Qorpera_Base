@@ -11,8 +11,8 @@
 # fuse3 and the company folder's program with its unit (F3 step 6c: it mounts
 # the folder at /company once the host hands the machine a view), the machine
 # guest helper and its watchdog (scripts/package-machine-guest.mjs), and apt's
-# self-update units masked. An agent that has a Dockerfile builds and runs it
-# inside its machine; images are not made from Dockerfiles.
+# and fwupd's self-update units masked. An agent that has a Dockerfile builds
+# and runs it inside its machine; images are not made from Dockerfiles.
 #
 # The builder runs in the node's declared image build space (the observer
 # policy's buildSpace: its project and its only network) as a build machine:
@@ -130,6 +130,10 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 		/var/lib/qorpera-folder/cache/machine
 	# No self-update: the image stays what was reviewed; agents update what they need inside their own machine.
 	systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
+	# Firmware metadata neither: fwupd-refresh.timer runs fwupdmgr refresh, which starts fwupd.service over D-Bus (its bus
+	# name hands activation to systemd). That work counts like any other, so a quiet machine looked busy and never slept
+	# (C8 MA-5b). A masked unit refuses every start, the bus activation too.
+	systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd.service
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
@@ -160,8 +164,23 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		[[ $(stat -c "%U:%G %a %F" "$folder") == "root:root 700 directory" ]]
 	done
 	[[ -z $(ls -A /var/lib/qorpera-folder/cache/machine) ]]
-	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
+	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service \
+		fwupd-refresh.timer fwupd-refresh.service fwupd.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
+	done
+	# Nothing else refreshes firmware either, whatever fwupd names its units: no fwupd timer runs and no other fwupd unit
+	# starts at boot (each is masked, or a service only another unit starts), and every bus name of fwupd starts a masked
+	# unit through systemd (a bus file without SystemdService= would have dbus start the daemon itself, past the masks).
+	units=$(systemctl list-unit-files --no-legend "*fwupd*")
+	while read -r unit state _; do
+		[[ $state == masked || ( $unit != *.timer && ( $state == static || $state == disabled ) ) ]] ||
+			{ echo "fwupd can still start: $unit is $state" >&2; exit 1; }
+	done <<<"$units"
+	for bus in /usr/share/dbus-1/system-services/*.service; do
+		grep -q "^Name=org\.freedesktop\.fwupd" "$bus" || continue
+		service=$(sed -n "s/^SystemdService=//p" "$bus")
+		[[ -n $service && $(systemctl is-enabled "$service" || true) == masked ]] ||
+			{ echo "the bus file $bus can still start fwupd" >&2; exit 1; }
 	done
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
 		/etc/systemd/system/qorpera-machine-folder.service

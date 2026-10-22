@@ -14,15 +14,38 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/one of its steps was refused/,
 		],
+		// A step whose code's category is a timeout took too long: it was not refused (21 October 2026).
 		[
 			"Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]",
 			"failed",
+			/steps got no answer in time/,
+		],
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]",
+			"failed",
+			/steps got no answer in time/,
+		],
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_HARNESS_EXECUTION:STAGE_TIMEOUT]; durable attempt output requires review",
+			"failed",
+			/steps got no answer in time/,
+		],
+		// A code that only names a timeout's machinery is still a refusal.
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_TIMEOUT_WATCH:UNKNOWN]",
+			"failed",
 			/one of its steps was refused/,
 		],
+		// A lapsed lease: Qorpera lost contact with the run, whichever side stopped answering (the database, 21 October).
 		[
 			"Runner lease expired before durable completion; durable attempt output requires review",
 			"failed",
-			/computer running this run stopped answering/,
+			/^Qorpera lost contact with this run\. The problem is on Qorpera's side\.$/,
+		],
+		[
+			"Runner lease expired before durable completion [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]",
+			"failed",
+			/^Qorpera lost contact with this run\./,
 		],
 		// A run has no time limit any more; only older runs carry a deadline.
 		["Execution deadline expired before durable completion", "failed", /took too long/],
@@ -86,7 +109,9 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		// Hours have to be added first: no Try again.
 		["Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]", "failed", false],
 		["Native provider bridge request failed (422)", "failed", false],
-		["Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]", "failed", false],
+		["Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]", "failed", true],
+		["Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]", "failed", true],
+		["Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:UNKNOWN]", "failed", false],
 		["Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]", "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
@@ -98,7 +123,7 @@ describe("why a coding session's turn failed, in the member's words", () => {
 	// The executor's summary: its own sentence, or "The coding turn did not finish: " and the run's last error.
 	const DID_NOT_FINISH = "The coding turn did not finish: ";
 	it.each([
-		["executor-lease-expired", /^The computer running this session stopped answering\./],
+		["executor-lease-expired", /^Qorpera lost contact with this session\./],
 		[
 			`${DID_NOT_FINISH}Native provider bridge request failed (422) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]; durable attempt output requires review`,
 			/^The session's last turn ended without saving its work or asking a question\./,
@@ -127,13 +152,17 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		],
 		[
 			`${DID_NOT_FINISH}Runner lease expired before durable completion; durable attempt output requires review`,
-			/^The computer running this session stopped answering\./,
+			/^Qorpera lost contact with this session\./,
 		],
 		[
 			`${DID_NOT_FINISH}Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)`,
 			/^No computer could be started for the session\./,
 		],
 		[`${DID_NOT_FINISH}Runner model socket request timed out`, /^One of the session's steps got no answer in time\./],
+		[
+			`${DID_NOT_FINISH}Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]`,
+			/^One of the session's steps got no answer in time\./,
+		],
 		[`${DID_NOT_FINISH}Execution deadline expired before durable completion`, /^The session took too long/],
 		[
 			`${DID_NOT_FINISH}You have hit your usage limit. Try again later.`,

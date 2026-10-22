@@ -7,6 +7,12 @@ export const AGENTS: Record<string, string> = {
 	// Agent details (app/views/agent-details.ts, agent-edits.ts)
 	"Agent details": "Agentdetaljer",
 	Routines: "Rutiner",
+	Copied: "Kopieret",
+	Edit: "Rediger",
+	"Back to agent details": "Tilbage til agentdetaljer",
+	"Done: {name} ended this routine": "Færdig: {name} afsluttede rutinen",
+	"This routine has ended": "Rutinen er slut",
+	"This routine can't be changed from here": "Rutinen kan ikke ændres herfra",
 	"Choose a figure and color": "Vælg en figur og farve",
 	Reset: "Nulstil",
 	"Edit figure": "Rediger figur",
@@ -17,10 +23,7 @@ export const AGENTS: Record<string, string> = {
 	"Your changes could not be saved.": "Dine ændringer kunne ikke gemmes.",
 
 	// Routines (app/views/agent-routines.ts)
-	"Waiting to start": "Venter på at starte",
-	Running: "Kører",
 	Finished: "Færdig",
-	"Could not start": "Kunne ikke starte",
 	Cancelled: "Annulleret",
 	Sun: "Søn",
 	Mon: "Man",
@@ -44,10 +47,7 @@ export const AGENTS: Record<string, string> = {
 	"Weekdays at {time}": "Hverdage kl. {time}",
 	"Weekends at {time}": "Weekender kl. {time}",
 	"{days} at {time}": "{days} kl. {time}",
-	Instruction: "Instruktion",
-	"When to run": "Hvornår den kører",
 	"Next run": "Næste kørsel",
-	"Last run": "Seneste kørsel",
 	"Pause routine": "Sæt rutinen på pause",
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":
@@ -62,10 +62,9 @@ export const AGENTS: Record<string, string> = {
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
 	"New routine": "Ny rutine",
-	"Has not run yet": "Har ikke kørt endnu",
-	Resumed: "Genoptaget",
-	"When {name} turned on “Work while you're away”": "Da {name} slog “Arbejd, mens du er væk” til",
-	"Who pays": "Hvem betaler",
+	"Close routines": "Luk rutiner",
+	"next {when}": "næste {when}",
+	tomorrow: "i morgen",
 	"Paid by you since {date}": "Betalt af dig siden {date}",
 	"Paid by the company since {date}": "Betalt af virksomheden siden {date}",
 	"Paid by {name} since {date}": "Betalt af {name} siden {date}",
@@ -93,10 +92,7 @@ export const AGENTS: Record<string, string> = {
 	"The login could not be chosen. Try again.": "Login kunne ikke vælges. Prøv igen.",
 	Ended: "Afsluttet",
 	Done: "Færdig",
-	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",
 	"The agent picks each next run": "Agenten vælger hver næste kørsel",
-	"Back to agent details": "Tilbage til agentdetaljer",
-	"Recurring work, on a schedule or when something happens.": "Fast arbejde efter en tidsplan, eller når noget sker.",
 	"Reading routines…": "Henter rutiner…",
 	"{name} has no routines yet.": "{name} har ingen rutiner endnu.",
 	"Routines will appear here.": "Rutiner vises her.",
@@ -107,9 +103,6 @@ export const AGENTS: Record<string, string> = {
 		"Forbind først en modelkonto i Indstillinger; en rutine kører på kontoen hos det medlem, der sidst gemte den.",
 	"Routine name": "Rutinens navn",
 	"What to do": "Hvad der skal gøres",
-	"When it runs": "Hvornår den kører",
-	"On chosen days at a set time": "På valgte dage på et fast tidspunkt",
-	"Every so often": "Med jævne mellemrum",
 	"Interval unit": "Intervallets enhed",
 	minutes: "minutter",
 	hours: "timer",
@@ -118,13 +111,9 @@ export const AGENTS: Record<string, string> = {
 	Days: "Dage",
 	Time: "Tidspunkt",
 	Reply: "Svar",
-	"Always post a reply in the conversation": "Skriv altid et svar i samtalen",
-	"Reply only when there is something to say": "Svar kun, når der er noget at sige",
-	"Work silently": "Arbejd i stilhed",
 	"Model account": "Modelkonto",
 	Every: "Hver",
 	at: "kl.",
-	"Save routine": "Gem rutine",
 	"Wait until {time} before the first run": "Vent til {time} med den første kørsel",
 	"Choose an interval between 5 minutes and 7 days.": "Vælg et interval mellem 5 minutter og 7 dage.",
 	"Choose at least one day, a time and a time zone such as Europe/Copenhagen.":
@@ -143,14 +132,14 @@ export const AGENTS: Record<string, string> = {
 	"This routine changed while you were editing it.": "Rutinen blev ændret, mens du redigerede den.",
 	"This routine could not be opened.": "Rutinen kunne ikke åbnes.",
 	"This routine is no longer available.": "Rutinen findes ikke længere.",
-	"Edit routine": "Rediger rutine",
-	"Back to routines": "Tilbage til rutiner",
 	"What should {name} do?": "Hvad skal {name} gøre?",
+	"or every few hours": "eller med jævne mellemrum",
+	"or on chosen days": "eller på valgte dage",
+	Always: "Altid",
+	"When there is news": "Når der er nyt",
+	Never: "Aldrig",
 	When: "Hvornår",
 	"Runs on": "Kører på",
-	"Effort: {effort}": "Indsats: {effort}",
-	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
-		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
 		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
 
@@ -190,6 +179,9 @@ export const AGENTS: Record<string, string> = {
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)
 	"Started a coding session in {harness}": "Startede en kodesession i {harness}",
 	"{label}. Open the session": "{label}. Åbn sessionen",
+	"{count} coding agents": "{count} kodeagenter",
+	"{count} need you": "{count} venter på dig",
+	"1 needs you": "1 venter på dig",
 	"less than a minute": "under et minut",
 	"{minutes} min": "{minutes} min",
 	"{hours} h {minutes} min": "{hours} t {minutes} min",
@@ -250,8 +242,8 @@ export const AGENTS: Record<string, string> = {
 	"{owner} left it to {agent}": "{owner} overlod det til {agent}",
 	"Draft PR #{number} opened": "PR-kladde #{number} åbnet",
 	"Draft PR opened": "PR-kladde åbnet",
-	"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.":
-		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
+	"Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again.":
+		"Qorpera mistede forbindelsen til sessionen. Arbejdsområdet er gemt; en opfølgning starter den igen.",
 	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
 		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
@@ -294,5 +286,6 @@ export const AGENTS: Record<string, string> = {
 	"Only {owner} can write to this session. Steer it through {agent}.":
 		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",
+	"Back to {name}": "Tilbage til {name}",
 	"Loading group details": "Henter gruppedetaljer",
 };

@@ -1,5 +1,6 @@
 import { Lexer, type MarkedToken } from "marked";
 import { h } from "./dom.ts";
+import { folderLinkPath } from "./folder-links.ts";
 import { t } from "./preferences.ts";
 
 // Parse only a single validated character reference, never source markup.
@@ -12,7 +13,8 @@ function decodeEntities(value: string): string {
 }
 
 /** Only explicit web/mail links can leave a transcript. Images are links,
- * never automatic remote requests. Raw HTML is always rendered as text. */
+ * never automatic remote requests. Raw HTML is always rendered as text. A
+ * `folder:` link (ui/folder-links.ts) leaves nothing: it opens the Company File. */
 function safeHref(href: string): string | undefined {
 	try {
 		const url = new URL(decodeEntities(href));
@@ -106,11 +108,26 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 					return token.type === "image"
 						? [document.createTextNode(decodeEntities(token.text))]
 						: [h("span", null, children())];
-				const href = safeHref(token.href);
 				const content =
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
 						: children();
+				// A file or folder of the company's own Company File: a button the app answers by opening Storage there.
+				const path = folderLinkPath(decodeEntities(token.href));
+				if (path !== undefined)
+					return [
+						h(
+							"button",
+							{
+								type: "button",
+								class: "folder-link",
+								"data-folder-path": path,
+								title: t("Open {path} in Storage", { path }),
+							},
+							content,
+						),
+					];
+				const href = safeHref(token.href);
 				return [
 					href
 						? h("a", { href, target: "_blank", rel: "noopener noreferrer", title: token.title }, content)

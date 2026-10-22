@@ -92,6 +92,7 @@ import {
 	numberTiles,
 } from "./interface-blocks.ts";
 import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
+import { renderMailbox } from "./mailbox.ts";
 import { roleLabel } from "./team.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
@@ -108,7 +109,7 @@ const BLOCK_TITLE = ".interface-block > h2";
  * keys (a JSON list) still drawn, else to the nearest control after it that is still there, else before it, else to
  * its block's title (a page left with no control). A page redrawn in the same view keeps its scroll position
  * (`data-scroll-key`). */
-function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
+export function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
 	const shown = shownIn.get(container);
 	if (shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected) return;
 	const active = document.activeElement;
@@ -321,6 +322,11 @@ export function renderInterface(
 				h("a", { href: `#/c/${profileId}` }, t("Back to the company")),
 			),
 		);
+		return;
+	}
+	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
+	if (entry.name === "mailbox") {
+		renderMailbox(container, company, name, writes?.openSettings ? { openSettings: writes.openSettings } : {});
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).

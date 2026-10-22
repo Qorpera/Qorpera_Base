@@ -17,7 +17,6 @@ export const CONVERSATION: Record<string, string> = {
 		"Billeder understøttes ikke i gruppechats. Brug Virksomhedsfilen.",
 	"Open agent details": "Åbn agentdetaljer",
 	"Open group details": "Åbn gruppedetaljer",
-	"Open agent computer": "Åbn agentens computer",
 	Stop: "Stop",
 	"Sending messages is not available yet": "Beskeder kan ikke sendes endnu",
 	"Sending messages is not available yet. Your draft stays here.":
@@ -183,8 +182,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
-	"The computer running this run stopped answering. The problem is on Qorpera's side.":
-		"Computeren bag kørslen holdt op med at svare. Fejlen ligger hos Qorpera.",
+	"Qorpera lost contact with this run. The problem is on Qorpera's side.":
+		"Qorpera mistede forbindelsen til kørslen. Fejlen ligger hos Qorpera.",
 	"One of the run's steps got no answer in time. The problem is on Qorpera's side.":
 		"Et af kørslens trin fik ikke svar i tide. Fejlen ligger hos Qorpera.",
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",

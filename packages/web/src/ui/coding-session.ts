@@ -1,8 +1,8 @@
 /* A coding session: in the thread, one centered line where the agent started it,
  * "Started a coding session in (mark) Codex", the way a message to a coworker
  * shows; the line opens the session as its own thread (coding-session-thread.ts).
- * While the session runs, the thread's header carries it beside the agent: the
- * agent's figure wearing the harness mark, moving as the agent's own figure does.
+ * While the session runs, a pill above the composer carries it: the agent's figure
+ * wearing the harness mark, moving as the agent's own figure does.
  * The session's thread reads like a conversation: the harness on the left (its
  * steps, its voice, its questions, the pull request), the owner's and the agent's
  * input on the right, and the composer pinned under it. Everything here is a
@@ -1230,7 +1230,7 @@ export class CodingSessionElement {
 	}
 }
 
-/** How a session's figure moves in the header, in the agents' own vocabulary:
+/** How a session's figure moves in the pill, in the agents' own vocabulary:
  * working while it works, waiting while it asks, still while it waits for a computer or is archived. */
 export function codingSessionActivity(session: Pick<CodingSession, "phase" | "archivedAt">): Activity {
 	if (session.phase === "queued" || !codingSessionGoing(session)) return "Idle";
@@ -1238,44 +1238,242 @@ export function codingSessionActivity(session: Pick<CodingSession, "phase" | "ar
 	return "Working";
 }
 
-/** A session that is still going, in the thread's header beside the agent: the
- * agent's figure wearing the harness mark, with its own clock so it does not move
- * in step with the agent. Hover or focus unfolds the session's title; a click
- * opens the session as its own thread. */
-export class CodingSessionSlot {
-	readonly el: HTMLButtonElement;
-	readonly #avatar = h("span", { class: "coding-slot-avatar" });
-	readonly #name = h("span", { class: "coding-slot-name" });
-	#figureKey = "";
+/** A session asks the member looking for an answer only when it is theirs; another member's question is theirs. */
+function needsViewer(session: CodingSession, names: CodingSessionNames): boolean {
+	return names.ownerIsViewer && codingSessionStatus(session, names).tone === "attention";
+}
 
-	constructor(workerId: string, open: (opener: HTMLElement) => void) {
-		this.el = h(
+/** The session's status as the pill shows it: another member's question reads as theirs, in a quiet tone. */
+function viewerStatus(session: CodingSession, names: CodingSessionNames): { text: string; tone: CodingSessionTone } {
+	const status = codingSessionStatus(session, names);
+	return status.tone === "attention" && !names.ownerIsViewer ? { ...status, tone: "idle" } : status;
+}
+
+/** The sessions still going, as one pill above the composer: their figures (the agent's
+ * figure wearing the harness mark), how many there are and who needs an answer. Hover, focus
+ * or a tap unfolds it upward into one line per session; a line opens its session as its
+ * own thread. A single session is its own line: hover widens it, a click opens it. */
+export class CodingPill {
+	readonly el = h("div", { class: "coding-dock", hidden: true });
+	readonly #pill = h("div", { class: "coding-pill" });
+	readonly #rows = h("div", { class: "coding-pill-rows", role: "list" });
+	readonly #faces = h("span", { class: "coding-pill-faces", "aria-hidden": "true" });
+	readonly #label = h("span", { class: "coding-pill-label" });
+	readonly #note = h("span", { class: "coding-pill-note" });
+	readonly #action = h("span", { class: "coding-pill-action" });
+	readonly #summary: HTMLButtonElement;
+	/** The one session going, when there is only one: the summary opens it. */
+	#single: CodingSession | undefined;
+	readonly #open: (workerId: string, opener: HTMLElement) => void;
+	/** Each session's line, kept across updates; its figure is drawn again only when it moves differently. */
+	readonly #rowViews = new Map<
+		string,
+		{
+			el: HTMLButtonElement;
+			face: HTMLElement;
+			faceKey: string;
+			title: HTMLElement;
+			status: HTMLElement;
+			action: HTMLElement;
+		}
+	>();
+	#facesKey = "";
+
+	constructor(open: (workerId: string, opener: HTMLElement) => void, signal?: AbortSignal) {
+		this.#open = open;
+		this.#summary = h(
 			"button",
-			{ type: "button", class: "coding-slot", dataset: { workerId }, onclick: () => open(this.el) },
-			this.#avatar,
-			this.#name,
+			{
+				type: "button",
+				class: "coding-pill-summary",
+				"aria-expanded": "false",
+				onclick: () => {
+					if (this.#single) this.#open(this.#single.workerId, this.#summary);
+					else if (this.#pill.dataset.open === "true") this.#fold();
+					else this.#setOpen(true);
+				},
+			},
+			this.#faces,
+			this.#label,
+			this.#note,
+			this.#action,
+			icon("chevron"),
 		) as HTMLButtonElement;
+		this.#pill.append(this.#rows, this.#summary);
+		this.el.append(this.#pill);
+		// Leaving the pill folds a tapped-open pill too, so it never stays over the messages, and ends a fold
+		// the member asked for: the next hover or focus unfolds it again.
+		this.#pill.addEventListener("pointerleave", (event) => {
+			if (event.pointerType !== "mouse") return;
+			this.#setOpen(false);
+			if (!this.#pill.contains(document.activeElement)) this.#setFolded(false);
+		});
+		this.#pill.addEventListener("focusout", (event) => {
+			if (event.relatedTarget instanceof Node && this.#pill.contains(event.relatedTarget)) return;
+			this.#setOpen(false);
+			if (!this.#pill.matches(":hover")) this.#setFolded(false);
+		});
+		this.#pill.addEventListener("keydown", (event) => {
+			if (!matchesKey(event, "dismiss") || this.#pill.dataset.folded === "true") return;
+			event.preventDefault();
+			event.stopPropagation();
+			this.#fold();
+			this.#summary.focus();
+		});
+		// Unfolded under the pointer while the keyboard is elsewhere (the composer): Escape folds it too, when nothing
+		// on the way handled it. Focus stays where it is.
+		document.addEventListener(
+			"keydown",
+			(event) => {
+				if (
+					event.defaultPrevented ||
+					!matchesKey(event, "dismiss") ||
+					this.el.hidden ||
+					this.#pill.dataset.folded === "true" ||
+					!this.#pill.matches(":hover")
+				)
+					return;
+				event.preventDefault();
+				this.#fold();
+			},
+			signal ? { signal } : undefined,
+		);
 	}
 
-	update(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): void {
-		const activity = codingSessionActivity(session);
-		const figureKey = JSON.stringify([activity, session.harness, agent?.id, agent?.appearance, agent?.templateId]);
-		if (figureKey !== this.#figureKey) {
-			this.#figureKey = figureKey;
-			// The button's own title names the session; the badge's would cover it.
-			const badge = harnessBadge(session.harness);
-			badge.removeAttribute("title");
+	/** The sessions still going, oldest first; the pill hides with none. */
+	update(
+		sessions: readonly CodingSession[],
+		agentFor: (session: CodingSession) => HostedStaffAgent | undefined,
+		names: (session: CodingSession) => CodingSessionNames,
+	): void {
+		const focused = this.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : undefined;
+		this.el.hidden = !sessions.length;
+		this.#single = sessions.length === 1 ? sessions[0] : undefined;
+		this.#pill.classList.toggle("is-single", Boolean(this.#single));
+		const rows = this.#single ? [] : sessions.map((session) => this.#row(session, agentFor(session), names(session)));
+		for (const workerId of this.#rowViews.keys())
+			if (!sessions.some((session) => session.workerId === workerId)) this.#rowViews.delete(workerId);
+		const current = [...this.#rows.children];
+		if (current.length !== rows.length || rows.some((row, index) => current[index] !== row))
+			replace(this.#rows, ...rows);
+		const facesKey = JSON.stringify(
+			sessions.slice(0, 3).map((session) => {
+				const agent = agentFor(session);
+				return [session.workerId, session.harness, codingSessionActivity(session), agent?.id, agent?.appearance];
+			}),
+		);
+		if (facesKey !== this.#facesKey) {
+			this.#facesKey = facesKey;
 			replace(
-				this.#avatar,
-				agentFigure(agent, names.agent, { size: 22, activity, identity: `coding:${session.workerId}` }),
-				badge,
+				this.#faces,
+				...sessions.slice(0, 3).map((session) => this.#face(session, agentFor(session), names(session), 20)),
 			);
 		}
-		const status = codingSessionStatus(session, names);
+		const waiting = sessions.filter((session) => needsViewer(session, names(session)));
+		const only = this.#single;
+		const status = only ? viewerStatus(only, names(only)) : undefined;
+		this.#label.textContent = only ? only.title : t("{count} coding agents", { count: sessions.length });
+		this.#note.textContent = status
+			? status.text
+			: waiting.length > 1
+				? t("{count} need you", { count: waiting.length })
+				: waiting.length
+					? t("1 needs you")
+					: t("Working");
+		this.#note.dataset.tone = status?.tone ?? (waiting.length ? "attention" : "working");
+		this.#action.textContent = status ? (only && needsViewer(only, names(only)) ? t("Answer") : t("Open")) : "";
+		const summary = [this.#label.textContent, this.#note.textContent].filter(Boolean).join(" · ");
+		if (only) {
+			this.#setOpen(false);
+			this.#summary.removeAttribute("aria-expanded");
+			this.#summary.dataset.workerId = only.workerId;
+			this.#summary.setAttribute("aria-label", t("{label}. Open the session", { label: summary }));
+		} else {
+			this.#summary.setAttribute("aria-expanded", String(this.#pill.dataset.open === "true"));
+			delete this.#summary.dataset.workerId;
+			this.#summary.setAttribute("aria-label", summary);
+		}
+		// Moving the lines drops focus to the page: back to the same line, or to the summary when the line left.
+		if (focused && document.activeElement !== focused && !this.el.hidden)
+			(focused.isConnected ? focused : this.#summary).focus({ preventScroll: true });
+	}
+
+	#setOpen(open: boolean): void {
+		this.#pill.dataset.open = String(open && !this.#single);
+		if (open) this.#setFolded(false);
+		if (!this.#single) this.#summary.setAttribute("aria-expanded", String(open));
+	}
+
+	/** Folded on the member's word (Escape, or the summary while open): hover and focus no longer unfold it
+	 * until the pointer and focus have both left. */
+	#fold(): void {
+		this.#setOpen(false);
+		this.#setFolded(true);
+	}
+
+	/** Folded lines are out of reach too, so Shift+Tab from the summary never lands on one it can't see. */
+	#setFolded(folded: boolean): void {
+		if (folded) this.#pill.dataset.folded = "true";
+		else delete this.#pill.dataset.folded;
+		this.#rows.inert = folded;
+	}
+
+	#face(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames, size: number) {
+		const badge = harnessBadge(session.harness);
+		badge.removeAttribute("title");
+		return h(
+			"span",
+			{ class: "coding-pill-face" },
+			agentFigure(agent, names.agent, {
+				size,
+				activity: codingSessionActivity(session),
+				identity: `coding:${session.workerId}:${size}`,
+			}),
+			badge,
+		);
+	}
+
+	#row(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): HTMLButtonElement {
+		const status = viewerStatus(session, names);
+		let view = this.#rowViews.get(session.workerId);
+		if (!view) {
+			const parts = {
+				face: h("span"),
+				title: h("span", { class: "coding-pill-title" }),
+				status: h("span", { class: "coding-pill-status" }),
+				action: h("span", { class: "coding-pill-action" }),
+			};
+			const el = h(
+				"button",
+				{
+					type: "button",
+					class: "coding-pill-row",
+					role: "listitem",
+					dataset: { workerId: session.workerId },
+					onclick: () => this.#open(session.workerId, el),
+				},
+				parts.face,
+				parts.title,
+				parts.status,
+				parts.action,
+			) as HTMLButtonElement;
+			view = { el, faceKey: "", ...parts };
+			this.#rowViews.set(session.workerId, view);
+		}
+		const faceKey = JSON.stringify([session.harness, codingSessionActivity(session), agent?.id, agent?.appearance]);
+		if (faceKey !== view.faceKey) {
+			view.faceKey = faceKey;
+			const face = this.#face(session, agent, names, 24);
+			view.face.replaceWith(face);
+			view.face = face;
+		}
 		const label = `${session.title} · ${status.text}`;
-		if (this.#name.textContent !== session.title) this.#name.textContent = session.title;
-		this.el.title = label;
-		this.el.setAttribute("aria-label", t("{label}. Open the session", { label }));
-		this.el.dataset.tone = status.tone;
+		view.el.dataset.tone = status.tone;
+		view.el.title = label;
+		view.el.setAttribute("aria-label", t("{label}. Open the session", { label }));
+		if (view.title.textContent !== session.title) view.title.textContent = session.title;
+		if (view.status.textContent !== status.text) view.status.textContent = status.text;
+		replace(view.action, needsViewer(session, names) ? t("Answer") : t("Open"), icon("chevron"));
+		return view.el;
 	}
 }

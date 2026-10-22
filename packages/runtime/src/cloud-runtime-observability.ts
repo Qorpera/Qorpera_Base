@@ -76,6 +76,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"save_interface",
 	// Summary trees (M1b-3): reading a conversation's lines and messages.
 	"zoom",
+	// Changing part of a file, and moving or renaming one (21 October 2026).
+	"company_edit",
+	"company_move",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -82,6 +82,7 @@
 
 - The replication reconciler reads folder GC's conflict (`qorpera_authorize_profile_object_replication` answering QRC01 409 with the folder core's "being collected" message, for an object folder GC holds) as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone. snapshot-v1's cleanup fence, which also answers QRC01, keeps its 409, and no other RPC's answer changes.
 - The folder route answers the folder core's storage allowance refusal (23514, which PostgREST sends as 400) with 413, so the runtime can tell a full company from a failed request.
+- The company creation worker seeds each platform folder's `README.md` and no longer Pulse, its numbers table or the cards table (the shared seed tree, cloud-client; migration `20260930526000`). Deploy after that migration: before it the database refuses the READMEs. The connection file writer never names an account's file `connections/README.md` (a new one starts at `-2`), and a machine's view moves `agents/README.md` as any file, not as an agent's folder.
 
 ### Fixed
 

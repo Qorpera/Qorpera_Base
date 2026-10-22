@@ -26,6 +26,8 @@ export interface InterfaceWrites {
 	readonly offers?: InterfaceOfferActions;
 	/** Reads the company's folder again soon, so a change that could not be made shows the rows as they are now. */
 	readonly reread?: () => void;
+	/** Opens Settings on Company connections, where the company's mail addresses are made (the Mailbox's New address). */
+	readonly openSettings?: () => void;
 }
 
 /** The offer an accept answers: the cell it names and what it read there. */

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 describe("shared cloud runtime constitution", () => {
 	it("has a stable version and remains short enough to read in one pass", () => {
-		expect(CLOUD_RUNTIME_CONSTITUTION_VERSION).toBe("qorpera-cloud-runtime-constitution-v2");
+		expect(CLOUD_RUNTIME_CONSTITUTION_VERSION).toBe("qorpera-cloud-runtime-constitution-v3");
 		expect(CLOUD_RUNTIME_CONSTITUTION.trim().split(/\s+/).length).toBeLessThanOrEqual(650);
 		expect(CLOUD_RUNTIME_CONSTITUTION.match(/^\d+\. /gm)).toHaveLength(10);
 	});
@@ -20,7 +20,7 @@ describe("shared cloud runtime constitution", () => {
 	// Contract section 18: the ten topics the constitution covers.
 	it("covers durable state, delivery, authority, and safe edge behavior", () => {
 		for (const topic of [
-			"one live Company File",
+			"one live company folder",
 			"no-change result",
 			"Only your sends are seen",
 			"typed wake",

@@ -151,6 +151,9 @@ export function button(
 /* Small stroked icons, the desktop's set (Lucide, ISC). Drawn inline so they
  * inherit the row's colour; an <img> could not. */
 const ICON_PATHS: Record<string, string[]> = {
+	// Lucide list / table-2, matching the existing ISC-licensed icon set.
+	list: ["M3 5h.01", "M3 12h.01", "M3 19h.01", "M8 5h13", "M8 12h13", "M8 19h13"],
+	table: ["M3 9h18", "M9 3v18"],
 	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
 	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
@@ -253,6 +256,8 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
 	],
 	download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3"],
+	// Lucide maximize-2: show something large.
+	expand: ["M15 3h6v6", "M9 21H3v-6", "m21 3-7 7", "m3 21 7-7"],
 	trash: [
 		"M3 6h18",
 		"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6",
@@ -275,6 +280,24 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
 		path.setAttribute("d", d);
 		svg.append(path);
+	}
+	// Lucide layout-grid / table-2 use native rectangles rather than path outlines.
+	const rectangles =
+		name === "grid"
+			? [
+					[3, 3, 7, 7, 1],
+					[14, 3, 7, 7, 1],
+					[14, 14, 7, 7, 1],
+					[3, 14, 7, 7, 1],
+				]
+			: name === "table"
+				? [[3, 3, 18, 18, 2]]
+				: [];
+	for (const [x, y, width, height, radius] of rectangles) {
+		const rectangle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+		for (const [key, value] of Object.entries({ x, y, width, height, rx: radius }))
+			rectangle.setAttribute(key, String(value));
+		svg.append(rectangle);
 	}
 	return svg;
 }
