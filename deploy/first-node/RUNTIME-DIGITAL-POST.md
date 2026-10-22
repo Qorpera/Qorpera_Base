@@ -53,6 +53,24 @@ A letter the vault cannot read (malformed, too large, not a MeMo letter) is held
 it and moves it to Virk after seven days. The sync records it so it is not fetched again on every pass, and Settings
 says how many letters went that way.
 
+**The sync (part 2, migration `20260930529000`).** One row a company in `qorpera_digital_post_syncs`, following its
+`digital_post` secret: a connect or a new key is due at once (`waiting`); a pass that took every letter listed is
+`current` and due again in ten minutes; a full list (50) from which it took a letter is due again in thirty seconds;
+a failure is tried again after five minutes, doubling to two hours, with a fixed phrase for Settings; a key Digital
+Post refuses (401) is `refused` and nothing is due until the member saves a key again; a Disconnect (the secret's
+revoke) is `disconnected`. A pass holds a fifteen-minute lease; a late answer from an earlier claim is refused.
+Letters are kept in `qorpera_digital_post_letters` by message id (unique per company, as is the folder by its key):
+`staging`, then `kept` once every file's staged chunks give its size and SHA-256 (`qorpera_seal_digital_post_letter`),
+then `written` (part 3). The staged bytes sit in `qorpera_digital_post_chunks`, 1 MiB each, until the folder writer
+has them; a letter left `staging` by a pass that stopped starts again when it is next delivered. Held letters are in
+`qorpera_digital_post_held` and forgotten after eight days. Since held letters stay on Digital Post's list, the sync
+remembers where a pass stopped (`scan_page`): a pass reads at most 20 pages from there, and stops after a page where it
+receipted something (the next pass reads that page again) or at the end of the list (the next starts from the first
+page), so every letter is reached however many are held before it. `qorpera_digital_post_settings` is the platform's
+one row that operators set: the Digital Post environment, Qorpera's CVR and the vault's public addresses, which the
+setup steps show. `qorpera_member_digital_post` gives any member the connection's state (supabase/CLIENT-CONTRACT.md,
+"Digital Post").
+
 ## In the company folder
 
 ```

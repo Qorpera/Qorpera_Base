@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
 import type { CloudConnectorOAuthFlows } from "./cloud-connector-oauth.ts";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
@@ -13,6 +14,7 @@ import {
 	CloudConnectorTokenRevocationUpkeep,
 	CloudConnectorTokenRevoker,
 } from "./cloud-connector-token-revocation.ts";
+import { CloudDigitalPostSyncs, CloudDigitalPostSyncUpkeep } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, CloudEventVerificationUpkeep } from "./cloud-event-verification.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
@@ -336,6 +338,7 @@ export async function runCloudSecretBrokerServiceMain(
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
 				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
+				...(connectors?.digitalPost ? { digitalPost: connectors.digitalPost } : {}),
 				runtimeToken,
 				proveBinding,
 				port: config.port as number,
@@ -396,6 +399,12 @@ export async function runCloudSecretBrokerServiceMain(
 		const verifications = new CloudEventVerificationUpkeep({
 			verifications: new CloudEventVerifications({ authority, keyring }),
 		});
+		// The company's Digital Post, fetched into the database when the vault has Qorpera's certificate.
+		const digitalPostSyncs = connectors?.digitalPost
+			? new CloudDigitalPostSyncUpkeep({
+					syncs: new CloudDigitalPostSyncs({ authority, keyring, post: connectors.digitalPost }),
+				})
+			: undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
@@ -418,6 +427,7 @@ export async function runCloudSecretBrokerServiceMain(
 			upkeep.start();
 			revocations.start();
 			verifications.start();
+			digitalPostSyncs?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -431,6 +441,7 @@ export async function runCloudSecretBrokerServiceMain(
 				upkeep.close(),
 				revocations.close(),
 				verifications.close(),
+				digitalPostSyncs?.close(),
 				signIns?.close(),
 				service.close(),
 			]);
@@ -450,6 +461,7 @@ async function runSharedVault(options: {
 	helper: ModelLoginHelperClient | undefined;
 	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
+	digitalPost?: DigitalPostClient;
 	runtimeToken: string;
 	proveBinding: NativeBindingProof;
 	port: number;
@@ -464,6 +476,7 @@ async function runSharedVault(options: {
 		...(options.helper ? { helper: options.helper } : {}),
 		...(options.chatGptPlan ? { chatGptPlan: options.chatGptPlan } : {}),
 		revoker: options.revoker,
+		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",
