@@ -1,114 +1,140 @@
-/* The founding table (table v3): a centred page with the company's name, one line about it,
- * a grid of seats and the Start bar. Tokens only, so light and dark both work. */
+/* The founding table, drawn as writing the first message together (hub round 3): the company's name as the
+ * heading, one box like qorpera.com's with the crown and the founders looking over its edge, one chip per
+ * seat, then Ready and Start. Tokens only, so light and dark both work. */
 
 .founding { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px 24px 56px; }
-.founding-page, .founding-started-body { width: 100%; max-width: 1080px; display: flex; flex-direction: column; gap: 18px; }
+.founding-page, .founding-started-body {
+	width: 100%; max-width: 760px; margin: auto 0; display: flex; flex-direction: column; align-items: center; gap: 18px;
+	padding: 28px 0 32px;
+}
 /* Parts of the page that are rebuilt on their own take no box of their own. */
-.founding-slot, .founding-foot-row { display: contents; }
+.founding-slot { display: contents; }
 /* The panels, the Start bar and its lines are shown and hidden in place. */
 .founding [hidden] { display: none !important; }
 
-.founding-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding-top: 12px; }
+.founding-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; width: 100%; }
 .founding-name {
-	width: min(520px, 100%); border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0;
-	background: transparent; color: var(--text); padding: 6px 4px; text-align: center;
-	font: 600 clamp(24px, 3.2vw, 34px) / 1.2 var(--font-display); letter-spacing: -0.015em;
+	width: min(640px, 100%); margin: 0; padding: 2px 6px; border: 0; border-radius: 12px; background: transparent;
+	color: var(--text); text-align: center; font: 750 clamp(32px, 4vw, 46px) / 1.06 var(--font-display); letter-spacing: -0.035em;
+	text-overflow: ellipsis;
 }
-h1.founding-name { border-bottom: 0; width: auto; }
-.founding-name:focus-visible { outline: none; border-bottom-color: var(--sidebar-selection); }
-.founding-vision {
-	width: min(720px, 100%); border: 0; background: transparent; color: var(--text-muted); padding: 4px;
-	font: 14px / 1.45 var(--font-sans); text-align: center; resize: none;
-}
-.founding-vision::placeholder, .founding-name::placeholder, .founding-role-mine::placeholder { color: var(--text-soft); }
-textarea.founding-vision:focus-visible { outline: none; box-shadow: inset 0 -1px 0 var(--border-strong); }
+input.founding-name:hover { background: var(--hover); }
+input.founding-name:focus-visible { outline: none; background: var(--hover); box-shadow: inset 0 -2px 0 var(--sidebar-selection); }
+.founding-sub { margin: 0; max-width: 34em; color: var(--text-muted); font-size: 17px; line-height: 1.45; text-wrap: balance; }
+.founding-invitation { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 
-.founding-invitation {
-	align-self: center; width: min(560px, 100%); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-	gap: 10px 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+/* The box: the idea, everyone's own line, and Invite friends. */
+.founding-ask { position: relative; width: 100%; max-width: 620px; margin-top: 50px; }
+.founding-crown { position: absolute; left: 18px; top: -40px; z-index: 2; width: 52px; pointer-events: none; }
+.founding-heads { position: absolute; right: 22px; top: -24px; z-index: 2; display: flex; align-items: flex-end; gap: 6px; }
+.founding-heads .person-avatar {
+	width: 40px; height: 40px; font-size: 13px; box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color, var(--border-strong));
+	animation: founding-peek var(--motion-spring) var(--ease-spring) both;
 }
+.founding-heads .founding-head-invited { width: 34px; height: 34px; font-size: 11px; opacity: 0.5; box-shadow: 0 0 0 2px var(--overlay), 0 0 0 3px var(--border-strong); }
+@keyframes founding-peek { from { opacity: 0; transform: translateY(14px); } }
+.founding-box {
+	position: relative; display: flex; flex-direction: column; gap: 10px; padding: 22px 8px 8px; border-radius: 26px;
+	background: var(--overlay); text-align: left;
+	box-shadow: 0 0 0 1px var(--border-strong), 0 24px 48px -28px rgba(10, 30, 80, 0.35);
+	transition: box-shadow var(--motion-fast) ease;
+}
+.founding-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 24px 48px -28px rgba(10, 30, 80, 0.45); }
+.founding-vision, .founding-role-mine {
+	display: block; width: 100%; margin: 0; padding: 0 12px; border: 0; outline: none; resize: none; overflow: hidden;
+	background: transparent; color: var(--text); font: 18px / 28px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.founding-vision::placeholder, .founding-role-mine::placeholder, .founding-name::placeholder { color: var(--text-soft); }
+textarea.founding-vision { min-height: 28px; }
+.founding-lines { display: flex; flex-direction: column; gap: 6px; padding: 0 10px; }
+.founding-line {
+	margin: 0; padding: 4px 8px; border-radius: 8px; color: var(--text); font: 18px / 28px var(--font-sans); overflow-wrap: anywhere;
+	background: color-mix(in srgb, var(--line-color, var(--border-strong)) 16%, transparent);
+}
+.founding-line-who {
+	display: inline-block; margin-right: 8px; padding: 0 7px; border-radius: 5px; vertical-align: 2px;
+	background: var(--line-color, var(--text-soft)); color: #fff; font: 700 11.5px / 18px var(--font-sans);
+}
+textarea.founding-role-mine {
+	width: calc(100% - 20px); margin: 0 10px; padding: 4px 8px 4px 12px; border-radius: 8px; min-height: 36px;
+	box-shadow: inset 3px 0 0 var(--line-color, var(--border-strong));
+}
+textarea.founding-role-mine:focus-visible { background: var(--hover); }
+.founding-box-foot { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.founding-invite {
+	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;
+	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--text);
+	font: 600 14px var(--font-sans); cursor: pointer;
+}
+.founding-invite:hover, .founding-invite[aria-expanded="true"] { background: var(--hover); }
+.founding-invite-faces { display: inline-flex; }
+.founding-invite-faces .person-avatar { width: 30px; height: 30px; font-size: 11px; box-shadow: 0 0 0 2px var(--overlay); }
+.founding-invite-faces .person-avatar + .person-avatar { margin-left: -12px; }
 
-/* Every row is as tall as its tallest card, and the invite tile stretches with it. */
-.founding-seats { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 300px)); grid-auto-rows: 1fr; justify-content: center; gap: 14px; }
-.founding-seat {
-	min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px;
-	background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: none;
-}
-.founding-seat-mine { border-color: var(--border-strong); }
-.founding-seat-invite {
-	width: 100%; height: 100%; margin: 0; font: inherit; cursor: pointer; align-items: center; justify-content: center; text-align: center;
-	color: var(--text-muted); background: transparent; box-shadow: none; border: 1.5px dashed var(--border-strong);
-}
-.founding-seat-invite:hover { background: var(--hover); }
-.founding-seat-invite:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.founding-seat-invite strong { color: var(--text); font-size: 14px; font-weight: 600; }
-.founding-plus {
-	width: 44px; height: 44px; border-radius: 50%; border: 1.5px dashed var(--border-strong);
-	display: grid; place-items: center; font-size: 22px; color: var(--text-soft);
-}
-.founding-seat-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
-.founding-seat-top .person-avatar { width: 40px; height: 40px; font-size: 13px; }
-.founding-who strong { display: block; font-size: 14px; font-weight: 600; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.founding-who small { display: block; font-size: 11.5px; color: var(--text-muted); line-height: 15px; }
-.founding-kind { font-size: 11px; font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 2px 8px; white-space: nowrap; }
-.founding-kind-owner { color: var(--text); background: var(--hover); border-color: transparent; }
-
-.founding-role {
-	min-height: 42px; margin: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
-	background: var(--chrome); color: var(--text); font: 14px / 1.45 var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
-}
-.founding-role-empty { color: var(--text-soft); }
-textarea.founding-role-mine { width: 100%; resize: vertical; background: var(--bg); border-color: var(--border-strong); }
-textarea.founding-role-mine:focus-visible { outline: none; border-color: var(--text-soft); }
-
-/* The foot holds one control: Connect ChatGPT until it is connected, then Ready. */
-.founding-seat-foot {
-	margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 10px;
-	border-top: 1px solid var(--border); padding-top: 9px; font-size: 11.5px; color: var(--text-muted);
-}
-.founding-status { font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
-.founding-status-ready { color: var(--text); background: var(--ok-soft); border-radius: var(--radius-pill); padding: 4px 11px; }
-.founding-seat-foot .btn.founding-ready, .founding-seat-foot .btn.founding-ready-on { border-radius: var(--radius-pill); }
-.founding-seat-foot .btn.founding-ready-on { background: var(--ok-soft); border-color: transparent; color: var(--text); font-weight: 600; }
-
-/* The friends list and the ChatGPT panel open under the seats. */
+/* The friends list opens under Invite friends; the ChatGPT panel under the seats. */
 .founding-sheet {
-	align-self: center; width: min(560px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 18px 20px 20px;
-	background: var(--overlay); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: none;
+	display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); padding: 16px 16px 18px;
+	background: var(--overlay); border: 1px solid var(--border-strong); border-radius: 20px;
 }
+.founding-friends-sheet {
+	position: absolute; left: 0; top: calc(100% + 12px); z-index: 5; width: min(420px, 100%);
+	box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.45); transform-origin: 40px 0; animation: founding-pop var(--motion-slow) var(--ease-spring) both;
+}
+@keyframes founding-pop { from { opacity: 0; transform: translateY(-8px) scale(0.97); } }
 .founding-connect { width: min(720px, 100%); }
-.founding-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.founding-sheet h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.founding-sheet-head { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; }
+.founding-sheet h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
 .founding-close {
-	flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; cursor: pointer;
-	color: var(--text-muted); font-size: 20px; line-height: 1; display: grid; place-items: center;
+	flex: none; display: grid; place-items: center; width: 30px; height: 30px; margin-left: auto; border: 0; border-radius: 50%;
+	background: transparent; color: var(--text-muted); cursor: pointer; align-self: center;
 }
+.founding-close .icon { width: 16px; height: 16px; }
 .founding-close:hover { background: var(--hover); color: var(--text); }
 .founding-friends { list-style: none; margin: 0; padding: 0; }
-.founding-friends li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); }
-.founding-friends li:last-child { border-bottom: 0; }
-.founding-friends strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.founding-add-friend { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 14px; }
+.founding-friends li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 7px 4px; border-radius: 12px; }
+.founding-friends li:hover { background: var(--hover); }
+.founding-friends .person-avatar { width: 38px; height: 38px; font-size: 13px; }
+.founding-friends strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.founding-add-friend { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding: 12px 4px 0; }
 .founding-add-friend label { font-size: 13px; font-weight: 600; }
 .founding-inline { display: flex; gap: 8px; }
 .founding-inline input {
-	flex: 1; min-width: 0; height: 36px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+	flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 10px;
 	background: var(--bg); color: var(--text); font-size: 14px;
 }
 
-/* Start, centred, with its status lines under it. */
-.founding-bar { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding-top: 6px; }
-.founding-start { min-width: 220px; justify-content: center; text-align: center; }
-.founding-hint { margin: 0; font-size: 12.5px; color: var(--text-muted); max-width: 520px; }
+/* One chip per seat: who, and where they are. */
+.founding-seats { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 10px; }
+.founding-seat {
+	display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px 14px 6px 6px;
+	border: 1px solid var(--border); border-radius: 26px; background: var(--overlay);
+}
+.founding-seat-invited { border-style: dashed; }
+.founding-seat-invited .person-avatar { opacity: 0.55; }
+.founding-seat-row { display: flex; align-items: center; gap: 10px; }
+.founding-seat-row .person-avatar { width: 38px; height: 38px; font-size: 13px; }
+.founding-seat-row strong { font-size: 15px; font-weight: 650; white-space: nowrap; }
+.founding-seat-role { margin: 0 0 4px 48px; color: var(--text-muted); font-size: 14px; line-height: 1.4; max-width: 280px; }
+.founding-status { font-size: 13px; font-weight: 600; color: var(--text-soft); white-space: nowrap; }
+.founding-status-ready { color: var(--ok); }
+
+/* Ready and Start, centred, with their lines under them. */
+.founding-bar { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding-top: 10px; }
+.founding-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.founding-actions .btn { min-height: 46px; padding: 0 22px; border-radius: var(--radius-pill); font-size: 15px; font-weight: 650; }
+.founding-ready-on { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 55%, transparent); color: var(--text); }
+.founding-start { min-width: 220px; justify-content: center; }
+.founding-start:disabled { opacity: 0.45; }
+.founding-hint { margin: 0; font-size: 13px; color: var(--text-muted); max-width: 520px; }
 .founding-exit { display: flex; justify-content: center; }
-.founding-started .founding-head { padding-top: 40px; }
+.founding-started .founding-head { padding-top: 24px; }
+.founding-started .founding-seats { flex-direction: column; align-items: center; }
 .founding-gone { align-items: center; text-align: center; padding-top: 64px; }
-a.founding-table-card, .invite-actions a.btn { color: inherit; text-decoration: none; }
-a.founding-table-card:hover { background: var(--hover); }
 
 @media (max-width: 760px) {
 	.founding { padding: 4px 16px 32px; }
-	.founding-seats { grid-template-columns: minmax(0, 1fr); }
+	.founding-ask { margin-top: 46px; }
+	.founding-heads { right: 14px; }
 	.founding-start { width: 100%; }
-	.founding-sheet { padding: 16px; border-radius: 14px; }
+	.founding-friends-sheet { position: static; width: 100%; margin-top: 12px; }
 }
