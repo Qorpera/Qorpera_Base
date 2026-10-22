@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { BankSummaryWriter } from "./bank-summary-files.ts";
 import { CodingResultsWriter } from "./coding-results-files.ts";
 import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
@@ -66,6 +67,21 @@ const codingResults =
 	process.env.QORPERA_CODING_RESULTS_WRITER === "1"
 		? new CodingResultsWriter({
 				workerId: process.env.QORPERA_CODING_RESULTS_WORKER_ID?.trim() || randomUUID(),
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
+			})
+		: undefined;
+// The company bank summary's writer (Bank connection part 3): off unless QORPERA_BANK_SUMMARY_WRITER=1; the coordinator turns
+// it on. Its own database client and its own loop, as the connection-file writer's.
+const bankSummaries =
+	process.env.QORPERA_BANK_SUMMARY_WRITER === "1"
+		? new BankSummaryWriter({
+				workerId: process.env.QORPERA_BANK_SUMMARY_WORKER_ID?.trim() || randomUUID(),
 				authority: new SupabaseMemberCompanyAuthority({
 					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -214,6 +230,23 @@ if (process.argv[2] === "migrate") {
 	const codingResultsWrites = setInterval(() => {
 		void writeCodingResults();
 	}, 5_000);
+	// The bank summary writer's own loop, every 15 s (a summary is new at most every few hours a company): one drain at a
+	// time, at most ten files and 60 s per tick.
+	let writingSummaries = false;
+	const writeBankSummaries = async (): Promise<void> => {
+		if (!bankSummaries || writingSummaries) return;
+		writingSummaries = true;
+		try {
+			await bankSummaries.writeDue(10, AbortSignal.timeout(60_000));
+		} catch {
+			process.stderr.write("Bank summary writer requires operator attention\n");
+		} finally {
+			writingSummaries = false;
+		}
+	};
+	const bankSummaryWrites = setInterval(() => {
+		void writeBankSummaries();
+	}, 15_000);
 	// The memory message eraser's own loop, every 5 s, as the coding results writer's: one pass at a time, at most ten
 	// erases and 30 s per tick.
 	let erasing = false;
@@ -256,6 +289,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(maintenance);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
+			clearInterval(bankSummaryWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			server.close(() => process.exit(0));

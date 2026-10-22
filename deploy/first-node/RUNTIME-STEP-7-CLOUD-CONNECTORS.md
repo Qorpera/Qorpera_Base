@@ -145,6 +145,10 @@ broker then keeps each connected company's bank summary current
 shared vault asks once a minute which companies are due. Until Enable
 Banking activates the application beyond restricted mode, only the accounts
 its owner linked in the control panel can be read.
+The summary reaches the company folder through the object gateway (part 3,
+migration `20260930528000`): with `QORPERA_BANK_SUMMARY_WRITER=1` the gateway
+writes each new summary to `bank/summary.json` as the platform, which is what
+the Bank page draws.
 
 ### Routing behind the one public origin (production)
 
