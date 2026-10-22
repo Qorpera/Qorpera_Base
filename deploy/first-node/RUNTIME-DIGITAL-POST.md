@@ -78,7 +78,19 @@ digital-post/
       aarsopgoerelse.pdf             the documents, under the sender's names made safe
 ```
 
-The day is the sender's (`createdDateTime`) in Danish time. `letter.md` says the letter is outside content. The main
+The day is the sender's (`createdDateTime`) in Danish time. `letters.json` is `{schema: "qorpera.digital-post-letters/v1",
+letters}`, each letter the summary the vault kept (message id, folder, title, sender and its id, written and received,
+the mandatory and legal-effect flags, the reply deadline, case id, file count, whether `letter.md` holds the text, and
+a snippet), newest first, at most 200 and within 240 KiB.
+
+**The writer (part 3, migration `20260930530000`).** The object gateway's `DigitalPostLetterWriter`
+(`QORPERA_DIGITAL_POST_WRITER=1`) claims one kept letter of a folder-v2 company that is not being deleted, with its own
+lease; reads each file's chunks back in pieces of at most 512 KiB and checks its size and SHA-256; and commits as the
+platform, under `digital-post:<letter>:<attempt>`, one change set: `digital-post/` and `digital-post/<year>` when they
+are missing, the letter's folder as one `new_folder` unit (in the folder whole or not at all), and the index at the
+version the claim read. A letter's folder already there (an earlier commit whose finish was lost) gets only the files
+it lacks; nothing in it is overwritten. A unit not saved backs off (a minute, doubling to an hour) and the next claim
+reads the folder again. A written letter's staged chunks are deleted. `letter.md` says the letter is outside content. The main
 document's text comes from its text or HTML version; a letter that is only a PDF says so until PDF text is read (step
 5).
 
