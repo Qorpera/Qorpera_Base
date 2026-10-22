@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import {
+	DIGITAL_POST_LIST_SIZE,
 	DigitalPostAnswerTooLarge,
 	type DigitalPostClient,
 	type DigitalPostKey,
@@ -77,7 +78,7 @@ const DATABASE_DEADLINE_MS = 10_000;
 /** One pass: the list, then every letter on it. The claim's lease is fifteen minutes. */
 const PASS_DEADLINE_MS = 10 * 60_000;
 const PASS_EVERY_MS = 60_000;
-/** Pages of Digital Post's list a pass reads at most (50 letters each) before it gives the rest to the next pass. */
+/** Pages of Digital Post's list a pass reads beyond the pages its held letters can fill (50 letters each). */
 const LIST_PAGES = 20;
 /** The chunk size the database stages a file in. */
 export const DIGITAL_POST_CHUNK_BYTES = 1024 * 1024;
@@ -273,6 +274,10 @@ export class CloudDigitalPostSyncs {
 	 * Digital Post moves them to Virk, so a page may hold nothing to take: the pass reads on, page by page. A receipt
 	 * shifts the pages after it, so a pass that receipted something stops at the end of that page (`more`: the next pass
 	 * starts again from the first page), and one that reached the last page is `current`.
+	 *
+	 * The held letters fill at most as many pages as they make; every page past those has letters this pass fetches,
+	 * which end receipted (and the pass stops there), held or gone. So a pass reads those pages and twenty more: whatever
+	 * it held there is held in the next claim, whose pages reach that far too, and no letter waits behind held ones.
 	 */
 	async #take(
 		claim: Claim,
@@ -281,7 +286,8 @@ export class CloudDigitalPostSyncs {
 		receipted: string[],
 		signal: AbortSignal,
 	): Promise<"current" | "more"> {
-		for (let page = 0; page < LIST_PAGES; page += 1) {
+		const pages = Math.ceil(claim.held.size / DIGITAL_POST_LIST_SIZE) + LIST_PAGES;
+		for (let page = 0; page < pages; page += 1) {
 			const available = await this.#post.available(key, signal, page);
 			let took = false;
 			for (const memoId of available.ids) {

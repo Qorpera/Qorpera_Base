@@ -268,6 +268,25 @@ it("reads past a page of held letters to the letters after them", async () => {
 	expect(f.log.filter((line) => line.startsWith("list"))).toEqual(["list", "list 1"]);
 	expect(f.post.letter).toHaveBeenCalledTimes(1);
 	expect(f.finished[0]?.receipted).toEqual([f.letterIds.get(MESSAGE_B)]);
+	// A thousand held letters (twenty pages) and the letter after them: one pass reaches it.
+	const thousand = Array.from(
+		{ length: 1000 },
+		(_, index) => `0c000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+	);
+	const far = fixture({
+		claim: claim({ held: thousand }),
+		pages: [
+			...Array.from({ length: 20 }, (_, page) => ({
+				ids: thousand.slice(page * 50, page * 50 + 50),
+				complete: false,
+			})),
+			{ ids: [MEMO_B], complete: true },
+		],
+		letters: { [MEMO_B]: letter(MESSAGE_B) },
+	});
+	expect(await far.syncs.pass(signal)).toBe("current");
+	expect(far.post.available).toHaveBeenCalledTimes(21);
+	expect(far.finished[0]?.receipted).toEqual([far.letterIds.get(MESSAGE_B)]);
 	// A receipt shifts the pages after it: a pass that took a letter on a page that was not the last stops there.
 	const more = fixture({
 		pages: [
@@ -285,8 +304,8 @@ it("asks for more at once only when the list was full and it took a letter", asy
 	const allHeld = fixture({ complete: false, claim: claim({ held: [MEMO_A] }) });
 	expect(await allHeld.syncs.pass(signal)).toBe("current");
 	expect(allHeld.finished[0]?.outcome).toBe("current");
-	// A list that never ends is read for twenty pages, then left to the next pass.
-	expect(allHeld.post.available).toHaveBeenCalledTimes(20);
+	// A list that never ends is read for the held letters' page and twenty more, then left to the next pass.
+	expect(allHeld.post.available).toHaveBeenCalledTimes(21);
 });
 
 it("stops on a refused key, and on a key that is not one", async () => {
