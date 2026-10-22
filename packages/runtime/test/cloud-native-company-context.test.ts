@@ -295,7 +295,8 @@ it.each([
 					"# Qorpera runtime constitution",
 					"send_message is your only public voice",
 					"# Writing to people",
-					"Do what was asked",
+					"When a member asks for something, do that, at the size they asked.",
+					"Your own responsibilities need no request",
 					"# How a turn works",
 					"# Your role: Co-Founder",
 				])
@@ -321,7 +322,13 @@ it.each([
 	// A revived parent always reads its continuation; a first dispatch has none.
 	expect(instructions.includes("qorpera.worker-completion-continuation/v1")).toBe(continues);
 	// A worker speaks to no one and keeps no standing work: staff judgement is the parent's.
-	for (const staff of ["you are a dispatcher, not a hero", "# Standing work", "# Writing to people"])
+	for (const staff of [
+		"you are a dispatcher, not a hero",
+		"# Standing work",
+		"When a routine wakes you for your own work",
+		"When a member stopped your work, it stays stopped",
+		"# Writing to people",
+	])
 		expect(instructions.includes(staff)).toBe(continues);
 });
 
@@ -687,17 +694,29 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
 	for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
 	// Jonas, 4 October 2026: the first job is the onboarding. The Co-Founder drafts the vision in its own words and
-	// revises it until every founder approves; only then does it write the file, close its first todo and propose hires.
+	// revises it until every founder approves. The 2026-10-22 amendment, item 3: the draft names the first team, and
+	// the run where every founder approves starts the company without asking again.
 	expect(cofounder).toContain("Your first job is the onboarding: building the vision with the founders");
 	expect(cofounder).toContain("Read vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
-	expect(cofounder).toContain("write the whole vision in your own words, post it in the thread as a draft");
+	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
+	expect(cofounder).toContain("each owner you will hire, what each owns and starts on");
+	expect(cofounder).toContain("this work runs on the model login of the founder whose approval completes the vision");
 	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
 	expect(cofounder).toContain(
-		"Only then write it to vision/vision.md, with the company's name as its first line, and close your first todo, Start with the founders",
+		"When every founder has approved, start the company in that same run, without asking again: write the vision to vision/vision.md, with the company's name as its first line and a last line \"Agreed by",
 	);
-	expect(cofounder).toContain("Then propose the first hires");
-	expect(cofounder).toContain("hire no one before the vision is agreed unless a founder asks you to");
+	expect(cofounder).toContain("hire each owner in the approved plan, looking in agents/ first");
+	expect(cofounder).toContain("close your first todo, Start with the founders");
+	expect(cofounder).toContain("never restart the onboarding");
+	// A company whose vision was agreed before v6 has no "Agreed by" line, but its first todo is closed.
+	expect(cofounder).toContain("or once your first todo, Start with the founders, is closed");
+	expect(cofounder).toContain("Hire no one before the vision is agreed unless a founder asks you to");
+	// Its daily plan keeps the company moving.
+	expect(cofounder).toContain("Your daily plan is a weekly routine on weekday mornings");
+	expect(cofounder).toContain("operations/company-plan.md, one file updated in place");
+	expect(cofounder).toContain("Treat every report of done as a claim");
+	expect(cofounder).toContain("On Mondays always write");
 	expect(cofounder).not.toContain("blank page");
 	// Every path and the first todo's title it names are the seed tree's.
 	const seeded = companyStateSeedTree({
@@ -1451,31 +1470,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
 // folder at /company replaced the workbench line), and taken again for the 21 October 2026 amendment (how agents start
 // work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
-// work was kept by area first, then by kind (Jonas, 21 October 2026). A change to either is a change to every run's
-// bytes.
+// work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
+// (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6). A change to
+// either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "239072d71ef52dd13809517a5d637daf1a14ca901a3d4f24be79ed245a03bdb5",
-			prompt: "7c08147caf24677a28b3dfcce381dedd442bea1c56a9a1763670279098692833",
+			instructions: "fd68c668483f66a13adeba052d9bd6b22ad1cd1c9ac471a2f34104e86a227f49",
+			prompt: "a71b0999eb78e8ccf7e21663209c8af3d6ed8e380dbbba875da3ee5ac07c443d",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "aff74b0d86a6234be79e3e7947a5a954d67a48b3cbfa58228bb67c5f0cac2856",
-			prompt: "606dca346945e947cd1b7a03fff0562fa01122c0a7a80d61523f26deb759a86f",
+			instructions: "91db301592c8213dbecd284cd135c5e8b99a6b0b2c71fec6a148130b6b3717a1",
+			prompt: "ab53d932d8bad88e3893b9dbf0f1bf613cc11c6455142564e86d09092c4ca60c",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "239072d71ef52dd13809517a5d637daf1a14ca901a3d4f24be79ed245a03bdb5",
-			prompt: "887167596b836fdc96beb2fe956417d96a3c5a99b1108a02e5385ebfcf542d89",
+			instructions: "fd68c668483f66a13adeba052d9bd6b22ad1cd1c9ac471a2f34104e86a227f49",
+			prompt: "d1dc9be4d86a1ec3a5df80ad432d637d1a1913d36f5d54e22ee8fbf908448831",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -1510,7 +1530,7 @@ it("tells every agent the seeded folders, how to make files and how to link them
 		"Write it self-contained, with its CSS and JavaScript inline and nothing loaded from the network",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"A file the member asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
+		"A file they asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",
@@ -1539,8 +1559,8 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 	expect(cloudCompanyRuntimeInstructions(null, false)).toContain("# Starting work");
 	// The Co-Founder does what a founder asks first; the vision never holds it up.
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
-	expect(cofounder).toContain("When a founder asks for something, do it first.");
-	expect(cofounder).toContain("It never holds up anything a founder asks for");
+	expect(cofounder).toContain("When a founder asks for something, do it first, at the size they asked.");
+	expect(cofounder).toContain("The onboarding never holds up anything a founder asks for");
 	expect(cofounder).not.toMatch(/comes first in every conversation|do not start your alternative/);
 });
 

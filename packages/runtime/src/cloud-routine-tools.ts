@@ -247,7 +247,7 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
  * or mailboxes through W2's listener (E2). */
 const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.replace(
 	"No member approval is needed; use it whenever",
-	"Each change goes through the automatic review first, and some wait for a member's approval; use it whenever",
+	"Each change passes a quick automatic review against your job; your own routines need no member's approval unless a member's own rule asks for it. Use it whenever",
 )
 	.replace(
 		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. ",
