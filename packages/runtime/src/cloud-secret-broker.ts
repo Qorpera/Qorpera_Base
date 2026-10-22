@@ -17,7 +17,9 @@ import {
 	type CompanyAccountState,
 	CompanyAccountVault,
 } from "./cloud-company-account-vault.ts";
+import { parseDigitalPostKey } from "./cloud-connector-digital-post.ts";
 import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
+import type { DigitalPostSyncAuthority } from "./cloud-digital-post-sync.ts";
 import {
 	type EventHookAnswer,
 	type EventHookAuthority,
@@ -870,6 +872,19 @@ function mcpSignInValue(fields: Readonly<Record<string, string>>): string {
 	return value;
 }
 
+/** A Digital Post connection's key (RUNTIME-DIGITAL-POST.md): exactly the field `api_key`, which must read as the API
+ * key Administrativ Adgang shows, so a key the sync could never use is not sealed. Its system id (not a secret) becomes
+ * the connection's account label. The error never carries the value. */
+function digitalPostCaptureLabel(fields: Readonly<Record<string, string>>): string {
+	const names = Object.keys(fields);
+	const value = names.length === 1 && names[0] === "api_key" ? fields.api_key : undefined;
+	try {
+		return parseDigitalPostKey(value ?? "").systemId;
+	} catch {
+		throw new Error("Digital Post API key is invalid");
+	}
+}
+
 function adapterKey(value: {
 	connectorId: string;
 	operationId: string;
@@ -1066,6 +1081,8 @@ export class CloudSecretBroker {
 		if (description.connectorId === "environment") environmentValue(request.fields);
 		// So is an MCP sign-in (5j-6b) only if the relay can send it on one header line.
 		if (description.connectorId === "mcp") mcpSignInValue(request.fields);
+		// And a Digital Post key only if it reads as one; the connection is labelled with its system id.
+		const label = description.connectorId === "digital_post" ? digitalPostCaptureLabel(request.fields) : accountLabel;
 		const capabilitySha256 = createHash("sha256").update(request.captureCapability).digest("hex");
 		const envelope = this.#keys.seal(request.fields, description);
 		try {
@@ -1076,7 +1093,7 @@ export class CloudSecretBroker {
 					capabilitySha256,
 					envelope,
 					envelopeSha256,
-					accountLabel,
+					label,
 					signal,
 				),
 				description,
@@ -1631,7 +1648,8 @@ export class PostgresCloudSecretBrokerAuthority
 		ConnectorTokenRevocationAuthority,
 		EventVerificationAuthority,
 		CompanyAccountAuthority,
-		EventHookAuthority
+		EventHookAuthority,
+		DigitalPostSyncAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -2068,6 +2086,133 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** The company's Digital Post sync, when it is due (20260930529000). */
+	claimDigitalPostSync(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_digital_post_sync($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	keepDigitalPostLetter(
+		input: Parameters<DigitalPostSyncAuthority["keepDigitalPostLetter"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_keep_digital_post_letter($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::uuid,$7::jsonb,$8::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.memoId,
+				JSON.stringify(input.summary),
+				JSON.stringify(input.files),
+			],
+			signal,
+		);
+	}
+
+	heldDigitalPostLetters(
+		input: Parameters<DigitalPostSyncAuthority["heldDigitalPostLetters"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_digital_post_held_among($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				JSON.stringify(input.memoIds),
+			],
+			signal,
+		);
+	}
+
+	stageDigitalPostChunk(
+		input: Parameters<DigitalPostSyncAuthority["stageDigitalPostChunk"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_stage_digital_post_chunk($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::uuid,$7::integer,$8::integer,$9::bytea) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.letterId,
+				input.fileIndex,
+				input.chunkIndex,
+				Buffer.from(input.content.buffer, input.content.byteOffset, input.content.byteLength),
+			],
+			signal,
+		);
+	}
+
+	sealDigitalPostLetter(
+		input: Parameters<DigitalPostSyncAuthority["sealDigitalPostLetter"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_seal_digital_post_letter($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.letterId,
+			],
+			signal,
+		);
+	}
+
+	holdDigitalPostLetter(
+		input: Parameters<DigitalPostSyncAuthority["holdDigitalPostLetter"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_hold_digital_post_letter($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::uuid,$7::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.memoId,
+				input.reason,
+			],
+			signal,
+		);
+	}
+
+	finishDigitalPostSync(
+		input: Parameters<DigitalPostSyncAuthority["finishDigitalPostSync"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_digital_post_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::uuid,$8::jsonb,$9::integer,$10::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.outcome,
+				input.systemId,
+				JSON.stringify(input.receipted),
+				input.scanPage,
+				input.error,
+			],
+			signal,
+		);
+	}
+
 	/** Signed hooks W1b: the company's deliveries waiting for a signature check (20260929998000). */
 	claimEventVerifications(limit: number, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
@@ -2382,6 +2527,16 @@ export class PostgresCloudSecretBrokerPrincipal {
 		return oneCloudSecretRpc(
 			this.#database,
 			"select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	/** The served companies with a Digital Post sync due (20260930529000): one call a pass. */
+	digitalPostSyncsDue(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_digital_post_syncs_due($1::uuid,$2::text) as result",
 			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);

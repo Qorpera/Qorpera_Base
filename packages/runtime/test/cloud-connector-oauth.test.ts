@@ -1,4 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DigitalPostClient } from "@qorpera/runtime/cloud-connector-digital-post";
 import {
 	CLOUD_CONNECTOR_OAUTH_STATE,
 	CloudConnectorOAuthError,
@@ -377,6 +382,70 @@ it("composes the broker's connector service from one credential and refuses inco
 			}),
 		),
 	).toThrow("invalid");
+});
+
+it("takes Qorpera's Digital Post certificate, alone or beside the OAuth clients, and refuses one without its key", () => {
+	const dir = mkdtempSync(join(tmpdir(), "qorpera-connector-config-"));
+	try {
+		execFileSync("openssl", ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", join(dir, "k")], {
+			stdio: "ignore",
+		});
+		execFileSync(
+			"openssl",
+			["req", "-new", "-x509", "-key", join(dir, "k"), "-out", join(dir, "c"), "-days", "2", "-subj", "/CN=oces"],
+			{
+				stdio: "ignore",
+			},
+		);
+		const digitalPost = {
+			environment: "test",
+			certificatePem: readFileSync(join(dir, "c"), "utf8"),
+			privateKeyPem: readFileSync(join(dir, "k"), "utf8"),
+		};
+		const alone = parseCloudConnectorServiceConfig(
+			JSON.stringify({ schema: "qorpera.cloud-connector-service/v1", publicOrigin: "https://s.test", digitalPost }),
+		);
+		expect(alone.digitalPost).toEqual(digitalPost);
+		const service = composeCloudConnectorService(alone, ["https://app.qorpera.test"], vi.fn<typeof fetch>());
+		expect(service.connectors).toEqual(["digital_post"]);
+		expect(service.digitalPost).toBeInstanceOf(DigitalPostClient);
+		expect(service.adapters).toEqual([]);
+		const beside = composeCloudConnectorService(
+			parseCloudConnectorServiceConfig(
+				JSON.stringify({
+					schema: "qorpera.cloud-connector-service/v1",
+					publicOrigin: "https://s.test",
+					github,
+					digitalPost,
+				}),
+			),
+			["https://app.qorpera.test"],
+			vi.fn<typeof fetch>(),
+		);
+		expect(beside.connectors).toEqual(["github", "digital_post"]);
+		expect(() =>
+			parseCloudConnectorServiceConfig(
+				JSON.stringify({
+					schema: "qorpera.cloud-connector-service/v1",
+					publicOrigin: "https://s.test",
+					digitalPost: {
+						...digitalPost,
+						privateKeyPem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+					},
+				}),
+			),
+		).toThrow("Digital Post certificate is invalid");
+		const withoutCertificate = composeCloudConnectorService(
+			parseCloudConnectorServiceConfig(
+				JSON.stringify({ schema: "qorpera.cloud-connector-service/v1", publicOrigin: "https://s.test", github }),
+			),
+			["https://app.qorpera.test"],
+			vi.fn<typeof fetch>(),
+		);
+		expect(withoutCertificate.digitalPost).toBeUndefined();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 it("gives each company its own share of the pending sign-ins, and a shared vault's confirm only its own flows", async () => {
