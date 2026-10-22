@@ -8,6 +8,7 @@ import {
 import { CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
 import { CloudConnectorTokenRevoker } from "./cloud-connector-token-revocation.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
+import { DigitalPostPdfText, type DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
  * Composition of the production connectors inside the cloud secret broker.
@@ -24,7 +25,8 @@ import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
  *
  * `digitalPost` is Qorpera's Digital Post certificate (OCES3, as the companies' system supplier: environment,
  * certificate and key, PEM): with it the vault fetches the Digital Post of every company that connected it
- * (cloud-digital-post-sync.ts, RUNTIME-DIGITAL-POST.md).
+ * (cloud-digital-post-sync.ts, RUNTIME-DIGITAL-POST.md), and reads a PDF-only letter's text through the host's
+ * pdftotext socket when it is installed (digital-post-pdf-text.ts).
  */
 
 export interface CloudConnectorServiceConfig {
@@ -46,6 +48,8 @@ export interface CloudConnectorService {
 	readonly revoker: CloudConnectorTokenRevoker;
 	/** Digital Post, when the vault has Qorpera's certificate: the Digital Post sync's client. */
 	readonly digitalPost?: DigitalPostClient;
+	/** With it, the reader of PDF-only letters' text. */
+	readonly digitalPostPdfText?: DigitalPostPdfTextReader;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -131,6 +135,6 @@ export function composeCloudConnectorService(
 			...(config.github ? { github: config.github } : {}),
 			fetch: fetchImplementation,
 		}),
-		...(digitalPost ? { digitalPost } : {}),
+		...(digitalPost ? { digitalPost, digitalPostPdfText: new DigitalPostPdfText() } : {}),
 	});
 }

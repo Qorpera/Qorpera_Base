@@ -10,7 +10,8 @@ import {
 import { ConnectorRequestError } from "./cloud-connector-http.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { type DigitalPostLetterLayout, layOutDigitalPostLetter } from "./digital-post-letter-files.ts";
-import { DigitalPostLetterInvalid, readDigitalPostLetter } from "./digital-post-memo.ts";
+import { type DigitalPostLetter, DigitalPostLetterInvalid, readDigitalPostLetter } from "./digital-post-memo.ts";
+import { type DigitalPostPdfTextReader, digitalPostPdfToRead } from "./digital-post-pdf-text.ts";
 
 /**
  * The company Digital Post sync (deploy/first-node/RUNTIME-DIGITAL-POST.md, part 2; migration 20260930529000). A
@@ -19,6 +20,9 @@ import { DigitalPostLetterInvalid, readDigitalPostLetter } from "./digital-post-
  * and lays it out, keeps it in the database (its summary, then its files in 1 MiB chunks, then the seal), and only
  * then sends Digital Post the business receipt, after which Digital Post deletes it. Writing the letters into the
  * company folder is the object gateway's (part 3), never the vault's.
+ *
+ * A letter whose main document is only a PDF has that PDF's text read in pdftotext's own sandbox first (part 5,
+ * digital-post-pdf-text.ts); a PDF that gives none is kept without it.
  *
  * A letter Digital Post delivers again is kept once and receipted again. A letter the vault cannot read is held: not
  * receipted, so Digital Post moves it to Virk after seven days, and not fetched again meanwhile. Nothing here logs or
@@ -199,17 +203,21 @@ export class CloudDigitalPostSyncs {
 	readonly #authority: DigitalPostSyncAuthority;
 	readonly #keyring: Pick<CloudSecretKeyring, "use">;
 	readonly #post: Pick<DigitalPostClient, "available" | "letter" | "receipt">;
+	readonly #pdfText: DigitalPostPdfTextReader | undefined;
 	readonly #now: () => Date;
 
 	constructor(options: {
 		authority: DigitalPostSyncAuthority;
 		keyring: Pick<CloudSecretKeyring, "use">;
 		post: Pick<DigitalPostClient, "available" | "letter" | "receipt">;
+		/** Reads a PDF-only letter's text; without it such a letter is kept without its text. */
+		pdfText?: DigitalPostPdfTextReader;
 		now?: () => Date;
 	}) {
 		this.#authority = options.authority;
 		this.#keyring = options.keyring;
 		this.#post = options.post;
+		this.#pdfText = options.pdfText;
 		this.#now = options.now ?? (() => new Date());
 	}
 
@@ -360,11 +368,22 @@ export class CloudDigitalPostSyncs {
 			throw error;
 		}
 		if (xml === null) return false;
+		const unreadable = (error: unknown) =>
+			hold(error instanceof DigitalPostLetterInvalid ? error.message : "the letter could not be laid out");
+		let letter: DigitalPostLetter;
+		try {
+			letter = readDigitalPostLetter(xml);
+		} catch (error) {
+			return unreadable(error);
+		}
+		// A letter that is only a PDF: its text, read outside the vault, or none.
+		const pdf = this.#pdfText ? digitalPostPdfToRead(letter) : null;
+		const text = pdf && this.#pdfText ? await this.#pdfText.read(pdf.bytes, signal) : null;
 		let layout: DigitalPostLetterLayout;
 		try {
-			layout = layOutDigitalPostLetter(readDigitalPostLetter(xml), this.#now());
+			layout = layOutDigitalPostLetter(letter, this.#now(), pdf && text !== null ? { text, from: pdf } : null);
 		} catch (error) {
-			return hold(error instanceof DigitalPostLetterInvalid ? error.message : "the letter could not be laid out");
+			return unreadable(error);
 		}
 		if (layout.files.reduce((total, file) => total + file.bytes.byteLength, 0) > DIGITAL_POST_LETTER_STAGE_BYTES)
 			return hold("the letter is too large for Qorpera");

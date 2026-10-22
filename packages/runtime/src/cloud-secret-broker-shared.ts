@@ -19,6 +19,7 @@ import {
 	type PostgresCloudSecretBrokerPrincipal,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
  * The shared vault (Vault By Default, founder decisions 2026-09-28): one broker process serves every
@@ -96,6 +97,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
 	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #digitalPost: Pick<DigitalPostClient, "available" | "letter" | "receipt"> | undefined;
+	readonly #digitalPostPdfText: DigitalPostPdfTextReader | undefined;
 	readonly #refreshEveryMs: number;
 	readonly #collectEveryMs: number;
 	readonly #sweepEveryMs: number;
@@ -131,6 +133,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		revoker?: Pick<CloudConnectorTokenRevoker, "revoke">;
 		/** Digital Post with Qorpera's certificate: absent, no company's Digital Post is fetched. */
 		digitalPost?: Pick<DigitalPostClient, "available" | "letter" | "receipt">;
+		/** Reads PDF-only letters' text; absent, they are kept without it. */
+		digitalPostPdfText?: DigitalPostPdfTextReader;
 		refreshEveryMs?: number;
 		collectEveryMs?: number;
 		sweepEveryMs?: number;
@@ -147,6 +151,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#chatGptPlan = options.chatGptPlan;
 		this.#revoker = options.revoker ?? new CloudConnectorTokenRevoker();
 		this.#digitalPost = options.digitalPost;
+		this.#digitalPostPdfText = options.digitalPostPdfText;
 		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
@@ -279,7 +284,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			revocations: new CloudConnectorTokenRevocations({ authority, keyring: this.#keyring, revoker: this.#revoker }),
 			verifications: new CloudEventVerifications({ authority, keyring: this.#keyring }),
 			digitalPostSyncs: this.#digitalPost
-				? new CloudDigitalPostSyncs({ authority, keyring: this.#keyring, post: this.#digitalPost })
+				? new CloudDigitalPostSyncs({
+						authority,
+						keyring: this.#keyring,
+						post: this.#digitalPost,
+						...(this.#digitalPostPdfText ? { pdfText: this.#digitalPostPdfText } : {}),
+					})
 				: undefined,
 		};
 	}

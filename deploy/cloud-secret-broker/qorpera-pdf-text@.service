@@ -1,0 +1,57 @@
+[Unit]
+Description=Qorpera PDF text for one Digital Post PDF (pdftotext with no network and nothing to write)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-DIGITAL-POST.md
+# An instance that failed or was killed goes at once; nothing piles up.
+CollectMode=inactive-or-failed
+
+[Service]
+# Standard input is the PDF the vault sends; its end is the vault closing its side. Standard output is the text, back
+# on the same connection. A PDF is outside content: whatever it does to pdftotext stays in this instance.
+ExecStart=/usr/bin/pdftotext -q -enc UTF-8 -eol unix -l 200 - -
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+# A throwaway user for each instance: it owns nothing and can read none of the vault's keys or folders.
+DynamicUser=yes
+PrivateUsers=yes
+InaccessiblePaths=-/etc/qorpera-shared-vault -/etc/qorpera-secret-broker -/etc/qorpera-model-login-helper
+# No network of any kind; the socket it was handed is all it talks to.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=none
+# Nothing it can write: a read-only system, its own empty /tmp, and files limited to 0 bytes.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+LimitFSIZE=0
+UMask=0077
+LimitCORE=0
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+# Bounded: a PDF built to exhaust memory or time ends here, and the vault keeps the letter without its text.
+LimitNOFILE=64
+MemoryMax=256M
+MemorySwapMax=0
+TasksMax=4
+CPUQuota=100%
+RuntimeMaxSec=30
