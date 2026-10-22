@@ -69,6 +69,75 @@ test("the installer pins the files in this folder", () => {
 	}
 });
 
+// The rules reader's database CA: Supabase's, as pinned, unless the install is given our own CA with its sha256 pin.
+// The inputs are checked before the root check, so this runs as any user and installs nothing; the X509 check and the
+// files themselves need root (test/prove-rules-reader-vm.sh's throwaway VM). The file here is a placeholder.
+describe("the installer's own database CA input", { skip: process.getuid?.() === 0 && "runs as a user, not root" }, () => {
+	const installer = join(here, "install-agent-exit.sh");
+	let temporary;
+	let ca;
+	let pin;
+	before(() => {
+		temporary = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-own-ca-"));
+		ca = join(temporary, "own-ca.crt");
+		writeFileSync(ca, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
+		pin = sha256(readFileSync(ca));
+	});
+	after(() => rmSync(temporary, { recursive: true, force: true }));
+	const install = (...input) => spawnSync("bash", [installer, temporary, ...input], { encoding: "utf8" });
+
+	test("without the input, or with both halves that match, it goes on (to the root check)", () => {
+		for (const input of [[], ["--database-ca", ca, "--database-ca-sha256", pin], ["--database-ca-sha256", pin, "--database-ca", ca]]) {
+			const run = install(...input);
+			assert.equal(run.status, 77, `${input.join(" ")}: ${run.stderr}`);
+			assert.equal(run.stderr, "Run as root.\n");
+		}
+	});
+
+	test("refuses half an input, a pin the file does not match and a file that is not one PEM certificate", () => {
+		const two = join(temporary, "two.crt");
+		writeFileSync(two, Buffer.concat([readFileSync(ca), readFileSync(ca)]));
+		const link = join(temporary, "link.crt");
+		symlinkSync(ca, link);
+		for (const [input, status, reason] of [
+			[["--database-ca", ca], 64, /--database-ca and --database-ca-sha256 go together/],
+			[["--database-ca-sha256", pin], 64, /--database-ca and --database-ca-sha256 go together/],
+			[["--database-ca", ca, "--database-ca-sha256", sha256("another file")], 65, /sha256 [0-9a-f]{64}, expected [0-9a-f]{64}; refusing/],
+			[["--database-ca", ca, "--database-ca-sha256", pin.toUpperCase()], 64, /not a sha256/],
+			[["--database-ca", ca, "--database-ca-sha256"], 64, /^Usage: /],
+			[["--database-ca", ca, "--database-ca", ca, "--database-ca-sha256", pin], 64, /^Usage: /],
+			[["--database-ca", join(temporary, "missing.crt"), "--database-ca-sha256", pin], 66, /not a regular file/],
+			[["--database-ca", link, "--database-ca-sha256", pin], 66, /not a regular file/],
+			[["--database-ca", two, "--database-ca-sha256", sha256(readFileSync(two))], 65, /not one PEM certificate/],
+		]) {
+			const run = install(...input);
+			assert.equal(run.status, status, `${input.join(" ")}: ${run.stderr}`);
+			assert.match(run.stderr, reason, input.join(" "));
+		}
+	});
+
+	test("hands the CA and its pin to the rules reader only through its own drop-in, and removes them without the input", () => {
+		const text = readFileSync(installer, "utf8");
+		const dropIn = "/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf";
+		assert.ok(text.includes(`OWN_CA_DROP_IN="${dropIn}"`));
+		for (const line of [
+			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca:$INSTALL_ROOT/database-own-ca.crt"',
+			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:$INSTALL_ROOT/database-own-ca.sha256"',
+			'install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.crt"',
+			'rm -f "$OWN_CA_DROP_IN" "$INSTALL_ROOT/database-own-ca.crt" "$INSTALL_ROOT/database-own-ca.sha256"',
+		])
+			assert.ok(text.includes(line), line);
+		// The unit itself is unchanged: Supabase's CA is still its credential, and still pinned above.
+		assert.ok(
+			readFileSync(join(here, "qorpera-agent-exit-rules.service"), "utf8")
+				.split("\n")
+				.includes(
+					"LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt",
+				),
+		);
+	});
+});
+
 // E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API and the nodes'
 // root helpers. No network, keychain or ssh.
 describe("the rules reader's login (rules-reader-login.py)", () => {
