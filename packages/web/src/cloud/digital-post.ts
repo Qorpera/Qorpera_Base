@@ -63,10 +63,10 @@ export interface DigitalPostLetter {
 	readonly snippet?: string;
 }
 
-/** A letter's id as the index keeps it: any UUID PostgreSQL takes (the runtime's MeMo reader and the SQL accept the
- * same), in lower case. */
-function letterId(value: string): boolean {
-	return POSTGRES_UUID_PATTERN.test(value);
+/** An id from Digital Post, a letter's or a system's, as the cloud keeps it: any UUID PostgreSQL takes, in lower case.
+ * The runtime's MeMo reader, the SQL and the vault take the same. */
+function digitalPostId(value: unknown): value is string {
+	return typeof value === "string" && POSTGRES_UUID_PATTERN.test(value);
 }
 const FOLDER = /^digital-post\/[0-9]{4}\/[^/]+$/;
 
@@ -94,6 +94,11 @@ function parseSupplier(value: unknown): DigitalPostSupplier | undefined {
 	};
 }
 
+function systemIdOf(value: unknown): string {
+	if (!digitalPostId(value)) throw new CloudShapeError("Digital Post system");
+	return value;
+}
+
 /** The connection's state; on a cloud without the call, nothing is connected. */
 export async function readDigitalPost(cloud: Cloud, environmentId: string): Promise<DigitalPostConnection> {
 	const input = record(
@@ -108,7 +113,7 @@ export async function readDigitalPost(cloud: Cloud, environmentId: string): Prom
 		status: oneOf(input.status, STATUSES, "Digital Post status"),
 		...(absent(input.secretId) ? {} : { secretId: uuid(input.secretId, "Digital Post connection") }),
 		...(supplier ? { supplier } : {}),
-		...(absent(input.systemId) ? {} : { systemId: uuid(input.systemId, "Digital Post system") }),
+		...(absent(input.systemId) ? {} : { systemId: systemIdOf(input.systemId) }),
 		...(absent(input.fetchedAt) ? {} : { fetchedAt: timestamp(input.fetchedAt, "Digital Post fetch time") }),
 		...(lastError ? { lastError } : {}),
 		letters: boundedInteger(input.letters, "Digital Post letters", 0, Number.MAX_SAFE_INTEGER),
@@ -126,7 +131,7 @@ function parseLetter(value: unknown): DigitalPostLetter | null {
 	const sender = text(input.sender, 2000);
 	const received = typeof input.received === "string" ? input.received : "";
 	if (
-		!letterId(messageUuid) ||
+		!digitalPostId(messageUuid) ||
 		!FOLDER.test(folder) ||
 		!title ||
 		!sender ||

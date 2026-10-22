@@ -76,6 +76,21 @@ describe("the Digital Post read", () => {
 		});
 	});
 
+	it("takes any system id PostgreSQL takes, as the vault records it", async () => {
+		const system = "6f1d3c2a-9b8e-0d7c-8a6b-5e4f3d2c1b0a";
+		const read = await readDigitalPost(
+			cloudWith(() => digitalPostConnected({ systemId: system })),
+			profile.environmentId,
+		);
+		expect(read.systemId).toBe(system);
+		await expect(
+			readDigitalPost(
+				cloudWith(() => digitalPostConnected({ systemId: "not-a-system" })),
+				profile.environmentId,
+			),
+		).rejects.toBeInstanceOf(CloudShapeError);
+	});
+
 	it("refuses an answer of another shape", async () => {
 		await expect(
 			readDigitalPost(
