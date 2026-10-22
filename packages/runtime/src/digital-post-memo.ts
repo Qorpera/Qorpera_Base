@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 
 /**
  * Danish Digital Post letters (MeMo, "Meddelelsesmodel", versions 1.1 and 1.2) as the company vault fetches them for a
@@ -25,7 +26,6 @@ const MAX_ELEMENTS = 50_000;
 const MAX_FILES = 100;
 const MAX_ACTIONS = 100;
 const MAX_FIELD_CHARACTERS = 2000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 // MeMo's own names are ASCII; a name outside this set refuses the letter.
 const NAME = /^[A-Za-z_][A-Za-z0-9._-]*(?::[A-Za-z_][A-Za-z0-9._-]*)?$/;
