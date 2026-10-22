@@ -164,7 +164,7 @@ def direct(**changed):
     return [part for flag, value in given.items() if value is not None for part in (flag, value)]
 # libpq settings in the environment that would weaken or redirect psql's connection, if psql got them.
 os.environ.update({"PGSSLMODE": "disable", "PGSSLROOTCERT": "/nonexistent", "PGGSSENCMODE": "require",
-                   "PGPASSWORD": "placeholder"})
+                   "PGPASSWORD": "placeholder", "PGPASSFILE": os.path.join(folder, "pgpass")})
 READ = "begin transaction read only;\nselect coalesce(json_agg(q), '[]'::json) from (" + login.ROLE_QUERY + ") q;\ncommit;\n"
 
 def rollout(argv=(), fail=None):
@@ -433,7 +433,7 @@ print(json.dumps(out))
 				assert.deepEqual(call.args, psqlArgs);
 				assert.deepEqual(call.connection, psqlConnection, "verify-full, TLS only, the given host, port and admin");
 				assert.equal(call.ca[0], true, "psql's CA is a copy of the pinned bytes, not the file named");
-				assert.deepEqual(call.env, ["PGPASSWORD"], "no libpq setting from the environment but the password's");
+				assert.deepEqual(call.env, ["PGPASSFILE", "PGPASSWORD"], "no libpq setting from the environment but the password's");
 			}
 		}
 		assert.equal(full.urls.length, 1, "both nodes get the same login");
