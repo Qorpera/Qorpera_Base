@@ -1568,11 +1568,13 @@ archive retains restorable state; delete is human-authorized and permanent.
 > section mean the vision. The Co-Founder writes it directly: everything is
 > approved by default, so no protected proposal or ratification step applies.
 
-> **Amended 2026-10-22.** Approving the vision starts the company: the draft
-> names the first team, and the run where every founder approves saves the
-> vision, sets up the Co-Founder's daily plan routine and hires that team. The
-> formation workflow, the formation project and the protected direction proposal
-> below are superseded. See the
+> **Amended 2026-10-22.** The company starts with the first conversation: as
+> soon as the Co-Founder knows what the company is about, it hires the team that
+> builds the vision with it (research, market watch, strategy) and sets up its
+> daily plan routine; the run where every founder approves the vision saves it
+> and gives every continuing responsibility an owner. The formation workflow,
+> the formation project and the protected direction proposal below are
+> superseded. See the
 > [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
 > item 3.
 
@@ -5956,14 +5958,15 @@ an agent starts work and where the results go.
 
 ### 2026-10-22 amendment: agents build the company without waiting
 
-> **Built, not live**, apart from item 4's platform part, which is **not built**. The runtime part goes live with the
-> next release cut. It follows the Grok Teacher's contract reviews of 5–14 October, checked against this text, and the
-> agent-behaviour deep dive of 22 October; the founder asked for these four changes first.
+> **Built, not live**, apart from the platform parts of items 4 and 5, which are **not built**, and item 6's hosting,
+> which is separate work. The runtime part goes live with the next release cut. It follows the Grok Teacher's contract
+> reviews of 5–14 October, checked against this text, and the agent-behaviour deep dive of 22 October; the founder asked
+> for items 1–4 first, and on 22 October changed item 3 and added items 5 and 6.
 
 The founders give the vision and supervise; the agents build and run the company. Until now nothing woke the
 Co-Founder once the vision was agreed, every run was told to wait for a decision before starting a better course, and
 the reviewer asked a member about any delegation it could not tie to a member's words, so a routine's or a coworker's
-run that hired, set up a routine or started a worker could wait for nobody. This amendment changes four things.
+run that hired, set up a routine or started a worker could wait for nobody. This amendment changes six things.
 
 1. **An agent's own responsibilities need no request.** "Do what was asked, at the size it was asked" binds a
    member's requests only. The agent does what the member asked, at the size they asked, adds nothing to it, and says
@@ -6003,34 +6006,42 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      now holds in code.
    - Not part of this amendment, each a founder decision: reading the files as they stood when a chain began (the
      run's own composition is used), checking agents' edits to job descriptions, and narrowing the built-in checks.
-3. **Approving the vision starts the company.** This replaces 14.2's formation workflow, formation project and
+3. **The company starts with the first conversation.** No company's strategy is complete at its start, so the company
+   moves while the vision is built (founder, 22 October). This replaces 14.2's formation workflow, formation project and
    protected direction proposal (superseded on 27 September by "the Co-Founder writes it directly") with what
    follows. The Co-Founder overlay is v6.
-   - The draft vision comes with the first team the Co-Founder proposes: each owner it will hire, what each owns and
-     starts on, its daily company plan, and whose model login pays: the founder whose approval completes the vision.
-     The plan comes first in that short message, since the reviewer reads at most 1200 bytes of the agent's message a
-     member's "yes" answers.
+   - The Co-Founder hires and manages; domain work, such as research, finance, sales or product, belongs to the agents
+     it hires. As soon as it knows what the company is about, from what the founders wrote at the founding table or
+     their first answer, it hires the team that builds the vision with it: at least a researcher for the customers and
+     their problem, a market watcher for competitors and the market, and a strategist who works out the options and
+     weighs them, each with a first assignment due within a day or two. In that run it sets up its daily plan routine
+     and tells the founders who it hired, what each finds out first, and that the team's work runs on the model login
+     of the founder whose conversation started it.
+   - It builds the vision with the founders one or two questions at a time, from their answers and the team's
+     findings, then posts the whole draft with its evidence and unknowns and revises it until every founder approves.
+     Until then the draft guides the team's work, and the Co-Founder keeps it current with what the team learns.
    - In the run where every founder has approved, the Co-Founder, without asking again, writes vision/vision.md with
-     the company's name as its first line and a last line "Agreed by <the founders>, <date>."; sets up its daily plan
-     routine; hires each owner in the approved plan, looking in agents/ first so that no owner is hired twice; closes
-     its first todo, Start with the founders; and tells the founders in a few lines who starts on what. A step that
-     fails is named and finished in the next planning run. The vision counts as agreed once that line is there or that
-     todo is closed, and the onboarding never restarts. A founder who joins later is greeted, given the vision and
-     asked to approve it or say what to change.
+     the company's name as its first line and a last line "Agreed by <the founders>, <date>."; gives each continuing
+     responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in agents/ first so
+     that no owner is hired twice; closes its first todo, Start with the founders; and tells the founders in a few
+     lines who works on what. A step that fails is named and finished in the next planning run. The vision counts as
+     agreed once that line is there or that todo is closed, and the onboarding never restarts. A founder who joins
+     later is greeted, given the vision and asked to approve it or say what to change.
    - The daily plan is a weekly routine on weekday mornings in the founders' time zone, with one living plan file,
      operations/company-plan.md. It reads the vision, the plan, every agent's agent.md, todos and routines, and
      human-tasks/; fixes what holds the company back most (continuing work with no owner, an agent stuck or idle, two
-     agents on the same work, an overdue human task, a decision only the founders can make); opens one or two things
-     owners called done and checks them; and writes to the founders only when something changed that they should
-     know or a decision waits for them, decisions first, each with a recommendation. On Mondays it always writes the
-     week; on the first Monday of a month it also compares the vision with the evidence and, when they disagree,
-     proposes a change for every founder to approve. None of this needs a founder's approval, but work a member asked
-     for is never cancelled or changed without telling that member.
-   - Hiring: the fewest agents the near-term goals need; changing an existing agent's agent.md before hiring; never a
-     hire for one-off work. A job description names a mission tied to a near-term goal, what progress looks like for
-     each responsibility and where to see it, when to speak up and to whom, and what belongs to others. A first
-     assignment is one concrete result, the folder it lands in, and when it is done.
-   - Only the founders change the vision's direction, with every founder's approval. The Co-Founder may update facts
+     agents on the same work, an overdue human task, a decision only the founders can make); until the vision is
+     agreed, brings the team's findings into the draft and chooses the next questions for the founders; opens one or
+     two things owners called done and checks them; and writes to the founders only when something changed that they
+     should know or a decision waits for them, decisions first, each with a recommendation. On Mondays it always
+     writes the week; on the first Monday of a month it also compares the vision with the evidence and, when they
+     disagree, proposes a change for every founder to approve. None of this needs a founder's approval, but work a
+     member asked for is never cancelled or changed without telling that member.
+   - Hiring: freely for continuing work, one owner per responsibility; never a hire for one-off work, which goes to a
+     worker. A job description names a mission tied to a goal or an open question in the vision, what progress looks
+     like for each responsibility and where to see it, when to speak up and to whom, and what belongs to others. A
+     first assignment is one concrete result, the folder it lands in, and when it is done.
+   - Only the founders change the agreed direction, with every founder's approval. The Co-Founder may update facts
      that follow from decisions already made, such as the team.
    - The seeded Co-Founder files (its agent.md and the Start with the founders todo) keep their wording for now; it
      follows in the folder seed's own change.
@@ -6046,6 +6057,23 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      way, unless a member asks.
    - **Not built:** the chain-wide stop and the card marking need their own change to the stop path. Until then a Stop
      ends one run, as 7.3 says.
+5. **A conversation is the quick way in; core work runs deep.** Members use conversations to supervise the company and
+   to get what they need quickly; the core work runs on its own, at high effort (founder, 22 October).
+   - Every staff run's "Writing to people" says to show the work simply: what is done, with links; what was decided,
+     each with its reason in a line; and what the members are needed for. When they ask, the agent answers at once
+     from what it and the company folder already know, and shares what it has.
+   - "Starting work" keeps a conversation quick: deep work, such as research, analysis, strategy or building, runs on
+     its own, in a worker, the agent's own routine at effort high, or with the agent that owns it, never in a long turn
+     while a member waits. "Standing work" gives a routine that does core work effort high.
+   - A member's turn in a conversation keeps the effort chosen in its Model menu and, unless that menu turned it off,
+     the fast service tier, as the model policy says.
+   - **Not built:** every other run that is not a routine's still runs at the model policy's default effort, low: a
+     worker, an agent's first run, a coworker's message. The platform part runs them at high and lets the effort in an
+     agent.md set its agent's runs. It changes the model policy, which the runtime bundle pins, so it lands with a
+     release cut.
+6. **The company's own servers.** When the company needs a server, a database or an app that must stay online, an
+   agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
+   October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
 
 ## 20. Enforcement matrix
 
