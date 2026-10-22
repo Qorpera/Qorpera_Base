@@ -99,14 +99,17 @@ textarea.founding-role-mine:focus-visible { background: var(--hover); }
 	color: inherit; border-radius: 5px; background: color-mix(in srgb, var(--line-color) 18%, transparent);
 	box-decoration-break: clone; -webkit-box-decoration-break: clone;
 }
-.founding-caret { position: relative; }
+/* Above the faces over the box, so a flag on the first line stays readable. */
+.founding-caret { position: relative; z-index: 3; }
 .founding-caret::before { content: ""; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--line-color); }
 .founding-caret b {
 	position: absolute; left: -1px; bottom: 100%; margin-bottom: 1px; padding: 0 6px; border-radius: 5px 5px 5px 0;
 	background: var(--line-color); color: #fff; font: 700 11.5px / 16px var(--font-sans); white-space: nowrap;
 }
+/* A flag that would leave the box at its right edge hangs to the left of its caret. */
+.founding-caret-left b { left: auto; right: -1px; border-radius: 5px 5px 0 5px; }
 .founding-seat-here .founding-seat-row .person-avatar { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color, var(--border-strong)); }
-.founding-status-writing { color: var(--line-color, var(--text-soft)); }
+.founding-status.founding-status-writing { color: var(--line-color, var(--text-soft)); }
 
 /* The friends list opens under Invite friends; the ChatGPT panel under the seats. */
 .founding-sheet {

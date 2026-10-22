@@ -531,6 +531,15 @@ export class FoundingView {
 		const followed = this.#following("vision");
 		const words = followed && followed.text === shown ? newWords(table.vision, shown) : undefined;
 		writeMarked(container, shown, carets, words && followed ? { ...words, userId: followed.userId } : undefined);
+		// A name flag that would leave the box at its right edge hangs to the left of its caret.
+		const right = container.getBoundingClientRect().right;
+		for (const caret of container.querySelectorAll<HTMLElement>(".founding-caret")) {
+			const flag = caret.querySelector("b");
+			caret.classList.toggle(
+				"founding-caret-left",
+				flag !== null && caret.getBoundingClientRect().left + flag.offsetWidth > right,
+			);
+		}
 	}
 
 	/** Text typed here and not saved yet, to carry over when the page is built again. */
