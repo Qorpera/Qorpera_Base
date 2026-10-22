@@ -788,8 +788,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the system's id and its key) and labels the connection with the system id; anything else fails the capture. A new
   key replaces the old (`p_existing_secret_id`); Disconnect is the secret's revoke, as for every connection.
 - `qorpera_member_digital_post(environment)` → `{schema: "qorpera.member-digital-post/v1", connected, status,
-  systemId, fetchedAt, lastError, letters, waitingForFolder, held}` for any member of the company (viewers too; 42501
-  for anyone else). `status` is `waiting` (connected, not fetched yet), `current`, `failed` (tried again; `lastError`
+  secretId, supplier, systemId, fetchedAt, lastError, letters, waitingForFolder, held}` for any member of the company
+  (viewers too; 42501 for anyone else). `secretId` is the connection's secret while connected (a new key passes it as
+  `p_existing_secret_id`; Disconnect revokes it). `supplier` is `{environment, cvr, addresses}`, what the setup steps
+  show: `test` or `production`, Qorpera's CVR and the vault's public addresses, or null until operators set
+  `qorpera_digital_post_settings`, and then Digital Post can't be connected yet. `status` is `waiting` (connected, not fetched yet), `current`, `failed` (tried again; `lastError`
   says why in a fixed phrase), `refused` (Digital Post refused the key: connect again) or `disconnected`. `letters`
   counts the letters kept, `waitingForFolder` those not yet in the folder, `held` the letters of the last eight days
   the vault could not take (Digital Post moves them to the Virk mailbox).

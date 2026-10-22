@@ -117,12 +117,12 @@ begin
 end
 $$;
 create function pg_temp.finish(p_secret uuid, p_outcome text, p_receipted jsonb default '[]', p_error text default null,
-	p_lease uuid default null, p_version bigint default 1) returns jsonb language plpgsql as $$
+	p_lease uuid default null, p_version bigint default 1, p_scan integer default 0) returns jsonb language plpgsql as $$
 declare v jsonb; v_lease uuid := coalesce(p_lease, pg_temp.lease(p_secret));
 begin
 	set local session authorization qorpera_secret_broker;
 	v := public.qorpera_finish_digital_post_sync('78600000-0000-4000-8000-0000000000d1', repeat('1', 64), p_secret,
-		p_version, v_lease, p_outcome, 'e545b339-8542-4a30-ae75-c67e4d2a7b99', p_receipted, p_error);
+		p_version, v_lease, p_outcome, 'e545b339-8542-4a30-ae75-c67e4d2a7b99', p_receipted, p_scan, p_error);
 	reset session authorization;
 	return v;
 end
@@ -138,7 +138,7 @@ end
 $$;
 grant execute on function pg_temp.claim(uuid, text), pg_temp.keep(uuid, uuid, jsonb, jsonb, uuid),
 	pg_temp.stage(uuid, uuid, integer, integer, bytea, uuid), pg_temp.seal(uuid, uuid), pg_temp.hold(uuid, uuid, text),
-	pg_temp.finish(uuid, text, jsonb, text, uuid, bigint), pg_temp.due(uuid, text), pg_temp.lease(uuid)
+	pg_temp.finish(uuid, text, jsonb, text, uuid, bigint, integer), pg_temp.due(uuid, text), pg_temp.lease(uuid)
 	to qorpera_secret_broker;
 -- A member's read, signed in, then as the service again; an error answers its SQLSTATE.
 create function pg_temp.member(p_user uuid, p_environment uuid) returns jsonb language plpgsql as $$
@@ -187,7 +187,7 @@ declare v_role text; v_function text; v_table text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_table in array array['public.qorpera_digital_post_syncs', 'public.qorpera_digital_post_letters',
-			'public.qorpera_digital_post_chunks', 'public.qorpera_digital_post_held'] loop
+			'public.qorpera_digital_post_chunks', 'public.qorpera_digital_post_held', 'public.qorpera_digital_post_settings'] loop
 			perform pg_temp.check(not has_table_privilege(v_role, v_table, 'select'), v_role || ' reads nothing of ' || v_table);
 		end loop;
 	end loop;
@@ -196,7 +196,7 @@ begin
 		'public.qorpera_stage_digital_post_chunk(uuid,text,uuid,bigint,uuid,uuid,integer,integer,bytea)',
 		'public.qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
 		'public.qorpera_hold_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid,text)',
-		'public.qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,text)',
+		'public.qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
 		'public.qorpera_broker_principal_digital_post_syncs_due(uuid,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			perform pg_temp.check(not has_function_privilege(v_role, v_function, 'execute'), v_role || ' may not call ' || v_function);
@@ -233,7 +233,16 @@ begin
 	perform pg_temp.check((pg_temp.sync()).status = 'waiting' and (pg_temp.sync()).due_at <= clock_timestamp()
 		and (pg_temp.sync()).environment_id = '78600000-0000-4000-8000-000000000020', 'a connect is due at once');
 	perform pg_temp.check(pg_temp.member('78600000-0000-4000-8000-000000000001', '78600000-0000-4000-8000-000000000020')
-		@> '{"connected": true, "status": "waiting", "systemId": null}', 'the member sees it waiting');
+		@> '{"connected": true, "status": "waiting", "systemId": null, "supplier": null,
+			"secretId": "78600000-0000-4000-8000-0000000000e1"}', 'the member sees it waiting, and no supplier yet');
+	insert into public.qorpera_digital_post_settings (environment, supplier_cvr, addresses)
+	values ('test', '12345678', array['198.51.100.7', '2001:db8::7']::inet[]);
+	perform pg_temp.check(pg_temp.member('78600000-0000-4000-8000-000000000001', '78600000-0000-4000-8000-000000000020')
+		-> 'supplier' = '{"environment": "test", "cvr": "12345678", "addresses": ["198.51.100.7", "2001:db8::7"]}',
+		'the setup steps read the supplier');
+	perform pg_temp.refused($q$insert into public.qorpera_digital_post_settings (id, environment, supplier_cvr, addresses)
+		values (false, 'test', '12345678', array['198.51.100.7']::inet[])$q$, '23514');
+	perform pg_temp.refused($q$update public.qorpera_digital_post_settings set supplier_cvr = '1234'$q$, '23514');
 	perform pg_temp.check(pg_temp.member('78600000-0000-4000-8000-000000000002', '78600000-0000-4000-8000-000000000020')
 		= '{"error": "42501"}', 'a stranger reads nothing');
 end $$;
@@ -249,7 +258,8 @@ begin
 	v := pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
 	perform pg_temp.check(v->>'schema' = 'qorpera.digital-post-sync-claim/v1'
 		and v->>'secretId' = '78600000-0000-4000-8000-0000000000e1' and (v->>'secretVersion')::int = 1
-		and v->'held' = '[]'::jsonb and v->>'keyId' = 'key-1' and v->>'encryptedEnvelopeBase64' !~ E'\n'
+		and v->'held' = '[]'::jsonb and (v->>'scanPage')::int = 0 and v->>'keyId' = 'key-1'
+		and v->>'encryptedEnvelopeBase64' !~ E'\n'
 		and v->>'lease' = pg_temp.lease('78600000-0000-4000-8000-0000000000e1')::text, 'the claim');
 	perform pg_temp.check(pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64)) is null,
 		'a leased sync is not claimed twice');
@@ -372,8 +382,17 @@ begin
 	perform pg_temp.past();
 	v := pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
 	perform pg_temp.check(v->'held' = '["0a000000-0000-4000-8000-000000000005"]'::jsonb, 'the held letter is listed');
-	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'more');
-	perform pg_temp.check((pg_temp.sync()).due_at <= clock_timestamp() + interval '31 seconds', 'more is due at once');
+	perform pg_temp.refused(format('select pg_temp.finish(%L, %L, %L, %L, %L, %L, %L)', '78600000-0000-4000-8000-0000000000e1',
+		'current', '[]', null, null, 1, 3), '22023');
+	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'more', '[]', null, null, 1, 7);
+	perform pg_temp.check((pg_temp.sync()).due_at <= clock_timestamp() + interval '31 seconds'
+		and (pg_temp.sync()).scan_page = 7, 'more is due at once, from the page it gives');
+	perform pg_temp.past();
+	perform pg_temp.check((pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64))->>'scanPage')::int = 7,
+		'the next claim starts there');
+	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'failed', '[]', 'Digital Post asked us to wait');
+	perform pg_temp.check((pg_temp.sync()).scan_page = 7, 'a failure starts again where it started');
+	update public.qorpera_digital_post_syncs set attempts = 0 where profile_id = '78600000-0000-4000-8000-000000000010';
 	perform pg_temp.past();
 	perform pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
 	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'failed', '[]', 'Digital Post asked us to wait');
@@ -391,7 +410,8 @@ begin
 	perform pg_temp.past();
 	perform pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64));
 	perform pg_temp.finish('78600000-0000-4000-8000-0000000000e1', 'refused', '[]', 'Digital Post refused the company''s key');
-	perform pg_temp.check((pg_temp.sync()).status = 'refused' and (pg_temp.sync()).due_at is null, 'a refused key stops it');
+	perform pg_temp.check((pg_temp.sync()).status = 'refused' and (pg_temp.sync()).due_at is null
+		and (pg_temp.sync()).scan_page = 0, 'a refused key stops it');
 	perform pg_temp.check(pg_temp.claim('78600000-0000-4000-8000-0000000000d1', repeat('1', 64)) is null, 'nothing is due');
 end $$;
 

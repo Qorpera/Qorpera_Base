@@ -29,6 +29,7 @@ function claim(overrides: Record<string, unknown> = {}) {
 		encryptedEnvelopeBase64: envelope.toString("base64"),
 		envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
 		held: [],
+		scanPage: 0,
 		...overrides,
 	};
 }
@@ -80,7 +81,9 @@ function fixture(
 	const held: Parameters<DigitalPostSyncAuthority["holdDigitalPostLetter"]>[0][] = [];
 	const letterIds = new Map<string, string>();
 	const authority: DigitalPostSyncAuthority = {
-		claimDigitalPostSync: vi.fn(async () => (options.claim === undefined ? claim() : options.claim)),
+		claimDigitalPostSync: vi.fn(async () =>
+			typeof options.claim === "function" ? options.claim() : options.claim === undefined ? claim() : options.claim,
+		),
 		keepDigitalPostLetter: vi.fn(async (input) => {
 			if (options.keepError) throw options.keepError;
 			kept.push(input);
@@ -145,7 +148,8 @@ function fixture(
 			return "receipted" as const;
 		}),
 	};
-	const syncs = new CloudDigitalPostSyncs({ authority, keyring, post, now: () => NOW });
+	// The keyring's real `use` is generic in its callback's answer; the fake answers whatever the callback does.
+	const syncs = new CloudDigitalPostSyncs({ authority, keyring: keyring as never, post, now: () => NOW });
 	return { syncs, authority, keyring, post, log, finished, kept, chunks, held, opened, letterIds };
 }
 
@@ -197,6 +201,7 @@ it("keeps, stages and seals a letter before its receipt, and records the pass", 
 			outcome: "current",
 			systemId: SYSTEM,
 			receipted: [letterId],
+			scanPage: 0,
 			error: null,
 		},
 	]);
@@ -267,27 +272,9 @@ it("reads past a page of held letters to the letters after them", async () => {
 	expect(await f.syncs.pass(signal)).toBe("current");
 	expect(f.log.filter((line) => line.startsWith("list"))).toEqual(["list", "list 1"]);
 	expect(f.post.letter).toHaveBeenCalledTimes(1);
-	expect(f.finished[0]?.receipted).toEqual([f.letterIds.get(MESSAGE_B)]);
-	// A thousand held letters (twenty pages) and the letter after them: one pass reaches it.
-	const thousand = Array.from(
-		{ length: 1000 },
-		(_, index) => `0c000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-	);
-	const far = fixture({
-		claim: claim({ held: thousand }),
-		pages: [
-			...Array.from({ length: 20 }, (_, page) => ({
-				ids: thousand.slice(page * 50, page * 50 + 50),
-				complete: false,
-			})),
-			{ ids: [MEMO_B], complete: true },
-		],
-		letters: { [MEMO_B]: letter(MESSAGE_B) },
-	});
-	expect(await far.syncs.pass(signal)).toBe("current");
-	expect(far.post.available).toHaveBeenCalledTimes(21);
-	expect(far.finished[0]?.receipted).toEqual([far.letterIds.get(MESSAGE_B)]);
-	// A receipt shifts the pages after it: a pass that took a letter on a page that was not the last stops there.
+	expect(f.finished[0]).toMatchObject({ receipted: [f.letterIds.get(MESSAGE_B)], scanPage: 0 });
+	// A receipt shifts the pages after it: a pass that took a letter on a page that was not the last stops there, and
+	// the next pass reads that page again.
 	const more = fixture({
 		pages: [
 			{ ids: [MEMO_A], complete: false },
@@ -297,15 +284,54 @@ it("reads past a page of held letters to the letters after them", async () => {
 	});
 	expect(await more.syncs.pass(signal)).toBe("more");
 	expect(more.log.filter((line) => line.startsWith("list"))).toEqual(["list"]);
+	expect(more.finished[0]).toMatchObject({ outcome: "more", scanPage: 0 });
+	const later = fixture({ claim: claim({ scanPage: 7 }), pages: [], letters: {} });
+	expect(await later.syncs.pass(signal)).toBe("current");
+	expect(later.post.available).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.anything(), 7);
 });
 
-it("asks for more at once only when the list was full and it took a letter", async () => {
-	expect(await fixture({ complete: false }).syncs.pass(signal)).toBe("more");
-	const allHeld = fixture({ complete: false, claim: claim({ held: [MEMO_A] }) });
-	expect(await allHeld.syncs.pass(signal)).toBe("current");
-	expect(allHeld.finished[0]?.outcome).toBe("current");
-	// A list that never ends is read for the held letters' page and twenty more, then left to the next pass.
-	expect(allHeld.post.available).toHaveBeenCalledTimes(21);
+it("reaches a letter behind two thousand unreadable ones over passes, with the claim's held list capped", async () => {
+	// Digital Post's list: 2000 letters the vault cannot read, then one it can (page 40). The database keeps every hold
+	// but its claim lists only the newest 1000, as qorpera_claim_digital_post_sync does, and keeps the scan page.
+	const bad = Array.from({ length: 2000 }, (_, index) => `0d000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+	const pages = [
+		...Array.from({ length: 40 }, (_, page) => ({ ids: bad.slice(page * 50, page * 50 + 50), complete: false })),
+		{ ids: [MEMO_B], complete: true },
+	];
+	const holds: string[] = [];
+	let scanPage = 0;
+	const malformed = new Uint8Array(Buffer.from("<memo:Message>not closed"));
+	const f = fixture({
+		claim: () => claim({ held: [...new Set(holds)].slice(-1000), scanPage }),
+		pages,
+		letters: { ...Object.fromEntries(bad.map((id) => [id, malformed])), [MEMO_B]: letter(MESSAGE_B) },
+	});
+	f.authority.holdDigitalPostLetter = vi.fn(async (input) => {
+		holds.push(input.memoId);
+		return { schema: "qorpera.digital-post-held/v1", held: true };
+	});
+	f.authority.finishDigitalPostSync = vi.fn(async (input) => {
+		f.finished.push(input);
+		scanPage = input.scanPage;
+		return { schema: "qorpera.digital-post-sync-result/v1" };
+	});
+	const outcomes: string[] = [];
+	for (let pass = 0; pass < 5 && !f.post.receipt.mock.calls.length; pass += 1)
+		outcomes.push(await f.syncs.pass(signal));
+	expect(outcomes).toEqual(["more", "more", "current"]);
+	expect(f.finished.map((finish) => finish.scanPage)).toEqual([20, 40, 0]);
+	expect(f.post.receipt).toHaveBeenCalledExactlyOnceWith(expect.anything(), MEMO_B, MESSAGE_B, NOW, expect.anything());
+});
+
+it("asks for more at once when the list was full and it took a letter, or when it read its pages", async () => {
+	const took = fixture({ complete: false });
+	expect(await took.syncs.pass(signal)).toBe("more");
+	expect(took.finished[0]?.scanPage).toBe(0);
+	// A list that never ends is read for twenty pages; the next pass reads on from there.
+	const allHeld = fixture({ complete: false, claim: claim({ held: [MEMO_A], scanPage: 3 }) });
+	expect(await allHeld.syncs.pass(signal)).toBe("more");
+	expect(allHeld.post.available).toHaveBeenCalledTimes(20);
+	expect(allHeld.finished[0]).toMatchObject({ outcome: "more", scanPage: 23 });
 });
 
 it("stops on a refused key, and on a key that is not one", async () => {

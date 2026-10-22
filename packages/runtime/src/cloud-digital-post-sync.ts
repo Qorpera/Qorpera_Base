@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import {
-	DIGITAL_POST_LIST_SIZE,
 	DigitalPostAnswerTooLarge,
 	type DigitalPostClient,
 	type DigitalPostKey,
@@ -63,6 +62,8 @@ export interface DigitalPostSyncAuthority {
 			outcome: "current" | "more" | "failed" | "refused";
 			systemId: string | null;
 			receipted: readonly string[];
+			/** The page of Digital Post's list the next pass starts at: 0 unless `more`. */
+			scanPage: number;
 			error: string | null;
 		},
 		signal: AbortSignal,
@@ -78,8 +79,9 @@ const DATABASE_DEADLINE_MS = 10_000;
 /** One pass: the list, then every letter on it. The claim's lease is fifteen minutes. */
 const PASS_DEADLINE_MS = 10 * 60_000;
 const PASS_EVERY_MS = 60_000;
-/** Pages of Digital Post's list a pass reads beyond the pages its held letters can fill (50 letters each). */
+/** Pages of Digital Post's list a pass reads at most (50 letters each); the next pass reads on from where it stopped. */
 const LIST_PAGES = 20;
+const MAX_SCAN_PAGE = 1_000_000;
 /** The chunk size the database stages a file in. */
 export const DIGITAL_POST_CHUNK_BYTES = 1024 * 1024;
 /** The most a letter's files may hold together (the database's bound); a larger letter is held for Virk. */
@@ -92,6 +94,7 @@ interface Claim extends DigitalPostSyncLease {
 	readonly encryptedEnvelopeBase64: string;
 	readonly envelopeSha256: string;
 	readonly held: ReadonlySet<string>;
+	readonly scanPage: number;
 }
 
 function parseClaim(value: unknown): Claim | null {
@@ -103,7 +106,7 @@ function parseClaim(value: unknown): Claim | null {
 		!input ||
 		typeof input !== "object" ||
 		Object.keys(input).sort().join() !==
-			"companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,held,keyId,lease,schema,secretId,secretVersion" ||
+			"companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,held,keyId,lease,scanPage,schema,secretId,secretVersion" ||
 		input.schema !== "qorpera.digital-post-sync-claim/v1" ||
 		![input.companyId, input.environmentId, input.secretId, input.lease].every(
 			(id) => typeof id === "string" && UUID.test(id),
@@ -118,7 +121,10 @@ function parseClaim(value: unknown): Claim | null {
 		!SHA.test(input.envelopeSha256) ||
 		!Array.isArray(input.held) ||
 		input.held.length > 1000 ||
-		input.held.some((id) => typeof id !== "string" || !UUID.test(id))
+		input.held.some((id) => typeof id !== "string" || !UUID.test(id)) ||
+		!Number.isSafeInteger(input.scanPage) ||
+		(input.scanPage as number) < 0 ||
+		(input.scanPage as number) > MAX_SCAN_PAGE
 	)
 		throw new Error("Digital Post sync claim is invalid");
 	return {
@@ -131,6 +137,7 @@ function parseClaim(value: unknown): Claim | null {
 		encryptedEnvelopeBase64: base64,
 		envelopeSha256: input.envelopeSha256,
 		held: new Set(input.held as string[]),
+		scanPage: input.scanPage as number,
 	};
 }
 
@@ -197,11 +204,11 @@ export class CloudDigitalPostSyncs {
 		const lease = { secretId: claim.secretId, version: claim.version, lease: claim.lease };
 		const receipted: string[] = [];
 		let systemId: string | null = null;
-		const finish = (outcome: "current" | "more" | "failed" | "refused", error: string | null) =>
+		const finish = (outcome: "current" | "more" | "failed" | "refused", error: string | null, scanPage = 0) =>
 			// Recorded even when the pass is closing: Digital Post has been asked, and receipts may have gone.
-			this.#authority.finishDigitalPostSync({ ...lease, outcome, systemId, receipted, error }, database());
+			this.#authority.finishDigitalPostSync({ ...lease, outcome, systemId, receipted, scanPage, error }, database());
 		const passing = AbortSignal.any([signal, AbortSignal.timeout(PASS_DEADLINE_MS)]);
-		let outcome: "current" | "more";
+		let outcome: { readonly outcome: "current" | "more"; readonly scanPage: number };
 		try {
 			outcome = await this.#withKey(claim, (key) => {
 				systemId = key.systemId;
@@ -215,8 +222,8 @@ export class CloudDigitalPostSyncs {
 			await finish("failed", failurePhrase(error, passing));
 			return "failed";
 		}
-		await finish(outcome, null);
-		return outcome;
+		await finish(outcome.outcome, null, outcome.scanPage);
+		return outcome.outcome;
 	}
 
 	/** Opens the key only for the pass; nothing that leaves holds it. */
@@ -271,13 +278,12 @@ export class CloudDigitalPostSyncs {
 
 	/**
 	 * The letters on Digital Post's list that are not held: fetched, kept, receipted. Held letters stay on the list until
-	 * Digital Post moves them to Virk, so a page may hold nothing to take: the pass reads on, page by page. A receipt
-	 * shifts the pages after it, so a pass that receipted something stops at the end of that page (`more`: the next pass
-	 * starts again from the first page), and one that reached the last page is `current`.
-	 *
-	 * The held letters fill at most as many pages as they make; every page past those has letters this pass fetches,
-	 * which end receipted (and the pass stops there), held or gone. So a pass reads those pages and twenty more: whatever
-	 * it held there is held in the next claim, whose pages reach that far too, and no letter waits behind held ones.
+	 * Digital Post moves them to Virk, so the pass reads on page by page, from the page where the last pass stopped, for at
+	 * most `LIST_PAGES` pages. A receipt shifts the pages after it, so a pass that receipted something stops at the end of
+	 * that page, and the next pass reads that page again (`more`). A pass that read its pages without reaching the end
+	 * leaves the next one the page after them (`more`), so every letter is reached however many are held before it; one
+	 * that reached the end of the list is `current`, and the next pass starts again from the first page. A page that
+	 * moved meanwhile (Digital Post moving letters to Virk) is read again once the list has been read to its end.
 	 */
 	async #take(
 		claim: Claim,
@@ -285,19 +291,19 @@ export class CloudDigitalPostSyncs {
 		key: DigitalPostKey,
 		receipted: string[],
 		signal: AbortSignal,
-	): Promise<"current" | "more"> {
-		const pages = Math.ceil(claim.held.size / DIGITAL_POST_LIST_SIZE) + LIST_PAGES;
-		for (let page = 0; page < pages; page += 1) {
+	): Promise<{ readonly outcome: "current" | "more"; readonly scanPage: number }> {
+		const last = Math.min(claim.scanPage + LIST_PAGES, MAX_SCAN_PAGE);
+		for (let page = claim.scanPage; page < last; page += 1) {
 			const available = await this.#post.available(key, signal, page);
 			let took = false;
 			for (const memoId of available.ids) {
 				if (claim.held.has(memoId)) continue;
 				if (await this.#takeOne(lease, key, memoId, receipted, signal)) took = true;
 			}
-			if (available.complete) return "current";
-			if (took) return "more";
+			if (available.complete) return { outcome: "current", scanPage: 0 };
+			if (took) return { outcome: "more", scanPage: page };
 		}
-		return "current";
+		return { outcome: "more", scanPage: last === MAX_SCAN_PAGE ? 0 : last };
 	}
 
 	/** One letter: true when it was kept and receipted; false when Digital Post no longer had it or it was held. */

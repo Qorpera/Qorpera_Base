@@ -85,7 +85,7 @@ begin
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
-		'qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,text)',
+		'qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
 		'qorpera_folder_describe_hook_capture_key(uuid,text,jsonb,uuid)',
