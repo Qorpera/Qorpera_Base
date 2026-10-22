@@ -114,6 +114,13 @@ describe("the folder's letters", () => {
 		expect(letters.map((each) => each.title)).toEqual(["Letter 2", "Letter 4", "Letter 9"]);
 		expect(letters[0]).toMatchObject({ messageUuid: letterId(2), replyBy: "2026-11-01T00:00:00Z", caseId: "SKAT-1" });
 		expect(letters[1]).not.toHaveProperty("snippet");
+		// Any UUID the runtime and the SQL take is a letter's id, in lower case as the index keeps it.
+		const postgres = "6f1d3c2a-9b8e-0d7c-8a6b-5e4f3d2c1b0a";
+		expect(
+			parseDigitalPostLetters(
+				letterIndex([letter(1, { messageUuid: postgres }), letter(2, { messageUuid: letterId(2).toUpperCase() })]),
+			).map((each) => each.messageUuid),
+		).toEqual([postgres]);
 		expect(parseDigitalPostLetters("{")).toEqual([]);
 		expect(parseDigitalPostLetters(JSON.stringify({ schema: "other/v1", letters: [letter(1)] }))).toEqual([]);
 	});
@@ -136,6 +143,9 @@ describe("a pasted key", () => {
 		expect(digitalPostKeyLooksValid(apiKey())).toBe(true);
 		expect(digitalPostKeyLooksValid(`  Basic ${apiKey()}\n`)).toBe(true);
 		expect(digitalPostKeyLooksValid(apiKey(id(871).toUpperCase()))).toBe(true);
+		// Any UUID the vault takes as a system id, in either case.
+		expect(digitalPostKeyLooksValid(apiKey("6f1d3c2a-9b8e-0d7c-8a6b-5e4f3d2c1b0a"))).toBe(true);
+		expect(digitalPostKeyLooksValid(apiKey("6F1D3C2A-9B8E-0D7C-8A6B-5E4F3D2C1B0A"))).toBe(true);
 		expect(digitalPostKeyLooksValid("")).toBe(false);
 		expect(digitalPostKeyLooksValid("k3y-Value_0123456789")).toBe(false);
 		expect(digitalPostKeyLooksValid(btoa("system:k3y-Value_0123456789"))).toBe(false);
