@@ -137,8 +137,8 @@ export class FoundingController {
 	#pendingVision: string | undefined;
 	#visionTries = 0;
 	#savingVision = false;
-	/** Your last text save (name, idea or role) was refused or failed: Start waits until one goes through. */
-	#editFailed = false;
+	/** The page's check for words in its fields that the table on the server does not have (FoundingView). */
+	#unsaved: (() => boolean) | undefined;
 
 	constructor(api: CloudApi, userId: string, profileId: string, options: FoundingOptions) {
 		this.#api = api;
@@ -250,19 +250,36 @@ export class FoundingController {
 		const vision = this.#pendingVision;
 		if (vision === undefined || this.#savingVision || table.phase !== "open" || table.me.state !== "joined") return;
 		if (table.vision) {
-			this.#pendingVision = undefined;
-			setFoundingIntent(this.profileId, {});
+			this.#forgetPendingVision();
 			return;
 		}
 		if (this.#visionTries >= VISION_TRIES) return;
 		this.#visionTries++;
 		this.#savingVision = true;
-		void this.describe(vision).then((saved) => {
+		// Written only on a table that still has no text when its turn in the queue comes, so newer text (your
+		// own, saved first) always wins; a table that moved meanwhile is read and checked again.
+		void this.#act("vision", async (current) => {
+			let base = current;
+			for (let attempt = 0; ; attempt++) {
+				if (base.vision || this.#pendingVision === undefined) return base === current ? null : base;
+				try {
+					const next = await this.#founding.update(this.profileId, base.revision, base.companyName, vision);
+					if (next.revision !== base.revision) this.#ownRevisions.set(next.revision, base.revision);
+					return next;
+				} catch (error) {
+					if (!stale(error) || attempt > 0) throw error;
+					base = await this.#founding.read(this.profileId);
+				}
+			}
+		}).then(() => {
 			this.#savingVision = false;
-			if (!saved || this.disposed) return;
-			this.#pendingVision = undefined;
-			setFoundingIntent(this.profileId, {});
+			if (!this.disposed && this.store.get().table?.vision) this.#forgetPendingVision();
 		});
+	}
+
+	#forgetPendingVision(): void {
+		this.#pendingVision = undefined;
+		setFoundingIntent(this.profileId, {});
 	}
 
 	/** The idea the opening could not save yet, shown in the box as your unsaved text. */
@@ -270,11 +287,16 @@ export class FoundingController {
 		return this.#pendingVision;
 	}
 
-	/** Your text saves queued so far, finished: false when the last one was refused or failed, so nothing is
-	 * started on a table without the words you left the field with. */
+	/** The page tells the table which words in its fields the server does not have yet. */
+	watchUnsaved(check: () => boolean): void {
+		this.#unsaved = check;
+	}
+
+	/** Your text saves queued so far, finished, and every field's words on the table: otherwise (a save that was
+	 * refused or failed, in any field) nothing is started or made Ready, and your words stay where they are. */
 	async #editsSaved(): Promise<boolean> {
 		await this.#queue;
-		return !this.#editFailed;
+		return !(this.#unsaved?.() ?? false);
 	}
 
 	/** Actions run one after another, in the order they were made (a role saved as you click Ready,
@@ -293,20 +315,14 @@ export class FoundingController {
 		run: (table: CompanyFounding) => Promise<CompanyFounding | null>,
 	): Promise<boolean> {
 		const table = this.store.get().table;
-		const edit = action === "name" || action === "vision" || action === "role";
-		if (this.disposed || !table || this.store.get().gone) {
-			if (edit) this.#editFailed = true;
-			return false;
-		}
+		if (this.disposed || !table || this.store.get().gone) return false;
 		this.store.set({ busy: action, error: undefined });
 		try {
 			const next = await run(table);
 			this.#epoch++;
-			if (edit) this.#editFailed = false;
 			if (next) this.#show(next);
 			return true;
 		} catch (error) {
-			if (edit) this.#editFailed = true;
 			if (this.disposed) return false;
 			this.#epoch++;
 			if (stale(error)) {
@@ -373,6 +389,8 @@ export class FoundingController {
 	/** Ready (or not) for the table you pressed it on. Your own edits queued before the press (a role
 	 * saved as you clicked) may move the revision; anyone else's change makes the server refuse it. */
 	async setReady(seenRevision: number, ready: boolean): Promise<void> {
+		// Ready means the table as you see it, your own words included: never while one of your saves failed.
+		if (ready && !(await this.#editsSaved())) return;
 		await this.#act("ready", (table) => {
 			let revision = table.revision;
 			while (revision !== seenRevision && this.#ownRevisions.has(revision))
@@ -384,8 +402,7 @@ export class FoundingController {
 
 	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
 	async startAlone(seenRevision: number): Promise<void> {
-		// The field you left as you pressed saves first; if that failed, nothing starts and your text stays.
-		if (!(await this.#editsSaved())) return;
+		// Ready and Start each wait for the field you left as you pressed: if its save failed, nothing happens.
 		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
 			await this.setReady(seenRevision, true);
 		if (this.store.get().table?.me.canStart) await this.start();

@@ -253,6 +253,7 @@ export class FoundingView {
 	constructor(founding: FoundingController, carried: FoundingDrafts = {}) {
 		this.#founding = founding;
 		this.#carried = carried;
+		founding.watchUnsaved(() => this.#unsaved());
 		this.el.append(this.#page.el);
 		this.#invite = h(
 			"button",
@@ -357,6 +358,22 @@ export class FoundingView {
 			this.#waiting,
 			this.#owners,
 			this.#withdrawn,
+		);
+	}
+
+	/** Words you changed in a field that the table on the server does not have: a save that failed or is not sent
+	 * yet. Compared with the table the controller holds, so a save that just went through counts at once, and a
+	 * field you did not touch never holds anything up. An empty name is no edit (leaving it puts the name back). */
+	#unsaved(): boolean {
+		const table = this.#founding.store.get().table;
+		if (!table || table.phase !== "open") return false;
+		const role = table.seats.find((seat) => seat.userId === this.#founding.userId)?.role ?? "";
+		const differs = (field: SyncedField<HTMLInputElement | HTMLTextAreaElement> | undefined, server: string) =>
+			field?.dirty === true && field.el.value.trim() !== server;
+		return (
+			(this.#name?.el.value.trim() !== "" && differs(this.#name, table.companyName)) ||
+			differs(this.#vision, table.vision) ||
+			differs(this.#role, role)
 		);
 	}
 

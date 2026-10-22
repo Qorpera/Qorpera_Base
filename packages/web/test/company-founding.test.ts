@@ -1026,6 +1026,98 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(role.value).toBe("Online shop and the photos.");
 	});
 
+	it("keeps Start and Ready off while any field's save failed, even after another field saved", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		let role = "Online shop.";
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
+			if (name === "qorpera_set_founder_role") role = String(args.p_role);
+			return mine(
+				{ role, ready: false, modelLoginReady: true },
+				wire({
+					waitingFor: [me],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false },
+				}),
+			);
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		await settle();
+		const mineRole = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		mineRole.focus();
+		mineRole.value = "Roasting.";
+		mineRole.blur();
+		await settle();
+		expect(role).toBe("Roasting.");
+		// The role went through; the idea did not, so Ready (with Bo at the table) does nothing.
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		await settle();
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(idea.value).toBe("Specialty coffee, roasted in Aarhus.");
+		// Leaving the idea as the table has it lets Ready through again.
+		idea.value = "Specialty coffee.";
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		await settle();
+		expect(calls).toContain("qorpera_set_founder_ready");
+	});
+
+	it("never lets the opening idea's retry overwrite newer text you saved first", async () => {
+		const { api, cloud } = fixture();
+		const sent: unknown[] = [];
+		let vision = "";
+		let revision = 4;
+		const newer = deferred<void>();
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_update_company_founding") {
+				sent.push(args.p_vision);
+				if (sent.length === 1) throw new Error("Failed to fetch");
+				if (args.p_vision === "Newer idea") await newer.promise;
+				vision = String(args.p_vision);
+				revision++;
+			}
+			return wire({ vision, revision });
+		});
+		setFoundingIntent(table, { vision: "Opening idea" });
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		expect(sent).toEqual(["Opening idea"]);
+		// You write newer text and leave the box; while that save is out, a read still finds the table empty.
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		field.focus();
+		field.value = "Newer idea";
+		field.blur();
+		await settle();
+		await controller.refresh();
+		await settle();
+		newer.resolve();
+		await settle();
+		await settle();
+		expect(sent).toEqual(["Opening idea", "Newer idea"]);
+		expect(controller.store.get().table?.vision).toBe("Newer idea");
+		expect(field.value).toBe("Newer idea");
+		expect(controller.pendingVision).toBeUndefined();
+	});
+
 	it("keeps an idea the opening could not save, through failed tries and a reload, until it is saved", async () => {
 		const { api, cloud } = fixture();
 		let failing = true;
@@ -1088,6 +1180,31 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(container.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Håndværk");
 		} finally {
 			setLanguagePreference("system");
+			hub.dispose();
+		}
+	});
+
+	it("keeps a multi-line idea's height when the box is drawn again", () => {
+		// jsdom lays nothing out: a box on the page is three lines tall, one off it has no height.
+		Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+			configurable: true,
+			get(this: HTMLTextAreaElement) {
+				return this.isConnected ? 78 : 0;
+			},
+		});
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		try {
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+			box.value = "One\nTwo\nThree";
+			box.dispatchEvent(new Event("input"));
+			expect(box.style.height).toBe("78px");
+			relabelNewCompany(hub);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.style.height).toBe("78px");
+		} finally {
+			Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
 			hub.dispose();
 		}
 	});

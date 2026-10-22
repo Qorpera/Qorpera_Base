@@ -187,6 +187,8 @@ class NewCompanyView {
 		this.#crown?.dispose();
 		this.#crownStage.replaceChildren();
 		this.#crown = mountCrown(this.#crownStage, { mirrored: false });
+		// Measured on the page: a box built away from it (a new language) has no height to go by.
+		this.#resize();
 		this.#placeholder();
 	}
 
@@ -254,10 +256,14 @@ class NewCompanyView {
 		this.#invitations.hidden = invitations.length === 0;
 	}
 
-	#changed(): void {
-		// The box grows with the idea, as the website's does.
+	/** The box grows with the idea, as the website's does. */
+	#resize(): void {
 		this.#idea.style.height = "auto";
 		if (this.#idea.scrollHeight > 0) this.#idea.style.height = `${this.#idea.scrollHeight}px`;
+	}
+
+	#changed(): void {
+		this.#resize();
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
