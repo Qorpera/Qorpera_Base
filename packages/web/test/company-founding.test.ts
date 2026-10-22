@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
-import { cofounderArrivalKey, FoundingController } from "../src/app/founding.ts";
+import { cofounderArrivalKey, FoundingController, setFoundingIntent } from "../src/app/founding.ts";
 import { parseRoute, routeHash } from "../src/app/router.ts";
 import { FoundingView } from "../src/app/views/founding.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
-import { companyNameFromIdea, keepWebsiteIdea, renderNewCompany } from "../src/app/views/new-company.ts";
+import {
+	companyNameFromIdea,
+	keepWebsiteIdea,
+	relabelNewCompany,
+	renderNewCompany,
+} from "../src/app/views/new-company.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-founding.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -940,17 +945,161 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 
 	it("carries qorpera.com's idea into the box once, and says where it came from", () => {
 		const { api } = fixture();
-		keepWebsiteIdea("En webshop med keramik");
+		keepWebsiteIdea({ idea: "En webshop med keramik", kind: "webshop" });
 		const hub = new HubController(api, me);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		expect(box.value).toBe("En webshop med keramik");
 		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(false);
+		const pressed = [...container.querySelectorAll<HTMLButtonElement>(".hero-kind[aria-pressed='true']")];
+		expect(pressed.map((kind) => kind.textContent)).toEqual(["Webshop"]);
 		// Read once: a later visit starts empty, and your own words replace the website's note.
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
 		box.value = "A bakery";
 		box.dispatchEvent(new Event("input"));
+		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(true);
+		hub.dispose();
+	});
+
+	it("never starts alone on a table your last text save did not reach, and keeps your words", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
+			return wire({
+				seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: true }],
+				waitingFor: [me],
+			});
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		field.focus();
+		field.value = "Specialty coffee, roasted in Aarhus.";
+		// Pressing Start leaves the box first: its save goes out, fails, and Start does nothing.
+		field.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		await settle();
+		expect(calls).toContain("qorpera_update_company_founding");
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(field.value).toBe("Specialty coffee, roasted in Aarhus.");
+	});
+
+	it("never starts a table with others at it when your last text save failed", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_set_founder_role") throw new Error("Failed to fetch");
+			return mine(
+				{ ready: true, modelLoginReady: true },
+				wire({
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: true },
+				}),
+			);
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const role = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		role.focus();
+		role.value = "Online shop and the photos.";
+		role.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		await settle();
+		expect(calls).toContain("qorpera_set_founder_role");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+		expect(role.value).toBe("Online shop and the photos.");
+	});
+
+	it("keeps an idea the opening could not save, through failed tries and a reload, until it is saved", async () => {
+		const { api, cloud } = fixture();
+		let failing = true;
+		const updates: unknown[] = [];
+		let vision = "";
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_update_company_founding") {
+				updates.push(args.p_vision);
+				if (failing) throw new Error("Failed to fetch");
+				vision = String(args.p_vision);
+			}
+			return wire({ vision, revision: vision ? 5 : 4 });
+		});
+		const key = `qorpera:founding-intent:${table}`;
+		setFoundingIntent(table, { vision: "A café with takeaway" });
+		const first = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(first);
+		const view = new FoundingView(first);
+		container.append(view.el);
+		first.store.subscribe(() => view.update());
+		view.update();
+		for (let read = 0; read < 4; read++) {
+			await settle();
+			await first.refresh();
+		}
+		await settle();
+		// A few tries, then it waits in the box as your unsaved text.
+		expect(updates).toEqual(["A café with takeaway", "A café with takeaway", "A café with takeaway"]);
+		expect(first.pendingVision).toBe("A café with takeaway");
+		expect(container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")?.value).toBe(
+			"A café with takeaway",
+		);
+		first.dispose();
+		expect(sessionStorage.getItem(key)).not.toBeNull();
+		// A reload still has it, and saves it once the cloud answers.
+		failing = false;
+		const second = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(second);
+		await settle();
+		expect(second.store.get().table?.vision).toBe("A café with takeaway");
+		expect(second.pendingVision).toBeUndefined();
+		expect(sessionStorage.getItem(key)).toBeNull();
+	});
+
+	it("draws the new-company box again in a new language, keeping the idea and the kind", () => {
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
+			.find((kind) => kind.textContent === "Trades")!
+			.click();
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		box.value = "A roofing company in Odense";
+		setLanguagePreference("da");
+		try {
+			relabelNewCompany(hub);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			expect(visibleText(container)).toContain("Fra idé til virksomhed.");
+			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
+			expect(container.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Håndværk");
+		} finally {
+			setLanguagePreference("system");
+			hub.dispose();
+		}
+	});
+
+	it("takes a kind picked on qorpera.com without an idea as the kind's example, with no website note", () => {
+		const { api } = fixture();
+		keepWebsiteIdea({ kind: "cafe" });
+		keepWebsiteIdea({ kind: "not-a-kind" });
+		expect(sessionStorage.getItem("qorpera:website-idea")).toBe(JSON.stringify({ kind: "cafe" }));
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")!.value).toBe("A café with takeaway");
 		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(true);
 		hub.dispose();
 	});
@@ -1016,6 +1165,43 @@ describe("founding table in the app", () => {
 		expect(visibleText(root)).toContain("Inviter venner");
 		expect(visibleText(root)).not.toContain("Invite friends");
 		expect(root.querySelector<HTMLTextAreaElement>(".founding-role-mine")?.value).toBe("Roasting, still typing");
+	});
+
+	it("opens the new-company box with what qorpera.com's arrow sent, and takes it out of the address", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		history.replaceState(null, "", "/?ide=En%20webshop%20med%20keramik&kind=webshop#/");
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		// Gone from the address before anything else runs: never in the history or a copied link.
+		expect(location.search).toBe("");
+		expect(location.hash).toBe("#/new");
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En webshop med keramik");
+		expect(visibleText(root)).toContain("Your idea from qorpera.com");
+		expect(root.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Webshop");
+	});
+
+	it("sends a member back from a sign-in at the app's root to the box with qorpera.com's idea", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		// The idea was kept before the sign-in; the sign-in returns to the root, where the selector would show.
+		keepWebsiteIdea({ idea: "En café med takeaway" });
+		history.replaceState(null, "", "/#/");
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(location.hash).toBe("#/new");
+		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En café med takeaway");
+		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
 	});
 });
 

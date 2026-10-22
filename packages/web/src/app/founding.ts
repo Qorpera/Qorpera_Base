@@ -51,17 +51,52 @@ export interface FoundingOptions {
 }
 
 /** What the new-company box asked for as it opened a table: the friends list open at once, and the idea, if
- * saving it with the opening failed. The table's page reads it once. */
+ * saving it with the opening failed. Kept in the tab, through a reload, until the table's page has used it:
+ * the friends list once, the idea until it is saved. */
 export interface FoundingIntent {
 	friends?: boolean;
 	vision?: string;
 }
 
 const intents = new Map<string, FoundingIntent>();
+const intentKey = (profileId: string) => `qorpera:founding-intent:${profileId}`;
 
 export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
+	if (!intent.friends && !intent.vision) {
+		intents.delete(profileId);
+		try {
+			sessionStorage.removeItem(intentKey(profileId));
+		} catch {
+			/* Nothing was kept. */
+		}
+		return;
+	}
 	intents.set(profileId, intent);
+	try {
+		sessionStorage.setItem(intentKey(profileId), JSON.stringify(intent));
+	} catch {
+		/* This page still has it. */
+	}
 }
+
+function takeFoundingIntent(profileId: string): FoundingIntent | undefined {
+	const kept = intents.get(profileId);
+	if (kept) return kept;
+	try {
+		const saved: unknown = JSON.parse(sessionStorage.getItem(intentKey(profileId)) ?? "null");
+		if (!saved || typeof saved !== "object") return undefined;
+		const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision.trim() : "";
+		return {
+			...("friends" in saved && saved.friends === true ? { friends: true } : {}),
+			...(vision ? { vision } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/** Automatic tries at saving the idea the opening could not; after them it waits in the box as your draft. */
+const VISION_TRIES = 3;
 
 /** The hint the Co-Founder's arrival reads once, so it plays from the start (agreed with Interfaces, 4 October 2026):
  * set when this tab's founder presses Start; the arrival removes it and ignores one older than ten minutes. */
@@ -98,8 +133,12 @@ export class FoundingController {
 	#epoch = 0;
 	/** Revisions this tab's own edits produced, each mapped to the revision it was made on. */
 	readonly #ownRevisions = new Map<number, number>();
-	/** The idea the new-company box could not save as it opened this table, saved on the first read. */
+	/** The idea the new-company box could not save as it opened this table: saved on a read, kept until it is. */
 	#pendingVision: string | undefined;
+	#visionTries = 0;
+	#savingVision = false;
+	/** Your last text save (name, idea or role) was refused or failed: Start waits until one goes through. */
+	#editFailed = false;
 
 	constructor(api: CloudApi, userId: string, profileId: string, options: FoundingOptions) {
 		this.#api = api;
@@ -108,9 +147,10 @@ export class FoundingController {
 		this.#options = options;
 		this.profileId = profileId;
 		this.#startKey = `qorpera-web-founding-start/v1/${api.cloud.config.projectUrl}/${userId}/${profileId}`;
-		const intent = intents.get(profileId);
-		intents.delete(profileId);
+		const intent = takeFoundingIntent(profileId);
 		this.#pendingVision = intent?.vision?.trim() || undefined;
+		// The friends list opens once; the idea stays kept until it is saved.
+		setFoundingIntent(profileId, this.#pendingVision ? { vision: this.#pendingVision } : {});
 		if (intent?.friends) this.openFriends(true);
 		const resume = () => {
 			if (!document.hidden) void this.refresh();
@@ -190,11 +230,7 @@ export class FoundingController {
 			...(panelDone ? { connectOpen: false } : {}),
 		});
 		if (panelDone) this.#closeConnections();
-		if (this.#pendingVision !== undefined && table.phase === "open" && table.me.state === "joined") {
-			const vision = this.#pendingVision;
-			this.#pendingVision = undefined;
-			if (!table.vision) void this.describe(vision);
-		}
+		this.#savePendingVision(table);
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
 		// 2026). A first run that waits for a login or failed keeps the page, which says why.
 		const firstRun = table.start?.firstRun;
@@ -206,6 +242,39 @@ export class FoundingController {
 			this.#opened = true;
 			this.#options.onCompanyReady?.();
 		}
+	}
+
+	/** The idea the opening could not save: written in on a read of the open table, and forgotten once the table
+	 * has it (or someone wrote the table's text first). A failed try is tried again on the next read, a few times. */
+	#savePendingVision(table: CompanyFounding): void {
+		const vision = this.#pendingVision;
+		if (vision === undefined || this.#savingVision || table.phase !== "open" || table.me.state !== "joined") return;
+		if (table.vision) {
+			this.#pendingVision = undefined;
+			setFoundingIntent(this.profileId, {});
+			return;
+		}
+		if (this.#visionTries >= VISION_TRIES) return;
+		this.#visionTries++;
+		this.#savingVision = true;
+		void this.describe(vision).then((saved) => {
+			this.#savingVision = false;
+			if (!saved || this.disposed) return;
+			this.#pendingVision = undefined;
+			setFoundingIntent(this.profileId, {});
+		});
+	}
+
+	/** The idea the opening could not save yet, shown in the box as your unsaved text. */
+	get pendingVision(): string | undefined {
+		return this.#pendingVision;
+	}
+
+	/** Your text saves queued so far, finished: false when the last one was refused or failed, so nothing is
+	 * started on a table without the words you left the field with. */
+	async #editsSaved(): Promise<boolean> {
+		await this.#queue;
+		return !this.#editFailed;
 	}
 
 	/** Actions run one after another, in the order they were made (a role saved as you click Ready,
@@ -224,14 +293,20 @@ export class FoundingController {
 		run: (table: CompanyFounding) => Promise<CompanyFounding | null>,
 	): Promise<boolean> {
 		const table = this.store.get().table;
-		if (this.disposed || !table || this.store.get().gone) return false;
+		const edit = action === "name" || action === "vision" || action === "role";
+		if (this.disposed || !table || this.store.get().gone) {
+			if (edit) this.#editFailed = true;
+			return false;
+		}
 		this.store.set({ busy: action, error: undefined });
 		try {
 			const next = await run(table);
 			this.#epoch++;
+			if (edit) this.#editFailed = false;
 			if (next) this.#show(next);
 			return true;
 		} catch (error) {
+			if (edit) this.#editFailed = true;
 			if (this.disposed) return false;
 			this.#epoch++;
 			if (stale(error)) {
@@ -309,6 +384,8 @@ export class FoundingController {
 
 	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
 	async startAlone(seenRevision: number): Promise<void> {
+		// The field you left as you pressed saves first; if that failed, nothing starts and your text stays.
+		if (!(await this.#editsSaved())) return;
 		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
 			await this.setReady(seenRevision, true);
 		if (this.store.get().table?.me.canStart) await this.start();
@@ -348,8 +425,10 @@ export class FoundingController {
 		return closed;
 	}
 
-	/** Safe to press twice, from two tabs or after a lost answer: the server keeps the first Start. */
+	/** Safe to press twice, from two tabs or after a lost answer: the server keeps the first Start. Never on a
+	 * table your last text save did not reach. */
 	async start(): Promise<void> {
+		if (!(await this.#editsSaved())) return;
 		let clientStartId: string = crypto.randomUUID();
 		try {
 			const saved = sessionStorage.getItem(this.#startKey);

@@ -6,9 +6,10 @@ import type { HubController } from "./hub.ts";
 
 /* Starting a company: qorpera.com's hero, inside the app (Jonas, 22 October 2026, hub round 3). One
  * headline, one box for the idea with the Co-Founder's crown looking over its edge, and the website's
- * kinds of company under it. The arrow opens a table and starts the company as soon as it can; "Invite
- * friends" opens the table first, so friends write the first message with you. The idea typed on
- * qorpera.com arrives in the box (`#/new?idea=…`).
+ * kinds of company under it. The arrow opens a table named after the idea, where Start is one press for
+ * a founder alone; "Invite friends" opens the table with the friends list, so friends write the first
+ * message with you. What was typed and picked on qorpera.com arrives in the box: its arrow opens
+ * `app.qorpera.com/?ide=…&kind=…` (and `#/new?idea=…` works too).
  *
  * The view is built once per hub and kept: typing, the caret, an IME composition and focus survive
  * every refresh of the company list. */
@@ -19,33 +20,49 @@ export interface Viewer {
 	name: string;
 }
 
-/** The website's kinds of company (qorpera.com, landing/src/site/site.js), each with an idea to start from. */
+/** The website's kinds of company (qorpera.com, landing/src/site/site.js), each with an idea to start from.
+ * The ids are the website's own, as its link sends them (`kind=`). */
 const KINDS = [
-	{ name: phrase("Webshop"), example: phrase("A webshop with ceramics"), icon: "shop" },
-	{ name: phrase("Marketing agency"), example: phrase("A marketing agency"), icon: "megaphone" },
-	{ name: phrase("Café and restaurant"), example: phrase("A café with takeaway"), icon: "cup" },
-	{ name: phrase("Consulting"), example: phrase("Sustainability consulting"), icon: "briefcase" },
-	{ name: phrase("Trades"), example: phrase("A painting company in Aarhus"), icon: "brush" },
-	{ name: phrase("App or software"), example: phrase("An app for dog walkers"), icon: "code" },
+	{ id: "webshop", name: phrase("Webshop"), example: phrase("A webshop with ceramics"), icon: "shop" },
+	{ id: "marketing", name: phrase("Marketing agency"), example: phrase("A marketing agency"), icon: "megaphone" },
+	{ id: "cafe", name: phrase("Café and restaurant"), example: phrase("A café with takeaway"), icon: "cup" },
+	{ id: "radgivning", name: phrase("Consulting"), example: phrase("Sustainability consulting"), icon: "briefcase" },
+	{ id: "handvaerk", name: phrase("Trades"), example: phrase("A painting company in Aarhus"), icon: "brush" },
+	{ id: "app", name: phrase("App or software"), example: phrase("An app for dog walkers"), icon: "code" },
 ] as const;
 
-/** Where qorpera.com's idea waits for the app: kept through a sign-in, read once. */
+/** What qorpera.com's box handed over: the idea typed there, and the kind of company picked. */
+export interface WebsiteHandoff {
+	idea?: string;
+	kind?: string;
+}
+
+/** Where qorpera.com's hand-off waits for the app: kept through a sign-in, read once. */
 const WEBSITE_IDEA_KEY = "qorpera:website-idea";
 
-/** Keeps the idea a qorpera.com link carried until the box takes it (a sign-in may come first). */
-export function keepWebsiteIdea(idea: string): void {
+/** Keeps what a qorpera.com link carried until the box takes it (a sign-in may come first). */
+export function keepWebsiteIdea(handoff: WebsiteHandoff): void {
+	const idea = handoff.idea?.trim().slice(0, IDEA_MAX_CHARACTERS);
+	const kind = KINDS.find((each) => each.id === handoff.kind)?.id;
+	if (!idea && !kind) return;
 	try {
-		sessionStorage.setItem(WEBSITE_IDEA_KEY, idea.slice(0, IDEA_MAX_CHARACTERS));
+		sessionStorage.setItem(
+			WEBSITE_IDEA_KEY,
+			JSON.stringify({ ...(idea ? { idea } : {}), ...(kind ? { kind } : {}) }),
+		);
 	} catch {
 		/* Without storage the idea is lost; the box is still there to type it. */
 	}
 }
 
-function takeWebsiteIdea(): string | undefined {
+function takeWebsiteIdea(): WebsiteHandoff | undefined {
 	try {
-		const idea = sessionStorage.getItem(WEBSITE_IDEA_KEY) ?? undefined;
+		const saved: unknown = JSON.parse(sessionStorage.getItem(WEBSITE_IDEA_KEY) ?? "null");
 		sessionStorage.removeItem(WEBSITE_IDEA_KEY);
-		return idea?.trim() || undefined;
+		if (!saved || typeof saved !== "object") return undefined;
+		const idea = "idea" in saved && typeof saved.idea === "string" ? saved.idea.trim() : "";
+		const kind = "kind" in saved && typeof saved.kind === "string" ? saved.kind : "";
+		return idea || kind ? { ...(idea ? { idea } : {}), ...(kind ? { kind } : {}) } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -173,11 +190,26 @@ class NewCompanyView {
 		this.#placeholder();
 	}
 
-	/** qorpera.com's idea goes into an empty box; whatever you typed here stays. */
-	carry(idea: string): void {
+	/** What qorpera.com handed over: its kind is pressed, and its idea (or else the kind's example) goes into an
+	 * empty box. Whatever you typed here stays. Only the website's own words get the "from qorpera.com" note. */
+	carry(handoff: WebsiteHandoff): void {
+		const index = KINDS.findIndex((kind) => kind.id === handoff.kind);
+		if (index >= 0)
+			for (const [at, kind] of this.#kinds.entries()) kind.setAttribute("aria-pressed", String(at === index));
 		if (this.#idea.value.trim()) return;
+		const idea = handoff.idea ?? (index >= 0 ? t(KINDS[index]!.example) : "");
+		if (!idea) return;
 		this.#idea.value = idea;
-		this.#carried = idea;
+		this.#carried = handoff.idea;
+		this.#changed();
+	}
+
+	/** Takes over another view's idea, note and kind (the same box, drawn again in a new language). */
+	adopt(other: NewCompanyView): void {
+		this.#idea.value = other.#idea.value;
+		this.#carried = other.#carried;
+		for (const [at, kind] of this.#kinds.entries())
+			kind.setAttribute("aria-pressed", other.#kinds[at]?.getAttribute("aria-pressed") ?? "false");
 		this.#changed();
 	}
 
@@ -225,7 +257,7 @@ class NewCompanyView {
 	#changed(): void {
 		// The box grows with the idea, as the website's does.
 		this.#idea.style.height = "auto";
-		this.#idea.style.height = `${this.#idea.scrollHeight}px`;
+		if (this.#idea.scrollHeight > 0) this.#idea.style.height = `${this.#idea.scrollHeight}px`;
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
@@ -300,6 +332,26 @@ class NewCompanyView {
 
 const views = new WeakMap<HubController, NewCompanyView>();
 
+/** A new language builds the box again in it, with what the old one held: the idea, the website's note, the
+ * kind pressed. */
+export function relabelNewCompany(hub: HubController): void {
+	const old = views.get(hub);
+	if (!old) return;
+	const view = new NewCompanyView(hub);
+	view.adopt(old);
+	views.set(hub, view);
+}
+
+/** qorpera.com's hand-off waits to be shown: the hub sends the member to the new-company box first (a sign-in
+ * returns to the app's root, not to `#/new`). */
+export function hasWebsiteIdea(): boolean {
+	try {
+		return sessionStorage.getItem(WEBSITE_IDEA_KEY) !== null;
+	} catch {
+		return false;
+	}
+}
+
 function viewFor(hub: HubController): NewCompanyView {
 	let view = views.get(hub);
 	if (!view) {
@@ -318,7 +370,7 @@ export function renderNewCompany(
 ): void {
 	const view = viewFor(hub);
 	view.mount(container, options.welcome ? "hub hub-welcome" : "hub hub-new");
-	const idea = takeWebsiteIdea();
-	if (idea) view.carry(idea);
+	const handoff = takeWebsiteIdea();
+	if (handoff) view.carry(handoff);
 	view.update(viewer, options.invitations ?? []);
 }

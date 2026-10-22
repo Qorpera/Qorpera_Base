@@ -496,7 +496,12 @@ export class FoundingView {
 				placeholder: t("What is the company for? One line is enough to start."),
 				"aria-label": t("What the company is for"),
 			});
-			this.#vision = new SyncedField(field, (value) => void founding.describe(value), this.#carried.vision);
+			// The idea the opening could not save waits here as your unsaved text: leaving the box saves it.
+			this.#vision = new SyncedField(
+				field,
+				(value) => void founding.describe(value),
+				this.#carried.vision ?? founding.pendingVision,
+			);
 			return field;
 		});
 		this.#vision?.show(table.vision);
