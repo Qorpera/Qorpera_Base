@@ -14,7 +14,12 @@
 -- - qorpera_digital_post_chunks: the staged files' bytes, in 1 MiB chunks (each vault call stays small). The folder
 --   writer deletes them once the letter is written.
 -- - qorpera_digital_post_held: letters the vault could not read (malformed, too large). They are never receipted, so
---   Digital Post moves them to the company's mailbox on Virk after seven days; the vault skips them meanwhile.
+--   Digital Post moves them to the company's mailbox on Virk after seven days; the vault skips them meanwhile. Held
+--   letters stay on Digital Post's list, so the sync remembers the page a pass stopped at (scan_page) and the next pass
+--   reads on from there: every letter is reached, however many are held before it.
+-- - qorpera_digital_post_settings: the platform's one row, set by operators: the Digital Post environment, Qorpera's
+--   CVR (the supplier a company names) and the vault's public addresses (the IPs a company lists), which Settings shows
+--   in the setup steps. Without it, Settings says Digital Post is not available yet.
 --
 -- Only the vault's own functions reach these tables (as the broker role, with the company's authority), except one
 -- member read of the connection's state. Everything goes with the company when it is deleted.
@@ -36,6 +41,8 @@ create table public.qorpera_digital_post_syncs (
 	-- The recipient system's id, from the key (not a secret): Settings shows it.
 	system_id uuid,
 	fetched_at timestamptz,
+	-- The page of Digital Post's list the next pass starts at (zero-based): where the last pass stopped.
+	scan_page integer not null default 0 check (scan_page between 0 and 1000000),
 	updated_at timestamptz not null default clock_timestamp(),
 	check ((status in ('refused', 'disconnected')) = (due_at is null))
 );
@@ -91,6 +98,16 @@ create table public.qorpera_digital_post_held (
 alter table public.qorpera_digital_post_held enable row level security;
 revoke all on public.qorpera_digital_post_held from public, anon, authenticated, service_role, qorpera_secret_broker;
 
+create table public.qorpera_digital_post_settings (
+	id boolean primary key default true check (id),
+	environment text not null check (environment in ('test', 'production')),
+	supplier_cvr text not null check (supplier_cvr ~ '^[0-9]{8}$'),
+	addresses inet[] not null check (cardinality(addresses) between 1 and 32 and array_position(addresses, null) is null),
+	updated_at timestamptz not null default clock_timestamp()
+);
+alter table public.qorpera_digital_post_settings enable row level security;
+revoke all on public.qorpera_digital_post_settings from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- The sync follows the company's Digital Post secret: a connect or a new key is due now; a Disconnect stops it. A
 -- company has one recipient system, so one connection; connecting again replaces the key.
 create function public.qorpera_digital_post_sync_follow_secret()
@@ -110,7 +127,7 @@ begin
 		on conflict (profile_id) do update
 		set environment_id = excluded.environment_id, secret_id = excluded.secret_id,
 			secret_version = excluded.secret_version, status = 'waiting', due_at = clock_timestamp(),
-			lease_until = null, lease_id = null, attempts = 0, last_error = null, system_id = null,
+			lease_until = null, lease_id = null, attempts = 0, last_error = null, system_id = null, scan_page = 0,
 			updated_at = clock_timestamp()
 		where sync.secret_id <> excluded.secret_id or sync.secret_version <> excluded.secret_version
 			or sync.status in ('refused', 'disconnected');
@@ -184,8 +201,8 @@ $$;
 revoke all on function public.qorpera_digital_post_leased(uuid, uuid, bigint, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The company's due sync, leased for fifteen minutes to this claim, with its sealed key and the letters held (not to
--- be fetched again): null when nothing is due. A secret no longer active, or sealed by another authority, stops the
+-- The company's due sync, leased for fifteen minutes to this claim, with its sealed key, the letters held (not to be
+-- fetched again; the newest 1000) and the page to start at: null when nothing is due. A secret no longer active, or sealed by another authority, stops the
 -- sync here. Held letters older than eight days are forgotten: Digital Post moved them to Virk after seven.
 create function public.qorpera_claim_digital_post_sync(p_broker_authority_id uuid, p_broker_capability_sha256 text)
 returns jsonb
@@ -202,7 +219,7 @@ declare
 	v_held jsonb;
 begin
 	v_authority := public.qorpera_digital_post_authority(p_broker_authority_id, p_broker_capability_sha256);
-	select sync.secret_id, sync.secret_version, secret.status as secret_status, secret.current_version,
+	select sync.secret_id, sync.secret_version, sync.scan_page, secret.status as secret_status, secret.current_version,
 		secret.environment_id, version.key_id, version.encrypted_envelope, version.envelope_sha256,
 		version.broker_authority_id as sealed_for
 	into v_row
@@ -242,7 +259,8 @@ begin
 		-- Postgres breaks base64 lines at 76 characters; the claim carries one line.
 		'encryptedEnvelopeBase64', translate(encode(v_row.encrypted_envelope, 'base64'), E'\n', ''),
 		'envelopeSha256', v_row.envelope_sha256,
-		'held', v_held
+		'held', v_held,
+		'scanPage', v_row.scan_page
 	);
 end
 $$;
@@ -518,9 +536,10 @@ revoke all on function public.qorpera_hold_digital_post_letter(uuid, text, uuid,
 grant execute on function public.qorpera_hold_digital_post_letter(uuid, text, uuid, bigint, uuid, uuid, text)
 	to qorpera_secret_broker;
 
--- The end of a leased pass (this claim's lease only), with the letters it receipted:
--- - current: every letter Digital Post listed was taken; due again in ten minutes.
--- - more: Digital Post listed a full page; due again in thirty seconds for the rest.
+-- The end of a leased pass (this claim's lease only), with the letters it receipted and the page the next pass starts
+-- at:
+-- - current: the pass reached the end of Digital Post's list; due again in ten minutes, from the first page.
+-- - more: the list goes on past where the pass stopped; due again in thirty seconds, from p_scan_page.
 -- - failed: offered again after five minutes, doubling to two hours.
 -- - refused: Digital Post refused the key; nothing is due until the member connects again.
 -- A late answer (the lease ran out, or the key changed) is refused.
@@ -533,6 +552,7 @@ create function public.qorpera_finish_digital_post_sync(
 	p_outcome text,
 	p_system_id uuid,
 	p_receipted jsonb,
+	p_scan_page integer,
 	p_error text
 )
 returns jsonb
@@ -550,6 +570,7 @@ begin
 	v_authority := public.qorpera_digital_post_authority(p_broker_authority_id, p_broker_capability_sha256);
 	if p_outcome is null or p_outcome not in ('current', 'more', 'failed', 'refused')
 		or (p_outcome in ('failed', 'refused')) <> (v_error is not null)
+		or p_scan_page is null or p_scan_page not between 0 and 1000000 or (p_outcome <> 'more' and p_scan_page <> 0)
 		or jsonb_typeof(p_receipted) is distinct from 'array' or jsonb_array_length(p_receipted) > 1000
 		or exists (select 1 from jsonb_array_elements(p_receipted) as item(value)
 			where jsonb_typeof(item.value) <> 'string'
@@ -575,6 +596,8 @@ begin
 		last_error = v_error,
 		system_id = coalesce(p_system_id, v_sync.system_id),
 		fetched_at = case when p_outcome in ('current', 'more') then v_now else v_sync.fetched_at end,
+		-- A failure starts again where the failed pass started.
+		scan_page = case p_outcome when 'more' then p_scan_page when 'failed' then v_sync.scan_page else 0 end,
 		updated_at = v_now
 	where profile_id = v_authority.profile_id
 	returning * into v_sync;
@@ -582,9 +605,9 @@ begin
 		'dueAt', v_sync.due_at);
 end
 $$;
-revoke all on function public.qorpera_finish_digital_post_sync(uuid, text, uuid, bigint, uuid, text, uuid, jsonb, text)
+revoke all on function public.qorpera_finish_digital_post_sync(uuid, text, uuid, bigint, uuid, text, uuid, jsonb, integer, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_finish_digital_post_sync(uuid, text, uuid, bigint, uuid, text, uuid, jsonb, text)
+grant execute on function public.qorpera_finish_digital_post_sync(uuid, text, uuid, bigint, uuid, text, uuid, jsonb, integer, text)
 	to qorpera_secret_broker;
 
 -- The shared vault's served companies with a Digital Post sync due: one call a pass.
@@ -620,7 +643,8 @@ revoke all on function public.qorpera_broker_principal_digital_post_syncs_due(uu
 grant execute on function public.qorpera_broker_principal_digital_post_syncs_due(uuid, text) to qorpera_secret_broker;
 
 -- A member's view of the company's Digital Post connection (Settings and the Mailbox): any member of the company,
--- viewers included, as for company mail. Fixed phrases only; never a key.
+-- viewers included, as for company mail. Fixed phrases only; never a key. `secretId` names the connection a key
+-- replaces or a Disconnect revokes; `supplier` is what the setup steps show (null until operators set it).
 create function public.qorpera_member_digital_post(p_environment_id uuid)
 returns jsonb
 language plpgsql
@@ -631,6 +655,7 @@ as $$
 declare
 	v_profile_id uuid;
 	v_sync public.qorpera_digital_post_syncs%rowtype;
+	v_settings public.qorpera_digital_post_settings%rowtype;
 begin
 	if auth.role() is distinct from 'authenticated' or auth.uid() is null or p_environment_id is null then
 		raise exception 'Digital Post is unavailable' using errcode = '42501';
@@ -643,10 +668,16 @@ begin
 	select sync.* into v_sync
 	from public.qorpera_digital_post_syncs as sync
 	where sync.profile_id = v_profile_id and sync.environment_id = p_environment_id;
+	select settings.* into v_settings from public.qorpera_digital_post_settings as settings;
 	return jsonb_build_object(
 		'schema', 'qorpera.member-digital-post/v1',
 		'connected', v_sync.profile_id is not null and v_sync.status <> 'disconnected',
 		'status', coalesce(v_sync.status, 'disconnected'),
+		'secretId', case when v_sync.status <> 'disconnected' then v_sync.secret_id end,
+		'supplier', case when v_settings.id then jsonb_build_object('environment', v_settings.environment,
+			'cvr', v_settings.supplier_cvr,
+			'addresses', (select jsonb_agg(host(address) order by ordinality)
+				from unnest(v_settings.addresses) with ordinality as address)) end,
 		'systemId', v_sync.system_id,
 		'fetchedAt', v_sync.fetched_at,
 		'lastError', case when v_sync.status in ('failed', 'refused') then v_sync.last_error end,

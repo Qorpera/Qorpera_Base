@@ -2178,7 +2178,7 @@ export class PostgresCloudSecretBrokerAuthority
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_finish_digital_post_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::uuid,$8::jsonb,$9::text) as result",
+			"select public.qorpera_finish_digital_post_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::uuid,$8::jsonb,$9::integer,$10::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
@@ -2188,6 +2188,7 @@ export class PostgresCloudSecretBrokerAuthority
 				input.outcome,
 				input.systemId,
 				JSON.stringify(input.receipted),
+				input.scanPage,
 				input.error,
 			],
 			signal,

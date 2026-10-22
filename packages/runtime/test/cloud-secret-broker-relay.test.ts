@@ -836,7 +836,8 @@ describe("capturing a Digital Post key", () => {
 		const f = captureFixture();
 		await f.capture({ api_key: ` Basic ${API_KEY} ` });
 		expect(f.completeCapture).toHaveBeenCalledTimes(1);
-		expect(f.completeCapture.mock.calls[0]?.[4]).toBe(SYSTEM);
+		// completeCapture(ticketId, capabilitySha256, envelope, envelopeSha256, accountLabel, signal)
+		expect((f.completeCapture.mock.calls[0] as unknown[] | undefined)?.[4]).toBe(SYSTEM);
 		for (const fields of [
 			{ value: API_KEY },
 			{ api_key: API_KEY, other: "x" },

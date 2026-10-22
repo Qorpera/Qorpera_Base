@@ -63,8 +63,13 @@ Letters are kept in `qorpera_digital_post_letters` by message id (unique per com
 `staging`, then `kept` once every file's staged chunks give its size and SHA-256 (`qorpera_seal_digital_post_letter`),
 then `written` (part 3). The staged bytes sit in `qorpera_digital_post_chunks`, 1 MiB each, until the folder writer
 has them; a letter left `staging` by a pass that stopped starts again when it is next delivered. Held letters are in
-`qorpera_digital_post_held` and forgotten after eight days. `qorpera_member_digital_post` gives any member the
-connection's state (supabase/CLIENT-CONTRACT.md, "Digital Post").
+`qorpera_digital_post_held` and forgotten after eight days. Since held letters stay on Digital Post's list, the sync
+remembers where a pass stopped (`scan_page`): a pass reads at most 20 pages from there, and stops after a page where it
+receipted something (the next pass reads that page again) or at the end of the list (the next starts from the first
+page), so every letter is reached however many are held before it. `qorpera_digital_post_settings` is the platform's
+one row that operators set: the Digital Post environment, Qorpera's CVR and the vault's public addresses, which the
+setup steps show. `qorpera_member_digital_post` gives any member the connection's state (supabase/CLIENT-CONTRACT.md,
+"Digital Post").
 
 ## In the company folder
 
