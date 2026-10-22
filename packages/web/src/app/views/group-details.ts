@@ -9,6 +9,7 @@ import { phrase, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
+import { type CardFootActions, cardFoot } from "./card-foot.ts";
 import { type GroupEdits, groupEditsFor } from "./group-edits.ts";
 
 type TextKey = "name" | "subtitle" | "purpose";
@@ -18,7 +19,8 @@ const LABELS: Record<TextKey, string> = {
 	purpose: phrase("Group description"),
 };
 
-/** Group identity edits in place, with the same field behavior as agent details. */
+/** A group chat's card, beside its row in the rail (or, on a phone, under the conversation title): its identity
+ * edited in place with the same field behaviour as an agent's card, its participants, then Copy, Hide and Delete. */
 export class GroupDetails {
 	readonly dialog: SurfaceDialog;
 	readonly #company: CompanyController;
@@ -32,6 +34,9 @@ export class GroupDetails {
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
 	readonly #participants = h("section", { "aria-label": t("Participants") });
 	readonly #stage = h("span", { class: "group-details-stage" });
+	/** Copy, Hide and Delete: there while the details load, or when they could not be read. */
+	readonly #foot: HTMLElement | null;
+	#statusTimer: ReturnType<typeof setTimeout> | undefined;
 	#details: GroupChatDetails | undefined;
 	#edits: GroupEdits | undefined;
 	#unsubscribeEdits: (() => void) | undefined;
@@ -50,6 +55,8 @@ export class GroupDetails {
 		anchor: HTMLElement,
 		scope: AbortSignal,
 		actions: WorkspaceActions = {},
+		card: CardFootActions = {},
+		placement: "below" | "beside" = "below",
 	) {
 		this.#company = company;
 		this.#sessionId = sessionId;
@@ -58,17 +65,30 @@ export class GroupDetails {
 		this.#roomId = company.store.get().sessions.find((item) => item.sessionId === sessionId)?.executionScope?.roomId;
 		this.dialog = new SurfaceDialog(
 			t("Group details"),
-			"agent-details group-details",
+			"agent-details group-details agent-card",
 			() => {
 				if (!this.#discarded && this.#open) this.#commit(this.#open);
+				clearTimeout(this.#statusTimer);
 				this.#lifetime.abort();
 				this.#unsubscribe();
 				this.#unsubscribeEdits?.();
 				onClose();
 			},
 			anchor,
+			placement,
 		);
 		this.dialog.el.dataset.page = "details";
+		this.#foot = cardFoot(card, {
+			close: () => this.dialog.close(false),
+			copyFailed: () => {
+				clearTimeout(this.#statusTimer);
+				this.#statusKey = "";
+				replace(this.#status, t("The conversation ID could not be copied."));
+				// Then the edits' own line comes back, or none while the details are not read.
+				this.#statusTimer = setTimeout(() => (this.#built ? this.#sync() : replace(this.#status)), 2400);
+			},
+			signal: this.#lifetime.signal,
+		});
 		this.#unsubscribe = company.store.subscribe(() => {
 			if (!this.#available()) this.dispose();
 			else {
@@ -110,7 +130,7 @@ export class GroupDetails {
 	}
 
 	async #load(): Promise<void> {
-		replace(this.dialog.content, listSkeleton(t("Loading group details")));
+		replace(this.dialog.content, listSkeleton(t("Loading group details")), this.#status, this.#foot);
 		try {
 			const details = await this.#company.groupDetails(this.#sessionId, this.#lifetime.signal);
 			if (!this.#available()) return;
@@ -125,6 +145,8 @@ export class GroupDetails {
 					this.dialog.content,
 					notice("danger", describeError(error)),
 					button(t("Retry"), () => void this.#load()),
+					this.#status,
+					this.#foot,
 				);
 		}
 	}
@@ -141,6 +163,7 @@ export class GroupDetails {
 			this.#field("purpose"),
 			this.#status,
 			this.#participants,
+			this.#foot,
 		);
 		this.#built = true;
 	}
@@ -244,7 +267,7 @@ export class GroupDetails {
 		const figureKey = JSON.stringify(agents);
 		if (figureKey !== this.#figureKey) {
 			this.#figureKey = figureKey;
-			replace(this.#stage, groupChatAvatar(agents, { width: 120, height: 110 }));
+			replace(this.#stage, groupChatAvatar(agents, { width: 64, height: 58 }));
 		}
 		const state = this.#company.store.get();
 		const key = JSON.stringify([
@@ -276,7 +299,7 @@ export class GroupDetails {
 			return h(
 				"li",
 				null,
-				agent ? agentFigure(agent, name, { size: 40 }) : personAvatar(name, participant.id),
+				agent ? agentFigure(agent, name, { size: 28 }) : personAvatar(name, participant.id),
 				h(
 					"div",
 					null,

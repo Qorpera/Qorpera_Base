@@ -246,7 +246,7 @@ describe("the pages and the folder (I7, C6a)", () => {
 		expect(texts(rail(controller, f), ".rail-interfaces .rail-row-interface strong")).toEqual(["Mailbox", "Members"]);
 		const main = h("main");
 		renderInterface(main, controller, "mailbox");
-		expect(main.querySelector("h1")?.textContent).toBe("Mailbox");
+		expect(main.querySelector<HTMLElement>(".mailbox")?.dataset.interface).toBe("mailbox");
 		expect(main.textContent).not.toContain("Written by an agent");
 	});
 

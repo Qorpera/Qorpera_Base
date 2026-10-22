@@ -1,5 +1,6 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentColor, type FigureId, figureArtwork, figureFor, nativeColorOf } from "./avatar.ts";
+import { bucketOf, level } from "./figure-levels.ts";
 import type { FigureArtwork } from "./figure-motion.ts";
 import { designPx } from "./scale.ts";
 
@@ -94,7 +95,14 @@ function knockout(artwork: FigureArtwork, figure: FigureId, side: number, radius
 	canvas.width = canvas.height = side + margin * 2;
 	const context = canvas.getContext("2d", { willReadFrequently: true });
 	if (!context) return undefined;
-	context.drawImage(artwork.drawable(figure, nativeColorOf(figure)), margin, margin, side, side);
+	const color = nativeColorOf(figure);
+	context.drawImage(
+		level(`${figure}${color}:source`, artwork.drawable(figure, color), bucketOf(side)),
+		margin,
+		margin,
+		side,
+		side,
+	);
 	const source = context.getImageData(0, 0, canvas.width, canvas.height);
 	const target = context.createImageData(canvas.width, canvas.height);
 	const offsets: [number, number][] = [];
@@ -152,7 +160,14 @@ function draw(group: Group): void {
 		}
 		context.globalCompositeOperation = "source-over";
 		const color = dark ? artwork.colorOnDark(member.figure, member.color) : member.color;
-		context.drawImage(artwork.drawable(member.figure, color), left, top, side, side);
+		// Halved to its size first, so the silhouette and eyes stay smooth (figure-levels.ts).
+		context.drawImage(
+			level(`${member.figure}${color}:source`, artwork.drawable(member.figure, color), bucketOf(side)),
+			left,
+			top,
+			side,
+			side,
+		);
 	}
 	if (group.count > 4) {
 		context.font = `600 ${(group.count > 12 ? 12 : 13) * scale}px -apple-system, BlinkMacSystemFont, sans-serif`;

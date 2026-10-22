@@ -73,8 +73,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b), agents'
 		// hooks and mailboxes (E3a), zoom and its release (M1b-3), the primary view and its record (M1b-4a), branches (M4),
 		// an agent's page change in its conversation (I10), run logs (W1b), the conversation tree writer (M1b-4b-2), the
-		// admission split (M1b-4b-3), resumed attempts (W5b-2) and worker memory (W4b), found by name: a release re-slots
-		// the file.
+		// admission split (M1b-4b-3), resumed attempts (W5b-2), worker memory (W4b) and an answered card beyond the
+		// history (20260930525000), found by name: a release re-slots the file.
 		...[
 			"_folder_state_worker_files.sql",
 			"_folder_coding_archive.sql",
@@ -90,6 +90,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_native_admission_split.sql",
 			"_memory_run_resume.sql",
 			"_memory_worker_binding.sql",
+			// A card a room wake's answer answers, beyond the run's history (21 October 2026).
+			"_agent_file_edit_move.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -122,7 +124,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(113);
+	expect(rows).toHaveLength(114);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

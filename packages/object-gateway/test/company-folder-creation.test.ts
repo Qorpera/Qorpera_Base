@@ -206,27 +206,33 @@ describe("creationUnits", () => {
 			"mkdir vision",
 			"write vision/vision.md",
 			"mkdir agents",
+			"write agents/README.md",
 			"write agents/sections.md",
 			"new_folder agents/co-founder",
 			"mkdir agents/groups",
 			"mkdir connections",
+			"write connections/README.md",
 			"mkdir human-tasks",
+			"write human-tasks/README.md",
 			"mkdir contacts",
+			"write contacts/README.md",
 			"mkdir skills",
+			"write skills/README.md",
 			"mkdir skills/human-task",
 			"write skills/human-task/SKILL.md",
 			"mkdir rules",
+			"write rules/README.md",
 			"mkdir interfaces",
-			"new_folder interfaces/pulse",
+			"write interfaces/README.md",
 			"new_folder interfaces/mailbox",
 			"new_folder interfaces/members",
 			"write interfaces/order.md",
 			"mkdir tables",
-			"new_folder tables/numbers",
+			"write tables/README.md",
 			"new_folder tables/areas",
-			"new_folder tables/cards",
 		]);
-		const cofounder = units[4];
+		const byPath = (path: string) => units.find((candidate) => candidate.path === path);
+		const cofounder = byPath("agents/co-founder");
 		expect(cofounder?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
 			"file agent.md",
 			"folder memory",
@@ -240,23 +246,28 @@ describe("creationUnits", () => {
 			"agent agents/co-founder/agent.md",
 			"todo agents/co-founder/todos/start-with-the-founders.md",
 		]);
-		expect(units[1]?.structured?.[0]?.kind).toBe("vision");
-		expect(units[3]?.structured?.[0]?.kind).toBe("sections");
-		// The seeded skill is no structured file: bytes only.
-		expect(units[11]?.structured).toBeUndefined();
-		expect(units[11]?.file).toBe(files.get("skills/human-task/SKILL.md"));
+		expect(byPath("vision/vision.md")?.structured?.[0]?.kind).toBe("vision");
+		expect(byPath("agents/sections.md")?.structured?.[0]?.kind).toBe("sections");
+		// The seeded skill and each folder's README.md are no structured files: bytes only.
+		for (const path of [
+			"skills/human-task/SKILL.md",
+			...units.filter((candidate) => candidate.path.endsWith("/README.md")).map((candidate) => candidate.path),
+		]) {
+			expect(byPath(path)?.structured, path).toBeUndefined();
+			expect(byPath(path)?.file, path).toBe(files.get(path));
+		}
 		// A table's definition and rows go in one unit, so its first rows read the definition it brings (P16).
-		const numbers = units.find((unit) => unit.path === "tables/numbers");
-		expect(numbers?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+		const areas = byPath("tables/areas");
+		expect(areas?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
 			"file table.toml",
 			"file rows.csv",
 		]);
-		expect(numbers?.structured?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
-			"table tables/numbers/table.toml",
-			"table-rows tables/numbers/rows.csv",
+		expect(areas?.structured?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+			"table tables/areas/table.toml",
+			"table-rows tables/areas/rows.csv",
 		]);
-		expect(units.find((unit) => unit.path === "interfaces/order.md")?.structured?.[0]?.kind).toBe("interface-order");
-		expect(units.find((unit) => unit.path === "interfaces/pulse")?.structured?.[0]?.kind).toBe("interface");
+		expect(byPath("interfaces/order.md")?.structured?.[0]?.kind).toBe("interface-order");
+		expect(byPath("interfaces/mailbox")?.structured?.[0]?.kind).toBe("interface");
 	});
 
 	it("refuses a file that was not staged", () => {
@@ -272,24 +283,26 @@ describe("CompanyFolderCreator", () => {
 		const create = named("qorpera_folder_company_create");
 		expect(create).toHaveLength(1);
 		expect(create[0]?.args).toMatchObject({ p_worker: workerId, p_creation_id: creationId, p_generation: 2 });
-		expect((create[0]?.args.p_units as unknown[]).length).toBe(22);
-		// One upload per file: the vision, the sections, the agent, the first todo and the skill, then the library's
-		// three pages, its order and three tables of two files each.
-		expect(named("qorpera_folder_open_upload")).toHaveLength(15);
+		expect((create[0]?.args.p_units as unknown[]).length).toBe(27);
+		// One upload per file: the vision, the sections, the agent, the first todo, the skill and the eight READMEs, then
+		// the library's two pages, its order and the areas table's two files.
+		expect(named("qorpera_folder_open_upload")).toHaveLength(18);
 		for (const open of named("qorpera_folder_open_upload")) expect(open.args.p_actor).toEqual({ kind: "platform" });
-		// Markdown for the state files, plain text for interfaces and tables.
+		// Markdown for the state files and the READMEs, plain text for interfaces and tables.
 		const media = named("qorpera_folder_open_upload").map(
 			(open) => JSON.parse(open.args.p_manifest as string).mediaType,
 		);
-		expect(media.filter((type) => type === "text/markdown")).toHaveLength(6);
-		expect(media.filter((type) => type === "text/plain")).toHaveLength(9);
+		expect(media.filter((type) => type === "text/markdown")).toHaveLength(14);
+		expect(media.filter((type) => type === "text/plain")).toHaveLength(4);
 		const units = create[0]?.args.p_units as {
 			path: string;
+			file?: { mediaType: string };
 			contents?: { path: string; file?: { mediaType: string } }[];
 		}[];
 		expect(
-			units.find((unit) => unit.path === "tables/numbers")?.contents?.map((entry) => entry.file?.mediaType),
+			units.find((unit) => unit.path === "tables/areas")?.contents?.map((entry) => entry.file?.mediaType),
 		).toEqual(["text/plain", "text/plain"]);
+		expect(units.find((unit) => unit.path === "rules/README.md")?.file?.mediaType).toBe("text/markdown");
 		expect(named("qorpera_folder_company_creation_release")).toHaveLength(0);
 		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);
 	});

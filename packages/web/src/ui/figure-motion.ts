@@ -1,5 +1,6 @@
 import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+import { bucketOf, level, reduce } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 import type { WorkingSchedule } from "./working-sequence.ts";
 
@@ -235,6 +236,8 @@ function paint(entry: LiveMotion): void {
 	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, false, step.strokes);
 	else if (!step) strokes(ctx, p.strokes, false, entry.side);
 	if (p.body > 0.001) {
+		const bucket = bucketOf(side),
+			surface = entry.id + entry.shown;
 		if (!eyesCanvas) {
 			eyesCanvas = document.createElement("canvas");
 			eyesCanvas.width = eyesCanvas.height = 512;
@@ -273,11 +276,13 @@ function paint(entry: LiveMotion): void {
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		// The silhouette is drawn sharp: its edge comes from the artwork's
-		// own (tightened) coverage, with no feather (Jonas, 20 Oct).
-		ctx.drawImage(asset.body, 0, 0, 100, 100);
+		// No feather: the edge comes from the artwork's own (tightened)
+		// coverage, smoothed by the halving (Jonas, 20 Oct).
+		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
-		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
+		// The eyes (recorded ones are a small raster, stretched) are drawn at
+		// 512 as the studio draws them, then halved to the body's level.
+		ctx.drawImage(reduce(eyesCanvas, bucket), 0, 0, 100, 100);
 		ctx.restore();
 	}
 	ctx.fillStyle = entry.shown;

@@ -508,13 +508,15 @@ model logins and browser sign-ins. The company owns them, but they never enter
 the folder, and agents never read them. Platform tools and platform rules stay
 in code. Machines keep only their system, applications and caches.
 
-The platform seeds this tree when a company is created:
+The platform seeds this tree when a company is created. The line after each
+folder (`#`) is what it is for:
 
 ```
-vision/
+vision/                      # What the company is and where it is going. Every agent reads it.
   vision.md                  the company's name, what it builds, for whom, why,
                              and how it works
-agents/
+agents/                      # The team: each agent's settings, memory, skills, routines and tasks.
+  README.md                  what the folder is for
   sections.md                sidebar sections, in order, with their agents
   <agent-name>/              one folder per agent
     agent.md                 settings in front matter; instructions in the body
@@ -524,26 +526,53 @@ agents/
     todos/<todo>.md          its open work (13)
   groups/
     <group-name>/group.md    one folder per group chat
-connections/
+connections/                 # Services the company has connected. Secrets are kept elsewhere.
+  README.md                  what the folder is for
   <connection>.md            one file per connected account
-human-tasks/
+human-tasks/                 # Jobs agents have handed to people.
+  README.md                  what the folder is for
   <task>.md                  work an agent hands to a member or a contact
   <task>/                    what the person sends back: proof/ and note.md
-contacts/
+contacts/                    # People and companies the company deals with.
+  README.md                  what the folder is for
   <contact>.md               one file per outside person or firm
-skills/
+skills/                      # Know-how every agent can use.
+  README.md                  what the folder is for
   <skill>/SKILL.md           company skills
-rules/
+rules/                       # Rules for agents. Only owners and admins change them.
+  README.md                  what the folder is for
   <rule>.md                  company review rules
+interfaces/                  # Settings for the pages in the app.
+  README.md                  what the folder is for
+  order.md                   the pages, in order
+  mailbox/interface.toml     the Mailbox page
+  members/interface.toml     the Members page
+tables/                      # The company's tables.
+  README.md                  what the folder is for
+  areas/table.toml           the areas: whose call each one is, and who its
+  areas/rows.csv             agents answer to
 ```
 
 `human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
-the 2026-10-02 amendment "work for people", item 5).
+the 2026-10-02 amendment "work for people", item 5). `interfaces/` and
+`tables/` joined it on 2 October 2026 (section 19, item 12).
+
+Each folder but `vision/` holds a `README.md` (Jonas, 21 October 2026). It
+starts with the folder's line above, then says in plain words what the folder
+holds, who writes in it, and that the company's own work goes in folders of
+its own. `vision/` has none: `vision.md` says what the company is, and every
+agent reads it in full at every run. A `README.md` directly in one of these
+folders, in any spelling with that key, is an ordinary file. No reader takes it
+for an agent, a group, a connection, a rule, a contact, a human task, a skill,
+a page or a table. It is not a seeded path, so the company may change or
+delete it. Pulse, its numbers table and the cards table are no longer seeded
+(the scope reset of 17 October; Jonas, 21 October 2026).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
-9). Everything else the company makes goes in folders it creates, one folder
-per category of files.
+9). Its line is "Code projects (git repositories)." Everything else the
+company makes goes in folders it creates, one folder per category of files,
+such as `designs/` or `documents/`.
 
 **`vision/`.** Filling `vision/vision.md` is the Co-Founder's first
 responsibility, and keeping it current is a standing one. Every agent reads it,
@@ -653,10 +682,12 @@ works for when that member asks (2026-09-25 amendment, item 1).
   unassisted, and its hire waits for a member.
 - Seeded folders and files cannot be deleted or moved: `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `human-tasks/`, `contacts/`, `skills/` and `rules/`
-  (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The Co-Founder's folder and its
-  `agent.md` cannot be deleted; the folder is only renamed within `agents/`
-  when the Co-Founder is renamed.
+  `connections/`, `human-tasks/`, `contacts/`, `skills/`, `rules/`,
+  `interfaces/`, `interfaces/order.md`, `tables/` and `tables/areas/` with its
+  two files (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The
+  folders' `README.md` files are seeded but not protected. The Co-Founder's
+  folder and its `agent.md` cannot be deleted; the folder is only renamed
+  within `agents/` when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
 
 The automatic review (2026-09-25 amendment) is unchanged:
@@ -686,7 +717,8 @@ The automatic review (2026-09-25 amendment) is unchanged:
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
 files, `group.md`, connection files, rule files, human task files and contact
 files have a fixed format (the last two: the 2026-10-02 amendment "work for
-people"). A save updates the file's index in the same step. A save the
+people"). A folder's `README.md` is never one of them. A save updates the
+file's index in the same step. A save the
 platform cannot read correctly is refused for that file, with the reason. A
 human, an agent's shell and a tool all save through this same path.
 
@@ -1907,6 +1939,9 @@ named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
 `description` (what the skill does and when to use it) and whose Markdown body
 holds the steps. Supporting files such as templates or scripts may sit beside
 it. A name is lowercase words joined by hyphens, at most 64 characters.
+`readme` is not a skill name: `skills/README.md` says what the folder is for
+(5.6), and a folder's key ignores case, so no skill is read, listed or written
+under that name (added with the folders' READMEs, 21 October 2026).
 
 Two libraries, both ordinary versioned Company File objects:
 
@@ -5796,6 +5831,107 @@ the proofs and the list of documents, is
    - A failed safety or correctness check of an enabled core capability holds the core. A deferred capability that
      is missing is not a failed core test.
    - Reports keep four things apart: scope recorded, work reassigned, behavior built and behavior verified.
+
+### 2026-10-21 amendment: how agents start work and use the company folder
+
+> **Built, not live.** The runtime part goes live with the next release cut. Jonas approved the proposal on
+> 21 October 2026: "Layout A. HTML opens live in the app: yes. The rules are OK. Go ahead and build it." The web app
+> and the seeded company folder change in their own PRs; §5.6's tree is theirs.
+
+On 21 October a founder asked the Co-Founder to prototype a sales dashboard. The page ended up in a worker's own
+folder. The worker's report never reached him: the run that carried it timed out composing its prompt and was not
+tried again. The first reply also guessed an answer in the message that asked the question. This amendment says how
+an agent starts work and where the results go.
+
+1. **Rules for starting work.** Every staff agent's instructions say how to do what was asked:
+   - a question: answer in chat, reading the company folder first when the answer is there;
+   - one file (a page, a document, a plan, a prototype, an HTML mockup): write it at once with the file tools, in
+     the folder where it belongs, and link it in the reply;
+   - bigger or longer work, or many files: a worker, which saves straight into the folder where the results belong
+     (item 4), and the agent posts the links when it reports;
+   - work that needs commands (converting files, running code, spreadsheets): the company's computer or a machine,
+     saving the result in the company folder;
+   - a real code project: a coding session. Its work is under `code/`, and it is the only case that needs a
+     repository.
+
+   Every agent also follows these rules:
+   - Ask only when the answer changes what happens. Never guess the answer in the message that asks; an
+     `ask_member` card's text only introduces the card.
+   - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
+     it).
+   - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 and keeps its
+     onboarding role for new companies.
+   - A file the member asked for is the work, not an extra.
+   - HTML pages and prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from
+     the network). Members open them live in the app.
+
+   The instructions name the platform's top-level folders once, one line each: `vision/`, `agents/`, `rules/`,
+   `connections/`, `skills/`, `contacts/`, `human-tasks/`, `interfaces/`, `tables/` and `code/`. They belong to the
+   platform: an agent changes them only through their own files, as its instructions and tools describe, and never
+   puts the company's work in them. `code/` holds git repositories only. The constitution is v3. Its law 2 now says
+   "company folder" where it said "Company File". Its law 6 no longer names public websites, because web search is
+   off; the company's browser reaches them.
+
+   Everything else is the company's own work, kept by area of the business first, then by kind (Jonas, 21 October
+   2026). This replaces the kind-first rule this amendment first gave ("name a folder for a kind of thing, never for
+   a team"), and §5.6's "one folder per category of files". Every run's instructions, a worker's and a routine's
+   included, carry these rules:
+   - Keep the work so a person finds anything in a few clicks. Look before making anything, and reuse a file or
+     folder that fits. A place a member or the assignment names always wins.
+   - The top level holds areas of the business: `sales/`, `marketing/`, `product/`, `finance/`, `legal/`,
+     `operations/`, `people/` and so on. An area's folder is made when its first file arrives. An existing area is
+     used when one fits, and no area gets two folders (no `selling/` beside `sales/`).
+   - Files sit directly in their area's folder. When an area gets crowded (about 15 files), its files are grouped
+     into subfolders by kind (`sales/proposals/`, `product/designs/`), and the agent moves the files it made into
+     them.
+   - Work on one project or customer that spans many files may get its own folder in its area
+     (`marketing/spring-launch/`).
+   - Names are lowercase words joined by hyphens, in plain words a person would search for, and say what the thing
+     is (`sales-dashboard.html`, `price-list.md`). A name has a date only when the date is part of what the thing is
+     (`board-meeting-2026-10.md`), and never "final", "v2", "copy", "new" or the agent's own name.
+   - One file per thing: the agent updates the file instead of making a new copy. The folder keeps every version.
+   - An agent's own notes and scratch go in its memory, not in the company's folders. It deletes scratch files it
+     made that nobody needs.
+   - An agent may move or rename its own misplaced files. Before it moves or renames anyone else's work, or
+     deletes, overwrites or reorganizes it on an unclear instruction, it says what it would change and waits for a
+     yes.
+   - It links every file it made or changed (item 2).
+
+   The tools say the same: a missing folder is made when it is the file's area or a place a member or the
+   assignment named, and `company_mkdir` names those cases.
+2. **Links to files.** An agent links a file it made or changed as a markdown link to `folder:` and the file's
+   company path, such as `[sales-dashboard.html](folder:sales/sales-dashboard.html)`. The web app opens it in the
+   folder's view.
+3. **A post is the request.** A run woken by a post in a conversation gets the post its wake names as `request` in
+   its context. For a card answer, it also gets the card the answer is for. Each is read in full, up to one 16 KiB
+   page, and the history no longer repeats the post. A card asked before the history's 32 latest entries is read by
+   its id (`qorpera_read_company_run_card`, migration `20260930525000`), and `read_context` reads on from it. A page
+   that cannot be read leaves the history's 2 KiB excerpt, which `read_context` reads on from.
+4. **Workers save into the real folder.** `manage_worker` dispatch takes `saveTo`, a company folder such as
+   `product/designs/`, and only with write access. The brief's context then says where the finished files belong.
+   The worker saves them there and lists them in its report. The folder core already lets a writing worker write
+   wherever its agent and member may, so no SQL changes. Review by path is unchanged. Without `saveTo`, a worker
+   saves in its own folder, as before.
+5. **File tools.** These apply in every run, chat, worker and routine alike:
+   - `company_read` asks for up to 8 KiB a call and shows as much as fits one tool result. The result fence stays at
+     8 KiB: the patched Codex pins it, and the run log and context views check it. Raising it needs a Codex rebuild
+     and a migration.
+   - `company_write` takes up to 512 KiB of text. A tool may raise its own argument bound to 960 KiB, which stays
+     below the native session's 1 MiB message.
+   - `company_edit` replaces one exact span, found once in the file at the version the agent read.
+   - `company_move` moves or renames a file, link or folder in one move unit. A folder moves as of the agent's own
+     listing of it: `company_list` answers the folder clock it read (`asOfSeq`), the move carries it through review
+     and commit, and a change in the folder since stops the move. The folder core reviews a move as a deletion.
+     Migration `20260930525000` adds it to the review recorder, and adds both tools to the observation vocabulary.
+6. **Search.** `company_search` is offered whenever the host has the node's folder search. On the shared execution
+   host that is off until the coordinator switches it on (`QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, with the
+   node's folder service), so no chat run had it. No code changes.
+7. **A composition timeout is tried again.** A run can time out reading its context, wake or connectors, or
+   composing its prompt (`NATIVE_COMPANY_CONTEXT`, `NATIVE_WAKE_ENVELOPE`, `NATIVE_CONNECTOR_TOOLS` or
+   `NATIVE_PROMPT_COMPOSITION` with `TIMEOUT`). Such a run failed before its start was recorded, so the runner now
+   reports the failure as retryable. The database queues it again only while nothing of the attempt is durable and
+   fewer than eight attempts were made, as for any retryable failure. A coding session's turn now names its own stage
+   (`coding-session`), so its timeouts are never taken for these. Each call keeps its 5-second bound.
 
 ## 20. Enforcement matrix
 

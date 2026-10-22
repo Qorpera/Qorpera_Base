@@ -1,5 +1,4 @@
 import type { User } from "@supabase/supabase-js";
-import type { GroupChatDetails } from "../../cloud/group-details.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import {
 	type CompanySidebar,
@@ -10,7 +9,7 @@ import {
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
-import { agentColor, agentFigure } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -30,9 +29,9 @@ import { type AgentState, type CompanyController, isAgentPairSession } from "../
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
 import type { Route } from "../router.ts";
-import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
-import { savedAgentDraft } from "./agent-edits.ts";
+import type { AgentCardActions } from "./agent-details.ts";
+import type { CardFootActions } from "./card-foot.ts";
 import type { SettingsTab } from "./settings.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -50,6 +49,20 @@ export interface ShellContext {
 	navigation?: { open: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
+	/** A right-click on an agent opens its card beside the row; the rail adds Hide and Delete. */
+	openAgentCard?: (
+		agent: HostedStaffAgent,
+		anchor: HTMLElement,
+		card: AgentCardActions,
+		findAnchor: () => HTMLElement | null,
+	) => void;
+	/** A right-click on a group chat opens its card the same way. */
+	openGroupCard?: (
+		session: HostedSession,
+		anchor: HTMLElement,
+		card: CardFootActions,
+		findAnchor: () => HTMLElement | null,
+	) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -968,12 +981,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	};
 	const mentionedIn = (sessionId: string | undefined) => Boolean(sessionId && state.mentions?.[sessionId]);
 	const agentModel = (agent: HostedStaffAgent): AgentModel => {
+		// A figure or colour just picked on the agent's card shows here before its save lands.
+		const look = state.looks?.[agent.id];
+		const shown = look
+			? { ...agent, appearance: { ...agent.appearance, creature: look.figure, color: look.color } }
+			: agent;
+		const figure = figureFor(shown);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
 			role: agent.role,
 			templateId: agent.templateId,
-			appearance: agent.appearance,
+			// Resolved, so the pick and the roster's words for it once saved (a colour's name, no colour for the
+			// figure's own shade) are one cache key, and the row is kept when the save lands.
+			appearance: { color: agentColor(shown, figure), shape: "", creature: figure },
 			// State is part of the cache key, including idle/failed transitions with the same figure and role.
 			state: company.agentState(agent.id),
 			mentioned: mentionedIn(
@@ -1434,203 +1455,79 @@ function canOrganize(company: CompanyController): boolean {
 	return Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
 }
 
-/** Pin or unpin, and Move to: the same for an agent and a group chat. */
-function placementEntries(company: CompanyController, sidebar: CompanySidebar, item: RailItem): MenuEntry[] {
-	const itemId = item.id;
+/** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
+ * sidebar, its conversation's id to copy, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+/** Pin or unpin from a card: this member's own pins, so no edit rights are needed, and a tap works where a drag
+ * can't (a phone). Nothing to offer when the pinned row is full and the item is not in it. The click reads the
+ * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
+function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
 	const pinned = sidebar.pinned.includes(itemId);
-	// A pin list can still name an item deleted since it was read; the cloud refuses those.
-	const livePins = () => {
-		const roster = company.sidebarRoster();
-		return sidebar.pinned.filter((pin) => roster.includes(pin));
-	};
-	const entries: MenuEntry[] = [];
-	if (pinned)
-		entries.push({
-			label: t("Unpin"),
-			icon: "unpin",
-			select: () =>
-				void company.changeSidebar({ action: "set_pins", order: livePins().filter((pin) => pin !== itemId) }),
-		});
-	else if (sidebar.pinned.length < PIN_LIMIT)
-		entries.push({
-			label: t("Pin"),
-			icon: "pin",
-			select: () => void company.changeSidebar({ action: "set_pins", order: [...livePins(), itemId] }),
-		});
-	if (canOrganize(company)) {
-		const known = new Set(sidebar.sections.map((section) => section.sectionId));
-		const placed = sidebar.placements[itemId]?.sectionId;
-		const current = placed && known.has(placed) ? placed : undefined;
-		// Choosing the section it is in keeps a row where it is; a pinned item moves out
-		// of the pinned row into the section it is given, as when it is dragged there.
-		const isHidden = sidebar.hidden.includes(itemId);
-		const move = (sectionId: string | null) => () => {
-			// A hidden item given a section is shown again, where it was sent.
-			if (isHidden) void company.changeSidebar(hideRequest(item, false));
-			if (!pinned && (sectionId ?? undefined) === current) return;
-			void company.changeSidebar(moveRequest(item, sectionId, pinned ? { unpin: true } : {}));
-		};
-		entries.push({
-			kind: "submenu",
-			label: t("Move to"),
-			icon: "folder",
-			items: [
-				...sidebar.sections.map(
-					(section): MenuEntry => ({
-						label: section.name,
-						icon: "folder",
-						checked: section.sectionId === current,
-						select: move(section.sectionId),
-					}),
-				),
-				{ label: t("Unassigned"), icon: "folder", checked: current === undefined, select: move(null) },
-				{ kind: "separator" },
-				{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company, item) },
-			],
-		});
-	}
-	return entries;
-}
-
-function hideEntry(company: CompanyController, sidebar: CompanySidebar, item: RailItem): MenuEntry {
-	const isHidden = sidebar.hidden.includes(item.id);
+	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
 	return {
-		label: isHidden ? t("Show in sidebar") : t("Hide from sidebar"),
-		icon: isHidden ? "show" : "hide",
-		select: () => void company.changeSidebar(hideRequest(item, !isHidden)),
-	};
-}
-
-function copyIdEntry(company: CompanyController, sessionId: string): MenuEntry {
-	return {
-		label: t("Copy conversation ID"),
-		icon: "copy",
-		select: () => {
-			const failed = () => company.reportRailError(t("The conversation ID could not be copied."));
-			if (!navigator.clipboard) failed();
-			else void navigator.clipboard.writeText(sessionId).catch(failed);
+		pinned,
+		pin: () => {
+			const now = company.store.get();
+			const current = now.sidebarUnavailable ? undefined : now.sidebar;
+			if (!current) return;
+			// A pin list can still name an item deleted since it was read; the cloud refuses those.
+			const roster = company.sidebarRoster();
+			const pins = current.pinned.filter((pin) => roster.includes(pin));
+			// What the card offered: already done elsewhere meanwhile is nothing to send.
+			if (pinned !== pins.includes(itemId)) return;
+			if (!pinned && pins.length >= PIN_LIMIT) {
+				company.reportRailError(t("The pinned row is full. Unpin something first."));
+				return;
+			}
+			void company.changeSidebar({
+				action: "set_pins",
+				order: pinned ? pins.filter((pin) => pin !== itemId) : [...pins, itemId],
+			});
 		},
 	};
 }
 
-const joinMenu = (groups: MenuEntry[][]): MenuEntry[] =>
-	groups
-		.filter((group) => group.length)
-		.flatMap((group, index) => (index ? [{ kind: "separator" } as MenuEntry, ...group] : group));
-
-function agentMenu(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): MenuEntry[] {
+function agentCard(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): AgentCardActions {
 	const state = company.store.get();
 	const actions = parts.context?.agentActions;
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const isCofounder = agent.id === company.cofounderId();
-	const canAuthorize = state.team?.capabilities.authorize === true;
-	const placeable = Boolean(sidebar) && !isCofounder;
-	const sessionId = company.primarySessionFor(agent.id)?.sessionId;
-	return joinMenu([
-		placeable ? placementEntries(company, sidebar!, { id: agent.id, kind: "agent" }) : [],
-		canAuthorize && actions?.updateAgent
-			? [{ label: t("Rename"), icon: "edit", select: () => void renameAgent(company, parts, agent) }]
-			: [],
-		sessionId ? [copyIdEntry(company, sessionId)] : [],
-		[
-			...(placeable ? [hideEntry(company, sidebar!, { id: agent.id, kind: "agent" })] : []),
-			...(!isCofounder && canAuthorize && actions?.deleteAgent
-				? [
-						{
-							label: t("Delete"),
-							icon: "trash",
-							danger: true,
-							select: () => void deleteAgent(company, parts, agent),
-						} satisfies MenuEntry,
-					]
-				: []),
-		],
-	]);
+	const item: RailItem = { id: agent.id, kind: "agent" };
+	const hidden = Boolean(sidebar?.hidden.includes(agent.id));
+	const conversationId = company.primarySessionFor(agent.id)?.sessionId;
+	return {
+		...(conversationId ? { conversationId } : {}),
+		...(sidebar && !isCofounder ? pinActions(company, sidebar, agent.id) : {}),
+		...(sidebar && !isCofounder
+			? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) }
+			: {}),
+		...(!isCofounder && state.team?.capabilities.authorize === true && actions?.deleteAgent
+			? { remove: () => void deleteAgent(company, parts, agent) }
+			: {}),
+	};
 }
 
-/** A group chat's menu: placed like an agent where the cloud places group chats; renamed
- * and deleted by owners and admins, as every room change is. */
-function groupMenu(company: CompanyController, parts: RailParts, session: HostedSession, roomId: string): MenuEntry[] {
-	const state = company.store.get();
-	const actions = parts.context?.agentActions;
-	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
-	const placeable = Boolean(sidebar?.groupChats) && company.groupChatRooms().has(roomId);
-	const canAuthorize = state.team?.capabilities.authorize === true && state.team.capabilities.write === true;
-	const details = groupDetailsOf(company, roomId);
-	return joinMenu([
-		placeable ? placementEntries(company, sidebar!, { id: roomId, kind: "room" }) : [],
-		canAuthorize && actions?.updateGroup && details?.status === "active" && session.status === "open"
-			? [{ label: t("Rename"), icon: "edit", select: () => void renameGroup(company, parts, session, roomId) }]
-			: [],
-		[copyIdEntry(company, session.sessionId)],
-		[
-			...(placeable ? [hideEntry(company, sidebar!, { id: roomId, kind: "room" })] : []),
-			...(canAuthorize && actions?.deleteGroup
-				? [
-						{
-							label: t("Delete"),
-							icon: "trash",
-							danger: true,
-							select: () => void deleteGroup(company, parts, session, roomId),
-						} satisfies MenuEntry,
-					]
-				: []),
-		],
-	]);
-}
-
-function groupDetailsOf(company: CompanyController, roomId: string): GroupChatDetails | undefined {
-	return Object.values(company.store.get().groups ?? {}).find((group) => group.roomId.toLowerCase() === roomId);
-}
-
-async function renameGroup(
+/** A group chat's card from the rail: its conversation's id to copy, Pin or Unpin and Hide (or Show) where the
+ * cloud places group chats, and Delete for owners and admins. Moving is a drag; the name edits on the card. */
+function groupCard(
 	company: CompanyController,
 	parts: RailParts,
 	session: HostedSession,
 	roomId: string,
-): Promise<void> {
-	const update = parts.context?.agentActions?.updateGroup;
-	const details = groupDetailsOf(company, roomId);
-	if (!update || !details) return;
-	const name = await nameDialog({
-		title: t("Rename group chat"),
-		label: t("Group chat name"),
-		value: details.name,
-		confirm: t("Rename"),
-		maxLength: 256,
-		signal: company.signal,
-	});
-	// The details may have changed while the dialog was open; the save checks their version.
-	const latest = groupDetailsOf(company, roomId);
-	if (!name || !latest || name === latest.name) return;
-	try {
-		await update(
-			session.sessionId,
-			latest,
-			{
-				name,
-				...(latest.subtitle !== undefined ? { subtitle: latest.subtitle } : {}),
-				purpose: latest.purpose,
-				members: latest.members,
-			},
-			company.signal,
-		);
-		// The conversation takes the group's new name.
-		await company.refreshSessions();
-	} catch (error) {
-		if (company.signal.aborted) return;
-		// A check before anything was written says what to do in the member's words. A group
-		// whose participants no longer pass (an agent left the company) is fixed in its details.
-		company.reportRailError(
-			!(error instanceof GroupUpdateNotWrittenError) || !error.message
-				? t("{name} could not be renamed.", { name: latest.name })
-				: error.cause instanceof GroupParticipantsError
-					? t("{name} could not be renamed. Update its participants in the group details first.", {
-							name: latest.name,
-						})
-					: error.message,
-		);
-	}
+): CardFootActions {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const placeable = Boolean(sidebar?.groupChats) && company.groupChatRooms().has(roomId);
+	const canAuthorize = state.team?.capabilities.authorize === true && state.team.capabilities.write === true;
+	const item: RailItem = { id: roomId, kind: "room" };
+	const hidden = Boolean(sidebar?.hidden.includes(roomId));
+	return {
+		conversationId: session.sessionId,
+		...(placeable ? pinActions(company, sidebar!, roomId) : {}),
+		...(placeable ? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) } : {}),
+		...(canAuthorize && parts.context?.agentActions?.deleteGroup
+			? { remove: () => void deleteGroup(company, parts, session, roomId) }
+			: {}),
+	};
 }
 
 async function deleteGroup(
@@ -1659,28 +1556,6 @@ async function deleteGroup(
 		await Promise.all([company.refreshSessions(), company.refreshSidebar()]);
 	} catch {
 		if (!company.signal.aborted) company.reportRailError(t("{name} could not be deleted.", { name: session.title }));
-	}
-}
-
-async function renameAgent(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): Promise<void> {
-	const update = parts.context?.agentActions?.updateAgent;
-	if (!update) return;
-	const name = await nameDialog({
-		title: t("Rename agent"),
-		label: t("Agent name"),
-		value: agent.displayName,
-		confirm: t("Rename"),
-		maxLength: 160,
-		signal: company.signal,
-	});
-	const latest = company.staffById(agent.id);
-	if (!name || !latest) return;
-	try {
-		await update(latest, { ...savedAgentDraft(latest), displayName: name }, company.signal);
-		await company.refreshStaff();
-	} catch {
-		if (!company.signal.aborted)
-			company.reportRailError(t("{name} could not be renamed.", { name: latest.displayName }));
 	}
 }
 
@@ -1789,26 +1664,29 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	let findOpener: (() => HTMLElement | null) | undefined;
 	if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
-		if (agent) {
-			items = agentMenu(company, parts, agent);
-			label = t("{name} actions", { name: agent.displayName });
-			opener = agentElement;
+		const open = parts.context?.openAgentCard;
+		if (agent && open) {
+			event.preventDefault();
 			// The row is rebuilt when the agent's state changes; focus goes back to the new one.
-			findOpener = () =>
-				parts.list.querySelector<HTMLElement>(`[data-agent-id="${agent.id}"], [data-cofounder-id="${agent.id}"]`);
+			open(agent, agentElement, agentCard(company, parts, agent), () =>
+				parts.list.querySelector<HTMLElement>(`[data-agent-id="${agent.id}"], [data-cofounder-id="${agent.id}"]`),
+			);
 		}
+		return;
 	} else if (roomElement?.dataset.roomId) {
 		const roomId = roomElement.dataset.roomId;
 		const session = company.store
 			.get()
 			.sessions.find((item) => isGroupChat(item) && String(item.executionScope?.roomId).toLowerCase() === roomId);
-		if (session) {
-			items = groupMenu(company, parts, session, roomId);
-			label = t("{name} actions", { name: session.title });
-			opener = roomElement;
+		const open = parts.context?.openGroupCard;
+		if (session && open) {
+			event.preventDefault();
 			// The row is rebuilt when the group changes; focus goes back to the new one.
-			findOpener = () => parts.list.querySelector<HTMLElement>(`[data-room-id="${roomId}"]`);
+			open(session, roomElement, groupCard(company, parts, session, roomId), () =>
+				parts.list.querySelector<HTMLElement>(`[data-room-id="${roomId}"]`),
+			);
 		}
+		return;
 	} else if (titleElement?.dataset.sectionId) {
 		const sectionId = titleElement.dataset.sectionId;
 		items = sectionMenu(company, sectionId);

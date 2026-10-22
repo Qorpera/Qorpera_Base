@@ -9,8 +9,8 @@ import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
+import { type CardFootActions, cardFoot } from "./card-foot.ts";
 
-type Page = "details" | "routines";
 type TextKey = "displayName" | "role" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
@@ -20,21 +20,30 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
 
-/** An agent's details, anchored under the conversation title. Name, title and
- * responsibilities are edited where they stand and save on their own; the figure
- * changes from a picker under it, as on the desktop. The responsibilities field is the
- * agent's description in plain prose and what the agent works from; there is no separate
- * responsibility page. Routines are a page of the same panel, opened from its top-right corner. */
+/** What the card opens or does besides editing the agent. Each is left out where the
+ * member can't use it, and the card then shows no control for it. */
+export interface AgentCardActions extends CardFootActions {
+	computer?: () => void;
+}
+
+/** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
+ * the conversation title). Name, title and responsibilities are edited where they stand
+ * and save on their own; the figure changes from a picker under it, as on the desktop. The
+ * responsibilities field is the agent's description in plain prose and what the agent works
+ * from. Under it, the agent's computer and routines, then Copy, Hide and Delete. Routines are a page
+ * of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
 	readonly #company: CompanyController;
-	readonly #agent: HostedStaffAgent;
 	readonly #actions: WorkspaceActions;
+	readonly #agent: HostedStaffAgent;
+	/** The routines page, kept while the card is open so going back and forth reads the list again in place. */
+	#routines: AgentRoutines | undefined;
+	readonly #routinesLink: HTMLButtonElement | null;
 	readonly #lifetime = new AbortController();
 	readonly #edits: AgentEdits;
 	readonly #unsubscribeEdits: () => void;
 	readonly #unsubscribe: () => void;
-	readonly #pageButtons: Record<Exclude<Page, "details">, HTMLButtonElement>;
 	readonly #details: HTMLElement;
 	readonly #fields = {} as Record<TextKey, HTMLInputElement | HTMLTextAreaElement>;
 	readonly #stage = h("span", { class: "agent-figure-stage" });
@@ -42,10 +51,8 @@ export class AgentDetails {
 	readonly #picker: HTMLElement;
 	readonly #figures: FigurePicker;
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
-	#page: Page = "details";
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
-	#routines: AgentRoutines | undefined;
 	#drawn = "";
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -56,32 +63,53 @@ export class AgentDetails {
 		onClose: () => void,
 		anchor?: HTMLElement,
 		scope: AbortSignal = company.signal,
+		card: AgentCardActions = {},
+		placement: "below" | "beside" = "below",
 	) {
 		this.#company = company;
-		this.#agent = agent;
 		this.#actions = actions;
+		this.#agent = agent;
 		this.#edits = editsFor(company, agent, actions, scope);
 		this.dialog = new SurfaceDialog(
 			t("Agent details"),
-			"agent-details staff-details",
+			"agent-details agent-card",
 			() => this.#closed(onClose),
 			anchor,
+			placement,
 		);
-		const pageButton = (page: Exclude<Page, "details">, label: string, glyph: string) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "icon-button agent-page-button",
-					title: label,
-					"aria-label": label,
-					"aria-pressed": "false",
-					onclick: () => this.#go(this.#page === page ? "details" : page),
-				},
-				icon(glyph),
-			);
-		this.#pageButtons = { routines: pageButton("routines", t("Routines"), "clock") };
-		this.dialog.tools.prepend(this.#pageButtons.routines);
+		// Each closes the card first: what it opens takes the screen, or asks its own question.
+		const then = (act: () => void) => () => {
+			this.dialog.close(false);
+			act();
+		};
+		const link = (label: string, glyph: string, act: (() => void) | undefined) =>
+			act
+				? h(
+						"button",
+						{ type: "button", class: "agent-card-link", onclick: then(act) },
+						icon(glyph),
+						h("span", null, label),
+						icon("chevron"),
+					)
+				: null;
+		const routines = h(
+			"button",
+			{ type: "button", class: "agent-card-link", onclick: () => this.#showRoutines() },
+			icon("clock"),
+			h("span", null, t("Routines")),
+			icon("chevron"),
+		) as HTMLButtonElement;
+		this.#routinesLink = routines;
+		const links = [link(t("Computer"), "computer", card.computer), routines];
+		const foot = cardFoot(card, {
+			close: () => this.dialog.close(false),
+			copyFailed: () => {
+				this.#say(t("The conversation ID could not be copied."));
+				// Then the edits' own line comes back, a failed save's Try again with it.
+				this.#statusTimer = setTimeout(() => this.#syncEdits(), 2400);
+			},
+			signal: this.#lifetime.signal,
+		});
 
 		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
 		this.#picker = h(
@@ -133,6 +161,8 @@ export class AgentDetails {
 				h("div", { class: "agent-details-names" }, this.#field("displayName"), this.#field("role")),
 			),
 			this.#field("charter"),
+			links.some(Boolean) ? h("div", { class: "agent-card-links" }, ...links) : null,
+			foot,
 			this.#status,
 		);
 		// A click elsewhere in the panel puts the figure picker away.
@@ -159,7 +189,8 @@ export class AgentDetails {
 		this.#unsubscribeEdits = this.#edits.store.subscribe(() => this.#syncEdits());
 		this.#sync();
 		this.#syncEdits();
-		this.#go("details", false);
+		this.dialog.el.dataset.page = "details";
+		replace(this.dialog.content, this.#details);
 		this.dialog.open();
 	}
 
@@ -179,10 +210,6 @@ export class AgentDetails {
 		this.#unsubscribe();
 		this.#unsubscribeEdits();
 		onClose();
-	}
-
-	#latest(): HostedStaffAgent {
-		return this.#company.staffById(this.#agent.id) ?? this.#agent;
 	}
 
 	#current(): AgentDraft {
@@ -287,6 +314,35 @@ export class AgentDetails {
 		this.#say(status, saved, failed);
 	}
 
+	/** The agent's routines take the card, which widens for them; the way back returns to the details. */
+	#showRoutines(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#closePicker(false);
+		if (this.#routines) this.#routines.refresh();
+		else
+			this.#routines = new AgentRoutines(
+				() => this.#company.staffById(this.#agent.id) ?? this.#agent,
+				routineAccessFor(this.#company, this.#actions),
+				this.#lifetime.signal,
+				() => this.#showDetails(),
+				true,
+			);
+		this.dialog.el.dataset.page = "routines";
+		replace(this.dialog.content, this.#routines.el);
+		this.dialog.content.scrollTop = 0;
+		this.dialog.content.querySelector<HTMLElement>(".routine-close")?.focus({ preventScroll: true });
+	}
+
+	#showDetails(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.dialog.el.dataset.page = "details";
+		replace(this.dialog.content, this.#details);
+		// Figures that left the page stop drawing; this one is drawn anew.
+		this.#drawn = "";
+		this.#drawFigure();
+		this.#routinesLink?.focus({ preventScroll: true });
+	}
+
 	#say(text: string, fade = false, retry = false): void {
 		if (this.#lifetime.signal.aborted) return;
 		clearTimeout(this.#statusTimer);
@@ -320,10 +376,10 @@ export class AgentDetails {
 		this.#drawFigure();
 	}
 
-	#drawFigure(force = false): void {
+	#drawFigure(): void {
 		const { figure, color } = this.#current();
 		const key = `${figure}:${color}`;
-		if (!force && key === this.#drawn) return;
+		if (key === this.#drawn) return;
 		this.#drawn = key;
 		replace(this.#stage, figureElement(figure, color, { size: 100, identity: this.#agent.id }));
 		if (!this.#picker.hidden) this.#figures.update({ figure, color });
@@ -346,39 +402,5 @@ export class AgentDetails {
 		this.#figureButton.setAttribute("aria-expanded", "false");
 		this.dialog.el.classList.remove("is-choosing-figure");
 		if (focusButton) this.#figureButton.focus({ preventScroll: true });
-	}
-
-	#go(page: Page, focus = true): void {
-		if (this.#lifetime.signal.aborted) return;
-		const from = this.#page;
-		this.#closePicker(false);
-		this.#page = page;
-		this.dialog.el.dataset.page = page;
-		for (const [name, control] of Object.entries(this.#pageButtons))
-			control.setAttribute("aria-pressed", String(name === page));
-		if (page === "details") {
-			replace(this.dialog.content, this.#details);
-			// Figures that left the page stop drawing; this one is drawn anew.
-			if (from !== "details") this.#drawFigure(true);
-		} else {
-			if (this.#routines) this.#routines.refresh();
-			else
-				this.#routines = new AgentRoutines(
-					() => this.#latest(),
-					routineAccessFor(this.#company, this.#actions),
-					this.#lifetime.signal,
-					() => this.#go("details"),
-				);
-			replace(this.dialog.content, this.#routines.el);
-		}
-		this.dialog.content.scrollTop = 0;
-		if (!focus || page === from) return;
-		const target =
-			page === "details"
-				? from === "details"
-					? undefined
-					: this.#pageButtons[from]
-				: this.dialog.content.querySelector<HTMLButtonElement>(".dialog-page-back");
-		target?.focus({ preventScroll: true });
 	}
 }

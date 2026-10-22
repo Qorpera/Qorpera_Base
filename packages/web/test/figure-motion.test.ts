@@ -296,6 +296,22 @@ describe("2D studio playback in the shell", () => {
 		// It then watches for the next move, from the new density.
 		expect(screens).toHaveLength(2);
 	});
+	it("draws the body and the eyes from surfaces at most twice the painted side", async () => {
+		const host = mount("Idle", "levels");
+		await settle();
+		context.drawImage!.mockClear();
+		show([host]);
+		advance(16);
+		const side = host.querySelector("canvas")!.width;
+		// The last two draws onto the figure's canvas: the body, then the eyes.
+		const finals = context.drawImage!.mock.calls.filter((call) => call.slice(1).join() === "0,0,100,100");
+		expect(finals.length).toBeGreaterThanOrEqual(2);
+		for (const [source] of finals) {
+			// A 512px surface drawn there in one step would turn jagged (figure-levels.ts).
+			expect((source as HTMLCanvasElement).width).toBeGreaterThanOrEqual(side);
+			expect((source as HTMLCanvasElement).width).toBeLessThanOrEqual(side * 2);
+		}
+	});
 	it("retains the studio's holds and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);
 		expect(localTime("Waiting", 90)).toBeCloseTo(278 / 60);

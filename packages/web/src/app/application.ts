@@ -40,15 +40,16 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
+import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { ComputerPanels } from "./views/computer.ts";
-import { ConversationView } from "./views/conversation.ts";
+import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
+import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
-import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
@@ -130,7 +131,8 @@ export function mountApplication(
 		frame.inert = false;
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
-	function openSettings(tab?: SettingsTab): void {
+	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
+	function openSettings(tab?: SettingsTab, folderPath?: string): void {
 		if (settings || feedback || !auth.userId) return;
 		settings = new SettingsView(
 			api,
@@ -148,8 +150,19 @@ export function mountApplication(
 		);
 		frame.inert = true;
 		root.append(settings.el);
+		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
+	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
+	// stays where it was below Settings. Storage answers the links in the documents it shows itself.
+	function onFolderLink(event: MouseEvent): void {
+		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
+		const path = link?.dataset.folderPath;
+		if (path === undefined || event.defaultPrevented) return;
+		event.preventDefault();
+		openSettings("storage", path);
+	}
+	root.addEventListener("click", onFolderLink);
 	let routeRevision = 0;
 	let accountRevision = 0;
 	// Taken from the page hash once at startup and on every route change; the
@@ -201,15 +214,6 @@ export function mountApplication(
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
-		if (liveFile && liveFile.routeHash !== location.hash) {
-			const message = liveFile.leaveMessage();
-			if (message && !window.confirm(message)) {
-				history.replaceState(null, "", liveFile.routeHash);
-				return;
-			}
-			liveFile.dispose();
-			liveFile = undefined;
-		}
 		closeSettings(false);
 		closeFeedback(false);
 		settingsAfterHome = undefined;
@@ -234,8 +238,10 @@ export function mountApplication(
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
-	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
+	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
+	let agentCard: AgentDetails | GroupDetails | undefined;
+	let agentPage: { agentId: string; page: AgentPage } | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -338,8 +344,8 @@ export function mountApplication(
 	}
 
 	/** Rebuild the route's screens from the stores, which keep drafts,
-	 * attachments and edits. A new-conversation draft and unsaved Company File
-	 * text live only in their screens, so those stay until they are left. */
+	 * attachments and edits. A new-conversation draft lives only in its screen,
+	 * so that stays until it is left. */
 	function redrawScreens(): void {
 		if (disposed) return;
 		// The founding table's page keeps its text between refreshes; a new language builds it again.
@@ -356,10 +362,6 @@ export function mountApplication(
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
-		}
-		if (liveFile && !liveFile.leaveMessage()) {
-			liveFile.dispose();
-			liveFile = undefined;
 		}
 		render();
 	}
@@ -380,11 +382,10 @@ export function mountApplication(
 		unsubscribeCompany?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		liveFile?.dispose();
-		liveFile = undefined;
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		agentPage = undefined;
 		computer = undefined;
 		computerPanels = undefined;
 		conversation = undefined;
@@ -827,10 +828,70 @@ export function mountApplication(
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
+		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
+		const showAgentPage = (agentId: string, page: AgentPage) => {
+			if (conversation?.show(agentId, page)) return;
+			agentPage = { agentId, page };
+			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
+		};
+		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
+			agentCard?.dispose();
+			const opened = new AgentDetails(
+				controller,
+				agent,
+				{
+					...agentActions,
+					...workspaceActions,
+					// The card's routines page: routines are files, written through the member's own folder client, with
+					// the company's own checks (the chat's routines check the conversation instead).
+					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+						memberFolder(companyCurrent, t("Company access changed.")),
+					),
+					nativeSubscription: createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					),
+				},
+				() => {
+					if (agentCard === opened) agentCard = undefined;
+				},
+				anchor,
+				controller.signal,
+				{
+					computer: () => showAgentPage(agent.id, "computer"),
+					...card,
+				},
+				"beside",
+			);
+			opened.dialog.findOpener = findAnchor;
+			agentCard = opened;
+		};
+		const openGroupCard: ShellContext["openGroupCard"] = (session, anchor, card, findAnchor) => {
+			agentCard?.dispose();
+			const opened = new GroupDetails(
+				controller,
+				session.sessionId,
+				() => {
+					if (agentCard === opened) agentCard = undefined;
+				},
+				anchor,
+				controller.signal,
+				{ ...agentActions, ...groupActions, ...workspaceActions },
+				card,
+				"beside",
+			);
+			opened.dialog.findOpener = findAnchor;
+			agentCard = opened;
+		};
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
+				openAgentCard,
+				openGroupCard,
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs
@@ -857,8 +918,6 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			mail?.dispose();
 			mail = undefined;
-			liveFile?.dispose();
-			liveFile = undefined;
 			closeSettings(false);
 			conversation?.dispose();
 			newConversation?.dispose();
@@ -1038,6 +1097,8 @@ export function mountApplication(
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		// A card's request waits only while its agent's chat is on the way.
+		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1310,6 +1371,8 @@ export function mountApplication(
 					if (!frame.inert) conversation.focus();
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
+				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
+				if (agentPage && conversation.show(agentPage.agentId, agentPage.page)) agentPage = undefined;
 				return;
 			}
 			case "staff": {
@@ -1326,71 +1389,10 @@ export function mountApplication(
 				return;
 			}
 			case "file": {
-				if (state.loading) {
-					replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening Company File"))));
-					return;
-				}
-				if (!state.team) {
-					// Company File access follows membership; without it there is nothing to wait for.
-					replace(
-						main,
-						h(
-							"section",
-							{ class: "page" },
-							notice("danger", state.error ?? t("Your membership in this company could not be read.")),
-							button(t("Retry company"), () => {
-								if (!controller.store.get().loading) void controller.refreshAll();
-							}),
-						),
-					);
-					return;
-				}
-				const authorityKey = JSON.stringify([
-					state.team.role,
-					state.team.capabilities.read,
-					state.team.capabilities.write,
-				]);
-				if (!liveFile || liveFile.authorityKey !== authorityKey) {
-					liveFile?.dispose();
-					const stop = new AbortController();
-					const files = new WebCompanyFiles(
-						cloud,
-						controller.profile,
-						controller.userId,
-						state.team.role,
-						AbortSignal.any([stop.signal, controller.signal]),
-						() => {
-							const selected = currentRoute(),
-								team = controller.store.get().team;
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== controller.userId ||
-								controller.store.get().accessLost ||
-								!team?.capabilities.read ||
-								JSON.stringify([team.role, team.capabilities.read, team.capabilities.write]) !== authorityKey ||
-								selected.name !== "company" ||
-								selected.profileId !== controller.profile.profileId ||
-								selected.section !== "file" ||
-								selected.id
-							)
-								throw new Error(t("Company File access changed."));
-						},
-						state.team.capabilities.write,
-					);
-					liveFile = new LiveCompanyFileView(
-						files,
-						stop,
-						authorityKey,
-						// The folder's changes name their members and agents.
-						() => ({
-							me: controller.userId,
-							members: controller.store.get().team?.members ?? [],
-							staff: controller.store.get().staff,
-						}),
-					);
-				}
-				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
+				// Existing Company File links open Storage in Settings. Resolve the company's
+				// home first, so its redirect cannot close the new Settings session.
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+				settingsAfterHome = "storage";
 				return;
 			}
 			case "meet":
@@ -1420,6 +1422,7 @@ export function mountApplication(
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
 					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
+					openSettings: () => openSettings("company-connections"),
 				});
 				return;
 			case "team":
@@ -1470,6 +1473,7 @@ export function mountApplication(
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
+		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
 	};

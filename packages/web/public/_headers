@@ -10,6 +10,14 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   Cache-Control: public, max-age=0, must-revalidate
+# The frame an HTML page from the Company File runs in (src/ui/page-frame.ts): sandboxed with no origin, so the page
+# reaches none of this site's cookies, storage or sign-in; its own inline styles and scripts run, nothing loads from
+# the network, and only this site may frame it. Every other page here refuses to be framed.
+/page-preview/*
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=86400

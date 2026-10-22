@@ -173,6 +173,36 @@ function text(value: unknown, limit: number): string | null {
 	return typeof value === "string" ? cut(clean(value), limit) : null;
 }
 
+/** A header of message ids (In-Reply-To, References) as `<id>` tokens on one line. The provider sends a header with
+ * several ids as a list, or as the text of one (`["<a@example.org>","<b@example.org>"]`); its ids are joined by
+ * spaces, the first and the newest that fit (RFC 5322 3.6.4). A plain header is kept as it came. */
+function messageIds(value: unknown): string | null {
+	let list = value;
+	if (typeof value === "string" && value.trimStart().startsWith("[")) {
+		try {
+			list = JSON.parse(value);
+		} catch {
+			// Not a list: a plain header.
+		}
+	}
+	if (!Array.isArray(list)) return text(value, 2048);
+	const ids = list
+		.flatMap((item) => {
+			if (typeof item !== "string") return [];
+			const bare = item.trim();
+			return item.match(/<[^<>\s]+>/g) ?? (/^[^<>\s]+$/.test(bare) ? [`<${bare}>`] : []);
+		})
+		.filter((id) => id.length <= 998);
+	if (ids.length === 0) return null;
+	const newest: string[] = [];
+	let length = ids[0].length;
+	for (let i = ids.length - 1; i > 0 && length + 1 + ids[i].length <= 2048; i--) {
+		newest.unshift(ids[i]);
+		length += 1 + ids[i].length;
+	}
+	return text([ids[0], ...newest].join(" "), 2048);
+}
+
 /** The HTML body as text: the provider may send it as a data URI. */
 function htmlBody(value: unknown): string | null {
 	if (typeof value !== "string") return null;
@@ -248,8 +278,8 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		replyTo: addresses(received.reply_to, MAX_LIST),
 		receivedAt: text(received.created_at, 64),
 		messageId: text(received.message_id, 998),
-		inReplyTo: header("in-reply-to"),
-		references: header("references"),
+		inReplyTo: messageIds(named.get("in-reply-to")),
+		references: messageIds(named.get("references")),
 		autoSubmitted: header("auto-submitted"),
 		precedence: header("precedence"),
 		listId: header("list-id"),

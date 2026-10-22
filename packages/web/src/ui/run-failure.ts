@@ -29,21 +29,24 @@ export function classifyRunFailure(
 	// a spent budget, which a full context window shares. When the cloud says (true or false), it decides;
 	// only an older cloud, which says nothing, leaves it to the error text below.
 	if (usageLimit === true) return "usage_limit";
-	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
-	// It names Qorpera's own machinery, not a member's account or a time limit, so it
-	// never decides the class: the step stays "bridge", as it was before the code.
+	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
+	// It names Qorpera's own machinery, not a member's account, so its words never decide the class: the step stays
+	// "bridge", as it was before the code. Only its category can: a step that ran out of time
+	// ("[code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]") took too long, it was not refused (Jonas, 21 October 2026).
+	const timedOut = / \[code=(?:[A-Z0-9_]{1,42}:)?(?:[A-Z0-9_]{0,41}_)?(?:TIMEOUT|TIMED_OUT)\]/.test(lastError ?? "");
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	// A rate limit is not a usage limit: it passes by itself (contract 17).
 	if (usageLimit === undefined && /usage limit|quota/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
 		return "credential";
 	if (/dispatch failed|provider request failed|no computer could start/i.test(error)) return "dispatch";
-	// A run has no time limit (2026-09-24): a lapsed lease means the computer running it
-	// stopped renewing it, from a crash or a lost connection, never that it ran too long.
+	// A run has no time limit (2026-09-24): a lapsed lease means the run's renewals stopped reaching the cloud,
+	// never that it ran too long. Its computer or Qorpera's own database may have stopped answering (21 October 2026:
+	// the database), so the member reads that Qorpera lost contact with the run, not which side failed.
 	if (/lease expired/i.test(error)) return "lost";
-	// One request inside the run got no answer in time (the model socket, the secret
-	// broker, a cloud call's own request deadline): the run itself was not too long.
-	if (/timed? ?out|did not respond/i.test(error)) return "step_timeout";
+	// One request inside the run got no answer in time (the model socket, the secret broker, a cloud call's own
+	// request deadline, a step whose code's category is a timeout): the run itself was not too long.
+	if (timedOut || /timed? ?out|did not respond/i.test(error)) return "step_timeout";
 	// Only runs from before the time limit was removed carry an expired run deadline.
 	if (/deadline expired/i.test(error)) return "timeout";
 	if (/bridge request failed/i.test(error)) return "bridge";
@@ -59,7 +62,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
-	lost: phrase("The computer running this run stopped answering. The problem is on Qorpera's side."),
+	lost: phrase("Qorpera lost contact with this run. The problem is on Qorpera's side."),
 	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
@@ -116,9 +119,7 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 		"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.",
 	),
 	dispatch: phrase("No computer could be started for the session. The workspace is kept; a follow-up tries again."),
-	lost: phrase(
-		"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-	),
+	lost: phrase("Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again."),
 	step_timeout: phrase(
 		"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.",
 	),
@@ -154,9 +155,9 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 	return t(CODING_REASONS[classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed")]);
 }
 
-/** Whether the run was interrupted rather than refused: its computer stopped
- * answering, a step got no answer in time, it was stopped for time, cancelled, or
- * never got a computer. Those are worth trying again as they are.
+/** Whether the run was interrupted rather than refused: Qorpera lost contact with
+ * it, a step got no answer in time, it was stopped for time, cancelled, or never
+ * got a computer. Those are worth trying again as they are.
  * A reached usage limit, a disconnected account or a company out of computer hours
  * need someone to act first, so their card offers Dismiss only and says what to do. */
 export function runFailureInterrupted(

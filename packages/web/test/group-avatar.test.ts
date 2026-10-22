@@ -163,11 +163,9 @@ describe("approved group avatar compositor", () => {
 		const { context } = await show(7);
 		const figures = context.paints.filter((paint) => paint.operation === "source-over");
 		expect(figures).toHaveLength(3);
-		expect(figures.map((paint) => (paint.source as HTMLCanvasElement).dataset.figure)).toEqual([
-			"planet",
-			"acorn",
-			"flame",
-		]);
+		// Each figure is drawn halved to its size (figure-levels.ts), so the
+		// painted canvas is a copy; the artwork asked for names the figures.
+		expect([...new Set(artwork.drawable.mock.calls.map(([figure]) => figure))]).toEqual(["planet", "acorn", "flame"]);
 		expect(context.text).toEqual([{ value: "+4", x: 65, y: 61.4, color: "#686864" }]);
 		expect(artwork.prepare).toHaveBeenCalledTimes(3);
 	});

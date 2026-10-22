@@ -1,7 +1,8 @@
-/** Qorpera's library of interfaces (RUNTIME-INTERFACES.md §8): the files of the first three, Pulse, Mailbox and
- * Members, with their tables. The platform copies them into a new company's folder (step I6), and until a company
- * keeps its own copies the web client draws Pulse from here (step I4). Every file parses with ./interfaces.ts; the
- * tests hold them to it. The ids are the library's; a copy gets fresh ones (`interfaceLibraryFiles`). */
+/** Qorpera's library of interfaces (RUNTIME-INTERFACES.md §8): the files of Mailbox and Members with the areas table,
+ * which the platform copies into a new company's folder (step I6) and the web draws its two pages from. Pulse, its
+ * numbers table and the cards table are no longer seeded (Jonas, 21 October 2026; the 2026-10-17 scope reset): they
+ * stay here as examples of the format, which tests read. Every file parses with ./interfaces.ts; the tests hold them to
+ * it. The ids are the library's; a copy gets fresh ones (`interfaceLibraryFiles`). */
 
 import { writeInterfaceOrderFile } from "./interfaces.ts";
 
@@ -392,16 +393,16 @@ members = "all"
 `;
 
 export interface InterfaceLibraryEntry {
-	readonly name: "pulse" | "mailbox" | "members";
+	readonly name: "mailbox" | "members";
 	readonly interface: string;
 	readonly tables: Readonly<Record<string, string>>;
 }
 
-/** The first three, in the Interfaces tab's order. */
+/** The two pages a company may show, in the Interfaces tab's order, each with the tables a new company gets for it.
+ * Members still names the cards table, which the web leaves out of the page; no company is seeded with it. */
 export const INTERFACE_LIBRARY: readonly InterfaceLibraryEntry[] = Object.freeze<InterfaceLibraryEntry[]>([
-	{ name: "pulse", interface: PULSE_INTERFACE, tables: { numbers: NUMBERS_TABLE } },
 	{ name: "mailbox", interface: MAILBOX_INTERFACE, tables: {} },
-	{ name: "members", interface: MEMBERS_INTERFACE, tables: { areas: AREAS_TABLE, cards: CARDS_TABLE } },
+	{ name: "members", interface: MEMBERS_INTERFACE, tables: { areas: AREAS_TABLE } },
 ]);
 
 /** The header line each table's rows file starts with. */

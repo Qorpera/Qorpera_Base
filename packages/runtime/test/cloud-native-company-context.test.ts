@@ -5,9 +5,13 @@ import {
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
+import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+	CLOUD_COMPANY_TOP_FOLDERS,
+	type CloudCompanyContextSource,
+	type CloudNativeCompanyContext,
 	type CloudNativeConversationTree,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
@@ -15,6 +19,7 @@ import {
 	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
+	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -37,33 +42,66 @@ it("derives the agent, requester and company from closed cloud context, not a su
 		sha256: f.authority.identity.runtimeBundleSha256,
 	});
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/its human members and its AI agents/);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/one live Company File/);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/one live company folder/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
 });
 
 it("puts the computer's work in the company folder at /company, not on a workbench (F3 4f)", () => {
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"On the Company Computer the company folder is at /company: what you save there becomes a Company File change",
+		"On a computer the company folder is at /company: what you save there becomes a change in the company folder",
 	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("nothing else on the computer is the Company File");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"Nothing else on the computer, your working directory included, is the company folder.",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
 });
 
-it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Create a folder only as the home for a category of files");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never create a folder on your own just to hold a single file");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"a folder a member asks for, or one your assignment names (such as a worker's output folder), is always fine",
-	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("Do not add files, folders");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"When no folder fits, even for one file, create one named for the file's category",
-	);
+// Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
+it("tells every run, a worker's and a routine's too, to keep the company's work by area first, then by kind", () => {
+	const f = nativeCompanyContextFixture();
+	const runs = [
+		cloudCompanyRuntimeInstructions(null, false),
+		cloudCompanyRuntimeInstructions(
+			{
+				kind: "agent",
+				source: { kind: "worker-dispatch", id: f.context.identity.runId, occurrenceKey: "w" },
+			} as never,
+			false,
+		),
+		cloudCompanyRuntimeInstructions(
+			{
+				kind: "routine",
+				source: { kind: "schedule", id: randomUUID(), occurrenceKey: "r" },
+				routine: null,
+			} as never,
+			false,
+		),
+	];
+	for (const instructions of runs)
+		for (const rule of [
+			"never put the company's work in them. code/ holds git repositories only.",
+			"\n# Keeping the company's work in order\nEverything outside the platform's folders is the company's own work. Keep it so a person finds anything in a few clicks:\n",
+			"A place a member or your assignment names always wins.",
+			"The top level holds areas of the business: sales/, marketing/, product/, finance/, legal/, operations/, people/ and so on. Use an area that fits, and make an area's folder when its first file arrives. Never make two folders for one area (no selling/ beside sales/).",
+			"When an area gets crowded (about 15 files), group its files into subfolders by kind, such as sales/proposals/ or product/designs/, and move the files you made into them.",
+			"may get its own folder in its area, such as marketing/spring-launch/",
+			"Name files and folders in lowercase words joined by hyphens",
+			"Add a date only when it is part of what the thing is (board-meeting-2026-10.md). Never use final, v2, copy, new or your own name.",
+			"One file per thing: update the file instead of making a new copy. The folder keeps every version.",
+			"Your own notes and scratch go in your memory, not in the company's folders. Delete scratch files you made that nobody needs.",
+			"Move or rename files you made that are out of place. Before you move or rename anyone else's work, or delete, overwrite or reorganize it on an unclear instruction, say exactly what you would change and wait for a yes.",
+			"Link every file you made or changed as a markdown link with the folder: scheme",
+		])
+			expect(instructions).toContain(rule);
+	// The kind-first rule of the first 21 October amendment is gone, in the prompt and in the tools' guidance.
+	for (const text of [CLOUD_COMPANY_RUNTIME_INSTRUCTIONS, CLOUD_TOOL_RESULT_INSTRUCTIONS])
+		expect(text).not.toMatch(
+			/category|kind of thing|growth\/|acme-nda|designs\/sales-dashboard|just to hold a single file/,
+		);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS.match(/wait for a yes/g)).toHaveLength(1);
 	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-		"When a member or your assignment named that folder, or a category of files needs it as its home, create it with company_mkdir",
-	);
-	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-		"if none fits, create one named for its category (contracts/, not acme-nda/)",
+		"When that folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir and repeat the call; otherwise write the file in the folder where it belongs.",
 	);
 });
 
@@ -1411,32 +1449,368 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
 // #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
 // images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
-// folder at /company replaced the workbench line). A change to either is a change to every run's bytes.
+// folder at /company replaced the workbench line), and taken again for the 21 October 2026 amendment (how agents start
+// work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
+// work was kept by area first, then by kind (Jonas, 21 October 2026). A change to either is a change to every run's
+// bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
-			prompt: "d3a5be48814723d8be602def1afafd4c25c5a78c615914c9da145109c712a5c1",
+			instructions: "239072d71ef52dd13809517a5d637daf1a14ca901a3d4f24be79ed245a03bdb5",
+			prompt: "7c08147caf24677a28b3dfcce381dedd442bea1c56a9a1763670279098692833",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "cfa3ddb3dc778426040a4be2f55f4351786b04f237dd7f55fb5b234d4a8a2266",
-			prompt: "9cb23983db74e2dfc64b4ea036395590a03fbbad3c556f21d9a49b9bf3f615c1",
+			instructions: "aff74b0d86a6234be79e3e7947a5a954d67a48b3cbfa58228bb67c5f0cac2856",
+			prompt: "606dca346945e947cd1b7a03fff0562fa01122c0a7a80d61523f26deb759a86f",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
-			prompt: "8f199493f9c81ce231ff2647695178ee3b7589da1dd80e9b0fbd9d4c97336a9c",
+			instructions: "239072d71ef52dd13809517a5d637daf1a14ca901a3d4f24be79ed245a03bdb5",
+			prompt: "887167596b836fdc96beb2fe956417d96a3c5a99b1108a02e5385ebfcf542d89",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
+});
+
+// The 21 October 2026 amendment "how agents start work and use the company folder".
+it("tells every agent the seeded folders, how to make files and how to link them, with no invented paths", () => {
+	for (const [name, about] of CLOUD_COMPANY_TOP_FOLDERS)
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(`\n- ${name}/ — ${about}\n`);
+	expect(CLOUD_COMPANY_TOP_FOLDERS.map(([name]) => name)).toEqual([
+		"vision",
+		"agents",
+		"rules",
+		"connections",
+		"skills",
+		"contacts",
+		"human-tasks",
+		"interfaces",
+		"tables",
+		"code",
+	]);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"Everything outside the platform's folders is the company's own work.",
+	);
+	expect(CLOUD_FOLDER_LINK_EXAMPLE).toBe("[sales-dashboard.html](folder:sales/sales-dashboard.html)");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("take company paths such as sales/sales-dashboard.html");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		`Link every file you made or changed as a markdown link with the folder: scheme and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}`,
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"Write it self-contained, with its CSS and JavaScript inline and nothing loaded from the network",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"A file the member asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"its context names the company folder where the results belong, such as product/designs/.",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(
+		/work\/report\.md|docs\/plan\.md|private scratch|public websites/,
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("nobody requested");
+});
+
+it("gives a staff run the rules for starting work, and a worker none of them", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const staff = compileCloudNativeCompanyInstructions(context);
+	expect(staff).toContain("\n# Starting work\nDo what the member asks first");
+	for (const rule of [
+		"- A question: answer it in chat",
+		"- One file, such as a page, a document, a plan, a prototype or an HTML mockup: write it yourself, right away",
+		"hand it to a worker with saveTo set to the folder where the results belong",
+		"use the company's computer or a machine when one is offered",
+		"It is the only work that needs a repository, and its files are under code/.",
+		"never guess the answer, or start on one, in the message that asks",
+		'Never end with a promise such as "I\'ll do it"',
+	])
+		expect(staff).toContain(rule);
+	expect(cloudCompanyRuntimeInstructions(null, false)).toContain("# Starting work");
+	// The Co-Founder does what a founder asks first; the vision never holds it up.
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain("When a founder asks for something, do it first.");
+	expect(cofounder).toContain("It never holds up anything a founder asks for");
+	expect(cofounder).not.toMatch(/comes first in every conversation|do not start your alternative/);
+});
+
+/** A room wake on `postId`, the post a member made in the agent's own thread. */
+function roomWake(context: CloudNativeCompanyContext, postId: string) {
+	const identity = context.identity;
+	return parseCloudWakeEnvelope(
+		{
+			schema: "qorpera.wake-envelope/v1",
+			id: randomUUID(),
+			runId: identity.runId,
+			kind: "room",
+			companyId: identity.companyId,
+			environmentId: identity.environmentId,
+			staffAgentId: identity.staffAgentId,
+			requesterUserId: identity.requesterUserId,
+			actorStaffId: null,
+			actorUserId: identity.requesterUserId,
+			audience: { ...context.audience, sessionId: identity.sessionId },
+			source: { kind: "room", id: postId, occurrenceKey: `test:${postId}` },
+			policy: {
+				schema: "qorpera.wake-policy/v1",
+				kind: "room",
+				initial: "optional",
+				final: "required",
+				silenceAllowed: false,
+				maxPublicSends: null,
+			},
+			time: { utc: "2026-10-21T08:00:00.000000Z", local: "2026-10-21T08:00:00.000000", timeZone: "UTC" },
+			pins: {
+				companySnapshotId: randomUUID(),
+				staffVersion: identity.staffVersion,
+				wakeSchema: "qorpera.wake-envelope/v1",
+				runtimeBundleVersion: null,
+			},
+			routine: null,
+			payload: { roomId: randomUUID(), inputIds: [postId], recipientStaffId: identity.staffAgentId },
+			parentRunId: null,
+			causal: { rootId: randomUUID(), agentIds: [identity.staffAgentId] },
+		},
+		identity,
+	);
+}
+
+/** A history entry as the context function ships it: whole, or its first `shown` characters with the whole text's hash. */
+function historyEntry(
+	id: string,
+	sequence: number,
+	text: string,
+	author: string | null,
+	shown = text.length,
+): CloudCompanyContextSource {
+	const excerpt = [...text].slice(0, shown).join("");
+	const cut = excerpt.length < text.length;
+	return {
+		kind: author ? "historical_human_message" : "historical_data",
+		sourceKind: "history",
+		id,
+		actorKind: author ? "human" : "company_service",
+		authorUserId: author,
+		sequence,
+		images: [],
+		content: {
+			text: excerpt,
+			originalBytes: Buffer.byteLength(text),
+			sha256: createHash("sha256").update(text).digest("hex"),
+			offset: 0,
+			nextOffset: cut ? [...excerpt].length : null,
+			truncated: cut,
+		},
+	};
+}
+
+it("makes the post a room wake names the run's request, read whole, and keeps it out of the history", async () => {
+	const f = nativeCompanyContextFixture();
+	const author = f.context.identity.requesterUserId;
+	const postId = randomUUID();
+	const post = JSON.stringify({
+		entry: { type: "message", text: `Prototype a sales dashboard. ${"Detail. ".repeat(600)}` },
+	});
+	f.context.currentInputs = [];
+	f.context.history = [
+		historyEntry(randomUUID(), 1, '{"entry":{"type":"message","text":"Earlier."}}', null),
+		historyEntry(postId, 2, post, author, 2048),
+	];
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const wake = roomWake(context, postId);
+	const whole = historyEntry(postId, 2, post, author);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => whole);
+	const request = await composeCloudRoomRequest(context, wake, { call }, f.binding, new AbortController().signal);
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.[0]).toBe("qorpera_read_company_run_context");
+	expect(call.mock.calls[0]?.[1]).toEqual({
+		p_binding: f.binding,
+		p_source_kind: "history",
+		p_source_id: postId,
+		p_expected_sha256: whole.content.sha256,
+		p_offset: 0,
+		p_limit: 16384,
+	});
+	expect(request).toEqual([{ input: whole }]);
+	const prompt = JSON.parse(
+		composeCloudNativeCompanyPrompt(
+			context,
+			wake,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			request,
+		),
+	);
+	expect(prompt.request).toEqual([{ input: whole }]);
+	expect(prompt.history.map((source: CloudCompanyContextSource) => source.id)).toEqual([context.history[0]?.id]);
+	expect(prompt.historyTruncated).toBe(false);
+	// Without a request the prompt is as before: the post stays in the history.
+	const plain = JSON.parse(composeCloudNativeCompanyPrompt(context, wake));
+	expect(plain.request).toBeUndefined();
+	expect(plain.history).toHaveLength(2);
+	// Any other wake has no request, and reads nothing.
+	expect(await composeCloudRoomRequest(context, null, { call }, f.binding, new AbortController().signal)).toEqual([]);
+	expect(call).toHaveBeenCalledTimes(1);
+});
+
+it("gives a card answer the card it answers, and keeps the excerpt when a page cannot be read", async () => {
+	const f = nativeCompanyContextFixture();
+	const author = f.context.identity.requesterUserId;
+	const cardId = randomUUID();
+	const answerId = randomUUID();
+	const card = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "interaction_request",
+			id: cardId,
+			data: { surface: "question", title: "Which layout?", body: "x".repeat(3000), payload: { options: [] } },
+		},
+	});
+	const answer = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "interaction_answer",
+			id: answerId,
+			data: {
+				schema: "qorpera.interaction-answer/v1",
+				interactionId: cardId,
+				requestEventId: cardId,
+				outcome: "answered",
+			},
+		},
+	});
+	f.context.currentInputs = [];
+	f.context.history = [historyEntry(cardId, 4, card, null, 2048), historyEntry(answerId, 5, answer, author)];
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const wake = roomWake(context, answerId);
+	const whole = historyEntry(cardId, 4, card, null);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => whole);
+	expect(await composeCloudRoomRequest(context, wake, { call }, f.binding, new AbortController().signal)).toEqual([
+		{ input: context.history[1], question: whole },
+	]);
+	// The answer was whole already: only the card was read.
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.[1]).toMatchObject({ p_source_id: cardId });
+	// A page that cannot be read leaves the excerpt, which read_context reads on from; the run goes on.
+	const failing = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+		throw new Error("Cloud tool authority unavailable");
+	});
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		expect(
+			await composeCloudRoomRequest(context, wake, { call: failing }, f.binding, new AbortController().signal),
+		).toEqual([{ input: context.history[1], question: context.history[0] }]);
+	} finally {
+		error.mockRestore();
+	}
+	// A page that is not the source's is refused the same way.
+	const other = vi.fn<CloudCompanyPathControl["call"]>(async () => historyEntry(cardId, 4, `${card} `, null));
+	const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		expect(
+			await composeCloudRoomRequest(context, wake, { call: other }, f.binding, new AbortController().signal),
+		).toEqual([{ input: context.history[1], question: context.history[0] }]);
+	} finally {
+		quiet.mockRestore();
+	}
+});
+
+it("reads an answered card the history no longer holds by its id, and lets read_context read on from it", async () => {
+	const f = nativeCompanyContextFixture();
+	const author = f.context.identity.requesterUserId;
+	const cardId = randomUUID();
+	const answerId = randomUUID();
+	const card = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "authorization_request",
+			id: cardId,
+			data: { surface: "approval", title: "Send the offer?", body: "y".repeat(18000) },
+		},
+	});
+	const answer = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "authorization_decision",
+			id: answerId,
+			data: {
+				schema: "qorpera.interaction-answer/v1",
+				interactionId: cardId,
+				requestEventId: cardId,
+				outcome: "allow",
+			},
+		},
+	});
+	f.context.currentInputs = [];
+	// More than 32 entries came between the card and its answer: the history holds the answer only.
+	f.context.history = [historyEntry(answerId, 40, answer, author)];
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const wake = roomWake(context, answerId);
+	// The card's first page, as the history would show it: cut at 16 KiB, with the whole text's hash.
+	const first = historyEntry(cardId, 4, card, null, 16000);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => first);
+	const request = await composeCloudRoomRequest(context, wake, { call }, f.binding, new AbortController().signal);
+	expect(request).toEqual([{ input: context.history[0], question: first }]);
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.slice(0, 2)).toEqual([
+		"qorpera_read_company_run_card",
+		{ p_binding: f.binding, p_card_id: cardId },
+	]);
+	// read_context admits the card the request showed, and only once the request is composed.
+	let admitted: CloudCompanyContextSource[] = [];
+	const read = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+		...first,
+		content: {
+			...first.content,
+			text: card.slice(16000),
+			offset: 16000,
+			nextOffset: null,
+			truncated: true,
+		},
+	}));
+	const tool = cloudCompanyContextTool(context, f.binding, { call: read }, () => admitted);
+	const argumentsValue = {
+		sourceKind: "history",
+		id: cardId,
+		sha256: first.content.sha256,
+		offset: 16000,
+		limit: 16384,
+	};
+	expect(() => tool.parseArguments(argumentsValue)).toThrow("Context source is unavailable");
+	admitted = [first];
+	const result = await tool.execute(tool.parseArguments(argumentsValue), {
+		companyId: context.identity.companyId,
+		runId: f.binding.runId,
+		callId: "card-page",
+		argumentSha256: "a".repeat(64),
+		signal: new AbortController().signal,
+	});
+	expect(JSON.parse(String(result.value)).content.text).toBe(card.slice(16000));
+	// A card the conversation does not hold leaves the answer alone; the run goes on.
+	const missing = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+		throw new Error("Cloud context history is unavailable");
+	});
+	const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		expect(
+			await composeCloudRoomRequest(context, wake, { call: missing }, f.binding, new AbortController().signal),
+		).toEqual([{ input: context.history[0] }]);
+	} finally {
+		quiet.mockRestore();
+	}
 });

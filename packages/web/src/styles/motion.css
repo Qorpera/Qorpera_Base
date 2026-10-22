@@ -213,10 +213,10 @@
 /* A question answered or declined settles to its quiet colours. */
 .interaction-card.is-decided { animation: decided-line var(--motion-slow) var(--ease-out) both; }
 
-/* ---- the agent's computer: it opens out of the header's computer button ---- */
+/* ---- the agent's computer: it opens out of the thread's top right corner ---- */
 
 .computer-panel {
-	transform-origin: var(--computer-origin-x, calc(100% - 12px)) var(--computer-origin-y, -32px);
+	transform-origin: calc(100% - 12px) -32px;
 	animation: computer-open var(--motion-spring) var(--ease-spring) both;
 }
 @keyframes computer-open {

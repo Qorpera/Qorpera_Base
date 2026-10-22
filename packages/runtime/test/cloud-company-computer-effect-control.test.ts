@@ -245,7 +245,7 @@ describe("durable office guest effects", () => {
 			{ ...target, field: "password" },
 			{ ...target, schema: "qorpera.event-hook-capture/v1" },
 			{ ...target, capturePublicKey: "k".repeat(44) },
-			{ ...target, address: "A/".repeat(21) + "A" },
+			{ ...target, address: `${"A/".repeat(21)}A` },
 			{ ...target, site: "https://dashboard.stripe.com" },
 			{ ...target, extra: true },
 			(({ site: _, ...rest }) => rest)(target),
