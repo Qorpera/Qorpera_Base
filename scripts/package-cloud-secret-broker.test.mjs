@@ -81,7 +81,7 @@ test("packages the secret broker separately from every execution host", async ()
 	}
 });
 
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digestOf = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const usage = /--out <new-directory> \[--database-ca <file> --database-ca-sha256 <sha256>\]/;
 
 test("packages our own database CA only with its sha256 pin, the two given together", async () => {
@@ -105,7 +105,7 @@ test("packages our own database CA only with its sha256 pin, the two given toget
 		const leaf = ca("leaf");
 		const two = join(temporary, "two.crt");
 		await writeFile(two, Buffer.concat([await readFile(own), await readFile(other)]));
-		const pin = sha256(await readFile(own));
+		const pin = digestOf(await readFile(own));
 		const pack = (destination, ...input) =>
 			spawnSync(process.execPath, ["scripts/package-cloud-secret-broker.mjs", "--out", destination, ...input], {
 				cwd: repositoryRoot,
@@ -118,12 +118,12 @@ test("packages our own database CA only with its sha256 pin, the two given toget
 		for (const [input, reason] of [
 			[["--database-ca", own], /--database-ca and --database-ca-sha256 go together/],
 			[["--database-ca-sha256", pin], /--database-ca and --database-ca-sha256 go together/],
-			[["--database-ca", own, "--database-ca-sha256", sha256(await readFile(other))], /does not match/],
+			[["--database-ca", own, "--database-ca-sha256", digestOf(await readFile(other))], /does not match/],
 			[["--database-ca", own, "--database-ca-sha256", pin.toUpperCase()], /is not a sha256/],
 			[["--database-ca", own, "--database-ca-sha256"], usage],
 			[["--database-ca", own, "--database-ca", own, "--database-ca-sha256", pin], usage],
-			[["--database-ca", two, "--database-ca-sha256", sha256(await readFile(two))], /is not one PEM certificate/],
-			[["--database-ca", leaf, "--database-ca-sha256", sha256(await readFile(leaf))], /is not a CA certificate/],
+			[["--database-ca", two, "--database-ca-sha256", digestOf(await readFile(two))], /is not one PEM certificate/],
+			[["--database-ca", leaf, "--database-ca-sha256", digestOf(await readFile(leaf))], /is not a CA certificate/],
 		]) {
 			const destination = join(temporary, "refused");
 			const refused = pack(destination, ...input);
@@ -152,7 +152,7 @@ test("packages our own database CA only with its sha256 pin, the two given toget
 			],
 		);
 		for (const artifact of manifest.artifacts) {
-			assert.equal(sha256(await readFile(join(destination, artifact.file))), artifact.sha256);
+			assert.equal(digestOf(await readFile(join(destination, artifact.file))), artifact.sha256);
 		}
 		assert.deepEqual(await readFile(join(destination, "database-own-ca.crt")), await readFile(own));
 		assert.equal(await readFile(join(destination, "database-own-ca.sha256"), "utf8"), `${pin}\n`);
