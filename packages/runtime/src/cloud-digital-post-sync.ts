@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import {
+	DigitalPostAnswerTooLarge,
 	type DigitalPostClient,
 	type DigitalPostKey,
 	DigitalPostKeyRefused,
@@ -76,6 +77,8 @@ const DATABASE_DEADLINE_MS = 10_000;
 /** One pass: the list, then every letter on it. The claim's lease is fifteen minutes. */
 const PASS_DEADLINE_MS = 10 * 60_000;
 const PASS_EVERY_MS = 60_000;
+/** Pages of Digital Post's list a pass reads at most (50 letters each) before it gives the rest to the next pass. */
+const LIST_PAGES = 20;
 /** The chunk size the database stages a file in. */
 export const DIGITAL_POST_CHUNK_BYTES = 1024 * 1024;
 /** The most a letter's files may hold together (the database's bound); a larger letter is held for Virk. */
@@ -265,8 +268,12 @@ export class CloudDigitalPostSyncs {
 		}
 	}
 
-	/** Every letter on Digital Post's list that is not held: fetched, kept, receipted. `more` when the list was full and
-	 * this pass took something, so the rest follows at once. */
+	/**
+	 * The letters on Digital Post's list that are not held: fetched, kept, receipted. Held letters stay on the list until
+	 * Digital Post moves them to Virk, so a page may hold nothing to take: the pass reads on, page by page. A receipt
+	 * shifts the pages after it, so a pass that receipted something stops at the end of that page (`more`: the next pass
+	 * starts again from the first page), and one that reached the last page is `current`.
+	 */
 	async #take(
 		claim: Claim,
 		lease: DigitalPostSyncLease,
@@ -274,70 +281,87 @@ export class CloudDigitalPostSyncs {
 		receipted: string[],
 		signal: AbortSignal,
 	): Promise<"current" | "more"> {
-		const available = await this.#post.available(key, signal);
-		let took = false;
-		for (const memoId of available.ids) {
-			if (claim.held.has(memoId)) continue;
-			signal.throwIfAborted();
-			const xml = await this.#post.letter(key, memoId, signal);
-			if (xml === null) continue;
-			let layout: DigitalPostLetterLayout;
-			try {
-				layout = layOutDigitalPostLetter(readDigitalPostLetter(xml), this.#now());
-			} catch (error) {
-				const reason =
-					error instanceof DigitalPostLetterInvalid ? error.message : "the letter could not be laid out";
-				await this.#authority.holdDigitalPostLetter({ ...lease, memoId, reason }, database());
-				continue;
+		for (let page = 0; page < LIST_PAGES; page += 1) {
+			const available = await this.#post.available(key, signal, page);
+			let took = false;
+			for (const memoId of available.ids) {
+				if (claim.held.has(memoId)) continue;
+				if (await this.#takeOne(lease, key, memoId, receipted, signal)) took = true;
 			}
-			if (layout.files.reduce((total, file) => total + file.bytes.byteLength, 0) > DIGITAL_POST_LETTER_STAGE_BYTES) {
-				await this.#authority.holdDigitalPostLetter(
-					{ ...lease, memoId, reason: "the letter is too large for Qorpera" },
-					database(),
-				);
-				continue;
-			}
-			const kept = parseKept(
-				await this.#authority.keepDigitalPostLetter(
-					{
-						...lease,
-						memoId,
-						summary: layout.summary,
-						files: layout.files.map((file) => ({
-							name: file.name,
-							mediaType: file.mediaType,
-							bytes: file.bytes.byteLength,
-							sha256: file.sha256,
-						})),
-					},
-					database(),
-				),
-			);
-			if (kept.state === "staging") {
-				for (const [fileIndex, file] of layout.files.entries())
-					for (let start = 0; start < file.bytes.byteLength; start += DIGITAL_POST_CHUNK_BYTES)
-						await this.#authority.stageDigitalPostChunk(
-							{
-								...lease,
-								letterId: kept.letterId,
-								fileIndex,
-								chunkIndex: start / DIGITAL_POST_CHUNK_BYTES,
-								content: file.bytes.subarray(start, start + DIGITAL_POST_CHUNK_BYTES),
-							},
-							database(),
-						);
-				if (
-					parseKept(await this.#authority.sealDigitalPostLetter({ ...lease, letterId: kept.letterId }, database()))
-						.state !== "kept"
-				)
-					throw new DigitalPostSyncError("the database did not keep the letter");
-			}
-			// Kept: only now may Digital Post delete it.
-			await this.#post.receipt(key, memoId, layout.summary.messageUuid, this.#now(), signal);
-			receipted.push(kept.letterId);
-			took = true;
+			if (available.complete) return "current";
+			if (took) return "more";
 		}
-		return !available.complete && took ? "more" : "current";
+		return "current";
+	}
+
+	/** One letter: true when it was kept and receipted; false when Digital Post no longer had it or it was held. */
+	async #takeOne(
+		lease: DigitalPostSyncLease,
+		key: DigitalPostKey,
+		memoId: string,
+		receipted: string[],
+		signal: AbortSignal,
+	): Promise<boolean> {
+		signal.throwIfAborted();
+		const hold = async (reason: string): Promise<false> => {
+			await this.#authority.holdDigitalPostLetter({ ...lease, memoId, reason }, database());
+			return false;
+		};
+		let xml: Uint8Array | null;
+		try {
+			xml = await this.#post.letter(key, memoId, signal);
+		} catch (error) {
+			if (error instanceof DigitalPostAnswerTooLarge) return hold("the letter is too large for Qorpera");
+			throw error;
+		}
+		if (xml === null) return false;
+		let layout: DigitalPostLetterLayout;
+		try {
+			layout = layOutDigitalPostLetter(readDigitalPostLetter(xml), this.#now());
+		} catch (error) {
+			return hold(error instanceof DigitalPostLetterInvalid ? error.message : "the letter could not be laid out");
+		}
+		if (layout.files.reduce((total, file) => total + file.bytes.byteLength, 0) > DIGITAL_POST_LETTER_STAGE_BYTES)
+			return hold("the letter is too large for Qorpera");
+		const kept = parseKept(
+			await this.#authority.keepDigitalPostLetter(
+				{
+					...lease,
+					memoId,
+					summary: layout.summary,
+					files: layout.files.map((file) => ({
+						name: file.name,
+						mediaType: file.mediaType,
+						bytes: file.bytes.byteLength,
+						sha256: file.sha256,
+					})),
+				},
+				database(),
+			),
+		);
+		if (kept.state === "staging") {
+			for (const [fileIndex, file] of layout.files.entries())
+				for (let start = 0; start < file.bytes.byteLength; start += DIGITAL_POST_CHUNK_BYTES)
+					await this.#authority.stageDigitalPostChunk(
+						{
+							...lease,
+							letterId: kept.letterId,
+							fileIndex,
+							chunkIndex: start / DIGITAL_POST_CHUNK_BYTES,
+							content: file.bytes.subarray(start, start + DIGITAL_POST_CHUNK_BYTES),
+						},
+						database(),
+					);
+			if (
+				parseKept(await this.#authority.sealDigitalPostLetter({ ...lease, letterId: kept.letterId }, database()))
+					.state !== "kept"
+			)
+				throw new DigitalPostSyncError("the database did not keep the letter");
+		}
+		// Kept: only now may Digital Post delete it.
+		await this.#post.receipt(key, memoId, layout.summary.messageUuid, this.#now(), signal);
+		receipted.push(kept.letterId);
+		return true;
 	}
 }
 

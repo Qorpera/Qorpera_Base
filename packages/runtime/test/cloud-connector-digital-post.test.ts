@@ -8,6 +8,7 @@ import type { TLSSocket } from "node:tls";
 import {
 	DIGITAL_POST_LIST_SIZE,
 	type DigitalPostAnswer,
+	DigitalPostAnswerTooLarge,
 	DigitalPostClient,
 	DigitalPostKeyInvalid,
 	DigitalPostKeyRefused,
@@ -156,6 +157,12 @@ describe("DigitalPostClient", () => {
 		expect((await fake(() => json({ content: full, totalPages: 1 })).client.available(key, signal)).complete).toBe(
 			true,
 		);
+		// A later page, zero-based: complete when no page follows it.
+		const paged = fake(() => json({ content: full, totalPages: 3 }));
+		expect((await paged.client.available(key, signal, 2)).complete).toBe(true);
+		expect((await paged.client.available(key, signal, 1)).complete).toBe(false);
+		expect(paged.requests[0]?.path).toBe(`/apis/v1/memos/?page=2&size=${DIGITAL_POST_LIST_SIZE}`);
+		await expect(paged.client.available(key, signal, -1)).rejects.toThrow("Digital Post page is invalid");
 	});
 
 	it("refuses a list it cannot read", async () => {
@@ -288,8 +295,8 @@ describe("digitalPostTransport", () => {
 		const untrusted = digitalPostTransport(app(), { host: "localhost", port, ca: other.certPem });
 		await expect(untrusted({ method: "GET", path: "/", headers: {} }, 1024, 5000, signal)).rejects.toThrow();
 		const send = digitalPostTransport(app(), { host: "localhost", port, ca: server.certPem });
-		await expect(send({ method: "GET", path: "/big", headers: {} }, 1024, 5000, signal)).rejects.toThrow(
-			"Digital Post answer is too large",
+		await expect(send({ method: "GET", path: "/big", headers: {} }, 1024, 5000, signal)).rejects.toBeInstanceOf(
+			DigitalPostAnswerTooLarge,
 		);
 	});
 

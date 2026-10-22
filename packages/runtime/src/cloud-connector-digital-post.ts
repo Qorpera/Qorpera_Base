@@ -60,6 +60,14 @@ export class DigitalPostKeyRefused extends Error {
 	}
 }
 
+/** An answer was larger than its bound: for a letter, larger than Qorpera keeps (`DIGITAL_POST_LETTER_MAX_BYTES`). */
+export class DigitalPostAnswerTooLarge extends Error {
+	constructor() {
+		super("Digital Post answer is too large");
+		this.name = "DigitalPostAnswerTooLarge";
+	}
+}
+
 /** The text is not a Digital Post API key. */
 export class DigitalPostKeyInvalid extends Error {
 	constructor() {
@@ -175,7 +183,7 @@ export function digitalPostTransport(
 					let bytes = 0;
 					response.on("data", (chunk: Buffer) => {
 						bytes += chunk.byteLength;
-						if (bytes > maximumBytes) response.destroy(new Error("Digital Post answer is too large"));
+						if (bytes > maximumBytes) response.destroy(new DigitalPostAnswerTooLarge());
 						else chunks.push(chunk);
 					});
 					response.once("error", reject);
@@ -221,12 +229,14 @@ export class DigitalPostClient {
 		this.#transport = transport;
 	}
 
-	/** The letters waiting for the company's system (`GET /apis/v1/memos/`), at most `DIGITAL_POST_LIST_SIZE`. */
-	async available(key: DigitalPostKey, signal: AbortSignal): Promise<DigitalPostAvailable> {
+	/** One page of the letters waiting for the company's system (`GET /apis/v1/memos/`, zero-based), at most
+	 * `DIGITAL_POST_LIST_SIZE` a page. `complete` when no page follows it. */
+	async available(key: DigitalPostKey, signal: AbortSignal, pageNumber = 0): Promise<DigitalPostAvailable> {
+		if (!Number.isSafeInteger(pageNumber) || pageNumber < 0) throw new Error("Digital Post page is invalid");
 		const answer = await this.#transport(
 			{
 				method: "GET",
-				path: `/apis/v1/memos/?page=0&size=${DIGITAL_POST_LIST_SIZE}`,
+				path: `/apis/v1/memos/?page=${pageNumber}&size=${DIGITAL_POST_LIST_SIZE}`,
 				headers: { accept: "application/json", authorization: key.authorization },
 			},
 			LIST_MAX_BYTES,
@@ -251,11 +261,12 @@ export class DigitalPostClient {
 		const totalPages = page.totalPages;
 		const complete =
 			content.length < DIGITAL_POST_LIST_SIZE ||
-			(typeof totalPages === "number" && Number.isSafeInteger(totalPages) && totalPages <= 1);
+			(typeof totalPages === "number" && Number.isSafeInteger(totalPages) && totalPages <= pageNumber + 1);
 		return { ids, complete };
 	}
 
-	/** One letter's MeMo XML (`GET /apis/v1/memos/{id}`); null when Digital Post no longer has it. */
+	/** One letter's MeMo XML (`GET /apis/v1/memos/{id}`); null when Digital Post no longer has it. A letter larger than
+	 * Qorpera keeps refuses with `DigitalPostAnswerTooLarge`. */
 	async letter(key: DigitalPostKey, id: string, signal: AbortSignal): Promise<Uint8Array | null> {
 		if (!UUID_PATTERN.test(id)) throw new Error("Digital Post letter id is invalid");
 		const answer = await this.#transport(

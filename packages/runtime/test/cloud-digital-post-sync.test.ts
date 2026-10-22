@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DigitalPostKeyRefused } from "@qorpera/runtime/cloud-connector-digital-post";
+import { DigitalPostAnswerTooLarge, DigitalPostKeyRefused } from "@qorpera/runtime/cloud-connector-digital-post";
 import { ConnectorRequestError } from "@qorpera/runtime/cloud-connector-http";
 import {
 	CloudDigitalPostSyncs,
@@ -68,6 +68,9 @@ function fixture(
 		fields?: Record<string, string>;
 		listError?: Error;
 		keepError?: Error;
+		/** Digital Post's list page by page; without it, every page answers `ids` and `complete`. */
+		pages?: { ids: string[]; complete: boolean }[];
+		letterErrors?: Record<string, Error>;
 	} = {},
 ) {
 	const log: string[] = [];
@@ -124,14 +127,17 @@ function fixture(
 	};
 	const letters = options.letters ?? { [MEMO_A]: letter(MESSAGE_A) };
 	const post = {
-		available: vi.fn(async (key: { authorization: string }) => {
+		available: vi.fn(async (key: { authorization: string }, _signal: AbortSignal, page = 0) => {
 			expect(key.authorization).toBe(`Basic ${KEY}`);
 			if (options.listError) throw options.listError;
-			log.push("list");
+			log.push(page === 0 ? "list" : `list ${page}`);
+			if (options.pages) return options.pages[page] ?? { ids: [], complete: true };
 			return { ids: options.ids ?? Object.keys(letters), complete: options.complete ?? true };
 		}),
 		letter: vi.fn(async (_key: unknown, id: string) => {
 			log.push(`fetch ${id}`);
+			const error = options.letterErrors?.[id];
+			if (error) throw error;
 			return letters[id] ?? null;
 		}),
 		receipt: vi.fn(async (_key: unknown, id: string, message: string) => {
@@ -236,11 +242,51 @@ it("holds a letter it cannot read or keep whole, without a receipt", async () =>
 	expect(f.post.receipt).toHaveBeenCalledWith(expect.anything(), MEMO_B, MESSAGE_B, NOW, expect.anything());
 });
 
+it("holds a letter Digital Post answers larger than Qorpera keeps, and takes the next one", async () => {
+	const f = fixture({
+		letters: { [MEMO_A]: letter(MESSAGE_A), [MEMO_B]: letter(MESSAGE_B) },
+		letterErrors: { [MEMO_A]: new DigitalPostAnswerTooLarge() },
+	});
+	expect(await f.syncs.pass(signal)).toBe("current");
+	expect(f.held.map((entry) => [entry.memoId, entry.reason])).toEqual([
+		[MEMO_A, "the letter is too large for Qorpera"],
+	]);
+	expect(f.post.receipt).toHaveBeenCalledExactlyOnceWith(expect.anything(), MEMO_B, MESSAGE_B, NOW, expect.anything());
+});
+
+it("reads past a page of held letters to the letters after them", async () => {
+	const held = Array.from({ length: 50 }, (_, index) => `0b000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+	const f = fixture({
+		claim: claim({ held }),
+		pages: [
+			{ ids: held, complete: false },
+			{ ids: [MEMO_B], complete: true },
+		],
+		letters: { [MEMO_B]: letter(MESSAGE_B) },
+	});
+	expect(await f.syncs.pass(signal)).toBe("current");
+	expect(f.log.filter((line) => line.startsWith("list"))).toEqual(["list", "list 1"]);
+	expect(f.post.letter).toHaveBeenCalledTimes(1);
+	expect(f.finished[0]?.receipted).toEqual([f.letterIds.get(MESSAGE_B)]);
+	// A receipt shifts the pages after it: a pass that took a letter on a page that was not the last stops there.
+	const more = fixture({
+		pages: [
+			{ ids: [MEMO_A], complete: false },
+			{ ids: [MEMO_B], complete: true },
+		],
+		letters: { [MEMO_A]: letter(MESSAGE_A), [MEMO_B]: letter(MESSAGE_B) },
+	});
+	expect(await more.syncs.pass(signal)).toBe("more");
+	expect(more.log.filter((line) => line.startsWith("list"))).toEqual(["list"]);
+});
+
 it("asks for more at once only when the list was full and it took a letter", async () => {
 	expect(await fixture({ complete: false }).syncs.pass(signal)).toBe("more");
 	const allHeld = fixture({ complete: false, claim: claim({ held: [MEMO_A] }) });
 	expect(await allHeld.syncs.pass(signal)).toBe("current");
 	expect(allHeld.finished[0]?.outcome).toBe("current");
+	// A list that never ends is read for twenty pages, then left to the next pass.
+	expect(allHeld.post.available).toHaveBeenCalledTimes(20);
 });
 
 it("stops on a refused key, and on a key that is not one", async () => {
