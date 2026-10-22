@@ -11,14 +11,24 @@ const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export type Route =
 	| { name: "hub" }
 	| { name: "account" }
+	/** A new company starts from an idea; qorpera.com hands over the one typed there as `#/new?idea=…`. */
+	| { name: "new"; idea?: string }
 	/** A founding table: a company row whose founders have not pressed Start yet. */
 	| { name: "found"; profileId: string }
 	| { name: "company"; profileId: string; section: CompanySection; id?: string };
 
+/** The longest idea a link may carry (the website's box takes 280 characters). */
+export const IDEA_MAX_CHARACTERS = 1000;
+
 export function parseRoute(hash: string): Route {
-	const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+	const [path = "", query = ""] = hash.replace(/^#\/?/, "").split("?", 2);
+	const parts = path.split("/").filter(Boolean);
 	if (parts.length === 0) return { name: "hub" };
 	if (parts[0] === "account") return { name: "account" };
+	if (parts[0] === "new" && parts.length === 1) {
+		const idea = new URLSearchParams(query).get("idea")?.trim().slice(0, IDEA_MAX_CHARACTERS);
+		return idea ? { name: "new", idea } : { name: "new" };
+	}
 	if (parts[0] === "found" && parts[1] && UUID.test(parts[1]))
 		return { name: "found", profileId: parts[1].toLowerCase() };
 	if (parts[0] === "c" && parts[1] && UUID.test(parts[1])) {
@@ -46,6 +56,9 @@ export function routeHash(route: Route): string {
 			return "#/";
 		case "account":
 			return "#/account";
+		// The idea never goes back into the address: it is read once, then the box holds it.
+		case "new":
+			return "#/new";
 		case "found":
 			return `#/found/${route.profileId}`;
 		case "company":

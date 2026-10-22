@@ -103,12 +103,17 @@ export function initials(name: string): string {
 	return (first + last).toUpperCase();
 }
 
-export function personAvatar(name: string, identity: string): HTMLElement {
+/** A person's own colour: their initials disc's, and their words at a founding table. */
+export function personColor(identity: string): string {
 	const colors = ["#778fc6", "#ab829c", "#b18b64", "#789e8d", "#9685b5", "#739eab"];
 	let hash = 0;
 	for (const character of identity) hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0;
+	return colors[hash % colors.length]!;
+}
+
+export function personAvatar(name: string, identity: string): HTMLElement {
 	const avatar = h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(name));
-	avatar.style.setProperty("--person-color", colors[hash % colors.length]!);
+	avatar.style.setProperty("--person-color", personColor(identity));
 	// An account id brings the person's own picture, when they chose one.
 	attachPersonPicture(avatar, identity);
 	return avatar;
@@ -165,6 +170,22 @@ const ICON_PATHS: Record<string, string[]> = {
 	],
 	bell: ["M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"],
 	plus: ["M12 5v14M5 12h14"],
+	arrow_up: ["M12 19V5", "M5.5 11.5 12 5l6.5 6.5"],
+	globe: [
+		"M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",
+		"M3 12h18",
+		"M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z",
+	],
+	// qorpera.com's kinds of company (landing/src/site/site.js), so the app's chips match the website's.
+	shop: ["M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8z", "M9 8V6.5a3 3 0 0 1 6 0V8"],
+	megaphone: ["M4 10v4h3l6 4V6L7 10z", "M17 9.5a3.5 3.5 0 0 1 0 5"],
+	cup: ["M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z", "M16 10h1.5a2.5 2.5 0 0 1 0 5H16", "M9 3.5v2M12 3.5v2"],
+	briefcase: [
+		"M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z",
+		"M9 8V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v2M4 13h16",
+	],
+	brush: ["M14.5 5.5l4 4-2 2-4-4z", "M12.5 7.5L5 15l4 4 7.5-7.5"],
+	code: ["M9 8l-4 4 4 4M15 8l4 4-4 4"],
 	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],
 	close: ["m6 6 12 12M6 18 18 6"],
 	lock: ["M5 11h14v10H5Z", "M8 11V7a4 4 0 0 1 8 0v4"],
