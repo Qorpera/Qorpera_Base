@@ -72,6 +72,7 @@ function fixture(
 		/** Digital Post's list page by page; without it, every page answers `ids` and `complete`. */
 		pages?: { ids: string[]; complete: boolean }[];
 		letterErrors?: Record<string, Error>;
+		now?: () => Date;
 	} = {},
 ) {
 	const log: string[] = [];
@@ -149,7 +150,12 @@ function fixture(
 		}),
 	};
 	// The keyring's real `use` is generic in its callback's answer; the fake answers whatever the callback does.
-	const syncs = new CloudDigitalPostSyncs({ authority, keyring: keyring as never, post, now: () => NOW });
+	const syncs = new CloudDigitalPostSyncs({
+		authority,
+		keyring: keyring as never,
+		post,
+		now: options.now ?? (() => NOW),
+	});
 	return { syncs, authority, keyring, post, log, finished, kept, chunks, held, opened, letterIds };
 }
 
@@ -321,6 +327,57 @@ it("reaches a letter behind two thousand unreadable ones over passes, with the c
 	expect(outcomes).toEqual(["more", "more", "current"]);
 	expect(f.finished.map((finish) => finish.scanPage)).toEqual([20, 40, 0]);
 	expect(f.post.receipt).toHaveBeenCalledExactlyOnceWith(expect.anything(), MEMO_B, MESSAGE_B, NOW, expect.anything());
+});
+
+it("keeps its place through a slow Digital Post, over passes and a second sweep", async () => {
+	// 2000 letters the vault cannot read, each fetch taking a second, then one it can (page 40). Each pass stops starting
+	// letters after six minutes and leaves the next pass the page it was on; the claim lists every hold.
+	const bad = Array.from({ length: 2000 }, (_, index) => `0e000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+	const pages = [
+		...Array.from({ length: 40 }, (_, page) => ({ ids: bad.slice(page * 50, page * 50 + 50), complete: false })),
+		{ ids: [MEMO_B], complete: true },
+	];
+	const malformed = new Uint8Array(Buffer.from("<memo:Message>not closed"));
+	const letters: Record<string, Uint8Array> = {
+		...Object.fromEntries(bad.map((id) => [id, malformed])),
+		[MEMO_B]: letter(MESSAGE_B),
+	};
+	const holds = new Set<string>();
+	const gone = new Set<string>();
+	let scanPage = 0;
+	let clock = NOW.getTime();
+	const f = fixture({ claim: () => claim({ held: [...holds], scanPage }), now: () => new Date(clock) });
+	f.post.available.mockImplementation(async (_key: unknown, _signal: AbortSignal, page = 0) => {
+		const listed = pages[page] ?? { ids: [], complete: true };
+		return { ids: listed.ids.filter((id) => !gone.has(id)), complete: listed.complete };
+	});
+	f.post.letter.mockImplementation(async (_key: unknown, id: string) => {
+		clock += 1000;
+		return letters[id] ?? null;
+	});
+	f.post.receipt.mockImplementation(async (_key: unknown, id: string) => {
+		gone.add(id);
+		return "receipted" as const;
+	});
+	f.authority.holdDigitalPostLetter = vi.fn(async (input) => {
+		holds.add(input.memoId);
+		return { schema: "qorpera.digital-post-held/v1", held: true };
+	});
+	f.authority.finishDigitalPostSync = vi.fn(async (input) => {
+		f.finished.push(input);
+		scanPage = input.scanPage;
+		return { schema: "qorpera.digital-post-sync-result/v1" };
+	});
+	const outcomes: string[] = [];
+	for (let pass = 0; pass < 10 && !gone.has(MEMO_B); pass += 1) outcomes.push(await f.syncs.pass(signal));
+	expect(outcomes).toEqual(["more", "more", "more", "more", "more", "current"]);
+	expect(holds.size).toBe(2000);
+	expect(f.post.letter).toHaveBeenCalledTimes(2001);
+	// The second sweep reads past every held letter without fetching one.
+	const sweep: string[] = [];
+	for (let pass = 0; pass < 10 && sweep.at(-1) !== "current"; pass += 1) sweep.push(await f.syncs.pass(signal));
+	expect(sweep).toEqual(["more", "more", "current"]);
+	expect(f.post.letter).toHaveBeenCalledTimes(2001);
 });
 
 it("asks for more at once when the list was full and it took a letter, or when it read its pages", async () => {

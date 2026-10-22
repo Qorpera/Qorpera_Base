@@ -201,8 +201,8 @@ $$;
 revoke all on function public.qorpera_digital_post_leased(uuid, uuid, bigint, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The company's due sync, leased for fifteen minutes to this claim, with its sealed key, the letters held (not to be
--- fetched again; the newest 1000) and the page to start at: null when nothing is due. A secret no longer active, or sealed by another authority, stops the
+-- The company's due sync, leased for fifteen minutes to this claim, with its sealed key, every letter held (not to be
+-- fetched again) and the page to start at: null when nothing is due. A secret no longer active, or sealed by another authority, stops the
 -- sync here. Held letters older than eight days are forgotten: Digital Post moved them to Virk after seven.
 create function public.qorpera_claim_digital_post_sync(p_broker_authority_id uuid, p_broker_capability_sha256 text)
 returns jsonb
@@ -245,12 +245,14 @@ begin
 	where profile_id = v_authority.profile_id;
 	delete from public.qorpera_digital_post_held
 	where profile_id = v_authority.profile_id and held_at < v_now - interval '8 days';
+	-- Every held letter: they live at most eight days, and Digital Post keeps a letter at most seven. The bound is only a
+	-- guard; past it the vault fetches the oldest again and holds them again, reading on all the same.
 	select coalesce(jsonb_agg(held.memo_id order by held.memo_id), '[]'::jsonb) into v_held
 	from (
 		select memo_id from public.qorpera_digital_post_held
 		where profile_id = v_authority.profile_id
 		order by held_at desc
-		limit 1000
+		limit 100000
 	) as held;
 	return jsonb_build_object(
 		'schema', 'qorpera.digital-post-sync-claim/v1',
