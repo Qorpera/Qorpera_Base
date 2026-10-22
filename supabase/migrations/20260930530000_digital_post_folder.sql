@@ -58,6 +58,10 @@ declare
 	v_files jsonb;
 	v_index jsonb;
 	v_blocked boolean;
+	v_root_present boolean;
+	v_year_present boolean;
+	v_folder_present boolean;
+	v_index_version uuid;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501';
@@ -100,30 +104,42 @@ begin
 	where id = v_letter.id
 	returning * into v_letter;
 	v_year := split_part(v_letter.folder, '/', 1) || '/' || split_part(v_letter.folder, '/', 2);
-	select jsonb_agg(file.value || jsonb_build_object('version', case when entry.kind = 'file' then entry.version end)
-			order by file.position),
-		bool_or(entry.kind is not null and entry.kind <> 'file')
-	into v_files, v_blocked
-	from jsonb_array_elements(v_letter.files) with ordinality as file(value, position)
-	left join lateral public.qorpera_digital_post_entry(v_letter.environment_id,
-		v_letter.folder || '/' || (file.value->>'name')) as entry on true;
-	v_blocked := v_blocked
-		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind <> 'folder', false)
-		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind <> 'folder', false)
-		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind <> 'folder', false)
-		or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json')).kind <> 'file',
-			false);
-	select coalesce(jsonb_agg(listed.summary order by listed.received_at desc, listed.id), '[]'::jsonb) into v_index
-	from (
-		select letter.summary, letter.received_at, letter.id
-		from public.qorpera_digital_post_letters as letter
-		where letter.profile_id = v_letter.profile_id
-			and (letter.status = 'written' or letter.id = v_letter.id
-				or (letter.status = 'kept' and coalesce(
-					(public.qorpera_digital_post_entry(letter.environment_id, letter.folder)).kind = 'folder', false)))
-		order by letter.received_at desc, letter.id
-		limit 200
-	) as listed;
+	-- What the folder holds, read in one statement so all of it is one snapshot: the letters the index lists and the
+	-- index's version are of the same moment (a letter committed after it changes the version, and the write at the
+	-- version read backs off).
+	select
+		(select jsonb_agg(file.value || jsonb_build_object('version', case when entry.kind = 'file' then entry.version end)
+				order by file.position)
+			from jsonb_array_elements(v_letter.files) with ordinality as file(value, position)
+			left join lateral public.qorpera_digital_post_entry(v_letter.environment_id,
+				v_letter.folder || '/' || (file.value->>'name')) as entry on true),
+		coalesce((select bool_or(entry.kind is not null and entry.kind <> 'file')
+			from jsonb_array_elements(v_letter.files) as file(value)
+			left join lateral public.qorpera_digital_post_entry(v_letter.environment_id,
+				v_letter.folder || '/' || (file.value->>'name')) as entry on true), false)
+			or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind <> 'folder', false)
+			or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind <> 'folder', false)
+			or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind <> 'folder', false)
+			or coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json')).kind
+				<> 'file', false),
+		coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind = 'folder', false),
+		coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind = 'folder', false),
+		coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind = 'folder', false),
+		(select entry.version
+			from public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json') as entry
+			where entry.kind = 'file'),
+		coalesce((select jsonb_agg(listed.summary order by listed.received_at desc, listed.id)
+			from (
+				select letter.summary, letter.received_at, letter.id
+				from public.qorpera_digital_post_letters as letter
+				where letter.profile_id = v_letter.profile_id
+					and (letter.status = 'written' or letter.id = v_letter.id
+						or (letter.status = 'kept' and coalesce(
+							(public.qorpera_digital_post_entry(letter.environment_id, letter.folder)).kind = 'folder', false)))
+				order by letter.received_at desc, letter.id
+				limit 200
+			) as listed), '[]'::jsonb)
+	into v_files, v_blocked, v_root_present, v_year_present, v_folder_present, v_index_version, v_index;
 	return jsonb_build_object(
 		'schema', 'qorpera.digital-post-letter-claim/v1',
 		'letterId', v_letter.id,
@@ -132,14 +148,12 @@ begin
 		'attempt', v_letter.write_attempts,
 		'operationKey', 'digital-post:' || v_letter.id::text || ':' || v_letter.write_attempts::text,
 		'folder', v_letter.folder,
-		'rootPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post')).kind = 'folder', false),
-		'yearPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_year)).kind = 'folder', false),
-		'folderPresent', coalesce((public.qorpera_digital_post_entry(v_letter.environment_id, v_letter.folder)).kind = 'folder', false),
+		'rootPresent', v_root_present,
+		'yearPresent', v_year_present,
+		'folderPresent', v_folder_present,
 		'blocked', v_blocked,
 		'files', v_files,
-		'indexVersion', (select entry.version
-			from public.qorpera_digital_post_entry(v_letter.environment_id, 'digital-post/letters.json') as entry
-			where entry.kind = 'file'),
+		'indexVersion', v_index_version,
 		'index', v_index,
 		'leaseUntil', v_letter.write_lease_until
 	);
