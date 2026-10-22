@@ -1,12 +1,14 @@
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
 import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import {
 	CloudConnectorTokenRevocations,
 	CloudConnectorTokenRevoker,
 	logConnectorTokenRevocationPass,
 } from "./cloud-connector-token-revocation.ts";
+import { CloudDigitalPostSyncs, logDigitalPostSyncPass } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, logEventVerificationPass } from "./cloud-event-verification.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
@@ -19,6 +21,7 @@ import {
 	type PostgresCloudSecretBrokerPrincipal,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
  * The shared vault (Vault By Default, founder decisions 2026-09-28): one broker process serves every
@@ -31,7 +34,8 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * upkeep pass runs in turn, and so does each company's connector token revocation queue (company delete
  * D6), once a minute, and each company's deliveries to signed hooks (W1b), every five seconds. With an
  * Enable Banking application, the companies whose bank sync is due are asked for once a minute and synced
- * in turn.
+ * in turn; with Qorpera's Digital Post certificate, so are the companies whose Digital Post sync is due
+ * (RUNTIME-DIGITAL-POST.md).
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -67,6 +71,7 @@ interface Served {
 	readonly revocations: CloudConnectorTokenRevocations;
 	readonly verifications: CloudEventVerifications;
 	readonly bankSyncs: CloudBankSyncs | undefined;
+	readonly digitalPostSyncs: CloudDigitalPostSyncs | undefined;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -88,7 +93,7 @@ function servedEntry(value: unknown): { companyId: string; authorityId: string; 
 export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompanies {
 	readonly #principal: Pick<
 		PostgresCloudSecretBrokerPrincipal,
-		"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue"
+		"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
 	>;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
@@ -96,6 +101,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
 	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #bank: Pick<EnableBankingClient, "balances" | "transactions"> | undefined;
+	readonly #digitalPost: Pick<DigitalPostClient, "available" | "letter" | "receipt"> | undefined;
+	readonly #digitalPostPdfText: DigitalPostPdfTextReader | undefined;
 	readonly #refreshEveryMs: number;
 	readonly #collectEveryMs: number;
 	readonly #sweepEveryMs: number;
@@ -103,6 +110,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #revokeEveryMs: number;
 	readonly #verifyEveryMs: number;
 	readonly #bankEveryMs: number;
+	readonly #digitalPostEveryMs: number;
 	readonly #now: () => number;
 	readonly #served = new Map<string, Served>();
 	readonly #signingIn = new Map<string, number>();
@@ -118,7 +126,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	constructor(options: {
 		principal: Pick<
 			PostgresCloudSecretBrokerPrincipal,
-			"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue"
+			"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
 		>;
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
@@ -131,6 +139,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		revoker?: Pick<CloudConnectorTokenRevoker, "revoke">;
 		/** Enable Banking: absent, no company's bank is synced. */
 		bank?: Pick<EnableBankingClient, "balances" | "transactions">;
+		/** Digital Post with Qorpera's certificate: absent, no company's Digital Post is fetched. */
+		digitalPost?: Pick<DigitalPostClient, "available" | "letter" | "receipt">;
+		/** Reads PDF-only letters' text; absent, they are kept without it. */
+		digitalPostPdfText?: DigitalPostPdfTextReader;
 		refreshEveryMs?: number;
 		collectEveryMs?: number;
 		sweepEveryMs?: number;
@@ -138,6 +150,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		revokeEveryMs?: number;
 		verifyEveryMs?: number;
 		bankEveryMs?: number;
+		digitalPostEveryMs?: number;
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
@@ -147,6 +160,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#chatGptPlan = options.chatGptPlan;
 		this.#revoker = options.revoker ?? new CloudConnectorTokenRevoker();
 		this.#bank = options.bank;
+		this.#digitalPost = options.digitalPost;
+		this.#digitalPostPdfText = options.digitalPostPdfText;
 		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
@@ -154,6 +169,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#revokeEveryMs = options.revokeEveryMs ?? 60_000;
 		this.#verifyEveryMs = options.verifyEveryMs ?? 5000;
 		this.#bankEveryMs = options.bankEveryMs ?? 60_000;
+		this.#digitalPostEveryMs = options.digitalPostEveryMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
 	}
 
@@ -281,6 +297,14 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			bankSyncs: this.#bank
 				? new CloudBankSyncs({ authority, keyring: this.#keyring, bank: this.#bank })
 				: undefined,
+			digitalPostSyncs: this.#digitalPost
+				? new CloudDigitalPostSyncs({
+						authority,
+						keyring: this.#keyring,
+						post: this.#digitalPost,
+						...(this.#digitalPostPdfText ? { pdfText: this.#digitalPostPdfText } : {}),
+					})
+				: undefined,
 		};
 	}
 
@@ -357,6 +381,28 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 	}
 
+	/** The Digital Post syncs of each served company that has one due, in turn: one call asks which. */
+	async syncDigitalPost(): Promise<void> {
+		if (this.#closed || !this.#digitalPost) return;
+		const answer = record(
+			await this.#principal.digitalPostSyncsDue(
+				AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)]),
+			),
+			"Shared vault Digital Post syncs",
+		);
+		if (
+			answer.schema !== "qorpera.broker-principal-digital-post-syncs/v1" ||
+			!Array.isArray(answer.companyIds) ||
+			answer.companyIds.length > 1000
+		)
+			throw new Error("Shared vault Digital Post syncs are invalid");
+		for (const companyId of new Set(answer.companyIds.map(company))) {
+			if (this.#closed) return;
+			const syncs = this.#served.get(companyId)?.digitalPostSyncs;
+			if (syncs) await logDigitalPostSyncPass(syncs, this.#closing.signal);
+		}
+	}
+
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
@@ -376,6 +422,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		);
 		if (this.#bank)
 			this.#loop(() => this.syncBanks(), this.#bankEveryMs, 20_000 + Math.floor(Math.random() * this.#bankEveryMs));
+		if (this.#digitalPost)
+			this.#loop(
+				() => this.syncDigitalPost(),
+				this.#digitalPostEveryMs,
+				20_000 + Math.floor(Math.random() * this.#digitalPostEveryMs),
+			);
 	}
 
 	#loop(work: () => Promise<void>, everyMs: number, firstMs: number): void {

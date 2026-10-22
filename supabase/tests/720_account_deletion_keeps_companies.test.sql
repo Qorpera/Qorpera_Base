@@ -51,7 +51,8 @@ with recursive reached(table_id) as (
 select pg_temp.acct_assert(not exists (
 	select table_id::regclass::text from reached
 	except
-	select unnest(array['qorpera_company_creation_requests', 'qorpera_company_founder_seats', 'qorpera_friendships',
+	select unnest(array['qorpera_company_creation_requests', 'qorpera_company_founder_seats',
+		'qorpera_founding_presence_devices', 'qorpera_friendships',
 		'qorpera_mail_thread_reads', 'qorpera_member_email_actions', 'qorpera_member_email_drafts', 'qorpera_member_notifications',
 		'qorpera_member_pictures', 'qorpera_member_session_accounts', 'qorpera_member_sidebar_agents',
 		'qorpera_member_sidebar_rooms', 'qorpera_native_presence_devices', 'qorpera_presence_devices',

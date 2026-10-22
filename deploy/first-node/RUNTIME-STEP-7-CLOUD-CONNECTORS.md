@@ -146,6 +146,21 @@ shared vault asks once a minute which companies are due. Until Enable
 Banking activates the application beyond restricted mode, only the accounts
 its owner linked in the control panel can be read.
 
+Digital Post (`RUNTIME-DIGITAL-POST.md`, migration `20260930529000`): the same
+credential may carry `digitalPost: {environment, certificatePem, privateKeyPem}`,
+Qorpera's OCES3 organisation or system certificate from MitID Erhverv (`test`
+for Digital Post's test environment, `production` for the real one; the key
+stays off chat and out of git). It may be the only entry. The broker checks
+that the key matches the certificate when it starts. With it the broker
+fetches the Digital Post of every company that saved a `digital_post` key
+(`cloud-digital-post-sync.ts`): a single-company broker checks once a minute,
+the shared vault asks once a minute which companies are due. Every call goes
+from the node's own address to `api.test.digitalpost.dk` or
+`api.digitalpost.dk` over mutual TLS; a company's recipient system lists that
+address, so the broker must run where that address is stable. Like the bank
+sync, it opens a company's key without a run, only to call Digital Post's
+fixed origin.
+
 ### Routing behind the one public origin (production)
 
 All companies' brokers sit behind ONE public origin,
