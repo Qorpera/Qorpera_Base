@@ -1,3 +1,4 @@
+import type { HostedConnectorConnection, HostedConnectorReturn, WebConnectors } from "../../cloud/connectors.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { h, replace, spinner } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
@@ -15,7 +16,48 @@ import type { CompanyController } from "../company.ts";
  * folder reader last read it. Three tabs. Overview: the saldo with what is disponibel and reserveret, the saldo over
  * time with what is expected ahead, and money in and out per month. Money in and Money out: the last month by category
  * as a ring and a list, each category opening to what it holds, and every month. Put in money tells the member how to
- * move their own money into the company, as a loan or as share capital; nothing here moves money. */
+ * move their own money into the company, as a loan or as share capital; nothing here moves money.
+ *
+ * Connect the bank (an owner or admin, from the empty page, or Connect again when the bank paused sharing): the member
+ * picks the bank, logs in at the bank itself with MitID, and comes back here, where the sign-in is finished. The vault
+ * keeps the bank's session and the summary arrives in the folder a few minutes later. */
+
+/** What the page needs for the company's bank connection (cloud/connectors.ts). */
+export type BankConnectionClient = Pick<WebConnectors, "list" | "beginSignIn" | "finishSignIn">;
+
+/** The banks offered, as Enable Banking names them in Denmark. */
+const BANKS = [
+	"Danske Bank",
+	"Nordea",
+	"Jyske Bank",
+	"Sydbank",
+	"Nykredit Bank",
+	"Arbejdernes Landsbank",
+	"Spar Nord Bank",
+	"Lunar",
+] as const;
+
+/** Why a bank sign-in did not finish, in the interface language. */
+function returnReason(reason: unknown): string {
+	switch (reason) {
+		case "declined":
+			return t("No account was shared with Qorpera.");
+		case "expired":
+			return t("The sign-in took too long. Try again.");
+		case "browser_mismatch":
+			return t("The sign-in was finished in another browser. Start it again here.");
+		case "state_unknown":
+			return t("This sign-in link is no longer valid. Try again.");
+		default:
+			return t("The bank did not complete the sign-in. Try again.");
+	}
+}
+
+/** The bank's sign-in outcome the app took from the page hash, kept until the Bank page is drawn once. */
+let pendingReturn: HostedConnectorReturn | undefined;
+export function noteBankReturn(outcome: HostedConnectorReturn | undefined): void {
+	pendingReturn = outcome?.connector === "bank" ? outcome : undefined;
+}
 
 type Tab = "overview" | "in" | "out";
 type Range = "quarter" | "year";
@@ -145,10 +187,74 @@ class BankView {
 	readonly #closed = () => this.dispose();
 	/** The line under the saldo that names the day the pointer is on. */
 	#hoverLine: HTMLElement | null = null;
+	readonly #connection: BankConnectionClient | undefined;
+	readonly #navigate: (url: string) => void;
+	readonly #lifetime = new AbortController();
+	/** The company's bank connection: undefined until read (or with no client), null when there is none. */
+	#bank: HostedConnectorConnection | null | undefined;
+	/** A sign-in that came back is being finished. */
+	#finishing = false;
+	/** What the last connect did, said under the page's heading. */
+	#note: { tone: "ok" | "error"; text: string } | undefined;
 
-	constructor(company: CompanyController) {
+	constructor(company: CompanyController, options: BankPageOptions = {}) {
 		this.#company = company;
+		this.#connection = options.connection?.();
+		this.#navigate = options.navigate ?? ((url) => location.assign(url));
 		company.signal.addEventListener("abort", this.#closed, { once: true });
+		const outcome = pendingReturn;
+		pendingReturn = undefined;
+		if (outcome && this.#connection) void this.#finish(outcome);
+		else void this.#readConnection();
+	}
+
+	/** Whether the member may connect the company's bank (owner or admin; the kernel enforces the same rule). */
+	#canConnect(): boolean {
+		const role = this.#company.store.get().team?.role;
+		return this.#connection !== undefined && (role === "owner" || role === "admin");
+	}
+
+	async #readConnection(): Promise<void> {
+		if (!this.#connection) return;
+		try {
+			const connections = await this.#connection.list(this.#lifetime.signal);
+			if (this.#lifetime.signal.aborted) return;
+			this.#bank =
+				connections
+					.filter(
+						(item) => item.connectorId === "bank" && item.status === "active" && item.ownerKind === "company",
+					)
+					.sort((left, right) => right.version - left.version)[0] ?? null;
+		} catch {
+			if (this.#lifetime.signal.aborted) return;
+			this.#bank = undefined;
+		}
+		this.#redraw();
+	}
+
+	/** The bank sent the member back: the vault seals the session only for this tab's proof. */
+	async #finish(outcome: HostedConnectorReturn): Promise<void> {
+		const client = this.#connection;
+		if (!client) return;
+		if (outcome.connection === "failed") {
+			this.#note = { tone: "error", text: `${t("The bank was not connected.")} ${returnReason(outcome.reason)}` };
+			await this.#readConnection();
+			return;
+		}
+		this.#finishing = true;
+		this.#redraw();
+		try {
+			await client.finishSignIn(outcome, this.#lifetime.signal);
+			if (this.#lifetime.signal.aborted) return;
+			this.#note = { tone: "ok", text: t("The bank is connected. Its numbers arrive here within a few minutes.") };
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			const reason = (error as { reason?: unknown } | undefined)?.reason;
+			this.#note = { tone: "error", text: `${t("The bank was not connected.")} ${returnReason(reason)}` };
+		} finally {
+			this.#finishing = false;
+		}
+		await this.#readConnection();
 	}
 
 	/** Draws the summary when its text, the language or the company's state it shows changed. */
@@ -166,14 +272,17 @@ class BankView {
 
 	dispose(): void {
 		this.#company.signal.removeEventListener("abort", this.#closed);
+		this.#lifetime.abort();
 		this.#dialog?.close(false);
 	}
 
 	#redraw(): void {
-		this.#draw(false);
+		if (this.#lifetime.signal.aborted) return;
+		this.#draw(this.el.dataset.loading === "true");
 	}
 
 	#draw(loading: boolean): void {
+		this.el.dataset.loading = String(loading);
 		if (loading) {
 			replace(this.el, h("div", { class: "bank-waiting" }, spinner(t("Opening company"))));
 			return;
@@ -241,17 +350,44 @@ class BankView {
 	}
 
 	#empty(unreadable: boolean): HTMLElement {
+		const note = this.#note
+			? h("p", { class: `bank-note-line is-${this.#note.tone}`, role: "status" }, this.#note.text)
+			: null;
+		if (unreadable)
+			return h(
+				"div",
+				{ class: "bank-empty" },
+				h("h1", null, t("The bank summary can't be read")),
+				h("p", null, t("Its file in the company folder doesn't follow the bank summary format.")),
+			);
+		if (this.#finishing) return h("div", { class: "bank-empty" }, spinner(t("Finishing the bank connection")));
+		if (this.#bank)
+			return h(
+				"div",
+				{ class: "bank-empty" },
+				h("h1", null, t("The bank is connected")),
+				note,
+				h("p", null, t("Its saldo and what comes in and goes out show here within a few minutes.")),
+			);
 		return h(
 			"div",
 			{ class: "bank-empty" },
-			h("h1", null, unreadable ? t("The bank summary can't be read") : t("No bank yet")),
+			h("h1", null, t("No bank yet")),
+			note,
 			h(
 				"p",
 				null,
-				unreadable
-					? t("Its file in the company folder doesn't follow the bank summary format.")
-					: t("When the company's bank is connected, its saldo and what comes in and goes out show here."),
+				this.#canConnect() || this.#connection === undefined
+					? t("When the company's bank is connected, its saldo and what comes in and goes out show here.")
+					: t("An owner or admin can connect the company's bank."),
 			),
+			this.#canConnect() && this.#bank === null
+				? h(
+						"button",
+						{ type: "button", class: "btn btn-primary", onclick: () => this.#openConnect(undefined, undefined) },
+						t("Connect the bank"),
+					)
+				: null,
 		);
 	}
 
@@ -266,7 +402,167 @@ class BankView {
 			),
 			" ",
 			h("span", null, t("Banks ask again every 180 days. It takes half a minute with MitID.")),
+			// Connecting again replaces the connection the company has, so it waits until that one is read.
+			this.#canConnect() && this.#bank
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
+							onclick: () => this.#openConnect(this.#bank?.secretId, summary.bank),
+						},
+						t("Connect again"),
+					)
+				: null,
 		);
+	}
+
+	/** Connect the bank: which bank, then where the member logs in, then the bank's own page. */
+	#openConnect(existingSecretId: string | undefined, bank: string | undefined): void {
+		const client = this.#connection;
+		if (!client) return;
+		this.#dialog?.close(false);
+		let chosen: string = BANKS.find((name) => name === bank) ?? "Danske Bank";
+		let personal = false;
+		let step = 1;
+		let starting = false;
+		let failed = false;
+		const gone = new MutationObserver(() => {
+			if (!this.el.isConnected) dialog.close(false);
+		});
+		const dialog = new SurfaceDialog(t("Connect the company's bank"), "bank-connect-dialog", () => {
+			gone.disconnect();
+			if (this.#dialog === dialog) this.#dialog = null;
+		});
+		this.#dialog = dialog;
+		const start = async () => {
+			starting = true;
+			failed = false;
+			draw();
+			try {
+				const url = await client.beginSignIn("bank", existingSecretId, this.#lifetime.signal, {
+					name: chosen,
+					country: "DK",
+					psuType: personal ? "personal" : "business",
+				});
+				if (this.#lifetime.signal.aborted) return;
+				this.#navigate(url);
+			} catch {
+				if (this.#lifetime.signal.aborted) return;
+				starting = false;
+				failed = true;
+				draw();
+			}
+		};
+		const draw = () => {
+			const body =
+				step === 1
+					? h(
+							"div",
+							{ class: "bank-put-step" },
+							h("p", null, t("Which bank does the company use?")),
+							h(
+								"div",
+								{ class: "bank-connect-banks", role: "radiogroup", "aria-label": t("Bank") },
+								BANKS.map((name) =>
+									h(
+										"button",
+										{
+											type: "button",
+											role: "radio",
+											class: "bank-put-kind",
+											"aria-checked": String(chosen === name),
+											onclick: () => {
+												chosen = name;
+												draw();
+											},
+										},
+										h("span", { class: "bank-put-radio", "aria-hidden": "true" }),
+										h("span", null, h("strong", null, name)),
+									),
+								),
+							),
+							h(
+								"label",
+								{ class: "bank-connect-personal" },
+								h("input", {
+									type: "checkbox",
+									checked: personal,
+									onchange: (event: Event) => {
+										if (event.target instanceof HTMLInputElement) personal = event.target.checked;
+									},
+								}),
+								h("span", null, t("The account is in my own name, not the company's")),
+							),
+						)
+					: h(
+							"div",
+							{ class: "bank-put-step" },
+							h("p", null, h("strong", null, t("Next, you log in at {bank}", { bank: chosen }))),
+							h(
+								"ul",
+								{ class: "bank-connect-points" },
+								h("li", null, t("You use your MitID on the bank's own page.")),
+								h("li", null, t("Qorpera never sees your login.")),
+								h("li", null, t("You choose which accounts to share.")),
+								h("li", null, t("Agents can read balances and payments. They can't pay.")),
+							),
+							failed
+								? h(
+										"p",
+										{ class: "bank-put-wrong", role: "alert" },
+										t("The sign-in could not be started. Try again."),
+									)
+								: null,
+						);
+			replace(
+				dialog.content,
+				h("h2", { class: "bank-put-title" }, t("Connect the company's bank")),
+				body,
+				h(
+					"div",
+					{ class: "bank-put-actions" },
+					step === 2
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "btn",
+									disabled: starting,
+									onclick: () => {
+										step = 1;
+										failed = false;
+										draw();
+									},
+								},
+								t("Back"),
+							)
+						: h("span"),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-primary",
+							disabled: starting,
+							onclick: () => {
+								if (step === 1) {
+									step = 2;
+									draw();
+								} else void start();
+							},
+						},
+						step === 1
+							? t("Continue")
+							: starting
+								? t("Opening {bank}…", { bank: chosen })
+								: t("Go to {bank}", { bank: chosen }),
+					),
+				),
+			);
+		};
+		draw();
+		dialog.open();
+		gone.observe(document.body, { childList: true, subtree: true });
 	}
 
 	#overview(summary: BankSummary): HTMLElement {
@@ -965,12 +1261,19 @@ const views = new WeakMap<HTMLElement, BankView>();
 
 /** Draws the Bank page into `container`, keeping what the member chose (the tab, the range, an open category) across
  * redraws of the same page. */
-export function renderBank(container: HTMLElement, company: CompanyController): void {
+export interface BankPageOptions {
+	/** The company's connections, for Connect the bank; without it the page only draws the summary. */
+	readonly connection?: () => BankConnectionClient;
+	/** Where the bank's sign-in page is opened; the browser's location by default. */
+	readonly navigate?: (url: string) => void;
+}
+
+export function renderBank(container: HTMLElement, company: CompanyController, options: BankPageOptions = {}): void {
 	const state = company.store.get();
 	let view = views.get(container);
 	if (!view || view.el.parentElement !== container) {
 		view?.dispose();
-		view = new BankView(company);
+		view = new BankView(company, options);
 		views.set(container, view);
 		replace(container, view.el);
 	}
