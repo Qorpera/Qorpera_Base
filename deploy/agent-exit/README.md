@@ -521,6 +521,15 @@ and has no login until `rules-reader-login.py` gives it one. The login is a URL 
 `/etc/qorpera-agent-exit/database-url`, root's, mode 0400 in a 0700 folder, which the unit hands to the reader with
 `LoadCredential`. Nobody reads, copies or prints it.
 
+Our own CA (a self-hosted database, later): `install-agent-exit.sh <package> --database-ca <file>
+--database-ca-sha256 <sha256>` installs that CA and its pin (the file's sha256, as `sha256sum` prints it) beside the
+reader, with the drop-in `/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf`, which hands both
+to the reader as two more credentials. The two go together: one without the other, a pin the file does not match, or a
+file that is not one PEM CA certificate is refused before anything is installed, and the reader refuses the same again
+(`packages/runtime/src/database-ca.ts`). The reader then trusts that CA alone, still with `verify-full`; Supabase's CA
+stays its credential and stays pinned. An install without the two keeps Supabase's CA and removes an own CA a previous
+install placed.
+
 The coordinator runs the script on the Mac, from a checkout of what the nodes run. It reads the Supabase CLI's token
 from the keychain itself and reaches each node with `ssh` and its root helper:
 
