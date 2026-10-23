@@ -2242,6 +2242,22 @@ the host passes it to Codex and verifies Codex applied it. Routines,
 coworker wakes, coding turns, other providers and runs under a bundle without
 fast mode run at standard speed; the latter pin no tier.
 
+2026-10-22 amendment: core work runs deep (founder, 22 October: core work
+runs at high effort, and a conversation is the quick way into the company).
+A run no member is waiting on runs at high effort: a worker's own run, an
+agent's first run, a coworker's message and a member's finished task. The
+`effort` of the agent's agent.md, when it names one, sets these runs instead.
+Work that carries on a chain (a worker's report, a machine event or check-in,
+an office start) keeps the effort its chain's first run was pinned with, so a
+chain a member's turn started keeps that conversation's effort, a routine's
+chain its routine's, and any other chain high. A member's turn keeps its
+conversation's Model menu effort and fast tier, and a routine run its
+routine's effort. The bundle's model policy declares `unattended: high`; the
+kernel resolves the effort when it creates the run and pins it as before
+(migration 20260930532000). Runs under a bundle without `unattended` keep the
+rules above. Built, not live: it goes live with the release cut whose bundle
+declares it.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are
@@ -5952,10 +5968,11 @@ an agent starts work and where the results go.
 
 ### 2026-10-22 amendment: agents build the company without waiting
 
-> **Built, not live**, apart from item 5's platform part, which is **not built**, and item 6's hosting,
-> which is separate work. The runtime part goes live with the next release cut. It follows the Grok Teacher's contract
-> reviews of 5–14 October, checked against this text, and the agent-behaviour deep dive of 22 October; the founder asked
-> for items 1–4 first, and on 22 October changed item 3 and added items 5 and 6.
+> **Built, not live**, apart from item 6's hosting, which is separate work. The runtime part goes live with the next
+> release cut, and item 5's platform part with the release cut whose bundle declares the model policy's
+> `unattended: high`. It follows the Grok Teacher's contract reviews of 5–14 October, checked against this text, and the
+> agent-behaviour deep dive of 22 October; the founder asked for items 1–4 first, and on 22 October changed item 3 and
+> added items 5 and 6.
 
 The founders give the vision and supervise; the agents build and run the company. Until now nothing woke the
 Co-Founder once the vision was agreed, every run was told to wait for a decision before starting a better course, and
@@ -6061,10 +6078,10 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      while a member waits. "Standing work" gives a routine that does core work effort high.
    - A member's turn in a conversation keeps the effort chosen in its Model menu and, unless that menu turned it off,
      the fast service tier, as the model policy says.
-   - **Not built:** every other run that is not a routine's still runs at the model policy's default effort, low: a
-     worker, an agent's first run, a coworker's message. The platform part runs them at high and lets the effort in an
-     agent.md set its agent's runs. It changes the model policy, which the runtime bundle pins, so it lands with a
-     release cut.
+   - **Built, not live** (migration 20260930532000; 17, the 2026-10-22 amendment): a run no member waits on (a worker's
+     own run, an agent's first run, a coworker's message, a member's finished task) runs at high, or at the effort its
+     agent's agent.md names. Work that carries on a chain keeps its first run's effort. It goes live with the release
+     cut whose bundle declares the model policy's `unattended: high`.
 6. **The company's own servers.** When the company needs a server, a database or an app that must stay online, an
    agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
    October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
@@ -6141,7 +6158,8 @@ while Azure backup/overflow remains disabled.
 3. Creating a company atomically seeds its Company File schema, one Co-Founder
    agent, synchronized enforcement projections, and one silent first-run wake.
 4. Creating an agent seeds exactly one startup wake, creates no template
-   artifact, and starts on the resolved low-effort thread policy.
+   artifact, and starts on the resolved effort policy (17: high, or its
+   agent.md's effort, since the 2026-10-22 amendment; low before it).
 5. Archive and permanent delete are distinct; authorized deletion applies one
    coherent Company File operation and removes the agent's owned artifacts and
    dependent enforcement state.
