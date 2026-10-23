@@ -138,12 +138,12 @@ describe("the installer's own database CA input", { skip: process.getuid?.() ===
 	});
 });
 
-// E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API and the nodes'
-// root helpers. No network, keychain or ssh.
+// E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API, psql (direct
+// mode) and the nodes' root helpers. No network, keychain, database or ssh; direct mode's host and CA are placeholders.
 describe("the rules reader's login (rules-reader-login.py)", () => {
 	const loginTool = join(here, "rules-reader-login.py");
 	const script = String.raw`
-import base64, contextlib, hashlib, hmac, importlib.util, io, json, re, secrets, sys
+import base64, contextlib, hashlib, hmac, importlib.util, io, json, os, re, secrets, sys, tempfile
 spec = importlib.util.spec_from_file_location("login", sys.argv[1])
 login = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(login)
@@ -215,9 +215,32 @@ out["shown"] = login.shown(
     "qorpera-agent-exit: database-url: refused\nWarning: Permanently added\n"
     + '{"passed": false, "failureClass": "TimeoutError"}\nqorpera-agent-exit: s3cret\n\n', "s3cret")
 
+# Direct mode's inputs: a placeholder host and a placeholder CA (PEM in form only), pinned by its sha256.
+folder = tempfile.mkdtemp()
+def write(name, data):
+    path = os.path.join(folder, name)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+ca_bytes = b"-----BEGIN CERTIFICATE-----\nMIIBplaceholder0placeholder0placeholder0==\n-----END CERTIFICATE-----\n"
+ca_path = write("ca.crt", ca_bytes)
+pin = hashlib.sha256(ca_bytes).hexdigest()
+DIRECT = {"--direct-host": "db.example.invalid", "--direct-port": "5432", "--direct-ca": ca_path,
+          "--direct-ca-sha256": pin, "--direct-admin": "db_admin"}
+def direct(**changed):
+    """Direct mode's flags, some changed (direct_ca_sha256=... for --direct-ca-sha256; None leaves one out)."""
+    given = dict(DIRECT, **{"--" + key.replace("_", "-"): value for key, value in changed.items()})
+    return [part for flag, value in given.items() if value is not None for part in (flag, value)]
+# libpq settings in the environment that would weaken or redirect psql's connection, if psql got them.
+os.environ.update({"PGSSLMODE": "disable", "PGSSLROOTCERT": "/nonexistent", "PGGSSENCMODE": "require",
+                   "PGPASSWORD": "placeholder", "PGPASSFILE": os.path.join(folder, "pgpass")})
+READ = "begin transaction read only;\nselect coalesce(json_agg(q), '[]'::json) from (" + login.ROLE_QUERY + ") q;\ncommit;\n"
+
 def rollout(argv=(), fail=None):
-    """The script's run against stand-in nodes and API; fail: (node, how) makes one step fail on one node."""
-    calls, files, queries, state = [], {}, [], {"login": False}
+    """The script's run against stand-in nodes, API and psql; fail: (node, how) makes one step fail on one node, or
+    ("psql", "down") psql's write."""
+    calls, files, queries, state, touched, seen, stdins = [], {}, [], {"login": False}, [], [], []
+    is_direct = "--direct-host" in argv
     def helper(node, request, secret=None):
         argv = request.get("argv", [])
         how = fail[1] if fail and fail[0] == node[0] else None
@@ -226,6 +249,8 @@ def rollout(argv=(), fail=None):
             return 0, json.dumps({"installed": True}), []
         if argv[0] == "/usr/bin/sha256sum":
             lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
+            if is_direct and how != "no-own-ca":
+                lines.append(pin + "  " + login.OWN_CA)
             if how == "stale":
                 lines[0] = "0" * 64 + "  " + login.TOOL
             return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []
@@ -255,16 +280,41 @@ def rollout(argv=(), fail=None):
         calls.append(["api", "set login"])
         state["login"] = True
         return []
-    login.helper, login.api, login.keychain_token = helper, api, lambda: token
-    printed = io.StringIO()
-    with contextlib.redirect_stdout(printed):
+    def psql(args, stdin, env):
+        connection = dict(re.findall(r"(\w+)='((?:[^'\\]|\\.)*)'", args[-1][len("--dbname="):]))
+        ca = connection.pop("sslrootcert")
+        with open(ca, "rb") as f:
+            copied = f.read() == ca_bytes and ca != ca_path
+        seen.append({"args": args[:-1], "connection": connection, "ca": [copied, ca],
+                     "env": sorted(key for key in env if key.startswith("PG"))})
+        stdins.append(stdin)
+        if stdin == READ:
+            calls.append(["psql", "role"])
+            queries.append({"query": login.ROLE_QUERY, "read_only": True})
+            return 0, json.dumps([dict(good, login=state["login"])]).encode(), b""
+        calls.append(["psql", "set login"])
+        if fail == ("psql", "down"):
+            return 2, b"", (b'psql: error: connection to server at "db.example.invalid", port 5432 failed: '
+                            + b"server certificate does not match host name\nLINE 1: " + stdin.encode())
+        assert stdin.endswith(";\n")
+        queries.append({"query": stdin[:-2]})
+        state["login"] = True
+        return 0, b"", b""
+    def keychain():
+        touched.append("keychain")
+        return token
+    login.helper, login.api, login.keychain_token, login.psql = helper, api, keychain, psql
+    printed, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
         try:
             result = login.main(list(argv))
         except login.Stop as stop:
             result = str(stop)
     password = files["node01"].split(":")[2].split("@")[0] if "node01" in files else None
     said = printed.getvalue() + str(result) + json.dumps(calls) + json.dumps([q for q in queries if q["query"] != login.ROLE_QUERY])
+    said += json.dumps(seen) + "".join(stdins)
     run = {"result": result, "printed": printed.getvalue().splitlines(), "calls": calls, "leaks": bool(password) and password in said}
+    run.update(stderr=errors.getvalue(), touched=touched, psql=seen, cas_left=any(os.path.exists(c["ca"][1]) for c in seen))
     if files:
         run["urls"] = sorted(set(files.values()))
     if len(queries) > 1:
@@ -277,6 +327,29 @@ def rollout(argv=(), fail=None):
 out["runs"] = {"check": rollout(["--check"]), "full": rollout()}
 for name, how in (("node02", "stale"), ("node02", "refused"), ("node02", "other"), ("node01", "unread")):
     out["runs"][name + " " + how] = rollout(fail=(name, how))
+out["runs"]["direct check"] = rollout(["--check"] + direct())
+out["runs"]["direct full"] = rollout(direct())
+out["runs"]["direct node02 no-own-ca"] = rollout(direct(), fail=("node02", "no-own-ca"))
+out["runs"]["direct psql down"] = rollout(direct(), fail=("psql", "down"))
+other_ca = write("other.crt", ca_bytes.replace(b"placeholder", b"elsewhere00"))
+not_pem = b"not a certificate\n"
+out["refused"] = {name: rollout(argv) for name, argv in {
+    **{"no " + flag: direct(**{flag[2:].replace("-", "_"): None}) for flag in login.DIRECT_FLAGS},
+    "host alone": ["--direct-host", "db.example.invalid"],
+    "CA and pin alone": ["--check", "--direct-ca", ca_path, "--direct-ca-sha256", pin],
+    "a flag twice": direct() + ["--direct-port", "5432"],
+    "a flag without its value": direct()[:-1],
+    "an unknown flag": direct() + ["--direct-insecure"],
+    "pin mismatch": direct(direct_ca=other_ca),
+    "pin not lower-case hex": direct(direct_ca_sha256=pin.upper()),
+    "CA not PEM": direct(direct_ca=write("not-pem.crt", not_pem), direct_ca_sha256=hashlib.sha256(not_pem).hexdigest()),
+    "CA missing": direct(direct_ca=os.path.join(folder, "missing.crt")),
+    "host with a path": direct(direct_host="db.example.invalid/x"),
+    "host upper-case": direct(direct_host="DB.example.invalid"),
+    "port 0": direct(direct_port="0"),
+    "port 65536": direct(direct_port="65536"),
+    "admin is the role": direct(direct_admin="qorpera_agent_exit"),
+}.items()}
 print(json.dumps(out))
 `;
 	let out;
@@ -352,6 +425,10 @@ print(json.dumps(out))
 		assert.equal(full.verifies, true, "the role gets the placed password's verifier");
 		assert.deepEqual(full.read_only, [true, null, true], "only the login is set with a query that may write");
 		assert.equal(full.leaks, false, "the password is in nothing printed and not in the query that sets the login");
+		for (const run of [check, full]) {
+			assert.deepEqual(run.touched, ["keychain"], "without direct mode's flags, the Supabase CLI's token as before");
+			assert.deepEqual(run.psql, [], "and never psql");
+		}
 	});
 
 	test("a node not as this checkout, or a login not written as sent, stops the run before the role changes", () => {
@@ -380,11 +457,149 @@ print(json.dumps(out))
 		assert.equal(unread.leaks, false);
 	});
 
+	// Direct mode (a self-hosted database): only with all of its flags, psql in place of the Supabase API and keychain.
+	const directChecked =
+		"checked: the database db.example.invalid:5432 (direct, CA as pinned), role qorpera_agent_exit (no login yet), node01, node02";
+	const psqlArgs = [
+		...["--no-psqlrc", "--no-password", "--quiet", "--tuples-only", "--no-align"],
+		...["--set", "ON_ERROR_STOP=1", "--file", "-"],
+	];
+	const psqlConnection = {
+		host: "db.example.invalid",
+		port: "5432",
+		dbname: "postgres",
+		user: "db_admin",
+		sslmode: "verify-full",
+		gssencmode: "disable",
+		connect_timeout: "15",
+		application_name: "qorpera-rules-reader-login",
+	};
+
+	test("direct mode, with all its flags: psql verify-full against the pinned CA's copy, no keychain, the same rollout", () => {
+		const check = out.runs["direct check"];
+		assert.equal(check.result, 0);
+		assert.deepEqual(check.calls, [["psql", "role"], ...checks("node01"), ...checks("node02")]);
+		assert.deepEqual(check.printed, [directChecked, "ok (nothing changed)"]);
+		const full = out.runs["direct full"];
+		assert.equal(full.result, 0);
+		assert.deepEqual(full.calls, [
+			["psql", "role"],
+			...checks("node01"),
+			...checks("node02"),
+			["node01", "exec", "database-url"],
+			["node02", "exec", "database-url"],
+			["psql", "set login"],
+			["psql", "role"],
+			["node01", "exec", "rules-start"],
+			["node02", "exec", "rules-start"],
+		]);
+		for (const run of [check, full]) {
+			assert.deepEqual(run.touched, [], "no keychain");
+			assert.ok(!run.calls.some((call) => call[0] === "api"), "no Supabase API");
+			assert.equal(run.cas_left, false, "the CA's copy is gone after the run");
+			for (const call of run.psql) {
+				assert.deepEqual(call.args, psqlArgs);
+				assert.deepEqual(call.connection, psqlConnection, "verify-full, TLS only, the given host, port and admin");
+				assert.equal(call.ca[0], true, "psql's CA is a copy of the pinned bytes, not the file named");
+				assert.deepEqual(call.env, ["PGPASSFILE", "PGPASSWORD"], "no libpq setting from the environment but the password's");
+			}
+		}
+		assert.equal(full.urls.length, 1, "both nodes get the same login");
+		const [url] = full.urls;
+		assert.match(
+			url,
+			/^postgresql:\/\/qorpera_agent_exit:[A-Za-z0-9_-]{43}@db\.example\.invalid:5432\/postgres\?sslmode=verify-full$/,
+		);
+		const tool = readFileSync(join(here, "qorpera-agent-exit.sh"), "utf8");
+		const toolPattern = [...tool.matchAll(/^\tpattern\+?='([^']*)'$/gm)].map((match) => match[1]).join("");
+		assert.equal(spawnSync("bash", ["-c", `pattern='${toolPattern}'; [[ $1 =~ $pattern ]]`, "bash", url]).status, 0);
+		const bytes = url.length;
+		assert.deepEqual(full.printed, [
+			directChecked,
+			`node01: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
+			`node02: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
+			"node01: the rules reader read the database: ok",
+			"node02: the rules reader read the database: ok",
+			"ok",
+		]);
+		assert.equal(full.verifies, true, "the role gets the placed password's verifier");
+		assert.deepEqual(full.read_only, [true, null, true], "only the login is set outside a read-only transaction");
+		assert.equal(full.leaks, false, "the password is in nothing printed, in no psql argument, environment or input");
+	});
+
+	test("direct mode stops on a node whose own CA is not the pinned one, and shows only psql's connection error", () => {
+		const noOwnCa = out.runs["direct node02 no-own-ca"];
+		assert.equal(
+			noOwnCa.result,
+			"node02: /usr/local/libexec/qorpera-agent-exit/database-own-ca.crt is not the direct database's pinned CA: install the exit with that CA first",
+		);
+		assert.equal(noOwnCa.urls, undefined, "no login is made");
+		const down = out.runs["direct psql down"];
+		assert.equal(
+			down.result,
+			'psql failed (the login of role qorpera_agent_exit)\n  psql: error: connection to server at "db.example.invalid", port 5432 failed: server certificate does not match host name; the role\'s login may or may not have changed: run this again',
+		);
+		assert.equal(down.leaks, false);
+	});
+
+	test("direct mode refuses a half-set or unchecked input before any keychain, API, psql or node", () => {
+		const usage = (missing) => (run) => {
+			assert.equal(run.result, 64);
+			const first = missing ? `direct mode needs all of its flags; missing ${missing}\n` : "  python3";
+			assert.ok(run.stderr.startsWith(first), run.stderr);
+			assert.match(run.stderr, /--direct-ca-sha256 SHA256/);
+		};
+		const stop = (message) => (run) => assert.equal(run.result, message);
+		const expected = {
+			"no --direct-host": usage("--direct-host"),
+			"no --direct-port": usage("--direct-port"),
+			"no --direct-ca": usage("--direct-ca"),
+			"no --direct-ca-sha256": usage("--direct-ca-sha256"),
+			"no --direct-admin": usage("--direct-admin"),
+			"host alone": usage("--direct-port, --direct-ca, --direct-ca-sha256, --direct-admin"),
+			"CA and pin alone": usage("--direct-host, --direct-port, --direct-admin"),
+			"a flag twice": usage(),
+			"a flag without its value": usage(),
+			"an unknown flag": usage(),
+			"pin mismatch": stop("--direct-ca's sha256 is not --direct-ca-sha256"),
+			"pin not lower-case hex": stop("--direct-ca-sha256 is not a sha256 (64 lower-case hex digits)"),
+			"CA not PEM": stop("--direct-ca is not PEM certificates"),
+			"CA missing": stop("--direct-ca could not be read"),
+			"host with a path": stop("--direct-host is not a host name (lower case)"),
+			"host upper-case": stop("--direct-host is not a host name (lower case)"),
+			"port 0": stop("--direct-port is not a port"),
+			"port 65536": stop("--direct-port is not a port"),
+			"admin is the role": stop("--direct-admin is not a role name, or is qorpera_agent_exit itself"),
+		};
+		assert.deepEqual(Object.keys(out.refused).sort(), Object.keys(expected).sort());
+		for (const [name, run] of Object.entries(out.refused)) {
+			expected[name](run);
+			assert.deepEqual([run.calls, run.touched, run.psql, run.printed], [[], [], [], []], name);
+		}
+	});
+
 	test("anything but --check or nothing prints the usage and exits 64, before the keychain", () => {
 		const r = spawnSync("python3", [loginTool, "--now"], { encoding: "utf8" });
 		assert.equal(r.status, 64);
 		assert.match(r.stderr, /rules-reader-login\.py --check/);
+		assert.ok(r.stderr.startsWith("  python3 deploy/agent-exit/rules-reader-login.py --check"), "the usage alone");
 		assert.equal(r.stdout, "");
+		const folder = mkdtempSync(join(tmpdir(), "rules-reader-login-"));
+		try {
+			const ca = join(folder, "ca.crt");
+			writeFileSync(ca, "-----BEGIN CERTIFICATE-----\nMIIBplaceholder==\n-----END CERTIFICATE-----\n");
+			const flags = ["--direct-host", "db.example.invalid", "--direct-port", "5432", "--direct-ca", ca];
+			const half = spawnSync("python3", [loginTool, ...flags, "--direct-admin", "db_admin"], { encoding: "utf8" });
+			assert.equal(half.status, 64, "a CA without its pin");
+			assert.match(half.stderr, /^direct mode needs all of its flags; missing --direct-ca-sha256\n/);
+			const unpinned = [...flags, "--direct-ca-sha256", "0".repeat(64), "--direct-admin", "db_admin"];
+			const mismatch = spawnSync("python3", [loginTool, ...unpinned], { encoding: "utf8" });
+			assert.equal(mismatch.status, 1);
+			assert.equal(mismatch.stderr, "rules-reader-login: --direct-ca's sha256 is not --direct-ca-sha256\n");
+			assert.equal(mismatch.stdout, "");
+		} finally {
+			rmSync(folder, { recursive: true, force: true });
+		}
 	});
 });
 
