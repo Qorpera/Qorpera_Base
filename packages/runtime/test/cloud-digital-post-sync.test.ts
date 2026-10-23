@@ -33,9 +33,14 @@ function claim(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** A small letter as Digital Post delivers it, with a main document of `size` bytes. */
-function letter(message: string, size = 16): Uint8Array {
+/** A small letter as Digital Post delivers it, with a main document of `size` bytes; with `text`, also its text
+ * version. */
+function letter(message: string, size = 16, text?: string): Uint8Array {
 	const pdf = Buffer.alloc(size, 7).toString("base64");
+	const plain =
+		text === undefined
+			? ""
+			: `<memo:File><memo:encodingFormat>text/plain</memo:encodingFormat><memo:filename>brev.txt</memo:filename><memo:content>${Buffer.from(text).toString("base64")}</memo:content></memo:File>`;
 	return new Uint8Array(
 		Buffer.from(`<memo:Message xmlns:memo="https://DigitalPost.dk/MeMo-1" memoVersion="1.2">
 	<memo:MessageHeader>
@@ -47,7 +52,7 @@ function letter(message: string, size = 16): Uint8Array {
 	</memo:MessageHeader>
 	<memo:MessageBody>
 		<memo:createdDateTime>2026-10-21T23:30:00Z</memo:createdDateTime>
-		<memo:MainDocument><memo:File><memo:encodingFormat>application/pdf</memo:encodingFormat><memo:filename>brev.pdf</memo:filename><memo:content>${pdf}</memo:content></memo:File></memo:MainDocument>
+		<memo:MainDocument><memo:File><memo:encodingFormat>application/pdf</memo:encodingFormat><memo:filename>brev.pdf</memo:filename><memo:content>${pdf}</memo:content></memo:File>${plain}</memo:MainDocument>
 	</memo:MessageBody>
 </memo:Message>`),
 	);
@@ -74,6 +79,7 @@ function fixture(
 		now?: () => Date;
 		/** The letters the database holds already. */
 		held?: string[];
+		pdfText?: { read: (pdf: Uint8Array, signal: AbortSignal) => Promise<string | null> };
 	} = {},
 ) {
 	const log: string[] = [];
@@ -161,6 +167,7 @@ function fixture(
 		authority,
 		keyring: keyring as never,
 		post,
+		...(options.pdfText ? { pdfText: options.pdfText } : {}),
 		now: options.now ?? (() => NOW),
 	});
 	return { syncs, authority, keyring, post, log, finished, kept, chunks, held, heldSet, opened, letterIds };
@@ -471,4 +478,42 @@ it("records a failure as a fixed phrase and sends no receipt for a letter it did
 	expect(digest.finished[0]?.error).toBe("the envelope digest differs");
 	expect(digest.keyring.use).not.toHaveBeenCalled();
 	for (const f of [forbidden, database, digest]) expect(JSON.stringify(f.finished)).not.toContain("secret detail");
+});
+
+it("reads a PDF-only letter's text through the reader, and keeps one whose PDF gives none as before", async () => {
+	const read = vi.fn(async (pdf: Uint8Array) =>
+		Buffer.from(pdf).equals(Buffer.alloc(16, 7)) ? "Din årsopgørelse er klar." : null,
+	);
+	const f = fixture({ pdfText: { read } });
+	expect(await f.syncs.pass(signal)).toBe("current");
+	expect(read).toHaveBeenCalledTimes(1);
+	expect(f.kept[0]?.summary).toMatchObject({ text: true, snippet: "Din årsopgørelse er klar." });
+	const markdown = Buffer.concat(f.chunks.filter((chunk) => chunk.fileIndex === 0).map((chunk) => chunk.content));
+	expect(markdown.toString("utf8")).toContain("From brev.pdf:\n\nDin årsopgørelse er klar.");
+	expect(f.log.at(-1)).toBe(`receipt ${MEMO_A} ${MESSAGE_A}`);
+	const none = fixture({ pdfText: { read: vi.fn(async () => null) } });
+	expect(await none.syncs.pass(signal)).toBe("current");
+	expect(none.kept[0]?.summary).toMatchObject({ text: false, snippet: null });
+	expect(none.log.at(-1)).toBe(`receipt ${MEMO_A} ${MESSAGE_A}`);
+	// A letter with a text version of its own is not read again from its PDF.
+	const own = fixture({
+		letters: { [MEMO_A]: letter(MESSAGE_A, 16, "Teksten fra afsenderen.") },
+		pdfText: { read },
+	});
+	expect(await own.syncs.pass(signal)).toBe("current");
+	expect(read).toHaveBeenCalledTimes(1);
+	expect(own.kept[0]?.summary).toMatchObject({ text: true, snippet: "Teksten fra afsenderen." });
+});
+
+it("stops the pass when it is stopped while a PDF is read, with no receipt", async () => {
+	const stop = new AbortController();
+	const read = vi.fn(async (_pdf: Uint8Array, readSignal: AbortSignal) => {
+		stop.abort(new Error("closing"));
+		readSignal.throwIfAborted();
+		return "never";
+	});
+	const f = fixture({ pdfText: { read } });
+	expect(await f.syncs.pass(stop.signal)).toBe("failed");
+	expect(f.post.receipt).not.toHaveBeenCalled();
+	expect(f.kept).toEqual([]);
 });

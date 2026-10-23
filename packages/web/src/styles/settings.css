@@ -382,6 +382,14 @@
 .service-token-form small { color: #73736f; }
 .service-token-row { display: flex; gap: 8px; }
 .service-token-row .service-token { flex: 1; min-width: 0; }
+/* Digital Post: its mark in place of a logo, and the steps in Administrativ Adgang. */
+.digital-post-logo { display: grid; place-items: center; color: #4f4f4b; }
+.digital-post-logo svg { width: 26px; height: 26px; }
+.digital-post-steps { grid-column: 2 / -1; display: grid; gap: 8px; font-size: 13px; line-height: 1.5; }
+.digital-post-steps p { margin: 0; }
+.digital-post-steps ol { display: grid; gap: 6px; margin: 0; padding-left: 20px; }
+.digital-post-steps code { overflow-wrap: anywhere; }
+.digital-post-note { color: #73736f; }
 /* A coding environment value is a textarea, so a multiline key keeps its line breaks; the buttons beside it keep
    their height. */
 .coding-environment .service-token-row { align-items: flex-start; }

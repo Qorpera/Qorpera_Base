@@ -1,22 +1,21 @@
-import { X509Certificate } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { AgentExitRulesReader } from "./agent-exit-rules.ts";
+import { databaseTls } from "./database-ca.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
 /**
  * The agent exit's rules reader as a service (qorpera-agent-exit-rules.service). It reads the database with the exit's
  * own login, from two private systemd credentials: the database URL, which the rollout script places on the node, and
- * Supabase's CA. It reads the node's client map, keeps rules.json in its state folder and writes status.json to its
- * runtime folder.
+ * Supabase's CA. A node installed with our own CA (install-agent-exit.sh --database-ca) has two more, that CA and its
+ * sha256 pin, and trusts that CA alone (database-ca.ts). It reads the node's client map, keeps rules.json in its state
+ * folder and writes status.json to its runtime folder.
  */
 
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
-const SUPABASE_CA_FINGERPRINT =
-	"80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA";
 /** The plug's client map (deploy/agent-exit/qorpera-agent-plug.py). */
 const CLIENTS_DIR = "/var/lib/qorpera-agent-exit/clients";
 
@@ -50,6 +49,29 @@ function exitDatabase(value: string): { host: string; port: number; user: string
 }
 
 async function readCredential(directory: string, name: string): Promise<string> {
+	const bytes = await readCredentialBytes(directory, name);
+	try {
+		return new TextDecoder("utf8", { fatal: true }).decode(bytes).trim();
+	} finally {
+		bytes.fill(0);
+	}
+}
+
+/** An optional credential: absent means its input was not given. Any other failure still fails closed. */
+async function readOptionalCredential<T>(
+	directory: string,
+	name: string,
+	read: (directory: string, name: string) => Promise<T>,
+): Promise<T | undefined> {
+	try {
+		return await read(directory, name);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+async function readCredentialBytes(directory: string, name: string): Promise<Buffer> {
 	if (!isAbsolute(directory) || !/^[a-z][a-z0-9-]+$/.test(name)) {
 		throw new Error("Agent exit rules credential path is invalid");
 	}
@@ -77,7 +99,7 @@ async function readCredential(directory: string, name: string): Promise<string> 
 		if (read.bytesRead !== metadata.size || read.bytesRead > MAX_CREDENTIAL_BYTES) {
 			throw new Error("Agent exit rules credential changed during read");
 		}
-		return new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, read.bytesRead)).trim();
+		return Buffer.from(bytes.subarray(0, read.bytesRead));
 	} finally {
 		bytes.fill(0);
 		await handle.close();
@@ -96,23 +118,29 @@ export async function runAgentExitRulesMain(): Promise<void> {
 	const state = directoryFromEnvironment("STATE_DIRECTORY");
 	const runtime = directoryFromEnvironment("RUNTIME_DIRECTORY");
 	const database = exitDatabase(await readCredential(credentials, "qorpera-agent-exit-rules-database-url"));
-	const databaseCa = await readCredential(credentials, "qorpera-agent-exit-rules-database-ca");
-	let certificate: X509Certificate;
-	try {
-		certificate = new X509Certificate(databaseCa);
-	} catch {
-		throw new Error("Agent exit rules database CA is invalid");
-	}
-	if (certificate.fingerprint256 !== SUPABASE_CA_FINGERPRINT || certificate.ca !== true) {
-		throw new Error("Agent exit rules database CA is invalid");
-	}
+	const ssl = databaseTls(
+		{
+			supabaseCa: await readCredential(credentials, "qorpera-agent-exit-rules-database-ca"),
+			ownCa: await readOptionalCredential(
+				credentials,
+				"qorpera-agent-exit-rules-database-own-ca",
+				readCredentialBytes,
+			),
+			ownCaSha256: await readOptionalCredential(
+				credentials,
+				"qorpera-agent-exit-rules-database-own-ca-sha256",
+				readCredential,
+			),
+		},
+		"Agent exit rules",
+	);
 	const pool = new Pool({
 		host: database.host,
 		port: database.port,
 		user: database.user,
 		password: database.password,
 		database: "postgres",
-		ssl: { ca: databaseCa, rejectUnauthorized: true },
+		ssl,
 		application_name: "qorpera-agent-exit-rules",
 		max: 1,
 		min: 0,

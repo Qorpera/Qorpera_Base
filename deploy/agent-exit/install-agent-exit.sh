@@ -6,6 +6,12 @@
 # scripts/package-agent-exit-rules.mjs builds from the same checkout: every file as the package's manifest says, its
 # unit and CA as pinned here. It installs no system package, creates no group, mounts nothing, starts nothing and
 # enables nothing: README.md has the switch-on steps.
+#
+# The rules reader trusts Supabase's CA, as pinned here. For a self-hosted database a deploy gives our own CA instead,
+# with --database-ca <file> and --database-ca-sha256 <the file's sha256>, always both: the file must match its pin,
+# and the reader then trusts that CA alone, still with verify-full (a drop-in adds the CA and its pin as two more
+# credentials; packages/runtime/src/database-ca.ts checks them again). Without them the reader keeps Supabase's CA, and
+# an own CA a previous install placed is removed.
 set -euo pipefail
 
 EXPECTED_TOOL_SHA256="b09af43610de3359b694b9b0a1c8fd0dfe0081c7f3b41ec62b99a940b3219f6e"
@@ -35,12 +41,67 @@ EXPECTED_SNI_UNIT_SHA256="72d18b520f2ef8c43dcce15ace4bf606db0e8659eed642a51ab9cc
 EXPECTED_RULES_CA_SHA256="700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/usr/local/libexec/qorpera-agent-exit"
+OWN_CA_DROP_IN="/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf"
 
-[[ $# -eq 1 && -d $1 ]] || {
-	echo "Usage: $0 <rules-reader-package-directory>" >&2
+usage() {
+	echo "Usage: $0 <rules-reader-package-directory> [--database-ca <file> --database-ca-sha256 <sha256>]" >&2
 	exit 64
 }
+[[ $# -ge 1 && -d $1 ]] || usage
 PACKAGE=$(cd "$1" && pwd)
+shift
+OWN_CA=
+OWN_CA_SHA256=
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--database-ca)
+		[[ $# -ge 2 && -n $2 && -z $OWN_CA ]] || usage
+		OWN_CA=$2
+		shift 2
+		;;
+	--database-ca-sha256)
+		[[ $# -ge 2 && -n $2 && -z $OWN_CA_SHA256 ]] || usage
+		OWN_CA_SHA256=$2
+		shift 2
+		;;
+	*) usage ;;
+	esac
+done
+# Our own CA: both inputs or neither, the pin a sha256, the file one PEM certificate that matches it. The check runs on
+# a private copy, which is what gets installed.
+OWN_CA_COPY=
+if [[ -n $OWN_CA || -n $OWN_CA_SHA256 ]]; then
+	[[ -n $OWN_CA && -n $OWN_CA_SHA256 ]] || {
+		echo "--database-ca and --database-ca-sha256 go together; refusing to install" >&2
+		exit 64
+	}
+	[[ $OWN_CA_SHA256 =~ ^[0-9a-f]{64}$ ]] || {
+		echo "--database-ca-sha256: not a sha256 (64 lowercase hex digits); refusing to install" >&2
+		exit 64
+	}
+	[[ -f $OWN_CA && ! -L $OWN_CA ]] || {
+		echo "$OWN_CA: not a regular file; refusing to install" >&2
+		exit 66
+	}
+	OWN_CA_COPY=$(mktemp)
+	trap 'rm -f "$OWN_CA_COPY"' EXIT
+	cat -- "$OWN_CA" >"$OWN_CA_COPY"
+	actual=$(sha256sum "$OWN_CA_COPY" | cut -d' ' -f1)
+	[[ $actual == "$OWN_CA_SHA256" ]] || {
+		echo "$OWN_CA: sha256 $actual, expected $OWN_CA_SHA256; refusing to install" >&2
+		exit 65
+	}
+	python3 -c '
+import re, sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
+sys.exit(0 if re.fullmatch(pem, data) else 1)
+' "$OWN_CA_COPY" || {
+		echo "$OWN_CA: not one PEM certificate; refusing to install" >&2
+		exit 65
+	}
+fi
 [[ $(id -u) -eq 0 ]] || {
 	echo "Run as root." >&2
 	exit 77
@@ -120,6 +181,14 @@ process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' 2>/dev/null |
 	echo "$PACKAGE/qorpera-agent-exit-rules.mjs does not parse; refusing to install" >&2
 	exit 65
 }
+if [[ -n $OWN_CA_COPY ]]; then
+	/usr/bin/node -e 'const { X509Certificate } = require("node:crypto");
+process.exit(new X509Certificate(require("node:fs").readFileSync(process.argv[1])).ca === true ? 0 : 1)' \
+		"$OWN_CA_COPY" 2>/dev/null || {
+		echo "$OWN_CA: not a CA certificate; refusing to install" >&2
+		exit 65
+	}
+fi
 
 install -d -m 0755 "$INSTALL_ROOT"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit.sh" "$INSTALL_ROOT/qorpera-agent-exit.sh"
@@ -135,6 +204,19 @@ install -m 0644 "$SOURCE_ROOT/qorpera-agent-exit-sni.nft" "$INSTALL_ROOT/qorpera
 install -m 0644 "$PACKAGE/qorpera-agent-exit-rules.mjs" "$INSTALL_ROOT/qorpera-agent-exit-rules.mjs"
 install -m 0644 "$PACKAGE/supabase-prod-ca-2021.crt" "$INSTALL_ROOT/supabase-prod-ca-2021.crt"
 install -m 0644 "$PACKAGE/qorpera-agent-exit-rules.service" /etc/systemd/system/qorpera-agent-exit-rules.service
+if [[ -n $OWN_CA_COPY ]]; then
+	install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.crt"
+	printf '%s\n' "$OWN_CA_SHA256" >"$OWN_CA_COPY"
+	install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.sha256"
+	install -d -m 0755 "$(dirname "$OWN_CA_DROP_IN")"
+	printf '%s\n' "[Service]" \
+		"LoadCredential=qorpera-agent-exit-rules-database-own-ca:$INSTALL_ROOT/database-own-ca.crt" \
+		"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:$INSTALL_ROOT/database-own-ca.sha256" \
+		>"$OWN_CA_COPY"
+	install -m 0644 "$OWN_CA_COPY" "$OWN_CA_DROP_IN"
+else
+	rm -f "$OWN_CA_DROP_IN" "$INSTALL_ROOT/database-own-ca.crt" "$INSTALL_ROOT/database-own-ca.sha256"
+fi
 for unit in qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
 	qorpera-agent-plug.service qorpera-agent-exit-health.service qorpera-agent-exit-health.timer \
 	qorpera-agent-exit-logs.service qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.service \

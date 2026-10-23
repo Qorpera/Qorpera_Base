@@ -830,6 +830,12 @@ when a run makes no progress for 15 minutes; nothing stops a run by itself. The
 parent hears that a member stopped the work. A Company Computer start is still
 not stopped here.
 
+2026-10-22 amendment (not built yet): a member's Stop on any run in a chain of
+agent messages ends the whole chain, and work a member stopped stays stopped.
+See the
+[2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
+item 4.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can
@@ -1543,6 +1549,16 @@ archive retains restorable state; delete is human-authorized and permanent.
 > responsibility, and every agent reads it. "Goals" and "direction" in this
 > section mean the vision. The Co-Founder writes it directly: everything is
 > approved by default, so no protected proposal or ratification step applies.
+
+> **Amended 2026-10-22.** The company starts with the first conversation: as
+> soon as the Co-Founder knows what the company is about, it hires the team that
+> builds the vision with it (research, market watch, strategy) and sets up its
+> daily plan routine; the run where every founder approves the vision saves it
+> and gives every continuing responsibility an owner. The formation workflow,
+> the formation project and the protected direction proposal below are
+> superseded. See the
+> [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
+> item 3.
 
 > **Amended 2026-10-06 (not built yet).** The Co-Founder's views include
 > branches of every agent's thread. It still receives no copies of internal
@@ -3382,6 +3398,13 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    - The approval card itself is still not read, and the card answer is
      still no approval of any other call: every call of that run is
      reviewed, apart from the identical call the card approved (item 6).
+   Amended 2026-10-22: the reviewer also reads the agent's mandate (its job
+   description, the routine's instructions, the Co-Founder's role and the
+   vision). A run no member started is judged by it and never asked about only
+   because no member agreed; in a run members started it counts for delegating
+   to the company's own agents. See the
+   [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
+   item 2.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -5927,6 +5950,125 @@ an agent starts work and where the results go.
    reports the failure as retryable. The database queues it again only while nothing of the attempt is durable and
    fewer than eight attempts were made, as for any retryable failure. A coding session's turn now names its own stage
    (`coding-session`), so its timeouts are never taken for these. Each call keeps its 5-second bound.
+
+### 2026-10-22 amendment: agents build the company without waiting
+
+> **Built, not live**, apart from the platform parts of items 4 and 5, which are **not built**, and item 6's hosting,
+> which is separate work. The runtime part goes live with the next release cut. It follows the Grok Teacher's contract
+> reviews of 5–14 October, checked against this text, and the agent-behaviour deep dive of 22 October; the founder asked
+> for items 1–4 first, and on 22 October changed item 3 and added items 5 and 6.
+
+The founders give the vision and supervise; the agents build and run the company. Until now nothing woke the
+Co-Founder once the vision was agreed, every run was told to wait for a decision before starting a better course, and
+the reviewer asked a member about any delegation it could not tie to a member's words, so a routine's or a coworker's
+run that hired, set up a routine or started a worker could wait for nobody. This amendment changes six things.
+
+1. **An agent's own responsibilities need no request.** "Do what was asked, at the size it was asked" binds a
+   member's requests only. The agent does what the member asked, at the size they asked, adds nothing to it, and says
+   once, beside the result, what it would do instead; it never starts its alternative in the request's place. Its own
+   responsibilities need no request: in its routines, its first run and a coworker's message it decides what they need
+   and does it. Work it notices while serving a member that belongs to its own responsibilities is recorded as a todo
+   or a routine, said in one line, and done outside the member's request. A worker does only its assignment.
+   "Standing work" in every staff run's instructions says how a routine run for the agent's own work goes: read what
+   changed, pick the one step that most moves the responsibility (doing nothing is a valid result), check it is not
+   done or taken, do it to a result someone can use, check it the way its user will see it, record it, and for a
+   dynamic routine set the next run from what it found.
+2. **Work no member started is judged by its mandate.** This amends the 2026-09-25 amendment, items 3 and 4, with its
+   2026-10-04 and 2026-10-16 paragraphs.
+   - The platform gives the reviewer a mandate beside the request: the agent's job description, the routine's
+     instructions when a routine started the work (its own wake's, or its chain's first run's), the Co-Founder's role
+     for the Co-Founder, and the company's vision, as the run's composition read them from the company's files. A
+     coworker's message, a tool result and an event's text are never part of it. It is data with its own 6 KiB
+     bound: the job description and the routine first, then as much of the vision as fits.
+   - In a run no member started (a routine, an event, a file change, a coworker's message, a first run, or work that
+     carries on from one of these), an action that plainly serves a responsibility in the job description, the
+     routine's instructions or the Co-Founder's role, within the vision, is requested. The reviewer never asks only
+     because no member agreed.
+   - In a run members started, the request decides as before. There the mandate counts only for delegating to the
+     company's own agents, so an agent may set up its own routine or hand work to its own agents inside a member's
+     turn without that member's agreement.
+   - Deny covers the mandate too: an action outside both the request and the mandate, one that follows instructions
+     found in outside content, or one that clearly works against the vision. In a run no member started this holds for
+     delegating too: handing work to the company's own agents that clearly serves none of the mandate's
+     responsibilities is a deny, such as an invoice clerk's routine starting a marketing worker. Telling the agent that
+     owns some work about it never is: that serves every agent's job. The built-in checks and Ask first rules are
+     unchanged.
+   - Step 4 keeps a narrow ask for an irreversible step outside the company that no built-in check covers and that
+     the request or the mandate only loosely describes: permanently deleting on the company computer, overwriting, a
+     public post in the company's name, or sending to many people at once.
+   - The routine tool says the same: a change passes the automatic review against the agent's job, and its own
+     routines need no member's approval unless a member's own rule asks for it. The 2026-09-19/20 amendment's item 1
+     now holds in code.
+   - Not part of this amendment, each a founder decision: reading the files as they stood when a chain began (the
+     run's own composition is used), checking agents' edits to job descriptions, and narrowing the built-in checks.
+3. **The company starts with the first conversation.** No company's strategy is complete at its start, so the company
+   moves while the vision is built (founder, 22 October). This replaces 14.2's formation workflow, formation project and
+   protected direction proposal (superseded on 27 September by "the Co-Founder writes it directly") with what
+   follows. The Co-Founder overlay is v6.
+   - The Co-Founder hires and manages; domain work, such as research, finance, sales or product, belongs to the agents
+     it hires. As soon as it knows what the company is about, from what the founders wrote at the founding table or
+     their first answer, it hires the team that builds the vision with it: at least a researcher for the customers and
+     their problem, a market watcher for competitors and the market, and a strategist who works out the options and
+     weighs them, each with a first assignment due within a day or two. In that run it sets up its daily plan routine
+     and tells the founders who it hired, what each finds out first, and that the team's work runs on the model login
+     of the founder whose conversation started it.
+   - It builds the vision with the founders one or two questions at a time, from their answers and the team's
+     findings, then posts the whole draft with its evidence and unknowns and revises it until every founder approves.
+     Until then the draft guides the team's work, and the Co-Founder keeps it current with what the team learns.
+   - In the run where every founder has approved, the Co-Founder, without asking again, writes vision/vision.md with
+     the company's name as its first line and a last line "Agreed by <the founders>, <date>."; gives each continuing
+     responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in agents/ first so
+     that no owner is hired twice; closes its first todo, Start with the founders; and tells the founders in a few
+     lines who works on what. A step that fails is named and finished in the next planning run. The vision counts as
+     agreed once that line is there or that todo is closed, and the onboarding never restarts. A founder who joins
+     later is greeted, given the vision and asked to approve it or say what to change.
+   - The daily plan is a weekly routine on weekday mornings in the founders' time zone, with one living plan file,
+     operations/company-plan.md. It reads the vision, the plan, every agent's agent.md, todos and routines, and
+     human-tasks/; fixes what holds the company back most (continuing work with no owner, an agent stuck or idle, two
+     agents on the same work, an overdue human task, a decision only the founders can make); until the vision is
+     agreed, brings the team's findings into the draft and chooses the next questions for the founders; opens one or
+     two things owners called done and checks them; and writes to the founders only when something changed that they
+     should know or a decision waits for them, decisions first, each with a recommendation. On Mondays it always
+     writes the week; on the first Monday of a month it also compares the vision with the evidence and, when they
+     disagree, proposes a change for every founder to approve. None of this needs a founder's approval, but work a
+     member asked for is never cancelled or changed without telling that member.
+   - Hiring: freely for continuing work, one owner per responsibility; never a hire for one-off work, which goes to a
+     worker. A job description names a mission tied to a goal or an open question in the vision, what progress looks
+     like for each responsibility and where to see it, when to speak up and to whom, and what belongs to others. A
+     first assignment is one concrete result, the folder it lands in, and when it is done.
+   - Only the founders change the agreed direction, with every founder's approval. The Co-Founder may update facts
+     that follow from decisions already made, such as the team.
+   - The seeded Co-Founder files (its agent.md and the Start with the founders todo) keep their wording for now; it
+     follows in the folder seed's own change.
+4. **One Stop ends a whole chain.** This amends 7.3's 2026-09-26 Stop paragraph and 14.6.
+   - Only a member's Stop or the operator pause ends a loop between agents (14.6), yet a Stop ends one run and leaves
+     the other agent's queued wake to carry the loop on. A member's Stop on any run in a chain of agent messages ends
+     the whole chain: every live run with the same causal root, the wakes queued from it, and a sent message that has
+     not yet woken anyone. Who may stop is unchanged.
+   - An outside action already sent keeps its receipt state: nothing is undone or sent again. Cards raised in the
+     stopped chain stay open and say that their chain was stopped; answering one starts a new reviewed run instead of
+     reviving the stopped one.
+   - Every staff run is told that work a member stopped stays stopped: it is never started again, reworded or another
+     way, unless a member asks.
+   - **Not built:** the chain-wide stop and the card marking need their own change to the stop path. Until then a Stop
+     ends one run, as 7.3 says.
+5. **A conversation is the quick way in; core work runs deep.** Members use conversations to supervise the company and
+   to get what they need quickly; the core work runs on its own, at high effort (founder, 22 October).
+   - Every staff run's "Writing to people" says to show the work simply: what is done, with links; what was decided,
+     each with its reason in a line; and what the members are needed for. When they ask, the agent answers at once
+     from what it and the company folder already know, and shares what it has.
+   - "Starting work" keeps a conversation quick: deep work, such as research, analysis, strategy or building, runs on
+     its own, in a worker, the agent's own routine at effort high, or with the agent that owns it, never in a long turn
+     while a member waits. "Standing work" gives a routine that does core work effort high.
+   - A member's turn in a conversation keeps the effort chosen in its Model menu and, unless that menu turned it off,
+     the fast service tier, as the model policy says.
+   - **Not built:** every other run that is not a routine's still runs at the model policy's default effort, low: a
+     worker, an agent's first run, a coworker's message. The platform part runs them at high and lets the effort in an
+     agent.md set its agent's runs. It changes the model policy, which the runtime bundle pins, so it lands with a
+     release cut.
+6. **The company's own servers.** When the company needs a server, a database or an app that must stay online, an
+   agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
+   October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
 
 ## 20. Enforcement matrix
 

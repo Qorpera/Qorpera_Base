@@ -675,7 +675,7 @@ it("is manage_routine: its description, its list arguments, the checks before re
 		f.routines(),
 	)[0];
 	expect(tool?.description).not.toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
-	expect(tool?.description).toContain("Each change goes through the automatic review first");
+	expect(tool?.description).toContain("Each change passes a quick automatic review against your job");
 	expect(tool?.description).toContain("routines/<routineKey>.md");
 	expect(tool?.description).toContain("cursor: the nextCursor of an earlier page");
 	expect(tool?.description).toContain("resume switches a routine back on");

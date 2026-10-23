@@ -1,5 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { Cloud } from "./client.ts";
+import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
 /**
@@ -250,6 +250,66 @@ export interface SecretCapture {
 		fields: Readonly<Record<string, string>>,
 		signal: AbortSignal | undefined,
 	): Promise<void>;
+}
+
+/** A kept capture ticket is reused only while it has this long left; tickets live ten minutes. */
+const KEPT_TICKET_MARGIN_MS = 60_000;
+
+/**
+ * Replacements of a secret's value that keep their ticket when the send fails, by a key the caller names (the secret,
+ * and whatever else its ticket fixes); never the value. SQL allows one open replacement of a secret and a ticket stays
+ * open ten minutes, so the next try for the same key reuses the kept ticket rather than ask for one SQL refuses.
+ */
+export function createKeptReplacements(
+	capture: SecretCapture,
+): (
+	key: string,
+	target: SecretCaptureTarget,
+	fields: Readonly<Record<string, string>>,
+	signal: AbortSignal | undefined,
+) => Promise<void> {
+	const kept = new Map<string, HostedConnectorCaptureTicket>();
+	async function sendKeeping(
+		key: string,
+		issued: HostedConnectorCaptureTicket,
+		fields: Readonly<Record<string, string>>,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		try {
+			await capture.send(issued, fields, signal);
+		} catch (error) {
+			kept.set(key, issued);
+			throw error;
+		}
+	}
+	return async (key, target, fields, signal) => {
+		const reused = kept.get(key);
+		kept.delete(key);
+		if (reused !== undefined && Date.parse(reused.expiresAt) - Date.now() > KEPT_TICKET_MARGIN_MS) {
+			try {
+				await capture.send(reused, fields, signal);
+			} catch (error) {
+				if (signal?.aborted) {
+					kept.set(key, reused);
+					throw error;
+				}
+				// The broker refuses a used ticket as it refuses any other, so the earlier try may have saved the
+				// value. A fresh ticket tells: SQL refuses a second open replacement of one secret (23505).
+				const fresh = await capture.ticket(target).catch((begin: unknown) => {
+					// The kept ticket may still be open (a 23505 says it is, so nothing was saved and the broker's
+					// error is the one to show): the next try sends with it again.
+					kept.set(key, reused);
+					throw begin instanceof CloudRpcError && begin.code === "23505" ? error : begin;
+				});
+				await sendKeeping(key, fresh, fields, signal);
+				return;
+			}
+			// The earlier try may still have been running at the broker and saved its own value with this ticket.
+			// SQL answers a send on a saved ticket as a replay that saves nothing, so this answer can't tell whose
+			// value was saved. The ticket is used either way: a fresh one saves this value, as one more version.
+		}
+		await sendKeeping(key, await capture.ticket(target), fields, signal);
+	};
 }
 
 export function createSecretCapture(

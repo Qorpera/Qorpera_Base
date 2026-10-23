@@ -4,6 +4,9 @@ the Mac, from a checkout of what the nodes run; nobody handles the login by hand
 
   python3 deploy/agent-exit/rules-reader-login.py --check   checks everything below, changes nothing
   python3 deploy/agent-exit/rules-reader-login.py           makes a new login and places it
+  python3 deploy/agent-exit/rules-reader-login.py [--check] --direct-host HOST --direct-port PORT
+      --direct-ca FILE --direct-ca-sha256 SHA256 --direct-admin ROLE
+                                                            the same against a self-hosted database (direct mode)
 
 Checks first: the project's pooler, the role qorpera_agent_exit as migration 20260930230000 makes it (no elevated
 attribute, a member of no role, may call the one read function), and on each node the root helper, the exit's tool,
@@ -22,6 +25,16 @@ the root-only file, and systemd's credential copy for the reader. It is never pr
 environment variable or in a file on this Mac. The Supabase CLI's token comes from the keychain the same way: read by
 this script, sent only to api.supabase.com. The script prints file names, sizes, the hash comparison and ok; from a
 node only the exit's tool's own lines or the helper's failure class, never anything holding the password.
+
+Direct mode (opt-in, for a self-hosted database; without its flags nothing above changes): all five flags or none.
+The SQL runs through psql over a direct admin connection, not the Supabase API, and nothing reads the keychain. The
+script takes the CA file only when its sha256 is --direct-ca-sha256, and gives psql a copy of those bytes with
+sslmode=verify-full, so psql checks the host's certificate and name against that CA alone; there is no mode without
+that check. The admin role's password is psql's own to find (PGPASSWORD, PGPASSFILE or ~/.pgpass; never a prompt):
+this script never reads it, and psql gets no other libpq setting from the environment. The login is
+postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full, and each node's reader must
+already hold the pinned CA as its own CA, as install-agent-exit.sh --database-ca and --database-ca-sha256 place it
+beside Supabase's (installing it is not this script's).
 """
 
 import base64
@@ -31,8 +44,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -73,10 +88,23 @@ ROLE_QUERY = f"""select r.rolcanlogin as login,
 from pg_roles r where r.rolname = '{ROLE}'"""
 NODE_LINE = re.compile(r"qorpera-agent-exit: [ -~]{0,300}")
 HELPER_FAILURE = re.compile(r'\{"passed": ?false, ?"failureClass": ?"[A-Za-z]{1,64}"\}')
+# Direct mode's inputs: all of them or none (none: the Supabase project above, as before).
+DIRECT_FLAGS = ("--direct-host", "--direct-port", "--direct-ca", "--direct-ca-sha256", "--direct-admin")
+DIRECT_HOST = re.compile(r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
+ADMIN_ROLE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+PEM_CERTIFICATES = re.compile(
+    rb"(-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]{1,16384}-----END CERTIFICATE-----\r?\n?)+")
+# Our own CA as install-agent-exit.sh --database-ca places it beside Supabase's; in direct mode it must be the pinned CA.
+OWN_CA = LIBEXEC + "/database-own-ca.crt"
+PSQL_LINE = re.compile(r"psql: error: [ -~]{0,300}")
 
 
 class Stop(Exception):
     """A failure, with a message that holds no secret."""
+
+
+class Usage(Exception):
+    """A command line this script does not take; its message (may be empty) says why."""
 
 
 def cli_token(raw):
@@ -146,6 +174,105 @@ def sql(token, query, what, write=False):
     return rows
 
 
+def parse_args(argv):
+    """(check, direct): direct is None without direct mode's flags, else each of them with its value. A flag twice, one
+    without a value, an unknown one or only some of direct mode's is a usage error."""
+    check, given, rest = False, {}, list(argv)
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--check" and not check:
+            check = True
+        elif flag in DIRECT_FLAGS and flag not in given and rest:
+            given[flag] = rest.pop(0)
+        else:
+            raise Usage("")
+    if not given:
+        return check, None
+    missing = [flag for flag in DIRECT_FLAGS if flag not in given]
+    if missing:
+        raise Usage("direct mode needs all of its flags; missing " + ", ".join(missing))
+    return check, given
+
+
+def direct_target(given):
+    """Direct mode's database, each input checked: a host name, a port, an admin role and the CA, taken only when its
+    sha256 is the pin."""
+    host, port, admin, pin = (given[flag] for flag in ("--direct-host", "--direct-port", "--direct-admin",
+                                                       "--direct-ca-sha256"))
+    if not DIRECT_HOST.fullmatch(host):
+        raise Stop("--direct-host is not a host name (lower case)")
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", port) or int(port) > 65535:
+        raise Stop("--direct-port is not a port")
+    if not ADMIN_ROLE.fullmatch(admin) or admin == ROLE:
+        raise Stop(f"--direct-admin is not a role name, or is {ROLE} itself")
+    if not re.fullmatch(r"[0-9a-f]{64}", pin):
+        raise Stop("--direct-ca-sha256 is not a sha256 (64 lower-case hex digits)")
+    try:
+        with open(given["--direct-ca"], "rb") as f:
+            ca = f.read(65537)
+    except OSError:
+        raise Stop("--direct-ca could not be read") from None
+    if not hmac.compare_digest(hashlib.sha256(ca).hexdigest(), pin):
+        raise Stop("--direct-ca's sha256 is not --direct-ca-sha256")
+    if not PEM_CERTIFICATES.fullmatch(ca):
+        raise Stop("--direct-ca is not PEM certificates")
+    return {"host": host, "port": int(port), "admin": admin, "ca": ca, "ca_sha256": pin}
+
+
+def psql_env():
+    """psql's environment: this one without libpq's settings, so none overrides what the connection names. Only where
+    psql finds the admin's password stays (PGPASSWORD, PGPASSFILE), for psql alone to read."""
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith("PG") or key in ("PGPASSWORD", "PGPASSFILE")}
+
+
+def psql(args, stdin, env):
+    """psql once: its exit code, stdout and stderr. None for the code if it could not run."""
+    path = shutil.which("psql")
+    if not path:
+        raise Stop("psql is not on PATH; direct mode runs its SQL with it")
+    try:
+        done = subprocess.run([path] + args, input=stdin.encode(), capture_output=True, env=env, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, b"", b""
+    return done.returncode, done.stdout, done.stderr
+
+
+def direct_sql(target, ca_file, query, what, write=False):
+    """As sql, over a direct admin connection with psql: TLS verify-full against the pinned CA's copy, rows as JSON. A
+    read runs in a read-only transaction."""
+
+    def quoted(value):
+        return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    connection = " ".join(f"{key}={quoted(value)}" for key, value in (
+        ("host", target["host"]), ("port", target["port"]), ("dbname", "postgres"), ("user", target["admin"]),
+        # TLS only: GSSAPI encryption, which libpq would otherwise try first, would stand in for verify-full.
+        ("sslmode", "verify-full"), ("sslrootcert", ca_file), ("gssencmode", "disable"), ("connect_timeout", 15),
+        ("application_name", "qorpera-rules-reader-login"),
+    ))
+    body = query + ";\n" if write else (
+        f"begin transaction read only;\nselect coalesce(json_agg(q), '[]'::json) from ({query}) q;\ncommit;\n")
+    code, out, err = psql(
+        ["--no-psqlrc", "--no-password", "--quiet", "--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1",
+         "--file", "-", "--dbname=" + connection],
+        body, psql_env(),
+    )
+    if code != 0:
+        # Only psql's own connection errors: a statement's error may repeat the statement.
+        said = [line for line in err.decode("utf-8", "replace").splitlines() if PSQL_LINE.fullmatch(line)]
+        raise Stop("\n".join([f"psql failed ({what})"] + ["  " + line for line in said]))
+    if write:
+        return []
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise Stop(f"psql's answer is not rows ({what})")
+    return rows
+
+
 def pooler_host(entries):
     """The pooler's host for the primary database, as the API lists it."""
     primary = [entry for entry in entries if isinstance(entry, dict) and entry.get("database_type") == "PRIMARY"] \
@@ -194,8 +321,8 @@ def set_login(verifier):
     return f"alter role {ROLE} with login password '{verifier}'"
 
 
-def login_url(host, password):
-    url = f"postgresql://{ROLE}.{REF}:{password}@{host}:{PORT}/postgres?sslmode=verify-full"
+def login_url(host, password, port=PORT, user=ROLE + "." + REF):
+    url = f"postgresql://{user}:{password}@{host}:{port}/postgres?sslmode=verify-full"
     if not re.fullmatch(LOGIN_PATTERN, url):
         raise Stop("the login is not in the form the exit's tool takes")
     return url
@@ -245,7 +372,7 @@ def sha256_file(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def check_node(node):
+def check_node(node, ca_sha256=None):
     code, out, err = helper(node, {"action": "status"})
     try:
         installed = code == 0 and json.loads(out).get("installed") is True
@@ -253,7 +380,7 @@ def check_node(node):
         installed = False
     if not installed:
         raise node_failed(node, "its root helper does not answer", err)
-    paths = [path for path, _ in INSTALLED] + [PROGRAM]
+    paths = [path for path, _ in INSTALLED] + [PROGRAM] + ([OWN_CA] if ca_sha256 is not None else [])
     code, out, err = run(node, ["/usr/bin/sha256sum", "--"] + paths)
     found = {}
     for line in out.splitlines():
@@ -263,6 +390,9 @@ def check_node(node):
     for path, local in INSTALLED:
         if found.get(path) != sha256_file(local):
             raise node_failed(node, f"{path} is not this checkout's: install the exit from it first", err)
+    if ca_sha256 is not None and found.get(OWN_CA) != ca_sha256:
+        raise node_failed(
+            node, f"{OWN_CA} is not the direct database's pinned CA: install the exit with that CA first", err)
     if PROGRAM not in found:
         raise node_failed(node, f"{PROGRAM} is missing: install the exit with its rules reader package first", err)
     code, _, err = run(node, ["/usr/bin/test", "-d", CLIENTS])
@@ -293,30 +423,51 @@ def start_reader(node):
 
 
 def main(argv):
-    if argv not in ([], ["--check"]):
-        print(__doc__.split("\n\n")[1], file=sys.stderr)
+    try:
+        check, given = parse_args(argv)
+    except Usage as usage:
+        print("\n".join(filter(None, [str(usage), __doc__.split("\n\n")[1]])), file=sys.stderr)
         return 64
-    check = argv == ["--check"]
-    token = keychain_token()
-    host = pooler_host(api(token, "GET", "/config/database/pooler", "the pooler"))
-    had_login = role_state(sql(token, ROLE_QUERY, f"role {ROLE}"))
+    if given is None:
+        token = keychain_token()
+        host = pooler_host(api(token, "GET", "/config/database/pooler", "the pooler"))
+        return rollout(check, "the pooler", lambda query, what, write=False: sql(token, query, what, write),
+                       lambda password: login_url(host, password))
+    target = direct_target(given)
+    with tempfile.TemporaryDirectory(prefix="qorpera-rules-reader-login-") as folder:
+        # psql reads the CA from this copy of the bytes checked against the pin, never from the file named.
+        ca_file = os.path.join(folder, "ca.crt")
+        with open(ca_file, "xb") as f:
+            f.write(target["ca"])
+        return rollout(
+            check, f"the database {target['host']}:{target['port']} (direct, CA as pinned)",
+            lambda query, what, write=False: direct_sql(target, ca_file, query, what, write),
+            lambda password: login_url(target["host"], password, target["port"], ROLE),
+            target["ca_sha256"],
+        )
+
+
+def rollout(check, database, sql_run, make_url, ca_sha256=None):
+    """The checks, then the login made, placed, set and read: against the Supabase project or direct mode's
+    database, which sql_run and make_url reach."""
+    had_login = role_state(sql_run(ROLE_QUERY, f"role {ROLE}"))
     for node in NODES:
-        check_node(node)
-    print(f"checked: the pooler, role {ROLE}{'' if had_login else ' (no login yet)'}, "
+        check_node(node, ca_sha256)
+    print(f"checked: {database}, role {ROLE}{'' if had_login else ' (no login yet)'}, "
           + ", ".join(node[0] for node in NODES))
     if check:
         print("ok (nothing changed)")
         return 0
     password = secrets.token_urlsafe(32)
-    url = login_url(host, password)
+    url = make_url(password)
     for node in NODES:
         print(place_login(node, url, password))
     verifier = scram_verifier(password, secrets.token_bytes(16))
     try:
-        sql(token, set_login(verifier), f"the login of role {ROLE}", write=True)
+        sql_run(set_login(verifier), f"the login of role {ROLE}", write=True)
     except Stop as stop:
         raise Stop(f"{stop}; the role's login may or may not have changed: run this again") from None
-    if role_state(sql(token, ROLE_QUERY, f"role {ROLE}")) is not True:
+    if role_state(sql_run(ROLE_QUERY, f"role {ROLE}")) is not True:
         raise Stop(f"role {ROLE} has no login after it was set: run this again")
     for node in NODES:
         print(start_reader(node))
