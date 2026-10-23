@@ -69,6 +69,75 @@ test("the installer pins the files in this folder", () => {
 	}
 });
 
+// The rules reader's database CA: Supabase's, as pinned, unless the install is given our own CA with its sha256 pin.
+// The inputs are checked before the root check, so this runs as any user and installs nothing; the X509 check and the
+// files themselves need root (test/prove-rules-reader-vm.sh's throwaway VM). The file here is a placeholder.
+describe("the installer's own database CA input", { skip: process.getuid?.() === 0 && "runs as a user, not root" }, () => {
+	const installer = join(here, "install-agent-exit.sh");
+	let temporary;
+	let ca;
+	let pin;
+	before(() => {
+		temporary = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-own-ca-"));
+		ca = join(temporary, "own-ca.crt");
+		writeFileSync(ca, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
+		pin = sha256(readFileSync(ca));
+	});
+	after(() => rmSync(temporary, { recursive: true, force: true }));
+	const install = (...input) => spawnSync("bash", [installer, temporary, ...input], { encoding: "utf8" });
+
+	test("without the input, or with both halves that match, it goes on (to the root check)", () => {
+		for (const input of [[], ["--database-ca", ca, "--database-ca-sha256", pin], ["--database-ca-sha256", pin, "--database-ca", ca]]) {
+			const run = install(...input);
+			assert.equal(run.status, 77, `${input.join(" ")}: ${run.stderr}`);
+			assert.equal(run.stderr, "Run as root.\n");
+		}
+	});
+
+	test("refuses half an input, a pin the file does not match and a file that is not one PEM certificate", () => {
+		const two = join(temporary, "two.crt");
+		writeFileSync(two, Buffer.concat([readFileSync(ca), readFileSync(ca)]));
+		const link = join(temporary, "link.crt");
+		symlinkSync(ca, link);
+		for (const [input, status, reason] of [
+			[["--database-ca", ca], 64, /--database-ca and --database-ca-sha256 go together/],
+			[["--database-ca-sha256", pin], 64, /--database-ca and --database-ca-sha256 go together/],
+			[["--database-ca", ca, "--database-ca-sha256", sha256("another file")], 65, /sha256 [0-9a-f]{64}, expected [0-9a-f]{64}; refusing/],
+			[["--database-ca", ca, "--database-ca-sha256", pin.toUpperCase()], 64, /not a sha256/],
+			[["--database-ca", ca, "--database-ca-sha256"], 64, /^Usage: /],
+			[["--database-ca", ca, "--database-ca", ca, "--database-ca-sha256", pin], 64, /^Usage: /],
+			[["--database-ca", join(temporary, "missing.crt"), "--database-ca-sha256", pin], 66, /not a regular file/],
+			[["--database-ca", link, "--database-ca-sha256", pin], 66, /not a regular file/],
+			[["--database-ca", two, "--database-ca-sha256", sha256(readFileSync(two))], 65, /not one PEM certificate/],
+		]) {
+			const run = install(...input);
+			assert.equal(run.status, status, `${input.join(" ")}: ${run.stderr}`);
+			assert.match(run.stderr, reason, input.join(" "));
+		}
+	});
+
+	test("hands the CA and its pin to the rules reader only through its own drop-in, and removes them without the input", () => {
+		const text = readFileSync(installer, "utf8");
+		const dropIn = "/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf";
+		assert.ok(text.includes(`OWN_CA_DROP_IN="${dropIn}"`));
+		for (const line of [
+			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca:$INSTALL_ROOT/database-own-ca.crt"',
+			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:$INSTALL_ROOT/database-own-ca.sha256"',
+			'install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.crt"',
+			'rm -f "$OWN_CA_DROP_IN" "$INSTALL_ROOT/database-own-ca.crt" "$INSTALL_ROOT/database-own-ca.sha256"',
+		])
+			assert.ok(text.includes(line), line);
+		// The unit itself is unchanged: Supabase's CA is still its credential, and still pinned above.
+		assert.ok(
+			readFileSync(join(here, "qorpera-agent-exit-rules.service"), "utf8")
+				.split("\n")
+				.includes(
+					"LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt",
+				),
+		);
+	});
+});
+
 // E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API, psql (direct
 // mode) and the nodes' root helpers. No network, keychain, database or ssh; direct mode's host and CA are placeholders.
 describe("the rules reader's login (rules-reader-login.py)", () => {
@@ -179,10 +248,9 @@ def rollout(argv=(), fail=None):
         if request["action"] == "status":
             return 0, json.dumps({"installed": True}), []
         if argv[0] == "/usr/bin/sha256sum":
-            lines = [
-                (pin if is_direct and how != "supabase-ca" and path == login.READER_CA else login.sha256_file(local))
-                + "  " + path for path, local in login.INSTALLED
-            ]
+            lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
+            if is_direct and how != "no-own-ca":
+                lines.append(pin + "  " + login.OWN_CA)
             if how == "stale":
                 lines[0] = "0" * 64 + "  " + login.TOOL
             return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []
@@ -261,7 +329,7 @@ for name, how in (("node02", "stale"), ("node02", "refused"), ("node02", "other"
     out["runs"][name + " " + how] = rollout(fail=(name, how))
 out["runs"]["direct check"] = rollout(["--check"] + direct())
 out["runs"]["direct full"] = rollout(direct())
-out["runs"]["direct node02 supabase-ca"] = rollout(direct(), fail=("node02", "supabase-ca"))
+out["runs"]["direct node02 no-own-ca"] = rollout(direct(), fail=("node02", "no-own-ca"))
 out["runs"]["direct psql down"] = rollout(direct(), fail=("psql", "down"))
 other_ca = write("other.crt", ca_bytes.replace(b"placeholder", b"elsewhere00"))
 not_pem = b"not a certificate\n"
@@ -459,13 +527,13 @@ print(json.dumps(out))
 		assert.equal(full.leaks, false, "the password is in nothing printed, in no psql argument, environment or input");
 	});
 
-	test("direct mode stops on a node whose reader CA is not the pinned one, and shows only psql's connection error", () => {
-		const supabaseCa = out.runs["direct node02 supabase-ca"];
+	test("direct mode stops on a node whose own CA is not the pinned one, and shows only psql's connection error", () => {
+		const noOwnCa = out.runs["direct node02 no-own-ca"];
 		assert.equal(
-			supabaseCa.result,
-			"node02: /usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt is not the direct database's pinned CA: install that CA first",
+			noOwnCa.result,
+			"node02: /usr/local/libexec/qorpera-agent-exit/database-own-ca.crt is not the direct database's pinned CA: install the exit with that CA first",
 		);
-		assert.equal(supabaseCa.urls, undefined, "no login is made");
+		assert.equal(noOwnCa.urls, undefined, "no login is made");
 		const down = out.runs["direct psql down"];
 		assert.equal(
 			down.result,

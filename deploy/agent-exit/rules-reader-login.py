@@ -32,8 +32,9 @@ script takes the CA file only when its sha256 is --direct-ca-sha256, and gives p
 sslmode=verify-full, so psql checks the host's certificate and name against that CA alone; there is no mode without
 that check. The admin role's password is psql's own to find (PGPASSWORD, PGPASSFILE or ~/.pgpass; never a prompt):
 this script never reads it, and psql gets no other libpq setting from the environment. The login is
-postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full, and each node's reader CA must
-already be the pinned CA (installing that CA and the reader's own pin is not this script's).
+postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full, and each node's reader must
+already hold the pinned CA as its own CA, as install-agent-exit.sh --database-ca and --database-ca-sha256 place it
+beside Supabase's (installing it is not this script's).
 """
 
 import base64
@@ -93,8 +94,8 @@ DIRECT_HOST = re.compile(r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-
 ADMIN_ROLE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 PEM_CERTIFICATES = re.compile(
     rb"(-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]{1,16384}-----END CERTIFICATE-----\r?\n?)+")
-# The reader's CA on the nodes; in direct mode it must be the pinned CA, not this checkout's Supabase CA.
-(READER_CA,) = [path for path, _ in INSTALLED if path.endswith(".crt")]
+# Our own CA as install-agent-exit.sh --database-ca places it beside Supabase's; in direct mode it must be the pinned CA.
+OWN_CA = LIBEXEC + "/database-own-ca.crt"
 PSQL_LINE = re.compile(r"psql: error: [ -~]{0,300}")
 
 
@@ -379,7 +380,7 @@ def check_node(node, ca_sha256=None):
         installed = False
     if not installed:
         raise node_failed(node, "its root helper does not answer", err)
-    paths = [path for path, _ in INSTALLED] + [PROGRAM]
+    paths = [path for path, _ in INSTALLED] + [PROGRAM] + ([OWN_CA] if ca_sha256 is not None else [])
     code, out, err = run(node, ["/usr/bin/sha256sum", "--"] + paths)
     found = {}
     for line in out.splitlines():
@@ -387,11 +388,11 @@ def check_node(node, ca_sha256=None):
         if match:
             found[match.group(2)] = match.group(1)
     for path, local in INSTALLED:
-        if ca_sha256 is not None and path == READER_CA:
-            if found.get(path) != ca_sha256:
-                raise node_failed(node, f"{path} is not the direct database's pinned CA: install that CA first", err)
-        elif found.get(path) != sha256_file(local):
+        if found.get(path) != sha256_file(local):
             raise node_failed(node, f"{path} is not this checkout's: install the exit from it first", err)
+    if ca_sha256 is not None and found.get(OWN_CA) != ca_sha256:
+        raise node_failed(
+            node, f"{OWN_CA} is not the direct database's pinned CA: install the exit with that CA first", err)
     if PROGRAM not in found:
         raise node_failed(node, f"{PROGRAM} is missing: install the exit with its rules reader package first", err)
     code, _, err = run(node, ["/usr/bin/test", "-d", CLIENTS])
