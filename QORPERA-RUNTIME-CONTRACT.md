@@ -830,7 +830,7 @@ when a run makes no progress for 15 minutes; nothing stops a run by itself. The
 parent hears that a member stopped the work. A Company Computer start is still
 not stopped here.
 
-2026-10-22 amendment (not built yet): a member's Stop on any run in a chain of
+2026-10-22 amendment: a member's Stop on any run in a chain of
 agent messages ends the whole chain, and work a member stopped stays stopped.
 See the
 [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
@@ -1810,6 +1810,21 @@ company-visible and answerable:
   same way, it wakes nobody; the recipient reads it, as data, at the start of
   its next wake of any kind. Held messages extend no chain. Thanks, status
   and FYIs are sent held.
+- **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
+  of a run in a conversation (7.3) ends that run's whole chain: every live run
+  with the same causal root (the other agent's, the agents' workers'), every
+  wake still queued in it, and every held message a run of the chain sent that
+  is still waiting to be read. The root is recorded as stopped, so a wake the
+  chain would still cause (a late worker report, a machine event, a file change
+  it made) is cancelled at admission. Who may stop is unchanged: the Stop cancels
+  only runs the member could stop one by one. An outside action already sent
+  keeps its receipt state; nothing is undone or sent again. Cards the chain
+  raised stay open and say that their chain was stopped; an answer to one
+  wakes the agent in a new run, reviewed against the answer, never as a
+  continuation of the stopped work. A member's post, a routine's slot and a
+  card answer start new roots, so an earlier Stop never fences them. A
+  worker's own Stop (7.3, 2026-10-03) still ends that run alone, and its
+  parent hears.
 
 ### 14.7 Rooms
 
@@ -5937,7 +5952,7 @@ an agent starts work and where the results go.
 
 ### 2026-10-22 amendment: agents build the company without waiting
 
-> **Built, not live**, apart from the platform parts of items 4 and 5, which are **not built**, and item 6's hosting,
+> **Built, not live**, apart from item 5's platform part, which is **not built**, and item 6's hosting,
 > which is separate work. The runtime part goes live with the next release cut. It follows the Grok Teacher's contract
 > reviews of 5–14 October, checked against this text, and the agent-behaviour deep dive of 22 October; the founder asked
 > for items 1–4 first, and on 22 October changed item 3 and added items 5 and 6.
@@ -6034,8 +6049,8 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      reviving the stopped one.
    - Every staff run is told that work a member stopped stays stopped: it is never started again, reworded or another
      way, unless a member asks.
-   - **Not built:** the chain-wide stop and the card marking need their own change to the stop path. Until then a Stop
-     ends one run, as 7.3 says.
+   - **Built** (migration `20260930533000`): a member's conversation Stop ends the run's whole chain and the chain's
+     cards say so, as 14.6 describes; a worker's own Stop still ends that run alone.
 5. **A conversation is the quick way in; core work runs deep.** Members use conversations to supervise the company and
    to get what they need quickly; the core work runs on its own, at high effort (founder, 22 October).
    - Every staff run's "Writing to people" says to show the work simply: what is done, with links; what was decided,

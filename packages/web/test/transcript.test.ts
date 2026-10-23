@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	AGENT_SEND_SCHEMA,
+	CHAIN_STOPPED_SCHEMA,
 	LEGACY_PART_SCHEMA,
 	projectTranscript,
 	RUNNER_ENTRY_SCHEMA,
@@ -439,6 +440,41 @@ describe("interaction cards in the transcript", () => {
 		if (settled[0]?.kind !== "interaction") throw new Error("card expected");
 		expect(settled[0].answer).toMatchObject({ outcome: "answered", pending: true });
 		expect(settled[0].answerFailed).toBeUndefined();
+	});
+
+	it("marks the cards of a chain a member stopped, drawing nothing for the note itself", () => {
+		const approval = "44444444-4444-4444-8444-000000000594";
+		const other = "44444444-4444-4444-8444-000000000595";
+		const projection = projectTranscript([
+			event(1, { eventId: CARD, eventType: "interaction_request", body: request }),
+			event(2, { eventId: approval, eventType: "authorization_request", body: { operation: "send-email" } }),
+			event(3, { eventId: other, eventType: "authorization_request", body: { operation: "send-email" } }),
+			event(4, {
+				eventType: "session_info",
+				body: {
+					schema: CHAIN_STOPPED_SCHEMA,
+					// As the kernel writes them, and one id in another case: a card is matched whatever its case.
+					cardIds: [CARD, approval.toUpperCase(), "not-a-card", 7, "44444444-4444-4444-8444-000000000999"],
+					stoppedRunId: RUN,
+					stoppedByUserId: USER,
+				},
+			}),
+		]);
+		expect(projection.hiddenCount).toBe(0);
+		expect(projection.items.map((item) => [item.id, "chainStopped" in item ? item.chainStopped : undefined])).toEqual(
+			[
+				[CARD, true],
+				[approval, true],
+				[other, undefined],
+			],
+		);
+		// A note without card ids, or of another shape, changes nothing.
+		const malformed = projectTranscript([
+			event(1, { eventId: CARD, eventType: "interaction_request", body: request }),
+			event(2, { eventType: "session_info", body: { schema: CHAIN_STOPPED_SCHEMA, cardIds: CARD } }),
+		]);
+		expect(malformed.items).toHaveLength(1);
+		expect(malformed.items[0] && "chainStopped" in malformed.items[0]).toBe(false);
 	});
 
 	it("hides a card it cannot read and an answer whose card is not loaded", () => {

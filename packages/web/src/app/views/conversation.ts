@@ -2412,6 +2412,7 @@ export class ConversationView {
 					keep(item.id, JSON.stringify([item, resolution, answerFailed, answers, members, locale]), "", () =>
 						renderActionReviewCard(review, resolution, {
 							answerFailed,
+							chainStopped: item.chainStopped === true,
 							draft: this.#reviewDrafts.get(review.reviewId),
 							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
 							answer: answers
@@ -2476,6 +2477,7 @@ export class ConversationView {
 					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
 					item.answerFailed,
+					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
 					agentName,
 					locale,

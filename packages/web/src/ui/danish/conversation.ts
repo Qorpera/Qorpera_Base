@@ -340,6 +340,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This card is past its time. The agent will ask again if it still needs it.":
 		"Kortet er udløbet. Agenten spørger igen, hvis den stadig har brug for det.",
 	"Your answer did not reach the agent. Answer again.": "Dit svar nåede ikke frem til agenten. Svar igen.",
+	"A member stopped the work that raised this card. Answering it starts new work.":
+		"Et medlem stoppede det arbejde, der rejste dette kort. Et svar starter nyt arbejde.",
+	"A member stopped the work that raised this card.": "Et medlem stoppede det arbejde, der rejste dette kort.",
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",

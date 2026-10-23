@@ -7,6 +7,7 @@ import {
 	questionOptions,
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
+import { stoppedCardNote } from "./card-notes.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
 import { renderEmailDraftCard } from "./email-draft-card.ts";
 import { phrase, t } from "./preferences.ts";
@@ -43,6 +44,8 @@ export interface InteractionCardItem {
 	answer?: InteractionAnswer;
 	/** An answer was sent but never reached the agent; the card is open again. */
 	answerFailed?: boolean;
+	/** A member stopped the work that raised the card; it stays open, and an answer starts new work. */
+	chainStopped?: boolean;
 	createdAt: string;
 }
 
@@ -156,6 +159,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	} else if (state === "waiting" && item.answerFailed && context.canAnswer) {
 		result.push(h("p", { class: "interaction-result" }, t("Your answer did not reach the agent. Answer again.")));
 	}
+	if (state === "waiting" && item.chainStopped)
+		result.push(h("p", { class: "interaction-result" }, stoppedCardNote(context.canAnswer)));
 
 	if (request.surface === "question") {
 		const options = questionOptions(request);
