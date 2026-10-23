@@ -5953,7 +5953,7 @@ an agent starts work and where the results go.
 
 ### 2026-10-22 amendment: agents build the company without waiting
 
-> **Built, not live**, apart from the platform parts of items 4 and 5, which are **not built**, and item 6's hosting,
+> **Built, not live**, apart from the platform part of item 4, which is **not built**, and item 6's hosting,
 > which is separate work. The runtime part goes live with the next release cut. It follows the Grok Teacher's contract
 > reviews of 5–14 October, checked against this text, and the agent-behaviour deep dive of 22 October; the founder asked
 > for items 1–4 first, and on 22 October changed item 3 and added items 5 and 6.
@@ -6062,10 +6062,10 @@ run that hired, set up a routine or started a worker could wait for nobody. This
      while a member waits. "Standing work" gives a routine that does core work effort high.
    - A member's turn in a conversation keeps the effort chosen in its Model menu and, unless that menu turned it off,
      the fast service tier, as the model policy says.
-   - **Not built:** every other run that is not a routine's still runs at the model policy's default effort, low: a
-     worker, an agent's first run, a coworker's message. The platform part runs them at high and lets the effort in an
-     agent.md set its agent's runs. It changes the model policy, which the runtime bundle pins, so it lands with a
-     release cut.
+   - **Built, not live** (migration 20260930532000; 17, the 2026-10-22 amendment): a run no member waits on (a worker's
+     own run, an agent's first run, a coworker's message, a member's finished task) runs at high, or at the effort its
+     agent's agent.md names. Work that carries on a chain keeps its first run's effort. It goes live with the release
+     cut whose bundle declares the model policy's `unattended: high`.
 6. **The company's own servers.** When the company needs a server, a database or an app that must stay online, an
    agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
    October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
