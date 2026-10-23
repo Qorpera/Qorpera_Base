@@ -1,10 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
-import { cofounderArrivalKey, FoundingController } from "../src/app/founding.ts";
+import { cofounderArrivalKey, FoundingController, setFoundingIntent } from "../src/app/founding.ts";
 import { parseRoute, routeHash } from "../src/app/router.ts";
 import { FoundingView } from "../src/app/views/founding.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
+import {
+	companyNameFromIdea,
+	keepWebsiteIdea,
+	relabelNewCompany,
+	renderNewCompany,
+} from "../src/app/views/new-company.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-founding.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -120,10 +126,15 @@ describe("founding table wire shape", () => {
 	});
 });
 
+/** jsdom has no matchMedia; the crown over the box asks it about reduced motion. */
+const stubMotion = () =>
+	vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+
 describe("founding table", () => {
 	let container: HTMLElement;
 	let controller: FoundingController | undefined;
 	beforeEach(() => {
+		stubMotion();
 		container = document.createElement("div");
 		document.body.append(container);
 	});
@@ -132,6 +143,7 @@ describe("founding table", () => {
 		controller = undefined;
 		container.remove();
 		vi.useRealTimers();
+		vi.unstubAllGlobals();
 		location.hash = "";
 	});
 
@@ -164,7 +176,8 @@ describe("founding table", () => {
 		await settle();
 		const text = visibleText(container);
 		expect(text).toContain("Connect ChatGPT");
-		expect(text).toContain("Invite Co-founder");
+		expect(text).toContain("Invite friends");
+		expect(text).toContain("Your first message to the Co-Founder. Write it together.");
 		expect(text).toContain("Waiting for you to be ready");
 		expect(text).toContain("Everyone at the table becomes a founder of Nordlys Kaffe.");
 		expect(container.querySelector<HTMLButtonElement>(".founding-start")?.disabled).toBe(true);
@@ -653,8 +666,10 @@ describe("founding table", () => {
 });
 
 describe("hub with founding tables", () => {
+	beforeEach(stubMotion);
 	afterEach(() => {
 		location.hash = "";
+		vi.unstubAllGlobals();
 	});
 
 	it("opens a table for a new company and lists invitations to tables", async () => {
@@ -677,9 +692,16 @@ describe("hub with founding tables", () => {
 		const hub = new HubController(api, me);
 		await hub.refresh();
 		const container = document.createElement("div");
+		vi.mocked(api.listProfiles).mockResolvedValue([]);
+		await hub.refresh();
 		renderHub(hub, container);
-		expect(visibleText(container)).toContain("Bo invited you to start it together");
-		expect(visibleText(container)).toContain("Opens a table for you and your co-founders");
+		// No company yet: the new-company box is the hub, with the seat Bo saved under it.
+		expect(container.querySelector(".hub-welcome")).not.toBeNull();
+		expect(visibleText(container)).toContain("From idea to company.");
+		expect(visibleText(container)).toContain("Bo saved you a seat at Havn.");
+		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("href")).toBe(
+			`#/found/${id(902)}`,
+		);
 		await hub.createCompany("Nordlys Kaffe");
 		expect(cloud.rpc).toHaveBeenCalledWith(
 			"qorpera_open_company_founding",
@@ -747,6 +769,574 @@ describe("hub with founding tables", () => {
 	});
 });
 
+describe("hub round 3: pick a company, or start one from an idea", () => {
+	let container: HTMLElement;
+	const controllers: FoundingController[] = [];
+	beforeEach(() => {
+		stubMotion();
+		container = document.createElement("div");
+		document.body.append(container);
+	});
+	afterEach(() => {
+		for (const controller of controllers.splice(0)) controller.dispose();
+		container.remove();
+		location.hash = "";
+		sessionStorage.clear();
+		vi.unstubAllGlobals();
+	});
+
+	it("draws each company, table and invitation as a figure and a name, then New company", async () => {
+		const { api } = fixture();
+		vi.mocked(api.listCompanyFoundings).mockResolvedValue([
+			{
+				profileId: id(903),
+				companyName: "Strand",
+				phase: "open",
+				myState: "joined",
+				invitedByDisplayName: null,
+				joined: 1,
+			},
+			{
+				profileId: id(902),
+				companyName: "Havn",
+				phase: "open",
+				myState: "invited",
+				invitedByDisplayName: "Bo",
+				joined: 1,
+			},
+		]);
+		const hub = new HubController(api, me);
+		await hub.refresh();
+		renderHub(hub, container, { userId: me, name: "Anna Holm" });
+		expect(visibleText(container)).toContain("Welcome back, Anna.");
+		expect(visibleText(container)).toContain("Pick a company.");
+		const tiles = [...container.querySelectorAll<HTMLAnchorElement>("a.company-card")].map((tile) => [
+			tile.querySelector(".company-name")?.textContent,
+			tile.getAttribute("href"),
+		]);
+		expect(tiles).toEqual([
+			[profileA.profileName, `#/c/${profileA.profileId}`],
+			["Strand", `#/found/${id(903)}`],
+			["Havn", `#/found/${id(902)}`],
+			["New company", "#/new"],
+		]);
+		// The invitation shows who asked; no tile carries a role, a date or a status line.
+		expect(container.querySelector(".company-card-invite .company-inviter")).not.toBeNull();
+		expect(visibleText(container)).not.toMatch(/since|waits for you|Opens a table/);
+		hub.dispose();
+	});
+
+	it("names a table after its idea", () => {
+		expect(companyNameFromIdea("A webshop with ceramics.")).toBe("Webshop with ceramics");
+		expect(companyNameFromIdea("en café med takeaway\nog mere")).toBe("Café med takeaway");
+		expect(companyNameFromIdea("   ")).toBe("New company");
+		const long = companyNameFromIdea("Handmade ceramics from Bornholm, sold to cafés in Copenhagen every week");
+		expect(long.length).toBeLessThanOrEqual(48);
+		expect(long).toBe("Handmade ceramics from Bornholm, sold to cafés");
+	});
+
+	it("reads qorpera.com's idea from the link, and never puts it back in the address", () => {
+		expect(parseRoute("#/new?idea=En%20webshop%20med%20keramik")).toEqual({
+			name: "new",
+			idea: "En webshop med keramik",
+		});
+		expect(parseRoute("#/new")).toEqual({ name: "new" });
+		expect(parseRoute("#/new?idea=%20%20")).toEqual({ name: "new" });
+		expect(routeHash({ name: "new", idea: "En webshop" })).toBe("#/new");
+	});
+
+	it("starts from an idea: the table opens named after it, with the idea written in", async () => {
+		const { api, cloud } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_open_company_founding")
+				return wire({ companyName: "Webshop with ceramics", vision: "" });
+			if (name === "qorpera_update_company_founding")
+				return wire({ companyName: "Webshop with ceramics", vision: "A webshop with ceramics.", revision: 5 });
+			throw new Error(`Unexpected RPC ${name}`);
+		});
+		const hub = new HubController(api, me);
+		await hub.startFromIdea("A webshop with ceramics.", "start");
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_open_company_founding",
+			expect.objectContaining({ p_company_name: "Webshop with ceramics" }),
+		);
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_update_company_founding",
+			expect.objectContaining({ p_profile_id: table, p_expected_revision: 4, p_vision: "A webshop with ceramics." }),
+		);
+		expect(location.hash).toBe(`#/found/${table}`);
+		hub.dispose();
+	});
+
+	it("opens the table with the friends list for Invite friends, and saves an idea the opening could not", async () => {
+		const { api, cloud } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		let updates = 0;
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_open_company_founding") return wire({ vision: "" });
+			if (name === "qorpera_update_company_founding") {
+				updates++;
+				if (updates === 1) throw new Error("Failed to fetch");
+				return wire({ vision: String(args.p_vision), revision: 5 });
+			}
+			if (name === "qorpera_read_company_founding") return wire({ vision: "" });
+			throw new Error(`Unexpected RPC ${name}`);
+		});
+		const hub = new HubController(api, me);
+		await hub.startFromIdea("A café with takeaway", "friends");
+		expect(location.hash).toBe(`#/found/${table}`);
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		expect(controller.store.get().friendsOpen).toBe(true);
+		await settle();
+		expect(api.listFriends).toHaveBeenCalled();
+		expect(updates).toBe(2);
+		expect(controller.store.get().table?.vision).toBe("A café with takeaway");
+		hub.dispose();
+	});
+
+	it("alone at the table, Start is one press: Ready, then Start", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		const alone = (changes: Wire = {}) =>
+			wire({
+				seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: true, ...changes }],
+				waitingFor: changes.ready ? [] : [me],
+				me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: changes.ready === true },
+			});
+		let ready = false;
+		let started = false;
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_set_founder_ready") ready = true;
+			if (name === "qorpera_start_company_founding") started = true;
+			if (started)
+				return wire({
+					phase: "started",
+					vision: "",
+					seats: [{ ...(wire().seats as Wire[])[0], role: "", ready: false }],
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: { startedAt: "2026-10-22T18:00:00Z", startedByUserId: me, revision: 5, companyReady: false },
+				});
+			return alone({ ready });
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		// Connected and alone: no separate Ready, and Start is on.
+		expect(container.querySelector<HTMLButtonElement>(".founding-ready")?.hidden).toBe(true);
+		const start = container.querySelector<HTMLButtonElement>(".founding-start")!;
+		expect(start.disabled).toBe(false);
+		expect(start.textContent).toBe("Start Nordlys Kaffe");
+		start.click();
+		await settle();
+		expect(calls.filter((name) => name !== "qorpera_read_company_founding")).toEqual([
+			"qorpera_set_founder_ready",
+			"qorpera_start_company_founding",
+		]);
+		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+	});
+
+	it("carries qorpera.com's idea into the box once, and says where it came from", () => {
+		const { api } = fixture();
+		keepWebsiteIdea({ idea: "En webshop med keramik", kind: "webshop" });
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		expect(box.value).toBe("En webshop med keramik");
+		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(false);
+		const pressed = [...container.querySelectorAll<HTMLButtonElement>(".hero-kind[aria-pressed='true']")];
+		expect(pressed.map((kind) => kind.textContent)).toEqual(["Webshop"]);
+		// Read once: a later visit starts empty, and your own words replace the website's note.
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
+		box.value = "A bakery";
+		box.dispatchEvent(new Event("input"));
+		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(true);
+		hub.dispose();
+	});
+
+	it("never starts alone on a table your last text save did not reach, and keeps your words", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
+			return wire({
+				seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: true }],
+				waitingFor: [me],
+			});
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		field.focus();
+		field.value = "Specialty coffee, roasted in Aarhus.";
+		// Pressing Start leaves the box first: its save goes out, fails, and Start does nothing.
+		field.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		await settle();
+		expect(calls).toContain("qorpera_update_company_founding");
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(field.value).toBe("Specialty coffee, roasted in Aarhus.");
+	});
+
+	it("never starts a table with others at it when your last text save failed", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_set_founder_role") throw new Error("Failed to fetch");
+			return mine(
+				{ ready: true, modelLoginReady: true },
+				wire({
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: true },
+				}),
+			);
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const role = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		role.focus();
+		role.value = "Online shop and the photos.";
+		role.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		await settle();
+		expect(calls).toContain("qorpera_set_founder_role");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+		expect(role.value).toBe("Online shop and the photos.");
+	});
+
+	it("keeps Start and Ready off while any field's save failed, even after another field saved", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		let role = "Online shop.";
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
+			if (name === "qorpera_set_founder_role") role = String(args.p_role);
+			return mine(
+				{ role, ready: false, modelLoginReady: true },
+				wire({
+					waitingFor: [me],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false },
+				}),
+			);
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		await settle();
+		const mineRole = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		mineRole.focus();
+		mineRole.value = "Roasting.";
+		mineRole.blur();
+		await settle();
+		expect(role).toBe("Roasting.");
+		// The role went through; the idea did not, so Ready (with Bo at the table) does nothing.
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		await settle();
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(idea.value).toBe("Specialty coffee, roasted in Aarhus.");
+		// Leaving the idea as the table has it lets Ready through again.
+		idea.value = "Specialty coffee.";
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		await settle();
+		expect(calls).toContain("qorpera_set_founder_ready");
+	});
+
+	it("keeps the save check across a page built again for a new language, before it is drawn", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		const save = deferred<never>();
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") return save.promise;
+			return mine({ ready: false, modelLoginReady: true });
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		const unsubscribe = controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Ready")!
+			.click();
+		// A new language builds the page again; it is not drawn before the save fails.
+		unsubscribe();
+		new FoundingView(controller, view.drafts());
+		save.reject(new Error("Failed to fetch"));
+		await settle();
+		expect(calls).not.toContain("qorpera_set_founder_ready");
+		expect(calls).not.toContain("qorpera_start_company_founding");
+	});
+
+	it("alone and already Ready, one press saves the field you left, makes you Ready again, and starts", async () => {
+		const { api, cloud } = fixture();
+		const calls: string[] = [];
+		const save = deferred<void>();
+		let vision = "Specialty coffee.";
+		let ready = true;
+		let revision = 4;
+		let started = false;
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			calls.push(name);
+			if (name === "qorpera_update_company_founding") {
+				await save.promise;
+				vision = String(args.p_vision);
+				ready = false;
+				revision++;
+			}
+			if (name === "qorpera_set_founder_ready") ready = args.p_ready === true;
+			if (name === "qorpera_start_company_founding") {
+				if (!ready) throw new Error("Every founder must be ready.");
+				started = true;
+			}
+			if (started)
+				return wire({
+					phase: "started",
+					vision: "",
+					seats: [{ ...(wire().seats as Wire[])[0], role: "", ready: false, modelLoginReady: true }],
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: { startedAt: "2026-10-22T18:00:00Z", startedByUserId: me, revision, companyReady: false },
+				});
+			return wire({
+				vision,
+				revision,
+				seats: [{ ...(wire().seats as Wire[])[0], ready, modelLoginReady: true }],
+				waitingFor: ready ? [] : [me],
+				me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: ready },
+			});
+		});
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee, roasted in Aarhus.";
+		idea.blur();
+		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
+		save.resolve();
+		await settle();
+		await settle();
+		expect(calls.filter((name) => name !== "qorpera_read_company_founding")).toEqual([
+			"qorpera_update_company_founding",
+			"qorpera_set_founder_ready",
+			"qorpera_start_company_founding",
+		]);
+		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+	});
+
+	it("never lets the opening idea's retry overwrite newer text you saved first", async () => {
+		const { api, cloud } = fixture();
+		const sent: unknown[] = [];
+		let vision = "";
+		let revision = 4;
+		const newer = deferred<void>();
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_update_company_founding") {
+				sent.push(args.p_vision);
+				if (sent.length === 1) throw new Error("Failed to fetch");
+				if (args.p_vision === "Newer idea") await newer.promise;
+				vision = String(args.p_vision);
+				revision++;
+			}
+			return wire({ vision, revision });
+		});
+		setFoundingIntent(table, { vision: "Opening idea" });
+		const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(controller);
+		const view = new FoundingView(controller);
+		container.append(view.el);
+		controller.store.subscribe(() => view.update());
+		view.update();
+		await settle();
+		expect(sent).toEqual(["Opening idea"]);
+		// You write newer text and leave the box; while that save is out, a read still finds the table empty.
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		field.focus();
+		field.value = "Newer idea";
+		field.blur();
+		await settle();
+		await controller.refresh();
+		await settle();
+		newer.resolve();
+		await settle();
+		await settle();
+		expect(sent).toEqual(["Opening idea", "Newer idea"]);
+		expect(controller.store.get().table?.vision).toBe("Newer idea");
+		expect(field.value).toBe("Newer idea");
+		expect(controller.pendingVision).toBeUndefined();
+	});
+
+	it("keeps an idea the opening could not save, through failed tries and a reload, until it is saved", async () => {
+		const { api, cloud } = fixture();
+		let failing = true;
+		const updates: unknown[] = [];
+		let vision = "";
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_update_company_founding") {
+				updates.push(args.p_vision);
+				if (failing) throw new Error("Failed to fetch");
+				vision = String(args.p_vision);
+			}
+			return wire({ vision, revision: vision ? 5 : 4 });
+		});
+		const key = `qorpera:founding-intent:${table}`;
+		setFoundingIntent(table, { vision: "A café with takeaway" });
+		const first = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(first);
+		const view = new FoundingView(first);
+		container.append(view.el);
+		first.store.subscribe(() => view.update());
+		view.update();
+		for (let read = 0; read < 4; read++) {
+			await settle();
+			await first.refresh();
+		}
+		await settle();
+		// A few tries, then it waits in the box as your unsaved text.
+		expect(updates).toEqual(["A café with takeaway", "A café with takeaway", "A café with takeaway"]);
+		expect(first.pendingVision).toBe("A café with takeaway");
+		expect(container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")?.value).toBe(
+			"A café with takeaway",
+		);
+		first.dispose();
+		expect(sessionStorage.getItem(key)).not.toBeNull();
+		// A reload still has it, and saves it once the cloud answers.
+		failing = false;
+		const second = new FoundingController(api, me, table, { currentUserId: () => me });
+		controllers.push(second);
+		await settle();
+		expect(second.store.get().table?.vision).toBe("A café with takeaway");
+		expect(second.pendingVision).toBeUndefined();
+		expect(sessionStorage.getItem(key)).toBeNull();
+	});
+
+	it("draws the new-company box again in a new language, keeping the idea and the kind", () => {
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
+			.find((kind) => kind.textContent === "Trades")!
+			.click();
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		box.value = "A roofing company in Odense";
+		setLanguagePreference("da");
+		try {
+			relabelNewCompany(hub);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			expect(visibleText(container)).toContain("Fra idé til virksomhed.");
+			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
+			expect(container.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Håndværk");
+		} finally {
+			setLanguagePreference("system");
+			hub.dispose();
+		}
+	});
+
+	it("keeps a multi-line idea's height when the box is drawn again", () => {
+		// jsdom lays nothing out: a box on the page is three lines tall, one off it has no height.
+		Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+			configurable: true,
+			get(this: HTMLTextAreaElement) {
+				return this.isConnected ? 78 : 0;
+			},
+		});
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		try {
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+			box.value = "One\nTwo\nThree";
+			box.dispatchEvent(new Event("input"));
+			expect(box.style.height).toBe("78px");
+			relabelNewCompany(hub);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.style.height).toBe("78px");
+		} finally {
+			Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
+			hub.dispose();
+		}
+	});
+
+	it("takes a kind picked on qorpera.com without an idea as the kind's example, with no website note", () => {
+		const { api } = fixture();
+		keepWebsiteIdea({ kind: "cafe" });
+		keepWebsiteIdea({ kind: "not-a-kind" });
+		expect(sessionStorage.getItem("qorpera:website-idea")).toBe(JSON.stringify({ kind: "cafe" }));
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")!.value).toBe("A café with takeaway");
+		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(true);
+		hub.dispose();
+	});
+
+	it("starts the company from the box with the arrow, and fills an empty box from a kind of company", async () => {
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue();
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		// An empty box does not start anything.
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		expect(start).not.toHaveBeenCalled();
+		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
+			.find((kind) => kind.textContent === "Café and restaurant")!
+			.click();
+		expect(box.value).toBe("A café with takeaway");
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		expect(start).toHaveBeenCalledWith("A café with takeaway", "start");
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent?.includes("Invite friends"))!
+			.click();
+		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends");
+		hub.dispose();
+	});
+});
+
 describe("founding table in the app", () => {
 	let dispose: (() => void) | undefined;
 	afterEach(() => {
@@ -773,7 +1363,7 @@ describe("founding table in the app", () => {
 		dispose = mountApplication(root, f.cloud, f.api);
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
-		expect(visibleText(root)).toContain("Invite Co-founder");
+		expect(visibleText(root)).toContain("Invite friends");
 		// A role typed and not saved yet comes along to the rebuilt page.
 		const role = root.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
 		role.focus();
@@ -782,9 +1372,46 @@ describe("founding table in the app", () => {
 		window.dispatchEvent(new Event("qorpera-language-change"));
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
-		expect(visibleText(root)).toContain("Inviter medstifter");
-		expect(visibleText(root)).not.toContain("Invite Co-founder");
+		expect(visibleText(root)).toContain("Inviter venner");
+		expect(visibleText(root)).not.toContain("Invite friends");
 		expect(root.querySelector<HTMLTextAreaElement>(".founding-role-mine")?.value).toBe("Roasting, still typing");
+	});
+
+	it("opens the new-company box with what qorpera.com's arrow sent, and takes it out of the address", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		history.replaceState(null, "", "/?ide=En%20webshop%20med%20keramik&kind=webshop#/");
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		// Gone from the address before anything else runs: never in the history or a copied link.
+		expect(location.search).toBe("");
+		expect(location.hash).toBe("#/new");
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En webshop med keramik");
+		expect(visibleText(root)).toContain("Your idea from qorpera.com");
+		expect(root.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Webshop");
+	});
+
+	it("sends a member back from a sign-in at the app's root to the box with qorpera.com's idea", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		// The idea was kept before the sign-in; the sign-in returns to the root, where the selector would show.
+		keepWebsiteIdea({ idea: "En café med takeaway" });
+		history.replaceState(null, "", "/#/");
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(location.hash).toBe("#/new");
+		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En café med takeaway");
+		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
 	});
 });
 

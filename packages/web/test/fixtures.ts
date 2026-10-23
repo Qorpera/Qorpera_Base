@@ -2,6 +2,7 @@ import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import { joinFoundingPresence } from "../src/cloud/founding-presence.ts";
 import type {
 	HostedCompanyFile,
 	HostedProfile,
@@ -210,6 +211,17 @@ export function fixture() {
 		sendActivity: vi.fn(),
 		stop: vi.fn(async () => {}),
 	});
+	// A cloud without the founding table's presence (20260930531000): the real topic client meets PGRST202 and gives
+	// up, so every table runs on its own reads, as before it.
+	const withoutTablePresence: Cloud = {
+		...cloud,
+		rpc: vi.fn(async (name: string) => {
+			throw new CloudRpcError(name, { message: "Could not find the function", code: "PGRST202" }, 404);
+		}),
+	};
+	vi.spyOn(api, "joinFoundingPresence").mockImplementation((profileId, listener) =>
+		joinFoundingPresence(withoutTablePresence, profileId, listener),
+	);
 	// A cloud that reads no mentions yet: no names to pick, no badges.
 	vi.spyOn(api, "listMemberMentions").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_mentions", { message: "missing", code: "PGRST202" }, 404),

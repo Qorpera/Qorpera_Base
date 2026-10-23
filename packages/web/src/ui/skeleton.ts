@@ -198,19 +198,13 @@ export function pageSkeleton(label: string): HTMLElement {
 	);
 }
 
-/** The company list's cards. */
+/** The company list's tiles: a stage and a name each. */
 export function companyCardsSkeleton(label = t("Loading companies"), count = 3): HTMLElement {
 	return placeholder(
 		label,
 		"company-grid skeleton-companies",
 		...Array.from({ length: count }, () =>
-			h(
-				"div",
-				{ class: "skeleton-company-card" },
-				shape("disc", "company-logo"),
-				shape("line", "company-name"),
-				shape("line", "small", "company-meta"),
-			),
+			h("div", { class: "skeleton-company-card" }, shape("company-stage"), shape("line", "company-name")),
 		),
 	);
 }

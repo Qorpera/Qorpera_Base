@@ -516,7 +516,6 @@ vision/                      # What the company is and where it is going. Every 
   vision.md                  the company's name, what it builds, for whom, why,
                              and how it works
 agents/                      # The team: each agent's settings, memory, skills, routines and tasks.
-  README.md                  what the folder is for
   sections.md                sidebar sections, in order, with their agents
   <agent-name>/              one folder per agent
     agent.md                 settings in front matter; instructions in the body
@@ -527,28 +526,21 @@ agents/                      # The team: each agent's settings, memory, skills, 
   groups/
     <group-name>/group.md    one folder per group chat
 connections/                 # Services the company has connected. Secrets are kept elsewhere.
-  README.md                  what the folder is for
   <connection>.md            one file per connected account
 human-tasks/                 # Jobs agents have handed to people.
-  README.md                  what the folder is for
   <task>.md                  work an agent hands to a member or a contact
   <task>/                    what the person sends back: proof/ and note.md
 contacts/                    # People and companies the company deals with.
-  README.md                  what the folder is for
   <contact>.md               one file per outside person or firm
 skills/                      # Know-how every agent can use.
-  README.md                  what the folder is for
   <skill>/SKILL.md           company skills
 rules/                       # Rules for agents. Only owners and admins change them.
-  README.md                  what the folder is for
   <rule>.md                  company review rules
 interfaces/                  # Settings for the pages in the app.
-  README.md                  what the folder is for
   order.md                   the pages, in order
   mailbox/interface.toml     the Mailbox page
   members/interface.toml     the Members page
 tables/                      # The company's tables.
-  README.md                  what the folder is for
   areas/table.toml           the areas: whose call each one is, and who its
   areas/rows.csv             agents answer to
 ```
@@ -557,16 +549,8 @@ tables/                      # The company's tables.
 the 2026-10-02 amendment "work for people", item 5). `interfaces/` and
 `tables/` joined it on 2 October 2026 (section 19, item 12).
 
-Each folder but `vision/` holds a `README.md` (Jonas, 21 October 2026). It
-starts with the folder's line above, then says in plain words what the folder
-holds, who writes in it, and that the company's own work goes in folders of
-its own. `vision/` has none: `vision.md` says what the company is, and every
-agent reads it in full at every run. A `README.md` directly in one of these
-folders, in any spelling with that key, is an ordinary file. No reader takes it
-for an agent, a group, a connection, a rule, a contact, a human task, a skill,
-a page or a table. It is not a seeded path, so the company may change or
-delete it. Pulse, its numbers table and the cards table are no longer seeded
-(the scope reset of 17 October; Jonas, 21 October 2026).
+Pulse, its numbers table and the cards table are no longer seeded (the scope
+reset of 17 October; Jonas, 21 October 2026).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
@@ -685,9 +669,8 @@ works for when that member asks (2026-09-25 amendment, item 1).
   `connections/`, `human-tasks/`, `contacts/`, `skills/`, `rules/`,
   `interfaces/`, `interfaces/order.md`, `tables/` and `tables/areas/` with its
   two files (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The
-  folders' `README.md` files are seeded but not protected. The Co-Founder's
-  folder and its `agent.md` cannot be deleted; the folder is only renamed
-  within `agents/` when the Co-Founder is renamed.
+  Co-Founder's folder and its `agent.md` cannot be deleted; the folder is only
+  renamed within `agents/` when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
 
 The automatic review (2026-09-25 amendment) is unchanged:
@@ -717,8 +700,7 @@ The automatic review (2026-09-25 amendment) is unchanged:
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
 files, `group.md`, connection files, rule files, human task files and contact
 files have a fixed format (the last two: the 2026-10-02 amendment "work for
-people"). A folder's `README.md` is never one of them. A save updates the
-file's index in the same step. A save the
+people"). A save updates the file's index in the same step. A save the
 platform cannot read correctly is refused for that file, with the reason. A
 human, an agent's shell and a tool all save through this same path.
 
@@ -1955,9 +1937,6 @@ named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
 `description` (what the skill does and when to use it) and whose Markdown body
 holds the steps. Supporting files such as templates or scripts may sit beside
 it. A name is lowercase words joined by hyphens, at most 64 characters.
-`readme` is not a skill name: `skills/README.md` says what the folder is for
-(5.6), and a folder's key ignores case, so no skill is read, listed or written
-under that name (added with the folders' READMEs, 21 October 2026).
 
 Two libraries, both ordinary versioned Company File objects:
 

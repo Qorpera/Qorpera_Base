@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
 	appendWorkerFollowUp,
-	COMPANY_FOLDER_ABOUT,
-	COMPANY_FOLDER_README_ROOTS,
-	COMPANY_FOLDER_READMES,
 	COMPANY_STATE_HUMAN_TASK_SKILL_PATH,
 	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
@@ -23,7 +20,6 @@ import {
 	humanTaskNotePath,
 	humanTaskPersonChange,
 	humanTaskProofPath,
-	isCompanyFolderReadme,
 	isCompanyStateName,
 	isCompanyStateTimeZoneName,
 	parseCompanyStateFile,
@@ -2043,12 +2039,10 @@ describe("companyStateSeedTree", () => {
 			const parent = entry.path.split("/").slice(0, -1).join("/");
 			if (parent) expect(paths.slice(0, index)).toContain(parent);
 			expect(companyStatePathProblems(entry.path, entry.kind === "folder")).toEqual([]);
-			// Every structured file parses; the seeded skill and the READMEs are ordinary files.
+			// Every structured file parses; the seeded skill is an ordinary file.
 			if (entry.kind === "file")
 				expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok ?? entry.path).toBe(
-					entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH || isCompanyFolderReadme(entry.path)
-						? entry.path
-						: true,
+					entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH ? entry.path : true,
 				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
@@ -2065,23 +2059,8 @@ describe("companyStateSeedTree", () => {
 			"interfaces",
 			"tables",
 		]);
-		// Each platform folder but vision/ holds a README.md right after it, starting with the folder's line; none is a
-		// seeded path, so the company may change or delete it.
-		const readmes = tree.filter((entry) => isCompanyFolderReadme(entry.path));
-		expect(readmes.map((entry) => entry.path)).toEqual(
-			COMPANY_FOLDER_README_ROOTS.map((root) => `${root}/README.md`),
-		);
-		for (const root of COMPANY_FOLDER_README_ROOTS) {
-			const index = paths.indexOf(`${root}/README.md`);
-			expect(tree[index - 1]).toEqual({ path: root, kind: "folder" });
-			const text = tree[index]?.text ?? "";
-			expect(text).toBe(COMPANY_FOLDER_READMES[root]);
-			expect(text.split("\n")[0]).toBe(COMPANY_FOLDER_ABOUT[root]);
-			expect(text).toMatch(/such as designs\/ or documents\/\.\n$/);
-			expect(text.endsWith("\n") && !text.endsWith("\n\n")).toBe(true);
-			expect(COMPANY_STATE_SEEDED_PATHS).not.toContain(`${root}/README.md`);
-		}
-		expect(paths).not.toContain("vision/README.md");
+		// No folder is seeded with a README.md (Jonas, 21 October 2026).
+		expect(paths.filter((path) => /(^|\/)readme\.md$/i.test(path))).toEqual([]);
 		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
 		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
 		expect(skill).toContain("`## Steps`");
@@ -2114,14 +2093,12 @@ describe("companyStateSeedTree", () => {
 		// Pulse, its numbers table and the cards table are no longer seeded (Jonas, 21 October 2026).
 		expect(library.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
 			"folder interfaces",
-			"file interfaces/README.md",
 			"folder interfaces/mailbox",
 			"file interfaces/mailbox/interface.toml",
 			"folder interfaces/members",
 			"file interfaces/members/interface.toml",
 			"file interfaces/order.md",
 			"folder tables",
-			"file tables/README.md",
 			"folder tables/areas",
 			"file tables/areas/table.toml",
 			"file tables/areas/rows.csv",
@@ -2144,54 +2121,6 @@ describe("companyStateSeedTree", () => {
 		// Every id the library drew is in its files.
 		const drawn = library.flatMap((entry) => ids.filter((id) => entry.text?.includes(id)));
 		expect(new Set(drawn)).toEqual(new Set(ids));
-	});
-
-	it("reads each platform folder's README.md as an ordinary file, in any spelling of its key", () => {
-		for (const root of COMPANY_FOLDER_README_ROOTS)
-			for (const path of [`${root}/README.md`, `${root}/readme.md`, `${root.toUpperCase()}/ReadMe.MD`]) {
-				expect(isCompanyFolderReadme(path), path).toBe(true);
-				expect(companyStatePath(path), path).toBeNull();
-				expect(parseCompanyStateFile(path, COMPANY_FOLDER_READMES[root]), path).toBeNull();
-				expect(companyStatePathProblems(path), path).toEqual([]);
-			}
-		// Only a platform folder's own README.md: not vision/'s, an agent's, a page's, or a lookalike.
-		for (const path of [
-			"vision/README.md",
-			"README.md",
-			"docs/README.md",
-			"agents/anna-berg/README.md",
-			"interfaces/mailbox/README.md",
-			"rules/README.md.bak",
-			"rules/README",
-			"rules/readme-first.md",
-		])
-			expect(isCompanyFolderReadme(path), path).toBe(false);
-		// Their neighbours keep their kinds.
-		expect(companyStatePath("rules/readme-first.md")?.kind).toBe("rule");
-		expect(companyStatePath("connections/readme-2.md")?.kind).toBe("connection");
-		expect(companyStatePath("connections/hook-readme.md")?.kind).toBe("hook");
-		expect(companyStatePath("human-tasks/readme-2.md")?.kind).toBe("human-task");
-		expect(companyStatePath("contacts/readmes.md")?.kind).toBe("contact");
-		expect(companyStatePath("rules/network.toml")?.kind).toBe("network-rules");
-		// A README that looks like a rule, a contact or a task is still not one.
-		expect(
-			parseCompanyStateFile(
-				"rules/README.md",
-				"---\nid: 0b8f3c1e-5a2d-4e6f-9a7b-1c2d3e4f5a6b\noutcome: allow\n---\nsend an invoice\n",
-			),
-		).toBeNull();
-		expect(Object.keys(COMPANY_FOLDER_ABOUT)).toEqual([
-			"vision",
-			"agents",
-			"rules",
-			"connections",
-			"skills",
-			"contacts",
-			"human-tasks",
-			"interfaces",
-			"tables",
-			"code",
-		]);
 	});
 
 	it("reads interfaces and tables by the path's shape, with their own parser and names", () => {
