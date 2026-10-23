@@ -994,7 +994,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v5",
+			schema: "qorpera.hire-overlay/v6",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2276,6 +2276,9 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	const routine = tools.find((tool) => tool.name === "manage_routine")?.description ?? "";
 	expect(routine).toContain("routines/<routineKey>.md");
 	expect(routine).not.toContain("No member approval is needed");
+	// The 2026-10-22 amendment, item 2: an agent's own routines are judged by its job, never held for a member.
+	expect(routine).toContain("your own routines need no member's approval unless a member's own rule asks for it");
+	expect(routine).not.toContain("wait for a member's approval");
 });
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
@@ -2884,8 +2887,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
 	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
 	// saveTo), so they moved again. When the company's own work was kept by area first (21 October 2026), company_write's,
-	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again;
-	// every other tool is as on master.
+	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again.
+	// Since the 2026-10-22 amendment manage_routine's description says a change passes a quick review against the
+	// agent's job, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2920,9 +2924,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"1e373027873aeabbfc9fcb08449396abced664ccff71855c6b712676d6b22078",
+		"2c2c1ca624846654817949b655bfc52bf2f9defbc333b558dfd3fcc751bb44cd",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"7c656698748e42e1418cafd730fcd96846e8c5aa9d99904d4fc63e2f062cccac",
+		"1daba67611c17eaf270f6469e0ae5ca8a41f3874f6e44db7cab418197d2eed18",
 	);
 });

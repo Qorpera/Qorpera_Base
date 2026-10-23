@@ -5,9 +5,10 @@ import {
 	FOUNDING_ROLE_MAX_CHARACTERS,
 	type FounderSeat,
 } from "../../cloud/company-founding.ts";
+import type { FoundingField } from "../../cloud/founding-presence.ts";
 import { button, confirmDialog, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import type { FoundingController } from "../founding.ts";
+import type { FounderLive, FoundingController } from "../founding.ts";
 import { navigate } from "../router.ts";
 import { mountCrown } from "./crown.ts";
 
@@ -20,7 +21,13 @@ import { mountCrown } from "./crown.ts";
  * The page is built once and updated in place while the table refreshes every few seconds: text
  * fields are never replaced, so typing, an accent or IME composition, the caret, focus and the
  * scroll position all survive a refresh, and a click that lands during a refresh still counts.
- * Other parts are rebuilt only when what they show changes. Text saves when its field is left. */
+ * Other parts are rebuilt only when what they show changes. Text saves when its field is left.
+ *
+ * With live presence (founding-presence.ts) the people here now have a ring in their colour over the box, someone
+ * writing has a pulsing one, "Writing" on their chip and "{name} is writing" in the box, and their caret and name flag
+ * stand in the idea box where they write. A field you have not touched follows the newest writer's words as it
+ * follows the table's, their new words tinted in their colour; a field you changed keeps your words, and their caret
+ * stands where it falls in them. Nothing of this is saved: Ready and Start still check your own fields. */
 
 /** Text typed on the table and not saved yet. */
 export interface FoundingDrafts {
@@ -49,6 +56,82 @@ class Slot {
 function growToText(field: HTMLTextAreaElement): void {
 	field.style.height = "auto";
 	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
+}
+
+/** A place in a text that does not split a character made of two UTF-16 units. */
+function whole(text: string, index: number): number {
+	const at = Math.max(0, Math.min(index, text.length));
+	const high = text.charCodeAt(at - 1);
+	const low = text.charCodeAt(at);
+	return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff ? at - 1 : at;
+}
+
+/** How two texts differ: the length of their common start, and of their common end after it. */
+function common(a: string, b: string): { start: number; end: number } {
+	const shorter = Math.min(a.length, b.length);
+	let start = 0;
+	while (start < shorter && a[start] === b[start]) start++;
+	let end = 0;
+	while (end < shorter - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+	return { start, end };
+}
+
+/** Where a caret at `index` in `from` stands in `to`: at the same words, or, inside words `to` does not have, where
+ * they would begin. */
+export function caretIn(from: string, index: number, to: string): number {
+	if (from === to) return whole(to, index);
+	const { start, end } = common(from, to);
+	if (index <= start) return whole(to, index);
+	if (index >= from.length - end) return whole(to, to.length - (from.length - index));
+	return whole(to, start);
+}
+
+/** The part of `text` that is not in `saved`, if any. */
+export function newWords(saved: string, text: string): { start: number; end: number } | undefined {
+	const { start, end } = common(saved, text);
+	const last = text.length - end;
+	return last > start ? { start: whole(text, start), end: whole(text, last) } : undefined;
+}
+
+interface Caret {
+	at: number;
+	userId: string;
+	name?: string;
+}
+
+/** Writes `text` into `container` with others' carets (a bar in their colour, with their name when given) and one
+ * writer's new words tinted in their colour. In the copy laid over a text field the words are invisible and only
+ * the carets and the tint show. */
+function writeMarked(
+	container: HTMLElement,
+	text: string,
+	carets: readonly Caret[],
+	mark?: { start: number; end: number; userId: string },
+): void {
+	const cuts = [
+		...new Set([0, text.length, ...carets.map((caret) => caret.at), ...(mark ? [mark.start, mark.end] : [])]),
+	]
+		.filter((at) => at >= 0 && at <= text.length)
+		.sort((a, b) => a - b);
+	const nodes: Node[] = [];
+	cuts.forEach((at, index) => {
+		for (const caret of carets.filter((item) => item.at === at)) {
+			const bar = h("span", { class: "founding-caret" }, caret.name ? h("b", null, caret.name) : null);
+			bar.style.setProperty("--line-color", personColor(caret.userId));
+			nodes.push(bar);
+		}
+		const next = cuts[index + 1];
+		if (next === undefined || next === at) return;
+		const words = text.slice(at, next);
+		if (mark && at >= mark.start && next <= mark.end) {
+			const tinted = h("mark", { class: "founding-them" }, words);
+			tinted.style.setProperty("--line-color", personColor(mark.userId));
+			nodes.push(tinted);
+		} else nodes.push(document.createTextNode(words));
+	});
+	// A text that ends in a new line has an empty last line, as the field shows it.
+	if (text.endsWith("\n")) nodes.push(document.createTextNode("\u200b"));
+	container.replaceChildren(...nodes);
 }
 
 /** A text field that shows the server's text unless you are editing it, and saves when you leave
@@ -85,11 +168,13 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 	get draft(): string | undefined {
 		return this.dirty ? this.el.value : undefined;
 	}
-	show(value: string): void {
-		this.#apply(value);
+	/** Shows the server's text, or, while you have not changed the field, `follow`: another founder's words as they
+	 * write them. Only the server's text ever counts as having what you wrote. */
+	show(value: string, follow?: string): void {
+		this.#apply(value, follow);
 		if (this.el instanceof HTMLTextAreaElement) growToText(this.el);
 	}
-	#apply(value: string): void {
+	#apply(value: string, follow: string | undefined): void {
 		this.#server = value;
 		if (this.#carried !== undefined) {
 			this.el.value = this.#carried;
@@ -98,23 +183,23 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 		}
 		// The server has what the field says (spaces at the ends aside): nothing is unsaved, and a
 		// space or new line you just typed stays.
-		if (this.el.value.trim() === value) {
-			this.#base = this.el.value;
-			return;
-		}
+		if (this.el.value.trim() === value) this.#base = this.el.value;
+		// Words you changed stay, even when another founder's words are the same.
 		if (this.dirty) return;
-		// An untouched field (spaces at the ends aside) follows the server, even while it has focus; its
-		// caret stays where it can.
+		const shown = follow ?? value;
+		if (this.el.value.trim() === shown) return;
+		// An untouched field (spaces at the ends aside) follows the server, or the founder writing in it, even
+		// while it has focus; its caret stays where it can.
 		const focused = document.activeElement === this.el;
 		const start = this.el.selectionStart;
 		const end = this.el.selectionEnd;
 		// A caret at the end stays at the end of the new text, so the next letters follow it.
 		const atEnd = start === this.el.value.length && end === start;
-		this.el.value = value;
-		this.#base = value;
-		if (focused && atEnd) this.el.setSelectionRange(value.length, value.length);
+		this.el.value = shown;
+		this.#base = shown;
+		if (focused && atEnd) this.el.setSelectionRange(shown.length, shown.length);
 		else if (focused && start !== null && end !== null)
-			this.el.setSelectionRange(Math.min(start, value.length), Math.min(end, value.length));
+			this.el.setSelectionRange(Math.min(start, shown.length), Math.min(end, shown.length));
 	}
 	/** Puts the server's text back (a name cannot be empty). */
 	reset(): void {
@@ -131,7 +216,14 @@ function names(table: CompanyFounding, userIds: readonly string[], me: string): 
 	return t("{names} and {last}", { names: list.slice(0, -1).join(", "), last: list[list.length - 1]! });
 }
 
-/** One seat under the box: who, and where they are (Ready, not yet, invited); Remove or Withdraw when you may. */
+/** Where someone is, live: at the table now, and writing. */
+interface SeatPresence {
+	here: boolean;
+	writing: boolean;
+}
+
+/** One seat under the box: who, and where they are (Ready, not yet, invited, writing now); Remove or Withdraw when
+ * you may. With live presence, the face of someone here now has a ring in their colour. */
 class SeatChip {
 	readonly el: HTMLElement;
 	readonly #body = new Slot();
@@ -148,36 +240,46 @@ class SeatChip {
 		);
 	}
 
-	update(table: CompanyFounding, seat: FounderSeat): void {
+	update(table: CompanyFounding, seat: FounderSeat, presence: SeatPresence | undefined): void {
 		const founding = this.#founding;
 		const canRemove = table.me.canManage && seat.state === "joined" && !this.#mine;
 		const canWithdraw =
 			seat.state === "invited" && !this.#mine && (table.me.canManage || seat.invitedByUserId === founding.userId);
 		this.el.classList.toggle("founding-seat-invited", seat.state === "invited");
-		const status =
-			seat.state === "invited"
+		this.el.classList.toggle("founding-seat-here", presence?.here === true);
+		const writing = presence?.writing === true && seat.state === "joined";
+		const status = writing
+			? t("Writing")
+			: seat.state === "invited"
 				? t("Invited")
 				: seat.ready
 					? t("Ready ✓")
 					: seat.modelLoginReady
 						? t("Not ready yet")
 						: t("ChatGPT not connected");
-		this.#body.show([seat.displayName, seat.state, status, canRemove, canWithdraw].join("\n"), () =>
-			h(
+		const here = presence?.here === true && !this.#mine;
+		this.#body.show([seat.displayName, seat.state, status, here, canRemove, canWithdraw].join("\n"), () => {
+			const face = personAvatar(seat.displayName, seat.userId);
+			face.style.setProperty("--line-color", personColor(seat.userId));
+			const line = h(
+				"span",
+				{
+					class: writing
+						? "founding-status founding-status-writing"
+						: seat.ready && seat.state === "joined"
+							? "founding-status founding-status-ready"
+							: "founding-status",
+				},
+				status,
+			);
+			if (writing) line.style.setProperty("--line-color", personColor(seat.userId));
+			return h(
 				"div",
 				{ class: "founding-seat-row" },
-				personAvatar(seat.displayName, seat.userId),
+				face,
 				h("strong", null, this.#mine ? t("You") : seat.displayName),
-				h(
-					"span",
-					{
-						class:
-							seat.ready && seat.state === "joined"
-								? "founding-status founding-status-ready"
-								: "founding-status",
-					},
-					status,
-				),
+				here ? h("span", { class: "visually-hidden" }, t("Here now")) : null,
+				line,
 				canRemove
 					? button(
 							t("Remove"),
@@ -193,8 +295,8 @@ class SeatChip {
 						)
 					: null,
 				canWithdraw ? button(t("Withdraw"), () => void founding.removeSeat(seat.userId), { small: true }) : null,
-			),
-		);
+			);
+		});
 	}
 }
 
@@ -220,6 +322,10 @@ export class FoundingView {
 	readonly #seats = new Map<string, SeatChip>();
 	readonly #invite: HTMLButtonElement;
 	readonly #inviteFaces = new Slot();
+	/** "{name} is writing", under the box's text. */
+	readonly #writing = h("p", { class: "founding-writing" });
+	/** The others' carets over the idea box, laid out as its text is. */
+	readonly #carets = h("div", { class: "founding-carets", "aria-hidden": "true" });
 	readonly #boxFoot: HTMLElement;
 	readonly #friends: HTMLElement;
 	readonly #friendList = new Slot();
@@ -266,7 +372,7 @@ export class FoundingView {
 			h("span", { class: "founding-plus", "aria-hidden": "true" }, icon("plus")),
 			t("Invite friends"),
 		);
-		this.#boxFoot = h("div", { class: "founding-box-foot" }, this.#invite);
+		this.#boxFoot = h("div", { class: "founding-box-foot" }, this.#invite, this.#writing);
 		this.#friendEmail = h("input", {
 			id: "foundingFriendEmail",
 			type: "email",
@@ -381,6 +487,63 @@ export class FoundingView {
 		);
 	}
 
+	/** Your field tells the others where you are and, live, your words and caret in it. */
+	#watchLive(synced: SyncedField<HTMLInputElement | HTMLTextAreaElement>, kind: FoundingField): void {
+		const founding = this.#founding;
+		const field = synced.el;
+		// Words count as yours only once you changed them: a field that follows another writer shows theirs.
+		const send = (typing: boolean) => founding.noteLive(kind, field.value, field.selectionEnd, typing, synced.dirty);
+		const element: HTMLElement = field;
+		element.addEventListener("focus", () => {
+			founding.noteField(kind);
+			send(false);
+		});
+		element.addEventListener("blur", () => founding.noteField(null));
+		element.addEventListener("input", () => send(true));
+		// A caret moved by the keys or the pointer.
+		element.addEventListener("keyup", (event) => {
+			if (/^(Arrow|Home|End|Page)/.test(event.key)) send(false);
+		});
+		element.addEventListener("pointerup", () => send(false));
+	}
+
+	/** The newest writer's own words in a field that differ from the table's: an untouched field follows them. */
+	#following(field: FoundingField): FounderLive | undefined {
+		return (this.#founding.store.get().liveText ?? []).find((live) => live.field === field && live.unsaved);
+	}
+
+	/** The others' carets in the idea box, where they fall in the words it shows; the followed writer's new words
+	 * tinted when the box shows exactly their words. */
+	#paintVision(container: HTMLElement, shown: string): void {
+		const state = this.#founding.store.get();
+		const table = state.table;
+		if (!table) return;
+		const lives = (state.liveText ?? []).filter((live) => live.field === "vision");
+		const carets = lives.flatMap((live) =>
+			live.caret === null
+				? []
+				: [
+						{
+							at: caretIn(live.text, live.caret, shown),
+							userId: live.userId,
+							name: table.seats.find((seat) => seat.userId === live.userId)?.displayName ?? t("a founder"),
+						},
+					],
+		);
+		const followed = this.#following("vision");
+		const words = followed && followed.text === shown ? newWords(table.vision, shown) : undefined;
+		writeMarked(container, shown, carets, words && followed ? { ...words, userId: followed.userId } : undefined);
+		// A name flag that would leave the box at its right edge hangs to the left of its caret.
+		const right = container.getBoundingClientRect().right;
+		for (const caret of container.querySelectorAll<HTMLElement>(".founding-caret")) {
+			const flag = caret.querySelector("b");
+			caret.classList.toggle(
+				"founding-caret-left",
+				flag !== null && caret.getBoundingClientRect().left + flag.offsetWidth > right,
+			);
+		}
+	}
+
 	/** Text typed here and not saved yet, to carry over when the page is built again. */
 	drafts(): FoundingDrafts {
 		return {
@@ -461,10 +624,12 @@ export class FoundingView {
 		const joined = table.me.state === "joined";
 		const mySeat = table.seats.find((seat) => seat.userId === me);
 
-		this.#nameSlot.show(joined ? "field" : `title\n${table.companyName}`, () => {
+		const followedName = this.#following("name")?.text;
+		const name = followedName ?? table.companyName;
+		this.#nameSlot.show(joined ? "field" : `title\n${name}`, () => {
 			if (!joined) {
 				this.#name = undefined;
-				return h("h1", { class: "founding-name" }, table.companyName);
+				return h("h1", { class: "founding-name" }, name);
 			}
 			const field = h("input", {
 				class: "founding-name",
@@ -474,7 +639,7 @@ export class FoundingView {
 				"aria-label": t("Company name"),
 				autocomplete: "organization",
 			});
-			this.#name = new SyncedField(
+			const syncedName = new SyncedField(
 				field,
 				(value, synced) => {
 					if (value.trim()) void founding.rename(value);
@@ -482,9 +647,11 @@ export class FoundingView {
 				},
 				this.#carried.name,
 			);
+			this.#name = syncedName;
+			this.#watchLive(syncedName, "name");
 			return field;
 		});
-		this.#name?.show(table.companyName);
+		this.#name?.show(table.companyName, followedName);
 
 		const invitedBy = mySeat?.invitedByUserId;
 		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
@@ -505,10 +672,12 @@ export class FoundingView {
 				: null,
 		);
 
-		this.#visionSlot.show(joined ? "field" : `text\n${table.vision}`, () => {
+		const followedVision = this.#following("vision")?.text;
+		const vision = followedVision ?? table.vision;
+		this.#visionSlot.show(joined ? "field" : "text", () => {
 			if (!joined) {
 				this.#vision = undefined;
-				return table.vision ? h("p", { class: "founding-vision" }, table.vision) : null;
+				return h("p", { class: "founding-vision" });
 			}
 			const field = h("textarea", {
 				class: "founding-vision",
@@ -518,34 +687,55 @@ export class FoundingView {
 				"aria-label": t("What the company is for"),
 			});
 			// The idea the opening could not save waits here as your unsaved text: leaving the box saves it.
-			this.#vision = new SyncedField(
+			const syncedVision = new SyncedField(
 				field,
 				(value) => void founding.describe(value),
 				this.#carried.vision ?? founding.pendingVision,
 			);
-			return field;
+			this.#vision = syncedVision;
+			this.#watchLive(syncedVision, "vision");
+			// Your own words move the others' carets too.
+			field.addEventListener("input", () => this.#paintVision(this.#carets, field.value));
+			return h("div", { class: "founding-vision-field" }, field, this.#carets);
 		});
-		this.#vision?.show(table.vision);
+		this.#vision?.show(table.vision, followedVision);
+		const shownVision = this.#vision?.el.value ?? vision;
+		const visionText = this.#visionSlot.el.querySelector<HTMLElement>("p.founding-vision");
+		if (visionText) {
+			visionText.hidden = !vision;
+			this.#paintVision(visionText, vision);
+		} else this.#paintVision(this.#carets, shownVision);
 
-		// Every other founder's own line, in their colour; yours is the field under them.
-		const others = table.seats.filter((seat) => seat.userId !== me && seat.state === "joined" && seat.role);
-		this.#lines.show(others.map((seat) => `${seat.userId}:${seat.displayName}:${seat.role}`).join("\n"), () =>
-			others.length === 0
-				? null
-				: h(
-						"div",
-						{ class: "founding-lines" },
-						...others.map((seat) => {
-							const line = h(
-								"p",
-								{ class: "founding-line" },
-								h("span", { class: "founding-line-who" }, seat.displayName),
-								h("span", null, seat.role),
-							);
-							line.style.setProperty("--line-color", personColor(seat.userId));
-							return line;
-						}),
-					),
+		// Every other founder's own line, in their colour, as they write it; yours is the field under them.
+		const others = table.seats
+			.filter((seat) => seat.userId !== me && seat.state === "joined")
+			.map((seat) => {
+				const live = (state.liveText ?? []).find((item) => item.userId === seat.userId && item.field === "role");
+				const writing = live !== undefined && (live.unsaved || live.caret !== null);
+				return { seat, text: writing ? live.text : seat.role, caret: writing ? live.caret : null };
+			})
+			.filter((line) => line.text || line.caret !== null);
+		this.#lines.show(
+			others.map((line) => `${line.seat.userId}:${line.seat.displayName}:${line.caret}:${line.text}`).join("\n"),
+			() =>
+				others.length === 0
+					? null
+					: h(
+							"div",
+							{ class: "founding-lines" },
+							...others.map(({ seat, text, caret }) => {
+								const words = h("span");
+								writeMarked(words, text, caret === null ? [] : [{ at: caret, userId: seat.userId }]);
+								const line = h(
+									"p",
+									{ class: "founding-line" },
+									h("span", { class: "founding-line-who" }, seat.displayName),
+									words,
+								);
+								line.style.setProperty("--line-color", personColor(seat.userId));
+								return line;
+							}),
+						),
 		);
 		this.#roleSlot.show(joined ? "mine" : "none", () => {
 			if (!joined) {
@@ -560,26 +750,72 @@ export class FoundingView {
 				"aria-label": t("Your role"),
 			});
 			field.style.setProperty("--line-color", personColor(me));
-			this.#role = new SyncedField(field, (value) => void founding.setRole(value), this.#carried.role);
+			const syncedRole = new SyncedField(field, (value) => void founding.setRole(value), this.#carried.role);
+			this.#role = syncedRole;
+			this.#watchLive(syncedRole, "role");
 			return field;
 		});
 		if (mySeat && joined) this.#role?.show(mySeat.role);
 
-		// The people at the table look over the box's edge, as the crown does.
-		this.#heads.show(table.seats.map((seat) => `${seat.userId}:${seat.displayName}:${seat.state}`).join("\n"), () =>
-			h(
-				"div",
-				{ class: "founding-heads", "aria-hidden": "true" },
+		// The people at the table look over the box's edge, as the crown does. With live presence, the ones here now
+		// have a ring in their colour (you always), and someone writing a pulsing one.
+		const presence = new Map((state.present ?? []).map((person) => [person.userId, person]));
+		const live = state.live === true;
+		const seen = (userId: string) =>
+			live
+				? {
+						here: userId === me || presence.get(userId)?.here === true,
+						writing: presence.get(userId)?.writing === true,
+					}
+				: undefined;
+		this.#heads.show(
+			[
+				live,
 				...table.seats.map((seat) => {
-					const face = personAvatar(seat.displayName, seat.userId);
-					face.classList.toggle("founding-head-invited", seat.state === "invited");
-					face.style.setProperty("--line-color", personColor(seat.userId));
-					return face;
+					const at = seen(seat.userId);
+					return `${seat.userId}:${seat.displayName}:${seat.state}:${at?.here}:${at?.writing}`;
 				}),
-			),
+			].join("\n"),
+			() =>
+				h(
+					"div",
+					{ class: live ? "founding-heads founding-heads-live" : "founding-heads", "aria-hidden": "true" },
+					...table.seats.map((seat) => {
+						const at = seen(seat.userId);
+						const face = personAvatar(seat.displayName, seat.userId);
+						face.classList.toggle("founding-head-invited", seat.state === "invited");
+						face.classList.toggle("founding-head-here", at?.here === true);
+						face.classList.toggle("founding-head-writing", at?.writing === true && seat.state === "joined");
+						face.style.setProperty("--line-color", personColor(seat.userId));
+						return face;
+					}),
+				),
 		);
+		const writers = table.seats.filter((seat) => seat.state === "joined" && seen(seat.userId)?.writing);
+		const writingText =
+			writers.length === 0
+				? ""
+				: writers.length === 1
+					? t("{name} is writing", { name: writers[0]!.displayName })
+					: t("{names} are writing", {
+							names: names(
+								table,
+								writers.map((seat) => seat.userId),
+								me,
+							),
+						});
+		if (this.#writing.dataset.text !== writingText) {
+			this.#writing.dataset.text = writingText;
+			this.#writing.replaceChildren(
+				h("span", { class: "founding-dots", "aria-hidden": "true" }, h("b"), h("b"), h("b")),
+				writingText,
+			);
+			if (writers[0]) this.#writing.style.setProperty("--line-color", personColor(writers[0].userId));
+		}
+		this.#writing.hidden = !writingText;
 		const full = table.seats.length >= FOUNDING_MAX_SEATS;
-		this.#boxFoot.hidden = !joined || full;
+		this.#invite.hidden = !joined || full;
+		this.#boxFoot.hidden = this.#invite.hidden && this.#writing.hidden;
 		this.#invite.setAttribute("aria-expanded", String(state.friendsOpen === true));
 		this.#inviteFaces.show(table.seats.map((seat) => `${seat.userId}:${seat.displayName}`).join("\n"), () =>
 			h(
@@ -596,7 +832,7 @@ export class FoundingView {
 				chip = new SeatChip(founding, seat);
 				this.#seats.set(seat.userId, chip);
 			}
-			chip.update(table, seat);
+			chip.update(table, seat, seen(seat.userId));
 			return chip.el;
 		});
 		for (const userId of [...this.#seats.keys()])

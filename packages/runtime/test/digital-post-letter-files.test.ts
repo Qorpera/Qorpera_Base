@@ -105,7 +105,10 @@ describe("layOutDigitalPostLetter", () => {
 		expect(text(without.files[0]?.bytes)).toContain("The letter's text is in brev.pdf");
 		expect(text(without.files[0]?.bytes)).toContain("does not take replies");
 		expect(without.summary).toMatchObject({ text: false, snippet: null, replyBy: null, files: 1 });
-		const withText = layOutDigitalPostLetter(pdfOnly, received, "Read from the PDF");
+		const withText = layOutDigitalPostLetter(pdfOnly, received, {
+			text: "Read from the PDF",
+			from: pdfOnly.documents[0]!.files[0]!,
+		});
 		expect(text(withText.files[0]?.bytes)).toContain("From brev.pdf:\n\nRead from the PDF");
 		expect(withText.summary).toMatchObject({ text: true, snippet: "Read from the PDF" });
 	});

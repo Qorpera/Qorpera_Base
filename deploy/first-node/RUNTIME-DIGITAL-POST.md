@@ -99,8 +99,47 @@ writes nothing and backs off. A company's letters are written one at a time, and
 every written letter and every kept one whose folder is already there, so a letter committed before its finish lands
 is never left out. A unit not saved backs off (a minute, doubling to an hour) and the next claim
 reads the folder again. A written letter's staged chunks are deleted. `letter.md` says the letter is outside content. The main
-document's text comes from its text or HTML version; a letter that is only a PDF says so until PDF text is read (step
-5).
+document's text comes from its text or HTML version, else from its PDF ("PDF text", below); a PDF that gives none (a
+scan) leaves `letter.md` saying the text is in the PDF.
+
+## PDF text
+
+Most authorities send a letter as a PDF alone. When the main document has no text or HTML version, the vault reads its
+PDF's text before it lays the letter out, and `letter.md` gives it under "From <file>:". A PDF is outside content, and
+the code that parses it is where an attack would land, so it never runs in the vault's process or as the vault's user,
+who can read the vault's keys:
+
+- `qorpera-pdf-text.socket` listens at `/run/qorpera-pdf-text/socket`, root's and the `qorpera-shared-vault` group's,
+  mode 0660: only the vault connects. Each connection starts its own `qorpera-pdf-text@.service`, with the connection
+  as its input and output.
+- The vault sends a one-time code (32 hex digits) on a line of its own, then the PDF, and closes its side. In the
+  sandbox a shell reads the code, runs `pdftotext -q -enc UTF-8 -eol unix -l 201 - -` on the rest, and writes the code
+  back after the text only when pdftotext exited cleanly. Text without its code (pdftotext crashed, or a limit ended it
+  partway) is never kept, so a letter never gets half its text unmarked. pdftotext reads 201 pages, one more than the
+  vault keeps: a longer PDF's text is cut after page 200 and says so.
+- An instance has a throwaway user (`DynamicUser`), no network (`PrivateNetwork`, no address family), a read-only
+  system, an empty private `/tmp`, files limited to 0 bytes, no capabilities, the system-service system calls only,
+  256 MiB, 4 tasks, one CPU and 30 seconds. `systemd-analyze security` rates it 0.2 (SAFE).
+- The vault (`digital-post-pdf-text.ts`) reads at most 256 KiB of text for 40 seconds; text cut there says so, and
+  needs no code. It drops control characters and runs of blank lines.
+- It is best effort: a PDF with no text, a failure, a timeout or no service gives no text, and the letter is kept and
+  receipted as before. The vault logs a fixed phrase, never content, and a missing service once.
+
+**Installing (4a, on each vault host; the vault needs no restart):**
+
+1. `apt-get install --no-install-recommends poppler-utils` (Ubuntu 26.04: pdftotext 26.01).
+2. Both units from `deploy/cloud-secret-broker/` into `/etc/systemd/system/`, `install -m 0644 -o root -g root`.
+3. `systemctl daemon-reload` and `systemctl enable --now qorpera-pdf-text.socket`.
+4. Check: copy `deploy/cloud-secret-broker/test/prove-pdf-text.mjs` to the host and run it as root with
+   `/usr/bin/node`; it must print `ALL PASSED`. It checks the socket's owner and mode; a PDF's text with Danish letters
+   and the code after it; 201 pages read and no more; no text and no code from a file that is not a PDF or after a
+   first line that is not a code; no code from an instance killed partway; the 30-second limit on a PDF never finished;
+   that a user outside the vault's group cannot connect; and that a running instance has its own user, network and
+   mounts. On a test machine, `--transient` adds poppler-utils, the group and the units for the run alone and takes
+   away exactly what it added; it refuses a host that has any of the units or the socket's folder already (node 1's
+   test machine, 22 Oct 2026: all 12 checks passed, rated 0.2).
+
+Until then the vault keeps PDF letters without their text. Letters already written are not read again.
 
 ## Agents
 
@@ -111,10 +150,25 @@ documents with the folder tools. Like event and file-change routines, such a rou
 
 ## The Mailbox
 
-The Mailbox lists letters from `digital-post/letters.json` in its Inbox among the email threads, newest first, with
-the sender as the name and a Digital Post mark, and opens a letter from its `letter.md` with its documents. The
-Addresses tab has a "Digital Post" row with the agents whose routines watch `digital-post`. It works whether company
-email is switched on or not.
+The Mailbox (`packages/web/src/app/views/mailbox.ts`) lists the letters of `digital-post/letters.json` in its Inbox
+among the email threads by when they came, as far back as the threads are read: the authority as the sender, the
+title and the start of the text, a Digital Post mark, and "Legal effect" where the letter has it. Search finds letters
+too. A letter opens from its `letter.md`: its flags, its text, its documents (which open in Storage) and a line to send
+a note about it to an agent the member picks, the Co-Founder at first. The note names the letter by its message id and
+its year's folder, never by its title or sender, since a member's message quotes outside words only from email.
+While Digital Post is connected or holds letters, the Addresses tab has a "Digital Post" row: how it stands, how many
+letters, and "Choose who reads it", which asks the Co-Founder to set the routine up. The Mailbox shows while the
+company has an email address, or Digital Post connected or holding letters, so it works whether company email is
+switched on or not. The index is read with the member's own folder access, again on the Mailbox's 20-second read only
+when its version changed; an open letter is read again then too.
+
+Settings → Company connections has a Digital Post card (`views/settings-digital-post.ts`): how the connection stands
+(when it last checked, the system, how many letters, how many Digital Post moved to Virk) and, for an owner or admin,
+Connect with the steps in Administrativ Adgang (Qorpera's CVR and the vault's addresses from
+`qorpera_digital_post_settings`) and the key's field, then Replace key and Disconnect. Disconnect revokes the key and
+says to remove the system in Administrativ Adgang too. A pasted key is checked to be base64 of a system id and its key
+before it goes to the vault. Until operators set the settings row the card says Digital Post is not available yet. On
+a cloud without `qorpera_member_digital_post`, the card and the Mailbox's Digital Post stay hidden.
 
 ## Security
 
@@ -124,6 +178,7 @@ email is switched on or not.
   sync takes the same one and the same bounds: the vault unwraps only to call Digital Post's fixed origin, and only
   the reduced letter leaves the adapter.
 - The XML reader refuses document types and unknown entities, bounds depth and size, and logs no content.
+- A letter's PDF is parsed only by pdftotext in its own sandbox ("PDF text"), never in the vault.
 - Every member and agent of the company reads its Digital Post, as with company mail (company-first). Letters can
   name people (an employee's CPR number in a letter about them).
 
@@ -135,7 +190,7 @@ email is switched on or not.
 | 2 | SQL and vault: the sync (claim, keep, stage, receipt, finish), the vault loop and configuration, the capture check for `digital_post` |
 | 3 | Object gateway: the folder writer and `digital-post/letters.json` |
 | 4 | Web: the Settings card (steps, the key, the state) and the Mailbox (letters in the Inbox, the letter view, the Addresses row) |
-| 5 | PDF text: the main document's text read from a PDF in a bounded worker, into `letter.md` |
+| 5 | PDF text: the main document's text read from its PDF by pdftotext in a socket-activated sandbox, into `letter.md` (`digital-post-pdf-text.ts`, `qorpera-pdf-text.socket`, `qorpera-pdf-text@.service`) |
 
 ## To check in Digital Post's test environment
 

@@ -15,6 +15,7 @@
 	},
 	"dependencies": {
 		"@qorpera/cloud-client": "*",
+		"@qorpera/contracts": "*",
 		"@supabase/supabase-js": "2.112.3",
 		"marked": "18.0.5"
 	},

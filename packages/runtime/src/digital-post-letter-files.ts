@@ -1,6 +1,6 @@
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { folderKey } from "@qorpera/contracts";
-import { type DigitalPostLetter, digitalPostLetterText, sha256Hex } from "./digital-post-memo.ts";
+import { type DigitalPostFile, type DigitalPostLetter, digitalPostLetterText, sha256Hex } from "./digital-post-memo.ts";
 
 /**
  * How a Digital Post letter lies in the company folder. Each letter is one folder,
@@ -183,13 +183,14 @@ function letterMarkdown(
 }
 
 /**
- * The folder and files of one letter. `extracted` is the main document's text when the caller read it from a PDF;
- * otherwise the letter's own text or HTML version is used.
+ * The folder and files of one letter. `extracted` is the main document's text when the caller read it from a PDF
+ * (`from`, one of the letter's files; digital-post-pdf-text.ts); otherwise the letter's own text or HTML version is
+ * used.
  */
 export function layOutDigitalPostLetter(
 	letter: DigitalPostLetter,
 	received: Date,
-	extracted: string | null = null,
+	extracted: { readonly text: string; readonly from: DigitalPostFile } | null = null,
 ): DigitalPostLetterLayout {
 	const sender = digitalPostSafeName(letter.sender.name ?? letter.sender.id, "Sender", SENDER_CHARACTERS);
 	const title = digitalPostSafeName(letter.title, "Letter", TITLE_CHARACTERS);
@@ -218,10 +219,9 @@ export function layOutDigitalPostLetter(
 			shown.push({ name, role: document.role, label: document.label });
 		}
 	const own = digitalPostLetterText(letter);
-	const text = extracted ?? own.text;
-	const source = own.source
-		? (shown[files.findIndex((file) => file.bytes === own.source?.bytes)]?.name ?? null)
-		: null;
+	const text = extracted?.text ?? own.text;
+	const from = extracted?.from ?? own.source;
+	const source = from ? (shown[files.findIndex((file) => file.bytes === from.bytes)]?.name ?? null) : null;
 	const markdown = Buffer.from(letterMarkdown(letter, received, shown, text, source), "utf8");
 	const json = Buffer.from(`${JSON.stringify(letter.record, null, 2)}\n`, "utf8");
 	const summaryText = text ? oneLine(text) : null;
