@@ -1,5 +1,6 @@
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import { interactionState } from "../cloud/interactions.ts";
+import { stoppedCardNote } from "./card-notes.ts";
 import { button, h } from "./dom.ts";
 import type { InteractionCardContext, InteractionCardItem } from "./interaction-card.ts";
 import { t } from "./preferences.ts";
@@ -329,6 +330,8 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 						: t("Check Gmail before sending again. Delivery has not been confirmed."),
 				),
 			);
+		if (!terminal && item.chainStopped)
+			card.append(h("p", { class: "email-draft-note" }, stoppedCardNote(context.canAnswer)));
 		if (!terminal && context.canAnswer) {
 			const actions = h("div", { class: "email-draft-actions" }, send, discard, save);
 			if ((uncertain || !connected || editor.error) && context.loadEmailDraft) {

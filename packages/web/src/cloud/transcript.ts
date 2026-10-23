@@ -27,6 +27,8 @@ export const PEER_MESSAGE_SCHEMA = "qorpera.peer-message/v1";
 export const PEER_LINK_SCHEMA = "qorpera.peer-link/v1";
 /** One line in a pair transcript saying why an exchange stopped. */
 export const PEER_BUDGET_SCHEMA = "qorpera.peer-budget/v1";
+/** A member stopped a chain of agent work: the cards it raised in this conversation stay open (contract 14.6). */
+export const CHAIN_STOPPED_SCHEMA = "qorpera.chain-stopped/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface TranscriptMessage {
@@ -71,6 +73,8 @@ export interface TranscriptCard {
 	answer?: InteractionAnswer;
 	/** An answer was given and its delivery failed: the card is open again. */
 	answerFailed?: boolean;
+	/** A member stopped the work that raised the card; an answer starts new work. */
+	chainStopped?: boolean;
 }
 
 export interface TranscriptPeerLink {
@@ -113,6 +117,8 @@ export interface TranscriptInteraction {
 	answer?: InteractionAnswer;
 	/** An answer was sent and its delivery failed, so it never reached the agent: the card is open again. */
 	answerFailed?: boolean;
+	/** A member stopped the work that raised the card; an answer starts new work. */
+	chainStopped?: boolean;
 	createdAt: string;
 }
 
@@ -362,6 +368,7 @@ export function projectTranscript(
 	const cards = new Map<string, TranscriptCard>();
 	const answers = new Map<string, InteractionAnswer>();
 	const failedAnswers = new Set<string>();
+	const stoppedCards = new Set<string>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
@@ -428,7 +435,11 @@ export function projectTranscript(
 						pairSessionId: info.pairSessionId,
 						createdAt: event.createdAt,
 					});
-				else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim())
+				else if (info?.schema === CHAIN_STOPPED_SCHEMA && Array.isArray(info.cardIds)) {
+					// Drawn on its cards, which may be anywhere above it; a card not loaded is left alone.
+					for (const cardId of info.cardIds)
+						if (typeof cardId === "string" && UUID.test(cardId)) stoppedCards.add(cardId.toLowerCase());
+				} else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim())
 					items.push({
 						kind: "note",
 						id: event.eventId,
@@ -553,6 +564,10 @@ export function projectTranscript(
 	for (const interactionId of failedAnswers) {
 		const interaction = interactions.get(interactionId) ?? cards.get(interactionId);
 		if (interaction && !interaction.answer) interaction.answerFailed = true;
+	}
+	for (const cardId of stoppedCards) {
+		const card = interactions.get(cardId) ?? cards.get(cardId);
+		if (card) card.chainStopped = true;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
 	// A waiting message stands before the first member message sent after it, else at
