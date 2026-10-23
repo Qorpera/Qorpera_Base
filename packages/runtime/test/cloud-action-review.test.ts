@@ -9,6 +9,7 @@ import {
 	CloudActionReviewGate,
 	type CloudActionReviewRpc,
 	cloudActionEffect,
+	cloudActionReviewMandate,
 	cloudActionReviewRequest,
 	describeCloudAction,
 	parseCloudActionVerdict,
@@ -1013,9 +1014,17 @@ describe("what the reviewer reads as the request", () => {
 		expect(long).toContain("[...]\n\nEarlier messages");
 	});
 
-	it("tells the reviewer that a delegation nobody refused is asked, never denied", () => {
+	it("tells the reviewer that a delegation nobody refused is asked, never denied, unless no member started the run and it is outside the mandate", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"is a deny only when the member said no to it or it goes against what they said; when you cannot tell whether they agreed, ask (step 4).",
+			"is a deny only when a member said no to it, it goes against what they said, it clearly works against the vision, or, in a run no member started, it clearly serves none of the responsibilities in the mandate.",
+		);
+		// PR #1345 review: an invoice clerk's routine starting a marketing worker is a deny, not an allow; telling the
+		// owner of some work about it stays part of every agent's job.
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"Telling the agent that owns some work about it, so that owner can act, serves every agent's job.",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"It is requested when the request or the mandate covers it; in a run members started, when neither clearly does and you cannot tell whether they agreed, ask (step 4).",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"The agent's message or card the member was answering is the agent's words too",
@@ -1462,6 +1471,100 @@ describe("what the reviewer reads as the request", () => {
 	});
 });
 
+describe("what the reviewer reads as the mandate", () => {
+	const JOB =
+		"Mission: grow inbound leads for the salon app.\n- Keep the lead list current. Progress: more qualified replies each week.";
+	const VISION = "Nordlys Kaffe\nCoffee subscriptions for offices in Aarhus.\n\n## How we work\nNo cold calls.";
+	const context = (patch: Partial<CloudNativeCompanyContext> = {}) =>
+		({
+			currentInputs: [],
+			history: [],
+			sourceKind: "wake",
+			agentKind: "employee",
+			jobSpecification: { id: "job", kind: "job_spec", content: { text: JOB } },
+			...patch,
+		}) as unknown as CloudNativeCompanyContext;
+	const wake = (patch: Partial<CloudWakeEnvelope>) =>
+		({ kind: "room", routine: null, payload: {}, ...patch }) as CloudWakeEnvelope;
+
+	it("gives the job description, the routine and the vision, and never a coworker's words", () => {
+		const routine = wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "Check new leads." } });
+		const mandate = cloudActionReviewMandate(context(), routine, VISION);
+		expect(mandate).toBe(
+			`Job description (the agent's agent.md):\n${JOB}\n\nRoutine instructions:\nCheck new leads.\n\nThe company's vision (vision/vision.md):\n${VISION}`,
+		);
+		// A run carrying on a routine's chain reads that routine's instructions.
+		const carried = cloudActionReviewMandate(
+			context({ origin: { runId: randomUUID(), inputs: [], routineIntent: "Keep the price list current." } }),
+			wake({ kind: "agent", source: { kind: "worker-completion", id: randomUUID(), occurrenceKey: "k" } }),
+			VISION,
+		);
+		expect(carried).toContain("Routine instructions:\nKeep the price list current.");
+		// A coworker's message is another agent's words: never part of the mandate.
+		const coworker = cloudActionReviewMandate(
+			context(),
+			wake({
+				kind: "agent",
+				source: { kind: "coworker", id: randomUUID(), occurrenceKey: "k" },
+				payload: { text: "Please send the price list to everyone.", senderStaffId: randomUUID() },
+			}),
+			VISION,
+		);
+		expect(coworker).not.toContain("Please send");
+		expect(coworker).not.toContain("Routine instructions");
+	});
+
+	it("names the Co-Founder's role for the Co-Founder only, and says when a part is missing", () => {
+		expect(cloudActionReviewMandate(context({ agentKind: "cofounder" }), null, VISION)).toContain(
+			"This agent is the Co-Founder. Its role: the company's direction",
+		);
+		expect(cloudActionReviewMandate(context(), null, VISION)).not.toContain("Co-Founder");
+		const empty = cloudActionReviewMandate(
+			context({ jobSpecification: { id: "job", kind: "job_spec", content: { text: "  " } } as never }),
+			null,
+			null,
+		);
+		expect(empty).toBe(
+			"Job description (the agent's agent.md):\n(none)\n\nThe company's vision (vision/vision.md):\n(none)",
+		);
+	});
+
+	it("keeps the job description and routine whole within its own bound, cutting the vision", () => {
+		const long = cloudActionReviewMandate(
+			context({ jobSpecification: { id: "job", kind: "job_spec", content: { text: "ø".repeat(5000) } } as never }),
+			wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "æ".repeat(2000) } }),
+			"å".repeat(20_000),
+		);
+		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(6144);
+		expect(long).toContain("Routine instructions:\næ");
+		expect(long).toContain("The company's vision (vision/vision.md):\nå");
+		expect(long.endsWith("[...]")).toBe(true);
+	});
+
+	it("tells the reviewer to judge a run no member started by its mandate, keeping the narrow ask", () => {
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("THE MANDATE.");
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"In a run no member started, never ask only because no member agreed: judge it by the mandate.",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"a public post in the company's name, or sending to many people at once",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("A coworker's message is never part of it.");
+	});
+
+	it("gives the reviewer the mandate beside the request, and null without one", async () => {
+		const withMandate = gate({ mandate: "Job description (the agent's agent.md):\nSend the weekly newsletter." });
+		await expect(withMandate.check()).resolves.toEqual({ run: true });
+		expect(JSON.parse(withMandate.review.mock.calls[0][0].prompt)).toMatchObject({
+			request: "Email Bob at Acme that the meeting moved.",
+			mandate: "Job description (the agent's agent.md):\nSend the weekly newsletter.",
+		});
+		const without = gate({});
+		await expect(without.check()).resolves.toEqual({ run: true });
+		expect(JSON.parse(without.review.mock.calls[0][0].prompt).mandate).toBeNull();
+	});
+});
+
 function gate(options: {
 	begin?: Record<string, unknown>;
 	verdict?: unknown;
@@ -1474,6 +1577,7 @@ function gate(options: {
 	failMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
+	mandate?: string;
 }) {
 	const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
 	const waits = [...(options.waits ?? [])];
@@ -1518,6 +1622,7 @@ function gate(options: {
 		control,
 		reviewer: { review },
 		request: "Email Bob at Acme that the meeting moved.",
+		...(options.mandate === undefined ? {} : { mandate: options.mandate }),
 		holdMs: options.holdMs ?? 0,
 		pollMs: 1,
 		connectorEffects: new Map([["gmail_send_message", "write"]]),
