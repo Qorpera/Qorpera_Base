@@ -26,6 +26,9 @@ export type MemberCompanyPublisherRpc =
 	// A coding turn's results.md writer (coding-results-files.ts, C3d): its claim and finish.
 	| "qorpera_claim_coding_results_file"
 	| "qorpera_finish_coding_results_file"
+	// The bank summary's writer (bank-summary-files.ts, Bank connection part 3): its claim and finish.
+	| "qorpera_claim_bank_summary_file"
+	| "qorpera_finish_bank_summary_file"
 	// The Digital Post letters' writer (digital-post-files.ts, RUNTIME-DIGITAL-POST.md part 3): its claim, its reads of
 	// the staged files and its finish.
 	| "qorpera_claim_digital_post_letter_file"
