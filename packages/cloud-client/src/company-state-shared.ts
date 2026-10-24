@@ -31,7 +31,7 @@ export function companyPathKey(path: string): string {
  * sections.md), rules/, connections/, skills/, contacts/, human-tasks/, interfaces/ and tables/ (Jonas, 21 October
  * 2026: "you want to have clear view of what's about the platform and what's about the company"). It is written
  * exactly so, and is seeded and never moved or deleted. The company's own work and code/ stay at the top. The database
- * keeps the same name (`qorpera_os_relative`, 20260930539000). */
+ * keeps the same name (`qorpera_os_relative`, 20260930534000). */
 export const QORPERA_OS_ROOT = "QorperaOS";
 /** The root folder's key, as the database keys it. */
 export const QORPERA_OS_KEY = "qorperaos";

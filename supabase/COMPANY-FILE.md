@@ -41,7 +41,7 @@ Three things sit beside the folder:
 ## Layout
 
 The platform's own folders sit under one top folder, `QorperaOS/` (Jonas,
-21 October 2026; migration `20260930539000`). The platform seeds it when a
+21 October 2026; migration `20260930534000`). The platform seeds it when a
 company is created (contract 5.6):
 
 ```

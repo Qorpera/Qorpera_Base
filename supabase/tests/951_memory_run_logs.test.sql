@@ -75,7 +75,7 @@ create function pg_temp.version(p_key text) returns uuid language sql as $$
 		and key_text = public.qorpera_folder_key(p_key)
 		and kind is distinct from 'claim'
 $$;
--- A path as the folder stores it: a memory key under the QorperaOS/ folder's spelling (20260930539000).
+-- A path as the folder stores it: a memory key under the QorperaOS/ folder's spelling (20260930534000).
 create function pg_temp.shown(p_key text) returns text language sql immutable as $$
 	select 'QorperaOS' || substr(p_key, char_length('qorperaos') + 1)
 $$;
@@ -285,7 +285,7 @@ declare
 begin
 	-- The company chose the beta in 970's setup, so its runs are recorded in it and keep logs (20260930508000).
 	-- A run in its agent's thread: the thread's tree, and the folders on the way that are not there yet. Otto's tree is.
-	-- The paths are handed out as the folder spells them, under QorperaOS/ (20260930539000).
+	-- The paths are handed out as the folder spells them, under QorperaOS/ (20260930534000).
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path',
 		'QorperaOS/agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('QorperaOS/agents/nora/memory/thread',
 		'QorperaOS/agents/nora/memory/thread/runs'), 'last', null, 'generation', 0, 'gone', false, 'origin', jsonb_build_object(

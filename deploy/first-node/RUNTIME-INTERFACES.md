@@ -56,7 +56,7 @@ with `interface_read`, and changes one with `save_interface` (§7).
 
 ## 2. Where things live
 
-Both folders are under `QorperaOS/`, the platform's top folder (contract 5.6; migration 20260930539000). Below it,
+Both folders are under `QorperaOS/`, the platform's top folder (contract 5.6; migration 20260930534000). Below it,
 paths are written in lowercase, as their keys.
 
 ```
@@ -857,7 +857,7 @@ wherever it is listed. Interfaces not listed follow by name.
 
 ## 10. Build order
 
-> Since 20260930539000 every platform path below is under `QorperaOS/` (§2): `interfaces/order.md` is
+> Since 20260930534000 every platform path below is under `QorperaOS/` (§2): `interfaces/order.md` is
 > `QorperaOS/interfaces/order.md`, `tables/areas` is `QorperaOS/tables/areas`, and `file:rules/shared-areas.md` is
 > `file:QorperaOS/rules/shared-areas.md`. The steps keep the paths as they were built.
 

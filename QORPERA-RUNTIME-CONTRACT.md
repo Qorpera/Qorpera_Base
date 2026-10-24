@@ -452,7 +452,7 @@ not design intent and MUST NOT be presented as product limits.
 > `QorperaOS/` (Jonas, 21 October 2026: "you want to have clear view of what's
 > about the platform and what's about the company"). `code/` and the company's
 > own work stay at the top beside it. The tree and every path below show it.
-> Migration `20260930539000` made the change. Nothing was migrated: a company
+> Migration `20260930534000` made the change. Nothing was migrated: a company
 > made before it is deleted and made again.
 
 > **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
@@ -5942,7 +5942,7 @@ an agent starts work and where the results go.
    - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
      it).
    - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 (v6 since the
-     2026-10-22 amendment, v7 since the QorperaOS/ paths, 20260930539000) and keeps its onboarding role for new
+     2026-10-22 amendment, v7 since the QorperaOS/ paths, 20260930534000) and keeps its onboarding role for new
      companies.
    - A file the member asked for is the work, not an extra.
    - HTML pages and prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from

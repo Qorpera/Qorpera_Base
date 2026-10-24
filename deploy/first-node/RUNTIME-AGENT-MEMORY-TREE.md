@@ -30,7 +30,7 @@ ratified.
 > The text below stays as the record of what was approved on 5 and 6 October. Where it says otherwise, the scope
 > amendment wins. Part 1's step 10 and decisions 1 and 4, and §§11, 13, 14 and 16 carry a mark.
 
-> Since 20260930539000 every platform path is under `QorperaOS/` (contract 5.6): a thread's tree root is
+> Since 20260930534000 every platform path is under `QorperaOS/` (contract 5.6): a thread's tree root is
 > `QorperaOS/agents/<agent>/memory/thread/` and a group chat's `QorperaOS/agents/groups/<group>/memory/`. Part 1
 > and §§3–13 say so. §1's facts and §§14–17 keep the paths as they were.
 

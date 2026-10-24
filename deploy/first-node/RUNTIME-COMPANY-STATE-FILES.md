@@ -19,7 +19,7 @@ September 2026).
 ## 1. The structured files
 
 Every structured file is under `QorperaOS/`, the top folder that holds the platform's own
-folders (contract 5.6; Jonas, 21 October 2026; migration 20260930539000). `code/`, `hooks/`,
+folders (contract 5.6; Jonas, 21 October 2026; migration 20260930534000). `code/`, `hooks/`,
 `digital-post/`, `bank/` and the company's own work stay at the top beside it, and nothing outside
 `QorperaOS/` is structured. The TS helpers are `QORPERA_OS_ROOT`, `osPath` and `osRelative` in
 `packages/cloud-client/src/company-state-shared.ts`; the SQL twin is `qorpera_os_relative`.
@@ -1489,7 +1489,7 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
 ## 8. Build order
 
-> Since 20260930539000 every platform path below is under `QorperaOS/` (§1): `agents/<handle>/agent.md` is
+> Since 20260930534000 every platform path below is under `QorperaOS/` (§1): `agents/<handle>/agent.md` is
 > `QorperaOS/agents/<handle>/agent.md`, `rules/` is `QorperaOS/rules/`, and so on. The steps keep the paths as
 > they were built.
 

@@ -9,7 +9,7 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 // The vault's connection-file writer (P22b) against a real database: test 704's folder-v2 company, every migration,
 // the object gateway's writer and file store as built, and its RPCs answered by the database as the service role.
-// It writes the files the vault marked (under QorperaOS/connections/, 20260930539000), keeps a member's text through a
+// It writes the files the vault marked (under QorperaOS/connections/, 20260930534000), keeps a member's text through a
 // rewrite, deletes a disconnected account's file, and puts nothing of the vault's secrets into any file.
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
