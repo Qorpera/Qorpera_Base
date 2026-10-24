@@ -10,7 +10,7 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // as the operator's path does (P14a's open and seed), the object gateway's worker and file store as built, and its
 // RPCs answered by the database as the service role. The worker's seeded tree is the one the creation commit takes:
 // every unit saves, the Co-Founder and its kickoff are written, the company is ready, and every structured file reads
-// back through the shared parser. The platform's folders are under QorperaOS/ (20260930527000).
+// back through the shared parser. The platform's folders are under QorperaOS/ (20260930539000).
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_company_creation";

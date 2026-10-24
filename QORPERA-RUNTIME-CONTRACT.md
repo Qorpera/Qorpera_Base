@@ -452,7 +452,7 @@ not design intent and MUST NOT be presented as product limits.
 > `QorperaOS/` (Jonas, 21 October 2026: "you want to have clear view of what's
 > about the platform and what's about the company"). `code/` and the company's
 > own work stay at the top beside it. The tree and every path below show it.
-> Migration `20260930527000` made the change. Nothing was migrated: a company
+> Migration `20260930539000` made the change. Nothing was migrated: a company
 > made before it is deleted and made again.
 
 > **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
@@ -579,10 +579,16 @@ reset of 17 October; Jonas, 21 October 2026).
 (the 2026-09-27 amendment "every machine works in the company folder", item
 9). Its line is "Code projects (git repositories)." `hooks/<hook>/`, where
 the platform saves verified events (the 2026-09-29 amendment "events wake
-agents"), also stays at the top. Everything else at the top is the company's
-own work, kept by area of the business first, then by
-kind (Jonas, 21 October 2026): areas such as `sales/` or `product/`, and
-inside a crowded area, subfolders by kind, such as `sales/proposals/`. See the
+agents"), also stays at the top. So do `digital-post/`, where the platform
+saves the company's Digital Post letters and their index `letters.json`
+(deploy/first-node/RUNTIME-DIGITAL-POST.md), and `bank/summary.json`, the
+summary of the company's bank accounts that the platform writes for the Bank
+page: like saved events, they are the company's own records that the platform
+writes, created when the first one arrives, not seeded platform folders.
+Everything else at the top is the company's own work, kept by area of the
+business first, then by kind (Jonas, 21 October 2026): areas such as `sales/`
+or `product/`, and inside a crowded area, subfolders by kind, such as
+`sales/proposals/`. See the
 [2026-10-21 amendment](#2026-10-21-amendment-how-agents-start-work-and-use-the-company-folder),
 item 1.
 
@@ -5936,7 +5942,8 @@ an agent starts work and where the results go.
    - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
      it).
    - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 (v6 since the
-     QorperaOS/ paths, 20260930527000) and keeps its onboarding role for new companies.
+     2026-10-22 amendment, v7 since the QorperaOS/ paths, 20260930539000) and keeps its onboarding role for new
+     companies.
    - A file the member asked for is the work, not an extra.
    - HTML pages and prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from
      the network). Members open them live in the app.
@@ -6065,7 +6072,7 @@ run that hired, set up a routine or started a worker could wait for nobody. This
 3. **The company starts with the first conversation.** No company's strategy is complete at its start, so the company
    moves while the vision is built (founder, 22 October). This replaces 14.2's formation workflow, formation project and
    protected direction proposal (superseded on 27 September by "the Co-Founder writes it directly") with what
-   follows. The Co-Founder overlay is v6.
+   follows. The Co-Founder overlay is v6 (v7 since the QorperaOS/ paths, 5.6).
    - The Co-Founder hires and manages; domain work, such as research, finance, sales or product, belongs to the agents
      it hires. As soon as it knows what the company is about, from what the founders wrote at the founding table or
      their first answer, it hires the team that builds the vision with it: at least a researcher for the customers and
@@ -6076,23 +6083,24 @@ run that hired, set up a routine or started a worker could wait for nobody. This
    - It builds the vision with the founders one or two questions at a time, from their answers and the team's
      findings, then posts the whole draft with its evidence and unknowns and revises it until every founder approves.
      Until then the draft guides the team's work, and the Co-Founder keeps it current with what the team learns.
-   - In the run where every founder has approved, the Co-Founder, without asking again, writes vision/vision.md with
-     the company's name as its first line and a last line "Agreed by <the founders>, <date>."; gives each continuing
-     responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in agents/ first so
-     that no owner is hired twice; closes its first todo, Start with the founders; and tells the founders in a few
-     lines who works on what. A step that fails is named and finished in the next planning run. The vision counts as
-     agreed once that line is there or that todo is closed, and the onboarding never restarts. A founder who joins
-     later is greeted, given the vision and asked to approve it or say what to change.
+   - In the run where every founder has approved, the Co-Founder, without asking again, writes
+     `QorperaOS/vision/vision.md` with the company's name as its first line and a last line "Agreed by <the founders>,
+     <date>."; gives each continuing responsibility the agreed vision needs an owner, by changing an agent.md or hiring,
+     looking in `QorperaOS/agents/` first so that no owner is hired twice; closes its first todo, Start with the
+     founders; and tells the founders in a few lines who works on what. A step that fails is named and finished in the
+     next planning run. The vision counts as agreed once that line is there or that todo is closed, and the onboarding
+     never restarts. A founder who joins later is greeted, given the vision and asked to approve it or say what to
+     change.
    - The daily plan is a weekly routine on weekday mornings in the founders' time zone, with one living plan file,
-     operations/company-plan.md. It reads the vision, the plan, every agent's agent.md, todos and routines, and
-     human-tasks/; fixes what holds the company back most (continuing work with no owner, an agent stuck or idle, two
-     agents on the same work, an overdue human task, a decision only the founders can make); until the vision is
-     agreed, brings the team's findings into the draft and chooses the next questions for the founders; opens one or
-     two things owners called done and checks them; and writes to the founders only when something changed that they
-     should know or a decision waits for them, decisions first, each with a recommendation. On Mondays it always
-     writes the week; on the first Monday of a month it also compares the vision with the evidence and, when they
-     disagree, proposes a change for every founder to approve. None of this needs a founder's approval, but work a
-     member asked for is never cancelled or changed without telling that member.
+     operations/company-plan.md (the company's own work, at the top). It reads the vision, the plan, every agent's
+     agent.md, todos and routines, and `QorperaOS/human-tasks/`; fixes what holds the company back most (continuing work
+     with no owner, an agent stuck or idle, two agents on the same work, an overdue human task, a decision only the
+     founders can make); until the vision is agreed, brings the team's findings into the draft and chooses the next
+     questions for the founders; opens one or two things owners called done and checks them; and writes to the founders
+     only when something changed that they should know or a decision waits for them, decisions first, each with a
+     recommendation. On Mondays it always writes the week; on the first Monday of a month it also compares the vision
+     with the evidence and, when they disagree, proposes a change for every founder to approve. None of this needs a
+     founder's approval, but work a member asked for is never cancelled or changed without telling that member.
    - Hiring: freely for continuing work, one owner per responsibility; never a hire for one-off work, which goes to a
      worker. A job description names a mission tied to a goal or an open question in the vision, what progress looks
      like for each responsibility and where to see it, when to speak up and to whom, and what belongs to others. A

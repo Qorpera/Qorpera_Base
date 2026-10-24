@@ -1491,7 +1491,7 @@ describe("what the reviewer reads as the mandate", () => {
 		const routine = wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "Check new leads." } });
 		const mandate = cloudActionReviewMandate(context(), routine, VISION);
 		expect(mandate).toBe(
-			`Job description (the agent's agent.md):\n${JOB}\n\nRoutine instructions:\nCheck new leads.\n\nThe company's vision (vision/vision.md):\n${VISION}`,
+			`Job description (the agent's agent.md):\n${JOB}\n\nRoutine instructions:\nCheck new leads.\n\nThe company's vision (QorperaOS/vision/vision.md):\n${VISION}`,
 		);
 		// A run carrying on a routine's chain reads that routine's instructions.
 		const carried = cloudActionReviewMandate(
@@ -1525,7 +1525,7 @@ describe("what the reviewer reads as the mandate", () => {
 			null,
 		);
 		expect(empty).toBe(
-			"Job description (the agent's agent.md):\n(none)\n\nThe company's vision (vision/vision.md):\n(none)",
+			"Job description (the agent's agent.md):\n(none)\n\nThe company's vision (QorperaOS/vision/vision.md):\n(none)",
 		);
 	});
 
@@ -1537,7 +1537,7 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(6144);
 		expect(long).toContain("Routine instructions:\næ");
-		expect(long).toContain("The company's vision (vision/vision.md):\nå");
+		expect(long).toContain("The company's vision (QorperaOS/vision/vision.md):\nå");
 		expect(long.endsWith("[...]")).toBe(true);
 	});
 

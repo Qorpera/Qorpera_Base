@@ -320,7 +320,7 @@ begin
 		pg_temp.write('QorperaOS/agents/nora-back/routines/Daily.md', 'routine', 'x', '{"kind":"routine"}'),
 		pg_temp.write('QorperaOS/agents/nora-back/Agent.md', 'agent', pg_temp.agent_text(nora, 'Nora'), pg_temp.agent_parse(nora, 'Nora'),
 			pg_temp.version('QorperaOS/agents/nora-back/agent.md')),
-		-- 20260930527000: a copy of QorperaOS/ itself would land its structured files as ordinary ones.
+		-- 20260930539000: a copy of QorperaOS/ itself would land its structured files as ordinary ones.
 		jsonb_build_object('op','copy','from','QorperaOS','to','backup')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 2, 'refused', 'structured_copy');
@@ -373,7 +373,7 @@ begin
 		-- The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
 		('QorperaOS/agents/groups', true, 0), ('QorperaOS/Agents/Groups', true, 1), ('QorperaOS/agents/Groups', true, 1),
 		('QorperaOS/AGENTS/GROUPS', true, 1), ('QorperaOS/Agents/groups/launch', true, 1),
-		-- 20260930527000: the root itself is written in any spelling, and the old roots are ordinary paths.
+		-- 20260930539000: the root itself is written in any spelling, and the old roots are ordinary paths.
 		('qorperaos/agents/anna/agent.md', false, 0), ('QORPERAOS/agents/anna', true, 0), ('Agents/Anna/Agent.md', false, 0),
 		('agents/Anna', true, 0),
 		-- H1: a task's and a contact's file names, the two roots as places, and a task's folders.
@@ -394,7 +394,7 @@ begin
 		('qorperaos/agents/sections.md/agent.md', null), ('qorperaos/skills/x/skill.md', null), ('qorperaos/human-tasks/fit-disk-node-2.md', 'human-task'),
 		('qorperaos/contacts/maria-jensen.md', 'contact'), ('qorperaos/human-tasks/fit-disk-node-2/note.md', null),
 		('qorperaos/human-tasks/fit-disk-node-2/proof/label.md', null), ('qorperaos/contacts/archive/old.md', null),
-		-- 20260930527000: the old roots are ordinary.
+		-- 20260930539000: the old roots are ordinary.
 		('vision/vision.md', null), ('agents/a/agent.md', null)) v(key, kind)
 	loop
 		if public.qorpera_structured_path_kind(t.key) is distinct from t.kind then

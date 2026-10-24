@@ -6,7 +6,7 @@ before any machine writes through the folder. It serves contract 5.6 and the
 machine-side design in [the company folder on every machine](RUNTIME-COMPANY-FOLDER.md).
 Where they differ, the contract governs.
 
-Since 20260930527000 every platform path is under `QorperaOS/` (contract 5.6): `rules/` is
+Since 20260930539000 every platform path is under `QorperaOS/` (contract 5.6): `rules/` is
 `QorperaOS/rules/`, `agents/<name>/agent.md` is `QorperaOS/agents/<name>/agent.md`, and so on.
 §§1–10 say so; the build plan (§11) keeps the paths as they were built. The root is seeded,
 written `QorperaOS`, keyed `qorperaos`, and never moved or deleted.

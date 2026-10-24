@@ -1,3 +1,4 @@
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudConnectorOperation } from "./cloud-connector-catalog.ts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
@@ -1028,7 +1029,7 @@ export function cloudActionReviewMandate(
 		...(routine ? [`Routine instructions:\n${bounded(routine, MANDATE_ROUTINE_BYTES)}`] : []),
 		...(context.agentKind === "cofounder" ? [COFOUNDER_MANDATE] : []),
 	].join("\n\n");
-	const label = "The company's vision (vision/vision.md):\n";
+	const label = `The company's vision (${osPath("vision/vision.md")}):\n`;
 	const room = MANDATE_BYTES - Buffer.byteLength(head) - Buffer.byteLength(label) - 2;
 	const text = vision?.trim() ?? "";
 	return `${head}\n\n${label}${text ? bounded(text, room) : "(none)"}`;

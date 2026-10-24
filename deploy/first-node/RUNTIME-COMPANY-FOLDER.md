@@ -7,7 +7,7 @@ coding machines mount the folder too and keep repositories and worktrees in
 it, is part of that amendment. This document is the design those decisions
 refer to.
 
-> Since 20260930527000 every platform path is under `QorperaOS/` (contract 5.6), so a machine shows
+> Since 20260930539000 every platform path is under `QorperaOS/` (contract 5.6), so a machine shows
 > `/company/QorperaOS/rules/`, `/company/QorperaOS/agents/` and so on, and `/company/code/` beside them. Paths on
 > the mount are case-sensitive: `QorperaOS` is spelled exactly so. The design sections say so; the build order
 > (section 9) keeps the paths as they were built.

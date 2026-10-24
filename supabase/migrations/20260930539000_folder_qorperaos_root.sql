@@ -1,4 +1,4 @@
--- 20260930527000: the platform's folders live under one top folder, QorperaOS/ (Jonas, 21 October 2026: "bundle the
+-- 20260930539000: the platform's folders live under one top folder, QorperaOS/ (Jonas, 21 October 2026: "bundle the
 -- seeded folders inside of the "QorperaOS" folder ... you want to have clear view of what's about the platform and
 -- what's about the company"; QORPERA-RUNTIME-CONTRACT.md 5.6). vision/, agents/ (with groups/ and sections.md),
 -- rules/, connections/, skills/, contacts/, human-tasks/, interfaces/ and tables/ move below it, so
@@ -31,12 +31,12 @@
 
 set local lock_timeout = '3s';
 
-create function pg_temp.os527_replace(p_function regprocedure, p_old text, p_new text, p_count integer default 1)
+create function pg_temp.os539_replace(p_function regprocedure, p_old text, p_new text, p_count integer default 1)
 returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> p_count then
-		raise exception '20260930527000 anchor differs in % (% expected): %', p_function, p_count, left(p_old, 80); end if;
+		raise exception '20260930539000 anchor differs in % (% expected): %', p_function, p_count, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
@@ -45,7 +45,7 @@ end $$;
 -- The TS twin is osRelative. The root is matched by its key, as the folder finds it.
 create function public.qorpera_os_relative(p_path text)
 returns text language sql immutable parallel safe strict set search_path = '' as $$
-	-- 20260930527000
+	-- 20260930539000
 	select case when public.qorpera_folder_key(split_part(p_path, '/', 1)) = 'qorperaos'
 		then substr(p_path, char_length(split_part(p_path, '/', 1)) + 2) end
 $$;
@@ -55,7 +55,7 @@ revoke all on function public.qorpera_os_relative(text) from public, anon, authe
 
 create or replace function public.qorpera_structured_path_kind(p_key text)
 returns text language sql immutable parallel safe set search_path = '' as $$
-	-- 20260930527000: every structured file is under qorperaos/; below it the kinds are as before.
+	-- 20260930539000: every structured file is under qorperaos/; below it the kinds are as before.
 	select case
 		when r.k is null then null
 		when r.k = 'vision/vision.md' then 'vision'
@@ -112,7 +112,7 @@ create or replace function public.qorpera_structured_folder_names(p_key text)
 returns text[] language sql immutable parallel safe set search_path = '' as $$
 	select case
 		when r.k is null then null
-		-- 20260930527000: QorperaOS/ itself is a place: it holds the platform's folders.
+		-- 20260930539000: QorperaOS/ itself is a place: it holds the platform's folders.
 		when r.k = '' then array[]::text[]
 		-- 20260929999000 (H1): the two roots are places, and a task's folder is named.
 		when r.k in ('contacts', 'human-tasks') then array[]::text[]
@@ -134,7 +134,7 @@ $$;
 
 create or replace function public.qorpera_company_state_seeded(p_key text)
 returns boolean language sql immutable set search_path = '' as $$
-	-- 20260930527000: QorperaOS/ itself, and the seeded folders and files below it.
+	-- 20260930539000: QorperaOS/ itself, and the seeded folders and files below it.
 	select p_key = any (array['qorperaos','qorperaos/vision','qorperaos/vision/vision.md','qorperaos/agents',
 		'qorperaos/agents/sections.md','qorperaos/agents/groups','qorperaos/connections','qorperaos/human-tasks',
 		'qorperaos/contacts','qorperaos/skills','qorperaos/rules',
@@ -154,7 +154,7 @@ declare
 begin
 	if p_folder then v_path := regexp_replace(v_path, '/+$', ''); end if;
 	v_key := public.qorpera_folder_key(v_path);
-	-- 20260930527000: every structured place is under QorperaOS/. The names and the case rule are read below the root;
+	-- 20260930539000: every structured place is under QorperaOS/. The names and the case rule are read below the root;
 	-- the root is the folder's own, in any spelling with its key.
 	v_below := public.qorpera_os_relative(v_path);
 	if v_below is null then return '[]'::jsonb; end if;
@@ -214,7 +214,7 @@ end $$;
 -- Pure helpers on keys.
 create or replace function public.qorpera_company_state_task_stem(p_key text)
 returns text language sql immutable parallel safe set search_path = '' as $$
-	-- 20260930527000: under qorperaos/human-tasks/.
+	-- 20260930539000: under qorperaos/human-tasks/.
 	select case when p_key ~ '^qorperaos/human-tasks/[^/]+\.md$' then substring(p_key from '^qorperaos/human-tasks/([^/]+)\.md$')
 		when p_key ~ '^qorperaos/human-tasks/[^/]+(/|$)' then substring(p_key from '^qorperaos/human-tasks/([^/]+)') end
 $$;
@@ -222,7 +222,7 @@ $$;
 -- A worker's folder, QorperaOS/agents/<a>/todos/<t>/<w>, for a key or for a request's folder in its stored spelling.
 create or replace function public.qorpera_company_state_worker_folder(p_key text)
 returns text language sql immutable set search_path = '' as $$
-	-- 20260930527000: one part right, below the root (any spelling of it).
+	-- 20260930539000: one part right, below the root (any spelling of it).
 	select case when public.qorpera_os_relative(p_key) is not null and split_part(p_key, '/', 2) = 'agents'
 		and split_part(p_key, '/', 3) not in ('', 'groups', 'sections.md')
 		and split_part(p_key, '/', 4) = 'todos' and split_part(p_key, '/', 5) <> '' and split_part(p_key, '/', 6) <> ''
@@ -231,25 +231,25 @@ $$;
 
 create or replace function public.qorpera_company_state_worker_todo_file(p_folder_key text)
 returns text language sql immutable set search_path = '' as $$
-	-- 20260930527000: one part right.
+	-- 20260930539000: one part right.
 	select array_to_string((string_to_array(p_folder_key, '/'))[1:4], '/') || '/' || split_part(p_folder_key, '/', 5) || '.md'
 $$;
 
 create or replace function public.qorpera_interface_folder(p_key text)
 returns text language sql immutable parallel safe set search_path = '' as $$
-	-- 20260930527000
+	-- 20260930539000
 	select case when p_key <> 'qorperaos/interfaces/order.md' then substring(p_key from '^(qorperaos/interfaces/[^/]+)(/|$)') end
 $$;
 
 create or replace function public.qorpera_interface_table_folder(p_key text)
 returns text language sql immutable parallel safe set search_path = '' as $$
-	-- 20260930527000
+	-- 20260930539000
 	select substring(p_key from '^(qorperaos/tables/[^/]+)(/|$)')
 $$;
 
 create or replace function public.qorpera_memory_tree_root_key(p_key text)
 returns text language sql immutable parallel safe set search_path = '' as $$
-	-- 20260930527000
+	-- 20260930539000
 	select case
 		when p_key ~ '^qorperaos/agents/groups/[^/]+/memory(/|$)' then substring(p_key from '^qorperaos/agents/groups/[^/]+/memory')
 		when p_key ~ '^qorperaos/agents/groups(/|$)' then null
@@ -259,7 +259,7 @@ $$;
 
 create or replace function public.qorpera_folder_coding_protected(p_key text)
 returns boolean language sql immutable set search_path = '' as $$
-	-- 20260930527000: under qorperaos/.
+	-- 20260930539000: under qorperaos/.
 	select p_key in ('qorperaos/agents','qorperaos/rules') or p_key like 'qorperaos/agents/%' or p_key like 'qorperaos/rules/%'
 		-- 20260930016000 (P16): interfaces/ and every table's table.toml.
 		or p_key = 'qorperaos/interfaces' or p_key like 'qorperaos/interfaces/%' or p_key ~ '^qorperaos/tables/[^/]+/table\.toml$'
@@ -276,7 +276,7 @@ returns jsonb language plpgsql stable set search_path = '' as $$
 declare v_definition jsonb := public.qorpera_interface_stored(p_environment_id, 'qorperaos/tables/areas/table.toml');
 	v_rows jsonb := public.qorpera_interface_stored(p_environment_id, 'qorperaos/tables/areas/rows.csv');
 begin
-	-- 20260930371000 (I9b); 20260930527000
+	-- 20260930371000 (I9b); 20260930539000
 	if v_definition is null or v_rows is null then return '[]'::jsonb; end if;
 	return coalesce(public.qorpera_interface_rows(v_definition, v_rows) -> 'rows', '[]'::jsonb);
 end $$;
@@ -409,36 +409,36 @@ $$;
 -- Moving and copying folders: nothing below a root outside the structured roots under qorperaos/ can be structured. A
 -- folder holding them is QorperaOS/ itself (never moved, but it may be copied): its contents are checked too, so a copy of
 -- it lands no structured file as an ordinary one.
-select pg_temp.os527_replace('public.qorpera_company_state_carried(uuid,text,text,text,public.qorpera_folder_entries)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_carried(uuid,text,text,text,public.qorpera_folder_entries)'::regprocedure,
 	$old$	if p_from_key !~ '^(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' -- P16
 		and v_to_key !~ '^(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$)' then$old$,
-	$new$	if p_from_key !~ '^qorperaos($|/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$))' -- P16; 527000
+	$new$	if p_from_key !~ '^qorperaos($|/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$))' -- P16; 539000
 		and v_to_key !~ '^qorperaos($|/(agents|vision|connections|rules|human-tasks|contacts|interfaces|tables)(/|$))' then$new$);
 
 -- Interfaces and tables.
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$a folder above the roots is the company root, which no unit removes or moves$old$,
 	$new$a folder above the roots is QorperaOS/ or the company root, which no unit removes or moves$new$);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$'^(interfaces|tables)(/|$)'$old$, $new$'^qorperaos/(interfaces|tables)(/|$)'$new$, 2);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$'^(interfaces(/|$)|tables(/[^/]+(/table\.toml)?)?$)'$old$, $new$'^qorperaos/(interfaces(/|$)|tables(/[^/]+(/table\.toml)?)?$)'$new$, 2);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$p_key ~ '^interfaces(/|$)'$old$, $new$p_key ~ '^qorperaos/interfaces(/|$)'$new$, 2);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$p_key ~ '^tables/[^/]+/(table\.toml|rows\.csv)$'$old$, $new$p_key ~ '^qorperaos/tables/[^/]+/(table\.toml|rows\.csv)$'$new$);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$e.key_text like 'interfaces/%/interface.toml'$old$, $new$e.key_text like 'qorperaos/interfaces/%/interface.toml'$new$);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$p_to_key ~ '^(interfaces|tables)/'$old$, $new$p_to_key ~ '^qorperaos/(interfaces|tables)/'$new$);
-select pg_temp.os527_replace(
+select pg_temp.os539_replace(
 	'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$		if v_landing.key in ('interfaces','tables') and (v_landing.kind <> 'folder' or p_op in ('move','copy')) then
 			return public.qorpera_interface_refused('placement', v_landing.key || '/ is a folder the company keeps; nothing lands on it');
@@ -470,84 +470,84 @@ select pg_temp.os527_replace(
 				'QorperaOS/tables/ holds one folder per table, each with table.toml, rows.csv and README.md only');
 		elsif v_landing.key ~ '^qorperaos/(interfaces|tables)/[^/]+/readme\.md$' and v_name not in ('README.md', 'readme.md') then$new$);
 
-select pg_temp.os527_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$e.key_text like 'interfaces/%/interface.toml'$old$, $new$e.key_text like 'qorperaos/interfaces/%/interface.toml'$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$v_folder = 'tables/areas'$old$, $new$v_folder = 'qorperaos/tables/areas'$new$, 5);
-select pg_temp.os527_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_interface_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$'tables/areas/ keeps owner and supervisor$old$, $new$'QorperaOS/tables/areas/ keeps owner and supervisor$new$);
 
-select pg_temp.os527_replace('public.qorpera_company_state_interface_targets(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_interface_targets(uuid,jsonb)'::regprocedure,
 	$old$if v_key = 'tables' then continue; end if;$old$, $new$if v_key = 'qorperaos/tables' then continue; end if;$new$);
 
-select pg_temp.os527_replace('public.qorpera_folder_note_interface_changes(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_note_interface_changes(jsonb,jsonb)'::regprocedure,
 	$old$public.qorpera_folder_key(v.path) ~ '^(interfaces|tables)/'$old$,
 	$new$public.qorpera_folder_key(v.path) ~ '^qorperaos/(interfaces|tables)/'$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_note_interface_changes(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_note_interface_changes(jsonb,jsonb)'::regprocedure,
 	$old$public.qorpera_folder_key(v.path) !~ '^tables/[^/]+/rows\.csv$'$old$,
 	$new$public.qorpera_folder_key(v.path) !~ '^qorperaos/tables/[^/]+/rows\.csv$'$new$, 2);
 
-select pg_temp.os527_replace('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure,
 	$old$~ '^(interfaces|tables)/'$old$, $new$~ '^qorperaos/(interfaces|tables)/'$new$, 2);
 
 -- The areas table (I9b).
-select pg_temp.os527_replace('public.qorpera_interface_agent_supervisor(uuid,uuid,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_interface_agent_supervisor(uuid,uuid,text)'::regprocedure,
 	$old$i.folder_key = 'tables/areas'$old$, $new$i.folder_key = 'qorperaos/tables/areas'$new$);
-select pg_temp.os527_replace('public.qorpera_consent_interface_supervision(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_consent_interface_supervision(uuid,jsonb)'::regprocedure,
 	$old$i.folder_key = 'tables/areas'$old$, $new$i.folder_key = 'qorperaos/tables/areas'$new$);
-select pg_temp.os527_replace('public.qorpera_offer_interface_agent(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_offer_interface_agent(uuid,jsonb)'::regprocedure,
 	$old$i.folder_key = 'tables/areas'$old$, $new$i.folder_key = 'qorperaos/tables/areas'$new$);
-select pg_temp.os527_replace('public.qorpera_interface_supervision_settle(uuid,uuid,uuid,text,uuid,boolean)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_interface_supervision_settle(uuid,uuid,uuid,text,uuid,boolean)'::regprocedure,
 	$old$if p_folder_key is distinct from 'tables/areas' then return; end if;$old$,
 	$new$if p_folder_key is distinct from 'qorperaos/tables/areas' then return; end if;$new$);
 
 -- Human tasks and contacts.
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$if p_key ~ '^human-tasks/[^/]+\.md$' then$old$, $new$if p_key ~ '^qorperaos/human-tasks/[^/]+\.md$' then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$extensions.digest('human-tasks/' || v_stem$old$, $new$extensions.digest('qorperaos/human-tasks/' || v_stem$new$, 4);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$'the task''s folder human-tasks/'$old$, $new$'the task''s folder QorperaOS/human-tasks/'$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$elsif p_key ~ '^contacts/[^/]*\.md$' and p_op = 'delete' then$old$,
 	$new$elsif p_key ~ '^qorperaos/contacts/[^/]*\.md$' and p_op = 'delete' then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$p_key <> 'human-tasks/' || v_stem then$old$, $new$p_key <> 'qorperaos/human-tasks/' || v_stem then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$		if v_landing.key = 'human-tasks' and p_op in ('move','copy') then
 			v_problem := 'human-tasks/ is made empty, with a new folder; nothing moves or copies onto it';
 		elsif v_landing.key ~ '^human-tasks/[^/]+\.md$' then$old$,
 	$new$		if v_landing.key = 'qorperaos/human-tasks' and p_op in ('move','copy') then
 			v_problem := 'QorperaOS/human-tasks/ is made empty, with a new folder; nothing moves or copies onto it';
 		elsif v_landing.key ~ '^qorperaos/human-tasks/[^/]+\.md$' then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$'a folder named human-tasks/'$old$, $new$'a folder named QorperaOS/human-tasks/'$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$		elsif v_landing.key ~ '^human-tasks/[^/]+$' and v_landing.kind <> 'folder' then
 			v_problem := 'directly under human-tasks/ go only task files (.md) and task folders';$old$,
 	$new$		elsif v_landing.key ~ '^qorperaos/human-tasks/[^/]+$' and v_landing.kind <> 'folder' then
 			v_problem := 'directly under QorperaOS/human-tasks/ go only task files (.md) and task folders';$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$v_problem := 'human-tasks/' || left(v_stem, 64) || '/ belongs to the task human-tasks/' || left(v_stem, 64)$old$,
 	$new$v_problem := 'QorperaOS/human-tasks/' || left(v_stem, 64) || '/ belongs to the task QorperaOS/human-tasks/' || left(v_stem, 64)$new$);
 
-select pg_temp.os527_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
 	$old$if v_key ~ '^human-tasks/[^/]+\.md$' then$old$, $new$if v_key ~ '^qorperaos/human-tasks/[^/]+\.md$' then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
 	$old$elsif v_key ~ '^contacts/[^/]*\.md$' then$old$, $new$elsif v_key ~ '^qorperaos/contacts/[^/]*\.md$' then$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_task_targets(uuid,jsonb)'::regprocedure,
 	$old$i.folder_key = 'human-tasks/' || v_stem || '.md'$old$, $new$i.folder_key = 'qorperaos/human-tasks/' || v_stem || '.md'$new$);
 
-select pg_temp.os527_replace('public.qorpera_company_state_human_task_rules(uuid,uuid,jsonb,text,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_human_task_rules(uuid,uuid,jsonb,text,jsonb)'::regprocedure,
 	$old$'human-tasks/' || v_stem$old$, $new$'qorperaos/human-tasks/' || v_stem$new$, 3);
 
 -- A contact's task shows nothing under the folders outside readers may not see.
-select pg_temp.os527_replace('public.qorpera_company_state_parse_problems(text,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_parse_problems(text,jsonb)'::regprocedure,
 	$old$~ '^(agents|contacts|human-tasks|connections|rules|hooks)/'$old$,
 	$new$~ '^(qorperaos/(agents|contacts|human-tasks|connections|rules)|hooks)/'$new$);
 
 -- The folder listener's human-task wakes: the range scan and its pattern.
-select pg_temp.os527_replace('public.qorpera_folder_listener_commit(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_listener_commit(uuid,jsonb)'::regprocedure,
 	$old$				and public.qorpera_folder_key(v.path) collate "C" >= 'human-tasks/' collate "C"
 				and public.qorpera_folder_key(v.path) collate "C" < 'human-tasks0' collate "C"
 				and public.qorpera_folder_key(v.path) ~ '^human-tasks/[^/]+\.md$'$old$,
@@ -556,120 +556,120 @@ select pg_temp.os527_replace('public.qorpera_folder_listener_commit(uuid,jsonb)'
 				and public.qorpera_folder_key(v.path) ~ '^qorperaos/human-tasks/[^/]+\.md$'$new$);
 
 -- Workers: an agent's folder, its todos and its workers' folders, one part right.
-select pg_temp.os527_replace('public.qorpera_company_state_worker_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_worker_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$'^agents/[^/]+$'$old$, $new$'^qorperaos/agents/[^/]+$'$new$, 3);
-select pg_temp.os527_replace('public.qorpera_company_state_worker_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_worker_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text)'::regprocedure,
 	$old$'^agents/[^/]+/todos/[^/]+$'$old$, $new$'^qorperaos/agents/[^/]+/todos/[^/]+$'$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$v_agent_folder text := array_to_string((string_to_array(v_folder, '/'))[1:2], '/');$old$,
 	$new$v_agent_folder text := array_to_string((string_to_array(v_folder, '/'))[1:3], '/');$new$);
-select pg_temp.os527_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$w.worker_key = split_part(v_folder, '/', 5)$old$, $new$w.worker_key = split_part(v_folder, '/', 6)$new$, 2);
-select pg_temp.os527_replace('public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure,
 	$old$v_todo, split_part(v_folder, '/', 5),$old$, $new$v_todo, split_part(v_folder, '/', 6),$new$);
 -- A worker request's folder is spelled as the worker's row keeps it (its wake's outputFolder): QorperaOS/agents/....
-select pg_temp.os527_replace('public.qorpera_folder_worker_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_worker_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)'::regprocedure,
 	$old$c_path constant text := '^agents/$old$, $new$c_path constant text := '^QorperaOS/agents/$new$);
-select pg_temp.os527_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$c_path constant text := '^agents/$old$, $new$c_path constant text := '^QorperaOS/agents/$new$);
-select pg_temp.os527_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$v_worker := public.qorpera_company_state_worker_at(v_environment, v_folder);$old$,
 	$new$v_worker := public.qorpera_company_state_worker_at(v_environment, public.qorpera_folder_key(v_folder));$new$);
-select pg_temp.os527_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$= array_to_string((string_to_array(v_folder, '/'))[1:2], '/')) then$old$,
 	$new$= public.qorpera_folder_key(array_to_string((string_to_array(v_folder, '/'))[1:3], '/'))) then$new$);
-select pg_temp.os527_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
 	$old$c_path constant text := '^agents/$old$, $new$c_path constant text := '^QorperaOS/agents/$new$);
-select pg_temp.os527_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
 	$old$v_worker := public.qorpera_company_state_worker_at(v_environment, v_folder);$old$,
 	$new$v_worker := public.qorpera_company_state_worker_at(v_environment, public.qorpera_folder_key(v_folder));$new$);
-select pg_temp.os527_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_archive_coding_worker(jsonb,jsonb)'::regprocedure,
 	$old$= array_to_string((string_to_array(v_folder, '/'))[1:2], '/')) then$old$,
 	$new$= public.qorpera_folder_key(array_to_string((string_to_array(v_folder, '/'))[1:3], '/'))) then$new$);
 
 -- An agent's own todos and workers.
-select pg_temp.os527_replace('public.qorpera_folder_agent_todos(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_agent_todos(uuid,jsonb,jsonb)'::regprocedure,
 	$old$'agents/' || v_folder || '/todos', 'read')$old$, $new$'QorperaOS/agents/' || v_folder || '/todos', 'read')$new$);
-select pg_temp.os527_replace('public.qorpera_folder_agent_workers(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_agent_workers(uuid,jsonb,jsonb)'::regprocedure,
 	$old$public.qorpera_folder_key('agents/' || v_folder || '/todos/'$old$,
 	$new$public.qorpera_folder_key('QorperaOS/agents/' || v_folder || '/todos/'$new$);
 
 -- Todo and routine rows keep their file's stored path, which is no longer its key: their ranges compare keys.
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$t.folder_path = v_key collate "C"$old$, $new$public.qorpera_folder_key(t.folder_path) = v_key collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"$old$,
 	$new$public.qorpera_folder_key(t.folder_path) > (v_key || '/') collate "C"
 						and public.qorpera_folder_key(t.folder_path) < (v_key || '0') collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$r.folder_path = v_key collate "C"$old$, $new$public.qorpera_folder_key(r.folder_path) = v_key collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"$old$,
 	$new$public.qorpera_folder_key(r.folder_path) > (v_key || '/') collate "C"
 							and public.qorpera_folder_key(r.folder_path) < (v_key || '0') collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$t.folder_path = v_key collate "C"$old$, $new$public.qorpera_folder_key(t.folder_path) = v_key collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"$old$,
 	$new$public.qorpera_folder_key(t.folder_path) > (v_key || '/') collate "C"
 					and public.qorpera_folder_key(t.folder_path) < (v_key || '0') collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$r.folder_path = v_key collate "C"$old$, $new$public.qorpera_folder_key(r.folder_path) = v_key collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"$old$,
 	$new$public.qorpera_folder_key(r.folder_path) > (v_key || '/') collate "C"
 					and public.qorpera_folder_key(r.folder_path) < (v_key || '0') collate "C"$new$, 2);
-select pg_temp.os527_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
 	$old$r.folder_path = v_key collate "C"$old$, $new$public.qorpera_folder_key(r.folder_path) = v_key collate "C"$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
 	$old$r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"$old$,
 	$new$public.qorpera_folder_key(r.folder_path) > (v_key || '/') collate "C"
 								and public.qorpera_folder_key(r.folder_path) < (v_key || '0') collate "C"$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
 	$old$public.qorpera_folder_key(p.path) like 'tables/%'$old$, $new$public.qorpera_folder_key(p.path) like 'qorperaos/tables/%'$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
 	$old$i.folder_key = 'tables/areas'$old$, $new$i.folder_key = 'qorperaos/tables/areas'$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
 	$old$if v_key like 'agents/%' then$old$, $new$if v_key like 'qorperaos/agents/%' then$new$);
 
 -- The network rules and the vision.
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$if v_op = 'move' and v_key = 'rules/network.toml' then$old$, $new$if v_op = 'move' and v_key = 'qorperaos/rules/network.toml' then$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$'rules/network.toml does not move; edit it where it is'$old$, $new$'QorperaOS/rules/network.toml does not move; edit it where it is'$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$'rules/network.toml'$old$, $new$'qorperaos/rules/network.toml'$new$, 3);
-select pg_temp.os527_replace('public.qorpera_folder_structured_verify(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_verify(uuid,uuid)'::regprocedure,
 	$old$					and e.key_sha256 = extensions.digest('rules/network.toml', 'sha256') and e.version = n.folder_path_version
 					and e.path = 'rules/network.toml'))$old$,
 	$new$					and e.key_sha256 = extensions.digest('qorperaos/rules/network.toml', 'sha256') and e.version = n.folder_path_version
 					and public.qorpera_os_relative(e.path) = 'rules/network.toml'))$new$);
-select pg_temp.os527_replace('public.qorpera_folder_structured_verify(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_structured_verify(uuid,uuid)'::regprocedure,
 	$old$extensions.digest('vision/vision.md', 'sha256')$old$, $new$extensions.digest('qorperaos/vision/vision.md', 'sha256')$new$);
 
 -- Summary trees and run logs.
-select pg_temp.os527_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
 	$old$		if v_memtree is null and (v_key ~ '^agents/groups/[^/]+/memory/tree\.toml$'
 				or (v_key ~ '^agents/[^/]+/memory/thread/tree\.toml$' and split_part(v_key, '/', 2) <> 'groups')) then$old$,
 	$new$		if v_memtree is null and (v_key ~ '^qorperaos/agents/groups/[^/]+/memory/tree\.toml$'
 				or (v_key ~ '^qorperaos/agents/[^/]+/memory/thread/tree\.toml$' and split_part(v_key, '/', 3) <> 'groups')) then$new$);
-select pg_temp.os527_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$'^agents(/|$)'$old$, $new$'^qorperaos/agents(/|$)'$new$, 3);
-select pg_temp.os527_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$p_key ~ '^agents/[^/]+/memory$'
 			and p_key !~ '^agents/groups/'$old$,
 	$new$p_key ~ '^qorperaos/agents/[^/]+/memory$'
 			and p_key !~ '^qorperaos/agents/groups/'$new$);
-select pg_temp.os527_replace('public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)'::regprocedure,
 	$old$t.key ~ '^agents/([^/]+|groups/[^/]+)/memory(/|$)'$old$, $new$t.key ~ '^qorperaos/agents/([^/]+|groups/[^/]+)/memory(/|$)'$new$);
-select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
 	$old$case when v_root !~ '^agents/groups/'$old$, $new$case when v_root !~ '^qorperaos/agents/groups/'$new$);
-select pg_temp.os527_replace('public.qorpera_memory_run_log_targets(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_run_log_targets(uuid,jsonb)'::regprocedure,
 	$old$v_key !~ '^agents(/|$)'$old$, $new$v_key !~ '^qorperaos/agents(/|$)'$new$);
 
 -- A summary tree's paths are written below the root as their keys; the root keeps the folder's spelling, from which a
 -- new path's parent spelling comes.
-select pg_temp.os527_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_tree_paths(uuid,text,text,text,jsonb,text,text)'::regprocedure,
 	$old$		if v_touch.op <> 'delete' and v_touch.path is distinct from v_touch.key then
 			return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
 				public.qorpera_company_state_problem('name', null, null, 'write the path in lowercase, as ' || left(v_touch.key, 100))));$old$,
@@ -681,16 +681,16 @@ select pg_temp.os527_replace('public.qorpera_memory_tree_paths(uuid,text,text,te
 
 -- Paths the database hands out to be written or shown are spelled QorperaOS/..., as the folder stores them; the roots
 -- it compares stay keys. A run's log before it exists, and the folders on the way to it:
-select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
 	$old$return jsonb_build_object('path', v_root || '/runs/' || p_run_id, 'exists', false,$old$,
 	$new$return jsonb_build_object('path', 'QorperaOS/' || public.qorpera_os_relative(v_root) || '/runs/' || p_run_id, 'exists', false,$new$);
-select pg_temp.os527_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
 	$old$jsonb_agg(m.p order by m.n)$old$, $new$jsonb_agg('QorperaOS/' || public.qorpera_os_relative(m.p) order by m.n)$new$);
 
 -- A member's chat image, where company_read opens it and the commit saves it.
 create or replace function public.qorpera_room_image_path(p_session_id uuid, p_client_input_id uuid, p_image jsonb)
 returns text language sql stable set search_path = '' as $$
-	-- 20260930527000: spelled QorperaOS/..., below the conversation's root key.
+	-- 20260930539000: spelled QorperaOS/..., below the conversation's root key.
 	select 'QorperaOS/' || public.qorpera_os_relative(public.qorpera_room_image_root(p_session_id)) || '/images/'
 		|| p_client_input_id::text || '/' || (p_image ->> 'objectSha256')
 		|| '.' || case p_image ->> 'mediaType' when 'image/png' then 'png' when 'image/jpeg' then 'jpg' when 'image/gif' then 'gif'
@@ -703,7 +703,7 @@ $$;
 -- A link's refusal names the path as people see it.
 create or replace function public.qorpera_folder_link_problems(p_key text)
 returns jsonb language sql immutable set search_path = '' as $$
-	-- 20260930380000 (LK1); 20260930527000: a path under the root is named QorperaOS/....
+	-- 20260930380000 (LK1); 20260930539000: a path under the root is named QorperaOS/....
 	select case when v.what is null then '[]'::jsonb else jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
 		format('%s is %s; a link cannot stand there', left(coalesce(rtrim('QorperaOS/' || public.qorpera_os_relative(p_key), '/'), p_key), 100),
 			v.what))) end
@@ -717,32 +717,32 @@ returns jsonb language sql immutable set search_path = '' as $$
 $$;
 
 -- Paths the platform writes: connection and hook files, the Co-Founder's first todo, the rules/ resource.
-select pg_temp.os527_replace('public.qorpera_folder_connection_file_state(uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_connection_file_state(uuid)'::regprocedure,
 	$old$v_path := 'connections/' || v_name || '.md';$old$, $new$v_path := 'QorperaOS/connections/' || v_name || '.md';$new$);
-select pg_temp.os527_replace('public.qorpera_folder_hook_file_state(text,uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_hook_file_state(text,uuid,uuid)'::regprocedure,
 	$old$v_path := 'connections/' || v_name || '.md';$old$, $new$v_path := 'QorperaOS/connections/' || v_name || '.md';$new$);
-select pg_temp.os527_replace('public.qorpera_folder_company_first_run(uuid,uuid,uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_company_first_run(uuid,uuid,uuid,uuid)'::regprocedure,
 	$old$'firstTodo', 'agents/co-founder/todos/start-with-the-founders.md'$old$,
 	$new$'firstTodo', 'QorperaOS/agents/co-founder/todos/start-with-the-founders.md'$new$);
-select pg_temp.os527_replace('public.qorpera_folder_enable_internal(uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_enable_internal(uuid)'::regprocedure,
 	$old$(p_environment_id, 'rules', 'subtree', 'company_rules', 'normal', v_file.created_by_user_id)$old$,
 	$new$(p_environment_id, 'QorperaOS/rules', 'subtree', 'company_rules', 'normal', v_file.created_by_user_id)$new$);
-select pg_temp.os527_replace('public.qorpera_folder_set_resource(uuid,jsonb,text,text,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_set_resource(uuid,jsonb,text,text,text,text)'::regprocedure,
 	$old$	if v_key = 'rules' or v_key like 'rules/%' then
 		raise exception 'The rules/ folder is fixed' using errcode = '42501'; end if;$old$,
 	$new$	if v_key = 'qorperaos/rules' or v_key like 'qorperaos/rules/%' then
 		raise exception 'The QorperaOS/rules/ folder is fixed' using errcode = '42501'; end if;$new$);
-select pg_temp.os527_replace('public.qorpera_folder_revoke(uuid,jsonb,uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_folder_revoke(uuid,jsonb,uuid,uuid)'::regprocedure,
 	$old$'The seeded root and rules/ are never revoked'$old$, $new$'The seeded root and QorperaOS/rules/ are never revoked'$new$);
 
 -- What members are told.
-select pg_temp.os527_replace('public.qorpera_manage_company_sidebar(uuid,jsonb)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_manage_company_sidebar(uuid,jsonb)'::regprocedure,
 	$old$'This company keeps its sections in agents/sections.md; edit that file'$old$,
 	$new$'This company keeps its sections in QorperaOS/agents/sections.md; edit that file'$new$);
-select pg_temp.os527_replace('public.qorpera_save_review_rule(uuid,uuid,text,text,text)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_save_review_rule(uuid,uuid,text,text,text)'::regprocedure,
 	$old$'This company keeps its rules in rules/; edit those files'$old$,
 	$new$'This company keeps its rules in QorperaOS/rules/; edit those files'$new$);
-select pg_temp.os527_replace('public.qorpera_archive_review_rule(uuid,uuid)'::regprocedure,
+select pg_temp.os539_replace('public.qorpera_archive_review_rule(uuid,uuid)'::regprocedure,
 	$old$'This rule comes from a file in rules/; delete the file'$old$, $new$'This rule comes from a file in QorperaOS/rules/; delete the file'$new$);
 
 -- 5. Spot checks ------------------------------------------------------------------------------------------------------
@@ -761,6 +761,6 @@ begin
 		or public.qorpera_company_state_worker_folder('QorperaOS/agents/a/todos/t/w/brief.md') is distinct from 'QorperaOS/agents/a/todos/t/w'
 		or public.qorpera_company_state_worker_todo_file('qorperaos/agents/a/todos/t/w') is distinct from 'qorperaos/agents/a/todos/t.md'
 		or public.qorpera_os_relative('qorperaosx/agents') is not null then
-		raise exception '20260930527000: a classifier does not read QorperaOS/ as it should';
+		raise exception '20260930539000: a classifier does not read QorperaOS/ as it should';
 	end if;
 end $check$;

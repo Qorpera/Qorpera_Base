@@ -41,7 +41,7 @@ Three things sit beside the folder:
 ## Layout
 
 The platform's own folders sit under one top folder, `QorperaOS/` (Jonas,
-21 October 2026; migration `20260930527000`). The platform seeds it when a
+21 October 2026; migration `20260930539000`). The platform seeds it when a
 company is created (contract 5.6):
 
 ```
@@ -69,7 +69,12 @@ SQL). `QorperaOS/` itself is seeded and is never moved or deleted.
 Beside `QorperaOS/`, at the top:
 
 - `code/<owner>/<name>/` holds repositories and is created when coding starts;
-- `hooks/<hook>/` holds the events the platform saved for a hook; and
+- `hooks/<hook>/` holds the events the platform saved for a hook;
+- `digital-post/` holds the company's Digital Post letters and their index
+  `letters.json`, which the platform writes from the first letter on
+  (deploy/first-node/RUNTIME-DIGITAL-POST.md);
+- `bank/summary.json` is the summary of the company's bank accounts that the
+  platform writes for the Bank page; and
 - everything else is the company's own work, kept by area of the business
   first, then by kind, such as `sales/` and, once it is crowded,
   `sales/proposals/` (contract, 2026-10-21 amendment, item 1).

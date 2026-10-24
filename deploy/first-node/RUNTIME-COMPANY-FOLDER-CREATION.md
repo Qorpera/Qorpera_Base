@@ -4,7 +4,7 @@ Status: design, 3 October 2026 (F2, the coordinator's slice P14); revised after 
 answers. The core's §5 "Company creation is one commit" and §11 C2 say what; this says how. It fills the stubs the
 founding lobby left for C2 (`20260928248200_company_founding_lobby.sql`): `qorpera_folder_company_open`, `_seed` and
 `_ready`. C5 turned creation on (`qorpera_company_founding_available()`, P39, 20260930031000) once C4's materializer
-(P28) ran the first run; switching it off again is the rollback. Since 20260930527000 the seeded tree is under
+(P28) ran the first run; switching it off again is the rollback. Since 20260930539000 the seeded tree is under
 `QorperaOS/` (contract 5.6); §2's units say so, and the build notes keep the paths as they were.
 
 In short:
@@ -131,7 +131,7 @@ One transaction, numbered with the core's steps (core §3):
   own step 1, after the creation row and the fence.
   - This order is a named exception for P13's call-chain check. The key is only ever claimed under its creation row
     and the fence, so nothing can hold it and wait for them.
-- **The units** (since 20260930527000 all under `QorperaOS/`, which comes first):
+- **The units** (since 20260930539000 all under `QorperaOS/`, which comes first):
   - `mkdir QorperaOS`;
   - `mkdir QorperaOS/vision`, `write QorperaOS/vision/vision.md`;
   - `mkdir QorperaOS/agents`, `write QorperaOS/agents/sections.md`;

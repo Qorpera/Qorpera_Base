@@ -861,7 +861,7 @@ looks absent in every answer. Members write through the object gateway's member 
 `20260928479130_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
 a write under `QorperaOS/human-tasks/` waits for P31.
 
-Since `20260930527000` the platform's folders (vision, agents, rules, connections, skills, contacts, human tasks,
+Since `20260930539000` the platform's folders (vision, agents, rules, connections, skills, contacts, human tasks,
 interfaces and tables) are under `QorperaOS/` at the top, beside `code/`, `hooks/` and the company's own work (runtime
 contract 5.6). The folder is written exactly `QorperaOS` and its key is `qorperaos`; below it, structured paths are
 written in lowercase. An entry's `path` keeps the stored spelling (`QorperaOS/agents/...`), so a client compares paths
