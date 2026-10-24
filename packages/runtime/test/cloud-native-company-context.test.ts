@@ -81,6 +81,8 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	for (const instructions of runs)
 		for (const rule of [
 			"never put the company's work in them. code/ holds git repositories only.",
+			// Jonas, 24 October 2026: these stay at the top, outside QorperaOS/, and are never an agent's area folders.
+			"The platform writes digital-post/, bank/, members/ and hooks/ (the company's official mail, bank data, members and events): read them, but never put your own files there.",
 			"\n# Keeping the company's work in order\nEverything outside the platform's folders is the company's own work. Keep it so a person finds anything in a few clicks:\n",
 			"A place a member or your assignment names always wins.",
 			"The top level holds areas of the business: sales/, marketing/, product/, finance/, legal/, operations/, people/ and so on. Use an area that fits, and make an area's folder when its first file arrives. Never make two folders for one area (no selling/ beside sales/).",
@@ -1491,13 +1493,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
 // (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
 // conversations as the members' quick way in), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
-// Jonas, 21 October 2026). A change to either is a change to every run's bytes.
+// Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026). A change to either is a
+// change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "6011fe91138cb7eb6be8036cf06d937492114a1b90a22b7f469deb09a46efcb3",
+			instructions: "f23e19bfa8fa567c71c38d3083d2873380af6c020e8c22da801892144e65666f",
 			prompt: "efb3b8a386ed0b226351b38078c1382ad9641dd52df3a4527f1c36143c1096a6",
 		},
 	],
@@ -1505,7 +1508,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "d97b376fdc00c6fd32c8bdf7c03aabefd24b30af2ea092a66c80d600d386b0c5",
+			instructions: "7b8e65a3077f1736efc057d7f38261650aa9e63ada114b10c8c2e9a35117131c",
 			prompt: "8b70f741e6b20b4ad888248ee51e8e26e640c343ae7bdef619a8f7a6ed619b56",
 		},
 	],
@@ -1513,7 +1516,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "6011fe91138cb7eb6be8036cf06d937492114a1b90a22b7f469deb09a46efcb3",
+			instructions: "f23e19bfa8fa567c71c38d3083d2873380af6c020e8c22da801892144e65666f",
 			prompt: "a1cf7d991f48d53a1a27bdf2fbeaba1e65f6b415e1992ad12ef5a9be1fd8e4ef",
 		},
 	],

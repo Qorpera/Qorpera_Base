@@ -74,7 +74,10 @@ Beside `QorperaOS/`, at the top:
   `letters.json`, which the platform writes from the first letter on
   (deploy/first-node/RUNTIME-DIGITAL-POST.md);
 - `bank/summary.json` is the summary of the company's bank accounts that the
-  platform writes for the Bank page; and
+  platform writes for the Bank page;
+- `digital-post/`, `bank/`, `members/` (none on `folder-v2` today) and
+  `hooks/` are the platform's to write (Jonas, 24 October 2026): agents read
+  them but never put their own files there; and
 - everything else is the company's own work, kept by area of the business
   first, then by kind, such as `sales/` and, once it is crowded,
   `sales/proposals/` (contract, 2026-10-21 amendment, item 1).

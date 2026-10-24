@@ -584,7 +584,12 @@ saves the company's Digital Post letters and their index `letters.json`
 (deploy/first-node/RUNTIME-DIGITAL-POST.md), and `bank/summary.json`, the
 summary of the company's bank accounts that the platform writes for the Bank
 page: like saved events, they are the company's own records that the platform
-writes, created when the first one arrives, not seeded platform folders.
+writes, created when the first one arrives, not seeded platform folders. Jonas
+confirmed on 24 October 2026 that `digital-post/`, `bank/`, `members/` and
+`hooks/` stay at the top, outside `QorperaOS/` (`folder-v2` makes no
+`members/` folder today: the 2026-09-17 amendment, "No member-private
+conversations"). The platform writes them: agents read them but never put
+their own files there, and every run's instructions say so.
 Everything else at the top is the company's own work, kept by area of the
 business first, then by kind (Jonas, 21 October 2026): areas such as `sales/`
 or `product/`, and inside a crowded area, subfolders by kind, such as

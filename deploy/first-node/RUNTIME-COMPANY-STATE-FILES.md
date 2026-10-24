@@ -19,9 +19,9 @@ September 2026).
 ## 1. The structured files
 
 Every structured file is under `QorperaOS/`, the top folder that holds the platform's own
-folders (contract 5.6; Jonas, 21 October 2026; migration 20260930534000). `code/`, `hooks/`,
-`digital-post/`, `bank/` and the company's own work stay at the top beside it, and nothing outside
-`QorperaOS/` is structured. The TS helpers are `QORPERA_OS_ROOT`, `osPath` and `osRelative` in
+folders (contract 5.6; Jonas, 21 October 2026; migration 20260930534000). `code/`, `digital-post/`,
+`bank/`, `members/`, `hooks/` and the company's own work stay at the top beside it (Jonas confirmed
+the four platform-written ones on 24 October 2026), and nothing outside `QorperaOS/` is structured. The TS helpers are `QORPERA_OS_ROOT`, `osPath` and `osRelative` in
 `packages/cloud-client/src/company-state-shared.ts`; the SQL twin is `qorpera_os_relative`.
 
 | Path | Kind | Settings block |
