@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EnableBankingSessionEnded } from "../src/cloud-connector-enable-banking.ts";
 import {
 	CloudConnectorTokenRevocations,
 	CloudConnectorTokenRevocationUpkeep,
@@ -116,6 +117,26 @@ describe("the provider revoke calls", () => {
 			/^the stored token is missing$/,
 		);
 		expect(github.requests).toEqual([]);
+	});
+	it("closes a disconnected bank's session at Enable Banking, and counts an ended one as already closed", async () => {
+		const closeSession = vi.fn(async () => undefined);
+		const revoker = new CloudConnectorTokenRevoker({ bank: { closeSession } });
+		await expect(revoker.revoke("bank", { session_id: "session-7f3e", accounts: "[]" }, signal())).resolves.toBe(
+			"revoked",
+		);
+		expect(closeSession).toHaveBeenCalledWith("session-7f3e", expect.any(AbortSignal));
+		closeSession.mockRejectedValueOnce(new EnableBankingSessionEnded("CLOSED_SESSION"));
+		await expect(revoker.revoke("bank", { session_id: "session-7f3e" }, signal())).resolves.toBe("already_invalid");
+		closeSession.mockRejectedValueOnce(new Error("Enable Banking: secret detail"));
+		await expect(revoker.revoke("bank", { session_id: "session-7f3e" }, signal())).rejects.toThrow(
+			/^Enable Banking did not close the session$/,
+		);
+		await expect(revoker.revoke("bank", { accounts: "[]" }, signal())).rejects.toThrow(
+			/^the stored session is missing$/,
+		);
+		await expect(
+			new CloudConnectorTokenRevoker().revoke("bank", { session_id: "session-7f3e" }, signal()),
+		).rejects.toThrow(/^Enable Banking is not configured$/);
 	});
 });
 

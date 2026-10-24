@@ -226,6 +226,32 @@ describe("the Enable Banking client", () => {
 		expect(pages.slice(-2)).toEqual(["?date_from=2026-10-01", "?date_from=2026-10-01&continuation_key=k-2"]);
 	});
 
+	it("pages on to the bank's last page past any small count, and says when a page limit cut it short", async () => {
+		// 300 pages of one transaction each.
+		const pagedFetch = enableBanking((url) => {
+			const page = Number(url.searchParams.get("continuation_key") ?? "0");
+			return json({
+				transactions: [
+					{
+						entry_reference: `r-${page}`,
+						transaction_amount: { amount: "1.00", currency: "DKK" },
+						credit_debit_indicator: "CRDT",
+						status: "BOOK",
+						booking_date: "2026-10-20",
+					},
+				],
+				continuation_key: page < 299 ? String(page + 1) : null,
+			});
+		});
+		const client = new EnableBankingClient(app, pagedFetch, () => now);
+		const whole = await client.transactions("u-1", null, signal, 1000);
+		expect(whole.complete).toBe(true);
+		expect(whole.transactions).toHaveLength(300);
+		const cut = await client.transactions("u-1", null, signal, 250);
+		expect(cut.complete).toBe(false);
+		expect(cut.transactions).toHaveLength(250);
+	});
+
 	it("tells a consent that ended from a rate limit and other refusals", async () => {
 		const answer = (body: unknown, status: number) =>
 			new EnableBankingClient(

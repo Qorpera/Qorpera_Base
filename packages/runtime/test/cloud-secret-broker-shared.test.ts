@@ -63,6 +63,7 @@ it("calls the principal's functions with its own capability hash and registers w
 	});
 	await principal.companies(new AbortController().signal);
 	await principal.eventVerificationsDue(new AbortController().signal);
+	await principal.bankSyncsDue(new AbortController().signal);
 	await principal.digitalPostSyncsDue(new AbortController().signal);
 	await principal.register(company, new AbortController().signal);
 	const own = createHash("sha256").update(sharedBrokerCapability(secret)).digest("hex");
@@ -73,6 +74,10 @@ it("calls the principal's functions with its own capability hash and registers w
 		},
 		{
 			text: "select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
+			values: [principalId, own],
+		},
+		{
+			text: "select public.qorpera_broker_principal_bank_syncs_due($1::uuid,$2::text) as result",
 			values: [principalId, own],
 		},
 		{
@@ -104,6 +109,7 @@ function principalFixture(
 		registered?: string[];
 		unregistered?: string[];
 		due?: string[];
+		bankDue?: string[];
 		digitalPostDue?: string[];
 		keyId?: string;
 		principalKeyId?: string;
@@ -134,6 +140,10 @@ function principalFixture(
 		eventVerificationsDue: vi.fn(async () => ({
 			schema: "qorpera.broker-principal-event-verifications/v1",
 			companyIds: [...(options.due ?? [])],
+		})),
+		bankSyncsDue: vi.fn(async () => ({
+			schema: "qorpera.broker-principal-bank-syncs/v1",
+			companyIds: [...(options.bankDue ?? [])],
 		})),
 		digitalPostSyncsDue: vi.fn(async () => ({
 			schema: "qorpera.broker-principal-digital-post-syncs/v1",
@@ -457,6 +467,42 @@ it("checks the signed deliveries of each served company that has some due, on th
 	await companies.verifyEvents();
 	expect(principal.eventVerificationsDue).toHaveBeenCalledTimes(2);
 	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(2);
+});
+
+it("syncs the bank of each served company that has one due, on the company's own authority, only with Enable Banking", async () => {
+	const one = randomUUID();
+	const idle = randomUUID();
+	const { principal } = principalFixture({ registered: [one, idle], bankDue: [one, randomUUID()] });
+	const claims = new Map<string, ReturnType<typeof vi.fn>>();
+	principal.authority.mockImplementation((companyId: string) => {
+		const claim = vi.fn(async () => null);
+		claims.set(companyId, claim);
+		return { claimBankSync: claim } as unknown as PostgresCloudSecretBrokerAuthority;
+	});
+	const options = {
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke: vi.fn() },
+	};
+	// Without the Enable Banking application nothing is asked.
+	const without = new SharedCloudSecretBrokerCompanies(options);
+	await without.refresh(new AbortController().signal);
+	await without.syncBanks();
+	expect(principal.bankSyncsDue).not.toHaveBeenCalled();
+	const companies = new SharedCloudSecretBrokerCompanies({
+		...options,
+		bank: { balances: vi.fn(), transactions: vi.fn() },
+	});
+	claims.clear();
+	await companies.refresh(new AbortController().signal);
+	await companies.syncBanks();
+	expect(principal.bankSyncsDue).toHaveBeenCalledOnce();
+	expect(claims.get(one)).toHaveBeenCalledOnce();
+	expect(claims.get(idle)).not.toHaveBeenCalled();
+	principal.bankSyncsDue.mockResolvedValueOnce({ schema: "other", companyIds: [] });
+	await expect(companies.syncBanks()).rejects.toThrow("Shared vault bank syncs are invalid");
+	await Promise.all([without.close(), companies.close()]);
 });
 
 it("fetches the Digital Post of each served company that has a sync due, on its own authority, only with the certificate", async () => {

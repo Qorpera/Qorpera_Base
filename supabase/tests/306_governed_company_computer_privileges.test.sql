@@ -46,9 +46,11 @@ begin
 	-- and storing a secret a vault_capture browser call took from Stripe's screen. Coding environment secrets
 	-- (20260930438000) add reading a coding session's environment, bound to its live lease. Coding MCP sign-ins
 	-- (20260930440000) add reading one MCP server's sign-in and the repository fetch of a running session, each bound
-	-- to its live lease. The company Digital Post sync (20260930529000) adds claiming the company's due sync, keeping,
-	-- staging, sealing and holding its letters and finishing it, each on the company's own authority, and the shared
-	-- vault's list of due companies.
+	-- to its live lease. The company bank sync (20260930523000) adds claiming the company's due sync, keeping its booked
+	-- transactions and finishing it, each on the company's own authority, and the shared vault's list of due companies.
+	-- The company Digital Post sync (20260930529000) adds claiming the company's due sync, keeping, staging, sealing and
+	-- holding its letters and finishing it, each on the company's own authority, and the shared vault's list of due
+	-- companies.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -62,9 +64,11 @@ begin
 		'qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',
+		'qorpera_broker_principal_bank_syncs_due(uuid,text)',
 		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_broker_principal_digital_post_syncs_due(uuid,text)',
 		'qorpera_broker_principal_event_verifications_due(uuid,text)',
+		'qorpera_claim_bank_sync(uuid,text)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',
 		'qorpera_claim_digital_post_sync(uuid,text)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
@@ -85,6 +89,7 @@ begin
 		'qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_finish_bank_sync(uuid,text,uuid,bigint,uuid,text,jsonb,timestamp with time zone,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
 		'qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
@@ -103,6 +108,7 @@ begin
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
+		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',

@@ -3,9 +3,11 @@ import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { CloudBankSyncs, CloudBankSyncUpkeep } from "./cloud-bank-sync.ts";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
 import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
+import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import type { CloudConnectorOAuthFlows } from "./cloud-connector-oauth.ts";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
@@ -356,6 +358,7 @@ export async function runCloudSecretBrokerServiceMain(
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
 				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
+				...(connectors?.bank ? { bank: connectors.bank } : {}),
 				...(connectors?.digitalPost ? { digitalPost: connectors.digitalPost } : {}),
 				...(connectors?.digitalPostPdfText ? { digitalPostPdfText: connectors.digitalPostPdfText } : {}),
 				runtimeToken,
@@ -418,6 +421,10 @@ export async function runCloudSecretBrokerServiceMain(
 		const verifications = new CloudEventVerificationUpkeep({
 			verifications: new CloudEventVerifications({ authority, keyring }),
 		});
+		// The company's bank summary, kept current when the vault has the Enable Banking application.
+		const bankSyncs = connectors?.bank
+			? new CloudBankSyncUpkeep({ syncs: new CloudBankSyncs({ authority, keyring, bank: connectors.bank }) })
+			: undefined;
 		// The company's Digital Post, fetched into the database when the vault has Qorpera's certificate.
 		const digitalPostSyncs = connectors?.digitalPost
 			? new CloudDigitalPostSyncUpkeep({
@@ -451,6 +458,7 @@ export async function runCloudSecretBrokerServiceMain(
 			upkeep.start();
 			revocations.start();
 			verifications.start();
+			bankSyncs?.start();
 			digitalPostSyncs?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
@@ -465,6 +473,7 @@ export async function runCloudSecretBrokerServiceMain(
 				upkeep.close(),
 				revocations.close(),
 				verifications.close(),
+				bankSyncs?.close(),
 				digitalPostSyncs?.close(),
 				signIns?.close(),
 				service.close(),
@@ -485,6 +494,7 @@ async function runSharedVault(options: {
 	helper: ModelLoginHelperClient | undefined;
 	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
+	bank?: EnableBankingClient;
 	digitalPost?: DigitalPostClient;
 	digitalPostPdfText?: DigitalPostPdfTextReader;
 	runtimeToken: string;
@@ -501,6 +511,7 @@ async function runSharedVault(options: {
 		...(options.helper ? { helper: options.helper } : {}),
 		...(options.chatGptPlan ? { chatGptPlan: options.chatGptPlan } : {}),
 		revoker: options.revoker,
+		...(options.bank ? { bank: options.bank } : {}),
 		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
 		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
 	});

@@ -5,6 +5,7 @@ import {
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
 import {
 	type CompanyAccountAnswer,
 	type CompanyAccountAuthority,
@@ -1649,6 +1650,7 @@ export class PostgresCloudSecretBrokerAuthority
 		EventVerificationAuthority,
 		CompanyAccountAuthority,
 		EventHookAuthority,
+		BankSyncAuthority,
 		DigitalPostSyncAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
@@ -2082,6 +2084,53 @@ export class PostgresCloudSecretBrokerAuthority
 		return this.#rpc(
 			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	/** The company's bank sync, when it is due (20260930523000). */
+	claimBankSync(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_bank_sync($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	recordBankTransactions(
+		input: Parameters<BankSyncAuthority["recordBankTransactions"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_bank_transactions($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb,$7::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				JSON.stringify(input.accountKeys),
+				JSON.stringify(input.transactions),
+			],
+			signal,
+		);
+	}
+
+	finishBankSync(input: Parameters<BankSyncAuthority["finishBankSync"]>[0], signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_bank_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::jsonb,$8::timestamptz,$9::text,$10::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.outcome,
+				input.summary === null ? null : JSON.stringify(input.summary),
+				input.consentUntil,
+				input.fetch,
+				input.error,
+			],
 			signal,
 		);
 	}
@@ -2527,6 +2576,16 @@ export class PostgresCloudSecretBrokerPrincipal {
 		return oneCloudSecretRpc(
 			this.#database,
 			"select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	/** The served companies with a bank sync due (20260930523000): one call a pass. */
+	bankSyncsDue(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_bank_syncs_due($1::uuid,$2::text) as result",
 			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);
