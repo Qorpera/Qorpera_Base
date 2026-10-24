@@ -5,7 +5,7 @@ import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
-import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
@@ -42,6 +42,7 @@ import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
+import { noteBankReturn } from "./views/bank.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
@@ -508,7 +509,11 @@ export function mountApplication(
 					});
 				}
 			}
-			if (connectorReturn) {
+			if (connectorReturn?.connector === "bank") {
+				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it.
+				noteBankReturn(connectorReturn);
+				connectorReturn = undefined;
+			} else if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
 				// company: show the outcome where the connection was started.
 				noteConnectorReturn(connectorReturn);
@@ -1459,6 +1464,7 @@ export function mountApplication(
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
 					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
 					openSettings: () => openSettings("company-connections"),
+					bankConnection: () => createWebConnectors(cloud, controller.profile),
 				});
 				return;
 			case "team":

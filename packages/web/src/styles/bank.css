@@ -151,3 +151,18 @@
 @media (prefers-reduced-motion: reduce) {
 	.bank-overview, .bank-detail, .bank-line, .bank-bar, .bank-ring, .bank-items, .bank-year-bar { animation: none; }
 }
+
+/* ---- Connect the bank ---------------------------------------------------------------------------------------------- */
+.bank-empty .btn-primary { margin-top: 8px; }
+.bank-note-line { font-size: 13px; }
+.bank-note-line.is-ok { color: var(--ok); }
+.bank-note-line.is-error { color: var(--danger); }
+.bank-paused .btn-small { margin-left: 10px; vertical-align: baseline; }
+.bank-connect-banks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.bank-connect-banks .bank-put-kind { align-items: center; }
+.bank-connect-personal { display: flex; flex-direction: row; align-items: center; gap: 8px; font-weight: 400; margin-top: 12px; color: var(--text-muted); font-size: 12.5px; cursor: pointer; }
+.bank-connect-personal input { flex: none; width: auto; height: auto; margin: 0; }
+.bank-connect-points { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 13px; }
+@media (max-width: 560px) {
+	.bank-connect-banks { grid-template-columns: minmax(0, 1fr); }
+}

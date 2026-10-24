@@ -6,7 +6,7 @@ import { BANK_SUMMARY_SCHEMA, parseBankSummary } from "../src/app/bank-summary.t
 import { CompanyController } from "../src/app/company.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
-import { parseKroner } from "../src/app/views/bank.ts";
+import { type BankConnectionClient, noteBankReturn, parseKroner, renderBank } from "../src/app/views/bank.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -345,5 +345,223 @@ describe("the Bank page (app/views/bank.ts)", () => {
 		row()?.click();
 		expect(document.activeElement).toBe(row());
 		expect(row()?.getAttribute("aria-expanded")).toBe("true");
+	});
+});
+
+describe("connecting the company's bank (app/views/bank.ts)", () => {
+	const connection = (overrides: Partial<Record<string, unknown>> = {}) => ({
+		secretId: id(70),
+		version: 1,
+		connectorId: "bank",
+		secretName: "primary",
+		purpose: "Company bank",
+		ownerKind: "company" as const,
+		ownerUserId: null,
+		status: "active" as const,
+		accountLabel: "••6243",
+		connectedByUserId: userA.id,
+		availableToAllAgents: false,
+		activeGrantCount: 0,
+		createdAt: timestamp,
+		updatedAt: timestamp,
+		...overrides,
+	});
+	function client(connections: unknown[] = []) {
+		return {
+			list: vi.fn(async () => connections),
+			beginSignIn: vi.fn(async () => "https://tilisy.enablebanking.com/ais/start?sessionid=abc"),
+			finishSignIn: vi.fn(async () => "••6243"),
+		} as unknown as BankConnectionClient & Record<"list" | "beginSignIn" | "finishSignIn", ReturnType<typeof vi.fn>>;
+	}
+	/** The Bank page with Connect the bank, for a member of `role`. */
+	async function connectable(bank: ReturnType<typeof client>, file?: string, role = "owner") {
+		const controller = company(true, file);
+		const state = controller.store.get();
+		if (state.team) controller.store.set({ team: { ...state.team, role: role as "owner" } });
+		const navigate = vi.fn();
+		const container = document.createElement("main");
+		document.body.append(container);
+		renderBank(container, controller, { connection: () => bank, navigate });
+		// The connection is read (and a returning sign-in finished) before the page is looked at.
+		await settle();
+		return { container, navigate, controller };
+	}
+	const dialog = () => document.querySelector<HTMLElement>(".bank-connect-dialog");
+	const radio = (label: string) =>
+		[...(dialog()?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [])].find(
+			(button) => button.textContent?.trim() === label,
+		);
+
+	it("lets an owner pick the bank, says where the login happens, and goes to the bank's own page", async () => {
+		const bank = client();
+		const { container, navigate } = await connectable(bank);
+		expect(container.textContent).toContain("No bank yet");
+		click(container, "Connect the bank");
+		expect(dialog()?.textContent).toContain("Which bank does the company use?");
+		expect(radio("Danske Bank")?.getAttribute("aria-checked")).toBe("true");
+		radio("Nordea")?.click();
+		const personal = dialog()?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+		if (personal) {
+			personal.checked = true;
+			personal.dispatchEvent(new Event("change"));
+		}
+		click(dialog() as HTMLElement, "Continue");
+		expect(dialog()?.textContent).toContain("Next, you log in at Nordea");
+		expect(dialog()?.textContent).toContain("They can't pay.");
+		click(dialog() as HTMLElement, "Go to Nordea");
+		await settle();
+		expect(bank.beginSignIn).toHaveBeenCalledWith("bank", undefined, expect.any(AbortSignal), {
+			name: "Nordea",
+			country: "DK",
+			psuType: "personal",
+		});
+		expect(navigate).toHaveBeenCalledWith("https://tilisy.enablebanking.com/ais/start?sessionid=abc");
+	});
+
+	it("says the sign-in could not be started and stays in the dialog", async () => {
+		const bank = client();
+		bank.beginSignIn.mockRejectedValueOnce(new Error("broker"));
+		const { container, navigate } = await connectable(bank);
+		click(container, "Connect the bank");
+		click(dialog() as HTMLElement, "Continue");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		await settle();
+		expect(dialog()?.textContent).toContain("The sign-in could not be started. Try again.");
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("leaves connecting to owners and admins", async () => {
+		const { container } = await connectable(client(), undefined, "contributor");
+		expect(container.textContent).toContain("An owner or admin can connect the company's bank.");
+		expect(
+			[...container.querySelectorAll("button")].some((button) => button.textContent === "Connect the bank"),
+		).toBe(false);
+	});
+
+	it("says a connected bank's numbers are on their way before its first summary", async () => {
+		const { container } = await connectable(client([connection()]));
+		expect(container.textContent).toContain("The bank is connected");
+		expect(container.textContent).not.toContain("Connect the bank");
+	});
+
+	it("finishes the bank's sign-in when the member comes back, or says why it was not connected", async () => {
+		const bank = client([connection()]);
+		const signIn = {
+			ticketId: id(20),
+			connectorId: "bank" as const,
+			companyId: profileA.profileId,
+			serviceOrigin: "https://company41-node-01.tailbb15c7.ts.net:10000",
+			browserProof: "p".repeat(43),
+			startedAt: Date.now(),
+		};
+		noteBankReturn({ connector: "bank", connection: "confirm", confirmation: "c".repeat(43), signIn });
+		const done = await connectable(bank);
+		expect(bank.finishSignIn).toHaveBeenCalledTimes(1);
+		expect(done.container.textContent).toContain(
+			"The bank is connected. Its numbers arrive here within a few minutes.",
+		);
+		noteBankReturn({ connector: "bank", connection: "failed", reason: "declined", signIn });
+		const declined = await connectable(client());
+		expect(declined.container.textContent).toContain(
+			"The bank was not connected. No account was shared with Qorpera.",
+		);
+		// Another connector's return is never the Bank page's.
+		noteBankReturn({ connector: "gmail", connection: "failed", signIn: { ...signIn, connectorId: "gmail" } });
+		const none = client();
+		await connectable(none);
+		expect(none.finishSignIn).not.toHaveBeenCalled();
+	});
+
+	it("never sends the member to the bank once the dialog is closed while the sign-in starts", async () => {
+		const bank = client();
+		let answer: (url: string) => void = () => {};
+		bank.beginSignIn.mockImplementationOnce(
+			() =>
+				new Promise<string>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const { container, navigate } = await connectable(bank);
+		click(container, "Connect the bank");
+		click(dialog() as HTMLElement, "Continue");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		const signal = bank.beginSignIn.mock.calls[0]?.[2] as AbortSignal;
+		expect(signal.aborted).toBe(false);
+		dialog()?.querySelector<HTMLButtonElement>(".surface-close")?.click();
+		expect(signal.aborted).toBe(true);
+		answer("https://tilisy.enablebanking.com/ais/start?sessionid=late");
+		await settle();
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("says how a Connect again went beside the paused numbers", async () => {
+		const signIn = {
+			ticketId: id(20),
+			connectorId: "bank" as const,
+			companyId: profileA.profileId,
+			serviceOrigin: "https://company41-node-01.tailbb15c7.ts.net:10000",
+			browserProof: "p".repeat(43),
+			startedAt: Date.now(),
+		};
+		const paused = JSON.stringify(summary({ pausedSince: "2026-10-20" }));
+		noteBankReturn({ connector: "bank", connection: "confirm", confirmation: "c".repeat(43), signIn });
+		const renewed = await connectable(client([connection()]), paused);
+		expect(renewed.container.textContent).toContain(
+			"The bank is connected. Its numbers arrive here within a few minutes.",
+		);
+		expect(renewed.container.textContent).toContain("282.730 kr");
+		noteBankReturn({ connector: "bank", connection: "failed", reason: "declined", signIn });
+		const declined = await connectable(client([connection()]), paused);
+		expect(declined.container.textContent).toContain(
+			"The bank was not connected. No account was shared with Qorpera.",
+		);
+		const refused = client([connection()]);
+		refused.finishSignIn.mockRejectedValueOnce(Object.assign(new Error("refused"), { reason: "expired" }));
+		noteBankReturn({ connector: "bank", connection: "confirm", confirmation: "c".repeat(43), signIn });
+		const late = await connectable(refused, paused);
+		expect(late.container.textContent).toContain("The bank was not connected. The sign-in took too long. Try again.");
+	});
+
+	it("says the connection could not be read, and reads it again on Try again", async () => {
+		const bank = client();
+		bank.list.mockRejectedValueOnce(new Error("rpc"));
+		const { container } = await connectable(bank);
+		expect(container.textContent).toContain("The bank connection could not be read.");
+		expect(container.textContent).not.toContain("Connect the bank");
+		click(container, "Try again");
+		await settle();
+		expect(bank.list).toHaveBeenCalledTimes(2);
+		expect(container.textContent).not.toContain("could not be read");
+		click(container, "Connect the bank");
+		expect(dialog()).not.toBeNull();
+	});
+
+	it("shows or hides Connect the bank as the member's role changes", async () => {
+		const bank = client();
+		const { container, controller } = await connectable(bank, undefined, "contributor");
+		const buttons = () => [...container.querySelectorAll("button")].map((button) => button.textContent?.trim());
+		expect(buttons()).not.toContain("Connect the bank");
+		const team = controller.store.get().team;
+		if (team) controller.store.set({ team: { ...team, role: "admin" } });
+		renderBank(container, controller, { connection: () => bank });
+		expect(buttons()).toContain("Connect the bank");
+		if (team) controller.store.set({ team: { ...team, role: "contributor" as "owner" } });
+		renderBank(container, controller, { connection: () => bank });
+		expect(buttons()).not.toContain("Connect the bank");
+	});
+
+	it("offers Connect again when the bank paused sharing, replacing the company's connection", async () => {
+		const bank = client([connection()]);
+		const { container } = await connectable(bank, JSON.stringify(summary({ pausedSince: "2026-10-20" })));
+		click(container, "Connect again");
+		expect(radio("Danske Bank")?.getAttribute("aria-checked")).toBe("true");
+		click(dialog() as HTMLElement, "Continue");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		await settle();
+		expect(bank.beginSignIn).toHaveBeenCalledWith("bank", id(70), expect.any(AbortSignal), {
+			name: "Danske Bank",
+			country: "DK",
+			psuType: "business",
+		});
 	});
 });

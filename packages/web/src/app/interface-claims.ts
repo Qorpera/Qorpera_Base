@@ -7,6 +7,7 @@ import {
 	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
 import { invalid, readStateFile, rewriteStateFile, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
+import type { WebConnectors } from "../cloud/connectors.ts";
 import { t } from "../ui/preferences.ts";
 import type { InterfaceOfferActions } from "./interface-offers.ts";
 
@@ -28,6 +29,8 @@ export interface InterfaceWrites {
 	readonly reread?: () => void;
 	/** Opens Settings on Company connections, where the company's mail addresses are made (the Mailbox's New address). */
 	readonly openSettings?: () => void;
+	/** The company's connections, for the Bank page's Connect the bank: its sign-in and whether it is connected. */
+	readonly bankConnection?: () => Pick<WebConnectors, "list" | "beginSignIn" | "finishSignIn">;
 }
 
 /** The offer an accept answers: the cell it names and what it read there. */

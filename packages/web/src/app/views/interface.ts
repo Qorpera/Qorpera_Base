@@ -331,7 +331,7 @@ export function renderInterface(
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).
 	if (entry.name === "bank") {
-		renderBank(container, company);
+		renderBank(container, company, writes?.bankConnection ? { connection: writes.bankConnection } : {});
 		return;
 	}
 	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched
