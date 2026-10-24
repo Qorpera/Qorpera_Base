@@ -236,3 +236,9 @@
 :root[data-theme="dark"] .files-search-input { border-color: rgba(255, 255, 255, 0.14); background: #1f1f1e; }
 :root[data-theme="dark"] .agent-card-square.is-done { color: var(--ok); }
 :root[data-theme="dark"] .agent-card .agent-inline-description > .icon { background: color-mix(in srgb, #ffffff 6%, var(--overlay)); }
+
+/* ---- The Bank page (bank.css) --------------------------------------------------------- */
+:root[data-theme="dark"] :is(.bank-detail-in .bank-amount-side, .bank-net-up) { color: #34d399; }
+:root[data-theme="dark"] :is(.bank-detail-out .bank-amount-side, .bank-net-down) { color: #f4776b; }
+:root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
+:root[data-theme="dark"] .bank-year-out { background: #7a3530; }

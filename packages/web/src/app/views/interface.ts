@@ -79,6 +79,7 @@ import {
 	viewBlocks,
 } from "../interfaces.ts";
 import type { QuotedText } from "../quotes.ts";
+import { renderBank } from "./bank.ts";
 import {
 	type BlockExtra,
 	type CalendarSource,
@@ -326,6 +327,11 @@ export function renderInterface(
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
 		renderMailbox(container, company, name, writes?.openSettings ? { openSettings: writes.openSettings } : {});
+		return;
+	}
+	// The Bank page draws itself from the company's bank summary (views/bank.ts).
+	if (entry.name === "bank") {
+		renderBank(container, company);
 		return;
 	}
 	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched

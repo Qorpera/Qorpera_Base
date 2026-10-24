@@ -1,9 +1,10 @@
 /* Interfaces in the web client (contract, 2026-10-02 interfaces amendment, narrowed by the 2026-10-17 scope amendment;
- * RUNTIME-INTERFACES.md). A company has two pages at most, Mailbox and Members (Interfaces C6a). Each is off until an
- * owner or admin switches it on in Settings → Company (app/views/settings-pages.ts; read by app/interface-pages.ts), and
- * the Interfaces tab lists those that are on, in that order. A page is drawn from the definition the web ships (the cloud client's library), never from the
- * company's folder: whatever its interfaces/ holds, Pulse, a page an agent wrote or a file named like one of the two,
- * is never shown, and every other page name, in the tab, a link or a button, is a page that isn't there.
+ * RUNTIME-INTERFACES.md). A company has three pages at most, Mailbox, Members (Interfaces C6a) and Bank. Each is off
+ * until an owner or admin switches it on in Settings → Company (app/views/settings-pages.ts; read by
+ * app/interface-pages.ts), and the Interfaces tab lists those that are on, in that order. A page is drawn from the
+ * definition the web ships (the cloud client's library; Bank's is app/bank-page.ts and views/bank.ts draws it), never
+ * from the company's folder: whatever its interfaces/ holds, Pulse, a page an agent wrote or a file named like one of
+ * the three, is never shown, and every other page name, in the tab, a link or a button, is a page that isn't there.
  *
  * Only the parts whose source the client can read are drawn: a part without its source is not drawn, and a page with no
  * part to draw is not listed (the client contract's rule against rendering missing machinery). Those sources are the
@@ -28,6 +29,7 @@ import {
 import type { MemberInterfaceOffer } from "../cloud/interface-offers.ts";
 import { INTERFACE_PAGES } from "../cloud/interface-pages.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
+import { BANK_INTERFACE } from "./bank-page.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import { mailShown } from "./company-mail.ts";
 import type { FolderProblem, FolderTable } from "./interface-folder.ts";
@@ -132,11 +134,11 @@ function withoutHiddenSources(file: InterfaceFile): InterfaceFile {
 }
 
 let shipped: readonly CompanyInterface[] | undefined;
-/** The definitions the web ships for the two pages, parsed once, without what reads a hidden source; the library's
+/** The definitions the web ships for the three pages, parsed once, without what reads a hidden source; the library's
  * others (Pulse) are not among them. A definition that doesn't parse is a bug in the library; it is left out rather
  * than drawn wrong. */
 function shippedInterfaces(): readonly CompanyInterface[] {
-	shipped ??= INTERFACE_LIBRARY.flatMap((entry) => {
+	shipped ??= [...INTERFACE_LIBRARY, { name: "bank", interface: BANK_INTERFACE }].flatMap((entry) => {
 		if (!(INTERFACE_PAGES as readonly string[]).includes(entry.name)) return [];
 		const parsed = parseInterfaceFile(entry.interface);
 		return parsed.ok ? [{ name: entry.name, file: withoutHiddenSources(parsed.file) }] : [];

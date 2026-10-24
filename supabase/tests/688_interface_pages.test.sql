@@ -1,6 +1,6 @@
 -- @fixture 865_folder_state_tables.test.sql until "-- 1. The port of parseTableRows"
--- Interfaces C6a, which pages a company shows (QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md §4): only Mailbox and
--- Members, both off until an owner or admin switches one on. Every member reads them; a contributor, a viewer, someone
+-- Interfaces C6a, which pages a company shows (QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md §4): only Mailbox,
+-- Members and Bank (20260930520000), all off until an owner or admin switches one on. Every member reads them; a contributor, a viewer, someone
 -- who is not a member, another company's owner and a company being deleted switch nothing; no other page can be
 -- switched. Switching changes no data: the folder, its commits, the areas' consents and offers, the members and who
 -- pays stay as they were.
@@ -37,10 +37,12 @@ begin
 	if p_answer ->> 'error' is distinct from p_state then
 		raise exception 'Expected SQLSTATE %, got %', p_state, p_answer using errcode = 'QTF01'; end if;
 end $$;
--- The answer for Mailbox and Members on or off.
-create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean) returns jsonb language sql as $$
+-- The answer for Mailbox, Members and Bank on or off.
+create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default false)
+returns jsonb language sql as $$
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1', 'pages', jsonb_build_array(
-		jsonb_build_object('page', 'mailbox', 'on', p_mailbox), jsonb_build_object('page', 'members', 'on', p_members)),
+		jsonb_build_object('page', 'mailbox', 'on', p_mailbox), jsonb_build_object('page', 'members', 'on', p_members),
+		jsonb_build_object('page', 'bank', 'on', p_bank)),
 		'mayChange', p_may)
 $$;
 -- Everything a switch must leave alone, for 634's company: its folder and commits, the areas' consents and offers,
@@ -100,7 +102,7 @@ begin
 	perform pg_temp.c6_error(pg_temp.c6_set(4, 'mailbox', true), '42501');
 	perform pg_temp.c6_error(pg_temp.c6_set(3, 'members', true), '42501');
 	perform pg_temp.c6_error(pg_temp.c6_set(99, 'members', true), '42501');
-	foreach v_page in array array['pulse', 'numbers', 'my-board', 'Mailbox', 'members ', ''] loop
+	foreach v_page in array array['pulse', 'numbers', 'my-board', 'Mailbox', 'members ', 'Bank', 'banks', ''] loop
 		perform pg_temp.c6_error(pg_temp.c6_set(1, v_page, true), '22023');
 	end loop;
 	perform pg_temp.c6_error(pg_temp.c6_set(1, null, true), '22023');
@@ -148,6 +150,17 @@ begin
 		or pg_temp.c6_set(1, 'members', true) is distinct from pg_temp.c6_pages(true, true, true) then
 		raise exception 'Off and on again'; end if;
 	if pg_temp.c6_data() is distinct from v_data then raise exception 'Off and on again changed the company''s data'; end if;
+
+	-- Bank: the admin turns it on, a viewer sees it on and can't switch it, the owner turns it off again.
+	if pg_temp.c6_set(5, 'bank', true) is distinct from pg_temp.c6_pages(true, true, true, true) then
+		raise exception 'The admin turns Bank on'; end if;
+	if pg_temp.c6_list(3) is distinct from pg_temp.c6_pages(true, true, false, true) then
+		raise exception 'A viewer sees Bank: %', pg_temp.c6_list(3); end if;
+	perform pg_temp.c6_error(pg_temp.c6_set(3, 'bank', false), '42501');
+	perform pg_temp.c6_error(pg_temp.c6_set(2, 'bank', false), '42501');
+	if pg_temp.c6_set(1, 'bank', false) is distinct from pg_temp.c6_pages(true, true, true, false) then
+		raise exception 'The owner turns Bank off'; end if;
+	if pg_temp.c6_data() is distinct from v_data then raise exception 'Bank''s switch changed the company''s data'; end if;
 	if (select count(*) from public.qorpera_interface_supervisions where state = 'live') is distinct from 1 then
 		raise exception 'The consent after the switches'; end if;
 end $$;

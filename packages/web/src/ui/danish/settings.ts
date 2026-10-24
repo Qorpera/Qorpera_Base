@@ -586,6 +586,9 @@ export const SETTINGS: Record<string, string> = {
 		"Virksomhedens post, for alle medlemmer. Den vises, når virksomheden har en mailadresse (Virksomhedens forbindelser → Postkasser).",
 	"Who owns and supervises each agent. It shows once the company has a second member.":
 		"Hvem der ejer og har tilsyn med hver agent. Den vises, når virksomheden har mindst to medlemmer.",
+	Bank: "Bank",
+	"The company's bank account: the saldo, and what comes in and goes out each month.":
+		"Virksomhedens bankkonto: saldoen, og hvad der kommer ind og går ud hver måned.",
 	"{page} could not be changed. Try again.": "{page} kunne ikke ændres. Prøv igen.",
 	"Pages are not available on this cloud yet.": "Sider er ikke tilgængelige i denne sky endnu.",
 	"Switching a page off only hides it. Nothing it showed is removed.":
