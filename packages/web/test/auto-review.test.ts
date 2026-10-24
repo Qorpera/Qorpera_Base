@@ -132,6 +132,37 @@ describe("the approval card", () => {
 		);
 	});
 
+	it("says a member stopped the work behind an open approval, which stays answerable", () => {
+		const answer = vi.fn();
+		const open = renderActionReviewCard(card, undefined, { answer, memberName: names, chainStopped: true });
+		expect(open.querySelector(".review-stopped")?.textContent).toBe(
+			"A member stopped the work that raised this card. Answering it starts new work.",
+		);
+		expect(open.querySelectorAll(".email-draft-actions button")).toHaveLength(3);
+		// Whoever cannot answer reads only that the work was stopped.
+		const waiting = renderActionReviewCard(card, undefined, { memberName: names, chainStopped: true });
+		expect(waiting.querySelector(".review-stopped")?.textContent).toBe(
+			"A member stopped the work that raised this card.",
+		);
+		const change = renderActionReviewCard(
+			{ ...card, title: "Delete from the Company File", target: "work/old-offer.md", tool: "company_delete" },
+			undefined,
+			{ answer, memberName: names, chainStopped: true },
+		);
+		expect(change.classList.contains("email-draft-card")).toBe(false);
+		expect(change.querySelector(".review-stopped")?.textContent).toContain("Answering it starts new work.");
+		// An answered card folds to its answer, without the note.
+		const decided = renderActionReviewCard(
+			card,
+			{ decision: "approved", answer: { answer: "allow_once" }, answeredBy: id(1) },
+			{ answer, memberName: names, chainStopped: true },
+		);
+		expect(decided.querySelector(".review-stopped")).toBeNull();
+		expect(
+			renderActionReviewCard(card, undefined, { answer, memberName: names }).querySelector(".review-stopped"),
+		).toBeNull();
+	});
+
 	it("offers nothing on an approval of an action it cannot read", () => {
 		const el = renderAuthorizationCard(
 			"authorization_request",

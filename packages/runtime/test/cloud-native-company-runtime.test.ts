@@ -995,7 +995,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v6",
+			schema: "qorpera.hire-overlay/v7",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2281,6 +2281,9 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	const routine = tools.find((tool) => tool.name === "manage_routine")?.description ?? "";
 	expect(routine).toContain("routines/<routineKey>.md");
 	expect(routine).not.toContain("No member approval is needed");
+	// The 2026-10-22 amendment, item 2: an agent's own routines are judged by its job, never held for a member.
+	expect(routine).toContain("your own routines need no member's approval unless a member's own rule asks for it");
+	expect(routine).not.toContain("wait for a member's approval");
 });
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
@@ -2889,10 +2892,11 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
 	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
 	// saveTo), so they moved again. When the company's own work was kept by area first (21 October 2026), company_write's,
-	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again. Since
-	// the platform's folders moved under QorperaOS/ (21 October 2026), table_read's, table_write's, organize_sidebar's,
-	// hire_agent's and create_group_chat's descriptions name them there, so they moved again; every other tool is as on
-	// master.
+	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again.
+	// Since the 2026-10-22 amendment manage_routine's description says a change passes a quick review against the
+	// agent's job, so they moved again. Since the platform's folders moved under QorperaOS/ (21 October 2026),
+	// table_read's, table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there,
+	// so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2927,9 +2931,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"41291bce1f9ae2e6a98ef54141d9c834c4f893de9443f079174a1be45a14d2fb",
+		"0000000000000000000000000000000000000000000000000000000000000000",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"2d1d0b38a5bcf479a3f338c95d97ada117565a2fa513f54c8566b08e55dc54b1",
+		"0000000000000000000000000000000000000000000000000000000000000000",
 	);
 });

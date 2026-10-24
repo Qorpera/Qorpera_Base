@@ -1,5 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { Cloud } from "./client.ts";
+import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
 /**
@@ -18,9 +18,24 @@ import { UUID_PATTERN } from "./parse.ts";
  * Several companies' brokers share one origin; `?company=<profileId>` (not a
  * secret) lets its router reach this company's broker, as for secret cards.
  * Contract §11.5; RPCs listed in supabase/CLIENT-CONTRACT.md §2.
+ *
+ * The company's bank (`bank`) signs in the same way, from the Bank page: the
+ * start names the bank the member picked, the bank's own sign-in (MitID) sends
+ * the member back, and the broker seals the session. It is not one of the
+ * Services cards, and no agent tool uses it.
  */
 
 export type HostedConnectorId = "gmail" | "google_drive" | "github";
+/** Every connector a sign-in can be started for: the Services cards' and the bank. */
+export type SignInConnectorId = HostedConnectorId | "bank";
+
+/** The bank a member picked for the company's bank connection, as Enable Banking names it, and whether the account
+ * is the company's (`business`) or in the member's own name (`personal`). */
+export interface WebBankChoice {
+	readonly name: string;
+	readonly country: string;
+	readonly psuType: "business" | "personal";
+}
 
 export const HOSTED_CONNECTORS: ReadonlyArray<{
 	id: HostedConnectorId;
@@ -64,7 +79,7 @@ export interface HostedConnectorCaptureTicket {
  * the company's broker in the confirm request. */
 export interface HostedConnectorSignIn {
 	ticketId: string;
-	connectorId: HostedConnectorId;
+	connectorId: SignInConnectorId;
 	companyId: string;
 	serviceOrigin: string;
 	browserProof: string;
@@ -72,7 +87,7 @@ export interface HostedConnectorSignIn {
 }
 
 export interface HostedConnectorReturn {
-	connector: HostedConnectorId;
+	connector: SignInConnectorId;
 	connection: "confirm" | "failed";
 	confirmation?: string;
 	reason?: string;
@@ -128,7 +143,7 @@ async function sha256Hex(text: string): Promise<string> {
 	return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-const CONNECTOR_IDS = new Set<string>(HOSTED_CONNECTORS.map((connector) => connector.id));
+const CONNECTOR_IDS = new Set<string>([...HOSTED_CONNECTORS.map((connector) => connector.id), "bank"]);
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}.`);
@@ -211,7 +226,7 @@ export function takeConnectorReturn(): HostedConnectorReturn | undefined {
 	if (connection === "failed") forgetSignIn();
 	const reason = params.get("reason") ?? undefined;
 	return {
-		connector: connector as HostedConnectorId,
+		connector: connector as SignInConnectorId,
 		connection,
 		...(connection === "confirm" ? { confirmation } : {}),
 		...(reason ? { reason } : {}),
@@ -250,6 +265,66 @@ export interface SecretCapture {
 		fields: Readonly<Record<string, string>>,
 		signal: AbortSignal | undefined,
 	): Promise<void>;
+}
+
+/** A kept capture ticket is reused only while it has this long left; tickets live ten minutes. */
+const KEPT_TICKET_MARGIN_MS = 60_000;
+
+/**
+ * Replacements of a secret's value that keep their ticket when the send fails, by a key the caller names (the secret,
+ * and whatever else its ticket fixes); never the value. SQL allows one open replacement of a secret and a ticket stays
+ * open ten minutes, so the next try for the same key reuses the kept ticket rather than ask for one SQL refuses.
+ */
+export function createKeptReplacements(
+	capture: SecretCapture,
+): (
+	key: string,
+	target: SecretCaptureTarget,
+	fields: Readonly<Record<string, string>>,
+	signal: AbortSignal | undefined,
+) => Promise<void> {
+	const kept = new Map<string, HostedConnectorCaptureTicket>();
+	async function sendKeeping(
+		key: string,
+		issued: HostedConnectorCaptureTicket,
+		fields: Readonly<Record<string, string>>,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		try {
+			await capture.send(issued, fields, signal);
+		} catch (error) {
+			kept.set(key, issued);
+			throw error;
+		}
+	}
+	return async (key, target, fields, signal) => {
+		const reused = kept.get(key);
+		kept.delete(key);
+		if (reused !== undefined && Date.parse(reused.expiresAt) - Date.now() > KEPT_TICKET_MARGIN_MS) {
+			try {
+				await capture.send(reused, fields, signal);
+			} catch (error) {
+				if (signal?.aborted) {
+					kept.set(key, reused);
+					throw error;
+				}
+				// The broker refuses a used ticket as it refuses any other, so the earlier try may have saved the
+				// value. A fresh ticket tells: SQL refuses a second open replacement of one secret (23505).
+				const fresh = await capture.ticket(target).catch((begin: unknown) => {
+					// The kept ticket may still be open (a 23505 says it is, so nothing was saved and the broker's
+					// error is the one to show): the next try sends with it again.
+					kept.set(key, reused);
+					throw begin instanceof CloudRpcError && begin.code === "23505" ? error : begin;
+				});
+				await sendKeeping(key, fresh, fields, signal);
+				return;
+			}
+			// The earlier try may still have been running at the broker and saved its own value with this ticket.
+			// SQL answers a send on a saved ticket as a replay that saves nothing, so this answer can't tell whose
+			// value was saved. The ticket is used either way: a fresh one saves this value, as one more version.
+		}
+		await sendKeeping(key, await capture.ticket(target), fields, signal);
+	};
 }
 
 export function createSecretCapture(
@@ -330,9 +405,11 @@ export interface WebConnectors {
 	 * consent URL the browser must visit. The tab keeps a proof that only it
 	 * can present when the member comes back. */
 	beginSignIn(
-		connectorId: HostedConnectorId,
+		connectorId: SignInConnectorId,
 		existingSecretId: string | undefined,
 		signal?: AbortSignal,
+		/** The bank the member picked: required for the bank, and only for it. */
+		bank?: WebBankChoice,
 	): Promise<string>;
 	/** Finishes a sign-in this tab started: the broker seals the account only
 	 * for the browser that holds the proof. Resolves to the account label. */
@@ -360,16 +437,16 @@ export function createWebConnectors(
 		throw new Error("Invalid company for connectors.");
 	const company = profile.profileId.toLowerCase();
 	const capture = createSecretCapture(cloud, profile, fetchImplementation);
-	const label = (connectorId: HostedConnectorId) =>
+	const label = (connectorId: SignInConnectorId) =>
 		HOSTED_CONNECTORS.find((connector) => connector.id === connectorId)?.label ?? connectorId;
-	async function ticket(connectorId: HostedConnectorId, existingSecretId: string | undefined) {
+	async function ticket(connectorId: SignInConnectorId, existingSecretId: string | undefined) {
 		return capture.ticket({
 			// Company first: the connection is the company's, never the member's.
 			ownerKind: "company",
 			ownerUserId: null,
 			connectorId,
 			secretName: "primary",
-			purpose: `${label(connectorId)} account`,
+			purpose: connectorId === "bank" ? "Company bank" : `${label(connectorId)} account`,
 			existingSecretId,
 		});
 	}
@@ -383,7 +460,10 @@ export function createWebConnectors(
 				}),
 			);
 		},
-		async beginSignIn(connectorId, existingSecretId, signal) {
+		async beginSignIn(connectorId, existingSecretId, signal, bank) {
+			if ((connectorId === "bank") !== (bank !== undefined)) throw new Error("Invalid bank sign-in.");
+			// The page the sign-in was started on, read now: the member may move on while the ticket is issued.
+			const returnTo = `${location.origin}/${location.hash}`;
 			const issued = await ticket(connectorId, existingSecretId);
 			// This tab's proof: only its hash goes to the broker now; the proof
 			// itself only with the confirmation after the provider sends us back.
@@ -395,8 +475,9 @@ export function createWebConnectors(
 						schema: "qorpera.cloud-connector-oauth-start/v2",
 						captureCapability: issued.captureCapability,
 						// The broker returns only to the app's root page; the route is in the hash.
-						returnTo: `${location.origin}/${location.hash}`,
+						returnTo,
 						browserProofSha256: await sha256Hex(browserProof),
+						...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
 					},
 					signal,
 				),

@@ -63,11 +63,16 @@ function returnReason(reason: unknown): string {
 	return text ? t(text) : t("Try again.");
 }
 
+/** A sign-in outcome for one of the Services cards (the bank's goes to the Bank page). */
+type ServiceReturn = HostedConnectorReturn & { connector: HostedConnectorId };
+const isServiceReturn = (outcome: HostedConnectorReturn | undefined): outcome is ServiceReturn =>
+	outcome !== undefined && outcome.connector !== "bank";
+
 /** A sign-in outcome the broker sent back in the page hash, kept until the
  * services panel is drawn once, even if that happens after a company loads. */
-let pendingReturn: HostedConnectorReturn | undefined;
+let pendingReturn: ServiceReturn | undefined;
 export function noteConnectorReturn(outcome: HostedConnectorReturn | undefined): void {
-	pendingReturn = outcome;
+	pendingReturn = isServiceReturn(outcome) ? outcome : undefined;
 }
 
 export class ServicesView {
@@ -120,7 +125,7 @@ export class ServicesView {
 	/** A sign-in this tab started came back: the broker seals the account only
 	 * for this tab's proof, then the fresh connection is shared with every agent
 	 * (an owner or admin started it). */
-	async #finish(outcome: HostedConnectorReturn): Promise<void> {
+	async #finish(outcome: ServiceReturn): Promise<void> {
 		const name = HOSTED_CONNECTORS.find((item) => item.id === outcome.connector)?.label ?? outcome.connector;
 		let finished = false;
 		try {

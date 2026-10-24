@@ -53,7 +53,8 @@ async function setup(f = fixture()) {
 }
 /** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and the
  * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
- * C6d), Settings reading the pages too. */
+ * C6d), Settings reading the pages too. The mail's read includes Digital Post's state, which Company connections'
+ * Digital Post card reads too (test/digital-post.test.ts). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
@@ -62,6 +63,7 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			(name) =>
 				name !== "qorpera_list_review_rules" &&
 				!name.startsWith("qorpera_member_mail_") &&
+				name !== "qorpera_member_digital_post" &&
 				name !== "qorpera_member_interface_offers" &&
 				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages",
@@ -1890,8 +1892,9 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelector(".settings-lead")?.textContent).toBe(
 			"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
 		);
-		// The Services section lists the Step 7 connectors with their own Connect buttons.
-		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
+		// The Services section lists the Step 7 connectors with their own Connect buttons; Digital Post has its own card.
+		expect(content.querySelectorAll('.service-card:not([data-connector="digital_post"])')).toHaveLength(3);
+		expect(content.querySelector('.digital-post .service-card[data-connector="digital_post"]')).not.toBeNull();
 		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
 		// The services, the coding environment variables and the hooks are this tab's only reads; the member's own

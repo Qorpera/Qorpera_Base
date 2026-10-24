@@ -521,6 +521,15 @@ and has no login until `rules-reader-login.py` gives it one. The login is a URL 
 `/etc/qorpera-agent-exit/database-url`, root's, mode 0400 in a 0700 folder, which the unit hands to the reader with
 `LoadCredential`. Nobody reads, copies or prints it.
 
+Our own CA (a self-hosted database, later): `install-agent-exit.sh <package> --database-ca <file>
+--database-ca-sha256 <sha256>` installs that CA and its pin (the file's sha256, as `sha256sum` prints it) beside the
+reader, with the drop-in `/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf`, which hands both
+to the reader as two more credentials. The two go together: one without the other, a pin the file does not match, or a
+file that is not one PEM CA certificate is refused before anything is installed, and the reader refuses the same again
+(`packages/runtime/src/database-ca.ts`). The reader then trusts that CA alone, still with `verify-full`; Supabase's CA
+stays its credential and stays pinned. An install without the two keeps Supabase's CA and removes an own CA a previous
+install placed.
+
 The coordinator runs the script on the Mac, from a checkout of what the nodes run. It reads the Supabase CLI's token
 from the keychain itself and reaches each node with `ssh` and its root helper:
 
@@ -528,6 +537,18 @@ from the keychain itself and reaches each node with `ssh` and its root helper:
 python3 deploy/agent-exit/rules-reader-login.py --check   checks everything, changes nothing
 python3 deploy/agent-exit/rules-reader-login.py           makes a new login and places it
 ```
+
+Direct mode, for a self-hosted database (opt-in; without its flags the script works as described here):
+`--direct-host HOST --direct-port PORT --direct-ca FILE --direct-ca-sha256 SHA256 --direct-admin ROLE`, all five or
+none, with or without `--check`. The SQL then runs through `psql` over a direct admin connection instead of the
+Supabase API, and the keychain is not read. The script takes the CA only when its sha256 is the pin, and psql connects
+with `sslmode=verify-full` against a copy of exactly those bytes (and GSSAPI encryption off); no input turns the check
+off. psql finds the admin's password itself (`PGPASSWORD`, `PGPASSFILE` or `~/.pgpass`, never a prompt) and gets no
+other libpq setting from the environment. The login is
+`postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full`, and each node's reader must
+already hold the pinned CA as its own CA (`install-agent-exit.sh --database-ca … --database-ca-sha256 …`, above):
+the script checks `database-own-ca.crt` against the pin and Supabase's CA against this checkout, and installing the
+CA is not this script's.
 
 It checks the project's pooler (one primary, with SCRAM), the role as the migration makes it, and on each node the
 root helper, the exit's tool, the reader's unit and CA as this checkout's, the reader's program and the client map.

@@ -1,15 +1,16 @@
 import type { Cloud } from "./client.ts";
 import { array, CloudShapeError, oneOf, record } from "./parse.ts";
 
-/* Which pages a company shows (Interfaces C6a; migration 20260930509000_interface_pages, supabase/CLIENT-CONTRACT.md
- * "Pages"). A company shows at most two, Mailbox and Members, each off until an owner or admin switches it on. The
- * web draws a page from the definition it ships, never from the folder's QorperaOS/interfaces/. */
+/* Which pages a company shows (Interfaces C6a; migrations 20260930509000_interface_pages and
+ * 20260930520000_interface_page_bank, supabase/CLIENT-CONTRACT.md "Pages"). A company shows at most three, Mailbox,
+ * Members and Bank, each off until an owner or admin switches it on. The web draws a page from the definition it
+ * ships, never from the folder's QorperaOS/interfaces/. */
 
-export const INTERFACE_PAGES = ["mailbox", "members"] as const;
+export const INTERFACE_PAGES = ["mailbox", "members", "bank"] as const;
 export type InterfacePageName = (typeof INTERFACE_PAGES)[number];
 
 export interface MemberInterfacePages {
-	/** Both pages, in the Interfaces tab's order. */
+	/** The pages, in the Interfaces tab's order. */
 	readonly pages: readonly { readonly page: InterfacePageName; readonly on: boolean }[];
 	/** The caller is an owner or admin, who may switch them. */
 	readonly mayChange: boolean;

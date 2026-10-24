@@ -1,12 +1,17 @@
+import { createPrivateKey } from "node:crypto";
+import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import { type DigitalPostApp, DigitalPostClient, parseDigitalPostApp } from "./cloud-connector-digital-post.ts";
+import { type EnableBankingApp, EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import { createGitHubConnectorAdapters } from "./cloud-connector-github.ts";
 import {
 	createGmailConnectorAdapters,
 	createGoogleDriveConnectorAdapters,
 	type GoogleOAuthClient,
 } from "./cloud-connector-google.ts";
-import { CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
+import { BANK_CONNECTOR_ID, CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
 import { CloudConnectorTokenRevoker } from "./cloud-connector-token-revocation.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
+import { DigitalPostPdfText, type DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
  * Composition of the production connectors inside the cloud secret broker.
@@ -20,6 +25,15 @@ import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
  * (see cloud-connector-oauth.ts). The member app origins that may start a
  * sign-in and receive the member back are the broker's own `memberOrigins`
  * (config v2), the same list the capture route answers to.
+ *
+ * `enableBanking` is Qorpera's Enable Banking application (its id and RSA
+ * private key, PEM): with it the vault connects companies' banks and keeps
+ * their bank summaries current (cloud-bank-sync.ts).
+ *
+ * `digitalPost` is Qorpera's Digital Post certificate (OCES3, as the companies' system supplier: environment,
+ * certificate and key, PEM): with it the vault fetches the Digital Post of every company that connected it
+ * (cloud-digital-post-sync.ts, RUNTIME-DIGITAL-POST.md), and reads a PDF-only letter's text through the host's
+ * pdftotext socket when it is installed (digital-post-pdf-text.ts).
  */
 
 export interface CloudConnectorServiceConfig {
@@ -30,6 +44,8 @@ export interface CloudConnectorServiceConfig {
 	readonly publicOrigin: string;
 	readonly google?: GoogleOAuthClient;
 	readonly github?: GoogleOAuthClient;
+	readonly enableBanking?: EnableBankingApp;
+	readonly digitalPost?: DigitalPostApp;
 }
 
 export interface CloudConnectorService {
@@ -38,6 +54,12 @@ export interface CloudConnectorService {
 	readonly connectors: readonly string[];
 	/** Cancels disconnected and deleted companies' tokens at the provider (company delete D6). */
 	readonly revoker: CloudConnectorTokenRevoker;
+	/** Enable Banking, when the vault has the application: the bank sync's client. */
+	readonly bank?: EnableBankingClient;
+	/** Digital Post, when the vault has Qorpera's certificate: the Digital Post sync's client. */
+	readonly digitalPost?: DigitalPostClient;
+	/** With it, the reader of PDF-only letters' text. */
+	readonly digitalPostPdfText?: DigitalPostPdfTextReader;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -59,12 +81,36 @@ function client(value: unknown, label: string): GoogleOAuthClient | undefined {
 	return Object.freeze({ clientId: input.clientId, clientSecret: input.clientSecret });
 }
 
+function enableBankingApp(value: unknown): EnableBankingApp | undefined {
+	if (value === undefined) return undefined;
+	const input = record(value, "Enable Banking application");
+	if (
+		Object.keys(input).sort().join() !== "applicationId,privateKeyPem" ||
+		typeof input.applicationId !== "string" ||
+		!POSTGRES_UUID_PATTERN.test(input.applicationId) ||
+		typeof input.privateKeyPem !== "string" ||
+		input.privateKeyPem.length > 16_384
+	)
+		throw new Error("Enable Banking application is invalid");
+	let type: string | undefined;
+	try {
+		type = createPrivateKey(input.privateKeyPem).asymmetricKeyType;
+	} catch {
+		type = undefined;
+	}
+	// Never the key's text in the message: the configuration error is logged.
+	if (type !== "rsa") throw new Error("Enable Banking application is invalid");
+	return Object.freeze({ applicationId: input.applicationId, privateKeyPem: input.privateKeyPem });
+}
+
 export function parseCloudConnectorServiceConfig(text: string): CloudConnectorServiceConfig {
 	const input = record(JSON.parse(text), "Cloud connector service configuration");
 	const keys = Object.keys(input).sort();
 	if (
 		input.schema !== "qorpera.cloud-connector-service/v1" ||
-		keys.some((key) => !["schema", "publicOrigin", "google", "github"].includes(key)) ||
+		keys.some(
+			(key) => !["schema", "publicOrigin", "google", "github", "enableBanking", "digitalPost"].includes(key),
+		) ||
 		typeof input.publicOrigin !== "string"
 	)
 		throw new Error("Cloud connector service configuration is invalid");
@@ -73,12 +119,17 @@ export function parseCloudConnectorServiceConfig(text: string): CloudConnectorSe
 		throw new Error("Cloud connector service public origin is invalid");
 	const google = client(input.google, "Google OAuth client");
 	const github = client(input.github, "GitHub OAuth client");
-	if (!google && !github) throw new Error("Cloud connector service configuration names no OAuth client");
+	const enableBanking = enableBankingApp(input.enableBanking);
+	const digitalPost = parseDigitalPostApp(input.digitalPost);
+	if (!google && !github && !enableBanking && !digitalPost)
+		throw new Error("Cloud connector service configuration names no OAuth client");
 	return Object.freeze({
 		schema: "qorpera.cloud-connector-service/v1",
 		publicOrigin: origin.origin,
 		...(google ? { google } : {}),
 		...(github ? { github } : {}),
+		...(enableBanking ? { enableBanking } : {}),
+		...(digitalPost ? { digitalPost } : {}),
 	});
 }
 
@@ -101,6 +152,10 @@ export function composeCloudConnectorService(
 		adapters.push(...createGoogleDriveConnectorAdapters({ fetch: fetchImplementation, client: config.google }));
 		connectors.push("gmail", "google_drive");
 	}
+	const bank = config.enableBanking ? new EnableBankingClient(config.enableBanking, fetchImplementation) : undefined;
+	if (bank) connectors.push(BANK_CONNECTOR_ID);
+	const digitalPost = config.digitalPost ? new DigitalPostClient(config.digitalPost) : undefined;
+	if (digitalPost) connectors.push("digital_post");
 	const oauth = new CloudConnectorOAuthFlows({
 		clients: {
 			...(config.google ? { google: config.google } : {}),
@@ -109,6 +164,7 @@ export function composeCloudConnectorService(
 		callbackUrl: `${config.publicOrigin}/v1/oauth/callback`,
 		returnOrigins,
 		fetch: fetchImplementation,
+		...(bank ? { bank } : {}),
 	});
 	return Object.freeze({
 		adapters: Object.freeze(adapters),
@@ -117,6 +173,9 @@ export function composeCloudConnectorService(
 		revoker: new CloudConnectorTokenRevoker({
 			...(config.github ? { github: config.github } : {}),
 			fetch: fetchImplementation,
+			...(bank ? { bank } : {}),
 		}),
+		...(bank ? { bank } : {}),
+		...(digitalPost ? { digitalPost, digitalPostPdfText: new DigitalPostPdfText() } : {}),
 	});
 }

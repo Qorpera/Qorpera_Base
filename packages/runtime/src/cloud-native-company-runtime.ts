@@ -5,6 +5,7 @@ import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
 	CloudActionReviewGate,
 	cloudActionEffect,
+	cloudActionReviewMandate,
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
@@ -801,6 +802,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							},
 							reviewer,
 							request: cloudActionReviewRequest(context, wake),
+							// What the agent works for, from its files as this run read them: a run no member started is
+							// judged by it (2026-10-22 amendment, item 2). A vision too large to read as text is left out.
+							mandate: cloudActionReviewMandate(context, wake, vision && "text" in vision ? vision.text : null),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects,
 							offlineShells,

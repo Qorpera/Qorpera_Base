@@ -206,7 +206,7 @@ first; deleting or moving the file (seeded).
 | `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens) |
 | `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, ghost |
 | `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6-astra when the file names none (20260930081000) |
-| `effort` | no | low, medium, high; default low |
+| `effort` | no | low, medium, high: the effort of the agent's runs no member waits on (its own workers, its first run, a coworker's message); none: the model policy's, high (20260930532000). A member's turn and a routine keep their own |
 | body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |
 
 **Database rules:**
@@ -905,7 +905,7 @@ of the body, for readers that should not reach the storage server.
 | Kind | Index | Keeps | Stays runtime state |
 | --- | --- | --- | --- |
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
-| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status, model (provider `openai`, model id the file's or `gpt-6-astra`; 20260930081000); the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `effort` stays in the parse until the runtime reads it (F2-1b); its `model` is indexed as above |
+| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status, model (provider `openai`, model id the file's or `gpt-6-astra`; 20260930081000); the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `effort` stays in the parse, where the kernel reads it when it pins a run's effort (20260930532000); its `model` is indexed as above |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
@@ -1018,7 +1018,12 @@ of the body, for readers that should not reach the storage server.
   as the default consent an agent's save records today. It takes the run's job and then the login,
   as an agent's routine save does, so it can meet a member switching that login off (40P01): the
   writer retries it.
-- Still to come: the vision in full (read through core C3's folder client), and the file's `effort` reaching runs.
+- Still to come: the vision in full (read through core C3's folder client).
+- The file's `effort` reaches runs (20260930532000; contract 17, the 2026-10-22 amendment): under a bundle whose model
+  policy declares `unattended`, a run of the agent's that no member waits on (its own workers, its first run, a
+  coworker's message, a member's finished task) takes the effort of the agent.md version the roster points at, else the
+  policy's, high. Work that carries on a chain keeps its first run's effort, a member's turn its conversation's and a
+  routine run its routine's.
 - The file's `model` reaches runs (20260930081000, the coordinator's gap of 5 October from A1's ports): the index sets
   the roster row's model provider (`openai`) and model id, the file's or `gpt-6-astra` when it names none, so the
   provider-model mapping follows and the agent's runs take it. A conversation's own model choice wins only on a native

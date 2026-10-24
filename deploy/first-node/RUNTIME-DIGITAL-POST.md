@@ -1,0 +1,201 @@
+# Digital Post in the company folder and the Mailbox
+
+Founder request, 22 October 2026: "add the E-boks/institutional mail to the inbox … the agents will need to be able to
+read that mail." Read only first; answering an authority comes later.
+
+## What it covers
+
+Danish public post to a company (Skattestyrelsen, Erhvervsstyrelsen, the municipality, courts, Udbetaling Danmark) is
+Digital Post. e-Boks, mit.dk and Virk are only places to read it. Post from private senders in e-Boks (banks, insurers,
+pension and payroll companies) is not Digital Post and has no official way in; it is not covered here.
+
+## The official way in
+
+Digital Post lets a business connect one system of its own to receive its post instead of the Virk mailbox (Technical
+Integration v1.51, sections 2.4.1, 2.6.1, 10.6.2, 10.11 and 12.4; the Administrativ Adgang guide, sections 5.1.2, 5.4
+and 15). Qorpera is that system for every company, as the company's system supplier:
+
+- **Once, for Qorpera.** Qorpera ApS's MitID Erhverv administrator issues an OCES3 organisation or system certificate
+  (a test one for Digital Post's test environment, then a production one). It goes into the vault's systemd credential
+  as `digitalPost {environment, certificatePem, privateKeyPem}` in the connector service configuration, never through
+  a chat or a file. Every call to Digital Post presents it (mutual TLS).
+- **Once per company, by a member** who has Digital Post's system administrator right (granted in Rettighedsportalen):
+  in Administrativ Adgang, Systemtilslutning → Opret system → Opsæt et nyt system → name "Qorpera" → Modtagersystem →
+  protocol REST PULL → the vault's public IP addresses → "Giv din systemleverandør fuldmagt" = Qorpera's CVR →
+  activate now → a contact email → Tilslut. The receipt shows the system's API key; the member pastes it into
+  Qorpera's Settings, which sends it straight to the company vault (the vault's capture, connector `digital_post`,
+  field `api_key`).
+- Digital Post finds the company's system by that key, checks that the certificate's CVR is the system's supplier and
+  that the call comes from a listed address. So the vault, which runs on the nodes with fixed addresses, makes every
+  call; Supabase Edge functions never do.
+
+**What the member must know** (the Settings card says it): once the system is active, new post no longer shows in
+e-Boks, mit.dk or Virk; Qorpera is the company's mailbox. A letter Qorpera cannot take within seven days goes to Virk
+instead, and Digital Post switches off a system that took nothing for seven days. Old post can be moved over with
+Administrativ Adgang's "Flyt post", which deletes it there.
+
+## The path of a letter
+
+1. **Fetch (vault).** The company's vault claims the company's Digital Post sync when it is due, opens the key in
+   memory, and lists the letters waiting (`GET /apis/v1/memos/`, at most 50 a call). For each it fetches the MeMo XML
+   (`GET /apis/v1/memos/{id}`, at most 32 MiB), reads it (`readDigitalPostLetter`) and lays it out for the folder
+   (`layOutDigitalPostLetter`).
+2. **Keep (database).** The vault records the letter and stages its files in the database. A letter whose message id
+   the company already keeps is a duplicate: Digital Post delivers at least once.
+3. **Receipt (vault).** Only after the letter is kept does the vault send the business receipt
+   (`POST /apis/v1/memos/{id}/receipt`). Digital Post deletes the letter then: from here the company folder holds the
+   only copy. A duplicate is receipted again, as Digital Post requires.
+4. **Write (object gateway).** The folder writer commits the letter's folder as the platform and rewrites the index
+   `digital-post/letters.json`, then clears the staged bytes. The vault never commits to the folder
+   (RUNTIME-COMPANY-FOLDER-CORE.md, "The vault never calls the commit").
+
+A letter the vault cannot read (malformed, too large, not a MeMo letter) is held: not receipted, so Digital Post keeps
+it and moves it to Virk after seven days. The sync records it so it is not fetched again on every pass, and Settings
+says how many letters went that way.
+
+**The sync (part 2, migration `20260930529000`).** One row a company in `qorpera_digital_post_syncs`, following its
+`digital_post` secret: a connect or a new key is due at once (`waiting`); a pass that took every letter listed is
+`current` and due again in ten minutes; a full list (50) from which it took a letter is due again in thirty seconds;
+a failure is tried again after five minutes, doubling to two hours, with a fixed phrase for Settings; a key Digital
+Post refuses (401) is `refused` and nothing is due until the member saves a key again; a Disconnect (the secret's
+revoke) is `disconnected`. A pass holds a fifteen-minute lease; a late answer from an earlier claim is refused.
+Letters are kept in `qorpera_digital_post_letters` by message id (unique per company, as is the folder by its key):
+`staging`, then `kept` once every file's staged chunks give its size and SHA-256 (`qorpera_seal_digital_post_letter`),
+then `written` (part 3). The staged bytes sit in `qorpera_digital_post_chunks`, 1 MiB each, until the folder writer
+has them; a letter left `staging` by a pass that stopped starts again when it is next delivered. Held letters are in
+`qorpera_digital_post_held` and forgotten after eight days. Since held letters stay on Digital Post's list, the sync
+remembers where a pass stopped (`scan_page`): a pass reads at most 20 pages from there, and stops after a page where it
+receipted something (the next pass reads that page again) or at the end of the list (the next starts from the first
+page), so every letter is reached however many are held before it. `qorpera_digital_post_settings` is the platform's
+one row that operators set: the Digital Post environment, Qorpera's CVR and the vault's public addresses, which the
+setup steps show. `qorpera_member_digital_post` gives any member the connection's state (supabase/CLIENT-CONTRACT.md,
+"Digital Post").
+
+## In the company folder
+
+```
+digital-post/
+  letters.json                       the index the Mailbox reads (platform-written; newest first)
+  2026/
+    2026-10-22 Skattestyrelsen - Årsopgørelse 2025 (6f1d3c2a-9b8e-4d7c-8a6b-5e4f3d2c1b0a)/
+      letter.md                      who, when, flags, deadlines, links, documents, the text
+      letter.json                    every field Digital Post delivered (files by size and SHA-256)
+      aarsopgoerelse.pdf             the documents, under the sender's names made safe
+```
+
+The day is the sender's (`createdDateTime`) in Danish time. `letters.json` is `{schema: "qorpera.digital-post-letters/v1",
+letters}`, each letter the summary the vault kept (message id, folder, title, sender and its id, written and received,
+the mandatory and legal-effect flags, the reply deadline, case id, file count, whether `letter.md` holds the text, and
+a snippet), newest first, at most 200 and within 240 KiB.
+
+**The writer (part 3, migration `20260930530000`).** The object gateway's `DigitalPostLetterWriter`
+(`QORPERA_DIGITAL_POST_WRITER=1`) claims one kept letter of a folder-v2 company that is not being deleted, with its own
+lease; reads each file's chunks back in pieces of at most 512 KiB and checks its size and SHA-256; and commits as the
+platform, under `digital-post:<letter>:<attempt>`, one change set: `digital-post/` and `digital-post/<year>` when they
+are missing, the letter's folder as one `new_folder` unit (in the folder whole or not at all), and the index at the
+version the claim read. A letter's folder already there (an earlier commit whose finish was lost) gets only the files
+it lacks; nothing in it is overwritten, and a path that holds something else (a folder or link where a file goes)
+writes nothing and backs off. A company's letters are written one at a time, and the index lists what the folder holds:
+every written letter and every kept one whose folder is already there, so a letter committed before its finish lands
+is never left out. A unit not saved backs off (a minute, doubling to an hour) and the next claim
+reads the folder again. A written letter's staged chunks are deleted. `letter.md` says the letter is outside content. The main
+document's text comes from its text or HTML version, else from its PDF ("PDF text", below); a PDF that gives none (a
+scan) leaves `letter.md` saying the text is in the PDF.
+
+## PDF text
+
+Most authorities send a letter as a PDF alone. When the main document has no text or HTML version, the vault reads its
+PDF's text before it lays the letter out, and `letter.md` gives it under "From <file>:". A PDF is outside content, and
+the code that parses it is where an attack would land, so it never runs in the vault's process or as the vault's user,
+who can read the vault's keys:
+
+- `qorpera-pdf-text.socket` listens at `/run/qorpera-pdf-text/socket`, root's and the `qorpera-shared-vault` group's,
+  mode 0660: only the vault connects. Each connection starts its own `qorpera-pdf-text@.service`, with the connection
+  as its input and output.
+- The vault sends a one-time code (32 hex digits) on a line of its own, then the PDF, and closes its side. In the
+  sandbox a shell reads the code, runs `pdftotext -q -enc UTF-8 -eol unix -l 201 - -` on the rest, and writes the code
+  back after the text only when pdftotext exited cleanly. Text without its code (pdftotext crashed, or a limit ended it
+  partway) is never kept, so a letter never gets half its text unmarked. pdftotext reads 201 pages, one more than the
+  vault keeps: a longer PDF's text is cut after page 200 and says so.
+- An instance has a throwaway user (`DynamicUser`), no network (`PrivateNetwork`, no address family), a read-only
+  system, an empty private `/tmp`, files limited to 0 bytes, no capabilities, the system-service system calls only,
+  256 MiB, 4 tasks, one CPU and 30 seconds. `systemd-analyze security` rates it 0.2 (SAFE).
+- The vault (`digital-post-pdf-text.ts`) reads at most 256 KiB of text for 40 seconds; text cut there says so, and
+  needs no code. It drops control characters and runs of blank lines.
+- It is best effort: a PDF with no text, a failure, a timeout or no service gives no text, and the letter is kept and
+  receipted as before. The vault logs a fixed phrase, never content, and a missing service once.
+
+**Installing (4a, on each vault host; the vault needs no restart):**
+
+1. `apt-get install --no-install-recommends poppler-utils` (Ubuntu 26.04: pdftotext 26.01).
+2. Both units from `deploy/cloud-secret-broker/` into `/etc/systemd/system/`, `install -m 0644 -o root -g root`.
+3. `systemctl daemon-reload` and `systemctl enable --now qorpera-pdf-text.socket`.
+4. Check: copy `deploy/cloud-secret-broker/test/prove-pdf-text.mjs` to the host and run it as root with
+   `/usr/bin/node`; it must print `ALL PASSED`. It checks the socket's owner and mode; a PDF's text with Danish letters
+   and the code after it; 201 pages read and no more; no text and no code from a file that is not a PDF or after a
+   first line that is not a code; no code from an instance killed partway; the 30-second limit on a PDF never finished;
+   that a user outside the vault's group cannot connect; and that a running instance has its own user, network and
+   mounts. On a test machine, `--transient` adds poppler-utils, the group and the units for the run alone and takes
+   away exactly what it added; it refuses a host that has any of the units or the socket's folder already (node 1's
+   test machine, 22 Oct 2026: all 12 checks passed, rated 0.2).
+
+Until then the vault keeps PDF letters without their text. Letters already written are not read again.
+
+## Agents
+
+An agent wakes on new letters with an ordinary file-change routine: `when: file-change`, `watch: digital-post`,
+`match: subtree`. Nothing new is needed for that. The member picks who reads Digital Post in the Mailbox (as with an
+email address, the request goes to the Co-Founder, who sets the routine up). The agent reads `letter.md` and the
+documents with the folder tools. Like event and file-change routines, such a routine is not paid by a ChatGPT plan.
+
+## The Mailbox
+
+The Mailbox (`packages/web/src/app/views/mailbox.ts`) lists the letters of `digital-post/letters.json` in its Inbox
+among the email threads by when they came, as far back as the threads are read: the authority as the sender, the
+title and the start of the text, a Digital Post mark, and "Legal effect" where the letter has it. Search finds letters
+too. A letter opens from its `letter.md`: its flags, its text, its documents (which open in Storage) and a line to send
+a note about it to an agent the member picks, the Co-Founder at first. The note names the letter by its message id and
+its year's folder, never by its title or sender, since a member's message quotes outside words only from email.
+While Digital Post is connected or holds letters, the Addresses tab has a "Digital Post" row: how it stands, how many
+letters, and "Choose who reads it", which asks the Co-Founder to set the routine up. The Mailbox shows while the
+company has an email address, or Digital Post connected or holding letters, so it works whether company email is
+switched on or not. The index is read with the member's own folder access, again on the Mailbox's 20-second read only
+when its version changed; an open letter is read again then too.
+
+Settings → Company connections has a Digital Post card (`views/settings-digital-post.ts`): how the connection stands
+(when it last checked, the system, how many letters, how many Digital Post moved to Virk) and, for an owner or admin,
+Connect with the steps in Administrativ Adgang (Qorpera's CVR and the vault's addresses from
+`qorpera_digital_post_settings`) and the key's field, then Replace key and Disconnect. Disconnect revokes the key and
+says to remove the system in Administrativ Adgang too. A pasted key is checked to be base64 of a system id and its key
+before it goes to the vault. Until operators set the settings row the card says Digital Post is not available yet. On
+a cloud without `qorpera_member_digital_post`, the card and the Mailbox's Digital Post stay hidden.
+
+## Security
+
+- The certificate's key is the vault's own credential; a company's key is sealed like any company credential and
+  opened only for a pass, in the vault process. Neither reaches a log, a row in clear, a result or the folder.
+- Unwrapping a company credential without a run is the bank sync's exception, not yet worded in contract 11.5; this
+  sync takes the same one and the same bounds: the vault unwraps only to call Digital Post's fixed origin, and only
+  the reduced letter leaves the adapter.
+- The XML reader refuses document types and unknown entities, bounds depth and size, and logs no content.
+- A letter's PDF is parsed only by pdftotext in its own sandbox ("PDF text"), never in the vault.
+- Every member and agent of the company reads its Digital Post, as with company mail (company-first). Letters can
+  name people (an employee's CPR number in a letter about them).
+
+## Build steps
+
+| Part | What |
+| --- | --- |
+| 1 | Runtime, inert: the MeMo reader, the folder layout and the Digital Post client (`digital-post-memo.ts`, `digital-post-letter-files.ts`, `cloud-connector-digital-post.ts`) |
+| 2 | SQL and vault: the sync (claim, keep, stage, receipt, finish), the vault loop and configuration, the capture check for `digital_post` |
+| 3 | Object gateway: the folder writer and `digital-post/letters.json` |
+| 4 | Web: the Settings card (steps, the key, the state) and the Mailbox (letters in the Inbox, the letter view, the Addresses row) |
+| 5 | PDF text: the main document's text read from its PDF by pdftotext in a socket-activated sandbox, into `letter.md` (`digital-post-pdf-text.ts`, `qorpera-pdf-text.socket`, `qorpera-pdf-text@.service`) |
+
+## To check in Digital Post's test environment
+
+- Whether a business's only recipient system may use REST PULL: the guide lists it for businesses, while Technical
+  Integration 12.4.3 says default recipient systems use REST PUBLISH/SUBSCRIBE. If pull is refused, a small endpoint
+  that only wakes the sync is added; the letter is still fetched by the vault.
+- The vault's public IP addresses as Digital Post sees them, for the setup steps.
+- The receipt body Digital Post expects from a recipient system (`messageUUID`, `receiptStatus`, `timeStamp`).

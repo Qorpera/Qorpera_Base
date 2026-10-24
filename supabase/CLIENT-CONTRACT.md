@@ -778,6 +778,26 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   and `cc`, its cc recipients as the agent gave them.
   Both are outside words to show as text only; a client must also work without them.
 
+
+### Digital Post (20260930529000_digital_post_sync)
+
+- Design `deploy/first-node/RUNTIME-DIGITAL-POST.md`. A company's public post (Danish Digital Post) reaches the company
+  folder through the company vault: an owner or admin saves the API key of the company's Digital Post recipient system
+  with the vault's capture (`qorpera_begin_cloud_secret_capture`, `owner_kind` `company`, connector `digital_post`,
+  secret name `primary`, one field `api_key`). The vault seals only a key that reads as one (the Basic credential of
+  the system's id and its key) and labels the connection with the system id; anything else fails the capture. A new
+  key replaces the old (`p_existing_secret_id`); Disconnect is the secret's revoke, as for every connection.
+- `qorpera_member_digital_post(environment)` → `{schema: "qorpera.member-digital-post/v1", connected, status,
+  secretId, supplier, systemId, fetchedAt, lastError, letters, waitingForFolder, held}` for any member of the company
+  (viewers too; 42501 for anyone else). `secretId` is the connection's secret while connected (a new key passes it as
+  `p_existing_secret_id`; Disconnect revokes it). `supplier` is `{environment, cvr, addresses}`, what the setup steps
+  show: `test` or `production`, Qorpera's CVR and the vault's public addresses, or null until operators set
+  `qorpera_digital_post_settings`, and then Digital Post can't be connected yet. `status` is `waiting` (connected, not fetched yet), `current`, `failed` (tried again; `lastError`
+  says why in a fixed phrase), `refused` (Digital Post refused the key: connect again) or `disconnected`. `letters`
+  counts the letters kept, `waitingForFolder` those not yet in the folder, `held` the letters of the last eight days
+  the vault could not take (Digital Post moves them to the Virk mailbox).
+- The letters, their staged files and the sync are closed to every API role; the vault reaches them through its own
+  functions.
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
 Built switched off with plan logins. Show none of it while plan logins are switched off for the company
@@ -899,17 +919,19 @@ by their keys, never with a lowercase literal.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Pages (20260930509000_interface_pages)
+### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
-two pages in its Interfaces tab, Mailbox and Members, each off until an owner or admin switches it on. A client draws
+three pages in its Interfaces tab, Mailbox, Members and Bank, each off until an owner or admin switches it on. A client draws
 them from the definitions it ships, never from a definition in the folder's `QorperaOS/interfaces/`: Pulse, a page an agent wrote
 and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
 data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a
 caller who is not a member of a folder-v2 company with that environment.
 
 - `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
-  `pages` being `[{page, on}]` for `mailbox` then `members`, and `mayChange` whether the caller is an owner or admin.
+  `pages` being `[{page, on}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an owner or
+  admin. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
+  20260930520000.
   Read it when the company opens, on focus, and after switching.
 - `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
   admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers

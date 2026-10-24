@@ -319,7 +319,7 @@
 .review-email { overflow-wrap: anywhere; }
 .review-email .review-email-body { padding: 13px 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .review-email .review-why { margin: 10px 2px 0; }
-.review-email .review-waiting, .review-email .review-failed { margin-inline: 2px; }
+.review-email .review-waiting, .review-email .review-failed, .review-email .review-stopped { margin-inline: 2px; }
 .review-email .email-draft-actions .review-always-open { margin-left: auto; background: transparent; color: var(--text-muted); font-size: 13px; }
 .action-review-card.is-folded { display: flex; align-items: flex-start; gap: 8px; width: auto; padding: 4px 2px; border-color: transparent; background: none; }
 .review-mark { display: grid; flex: none; place-items: center; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; }
@@ -334,6 +334,7 @@
 .review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
 .review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
 .review-waiting { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); }
+.review-stopped { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); }
 /* A change an agent saved that waits for review (P40c, proposal-card.ts) wears the approval card: its changes, where
  * it was saved, and Discard. */
 .proposal-card { overflow-wrap: anywhere; }

@@ -10,8 +10,20 @@ const CUT = "#ffffff";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
+/** An emblem a file may name, or the Bank page's, which only the web draws (app/bank-page.ts). */
+export type Emblem = InterfaceEmblem | "bank";
+
 /** Each emblem on a 48×48 grid: the solid parts take the colour, the cuts are white. */
-const EMBLEMS: Readonly<Record<InterfaceEmblem, readonly Part[]>> = {
+const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
+	bank: [
+		["path", { d: "M24 3.5 44.5 14.6a1.6 1.6 0 0 1-.8 3H4.3a1.6 1.6 0 0 1-.8-3z", fill: "solid" }],
+		["circle", { cx: "24", cy: "11.6", r: "2.7", fill: "cut" }],
+		["rect", { x: "7", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
+		["rect", { x: "16", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
+		["rect", { x: "26.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
+		["rect", { x: "35.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
+		["rect", { x: "3.5", y: "38.5", width: "41", height: "5.5", rx: "2.2", fill: "solid" }],
+	],
 	pulse: [
 		["path", { d: "M24 4c11.6 0 20 8.2 20 19.4C44 35 35.4 44 24 44S4 35 4 23.4C4 12.2 12.4 4 24 4z", fill: "solid" }],
 		["path", { d: "M9 25h7.5l3-7.5 5 14 4-10 2.5 3.5H39", stroke: "cut", class: "emblem-beat" }],
@@ -59,7 +71,7 @@ const EMBLEMS: Readonly<Record<InterfaceEmblem, readonly Part[]>> = {
 };
 
 /** The emblem, `size` pixels square. `colour` is an agent colour name; without one the emblem is gray. */
-export function interfaceEmblem(emblem: InterfaceEmblem | null, colour: string | null, size: number): SVGSVGElement {
+export function interfaceEmblem(emblem: Emblem | null, colour: string | null, size: number): SVGSVGElement {
 	const hue = colourNameHex(colour ?? "") ?? colourNameHex("gray") ?? "#7c7c7a";
 	const svg = document.createElementNS(NS, "svg");
 	svg.setAttribute("viewBox", "0 0 48 48");

@@ -400,6 +400,73 @@ describe("connector client", () => {
 		expect(JSON.stringify(body)).not.toContain(kept.browserProof);
 	});
 
+	it("starts the company's bank with the bank the member picked, and only the bank with one", async () => {
+		const cloud = cloudWith(() => ticket);
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({
+				schema: "qorpera.cloud-connector-oauth-started/v1",
+				connectorId: "bank",
+				authorizationUrl: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
+				expiresAt: timestamp,
+			}),
+		);
+		const connectors = createWebConnectors(cloud, profile, fetch);
+		const bank = { name: "Danske Bank", country: "DK", psuType: "business" as const };
+		const url = await connectors.beginSignIn("bank", id(30), undefined, bank);
+		expect(url).toBe("https://tilisy.enablebanking.com/ais/start?sessionid=abc");
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_begin_cloud_secret_capture",
+			expect.objectContaining({
+				p_owner_kind: "company",
+				p_connector_id: "bank",
+				p_purpose: "Company bank",
+				p_existing_secret_id: id(30),
+			}),
+		);
+		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+		expect(body).toMatchObject({ schema: "qorpera.cloud-connector-oauth-start/v2", bank });
+		const kept = JSON.parse(sessionStorage.getItem("qorpera.connector-sign-in.v1") ?? "{}") as Record<string, string>;
+		expect(kept.connectorId).toBe("bank");
+		// A bank start names its bank; no other connector's does.
+		await expect(connectors.beginSignIn("bank", undefined)).rejects.toThrow("Invalid bank sign-in.");
+		await expect(connectors.beginSignIn("gmail", undefined, undefined, bank)).rejects.toThrow(
+			"Invalid bank sign-in.",
+		);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		// The bank's sign-in comes back like any other, for the Bank page to finish.
+		history.replaceState(
+			null,
+			"",
+			`#/c/${id(10)}/i/bank?connector=bank&connection=confirm&confirmation=${CONFIRMATION}`,
+		);
+		expect(takeConnectorReturn()).toMatchObject({ connector: "bank", connection: "confirm" });
+		expect(location.hash).toBe(`#/c/${id(10)}/i/bank`);
+	});
+
+	it("returns to the page the sign-in was started on, even when the member moved on meanwhile", async () => {
+		history.replaceState(null, "", `#/c/${id(10)}/i/bank`);
+		const cloud = cloudWith(() => {
+			// The member moves to another page while the ticket is issued.
+			history.replaceState(null, "", `#/c/${id(10)}/i/members`);
+			return ticket;
+		});
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({
+				schema: "qorpera.cloud-connector-oauth-started/v1",
+				connectorId: "bank",
+				authorizationUrl: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
+				expiresAt: timestamp,
+			}),
+		);
+		await createWebConnectors(cloud, profile, fetch).beginSignIn("bank", undefined, undefined, {
+			name: "Danske Bank",
+			country: "DK",
+			psuType: "business",
+		});
+		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+		expect(body.returnTo).toBe(`${location.origin}/#/c/${id(10)}/i/bank`);
+	});
+
 	it("finishes the sign-in with this tab's proof once and forgets it", async () => {
 		startedHere("gmail");
 		history.replaceState(null, "", `#/?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`);

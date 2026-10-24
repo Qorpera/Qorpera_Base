@@ -129,6 +129,42 @@ of the broker config's `memberOrigins` (the broker refuses to start with the
 credential but no member origin). Every company's broker gets the same
 credential: one Google client and one GitHub OAuth App serve all companies.
 
+The company bank (Bank interface part 2, migration `20260930523000`): the
+same credential may carry `enableBanking: {applicationId, privateKeyPem}`,
+Qorpera's Enable Banking application (production app "Qorpera",
+`1c5dff8a-a15b-4987-b1d7-8457d0653e03`; its RSA key is the `.pem` the control
+panel generated, kept off chat and out of git). It may be the only entry. With
+it the broker serves the connector `bank`: a company ticket's start names the
+bank (`bank: {name, country, psuType}`), Enable Banking sends the member to
+the bank's own sign-in (MitID), and the bank comes back to the same
+`/v1/oauth/callback`, routed by the same state prefix, so nginx needs nothing
+new. The application's whitelisted redirect URL is exactly
+`https://company41-node-01.tailbb15c7.ts.net:10000/v1/oauth/callback`. The
+broker then keeps each connected company's bank summary current
+(`cloud-bank-sync.ts`): a single-company broker checks once a minute, the
+shared vault asks once a minute which companies are due. Until Enable
+Banking activates the application beyond restricted mode, only the accounts
+its owner linked in the control panel can be read.
+The summary reaches the company folder through the object gateway (part 3,
+migration `20260930528000`): with `QORPERA_BANK_SUMMARY_WRITER=1` the gateway
+writes each new summary to `bank/summary.json` as the platform, which is what
+the Bank page draws.
+
+Digital Post (`RUNTIME-DIGITAL-POST.md`, migration `20260930529000`): the same
+credential may carry `digitalPost: {environment, certificatePem, privateKeyPem}`,
+Qorpera's OCES3 organisation or system certificate from MitID Erhverv (`test`
+for Digital Post's test environment, `production` for the real one; the key
+stays off chat and out of git). It may be the only entry. The broker checks
+that the key matches the certificate when it starts. With it the broker
+fetches the Digital Post of every company that saved a `digital_post` key
+(`cloud-digital-post-sync.ts`): a single-company broker checks once a minute,
+the shared vault asks once a minute which companies are due. Every call goes
+from the node's own address to `api.test.digitalpost.dk` or
+`api.digitalpost.dk` over mutual TLS; a company's recipient system lists that
+address, so the broker must run where that address is stable. Like the bank
+sync, it opens a company's key without a run, only to call Digital Post's
+fixed origin.
+
 ### Routing behind the one public origin (production)
 
 All companies' brokers sit behind ONE public origin,

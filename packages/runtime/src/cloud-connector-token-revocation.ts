@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { cloudConnector } from "./cloud-connector-catalog.ts";
+import { type EnableBankingClient, EnableBankingSessionEnded } from "./cloud-connector-enable-banking.ts";
 import { GITHUB_API_VERSION } from "./cloud-connector-github.ts";
 import type { GoogleOAuthClient } from "./cloud-connector-google.ts";
 import { connectorRequest } from "./cloud-connector-http.ts";
@@ -20,6 +21,8 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  *   404 there means the token is already invalid. It revokes that one token, never the user's whole
  *   grant (`/grant` would disconnect the user's GitHub in every company). A typed personal token is not
  *   ours to revoke.
+ * - The company bank (Enable Banking, 20260930523000): `DELETE /sessions/{id}` closes the sealed session
+ *   at Enable Banking, signed as Qorpera's application; a session that already ended counts as closed.
  *
  * Nothing here logs or records a token or a provider's answer text: errors are fixed phrases.
  */
@@ -38,7 +41,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
-const CONNECTORS = new Set(["gmail", "google_drive", "github"]);
+const CONNECTORS = new Set(["gmail", "google_drive", "github", "bank"]);
 /** GitHub's OAuth App user tokens; anything else stored for GitHub is a typed personal token. */
 const GITHUB_APP_TOKEN = /^gho_[A-Za-z0-9_]{16,251}$/;
 const TOKEN = /^[\x21-\x7e]{1,4096}$/;
@@ -62,7 +65,7 @@ interface Claim {
 	readonly secretId: string;
 	readonly version: number;
 	readonly keyId: string;
-	readonly connectorId: "gmail" | "google_drive" | "github";
+	readonly connectorId: "gmail" | "google_drive" | "github" | "bank";
 	readonly encryptedEnvelopeBase64: string;
 	readonly envelopeSha256: string;
 }
@@ -108,14 +111,23 @@ function parseClaims(value: unknown): Claim[] {
 	});
 }
 
-/** The provider calls. Google's revoke needs no client; GitHub's needs the OAuth App's credentials. */
+/** The provider calls. Google's revoke needs no client; GitHub's needs the OAuth App's credentials, the bank's
+ * Enable Banking's application. */
 export class CloudConnectorTokenRevoker {
 	readonly #fetch: typeof fetch;
 	readonly #github: GoogleOAuthClient | undefined;
+	readonly #bank: Pick<EnableBankingClient, "closeSession"> | undefined;
 
-	constructor(options: { github?: GoogleOAuthClient; fetch?: typeof fetch } = {}) {
+	constructor(
+		options: {
+			github?: GoogleOAuthClient;
+			fetch?: typeof fetch;
+			bank?: Pick<EnableBankingClient, "closeSession">;
+		} = {},
+	) {
 		this.#fetch = options.fetch ?? fetch;
 		this.#github = options.github;
+		this.#bank = options.bank;
 	}
 
 	async revoke(
@@ -123,11 +135,30 @@ export class CloudConnectorTokenRevoker {
 		fields: Readonly<Record<string, string>>,
 		signal: AbortSignal,
 	): Promise<ConnectorTokenOutcome> {
+		if (connectorId === "bank") return this.#closeBankSession(fields, signal);
 		const name = cloudConnector(connectorId).credentialName;
 		const token = Object.hasOwn(fields, name) ? fields[name] : undefined;
 		if (typeof token !== "string" || !TOKEN.test(token))
 			throw new ConnectorTokenRevocationError("the stored token is missing");
 		return connectorId === "github" ? this.#revokeGitHub(token, signal) : this.#revokeGoogle(token, signal);
+	}
+
+	async #closeBankSession(
+		fields: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<ConnectorTokenOutcome> {
+		const session = Object.hasOwn(fields, "session_id") ? fields.session_id : undefined;
+		if (typeof session !== "string" || !TOKEN.test(session))
+			throw new ConnectorTokenRevocationError("the stored session is missing");
+		const bank = this.#bank;
+		if (!bank) throw new ConnectorTokenRevocationError("Enable Banking is not configured");
+		try {
+			await bank.closeSession(session, signal);
+			return "revoked";
+		} catch (error) {
+			if (error instanceof EnableBankingSessionEnded) return "already_invalid";
+			throw new ConnectorTokenRevocationError("Enable Banking did not close the session");
+		}
 	}
 
 	async #revokeGoogle(token: string, signal: AbortSignal): Promise<ConnectorTokenOutcome> {

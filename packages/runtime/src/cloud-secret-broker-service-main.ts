@@ -1,11 +1,13 @@
-import { X509Certificate } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { CloudBankSyncs, CloudBankSyncUpkeep } from "./cloud-bank-sync.ts";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
+import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import type { CloudConnectorOAuthFlows } from "./cloud-connector-oauth.ts";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
@@ -13,6 +15,7 @@ import {
 	CloudConnectorTokenRevocationUpkeep,
 	CloudConnectorTokenRevoker,
 } from "./cloud-connector-token-revocation.ts";
+import { CloudDigitalPostSyncs, CloudDigitalPostSyncUpkeep } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, CloudEventVerificationUpkeep } from "./cloud-event-verification.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
@@ -32,6 +35,8 @@ import {
 } from "./cloud-secret-broker-http.ts";
 import { SharedCloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { databaseTls } from "./database-ca.ts";
+import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -39,8 +44,6 @@ const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
-const SUPABASE_CA_FINGERPRINT =
-	"80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA";
 
 function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
 	if (
@@ -91,9 +94,19 @@ function brokerDatabase(value: string): {
 
 /** An optional credential: absent means the feature stays off. Any other
  * failure still fails closed. */
-async function readOptionalCredential(directory: string, name: string): Promise<string | undefined> {
+async function readOptionalCredential(directory: string, name: string): Promise<string | undefined>;
+async function readOptionalCredential<T>(
+	directory: string,
+	name: string,
+	read: (directory: string, name: string) => Promise<T>,
+): Promise<T | undefined>;
+async function readOptionalCredential(
+	directory: string,
+	name: string,
+	read: (directory: string, name: string) => Promise<unknown> = readCredential,
+): Promise<unknown> {
 	try {
-		return await readCredential(directory, name);
+		return await read(directory, name);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
 		throw error;
@@ -101,6 +114,15 @@ async function readOptionalCredential(directory: string, name: string): Promise<
 }
 
 async function readCredential(directory: string, name: string): Promise<string> {
+	const bytes = await readCredentialBytes(directory, name);
+	try {
+		return new TextDecoder("utf8", { fatal: true }).decode(bytes).trim();
+	} finally {
+		bytes.fill(0);
+	}
+}
+
+async function readCredentialBytes(directory: string, name: string): Promise<Buffer> {
 	if (!isAbsolute(directory) || !/^[a-z][a-z0-9-]+$/.test(name)) {
 		throw new Error("Cloud secret broker credential path is invalid");
 	}
@@ -128,7 +150,7 @@ async function readCredential(directory: string, name: string): Promise<string> 
 		if (read.bytesRead !== metadata.size || read.bytesRead > MAX_CREDENTIAL_BYTES) {
 			throw new Error("Cloud secret broker credential changed during read");
 		}
-		return new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, read.bytesRead)).trim();
+		return Buffer.from(bytes.subarray(0, read.bytesRead));
 	} finally {
 		bytes.fill(0);
 		await handle.close();
@@ -226,16 +248,16 @@ export async function runCloudSecretBrokerServiceMain(
 		throw new Error("Cloud secret broker configuration is invalid");
 	const memberOrigins = withOrigins ? (config.memberOrigins as unknown[]).map(parseMemberOrigin) : [];
 	const database = brokerDatabase(await readCredential(directory, "qorpera-cloud-secret-database-url"));
-	const databaseCa = await readCredential(directory, "qorpera-cloud-secret-database-ca");
-	let certificate: X509Certificate;
-	try {
-		certificate = new X509Certificate(databaseCa);
-	} catch {
-		throw new Error("Cloud secret broker database CA is invalid");
-	}
-	if (certificate.fingerprint256 !== SUPABASE_CA_FINGERPRINT || certificate.ca !== true) {
-		throw new Error("Cloud secret broker database CA is invalid");
-	}
+	// Supabase's CA by default; our own CA and its sha256 pin only as the package's drop-in adds them
+	// (scripts/package-cloud-secret-broker.mjs --database-ca), and then that CA alone (database-ca.ts).
+	const ssl = databaseTls(
+		{
+			supabaseCa: await readCredential(directory, "qorpera-cloud-secret-database-ca"),
+			ownCa: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca", readCredentialBytes),
+			ownCaSha256: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca-sha256"),
+		},
+		"Cloud secret broker",
+	);
 	// One company's broker proves its authority with its capability; the shared vault derives every
 	// company's capability, and its own, from its principal secret.
 	const brokerCapability = await readCredential(
@@ -298,7 +320,7 @@ export async function runCloudSecretBrokerServiceMain(
 		user: database.user,
 		password: database.password,
 		database: database.database,
-		ssl: { ca: databaseCa, rejectUnauthorized: true },
+		ssl,
 		application_name: shared ? "qorpera-shared-vault" : "qorpera-cloud-secret-broker",
 		// The shared vault runs every company's calls and background passes on one pool.
 		max: shared ? 8 : 2,
@@ -336,6 +358,9 @@ export async function runCloudSecretBrokerServiceMain(
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
 				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
+				...(connectors?.bank ? { bank: connectors.bank } : {}),
+				...(connectors?.digitalPost ? { digitalPost: connectors.digitalPost } : {}),
+				...(connectors?.digitalPostPdfText ? { digitalPostPdfText: connectors.digitalPostPdfText } : {}),
 				runtimeToken,
 				proveBinding,
 				port: config.port as number,
@@ -396,6 +421,21 @@ export async function runCloudSecretBrokerServiceMain(
 		const verifications = new CloudEventVerificationUpkeep({
 			verifications: new CloudEventVerifications({ authority, keyring }),
 		});
+		// The company's bank summary, kept current when the vault has the Enable Banking application.
+		const bankSyncs = connectors?.bank
+			? new CloudBankSyncUpkeep({ syncs: new CloudBankSyncs({ authority, keyring, bank: connectors.bank }) })
+			: undefined;
+		// The company's Digital Post, fetched into the database when the vault has Qorpera's certificate.
+		const digitalPostSyncs = connectors?.digitalPost
+			? new CloudDigitalPostSyncUpkeep({
+					syncs: new CloudDigitalPostSyncs({
+						authority,
+						keyring,
+						post: connectors.digitalPost,
+						...(connectors.digitalPostPdfText ? { pdfText: connectors.digitalPostPdfText } : {}),
+					}),
+				})
+			: undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
@@ -418,6 +458,8 @@ export async function runCloudSecretBrokerServiceMain(
 			upkeep.start();
 			revocations.start();
 			verifications.start();
+			bankSyncs?.start();
+			digitalPostSyncs?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -431,6 +473,8 @@ export async function runCloudSecretBrokerServiceMain(
 				upkeep.close(),
 				revocations.close(),
 				verifications.close(),
+				bankSyncs?.close(),
+				digitalPostSyncs?.close(),
 				signIns?.close(),
 				service.close(),
 			]);
@@ -450,6 +494,9 @@ async function runSharedVault(options: {
 	helper: ModelLoginHelperClient | undefined;
 	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
+	bank?: EnableBankingClient;
+	digitalPost?: DigitalPostClient;
+	digitalPostPdfText?: DigitalPostPdfTextReader;
 	runtimeToken: string;
 	proveBinding: NativeBindingProof;
 	port: number;
@@ -464,6 +511,9 @@ async function runSharedVault(options: {
 		...(options.helper ? { helper: options.helper } : {}),
 		...(options.chatGptPlan ? { chatGptPlan: options.chatGptPlan } : {}),
 		revoker: options.revoker,
+		...(options.bank ? { bank: options.bank } : {}),
+		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
+		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",

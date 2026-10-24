@@ -32,20 +32,10 @@
 :root[data-theme="dark"] .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
 
 /* ---- hub ------------------------------------------------------------------- */
-:root[data-theme="dark"] .hub-lead { color: #a4a8b0; }
-:root[data-theme="dark"] :is(.hub-note, .hub-or, .company-meta) { color: #8d9199; }
-:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input) { background: #242423; }
-:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input)::placeholder { color: #7d818a; }
-:root[data-theme="dark"] .company-card {
-	border-color: rgba(255, 255, 255, 0.08); background: #232322;
-	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.2);
-}
-:root[data-theme="dark"] .company-card:hover {
-	border-color: rgba(255, 255, 255, 0.15); box-shadow: 0 24px 56px rgba(0, 0, 0, 0.4), 0 3px 8px rgba(0, 0, 0, 0.25);
-}
-:root[data-theme="dark"] .company-card-new { background: transparent; box-shadow: none; }
-:root[data-theme="dark"] .company-card-new:hover { background: rgba(255, 255, 255, 0.03); box-shadow: none; }
-:root[data-theme="dark"] .company-card-compose:hover { border-color: rgba(255, 255, 255, 0.08); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28); }
+:root[data-theme="dark"] .company-card:is(:hover, :focus-visible) .company-stage { box-shadow: 0 22px 40px -24px rgba(0, 0, 0, 0.75); }
+:root[data-theme="dark"] .company-card:focus-visible .company-stage { box-shadow: 0 0 0 3px var(--ring); }
+:root[data-theme="dark"] .hero-box { box-shadow: 0 0 0 1px var(--border-strong), 0 24px 48px -28px rgba(0, 0, 0, 0.8); }
+:root[data-theme="dark"] .hero-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 24px 48px -28px rgba(0, 0, 0, 0.8); }
 
 /* ---- first run and the figure picker ---------------------------------------- */
 :root[data-theme="dark"] .meet h1 { color: var(--text); }
@@ -235,6 +225,8 @@
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }
+:root[data-theme="dark"] .digital-post-logo { color: #c9c9c4; }
+:root[data-theme="dark"] .digital-post-note { color: #a3a39e; }
 :root[data-theme="dark"] .hook-icon { background: #3d3d3c; color: #c9c8c3; }
 :root[data-theme="dark"] :is(.hook-card .hook-state, .hook-address small, .hook-form small, .hook-domain) { color: #a3a39e; }
 :root[data-theme="dark"] .hook-address code { background: #2a2a29; }
@@ -244,3 +236,9 @@
 :root[data-theme="dark"] .files-search-input { border-color: rgba(255, 255, 255, 0.14); background: #1f1f1e; }
 :root[data-theme="dark"] .agent-card-square.is-done { color: var(--ok); }
 :root[data-theme="dark"] .agent-card .agent-inline-description > .icon { background: color-mix(in srgb, #ffffff 6%, var(--overlay)); }
+
+/* ---- The Bank page (bank.css) --------------------------------------------------------- */
+:root[data-theme="dark"] :is(.bank-detail-in .bank-amount-side, .bank-net-up) { color: #34d399; }
+:root[data-theme="dark"] :is(.bank-detail-out .bank-amount-side, .bank-net-down) { color: #f4776b; }
+:root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
+:root[data-theme="dark"] .bank-year-out { background: #7a3530; }

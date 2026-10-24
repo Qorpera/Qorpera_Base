@@ -1361,7 +1361,12 @@ function interfaceRailRow(entry: CompanyInterface, href: string, count: number):
 			title: file.about ?? file.name,
 			...(waiting ? { "aria-label": label } : {}),
 		},
-		h("span", { class: "rail-row-stand" }, interfaceEmblem(file.emblem, file.colour, 40), countBadge(count)),
+		h(
+			"span",
+			{ class: "rail-row-stand" },
+			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 40),
+			countBadge(count),
+		),
 		h(
 			"span",
 			{ class: "rail-row-copy" },

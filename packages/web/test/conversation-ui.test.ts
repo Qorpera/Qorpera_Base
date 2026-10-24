@@ -1065,10 +1065,11 @@ describe("conversation UI boundaries", () => {
 		expect(
 			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
 		).toHaveLength(0);
-		// Only the company's mail, offers, consents and pages are read while it is open (Interfaces steps I5c, I9c, C6a
-		// and C6d).
+		// Only the company's mail (with its Digital Post), offers, consents and pages are read while it is open
+		// (Interfaces steps I5c, I9c, C6a and C6d; RUNTIME-DIGITAL-POST.md).
 		const companyRead = (name: string) =>
 			name.startsWith("qorpera_member_mail_") ||
+			name === "qorpera_member_digital_post" ||
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages";

@@ -4,22 +4,27 @@ import { h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
 function pageCopy(page: InterfacePageName): { name: string; about: string } {
-	return page === "mailbox"
-		? {
-				name: t("Mailbox"),
-				about: t(
-					"The company's mail, for every member. It shows once the company has a mail address (Company connections → Mailboxes).",
-				),
-			}
-		: {
-				name: t("Members"),
-				about: t("Who owns and supervises each agent. It shows once the company has a second member."),
-			};
+	if (page === "mailbox")
+		return {
+			name: t("Mailbox"),
+			about: t(
+				"The company's mail, for every member. It shows once the company has a mail address (Company connections → Mailboxes).",
+			),
+		};
+	if (page === "bank")
+		return {
+			name: t("Bank"),
+			about: t("The company's bank account: the saldo, and what comes in and goes out each month."),
+		};
+	return {
+		name: t("Members"),
+		about: t("Who owns and supervises each agent. It shows once the company has a second member."),
+	};
 }
 
 /**
  * Settings → Company → Pages (Interfaces C6a; supabase/CLIENT-CONTRACT.md "Pages"): the pages the company's
- * Interfaces tab may show, Mailbox and Members. Each is off until an owner or admin switches it on; everyone else
+ * Interfaces tab may show, Mailbox, Members and Bank. Each is off until an owner or admin switches it on; everyone else
  * sees the switches locked. Switching a page off only hides it: what it showed stays as it was.
  */
 export class PagesView {
