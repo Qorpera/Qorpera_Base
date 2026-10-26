@@ -9,6 +9,7 @@ import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-co
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
+import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
@@ -211,16 +212,27 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 
 /** A loggable code for an executor error: fixed identifiers only (they carry
  * no credential or repository content), else UNCLASSIFIED. The guest's
- * refusal line uses the same rule. */
+ * refusal line uses the same rule. A code host's own error (`CODE: detail`) is
+ * logged by its code. */
 export function errorCode(error: unknown): string {
-	return codingErrorCode(error);
+	const code = codingErrorCode(error);
+	return code === "UNCLASSIFIED" ? (codeHostErrorCode(error) ?? code) : code;
 }
 
-/** A code host's line in the executor's log, for its VM and for its jobs: an error by its code only, never as itself. */
+/** An error in the executor's log: its code, and what it says beyond that (git's message, the paths a code host's rule
+ * names, free text), as one line of at most 500 characters with anything shaped like a credential taken out
+ * (codingErrorDetail), or nothing when it says nothing more. */
+export function loggedError(error: unknown): { code: string; detail?: string } {
+	const detail = codingErrorDetail(error);
+	return { code: errorCode(error), ...(detail ? { detail } : {}) };
+}
+
+/** A code host's line in the executor's log, for its VM and for its jobs: an error by its code and its detail
+ * (loggedError), never as itself. */
 export function logCodeHost(event: CodeHostEvent | CodeHostViewEvent): void {
 	if (event.event === "code-host") console.log(JSON.stringify(event));
 	else console.error(JSON.stringify({ event: event.event, step: event.step, project: event.project,
-		...(event.error === undefined ? {} : { code: errorCode(event.error) }) }));
+		...(event.error === undefined ? {} : loggedError(event.error)) }));
 }
 
 /** Independent Linux service: the identity host runs the model turn, this
@@ -373,7 +385,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			control,
 			host,
 			owner: config.owner,
-			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, code: errorCode(error) })),
+			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, ...loggedError(error) })),
 		});
 		executor = running;
 		// Every claimable turn runs at once; the member machines and the node's
