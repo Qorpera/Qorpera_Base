@@ -3053,13 +3053,13 @@ describe("a coding session on the folder model", () => {
 		expect(f.views.attach).not.toHaveBeenCalled();
 	});
 	describe("a wake whose storage or machine fails", () => {
-		/** A host whose steps on the NAS may take 50 ms each. */
+		/** A host whose steps on the NAS may take 100 ms each. */
 		const impatient = (f: Awaited<ReturnType<typeof folderFixture>>) =>
-			new LxdCodingExecutorHost({ ...f.options, folder: f.folder, storageStepTimeoutMs: 50 });
+			new LxdCodingExecutorHost({ ...f.options, folder: f.folder, storageStepTimeoutMs: 100 });
 		it("tries a folder check the NAS was slow to answer again, and the wake goes on (C8 C4-1, 26 Oct 2026)", async () => {
 			const f = await folderFixture();
 			// The wake's first step, the check of the machines' folder, gets its answer only after its time ran out.
-			mocked.storageAssert.mockImplementationOnce(() => new Promise((done) => globalThis.setTimeout(done, 150)));
+			mocked.storageAssert.mockImplementationOnce(() => new Promise((done) => globalThis.setTimeout(done, 250)));
 			expect(await impatient(f).prepareWorkspace(f.claim, f.turn(), f.signal)).toEqual({
 				vmId: f.machine.machineId,
 				baseSha: f.baseSha,
@@ -3081,9 +3081,9 @@ describe("a coding session on the folder model", () => {
 				summary:
 					"The coding machine's storage did not answer in time, so the turn could not start. The workspace is kept; a follow-up tries again. [code=CODING_HOST_STORAGE_TIMEOUT]",
 			});
-			// Three tries of 50 ms with a pause of 250 ms and then 500 ms between them; each later try waited for the one
+			// Three tries of 100 ms with a pause of 250 ms and then 500 ms between them; each later try waited for the one
 			// before it, which never answered, so the NAS was asked once.
-			expect(took).toBeGreaterThanOrEqual(850);
+			expect(took).toBeGreaterThanOrEqual(1000);
 			expect(took).toBeLessThan(5000);
 			expect(mocked.storageAssert).toHaveBeenCalledTimes(1);
 			// The wake never reached the machine.

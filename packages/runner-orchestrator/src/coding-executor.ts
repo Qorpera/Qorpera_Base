@@ -31,9 +31,9 @@ export class CodingMachineUnavailable extends Error {
 	}
 }
 /** The turn's workspace could not be made, for a reason the host can name: its machine's storage did not answer in
- * time, or its node is not set up for the machine. Nothing of the turn ran: it fails at once, under its lease, with
- * `summary` (what happened, in the member's and the agent's words, and the code), instead of leaving its lease to lapse
- * as if the executor had stopped. The message is the fixed code alone, which is all a log shows. */
+ * time, or its node is not set up for the machine. The turn's model never ran: the turn fails at once, under its lease,
+ * with `summary` (what happened, in the member's and the agent's words, and the code), instead of leaving its lease to
+ * lapse as if the executor had stopped. The message is the fixed code alone, which is all a log shows. */
 export class CodingWorkspaceFailed extends Error {
 	readonly summary: string;
 	constructor(code: string, summary: string, options?: ErrorOptions) {
@@ -529,8 +529,8 @@ export class CloudCodingExecutor {
 				workspace = await this.#host.prepareWorkspace(claimed, turn, active);
 			} catch (error) {
 				if (error instanceof CodingWorkspaceFailed && !active.aborted) {
-					// Nothing ran yet: unplug whatever was attached, then fail the turn with its reason while it holds its
-					// lease. Should the report not go through, the lease lapses and the session fails all the same.
+					// The model never ran: unplug whatever was attached, then fail the turn with its reason while it holds
+					// its lease. Should the report not go through, the lease lapses and the session fails all the same.
 					this.#reported("turn", error);
 					end();
 					try {
