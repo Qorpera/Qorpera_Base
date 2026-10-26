@@ -327,6 +327,7 @@ it.each([
 		"# Standing work",
 		"When a routine wakes you for your own work",
 		"When a member stopped your work, it stays stopped",
+		"A coding session cannot push, open a pull request or send messages itself",
 		"# Writing to people",
 	])
 		expect(instructions.includes(staff)).toBe(continues);
@@ -1481,13 +1482,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
 // work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
 // (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
-// conversations as the members' quick way in). A change to either is a change to every run's bytes.
+// conversations as the members' quick way in), and taken again when a member's "push it" or "open a PR" became a
+// coding session's hand-in (C4-1, 26 October 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "cf6c70322435c9c7765cec3a2f07bdf239620359ab51e63488c1553b697ac5ec",
+			instructions: "1930e680333d613d40ab288ceea7b566da8bd9a3ba9084c7adee7488b6ecd27f",
 			prompt: "a71b0999eb78e8ccf7e21663209c8af3d6ed8e380dbbba875da3ee5ac07c443d",
 		},
 	],
@@ -1503,7 +1505,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "cf6c70322435c9c7765cec3a2f07bdf239620359ab51e63488c1553b697ac5ec",
+			instructions: "1930e680333d613d40ab288ceea7b566da8bd9a3ba9084c7adee7488b6ecd27f",
 			prompt: "d1dc9be4d86a1ec3a5df80ad432d637d1a1913d36f5d54e22ee8fbf908448831",
 		},
 	],
@@ -1561,6 +1563,9 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"hand it to a worker with saveTo set to the folder where the results belong",
 		"use the company's computer or a machine when one is offered",
 		"It is the only work that needs a repository, and its files are under code/.",
+		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
+		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.
+		"A coding session cannot push, open a pull request or send messages itself: when a member asks to push, open a PR or report its link, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked; the system then pushes the branch, opens the draft PR and brings you its link.",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
 		// The 2026-10-22 amendment, items 5 and 6 (Jonas, 22 October): a conversation is the members' quick way in and

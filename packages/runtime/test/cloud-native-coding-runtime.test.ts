@@ -216,6 +216,15 @@ describe("the coding composition of a native turn", () => {
 				expect(options.prompt).toContain("Fix the delay after send");
 				expect(options.prompt).not.toContain(f.binding.credentialCapsuleId);
 				expect(options.runtimeInstructions).toContain("coding_ask");
+				// C4-1 (26 October 2026): asked to push, open a draft PR and report its link, Codex committed and ended its
+				// turn with a written answer, which fails as CODING_TURN_ENDED_WITHOUT_SUBMISSION. A turn ends by handing in
+				// or asking, those words mean a hand-in, and a blocker is handed in or asked about.
+				for (const rule of [
+					"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails",
+					"A request to push, to open a pull request or to report its link means: commit and call coding_finish; the trusted broker then pushes the branch, opens or updates the draft pull request and passes its link on, so you do none of that yourself.",
+					"When something blocks you, still end the turn that way: coding_finish with the commit you have and a summary that names the blocker, or, with nothing worth handing in, coding_ask with what blocks you and what you need from the member.",
+				])
+					expect(options.runtimeInstructions).toContain(rule);
 				await options.beginExecution(
 					{
 						type: "namespace",
