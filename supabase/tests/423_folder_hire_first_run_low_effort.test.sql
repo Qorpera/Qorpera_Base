@@ -1,10 +1,25 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- A hire's first run starts at low effort (launch checklist L04.1; contract section 21 item 4: "starts on the resolved
 -- low-effort thread policy"). The owner hires Dana through Dana's agent.md, with no effort named, as the product writes
--- it; the follow-up queue queues the kickoff and one materializer pass makes it a run. The run is pinned to the active
--- runtime bundle at that bundle's default effort, low, with the hash of the bundle's model policy, and the runner's
--- authority reads the same; an effort chosen in another conversation does not carry over; the pin cannot change later;
--- a second pass makes no second run.
+-- it; the follow-up queue queues the kickoff and one materializer pass makes it a run. The test runs under a bundle
+-- without `unattended` in its model policy: its own, the active bundle less that key. The run is pinned to that bundle at
+-- its default effort, low, with the hash of the bundle's model policy, and the runner's authority reads the same; an
+-- effort chosen in another conversation does not carry over; the pin cannot change later; a second pass makes no second
+-- run. Under a bundle that declares `unattended`, a first run runs at that effort (789).
+
+-- The test's bundle: the active one without `unattended`, as its next version, activated as a release would.
+reset role;
+with bundle as (
+	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
+	select b.bundle_key, (select max(v.version) + 1 from public.qorpera_runtime_bundles v where v.bundle_key = b.bundle_key),
+		m.manifest, encode(extensions.digest(convert_to(m.manifest::text, 'utf8'), 'sha256'), 'hex')
+	from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id
+	cross join lateral (select b.manifest #- '{modelPolicy,unattended}' as manifest) m
+	where a.singleton
+	returning id, sha256)
+update public.qorpera_active_runtime_bundle set runtime_bundle_id = bundle.id, runtime_bundle_sha256 = bundle.sha256
+from bundle where singleton;
+select pg_temp.base_claims('service_role');
 
 -- The owner chose high effort in Alice's thread: a choice of that conversation only.
 insert into public.qorpera_session_models(session_id, reasoning_effort, version, updated_by_user_id)
@@ -14,7 +29,7 @@ where room.id = pg_temp.base_thread('92400000-0000-4000-8000-000000000030');
 select pg_temp.base_commit(pg_temp.base_owner(), 'first-run-effort-hire-dana', jsonb_build_array(
 	pg_temp.base_hire('dana', '92400000-0000-4000-8000-000000000034', 'Dana'))) \g /dev/null
 
--- 1. The first run: the kickoff's first-run wake, pinned at the active bundle's default effort, low.
+-- 1. The first run: the kickoff's first-run wake, pinned at the test's bundle's default effort, low.
 do $$
 declare v_pass jsonb := pg_temp.base_materialize(); v_run public.qorpera_execution_runs; v_wake public.qorpera_wake_occurrences;
 	v_bundle public.qorpera_runtime_bundles; v_policy text; v_identity jsonb;
@@ -33,7 +48,10 @@ begin
 		'the run is in Dana''s new thread, which has no chosen effort');
 	select bundle.* into strict v_bundle from public.qorpera_active_runtime_bundle active
 		join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id where active.singleton;
-	perform pg_temp.base_assert(v_bundle.manifest #>> '{modelPolicy,effort}' = 'low', 'fixture: the active bundle''s default effort is low');
+	perform pg_temp.base_assert(v_bundle.version = (select max(version) from public.qorpera_runtime_bundles
+			where bundle_key = v_bundle.bundle_key) and not (v_bundle.manifest -> 'modelPolicy' ? 'unattended')
+		and v_bundle.manifest #>> '{modelPolicy,effort}' = 'low',
+		'fixture: the active bundle is the test''s, without unattended, and its default effort is low');
 	v_policy := encode(extensions.digest(convert_to((v_bundle.manifest -> 'modelPolicy')::text, 'utf8'), 'sha256'), 'hex');
 	perform pg_temp.base_assert(v_run.runtime_bundle_id = v_bundle.id and v_run.runtime_bundle_sha256 = v_bundle.sha256
 		and v_run.reasoning_effort = 'low' and v_run.reasoning_policy_sha256 = v_policy,

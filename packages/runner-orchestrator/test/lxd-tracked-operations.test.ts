@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { LxdUnixClient } from "../src/lxd-client.ts";
+import { LxdSubmissionRefused, LxdUnixClient } from "../src/lxd-client.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -224,6 +224,106 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 		await expect(
 			client.submitInstanceOperation("offices", { action: "delete", name: "office-test" }, signal()),
 		).rejects.toThrow(/^LXD_OPERATION_SUBMISSION_UNCONFIRMED$/);
+	});
+	it("keeps LXD's own refusal of a submission, its status, code and message on one line, and still calls it unconfirmed", async () => {
+		// As node02's coding project refused a coding machine's agent card on 24 Oct 2026 (C8 C4-1).
+		const refusal = {
+			type: "error",
+			status: "",
+			status_code: 0,
+			operation: "",
+			error_code: 403,
+			error: 'Failed checking if instance creation allowed:\nInvalid device "network": Only managed network devices are allowed\u0007',
+			metadata: null,
+		};
+		const answers: Array<[unknown, number]> = [
+			[refusal, 403],
+			[{ ...refusal, error_code: "403", error: `${"x".repeat(600)}\u{1F600}` }, 400],
+		];
+		const client = await fixture((_request, response) => {
+			const [body, status] = answers.shift() ?? [{}, 500];
+			send(response, body, status);
+		});
+		const submit = () =>
+			client.submitInstanceOperation("offices", { action: "start", name: "office-test" }, signal()).then(
+				() => {
+					throw new Error("accepted");
+				},
+				(error: unknown) => error,
+			);
+		const refused = await submit();
+		expect(refused).toBeInstanceOf(LxdSubmissionRefused);
+		expect(refused).toMatchObject({
+			message: "LXD_OPERATION_SUBMISSION_UNCONFIRMED",
+			status: 403,
+			lxdCode: 403,
+			lxdMessage:
+				'Failed checking if instance creation allowed: Invalid device "network": Only managed network devices are allowed',
+		});
+		// A code that is not a number is left out; a long message is cut to 500 characters.
+		expect(await submit()).toMatchObject({ status: 400, lxdCode: null, lxdMessage: "x".repeat(500) });
+		// Anything but LXD's error answer keeps nothing: no answer, another type, a status that is no error.
+		for (const [body, status] of [
+			[{ ...refusal, type: "sync" }, 403],
+			[refusal, 200],
+			[refusal, 302],
+			["not an envelope", 500],
+		] as const) {
+			const other = await fixture((_request, response) => send(response, body, status));
+			const error = await other
+				.submitInstanceOperation("offices", { action: "delete", name: "office-test" }, signal())
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(Error);
+			expect(error).not.toBeInstanceOf(LxdSubmissionRefused);
+			expect((error as Error).message).toBe("LXD_OPERATION_SUBMISSION_UNCONFIRMED");
+		}
+	});
+	it.each([
+		[{ restricted: "true", "restricted.devices.nic": "managed" }, false],
+		[{ restricted: "true" }, false],
+		[{ restricted: "true", "restricted.devices.nic": "allow" }, true],
+		[{ restricted: "true", "restricted.devices.nic": "allow", "restricted.networks.access": "coding-net" }, false],
+		[
+			{ restricted: "true", "restricted.devices.nic": "allow", "restricted.networks.access": "coding-net, qagent0" },
+			true,
+		],
+		[{ restricted: "false", "restricted.devices.nic": "managed" }, true],
+		[{}, true],
+	])("reads, and only reads, whether a project allows the agent card: %j", async (config, allowed) => {
+		const calls: string[] = [];
+		const client = await fixture((request, response) => {
+			calls.push(`${request.method} ${request.url}`);
+			send(response, { type: "sync", status_code: 200, metadata: { name: "coding", config, used_by: [] } });
+		});
+		await expect(client.allowsAgentCard("coding", signal())).resolves.toBe(allowed);
+		expect(calls).toEqual(["GET /1.0/projects/coding"]);
+	});
+	it("reads a project however many instances it holds, and calls one it cannot read unconfirmed", async () => {
+		const used = Array.from(
+			{ length: 2000 },
+			(_, i) => `/1.0/instances/qorpera-coding-machine-${i.toString(16).padStart(32, "0")}?project=coding`,
+		);
+		const config = { restricted: "true", "restricted.devices.nic": "allow" };
+		const big = await fixture((_request, response) =>
+			send(response, { type: "sync", status_code: 200, metadata: { name: "coding", config, used_by: used } }),
+		);
+		await expect(big.allowsAgentCard("coding", signal())).resolves.toBe(true);
+		for (const [body, status] of [
+			[{ type: "error", status_code: 0, error_code: 404, error: "Project not found" }, 404],
+			[{ type: "sync", status_code: 200, metadata: { name: "other", config } }, 200],
+			[{ type: "sync", status_code: 200, metadata: { name: "coding", config: { restricted: true } } }, 200],
+			[{ type: "sync", status_code: 200, metadata: null }, 200],
+		] as const) {
+			const other = await fixture((_request, response) => send(response, body, status));
+			await expect(other.allowsAgentCard("coding", signal())).rejects.toThrow(/^LXD_PROJECT_UNCONFIRMED$/);
+		}
+		let calls = 0;
+		const unused = await fixture((_request, response) => {
+			calls++;
+			send(response, {}, 500);
+		});
+		await expect(unused.allowsAgentCard("bad?project=x", signal())).rejects.toThrow(/^LXD_PROJECT_UNCONFIRMED$/);
+		expect(calls).toBe(0);
 	});
 	it.each([301, 404, 500])("keeps an unavailable operation (%s) unconfirmed", async (status) => {
 		const client = await fixture((_request, response) => send(response, envelope(), status));

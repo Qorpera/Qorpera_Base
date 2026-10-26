@@ -24,7 +24,7 @@ import {
 	undropCodingMachineStart,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
-import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { type LxdInstanceRecord, LxdSubmissionRefused, type LxdTrackedInstanceAction } from "../src/lxd-client.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 import { codingStorageFixture } from "./helpers/coding-storage.ts";
 
@@ -160,6 +160,13 @@ async function fixture() {
 			reconcileCodingMachine({ ...options, desiredState }),
 		instance: fake.instance,
 	};
+}
+
+/** The dispatch errors written next to the machine's journal, oldest first. */
+async function dispatchErrors(f: Awaited<ReturnType<typeof fixture>>) {
+	const root = join(f.journalRoot, f.value.machineId);
+	const names = (await readdir(root)).filter((name) => name.startsWith("dispatch-error-")).sort();
+	return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))));
 }
 
 /** The outside stops written next to the machine's journal, oldest first. */
@@ -358,6 +365,81 @@ describe("a coding machine's journaled lifecycle", () => {
 		expect((await f.reconcile()).state).toBe("recovery-required");
 		expect((await f.reconcile("stopped")).state).toBe("recovery-required");
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
+	});
+	it("writes down next to the journal what LXD answered a refused create, names its status, and leaves the create to an operator", async () => {
+		const f = await fixture();
+		// As node02's coding project refused the agent card on 24 Oct 2026 (C8 C4-1): LXD's answer, no operation.
+		const message =
+			'Failed checking if instance creation allowed: Invalid device "network": Only managed network devices';
+		f.client.submitInstanceOperation.mockRejectedValue(new LxdSubmissionRefused(403, 403, message));
+		expect(await f.reconcile()).toMatchObject({ state: "recovery-required", lxdStatus: 403 });
+		expect(await dispatchErrors(f)).toEqual([
+			{
+				schema: "qorpera.coding-machine-dispatch-error/v1",
+				segment: 0,
+				sequence: 0,
+				action: "create",
+				code: "LXD_OPERATION_SUBMISSION_UNCONFIRMED",
+				lxd: { status: 403, code: 403, message },
+				observedAt: expect.any(String),
+			},
+		]);
+		// The create's dispatch is still the journal's tail: never sent again, and nothing more written down.
+		const again = await f.reconcile();
+		expect(again.state).toBe("recovery-required");
+		expect(again.lxdStatus).toBeUndefined();
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
+		expect(await dispatchErrors(f)).toHaveLength(1);
+		expect(
+			(await readdir(join(f.journalRoot, f.value.machineId))).filter((name) => /^\d{6}\.json$/.test(name)),
+		).toEqual(["000000.json"]);
+		// A submission LXD never answered keeps only its code.
+		const g = await fixture();
+		g.client.submitInstanceOperation.mockRejectedValue(new Error("LXD_OPERATION_SUBMISSION_UNCONFIRMED"));
+		const unanswered = await g.reconcile();
+		expect(unanswered.state).toBe("recovery-required");
+		expect(unanswered.lxdStatus).toBeUndefined();
+		expect(await dispatchErrors(g)).toEqual([
+			expect.objectContaining({ action: "create", code: "LXD_OPERATION_SUBMISSION_UNCONFIRMED", lxd: null }),
+		]);
+		// One whose text is not a code keeps none of it.
+		const h = await fixture();
+		h.client.submitInstanceOperation.mockRejectedValue(new Error("connect ECONNREFUSED /var/snap/lxd/unix.socket"));
+		expect((await h.reconcile()).state).toBe("recovery-required");
+		expect(await dispatchErrors(h)).toEqual([expect.objectContaining({ code: "UNCLASSIFIED", lxd: null })]);
+	});
+	it("reads the machine's project before a create with the agent card, and fails before the plug, the authority and the dispatch when it refuses the card", async () => {
+		const f = await fixture();
+		const projectAllowsAgentCard = vi.fn(async (_project: string, _signal: AbortSignal) => false);
+		const reconcile = () => reconcileCodingMachine({ ...f.options, desiredState: "running", projectAllowsAgentCard });
+		await expect(reconcile()).rejects.toThrow("CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD");
+		expect(projectAllowsAgentCard).toHaveBeenCalledWith("coding", f.controller.signal);
+		// Only the reconcile's first authority ran: no plug, no create authority, nothing dispatched or written down.
+		expect(f.authorize).toHaveBeenCalledTimes(1);
+		expect(f.plug).not.toHaveBeenCalled();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		const root = join(f.journalRoot, f.value.machineId);
+		expect(await readdir(root)).toEqual(["binding.json"]);
+		// Not even a stop needs anything: the machine was never made.
+		expect(
+			(await reconcileCodingMachine({ ...f.options, desiredState: "stopped", projectAllowsAgentCard })).state,
+		).toBe("absent");
+		// Once the project allows the card, the create goes out as the first, and nothing after it reads the project.
+		projectAllowsAgentCard.mockResolvedValue(true);
+		for (const expected of ["pending", "pending", "running"]) expect((await reconcile()).state).toBe(expected);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+		expect(projectAllowsAgentCard).toHaveBeenCalledTimes(2);
+		expect(f.plug).toHaveBeenCalledTimes(1);
+		// A project that cannot be read fails the create the same way, before anything goes out.
+		const g = await fixture();
+		const unread = vi.fn(async () => {
+			throw new Error("LXD_PROJECT_UNCONFIRMED");
+		});
+		await expect(
+			reconcileCodingMachine({ ...g.options, desiredState: "running", projectAllowsAgentCard: unread }),
+		).rejects.toThrow("LXD_PROJECT_UNCONFIRMED");
+		expect(g.plug).not.toHaveBeenCalled();
+		expect(g.client.submitInstanceOperation).not.toHaveBeenCalled();
 	});
 	it("one concurrent claimant dispatches create", async () => {
 		const f = await fixture();

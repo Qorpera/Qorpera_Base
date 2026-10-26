@@ -8,19 +8,27 @@
 -- kinds are a real coworker wake with its kind and origin rewritten, read by the resolver the pin trigger calls.
 reset role;
 
--- The active bundle with `unattended: high` in its model policy, activated as a release would.
-select set_config('qorpera_test.ce_old', (select runtime_bundle_sha256 from public.qorpera_active_runtime_bundle where singleton), true)
-\g /dev/null
-insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
-select b.bundle_key, b.version + 1, m.manifest, encode(extensions.digest(convert_to(m.manifest::text, 'utf8'), 'sha256'), 'hex')
-from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id
-cross join lateral (select jsonb_set(b.manifest, '{modelPolicy,unattended}', '"high"') as manifest) m
-where a.singleton;
-select set_config('qorpera_test.ce_new', (select b.sha256 from public.qorpera_runtime_bundles b
-	join public.qorpera_runtime_bundles old on old.sha256 = current_setting('qorpera_test.ce_old')
-	where b.bundle_key = old.bundle_key and b.version = old.version + 1), true) \g /dev/null
-update public.qorpera_active_runtime_bundle set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
-from public.qorpera_runtime_bundles b where singleton and b.sha256 = current_setting('qorpera_test.ce_new');
+-- The active bundle with its model policy's `unattended` set to an effort, or left out (null), as the bundle's next
+-- version, activated as a release would; answers its hash. The tests hold whether or not the active bundle declares it.
+create function pg_temp.ce_activate(p_unattended text) returns text language plpgsql as $$
+declare v_active public.qorpera_runtime_bundles; v_manifest jsonb; v_bundle public.qorpera_runtime_bundles;
+begin
+	select b.* into strict v_active from public.qorpera_active_runtime_bundle a
+	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
+	v_manifest := case when p_unattended is null then v_active.manifest #- '{modelPolicy,unattended}'
+		else jsonb_set(v_active.manifest, '{modelPolicy,unattended}', to_jsonb(p_unattended)) end;
+	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
+	select v_active.bundle_key, max(version) + 1, v_manifest,
+		encode(extensions.digest(convert_to(v_manifest::text, 'utf8'), 'sha256'), 'hex')
+	from public.qorpera_runtime_bundles where bundle_key = v_active.bundle_key
+	returning * into strict v_bundle;
+	update public.qorpera_active_runtime_bundle set runtime_bundle_id = v_bundle.id, runtime_bundle_sha256 = v_bundle.sha256
+	where singleton;
+	return v_bundle.sha256;
+end $$;
+
+-- The active bundle with `unattended: high` in its model policy.
+select set_config('qorpera_test.ce_new', pg_temp.ce_activate('high'), true) \g /dev/null
 select pg_temp.base_claims('service_role');
 
 create function pg_temp.ce_run(p_run uuid) returns public.qorpera_execution_runs language sql as $$
@@ -315,15 +323,20 @@ $$;
 rollback to ce_carried;
 
 -- 7. Under a bundle without `unattended` nothing changes: a first run and a coworker's message run at the default, low.
-savepoint ce_old_bundle;
-update public.qorpera_active_runtime_bundle set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
-from public.qorpera_runtime_bundles b where singleton and b.sha256 = current_setting('qorpera_test.ce_old');
+--    The bundle is the active one less that key, so the section holds whatever the database's bundle declares.
+savepoint ce_none_bundle;
+select set_config('qorpera_test.ce_none', pg_temp.ce_activate(null), true) \g /dev/null
 do $$
-declare v_bob jsonb := pg_temp.ce_bob('core-effort-old'); v_carol public.qorpera_execution_runs;
+declare v_bob jsonb; v_carol public.qorpera_execution_runs;
 begin
+	perform pg_temp.base_assert((select b.sha256 = current_setting('qorpera_test.ce_none')
+			and not (b.manifest -> 'modelPolicy' ? 'unattended') and b.manifest #>> '{modelPolicy,effort}' = 'low'
+		from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id
+		where a.singleton), 'fixture: the active bundle declares no unattended and runs the rest at low');
+	v_bob := pg_temp.ce_bob('core-effort-old');
 	v_carol := pg_temp.ce_run(pg_temp.ce_message(v_bob, 'core-effort-old-note'));
-	perform pg_temp.base_assert(v_carol.reasoning_effort = 'low' and v_carol.runtime_bundle_sha256 = current_setting('qorpera_test.ce_old'),
-		'a coworker run under the old bundle runs low: ' || to_jsonb(v_carol)::text);
+	perform pg_temp.base_assert(v_carol.reasoning_effort = 'low' and v_carol.runtime_bundle_sha256 = current_setting('qorpera_test.ce_none'),
+		'a coworker run under a bundle without unattended runs low: ' || to_jsonb(v_carol)::text);
 end
 $$;
 select pg_temp.base_commit(pg_temp.base_owner(), 'core-effort-old-hire', jsonb_build_array(
@@ -332,10 +345,10 @@ do $$
 declare v_pass jsonb := pg_temp.base_materialize(); v_dana public.qorpera_execution_runs;
 begin
 	v_dana := pg_temp.ce_run(pg_temp.ce_pass_run(v_pass, '92400000-0000-4000-8000-000000000034'));
-	perform pg_temp.base_assert(v_dana.reasoning_effort = 'low' and v_dana.runtime_bundle_sha256 = current_setting('qorpera_test.ce_old'),
-		'a first run under the old bundle runs low, whatever its agent.md says: ' || to_jsonb(v_dana)::text);
+	perform pg_temp.base_assert(v_dana.reasoning_effort = 'low' and v_dana.runtime_bundle_sha256 = current_setting('qorpera_test.ce_none'),
+		'a first run under a bundle without unattended runs low, whatever its agent.md says: ' || to_jsonb(v_dana)::text);
 end
 $$;
-rollback to ce_old_bundle;
+rollback to ce_none_bundle;
 
 rollback;

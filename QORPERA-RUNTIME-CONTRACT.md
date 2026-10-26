@@ -5939,7 +5939,9 @@ an agent starts work and where the results go.
    - work that needs commands (converting files, running code, spreadsheets): the company's computer or a machine,
      saving the result in the company folder;
    - a real code project: a coding session. Its work is under `code/`, and it is the only case that needs a
-     repository.
+     repository. A member's "push it", "open a PR" or "report the link" means a hand-in (26 October 2026, C4-1): the
+     session commits and ends its turn with `coding_finish`, or asks with `coding_ask` when blocked, never with a plain
+     answer, and the system pushes, opens the draft PR and brings the agent its link.
 
    Every agent also follows these rules:
    - Ask only when the answer changes what happens. Never guess the answer in the message that asks; an

@@ -215,6 +215,13 @@ export interface LxdImageClient {
 	hasImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean>;
 }
 
+/** Whether a project lets its instances have the agent card, read from LXD and never changed: LXD's own rule
+ * (projectAllowsAgentCard), which LXD otherwise applies only at the create. LXD_PROJECT_UNCONFIRMED when the project
+ * could not be read. */
+export interface LxdProjectClient {
+	allowsAgentCard(project: string, signal: AbortSignal): Promise<boolean>;
+}
+
 export interface LxdOperationReference {
 	project: string;
 	instanceName: string;
@@ -1341,6 +1348,27 @@ export class LxdOperationFailed extends Error {
 	}
 }
 
+/** A tracked submission LXD answered with its own error, before any operation (submitInstanceOperation). The message
+ * stays LXD_OPERATION_SUBMISSION_UNCONFIRMED: a caller judges the outcome as it judges any unconfirmed submission. What
+ * LXD said is kept for its operator: the HTTP status, LXD's error code and its message, on one line and at most 500
+ * characters. LXD's message names what the request named (instances, devices, keys), and only a caller whose request
+ * carries no secret value should keep it. */
+export class LxdSubmissionRefused extends Error {
+	readonly status: number;
+	readonly lxdCode: number | null;
+	readonly lxdMessage: string;
+	constructor(status: number, lxdCode: unknown, lxdMessage: unknown) {
+		super("LXD_OPERATION_SUBMISSION_UNCONFIRMED");
+		this.name = "LxdSubmissionRefused";
+		this.status = status;
+		this.lxdCode = Number.isSafeInteger(lxdCode) ? (lxdCode as number) : null;
+		this.lxdMessage =
+			typeof lxdMessage === "string"
+				? [...lxdMessage.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim()].slice(0, 500).join("")
+				: "";
+	}
+}
+
 function operationFailure(message: unknown, definitive = false): Error {
 	const text =
 		typeof message === "string" && AGENT_OFFLINE.test(message)
@@ -1484,6 +1512,7 @@ export class LxdUnixClient
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
 		LxdImageClient,
+		LxdProjectClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
@@ -2011,6 +2040,9 @@ export class LxdUnixClient
 			} else throw new Error("invalid action");
 			checked.throwIfAborted();
 			const envelope = record(result.body, "LXD response");
+			// LXD refused the request itself, with its own error and no operation: what it said is kept.
+			if (result.status >= 400 && result.status <= 599 && envelope.type === "error")
+				throw new LxdSubmissionRefused(result.status, envelope.error_code, envelope.error);
 			if (
 				result.status !== 202 ||
 				envelope.type !== "async" ||
@@ -2024,9 +2056,24 @@ export class LxdUnixClient
 			const reference = { project, instanceName: name, operationId };
 			trackedOperation(envelope.metadata, reference);
 			return reference;
-		} catch {
+		} catch (error) {
+			if (error instanceof LxdSubmissionRefused) throw error;
 			throw new Error("LXD_OPERATION_SUBMISSION_UNCONFIRMED");
 		}
+	}
+
+	async allowsAgentCard(project: string, signal: AbortSignal): Promise<boolean> {
+		let config: Record<string, string>;
+		try {
+			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project)) throw new Error("invalid project");
+			// Its used_by lists every instance, image and volume in it, so its record is not held to 64 KiB.
+			const value = await this.#officeMetadata(`/1.0/projects/${project}`, signal, MAX_RESPONSE_BYTES);
+			if (value.name !== project) throw new Error("project differs");
+			config = stringRecord(value.config, "project config");
+		} catch {
+			throw new Error("LXD_PROJECT_UNCONFIRMED");
+		}
+		return projectAllowsAgentCard(config);
 	}
 
 	async inspectInstanceOperation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {

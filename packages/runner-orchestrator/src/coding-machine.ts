@@ -19,7 +19,13 @@ import {
 	runAgentPlug,
 	withAgentPlug,
 } from "./agent-plug.ts";
-import type { LxdCreateInstanceRequest, LxdImageClient, LxdInstanceRecord, LxdTrackedClient } from "./lxd-client.ts";
+import {
+	type LxdCreateInstanceRequest,
+	type LxdImageClient,
+	type LxdInstanceRecord,
+	LxdSubmissionRefused,
+	type LxdTrackedClient,
+} from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -410,6 +416,13 @@ export interface CodingMachineReconcileOptions {
 		signal: AbortSignal,
 		after: "create" | "start" | "stop" | "rebuild",
 	) => Promise<"rebuild" | undefined>;
+	/** Whether the machine's LXD project lets an instance have the agent card, read from LXD and never changed (the
+	 * client's allowsAgentCard). Given, a create with the agent card goes out only once it answered yes: LXD refuses the
+	 * card in a project that does not allow it (deploy/agent-exit/ROLLOUT.md step 0), but only at the create, after its
+	 * dispatch is written down, which leaves the machine to an operator. A no fails the reconcile with
+	 * CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD before the plug, the create's authority and its dispatch, so nothing is
+	 * written down and the next create, once the project allows the card, goes out as the first. */
+	projectAllowsAgentCard?: (project: string, signal: AbortSignal) => Promise<boolean>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -417,6 +430,46 @@ export interface CodingMachineReconcileResult {
 	machineId: string;
 	instanceName: string;
 	instanceSha256: string;
+	/** recovery-required after an effect LXD refused at its submission: LXD's HTTP status. LXD's whole answer is written
+	 * down next to the journal (recordDispatchError). */
+	lxdStatus?: number;
+}
+
+/** An error's fixed code (`CODE`, an abort by its name), else UNCLASSIFIED: never its free text. */
+function fixedCode(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/^[A-Z][A-Z0-9_]{2,80}$/.test(message)) return message;
+	const name = error instanceof Error ? error.name : "";
+	return name === "AbortError" || name === "TimeoutError" ? name : "UNCLASSIFIED";
+}
+/** Writes down next to the journal, once, what the submission of the dispatch at `segment` and `sequence` threw, while
+ * that dispatch is the journal's tail and whether LXD took the effect stays unknown (an operator settles it, or a
+ * disposable VM's own view once any operation is long over): the error's fixed code, and LXD's own answer when LXD gave
+ * one, its HTTP status, LXD's error code and its message (500 characters at most, on one line). The requests a journal
+ * makes carry no secret value (a machine's ids, digests, sizes, image, disk and card), so neither does LXD's message
+ * about one. */
+async function recordDispatchError(
+	root: string,
+	segment: number,
+	sequence: number,
+	action: Action,
+	error: unknown,
+): Promise<void> {
+	const name = `dispatch-error-${String(segment).padStart(6, "0")}-${String(sequence).padStart(6, "0")}.json`;
+	const refused = error instanceof LxdSubmissionRefused;
+	await publish(
+		root,
+		name,
+		encode({
+			schema: "qorpera.coding-machine-dispatch-error/v1",
+			segment,
+			sequence,
+			action,
+			code: fixedCode(error),
+			lxd: refused ? { status: error.status, code: error.lxdCode, message: error.lxdMessage } : null,
+			observedAt: new Date().toISOString(),
+		}),
+	);
 }
 
 /** Which triplet may follow a settled one: create first; then start and stop
@@ -1082,6 +1135,9 @@ export async function reconcileCodingMachine(
 	let request = plan.request;
 	if (action === "create" && plan.agentPlug) {
 		if (!request) return result("recovery-required");
+		if (options.projectAllowsAgentCard && !(await options.projectAllowsAgentCard(plan.project, options.signal)))
+			throw new Error("CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD");
+		options.signal.throwIfAborted();
 		const hwaddr = await (options.plug ?? runAgentPlug)(plan.agentPlug.claim, options.signal);
 		request = withAgentPlug(request, plan.agentPlug.device, hwaddr);
 	}
@@ -1113,6 +1169,7 @@ export async function reconcileCodingMachine(
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
 	signal = await authorize(action === "rebuild" ? "rebuild" : intent);
+	const dispatched = { segment: current.segment, sequence: current.events.length };
 	if (!(await append({ action, kind: "dispatch", operationId: null, state: null }))) return result("pending");
 	let operationId: string;
 	try {
@@ -1138,8 +1195,14 @@ export async function reconcileCodingMachine(
 		)
 			throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
 		operationId = reference.operationId;
-	} catch {
-		return result("recovery-required");
+	} catch (error) {
+		// The dispatch stays the journal's tail, its outcome unknown. What the submission threw, and what LXD answered if
+		// it did, is written down next to the journal for whoever settles it; LXD's status also goes with the result. A
+		// record that could not be written changes nothing else.
+		await recordDispatchError(root, dispatched.segment, dispatched.sequence, action, error).catch(() => undefined);
+		return error instanceof LxdSubmissionRefused
+			? { ...result("recovery-required"), lxdStatus: error.status }
+			: result("recovery-required");
 	}
 	// Preserve operation custody even if authority loss follows LXD acceptance.
 	current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);

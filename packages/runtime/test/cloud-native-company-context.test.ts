@@ -329,6 +329,7 @@ it.each([
 		"# Standing work",
 		"When a routine wakes you for your own work",
 		"When a member stopped your work, it stays stopped",
+		"A coding session cannot push, open a pull request or send messages itself",
 		"# Writing to people",
 	])
 		expect(instructions.includes(staff)).toBe(continues);
@@ -1492,7 +1493,8 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
 // work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
 // (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
-// conversations as the members' quick way in), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
+// conversations as the members' quick way in), taken again when a member's "push it" or "open a PR" became a coding
+// session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
 // Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026). A change to either is a
 // change to every run's bytes.
 it.each([
@@ -1583,6 +1585,9 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"hand it to a worker with saveTo set to the folder where the results belong",
 		"use the company's computer or a machine when one is offered",
 		"It is the only work that needs a repository, and its files are under code/.",
+		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
+		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.
+		"A coding session cannot push, open a pull request or send messages itself: when a member asks to push, open a PR or report its link, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked; the system then pushes the branch, opens the draft PR and brings you its link.",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
 		// The 2026-10-22 amendment, items 5 and 6 (Jonas, 22 October): a conversation is the members' quick way in and
