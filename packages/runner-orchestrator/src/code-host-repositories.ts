@@ -1,8 +1,15 @@
 import { isDeepStrictEqual } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
-import { type CodeHostJob, codeAreaPath, exportCodeBranch } from "./code-host-jobs.ts";
+import {
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+	codeAreaPath,
+	exportCodeBranch,
+} from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { CodingWorkspaceFailed } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
 	type CodingFolderRepositories,
@@ -11,6 +18,9 @@ import {
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
 export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
+/** What the member and the agent read when the code host could not make the session's worktree (its code follows). */
+const CODE_COPY_FAILED =
+	"Making the session's copy of the code failed. The workspace is kept; a follow-up tries again.";
 
 /** The coding sessions' repositories on the folder path (F3 step 5g-6b). A session works in its own locked worktree
  * of its company's code area, `/company/code/<owner>/<name>/worktrees/<workerId>` (lower-case, `codeAreaPath`) on
@@ -24,12 +34,20 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		this.#jobs = jobs;
 	}
 
+	/** A job that failed at one of its steps or was refused by rule (the code host's own error, which names its code)
+	 * fails the turn at once with that code (CodingWorkspaceFailed): what the code host said stays with it, as its cause,
+	 * for the executor's log. */
 	async prepare(session: CodingFolderRepositorySession, signal: AbortSignal): Promise<{ cwd: string }> {
 		const { repository, workerId } = session.claim;
 		const broker = codeAreaBroker(session);
-		await this.#job(session, signal, (job) =>
-			attachCodeSession(job, { repository, workerId, baseSha: session.baseSha }, broker),
-		);
+		try {
+			await this.#job(session, signal, (job) =>
+				attachCodeSession(job, { repository, workerId, baseSha: session.baseSha }, broker),
+			);
+		} catch (error) {
+			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
+			throw new CodingWorkspaceFailed(error.code, CODE_COPY_FAILED, { cause: error });
+		}
 		return { cwd: `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(repository)}/worktrees/${workerId}` };
 	}
 

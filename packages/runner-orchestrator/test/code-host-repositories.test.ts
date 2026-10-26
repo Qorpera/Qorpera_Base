@@ -6,11 +6,17 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CodeHostCommand, type CodeHostGcBlock, exportCodeBranch } from "../src/code-host-jobs.ts";
+import {
+	type CodeHostCommand,
+	type CodeHostGcBlock,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+	exportCodeBranch,
+} from "../src/code-host-jobs.ts";
 import { CODE_HOST_EXPORT_MAXIMUM_BYTES, CodeHostRepositories } from "../src/code-host-repositories.ts";
 import { attachCodeSession, type CodeAreaBroker } from "../src/code-host-seed.ts";
 import type { CodeHostJobs } from "../src/code-host-views.ts";
-import type { CodingSessionClaim } from "../src/coding-executor.ts";
+import { type CodingSessionClaim, CodingWorkspaceFailed } from "../src/coding-executor.ts";
 import type { CodingFolderRepositorySession } from "../src/coding-folder-repositories.ts";
 import { type CodingBrokerGitCommand, createCodingBrokerGitRunner, pushCloudCodingBundle } from "../src/coding-git.ts";
 import type { LxdCodingMachineBinding } from "../src/coding-machine.ts";
@@ -282,6 +288,38 @@ describe("CodeHostRepositories", () => {
 		}
 		expect(f.authorized).toHaveBeenCalledTimes(1);
 		expect(f.lent).toHaveBeenCalledTimes(1);
+	});
+
+	it("fails the turn with the code host's own code when its job fails a step or is refused, keeping what it said (C8 C4-1)", async () => {
+		const f = await fixture();
+		const summary = (code: string) =>
+			`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again. [code=${code}]`;
+		// As the job of 26 Oct 2026 06:53:43Z may have ended: git's worktree add failed while it wrote the worktree.
+		const failure = new CodeHostJobFailure(
+			"CODE_HOST_WORKTREE_FAILED",
+			"fatal: could not create work tree dir '/company/code/qorpera/example/worktrees/x': Input/output error",
+		);
+		const refusal = new CodeHostRefusal("CODE_HOST_WORKTREE_INCOMPLETE", ["code/qorpera/example/worktrees/x"]);
+		for (const error of [failure, refusal]) {
+			vi.mocked(attachCodeSession).mockRejectedValueOnce(error);
+			const failed = await f.repositories.prepare(f.session, signal()).catch((caught: unknown) => caught);
+			expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+			expect(failed).toMatchObject({ message: error.code, summary: summary(error.code), cause: error });
+		}
+		// Anything else, and a job whose caller gave up, fail as they are.
+		const other = new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_REMOVING");
+		vi.mocked(attachCodeSession).mockRejectedValueOnce(other);
+		await expect(f.repositories.prepare(f.session, signal())).rejects.toBe(other);
+		const gaveUp = new AbortController();
+		vi.mocked(attachCodeSession).mockImplementationOnce(async () => {
+			gaveUp.abort();
+			throw failure;
+		});
+		await expect(f.repositories.prepare(f.session, gaveUp.signal)).rejects.toBe(failure);
+		// The next attach makes the worktree.
+		await expect(f.repositories.prepare(f.session, signal())).resolves.toEqual({
+			cwd: `/company/code/qorpera/example/worktrees/${f.workerId}`,
+		});
 	});
 
 	it("asks the session's authority once its job's turn comes and once its steps are done, before the job publishes", async () => {

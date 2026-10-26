@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { errorCode, logCodeHost, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import {
+	errorCode,
+	logCodeHost,
+	loggedError,
+	parseCodingExecutorConfiguration,
+} from "../../../deploy/coding-worker/executor.ts";
 import { codingHostWatchdogProject } from "../../../deploy/coding-worker/host-watchdog.ts";
+import { CodeHostJobFailure, CodeHostRefusal } from "../../runner-orchestrator/src/code-host-jobs.ts";
+import { CodingWorkspaceFailed } from "../../runner-orchestrator/src/coding-executor.ts";
 
 function fixture() {
 	return {
@@ -341,6 +348,50 @@ describe("executor error codes", () => {
 		const leaky = Object.assign(new Error("aborted"), { name: "AbortError", cause: new Error("secret text") });
 		expect(errorCode(leaky)).toBe("AbortError");
 	});
+	it("names a code host's own error by its code (C8 C4-1, 26 Oct 2026: it was UNCLASSIFIED)", () => {
+		expect(errorCode(new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", "fatal: could not lock"))).toBe(
+			"CODE_HOST_WORKTREE_FAILED",
+		);
+		expect(errorCode(new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", ["code/a/worktrees/x"]))).toBe(
+			"CODE_HOST_WORKTREE_NO_BRANCH",
+		);
+		expect(errorCode(new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE"))).toBe("CODE_HOST_TREE_UNREADABLE");
+		// Its message alone names no code: only the code host's own error does.
+		expect(errorCode(new Error("CODE_HOST_WORKTREE_FAILED: fatal: could not lock"))).toBe("UNCLASSIFIED");
+	});
+	it("logs what an error says beyond its code, on one line, with credentials taken out", () => {
+		const git = new CodeHostJobFailure(
+			"CODE_HOST_WORKTREE_FAILED",
+			"Preparing worktree (new branch 'qorpera/coding/x')\nfatal: could not create work tree dir '/company/code/acme/app/worktrees/x': Input/output error\n",
+		);
+		const said =
+			"Preparing worktree (new branch 'qorpera/coding/x') fatal: could not create work tree dir '/company/code/acme/app/worktrees/x': Input/output error";
+		expect(loggedError(git)).toEqual({ code: "CODE_HOST_WORKTREE_FAILED", detail: said });
+		// The turn's failure names the code host's code; its detail is its cause's.
+		expect(loggedError(new CodingWorkspaceFailed(git.code, "Making it failed.", { cause: git }))).toEqual({
+			code: "CODE_HOST_WORKTREE_FAILED",
+			detail: said,
+		});
+		// One the log cannot name is still UNCLASSIFIED, with what it said.
+		expect(loggedError(new Error("LXD: Instance is not running"))).toEqual({
+			code: "UNCLASSIFIED",
+			detail: "LXD: Instance is not running",
+		});
+		// A token in a URL never reaches the log.
+		const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a";
+		const seed = loggedError(
+			new CodeHostJobFailure(
+				"CODE_HOST_SEED_FAILED",
+				`fatal: unable to access 'https://x-access-token:${token}@github.com/acme/app.git/': error: 403`,
+			),
+		);
+		expect(seed).toEqual({
+			code: "CODE_HOST_SEED_FAILED",
+			detail: "fatal: unable to access 'https://[redacted]@github.com/acme/app.git/': error: 403",
+		});
+		// A bare code says nothing more.
+		expect(loggedError(new Error("CODING_HOST_GUEST_NOT_READY"))).toEqual({ code: "CODING_HOST_GUEST_NOT_READY" });
+	});
 	it("keeps a system error's errno code, never its message", () => {
 		expect(
 			errorCode(Object.assign(new Error("EACCES: permission denied, open '/secret/path'"), { code: "EACCES" })),
@@ -350,7 +401,7 @@ describe("executor error codes", () => {
 });
 
 describe("executor code host log", () => {
-	it("logs a code host's events as they are, and its errors and its jobs' errors by their code only", () => {
+	it("logs a code host's events as they are, and its errors and its jobs' errors by their code and what they say", () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const project = "qorpera-code-host-1";
@@ -367,7 +418,13 @@ describe("executor code host log", () => {
 			expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
 				{ event: "code-host-error", step: "refused", project },
 				{ event: "code-host-error", step: "stop", project, code: "LXD request failed (500)" },
-				{ event: "code-host-view-error", step: "clean", project, code: "UNCLASSIFIED" },
+				{
+					event: "code-host-view-error",
+					step: "clean",
+					project,
+					code: "UNCLASSIFIED",
+					detail: "fatal: /company/code/acme/app",
+				},
 				{ event: "code-host-view-error", step: "close", project, code: "CODE_HOST_VIEW_OPEN" },
 			]);
 		} finally {
