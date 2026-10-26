@@ -260,8 +260,68 @@ visible to the exit (they matter for the "only listed" mode, §10).
   deleted.
 - A lookup script answers "who used address X at time T".
 - A company's owners and admins see their company's log, and a member sees the lines of their own coding machine,
-  in a view that comes later with its own interfaces amendment (E10).
+  in the view below (E10; the contract's "2026-10-17 amendment: each company sees its own agent exit log").
 - A refused connection tells the agent only that it was refused. The rule is in the log.
+
+### 7.1 The company's own view (E10)
+
+The contract text is the "2026-10-17 amendment: each company sees its own agent exit log". Its choices were proposed
+here and set by the runtime coordinator on 17 October 2026. The details below are **proposed**.
+
+**Who reads what.** `qorpera_member_agent_exit_log_scope(company)` (migration 20260930507000, SQL test 685) is for
+`authenticated` callers only. The company is the plug's `company`, which is the profile id.
+- An owner or admin gets `{"scope":"company"}`: every line of the company's machines (agent machines, coding machines
+  and office machines), and the brake's lines.
+- Any other member (a contributor or a viewer) gets `{"scope":"member","member":<user id>}`: the lines of the coding
+  machines whose plug names them. The plug's `member` is the coding machine's member user id.
+- Anyone else gets 42501, as if the company were not there. A company being deleted gets 55000.
+- Agents never call it: the source is not shown to them (the amendment's item 3).
+
+**The road** (E10b).
+1. The browser asks the member company gateway for `GET /v1/member-agent-exit-log/<company>/<day>`, or
+   `…/<day>/<page>` for a later page, with the member's token. `<day>` is a date (UTC), or `newest` for the newest
+   day the log has.
+2. The object gateway on node 1 asks the database for the scope with that token. A refusal is a 404, as if there
+   were nothing.
+3. It asks the exit's reader on its node for that company's lines of that day, in that scope.
+4. It asks for the scope again. If the scope changed, nothing of this read is sent (409), and the client asks again.
+5. It answers.
+
+**The reader.** `qorpera-agent-exit-logs.py view --nas-dir DIR --company C --day D [--member U] [--page N]` runs as
+root, one process per request, behind a socket that only the object gateway's user may open
+(`qorpera-agent-exit-view.socket`). It reads only, has no network and has a time limit. The NAS's files are root's
+(mode 0640) and the gateway runs unprivileged, so the gateway never reads them itself. The reader reads the NAS, not
+the node's own disk, the way the lookup reads it:
+- every node's `<host>/<day>/` (its flows, clients and DNS parts, and `lost/`) and its `status.json`. The counts file
+  of the day before says who was plugged in when the day began;
+- a line is the company's when its address was one of the company's machines' at that moment, as the counts
+  attribute it. With `--member`, only the lines of a coding machine whose plug names that member;
+- a connection's name is the last name the machine looked up for that address before it, from the DNS record, as in
+  the lookup;
+- the unknown stretches, per node, as in the lookup: the node's part of the day not shipped yet (`status.json`), a
+  file deleted before it was shipped (`lost/`), a gap line, a pause, a stretch with no alive line, and a node with no
+  status. They are the node's, not a company's, so a member sees them too. Each is a row of kind `unknown`, so every
+  block that draws the source draws them, and an empty table never reads as "no connections".
+
+It answers `{"schema":"qorpera.agent-exit-view/v1","company","day","newest","scope","rows","next"}`, newest first,
+with at most 2,000 rows a page. `newest` is the newest day the log has, where "Later day" stops. `scope` is the
+scope it read, so a block can tell a member who sees no rows that only their own coding machines' lines are shown.
+A day newer than `newest`, or more than 90 days back, is a 404.
+
+**Rows** (the source's columns, RUNTIME-INTERFACES.md §4): `at` and `until` (UTC, to the second), `kind`
+(`connection`, `refused`, `braked` or `unknown`), `machine` (an id, drawn as the machine's name), `machine_kind`
+(`machine`, `coding` or `office`), `member` (a user id, drawn as the member's name), `to` (the address alone),
+`port`, `protocol`, `name`, `sent`, `received`, and `why` (the rule that refused, the brake's reason, or why a
+stretch is unknown). `name` is outside content. A brake row and an unknown row leave the machine and the address
+empty.
+
+**Limits.**
+- Today never shows. A day is the newest once it is closed, about two hours after it ends. A node's part that is
+  sealed and shipped only in a later pass is an `unknown` row that says so until then. An unknown row's `why` is the
+  lookup's sentence.
+- A request reads every node's parts of that day, which takes seconds on a busy day. If that gets slow, the tender
+  can write each company's lines as it counts the day.
+- A line from an address that no company had at that moment is in no company's view.
 
 ## 8. The line guard (E7, choice 2)
 
@@ -471,7 +531,7 @@ server name check.
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
 | E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c-1 "only listed" by address; E8c-2 its server name check | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
-| E10 | Each company's own log view (its own interfaces amendment) | companies see it |
+| E10 | Each company's own log view (§7.1, its own amendment): E10a the amendment, the designs and the scope function; E10b the reader and the gateways' route; E10c the `exit_log` source in the clients (the interfaces design's I12) | companies see it |
 
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.

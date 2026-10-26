@@ -395,18 +395,38 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `working` | agent, what, since |
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
+| `exit_log` | at, until, kind (`connection`, `refused`, `braked`, `unknown`), machine, machine_kind, member, to, port, protocol, name, sent, received, why: one day of the company's agent exit log (E10c) |
 
 - **Mail in `waiting` (proposed, built in I5c).** The `mail` rows are the sends the member mail read's waiting call
   lists, one per review, and only a `badge` counts them. A block from `waiting` doesn't draw them: the agent whose
   send waits is already there as a `review` row, so nothing shows twice.
 - **`mail_addresses.handled_by`** (proposed, built in I5c) lists agent ids, drawn as names, and `routine` names the
   routines that read the address.
+- **`exit_log`** (contract, "2026-10-17 amendment: each company sees its own agent exit log"; built in E10c; design
+  `deploy/first-node/RUNTIME-AGENT-EXIT.md` §7.1) holds one day (UTC) of the company's agent exit log, newest first.
+  - Owners and admins read every line of the company's machines, and the brake. Any other member reads only the
+    lines of their own coding machines. Agents read none of it: a block from `exit_log` is not drawn for an agent,
+    and `interface_read` says the source is not shown, as it does for mail.
+  - `at` and `until` are to the second. `machine` is an id, drawn as the machine's name, and `member` a user id,
+    drawn as the member's name. `to` is the address alone; `port` is its own column, so a block's `where` can pick a
+    port and a table sorts it.
+  - A stretch the log cannot speak for is a row of kind `unknown`, with `why`: a node's part of the day not there
+    yet, a gap, a pause, a file deleted before it was shipped. So an empty table never reads as "no connections".
+  - A member who sees no rows is told whose lines they may see: "Only your own coding machines' lines are shown
+    here."
+  - It is drawn only in `table` and `list` at first, as `mail` is. A `calendar` or `numbers` block that names it is
+    not drawn.
+  - A bar above the rows names the day ("Thursday 16 October, UTC"), with "Earlier day" and "Later day". Earlier
+    stops at the 90th day back, and Later at the newest day the log has. The day is the page's, not a block's: two
+    blocks from `exit_log` on one page step together. It is kept in the page's state, not in the address. The labels
+    are Danish in `packages/web/src/ui/danish/workspace.ts`.
 
 - **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. These are
   outside content:
   - `mail`'s `from_name`, `from_address` and `subject`;
   - a `file:` source's `text` under `hooks/<hook>/` (saved events, and received mail once it moves there with I11);
-  - a `file:` source's `text` under `human-tasks/<task>/`, whoever sent it back.
+  - a `file:` source's `text` under `human-tasks/<task>/`, whoever sent it back;
+  - `exit_log`'s `name`, the name a machine looked up.
 
   A path counts as under `hooks/` or `human-tasks/` by its folder key, as the folder finds files: case and
   full-width letters don't matter.
@@ -886,6 +906,7 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I9b | supervision: consent records; for work alone, the supervisor as payer and card recipient (§5.1) | S2 | I9 |
 | I10 | pages made by agents: the review card with a live preview, Undo | Interfaces | I6, I8 |
 | I11 | the Mailbox reads mail from the folder | Q1, with Interfaces | M2c |
+| I12 | the `exit_log` source (§4): agent exit E10c, in cloud-client, the web client (the day bar) and `interface_read` | agent exit, with Interfaces | E10b, I9b |
 
 The library with update offers, the table store and the marketplace come later.
 
