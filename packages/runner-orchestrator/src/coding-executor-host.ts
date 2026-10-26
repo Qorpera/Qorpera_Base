@@ -32,7 +32,12 @@ import type {
 	CodingTurnState,
 	CodingWorkspace,
 } from "./coding-executor.ts";
-import { CodingMachineUnavailable, CodingPushRefused, CodingSaveRefused } from "./coding-executor.ts";
+import {
+	CodingMachineUnavailable,
+	CodingPushRefused,
+	CodingSaveRefused,
+	CodingWorkspaceFailed,
+} from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import {
 	type CodingFolderControl,
@@ -90,6 +95,7 @@ import type {
 	LxdInstanceDeviceClient,
 	LxdInstanceExecStreamClient,
 	LxdInstanceFile,
+	LxdProjectClient,
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
@@ -159,7 +165,8 @@ export interface LxdCodingExecutorHostOptions {
 	client: Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 		Pick<LxdInspectableClient, "readInstanceFile" | "pushInstanceFile" | "execInstance"> &
 		LxdInstanceDeviceClient &
-		LxdImageClient;
+		LxdImageClient &
+		LxdProjectClient;
 	journalRoot: string;
 	guest: {
 		/** The image's own coding user: sessions whose NAS volume predates
@@ -195,6 +202,8 @@ export interface LxdCodingExecutorHostOptions {
 	attachTimeoutMs?: number;
 	/** How long one machine's keeper step (observe, keep, renew) may take (default 15 s). */
 	keepDeadlineMs?: number;
+	/** How long one step on the NAS may take, its wait for the step before it included (default 5 s). */
+	storageStepTimeoutMs?: number;
 	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
 	agentPlug?: AgentPlug;
 	/** The leases that let this node's member machines run, read by the host
@@ -308,6 +317,25 @@ export const CODING_VM_STOP_BUDGET_MS = 30_000;
 /** Part of a sleep for stopping every command slice and syncing the NAS
  * folders before the machine is powered off. */
 const CODING_VM_QUIESCE_MS = 8_000;
+/** How long one step on the NAS may take (the control path's checks, a session volume's), its wait for the step
+ * before it included. One that runs out of it fails with CODING_HOST_STORAGE_TIMEOUT. */
+const CODING_STORAGE_STEP_MS = 5_000;
+/** How many times in all a folder check (#directory) that ran out of that time is tried, and the pause before its
+ * second try, doubled before each next one: at most about 16 s for a NAS that does not answer. */
+const CODING_STORAGE_CHECK_TRIES = 3;
+const CODING_STORAGE_CHECK_PAUSE_MS = 250;
+/** The failures of a turn's workspace that the host can name, by their code, with what the member and the agent read:
+ * the turn fails at once with it (CodingWorkspaceFailed). */
+const NAMED_WORKSPACE_FAILURES = new Map<string, string>([
+	[
+		"CODING_HOST_STORAGE_TIMEOUT",
+		"The coding machine's storage did not answer in time, so the turn could not start. The workspace is kept; a follow-up tries again.",
+	],
+	[
+		"CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD",
+		"No computer could start for this session: its node does not allow the machine's network card yet, and an operator must allow it there. The workspace is kept; a follow-up tries again once that is done.",
+	],
+]);
 /** Part of a sleep or a detach for cancelling a session's running commands and
  * taking the session off the machine inside the guest, before the power-off or
  * the unplug that stop everything anyway. */
@@ -576,7 +604,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return abortable(work, signal);
 	}
 	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-		const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
+		const limit = AbortSignal.timeout(this.#options.storageStepTimeoutMs ?? CODING_STORAGE_STEP_MS);
+		const checked = AbortSignal.any([...(signal ? [signal] : []), limit]);
 		// Keep the real promise as custody even after the caller's timeout. Normal
 		// heartbeat/command overlap queues; unresolved hard-NFS IO never overlaps.
 		const work = this.#storageWork
@@ -596,23 +625,44 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					if (checked.aborted) abort();
 				}),
 			]);
+		} catch (error) {
+			// The step's own time ran out, not its caller's: the NAS did not answer in time.
+			if (limit.aborted && !signal?.aborted) throw new Error("CODING_HOST_STORAGE_TIMEOUT", { cause: error });
+			throw error;
 		} finally {
 			if (abort) checked.removeEventListener("abort", abort);
 		}
 	}
+	/** The folder `name` under the NAS control path, made if it is not there, and checked with the control path before
+	 * and after. A check that ran out of its time is tried again, after a short pause, up to CODING_STORAGE_CHECK_TRIES
+	 * times in all: the NAS answering slowly for a moment does not fail the step (C8 C4-1, 26 Oct 2026: a wake's first
+	 * step ran out of its 5 s and its turn ended). Each try waits for the one before it (#storageTask), so a NAS that
+	 * does not answer still gets one request at a time, and the step fails with CODING_HOST_STORAGE_TIMEOUT after the
+	 * last. Any other failure, and the caller giving up, fail it at once. */
 	async #directory(name: string, callerSignal?: AbortSignal): Promise<string> {
-		return this.#storageTask(async (signal) => {
-			await this.#storage.assertControl(signal);
-			await checkDirectory(this.#options.journalRoot);
-			const path = join(this.#options.journalRoot, name);
-			signal.throwIfAborted();
-			await mkdir(path, { mode: 0o700 }).catch((error) => {
-				if (!code(error, "EEXIST")) throw error;
-			});
-			await checkDirectory(path);
-			await this.#storage.assertControl(signal);
-			return path;
-		}, callerSignal);
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await this.#storageTask(async (signal) => {
+					await this.#storage.assertControl(signal);
+					await checkDirectory(this.#options.journalRoot);
+					const path = join(this.#options.journalRoot, name);
+					signal.throwIfAborted();
+					await mkdir(path, { mode: 0o700 }).catch((error) => {
+						if (!code(error, "EEXIST")) throw error;
+					});
+					await checkDirectory(path);
+					await this.#storage.assertControl(signal);
+					return path;
+				}, callerSignal);
+			} catch (error) {
+				if (
+					!(error instanceof Error && error.message === "CODING_HOST_STORAGE_TIMEOUT") ||
+					attempt >= CODING_STORAGE_CHECK_TRIES
+				)
+					throw error;
+				await setTimeout(CODING_STORAGE_CHECK_PAUSE_MS * 2 ** (attempt - 1), undefined, { signal: callerSignal });
+			}
+		}
 	}
 	/** Run authority for one effect of this turn on its member's machine: the
 	 * live session lease, the exact machine and the session's NAS volume, a
@@ -741,13 +791,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				plug: this.#options.agentPlug,
 				stoppedFromOutside,
 				starting,
+				// Read before a create with the agent card, so a node not set up for it fails that create, not its machine.
+				projectAllowsAgentCard: (project, read) => this.#options.client.allowsAgentCard(project, read),
 			});
 			checked.throwIfAborted();
 			if (result.state === "pending") {
 				await setTimeout(500, undefined, { signal: checked });
 				continue;
 			}
-			if (result.state === "recovery-required") throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
+			// An effect LXD refused at its submission names LXD's status, which the log shows (and a failed
+			// housekeeping step's last_error).
+			if (result.state === "recovery-required")
+				throw new Error(
+					result.lxdStatus
+						? `CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_${result.lxdStatus}`
+						: "CODING_HOST_VM_RECOVERY_REQUIRED",
+				);
 			if (desiredState === "running" && result.state !== "running")
 				throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
 			if (desiredState === "stopped" && result.state !== "stopped" && result.state !== "absent")
@@ -1092,7 +1151,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 		});
 	}
+	/** A failure the host can name (NAMED_WORKSPACE_FAILURES) is a CodingWorkspaceFailed, unless the caller gave up. */
 	async prepareWorkspace(
+		claim: CodingSessionClaim,
+		turn: CodingTurnState,
+		signal: AbortSignal,
+	): Promise<CodingWorkspace> {
+		try {
+			return await this.#prepareWorkspace(claim, turn, signal);
+		} catch (error) {
+			const summary = error instanceof Error ? NAMED_WORKSPACE_FAILURES.get(error.message) : undefined;
+			if (!(error instanceof Error) || summary === undefined || signal.aborted) throw error;
+			throw new CodingWorkspaceFailed(error.message, summary, { cause: error });
+		}
+	}
+	async #prepareWorkspace(
 		claim: CodingSessionClaim,
 		turn: CodingTurnState,
 		signal: AbortSignal,

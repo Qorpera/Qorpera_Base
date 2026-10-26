@@ -14,6 +14,7 @@ import {
 	type CodingSessionClaim,
 	type CodingSubmission,
 	type CodingTurnState,
+	CodingWorkspaceFailed,
 	parseCodingSessionClaim,
 	parseCodingTurnState,
 } from "../src/coding-executor.ts";
@@ -396,6 +397,61 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+	});
+
+	it("a workspace the host could not make for a reason it names fails the turn at once, with that reason, under its lease", async () => {
+		const w = world();
+		// As the wake of 26 Oct 2026 04:41Z (C8 C4-1) would have ended, had its storage stayed slow past the host's tries.
+		const failure = new CodingWorkspaceFailed(
+			"CODING_HOST_STORAGE_TIMEOUT",
+			"The coding machine's storage did not answer in time, so the turn could not start.",
+		);
+		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(failure);
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({
+			control: w.control,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion).toMatchObject({
+			p_worker_id: w.world.claim.workerId,
+			p_lease_token: w.world.claim.leaseToken,
+			p_outcome: "failed",
+			p_summary:
+				"The coding machine's storage did not answer in time, so the turn could not start. [code=CODING_HOST_STORAGE_TIMEOUT]",
+		});
+		expect(w.world.phase).toBe("failed");
+		// Nothing began; what the turn attached came off first; the log names the code.
+		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		const completed = vi.mocked(w.control.call).mock.calls.findIndex((c) => c[0] === "qorpera_complete_coding_turn");
+		expect(vi.mocked(w.host.detachSession).mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(w.control.call).mock.invocationCallOrder[completed]!,
+		);
+		expect(report.mock.calls).toEqual([["turn", failure]]);
+	});
+
+	it("a named workspace failure whose report does not go through leaves the lease to lapse, as any other failure", async () => {
+		const w = world();
+		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(
+			new CodingWorkspaceFailed("CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD", "No computer could start."),
+		);
+		const inner = w.control.call;
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_complete_coding_turn"
+					? Promise.reject(new Error("Coding session lease unavailable"))
+					: inner(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(w.world.phase).toBe("preparing");
+		expect(w.host.detachSession).toHaveBeenCalled();
 	});
 
 	it("a lost heartbeat aborts the turn and ends it", async () => {
