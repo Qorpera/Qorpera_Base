@@ -395,8 +395,10 @@ describe("CodeHostRepositories", () => {
 		// GitHub's main no longer reaches the session's base: the session starts again from the base as it is now.
 		const gone = "c".repeat(40);
 		const session = { ...f.session, baseSha: gone, claim: { ...f.session.claim, baseSha: gone } };
+		// The turn fails at once with the code host's code (CodingWorkspaceFailed), the refusal its cause.
 		await expect(f.repositories.prepare(session, signal())).rejects.toMatchObject({
-			code: "CODE_HOST_SEED_BASE_GONE",
+			message: "CODE_HOST_SEED_BASE_GONE",
+			cause: { code: "CODE_HOST_SEED_BASE_GONE" },
 		});
 		expect(await exists(f.tree)).toBe(false);
 		expect(f.events).not.toContain("publish");

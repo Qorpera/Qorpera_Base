@@ -8,6 +8,9 @@ import { CodeHostJobFailure, CodeHostRefusal } from "./code-host-jobs.ts";
 /** At most this many characters of an error's detail reach a log: its start and its end, which for git is its last word. */
 const MAX_DETAIL = 500;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}(:[A-Z][A-Z0-9_]{0,63})?$/;
+/** A message that is a code already, as the log's fixed-code rule reads one (cloud-coding-error-code.ts): a code, or
+ * one of the LXD client's fixed messages with an optional HTTP status. */
+const BARE = (message: string) => FIXED.test(message) || /^LXD [A-Za-z ]{1,60}( \(\d{3}\))?$/.test(message);
 
 /** The code host's own code for one of its errors (a job's failed step, a refusal by rule), or undefined. */
 export function codeHostErrorCode(error: unknown): string | undefined {
@@ -45,7 +48,7 @@ export function codingErrorDetail(error: unknown): string {
 		else if (current instanceof CodeHostJobFailure) said = current.detail;
 		else if (current instanceof CodeHostRefusal)
 			said = current.message.startsWith(`${current.code}: `) ? current.message.slice(current.code.length + 2) : "";
-		else if (!FIXED.test(current.message)) said = current.message;
+		else if (!BARE(current.message)) said = current.message;
 		current = current instanceof Error ? current.cause : undefined;
 	}
 	const line = redactCodingErrorText(said.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " "))

@@ -39,6 +39,7 @@ describe("a coding error's code and detail for the executor's log", () => {
 		expect(codingErrorDetail(new CodeHostRefusal("CODE_HOST_NOT_SEEDED"))).toBe("");
 		expect(codingErrorDetail(new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE"))).toBe("");
 		expect(codingErrorDetail(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"))).toBe("");
+		expect(codingErrorDetail(new Error("LXD request failed (500)"))).toBe("");
 		expect(codingErrorDetail(undefined)).toBe("");
 	});
 	it("keeps another error's own text, or its cause's under a bare code", () => {
