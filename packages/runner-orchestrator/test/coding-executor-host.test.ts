@@ -23,6 +23,7 @@ import {
 	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingTurnState,
+	CodingWorkspaceFailed,
 } from "../src/coding-executor.ts";
 import {
 	CODING_FOLDER_GIT_ENVIRONMENT,
@@ -571,6 +572,7 @@ async function fixture() {
 		submitInstanceOperation: vi.fn(),
 		inspectInstanceOperation: vi.fn(),
 		hasImage: vi.fn(async () => !state.imageGone),
+		allowsAgentCard: vi.fn(async () => true),
 		replaceInstanceDevices: vi.fn(async (_project, _name, devices) => {
 			if (state.applyDevices) lxd.devices = structuredClone(devices) as Devices;
 		}),
@@ -3049,6 +3051,107 @@ describe("a coding session on the folder model", () => {
 		);
 		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
 		expect(f.views.attach).not.toHaveBeenCalled();
+	});
+	describe("a wake whose storage or machine fails", () => {
+		/** A host whose steps on the NAS may take 50 ms each. */
+		const impatient = (f: Awaited<ReturnType<typeof folderFixture>>) =>
+			new LxdCodingExecutorHost({ ...f.options, folder: f.folder, storageStepTimeoutMs: 50 });
+		it("tries a folder check the NAS was slow to answer again, and the wake goes on (C8 C4-1, 26 Oct 2026)", async () => {
+			const f = await folderFixture();
+			// The wake's first step, the check of the machines' folder, gets its answer only after its time ran out.
+			mocked.storageAssert.mockImplementationOnce(() => new Promise((done) => globalThis.setTimeout(done, 150)));
+			expect(await impatient(f).prepareWorkspace(f.claim, f.turn(), f.signal)).toEqual({
+				vmId: f.machine.machineId,
+				baseSha: f.baseSha,
+			});
+			expect(reconciled()).toEqual(["running"]);
+			expect(f.views.attach).toHaveBeenCalledTimes(1);
+		});
+		it("fails the turn with the storage's own code once the NAS stays slow past the last try, sending it one request at a time", async () => {
+			const f = await folderFixture();
+			mocked.storageAssert.mockImplementationOnce(() => new Promise(() => {}));
+			const started = performance.now();
+			const failed = await impatient(f)
+				.prepareWorkspace(f.claim, f.turn(), f.signal)
+				.catch((error: unknown) => error);
+			const took = performance.now() - started;
+			expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+			expect(failed).toMatchObject({
+				message: "CODING_HOST_STORAGE_TIMEOUT",
+				summary:
+					"The coding machine's storage did not answer in time, so the turn could not start. The workspace is kept; a follow-up tries again. [code=CODING_HOST_STORAGE_TIMEOUT]",
+			});
+			// Three tries of 50 ms with a pause of 250 ms and then 500 ms between them; each later try waited for the one
+			// before it, which never answered, so the NAS was asked once.
+			expect(took).toBeGreaterThanOrEqual(850);
+			expect(took).toBeLessThan(5000);
+			expect(mocked.storageAssert).toHaveBeenCalledTimes(1);
+			// The wake never reached the machine.
+			expect(mocked.reconcile).not.toHaveBeenCalled();
+			expect(f.views.attach).not.toHaveBeenCalled();
+		});
+		it("names no storage timeout for a caller that gave up, and tries nothing again", async () => {
+			const f = await folderFixture();
+			const gaveUp = new AbortController();
+			// The turn's lease is lost while the wake's first check waits for the NAS, before that check's own time ran out.
+			mocked.storageAssert.mockImplementationOnce(() => {
+				globalThis.setTimeout(() => gaveUp.abort(new Error("CODING_EXECUTOR_LEASE_LOST")), 20);
+				return new Promise(() => {});
+			});
+			await expect(impatient(f).prepareWorkspace(f.claim, f.turn(), gaveUp.signal)).rejects.toThrow(
+				/^CODING_EXECUTOR_LEASE_LOST$/,
+			);
+			expect(mocked.storageAssert).toHaveBeenCalledTimes(1);
+			expect(mocked.reconcile).not.toHaveBeenCalled();
+		});
+		it("fails a check that fails otherwise at once, without trying it again", async () => {
+			const f = await folderFixture();
+			mocked.storageAssert.mockRejectedValueOnce(new Error("CODING_NAS_CONTROL_INVALID"));
+			const failed = await impatient(f)
+				.prepareWorkspace(f.claim, f.turn(), f.signal)
+				.catch((error: unknown) => error);
+			expect(failed).not.toBeInstanceOf(CodingWorkspaceFailed);
+			expect((failed as Error).message).toBe("CODING_NAS_CONTROL_INVALID");
+			expect(mocked.storageAssert).toHaveBeenCalledTimes(1);
+		});
+		it("reads the machine's project before its create, and fails the turn with the project's own code when it refuses the agent card", async () => {
+			const f = await folderFixture();
+			vi.mocked(f.client.allowsAgentCard).mockResolvedValue(false);
+			// As coding-machine.ts does before a create with the agent card.
+			mocked.reconcile.mockImplementationOnce(async (input: CodingMachineReconcileOptions) => {
+				await input.authorize("run", input.signal);
+				if (!(await input.projectAllowsAgentCard?.(input.plan.project, input.signal)))
+					throw new Error("CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD");
+				throw new Error("created");
+			});
+			const failed = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((error: unknown) => error);
+			expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+			expect(failed).toMatchObject({
+				message: "CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD",
+				summary:
+					"No computer could start for this session: its node does not allow the machine's network card yet, and an operator must allow it there. The workspace is kept; a follow-up tries again once that is done. [code=CODING_MACHINE_PROJECT_REFUSES_AGENT_CARD]",
+			});
+			expect(f.client.allowsAgentCard).toHaveBeenCalledWith("coding", expect.any(AbortSignal));
+			expect(f.views.attach).not.toHaveBeenCalled();
+		});
+		it("names LXD's status when an effect it refused leaves the machine to an operator, and keeps that outcome", async () => {
+			for (const [lxdStatus, expected] of [
+				[403, "CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403"],
+				[undefined, "CODING_HOST_VM_RECOVERY_REQUIRED"],
+			] as const) {
+				const f = await folderFixture();
+				mocked.reconcile.mockImplementationOnce(async (input: CodingMachineReconcileOptions) => ({
+					state: "recovery-required",
+					machineId: input.plan.machineId,
+					instanceName: input.plan.name,
+					instanceSha256: input.plan.instanceSha256,
+					...(lxdStatus ? { lxdStatus } : {}),
+				}));
+				const failed = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((error: unknown) => error);
+				expect(failed).not.toBeInstanceOf(CodingWorkspaceFailed);
+				expect((failed as Error).message).toBe(expected);
+			}
+		});
 	});
 	it("checks the machine's agent again when an exec's LXD operation failed before it ran, up to the limit", async () => {
 		// Live 2026-10-16 (P3 phase A run 5): just after the guest's lxd-agent came up, LXD timed out connecting to it

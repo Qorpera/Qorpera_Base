@@ -30,6 +30,17 @@ export class CodingMachineUnavailable extends Error {
 		this.reason = reason;
 	}
 }
+/** The turn's workspace could not be made, for a reason the host can name: its machine's storage did not answer in
+ * time, or its node is not set up for the machine. Nothing of the turn ran: it fails at once, under its lease, with
+ * `summary` (what happened, in the member's and the agent's words, and the code), instead of leaving its lease to lapse
+ * as if the executor had stopped. The message is the fixed code alone, which is all a log shows. */
+export class CodingWorkspaceFailed extends Error {
+	readonly summary: string;
+	constructor(code: string, summary: string, options?: ErrorOptions) {
+		super(code, options);
+		this.summary = `${summary} [code=${code}]`;
+	}
+}
 /** The kernel refused a call on a busy row (SQLSTATE 55P03, lock_not_available)
  * and rolled its transaction back whole: the call wrote nothing. A control
  * rejects with this only for a complete PostgREST error with that SQLSTATE. */
@@ -203,7 +214,8 @@ export interface CodingExecutorHost {
 	 * the session's NAS folders and seed a credential-free checkout exactly once.
 	 * Resolves with the machine and the pinned base; nothing calls the model
 	 * before this resolves. Throws CodingMachineUnavailable when the turn must
-	 * wait for its machine. */
+	 * wait for its machine, and CodingWorkspaceFailed when the turn fails for a
+	 * reason the host can name. */
 	prepareWorkspace(claim: CodingSessionClaim, turn: CodingTurnState, signal: AbortSignal): Promise<CodingWorkspace>;
 	/** The end of a turn, whatever its outcome: nothing more starts, publishes
 	 * or seeds for it. The session stays attached for the keeper. */
@@ -516,6 +528,19 @@ export class CloudCodingExecutor {
 			try {
 				workspace = await this.#host.prepareWorkspace(claimed, turn, active);
 			} catch (error) {
+				if (error instanceof CodingWorkspaceFailed && !active.aborted) {
+					// Nothing ran yet: unplug whatever was attached, then fail the turn with its reason while it holds its
+					// lease. Should the report not go through, the lease lapses and the session fails all the same.
+					this.#reported("turn", error);
+					end();
+					try {
+						await this.#host.detachSession(claimed, active);
+					} catch (detachError) {
+						this.#reported("stop", detachError);
+					}
+					await complete("failed", error.summary);
+					return "failed";
+				}
 				if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
 				// Nothing ran yet: unplug whatever was attached, then wait in the queue.
 				try {
