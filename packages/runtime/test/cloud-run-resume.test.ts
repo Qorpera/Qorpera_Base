@@ -6,7 +6,11 @@ import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextRequest,
 } from "@qorpera/runtime/cloud-native-context-composition";
-import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import {
+	CLOUD_RUN_ROW_READ_MS,
+	type CloudNativeToolBinding,
+	CloudNativeToolRun,
+} from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudRunLogFolder, CloudRunLogGone, type CloudRunLogPlace } from "@qorpera/runtime/cloud-run-log";
 import { type CloudRunResumeRequest, CloudRunResumeRpc, openCloudRunResume } from "@qorpera/runtime/cloud-run-resume";
 import { MemoryCompactLane } from "@qorpera/runtime/memory-tree/compact";
@@ -335,6 +339,27 @@ describe("resume binding RPC", () => {
 		expect(vi.mocked(f.control.call).mock.calls[0]?.[1]).toEqual({ p_binding: f.binding });
 	});
 
+	it("gives both reads of the run's budget row as long as the database may run them (R1, 28 Oct 2026)", async () => {
+		const f = fixture();
+		const normal = f.run.retry;
+		const asked: unknown[][] = [];
+		f.run.retry = async (read, io, ...rest) => {
+			asked.push(rest);
+			return normal(read, io);
+		};
+		await f.open();
+		// Each attempt's transport and the run's retry wait CLOUD_RUN_ROW_READ_MS, and a lost or late answer is asked
+		// again only once that long has passed since its copy was sent.
+		expect(asked).toEqual([
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
+		]);
+		expect(vi.mocked(f.control.call).mock.calls.map(([method, , , timeoutMs]) => [method, timeoutMs])).toEqual([
+			["qorpera_memory_run_resume", CLOUD_RUN_ROW_READ_MS],
+			["qorpera_memory_run_resume_record", CLOUD_RUN_ROW_READ_MS],
+		]);
+	});
+
 	it.each([
 		undefined,
 		{},
@@ -435,10 +460,16 @@ describe("resume binding RPC", () => {
 			// The refusal ends this record only; the run's authority stands.
 			expect(run.signal.aborted).toBe(false);
 
-			// The real retry does ask a lost answer again, with the same request, and still stops at the refusal.
+			// The real retry does ask a lost answer again, with the same request, and still stops at the refusal. The
+			// first answer is a lock wait the database gave up (55P03), so the copy has ended and it is asked again at
+			// once; a lost answer that does not say so would wait out the copy (R1, see the run's own tests).
 			let answers = 0;
 			const lossy = vi.fn<typeof fetch>(async () => {
-				if (++answers === 1) return new Response("<html>bad gateway</html>", { status: 502 });
+				if (++answers === 1)
+					return Response.json(
+						{ code: "55P03", message: "Run budget row is busy", details: null, hint: null },
+						{ status: 500 },
+					);
 				return Response.json(refusal, { status: 409 });
 			});
 			const retried = resumeWith(lossy);

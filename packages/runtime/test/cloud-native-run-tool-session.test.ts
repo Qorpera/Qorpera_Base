@@ -125,12 +125,16 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(encoded).not.toContain(f.binding.credentialCapsuleId);
 });
 
-it("asks for the run's admission and its context read set together", async () => {
+it("asks for the run's admission, then its context read set: the two reads are never in flight at once (R1, 28 Oct 2026)", async () => {
+	// The context read takes the run's budget row; sent alongside the admission, a stalled database queued one
+	// run's reads 11 to 14 deep on that row.
 	const f = fixture();
 	let inFlight = 0;
 	let overlapped = false;
-	const slow = async <T>(read: () => Promise<T>): Promise<T> => {
+	const order: string[] = [];
+	const slow = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
 		if (++inFlight > 1) overlapped = true;
+		order.push(name);
 		try {
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			return await read();
@@ -139,10 +143,14 @@ it("asks for the run's admission and its context read set together", async () =>
 		}
 	};
 	const describe = f.control.describeToolAuthority.getMockImplementation()!;
-	f.control.describeToolAuthority.mockImplementation(() => slow(describe));
-	f.assertContext.mockImplementation(() => slow(async () => undefined));
+	f.control.describeToolAuthority.mockImplementation(() => slow("admission", describe));
+	f.assertContext.mockImplementation(() => slow("context", async () => undefined));
 	await expect(f.start()).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
-	expect(overlapped).toBe(true);
+	expect(overlapped).toBe(false);
+	// Each context read follows an admission read of its own.
+	const contexts = order.flatMap((name, index) => (name === "context" ? [index] : []));
+	expect(contexts.length).toBeGreaterThanOrEqual(3);
+	for (const index of contexts) expect(order[index - 1]).toBe("admission");
 });
 
 it("does not release a provider request when durable context-view recording fails", async () => {
@@ -304,7 +312,7 @@ function tracked(f: ReturnType<typeof fixture>, oneCall: boolean) {
 	return { counts, fenceContextView, tools };
 }
 
-it("checks and records each model request in one call: 4 rounds and 7 calls become 1", async () => {
+it("checks and records each model request in one call: 7 rounds and 7 calls become 1", async () => {
 	const before = fixture();
 	const separate = tracked(before, false);
 	await expect(before.start({ tools: separate.tools })).resolves.toMatchObject({ fencedRequests: 2, toolCalls: 1 });
@@ -313,10 +321,11 @@ it("checks and records each model request in one call: 4 rounds and 7 calls beco
 	await expect(after.start({ tools: combined.tools })).resolves.toMatchObject({ fencedRequests: 2, toolCalls: 1 });
 	// Admission, the start checks and the tool call's own checks are the same in both runs.
 	// Per model request the separate calls were: the result fence's check (2 calls), the check
-	// before recording (2), the record, and the check after it (2): 4 rounds, 7 calls.
+	// before recording (2), the record, and the check after it (2): 7 calls. Since R1 (28 Oct 2026)
+	// each check's two calls go one after the other, so 7 rounds too (4 before).
 	expect(separate.counts.record).toBe(2);
 	expect(combined.counts).toMatchObject({ record: 0, fence: 2 });
-	expect(separate.counts.rounds - combined.counts.rounds).toBe(2 * (4 - 1));
+	expect(separate.counts.rounds - combined.counts.rounds).toBe(2 * (7 - 1));
 	expect(separate.counts.calls - combined.counts.calls).toBe(2 * (7 - 1));
 	expect(separate.counts.describe - combined.counts.describe).toBe(2 * 3);
 	expect(separate.counts.context - combined.counts.context).toBe(2 * 3);
