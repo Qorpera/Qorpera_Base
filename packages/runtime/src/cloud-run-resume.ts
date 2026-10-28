@@ -341,16 +341,20 @@ export async function openCloudRunResume(options: {
 /** The first line of a resumed attempt's work message when its run keeps no log: what the lines after it are. */
 export const RUN_RESUME_RECEIPTS =
 	"resumed: this run was cut off, and this attempt goes on with the same task. The effects its earlier attempts " +
-	"recorded follow, oldest first. A completed one ran: do not do it again. Called again with the same tool, " +
-	"operation key and arguments, it returns its stored result and runs nothing. An effect whose outcome is unknown " +
-	"may have run: check it first; its key never runs again. A logicalOperationKey starts with its tool's name.";
+	"recorded follow, oldest first, each by its receipt's key. A completed one ran: do not do it again; where its " +
+	"result is not shown, read the current state rather than call it again. An effect whose outcome is unknown may " +
+	"have run: check it first; its key never runs again. A receipt's key is not always the key a call passed: most " +
+	"begin with the tool's name and a colon, many tools put a prefix of their own before the call's key (as in " +
+	"hire_agent:hire:<operationKey> or coworker:<operationKey>), and some come from no argument. The same tool called " +
+	"again with the call's own key and the same arguments returns the stored result and runs nothing; other " +
+	"arguments under that key are refused.";
 
 /** Opens a resumed attempt of a run that keeps no log (Agent notebooks, 20260930539000) from the run's receipts, which
  * `resume.receipts` read: its work message tells it each completed effect with the result the run stored for it, each
- * effect whose outcome is unknown, and each one's key. Only results this run already saw are shown, the newest first
- * within half the run's view (§5.7); past that a completed effect is listed by its key, which returns its result when
- * called again. Nothing is written but the resume record, which lists every unknown receipt as for a log; SQL refuses
- * the attempt's first receipt until it is stored. A caller must await this before any provider request or step. */
+ * effect whose outcome is unknown, and each one's receipt key. Only results this run already saw are shown: newest
+ * first, each one that still fits in half the run's view (§5.7); any other completed effect is listed by its key alone.
+ * Nothing is written but the resume record, which lists every unknown receipt as for a log; SQL refuses the attempt's
+ * first receipt until it is stored. A caller must await this before any provider request or step. */
 export async function openCloudRunReceiptsResume(options: {
 	readonly resume: CloudRunResumePort;
 	readonly receipts: CloudRunResumeReceipts;
@@ -368,7 +372,7 @@ export async function openCloudRunReceiptsResume(options: {
 			continue;
 		}
 		const line = content === null ? null : `completed: ${JSON.stringify({ ...item, result: content })}`;
-		// Its share of the message, escaped as sent.
+		// Its share of the message, escaped as sent. One that does not fit leaves room for an older, smaller one.
 		const bytes = line === null ? 0 : Buffer.byteLength(cloudRunWorkMessage([line])) - empty;
 		if (line !== null && bytes <= budget) {
 			budget -= bytes;

@@ -40,8 +40,9 @@ export async function openCloudRunLog(options: {
 	const { runId, signal } = options.log;
 	if (resume.runId !== runId) throw new CloudRunLogUnavailable("resume_run_mismatch");
 	signal.throwIfAborted();
-	// Asked beside the place, so a run in Agent notebooks waits for no further round trip. Null for any run that keeps
-	// a log, and read only when the run keeps none.
+	// Asked for every run, beside the place, so a run in Agent notebooks waits for no further round trip: one more call
+	// in the same wave. Its answer (null for an original attempt and for any run that keeps a log) is used only when the
+	// run keeps none; a failed read fails only such a run.
 	const receipts = resume.receipts(signal);
 	receipts.catch(() => undefined);
 	let place: CloudRunLogPlace;

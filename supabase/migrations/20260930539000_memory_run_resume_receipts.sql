@@ -11,8 +11,10 @@
 --    and a narrow run still takes today's path.
 -- 3. The cut-off (qorpera_resume_run_from_log) resumes it; at its login's usage limit it ends as before, with no pause.
 -- 4. qorpera_memory_run_resume_receipts (service_role, through the run's binding) returns the run's completed receipts
---    (the newest 64, with the results the runtime stored for them, up to 64 KiB) and its outcome_unknown ones. Only
---    the platform reads it, to build the resumed attempt's first message.
+--    (the newest 64, with the results the runtime stored for them, newest first up to 64 KiB in all) and its
+--    outcome_unknown ones; null for an original attempt or a run that keeps a log. A resumed attempt of a run that no
+--    longer resumes (its machine made it narrow) is refused (55000), so it fails. Only the platform reads it, to build the
+--    resumed attempt's first message.
 -- 5. The resume record (qorpera_memory_run_resume_record) accepts such a run with no steps read, and still needs every
 --    unknown receipt listed (20260930340000).
 -- 6. Until the resumed attempt has recorded that, its first receipt is refused (55000), a replay too.

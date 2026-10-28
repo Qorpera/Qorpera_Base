@@ -352,12 +352,14 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 
 	it("tells the attempt each completed effect with its result and each unknown one, and records the unknown ones", async () => {
 		const f = fixture();
-		const older = completed("company_write:plan", null);
-		const done = completed("company_write:notes", { kind: "json", value: { path: "notes.md", saved: true } });
-		const unsure = unknown("mail_send:intro");
+		// Receipt keys as tools store them: with the tool's own prefix, and one begun in SQL with no tool name.
+		const older = completed("manage_todo:todo:plan", null);
+		const done = completed("hire_agent:hire:researcher", { kind: "json", value: { agentId: "a1", saved: true } });
+		const unsure = unknown("coworker:ask-sara");
 		f.receipts = { schema: SCHEMA, why: "restart", receipts: [older, done, unsure], completedOmitted: 2 };
 		const result = await open(f);
-		// Oldest first; a completed one whose result SQL left out is listed by its key.
+		// Oldest first, each by its receipt's key as stored; a completed one whose result SQL left out is listed by its
+		// key alone.
 		expect(result.lines).toEqual([
 			RUN_RESUME_RECEIPTS,
 			"earlier: 2 older completed effects are not listed",
@@ -394,9 +396,9 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 		expect(f.folder.commit).not.toHaveBeenCalled();
 	});
 
-	it("shows the newest results, escaped, within half the run's view, and lists the rest by their keys", async () => {
+	it("shows, newest first, each result that still fits in half the run's view, escaped, and lists the rest by their keys", async () => {
 		const f = fixture();
-		// Escaped, each `<` is six bytes: 36,000, past the 32,000 a resume may show.
+		// Escaped, each `<` is six bytes: 36,000, past the 32,000 a resume may show. The older, smaller one still fits.
 		const old = completed("company_write:a", { kind: "text", value: "a".repeat(12_000) });
 		const large = completed("company_write:b", { kind: "text", value: "<".repeat(6_000) });
 		const newest = completed("company_write:c", { kind: "text", value: "c".repeat(12_000) });
