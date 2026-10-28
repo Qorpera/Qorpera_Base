@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import type { CloudAgentSendInput, CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { tagNativeRuntimeFailure } from "@qorpera/runtime/cloud-native-failure";
@@ -607,6 +608,48 @@ describe("native provider host", () => {
 			provider_session_id: "silent-job",
 		});
 		expect(sendMessage).not.toHaveBeenCalled();
+		expect(await readdir(root)).toEqual([]);
+	});
+
+	it("names a capsule download that got no answer a timeout, and one the store refused a plain failure", async () => {
+		const root = await temporaryRoot("qorpera-native-company-download-");
+		const capsuleId = "10000000-0000-4000-8000-000000000016";
+		const get = vi.fn<NativeCredentialCapsuleStore["get"]>();
+		const execute = vi.fn<NativeCloudExecutionDriver["execute"]>();
+		const host = new NativeProviderHost({
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution: vi.fn(),
+				sendMessage: vi.fn(),
+			},
+			capsules: { get, put: vi.fn() },
+			harness: { beginLogin: vi.fn() },
+			cloudRuntime: { execute },
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		for (const [error, message] of [
+			// The store's own deadline (withCloudDeadline).
+			[new CloudRequestTimeoutError(), "Native provider execution credential-download stage failed (timeout)"],
+			[
+				new TypeError("terminated", {
+					cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+				}),
+				"Native provider execution credential-download stage failed (timeout)",
+			],
+			// What SupabaseNativeCredentialCapsuleStore.get throws for a refused download.
+			[
+				new Error("Native capsule download failed (403)"),
+				"Native provider execution credential-download stage failed",
+			],
+		] as const) {
+			get.mockRejectedValueOnce(error);
+			await expect(host.execute(companyRequest(capsuleId))).rejects.toThrow(exactly(message));
+		}
+		expect(get).toHaveBeenCalledTimes(3);
+		expect(execute).not.toHaveBeenCalled();
 		expect(await readdir(root)).toEqual([]);
 	});
 

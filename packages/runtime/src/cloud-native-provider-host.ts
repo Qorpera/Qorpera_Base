@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } fr
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
+import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import {
 	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
 	type NativeAccountRefreshRequest,
@@ -554,6 +555,34 @@ function credentialSealingFailure(error: unknown): string {
 		if (error.message === message) return reason;
 	}
 	return harnessExecutionFailureCategory(error);
+}
+
+/** Transport codes that say an answer was lost on its way, never that it was refused. */
+const LOST_ANSWER_CODES = new Set([
+	"ECONNRESET",
+	"ECONNREFUSED",
+	"ETIMEDOUT",
+	"EPIPE",
+	"EAI_AGAIN",
+	"ENETUNREACH",
+	"EHOSTUNREACH",
+	"UND_ERR_SOCKET",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_HEADERS_TIMEOUT",
+	"UND_ERR_BODY_TIMEOUT",
+]);
+
+/** Whether a credential download got no answer: its request's deadline passed, or the connection failed or was cut
+ * (28 October 2026). An answer that says no (a refusal, a revoked login, or the broker's 403 for its own failure), a
+ * malformed answer and a redirect are answers. */
+function credentialDownloadLost(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+		if (current instanceof CloudRequestTimeoutError || current.name === "TimeoutError") return true;
+		if (LOST_ANSWER_CODES.has(String((current as NodeJS.ErrnoException).code))) return true;
+		current = current.cause;
+	}
+	return false;
 }
 
 function harnessExecutionFailureCategory(error: unknown): string {
@@ -1549,6 +1578,16 @@ export class NativeProviderHost {
 				} else {
 					failure = safeHarnessExecutionFailure(error);
 				}
+			} else if (
+				stage === "credential-download" &&
+				!executionAbort.signal.aborted &&
+				credentialDownloadLost(error)
+			) {
+				// A download that got no answer, before the harness started, is a timeout: the runner tries the run again
+				// from the start (cloudRunnerJobFailureBeforeStartIsRetryable). A stopped run is never named one.
+				failure = new Error("Native provider execution credential-download stage failed (timeout)", {
+					cause: error,
+				});
 			} else {
 				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });

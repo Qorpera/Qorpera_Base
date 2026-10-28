@@ -92,7 +92,7 @@ describe("the runner's retry decision", () => {
 			expect(cloudRunnerJobFailureIsRetryable(new Error(message))).toBe(retryable);
 	});
 
-	it("tries again only a timeout before the run started: its context, wake, connectors or prompt", () => {
+	it("tries again only a timeout before the run started: its login download, context, wake, connectors or prompt", () => {
 		for (const stage of ["company-context", "wake-envelope", "connector-tools", "prompt-composition"] as const)
 			expect(
 				cloudRunnerJobFailureBeforeStartIsRetryable(
@@ -101,7 +101,20 @@ describe("the runner's retry decision", () => {
 					),
 				),
 			).toBe(true);
+		// The host names a login download that got no answer this way (cloud-native-model-login-run.test.ts).
+		const download = nativeProviderFailureCode(
+			new Error("Native provider execution credential-download stage failed (timeout)"),
+		);
+		expect(download).toBe("NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT");
+		expect(
+			cloudRunnerJobFailureBeforeStartIsRetryable(
+				new Error(`Native provider bridge request failed (422) [code=${download}]`),
+			),
+		).toBe(true);
 		for (const message of [
+			// A refused download, and an opened login's own timeout, stay final.
+			"Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]",
+			"Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_OPENING:TIMEOUT]",
 			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE]",
 			"Native provider bridge request failed (422) [code=NATIVE_NATIVE_TOOLS:TIMEOUT]",
 			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TIMEOUT]",
