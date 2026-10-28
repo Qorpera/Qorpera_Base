@@ -134,18 +134,19 @@ end $$;
 
 -- 3. The tree work no run is bound to. Every memory call a run's host makes is gated by the run's mode or has nothing
 --    to gate: the compaction record only counts compactor calls (a notebook run makes none); the step hashes and the
---    narrow step only serve a log a run already writes; a resume needs a live log (a notebook run has none, so it ends
---    as on master: cut off, in review; at its usage limit, failed). Nothing folds or composes outside a run: the only
---    tree crons are the prune's, and erasure and retention read no mode, so they run in either.
+--    narrow step only serve a log a run already writes; a resume needs a live log, or reads a notebook run's own
+--    receipts (it has no log, 20260930539000: cut off, it resumes from them; at its usage limit, it fails). Nothing
+--    folds or composes outside a run: the only tree crons are the prune's, and erasure and retention read no mode, so
+--    they run in either.
 do $$
 declare v_got text[]; v_name text; v_jobs text[];
 begin
 	select array_agg(x.name order by x.name collate "C") into v_got
 	from (select distinct name::text as name from public.qorpera_native_host_calls where name like 'qorpera\_memory\_%') x;
 	if v_got is distinct from array['qorpera_memory_branches', 'qorpera_memory_compaction_record', 'qorpera_memory_events_run',
-		'qorpera_memory_release', 'qorpera_memory_run_log_place', 'qorpera_memory_run_resume', 'qorpera_memory_run_resume_record',
-		'qorpera_memory_step_hashes', 'qorpera_memory_step_narrow', 'qorpera_memory_view', 'qorpera_memory_view_record',
-		'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom'] then
+		'qorpera_memory_release', 'qorpera_memory_run_log_place', 'qorpera_memory_run_resume', 'qorpera_memory_run_resume_receipts',
+		'qorpera_memory_run_resume_record', 'qorpera_memory_step_hashes', 'qorpera_memory_step_narrow', 'qorpera_memory_view',
+		'qorpera_memory_view_record', 'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom'] then
 		raise exception 'The memory host calls changed: %', v_got; end if;
 	foreach v_name in array array['qorpera_memory_branches', 'qorpera_memory_events_run', 'qorpera_memory_release',
 		'qorpera_memory_run_log_place', 'qorpera_memory_view_record', 'qorpera_memory_view_reference_check_run',
@@ -156,13 +157,14 @@ begin
 	end loop;
 	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_memory_view(jsonb)'::regprocedure),
 		'qorpera_memory_view_of(') = 0 then raise exception 'The view is the gated view_of''s'; end if;
-	-- Who reads a run's mode: the gates, the run row's trigger and the company's read.
+	-- Who reads a run's mode: the gates, the run row's trigger, the company's read and the receipts resume's check.
 	select array_agg(proname::text order by proname::text collate "C") into v_got from pg_proc
 	where pronamespace = 'public'::regnamespace and prosrc ~ '\mmemory_mode\M';
 	if v_got is distinct from array['qorpera_company_memory_mode', 'qorpera_memory_branches', 'qorpera_memory_events_run',
 		'qorpera_memory_release', 'qorpera_memory_run_log_paths', 'qorpera_memory_run_log_place',
 		'qorpera_memory_run_tree_problem', 'qorpera_memory_view_of', 'qorpera_memory_view_record',
-		'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom', 'qorpera_pin_execution_memory_mode'] then
+		'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom', 'qorpera_pin_execution_memory_mode',
+		'qorpera_run_resumes_from_receipts'] then
 		raise exception 'The mode''s readers changed: %', v_got; end if;
 	-- The crons: only the prune's (where pg_cron is installed), and only its schedule names memory.
 	if to_regclass('cron.job') is not null then

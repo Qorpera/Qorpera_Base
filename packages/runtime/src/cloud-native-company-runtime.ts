@@ -503,7 +503,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			signal.throwIfAborted();
 			// The run's work log (RUNTIME-AGENT-MEMORY-TREE.md §4.5, W1c-3), opened with its tools: its step lines build
 			// in the run's compactor lane, on threads this run's Codex session answers (§7.1), and its work composer
-			// serves the agent's requests from then on (§5.7). A run without a log sends each request as Codex built it.
+			// serves the agent's requests from then on (§5.7). A run without a log sends each request as Codex built it,
+			// with only its receipts' work message added on a resumed attempt (20260930539000).
 			let runWork: CloudCodexContextComposer | undefined;
 			const composeRun: CloudCodexContextComposer = (request, composeSignal) =>
 				runWork ? runWork(request, composeSignal) : cloudNativeContextIdentity(request);
@@ -821,9 +822,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							)
 						)
 							throw new Error("Cloud context identity changed before execution");
-						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2). The log
-						// steps a call as auto-review classifies it. A log made once and no longer there ends the run, as
-						// it does mid-run.
+						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2), or, in Agent
+						// notebooks, the run's receipts (20260930539000). The log steps a call as auto-review classifies
+						// it. A log made once and no longer there ends the run, as it does mid-run.
 						const opened = await openCloudRunLog({
 							resume: new CloudRunResumeRpc({ run, control: this.#paths }),
 							folder: new CloudRunLogCompanyFolder({
@@ -1077,7 +1078,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										},
 									}
 								: {}),
-							...(opened ? { runLog: { log: opened.log, lines: opened.lines } } : {}),
+							...(opened?.log ? { runLog: { log: opened.log, lines: opened.lines } } : {}),
 						};
 					},
 				}).finally(async () => {

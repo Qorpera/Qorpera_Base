@@ -2,7 +2,8 @@
 -- Context tree W5a-1 (20260930170000): a started run that is cut off goes on from its run log. Test 924's run of Alice's
 -- holds a real native lease; it records its native start, acknowledges in her thread and begins a step. Then its runner's
 -- lease runs out, as when the machine dies, and the orchestrator's reconcile ends the attempt. Without a run log (W5a-2's
--- gate, 990) that is today's path: the run fails and waits for review. With a log, the open step's outcome becomes
+-- gate, 990), in Agent tree mode, that is today's path: the run fails and waits for review (in Agent notebooks mode it
+-- resumes from its receipts, 466). With a log, the open step's outcome becomes
 -- unknown, the attempt's native lease goes to history, a run_cut_off event supersedes the start, and the job is queued
 -- again. The next attempt is fenced from nothing but the old one's lease: it starts once, on the same login only, sees the
 -- step as outcome unknown, does a new step and completes. A run that never started, a run with an ambiguous step and a
@@ -41,7 +42,8 @@ create function pg_temp.rc_events(p_run uuid, p_type text) returns bigint langua
 	select count(*) from public.qorpera_execution_run_events where run_id = p_run and event_type = p_type
 $$;
 
--- 1. The resume and its gate are nobody's to call, and a run with no log does not resume.
+-- 1. The resume and its gate are nobody's to call, and a run with no log resumes only in Agent notebooks mode, from its
+--    receipts (466).
 do $$
 declare v_role text; v_run uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 begin
@@ -50,13 +52,19 @@ begin
 			and not has_function_privilege(v_role, 'public.qorpera_resume_run_from_log(uuid,text,boolean)', 'EXECUTE'),
 			'the resume is open to ' || v_role);
 	end loop;
-	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run) is false, 'a run with no log does not resume');
+	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run), 'a notebook run with no log resumes from its receipts');
 end
 $$;
 
--- 2. With no log, the gate is off: a started run that is cut off takes today's path. It fails, its open step is
---    ambiguous, and it waits for review.
+-- 2. With no log, in Agent tree mode, the gate is off: a started run that is cut off takes today's path. It fails, its
+--    open step is ambiguous, and it waits for review.
 savepoint rc_gate_off;
+set local session_replication_role = replica;
+update public.qorpera_execution_runs set memory_mode = 'tree'
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+set local session_replication_role = origin;
+select pg_temp.base_assert(public.qorpera_run_resumes_from_log((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid)
+	is false, 'a tree run with no log does not resume') \g /dev/null
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_receipt uuid := extensions.gen_random_uuid();
 begin

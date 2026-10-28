@@ -111,6 +111,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_memory_commit",
 			"qorpera_memory_run_log_place",
 			"qorpera_memory_run_resume",
+			"qorpera_memory_run_resume_receipts",
 			"qorpera_memory_run_resume_record",
 			"qorpera_memory_step_narrow",
 			"qorpera_memory_step_hashes",
