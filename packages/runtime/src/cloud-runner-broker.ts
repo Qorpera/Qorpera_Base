@@ -23,6 +23,21 @@ const TRANSIENT_RETRY_BUDGET_MS = 20_000;
  * renewals run in parallel against the six-minute rolling job lease. */
 const DURABLE_RETRY_BUDGET_MS = 360_000;
 
+/** A broker request the transport gave up on. `transient` says its last failure was a lost or late answer (no
+ * answer, 429, 502, 503 or 504) that outlived the transport's own retries, not a refusal; `status` is absent when no
+ * answer came. A worker asks a transient renewal again for as long as its lease allows (WB-001, 28 Oct 2026). */
+export class CloudRunnerBrokerRequestError extends Error {
+	readonly status: number | undefined;
+	readonly transient: boolean;
+
+	constructor(message: string, status: number | undefined, transient: boolean, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "CloudRunnerBrokerRequestError";
+		this.status = status;
+		this.transient = transient;
+	}
+}
+
 export interface CloudRunnerBrokerAuthority {
 	runnerId: string;
 	jobId: string;
@@ -744,9 +759,9 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			if (!transient || Date.now() + delayMs >= deadline || this.#requestSignal(authority)?.aborted) {
 				if (transportError) {
 					if (this.#requestSignal(authority)?.aborted) throw transportError;
-					throw new Error(`${label} failed`, { cause: transportError });
+					throw new CloudRunnerBrokerRequestError(`${label} failed`, undefined, true, { cause: transportError });
 				}
-				throw new Error(`${label} failed (${status})`);
+				throw new CloudRunnerBrokerRequestError(`${label} failed (${status})`, status, transient);
 			}
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
 		}

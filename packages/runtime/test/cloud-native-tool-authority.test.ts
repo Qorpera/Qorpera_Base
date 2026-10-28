@@ -20,11 +20,11 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-async function admit() {
+async function admit(holdMs?: number) {
 	const fixture = nativeToolAuthorityFixture();
 	const reader = { describeToolAuthority: vi.fn(async () => structuredClone(fixture.authority)) };
 	const abort = new AbortController();
-	const run = await CloudNativeToolRun.open(fixture.binding, reader, abort.signal);
+	const run = await CloudNativeToolRun.open(fixture.binding, reader, abort.signal, holdMs);
 	runs.push(run);
 	return { ...fixture, reader, abort, run };
 }
@@ -267,6 +267,72 @@ it("closes at once on a refusal, and asks no more once the authority would lapse
 	expect(second.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
 	expect(second.run.signal.aborted).toBe(true);
 });
+
+it("holds a run through a short control-plane outage that closes an unheld one at its window (WB-001, 28 Oct 2026)", async () => {
+	const clock = fakeClock();
+	const unheld = await admit();
+	const held = await admit(120_000);
+	// The control plane goes away 6 s after the last read and is back at 29 s, and a read sent meanwhile hangs (WB-001:
+	// last good read 16:04:46.9Z, outage about 16:04:53 to 16:05:16Z). The refresh at 10 s is cut at 15 s, the next
+	// read at 25.25 s, and the one from 25.75 s is still hanging when the unheld run's window ends at 30 s.
+	for (const { reader, authority } of [unheld, held])
+		reader.describeToolAuthority.mockImplementation(async () =>
+			clock.now >= 6_000 && clock.now < 29_000 ? new Promise<never>(() => undefined) : structuredClone(authority),
+		);
+	await clock.tick(29_500);
+	expect(unheld.run.signal.aborted).toBe(false);
+	expect(held.run.signal.aborted).toBe(false);
+	await clock.tick(1_000);
+	expect(unheld.run.signal.aborted).toBe(true);
+	expect(held.run.signal.aborted).toBe(false);
+	// The held run's read from 25.75 s is cut at 45.75 s; the next, at 46.75 s, answers, and the run goes on.
+	await clock.tick(120_000);
+	expect(held.run.signal.aborted).toBe(false);
+	expect(held.reader.describeToolAuthority.mock.calls.length).toBeGreaterThan(10);
+});
+
+it("still closes a held run when the hold ends with the control plane away", async () => {
+	const clock = fakeClock();
+	const { run, reader } = await admit(120_000);
+	reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("transport_unavailable"));
+	await clock.tick(119_000);
+	expect(run.signal.aborted).toBe(false);
+	await clock.tick(1_500);
+	expect(run.signal.aborted).toBe(true);
+});
+
+it("closes a held run at once on a refusal, and at a nearer end the cloud answers", async () => {
+	const clock = fakeClock();
+	const refused = await admit(120_000);
+	refused.reader.describeToolAuthority.mockRejectedValue(
+		new CloudControlRpcRefused("55000", "Company execution is paused"),
+	);
+	await clock.tick(10_500);
+	expect(refused.run.signal.aborted).toBe(true);
+	expect(refused.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+	// An answer under the window (a lease or the run's deadline within it) is kept as answered, not held.
+	const fixture = nativeToolAuthorityFixture();
+	const reader = { describeToolAuthority: vi.fn(async () => ({ ...fixture.authority, validForMs: 2_000 })) };
+	const run = await CloudNativeToolRun.open(fixture.binding, reader, new AbortController().signal, 120_000);
+	runs.push(run);
+	reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("transport_unavailable"));
+	await clock.tick(1_000);
+	expect(run.signal.aborted).toBe(false);
+	await clock.tick(1_100);
+	expect(run.signal.aborted).toBe(true);
+});
+
+it.each([29_999, 1.5, Number.NaN, 2 ** 53])(
+	"rejects a hold shorter than the window or not a whole number: %d",
+	async (holdMs) => {
+		const fixture = nativeToolAuthorityFixture();
+		const reader = { describeToolAuthority: vi.fn(async () => structuredClone(fixture.authority)) };
+		await expect(
+			CloudNativeToolRun.open(fixture.binding, reader, new AbortController().signal, holdMs),
+		).rejects.toThrow("Cloud tool authority hold is invalid");
+		expect(reader.describeToolAuthority).not.toHaveBeenCalled();
+	},
+);
 
 it("keeps a model request's fence asking while a slow database answers, for as long as the lease holds (5 Oct 2026)", async () => {
 	const clock = fakeClock();

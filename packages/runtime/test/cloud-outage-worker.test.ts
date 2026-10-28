@@ -12,6 +12,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import { nativeProviderExecutionGuarantees } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CloudRunnerBrokerDescription,
+	CloudRunnerBrokerRequestError,
 	type CloudRunnerBrokerTransport,
 	CloudRunnerJobBroker,
 	type CloudRunnerNativeAuthority,
@@ -40,6 +41,8 @@ class Control implements CloudRunnerControlTransport {
 	loseFailure = false;
 	stallRenewal = false;
 	rejectRenewal?: number;
+	/** The next heartbeats' answers: a status refused, a transport error, or a runner no longer active. */
+	heartbeatFailures: (number | Error | "revoked")[] = [];
 	completion?: JsonValue;
 	wrongCompletion = false;
 	enrichCompletion = false;
@@ -47,6 +50,9 @@ class Control implements CloudRunnerControlTransport {
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.calls.push(structuredClone(body));
+		const failure = body.action === "heartbeat" ? this.heartbeatFailures.shift() : undefined;
+		if (typeof failure === "number") throw new CloudRunnerControlRequestError(failure);
+		if (failure instanceof Error) throw failure;
 		if (body.action === "activate" || body.action === "heartbeat")
 			return {
 				runner_id: runnerId,
@@ -56,8 +62,8 @@ class Control implements CloudRunnerControlTransport {
 				runner_kind: "qorpera_computer",
 				capabilities: ["agent_turn"],
 				max_concurrency: 1,
-				status: "active",
-				online: true,
+				status: failure === "revoked" ? "revoked" : "active",
+				online: failure !== "revoked",
 				activation_expires_at: new Date(Date.now() + 900_000).toISOString(),
 				session_expires_at: new Date(Date.now() + 900_000).toISOString(),
 				registered_by_user_id: actorId,
@@ -150,6 +156,7 @@ function companyLane() {
 		expiresAt: new Date(Date.now() + 60_000).toISOString(),
 	};
 	return {
+		authority,
 		describe: vi.spyOn(CloudRunnerJobBroker.prototype, "describe").mockResolvedValue({
 			companyRuntime: "company-path-v1",
 			sponsor: { authenticationMode: "native_subscription" },
@@ -195,6 +202,7 @@ function worker(
 	executeJob: CloudRunnerCompanyExecutor,
 	transport = broker(),
 	now?: () => number,
+	heartbeatMs?: number,
 ) {
 	return new EphemeralCloudRunnerWorker({
 		runner,
@@ -209,8 +217,35 @@ function worker(
 		platform: "linux-x64",
 		runnerVersion: "synthetic",
 		leaseRenewalMs: 10,
+		heartbeatMs,
 		now,
 	});
+}
+
+/** A native run that goes on until it is finished, on fake timers. Its native lease, read at the start, ends 60 s on;
+ * each renewal answers with 120 s more. */
+async function outageRun(heartbeatMs?: number) {
+	vi.useFakeTimers();
+	const control = new Control();
+	const runner = new DisposableCloudRunner(control, runnerId, "b".repeat(43));
+	await runner.activate("linux-x64", "synthetic");
+	const lease = (ms: number) => ({ ...lane.authority, expiresAt: new Date(Date.now() + ms).toISOString() });
+	lane.acquire.mockImplementation(async () => lease(60_000));
+	lane.renew.mockImplementation(async () => lease(120_000));
+	let finish = (): void => undefined;
+	const execute = vi.fn(
+		async (options: Parameters<CloudRunnerCompanyExecutor>[0]) =>
+			new Promise<CloudRunnerExecutionResult>((resolve, reject) => {
+				finish = () => resolve(result());
+				options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+			}),
+	);
+	const running = worker(runner, execute, broker(), undefined, heartbeatMs)
+		.runNext(assignment)
+		.catch((error: unknown) => error);
+	await vi.advanceTimersByTimeAsync(0);
+	expect(execute).toHaveBeenCalledOnce();
+	return { control, running, finish: () => finish(), signal: () => execute.mock.calls[0]![0].signal };
 }
 
 async function durable(control: Control) {
@@ -425,6 +460,67 @@ describe("cloud worker outage recovery", () => {
 		await worker(runner, execute).runNext(undefined);
 		expect(runner.snapshot().recoveryJobIds).toEqual([jobId]);
 		expect(execute).toHaveBeenCalledOnce();
+	});
+
+	it("asks a lost or late native lease renewal again and keeps the run (WB-001, 28 Oct 2026)", async () => {
+		const outage = await outageRun();
+		// A gateway error, then a renewal that never answers (cut at 40 s), then the answer at 50 s: the native lease read
+		// at the start ends at 60 s.
+		lane.renew
+			.mockRejectedValueOnce(new CloudRunnerBrokerRequestError("Native authority renewal failed (503)", 503, true))
+			.mockImplementationOnce(async () => new Promise<never>(() => undefined));
+		await vi.advanceTimersByTimeAsync(55_000);
+		expect(outage.signal().aborted).toBe(false);
+		expect(lane.renew.mock.calls.length).toBeGreaterThan(3);
+		outage.finish();
+		expect(await outage.running).toMatchObject({ status: "completed" });
+	});
+
+	it.each([
+		new CloudRunnerBrokerRequestError("Native authority renewal failed (403)", 403, false),
+		new Error("Native authority renewal returned another lease"),
+	])("stops the run at once when a native lease renewal is refused: %s", async (refusal) => {
+		const outage = await outageRun();
+		lane.renew.mockRejectedValueOnce(refusal);
+		await vi.advanceTimersByTimeAsync(11);
+		expect(await outage.running).toBe(refusal);
+		expect(lane.renew).toHaveBeenCalledOnce();
+		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
+	it("stops the run 10 s before the native lease ends while its renewal goes unanswered", async () => {
+		const outage = await outageRun();
+		const unanswered = new CloudRunnerBrokerRequestError("Native authority renewal failed", undefined, true);
+		lane.renew.mockRejectedValue(unanswered);
+		// Asked at 0, 10, 20, 30, 40 and 50 s: the next try, at 60 s, would find the lease ended.
+		await vi.advanceTimersByTimeAsync(45_000);
+		expect(outage.signal().aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(await outage.running).toBe(unanswered);
+		expect(lane.renew).toHaveBeenCalledTimes(6);
+	});
+
+	it("asks a lost or late heartbeat again, with the same rotation, without stopping the run", async () => {
+		const outage = await outageRun(1_000);
+		outage.control.heartbeatFailures.push(503, new TypeError("fetch failed"));
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(outage.signal().aborted).toBe(false);
+		const heartbeats = outage.control.calls.filter((call) => call.action === "heartbeat");
+		expect(heartbeats.length).toBeGreaterThanOrEqual(4);
+		expect(new Set(heartbeats.slice(0, 3).map((call) => JSON.stringify(call))).size).toBe(1);
+		expect(JSON.stringify(heartbeats[3])).not.toBe(JSON.stringify(heartbeats[0]));
+		outage.finish();
+		expect(await outage.running).toMatchObject({ status: "completed" });
+	});
+
+	it.each([403, "revoked"] as const)("stops the run at once when a heartbeat is refused (%s)", async (failure) => {
+		const outage = await outageRun(1_000);
+		outage.control.heartbeatFailures.push(failure);
+		await vi.advanceTimersByTimeAsync(1_050);
+		const error = await outage.running;
+		expect(error).toBeInstanceOf(Error);
+		expect(String(error)).toMatch(failure === 403 ? "failed (403)" : "inconsistent runner");
+		expect(outage.control.calls.filter((call) => call.action === "heartbeat")).toHaveLength(1);
 	});
 
 	it("rejects a cross-tenant assignment before execution", async () => {

@@ -3,6 +3,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudAgentSendInput, CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { tagNativeRuntimeFailure } from "@qorpera/runtime/cloud-native-failure";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
@@ -24,6 +25,7 @@ import {
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "@qorpera/runtime/cloud-native-provider-service";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
@@ -909,5 +911,124 @@ describe("native provider host", () => {
 		} finally {
 			await service.close();
 		}
+	});
+});
+
+describe("native provider host authority checks in a control-plane outage (WB-001, 28 Oct 2026)", () => {
+	const realSetTimeout = setTimeout;
+	const fileWork = () => new Promise((resolve) => realSetTimeout(resolve, 5));
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** A capsule run on fake timers that goes on until `finish`, or stops with its signal. `check` sees each authority
+	 * check's number, from 1, and throws to fail it. */
+	async function outageRun(check: (call: number) => void) {
+		const root = await temporaryRoot("qorpera-native-outage-");
+		const identity = await temporaryRoot("qorpera-native-outage-identity-");
+		const capsules = new MemoryCapsules();
+		const capsuleId = "10000000-0000-4000-8000-000000000006";
+		await mkdir(join(identity, "codex"));
+		await writeFile(join(identity, "codex", "auth.json"), '{"refresh_token":"original-private"}\n');
+		await capsules.put(
+			`native-capsule/${capsuleId}`,
+			await sealNativeCredentialCapsule(identity, masterKey, capsuleId),
+		);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const origin = Date.now();
+		vi.spyOn(performance, "now").mockImplementation(() => Date.now() - origin);
+		let calls = 0;
+		const validateExecution = vi.fn(async () => {
+			calls += 1;
+			check(calls);
+		});
+		let started = false;
+		let finish = (): void => undefined;
+		const host = new NativeProviderHost({
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution,
+				sendMessage: vi.fn(sendReceipt),
+			},
+			capsules,
+			harness: { beginLogin: vi.fn() },
+			cloudRuntime: {
+				execute: vi.fn<NativeCloudExecutionDriver["execute"]>(
+					async (_request, _identityRoot, signal) =>
+						new Promise((resolve, reject) => {
+							finish = () =>
+								resolve({
+									providerSessionId: "session-1",
+									delivery: { messageCount: 1, finalMessageId: connectionId },
+								});
+							signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+							started = true;
+						}),
+				),
+			},
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		let settled = false;
+		const result = host.execute(companyRequest(capsuleId)).finally(() => {
+			settled = true;
+		});
+		result.catch(() => undefined);
+		// Opening the login is file work: the clock stands still until the run is under way.
+		for (let wait = 0; wait < 1_000 && !started; wait += 1) await fileWork();
+		expect(started).toBe(true);
+		return {
+			validateExecution,
+			finish: () => finish(),
+			/** Lets the run's file work and short pauses go on until it ends. */
+			async end() {
+				for (let wait = 0; wait < 1_000 && !settled; wait += 1) {
+					await fileWork();
+					await vi.advanceTimersByTimeAsync(50);
+				}
+				return result;
+			},
+		};
+	}
+
+	it("asks a lost or late check again and keeps the run", async () => {
+		// The checks at 15, 30 and 45 s and the first at the run's end are lost; the rest answer.
+		const run = await outageRun((call) => {
+			if ([2, 3, 4, 6].includes(call)) throw new CloudRuntimeDiagnosticError("transport_unavailable");
+		});
+		await vi.advanceTimersByTimeAsync(65_000);
+		expect(run.validateExecution).toHaveBeenCalledTimes(5);
+		run.finish();
+		await expect(run.end()).resolves.toMatchObject({ message_count: 1, provider_session_id: "session-1" });
+		expect(run.validateExecution).toHaveBeenCalledTimes(7);
+	});
+
+	it("stops the run at once on a refusal", async () => {
+		const run = await outageRun((call) => {
+			if (call === 2) throw new CloudControlRpcRefused("42501", "Run is no longer authorized");
+		});
+		await vi.advanceTimersByTimeAsync(15_000);
+		await expect(run.end()).rejects.toThrow(
+			exactly("Native provider execution completion-authority-validation stage failed"),
+		);
+		expect(run.validateExecution).toHaveBeenCalledTimes(2);
+	});
+
+	it("stops the run once its checks have gone unanswered for a native lease's length", async () => {
+		const run = await outageRun((call) => {
+			if (call > 1) throw new CloudRuntimeDiagnosticError("timeout");
+		});
+		// Asked every 15 s: the one at 105 s fails, and the next would begin 120 s after the last answer.
+		await vi.advanceTimersByTimeAsync(104_000);
+		expect(run.validateExecution).toHaveBeenCalledTimes(7);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await expect(run.end()).rejects.toThrow(
+			exactly("Native provider execution completion-authority-validation stage failed"),
+		);
+		expect(run.validateExecution).toHaveBeenCalledTimes(8);
 	});
 });

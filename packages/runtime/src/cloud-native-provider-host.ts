@@ -11,6 +11,7 @@ import {
 } from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudAgentSendInput, CloudAgentSendReceipt } from "./cloud-agent-mouth.ts";
+import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import type { ModelLoginIssue, ModelLoginIssueRequest, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
@@ -19,6 +20,7 @@ import {
 	launchIsolatedNativeProcess,
 	type NativeIsolationConfiguration,
 } from "./cloud-native-isolation.ts";
+import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
@@ -1360,19 +1362,46 @@ export class NativeProviderHost {
 		if (signal?.aborted) externalAbort();
 		else signal?.addEventListener("abort", externalAbort, { once: true });
 		let stage = "initial-authority-validation";
+		// When the last check that answered began. A check whose answer is lost or late is asked again while the next
+		// try can begin within a native lease's length of it (WB-001, 28 Oct 2026), so a short control-plane outage does
+		// not stop the run; the run's worker, which renews the lease, stops it when the lease ends. A refusal, any other
+		// failure, or an outage past that still stops the run at once.
+		let validatedAt = performance.now();
+		const askAgain = (error: unknown, pauseMs: number, stop: AbortSignal): boolean =>
+			cloudControlRetryable(error) &&
+			!stop.aborted &&
+			performance.now() + pauseMs < validatedAt + NATIVE_AUTHORITY_LEASE_SECONDS * 1000;
 		try {
 			await this.#controlPlane.validateExecution(request, executionAbort.signal);
 		} catch (error) {
 			throw new Error(`Native provider execution ${stage} stage failed`, { cause: error });
 		}
+		// A check at the run's end, before its login is kept: asked again after a short pause.
+		const validateAtEnd = async (): Promise<void> => {
+			for (let attempt = 0; ; attempt++) {
+				const started = performance.now();
+				try {
+					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					validatedAt = started;
+					return;
+				} catch (error) {
+					const pauseMs = cloudControlBackoffMs(attempt);
+					if (!askAgain(error, pauseMs, executionAbort.signal)) throw error;
+					await cloudControlPause(pauseMs, executionAbort.signal);
+				}
+			}
+		};
 		const validationStop = new AbortController();
 		let validationError: unknown;
 		const validationSignal = AbortSignal.any([executionAbort.signal, validationStop.signal]);
 		const monitor = (async () => {
 			while (await waitFor(EXECUTION_AUTHORITY_RECHECK_MS, validationSignal)) {
+				const started = performance.now();
 				try {
 					await this.#controlPlane.validateExecution(request, validationSignal);
+					validatedAt = started;
 				} catch (error) {
+					if (askAgain(error, EXECUTION_AUTHORITY_RECHECK_MS, validationSignal)) continue;
 					validationError = error;
 					executionAbort.abort(error);
 					return;
@@ -1540,7 +1569,7 @@ export class NativeProviderHost {
 				stage = "completion-authority-validation";
 				try {
 					executionAbort.signal.throwIfAborted();
-					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					await validateAtEnd();
 					executionAbort.signal.throwIfAborted();
 				} catch (error) {
 					failure ??= new Error(`Native provider execution ${stage} stage failed`, { cause: error });
@@ -1562,7 +1591,7 @@ export class NativeProviderHost {
 									durableCredentialPaths,
 								);
 					stage = "completion-authority-validation";
-					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					await validateAtEnd();
 					executionAbort.signal.throwIfAborted();
 					if (!refreshedCapsule) {
 						// Unchanged: the store keeps the login this run started from.
