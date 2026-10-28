@@ -203,7 +203,10 @@ select pg_temp.base_assert((pg_temp.un_job()).status = 'failed' and (pg_temp.un_
 	and (pg_temp.un_runner('qorpera_test.un_runner8')).status = 'revoked','The job fails with the reason');
 rollback to savepoint cap;
 
--- 8. Attempt 2 on node A: a new runner and machine, which accepts and is the only runner holding the job.
+-- 8. Attempt 2 on node A: a new runner and machine, which accepts and is the only runner holding the job. The wait
+-- after the failure (20260930537000) is over, and the job is queued again from its end.
+update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+where id = current_setting('qorpera_test.un_job')::uuid;
 set local role service_role;
 select set_config('qorpera_test.un_claim',pg_temp.un_claim('92400000-0000-4000-8000-000000000092')::text,true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.un_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.un_run')
