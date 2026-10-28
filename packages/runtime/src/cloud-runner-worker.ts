@@ -1,4 +1,4 @@
-import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { CloudRequestTimeoutError, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
 	type CloudRunnerAssignmentAcceptance,
 	type CloudRunnerJob,
@@ -7,6 +7,7 @@ import {
 import { executeNativeCompanyRunnerJob } from "./cloud-native-company-runner.ts";
 import type { NativeProviderComputerBridge } from "./cloud-native-provider.ts";
 import {
+	CloudRunnerBrokerRequestError,
 	type CloudRunnerBrokerTransport,
 	type CloudRunnerStart,
 	NATIVE_AUTHORITY_LEASE_SECONDS,
@@ -69,6 +70,21 @@ function wait(delayMs: number, signal: AbortSignal): Promise<boolean> {
 
 function workerStopped(): Error {
 	return new Error("Ephemeral runner worker stopped");
+}
+
+/* A lost or late answer to a native lease renewal: the broker's transport gave up on one (no answer, 429, 502, 503 or
+ * 504), or the renewal outlived its deadline here. A refusal, or an answer naming another lease, is not one. */
+function nativeRenewalUnanswered(error: unknown): boolean {
+	return error instanceof CloudRunnerBrokerRequestError ? error.transient : error instanceof CloudRequestTimeoutError;
+}
+
+/* A lost or late answer to a heartbeat: 429 or 5xx, the call's deadline, or no answer at all (fetch rejects with a
+ * TypeError). Unlike the lease's renewal, a failure without a status is not enough: a heartbeat's answer that the
+ * runner is no longer active, or a local store that failed, has none either. */
+function heartbeatUnanswered(error: unknown): boolean {
+	const status = cloudRunnerControlRequestStatus(error);
+	if (status !== undefined) return status === 429 || status >= 500;
+	return error instanceof CloudRequestTimeoutError || error instanceof TypeError;
 }
 
 function safeFailure(error: unknown): string {
@@ -263,8 +279,14 @@ export class EphemeralCloudRunnerWorker {
 		const executionAbort = new AbortController();
 		const maintenanceAbort = new AbortController();
 		let maintenanceError: unknown;
-		let renewNativeAuthority: (() => Promise<void>) | undefined;
+		let renewNativeAuthority: ((attempt: AbortSignal) => Promise<void>) | undefined;
 		let nativeRenewalInFlight: Promise<void> | undefined;
+		/* When the native lease ends, as its acquisition or last renewal answered; none while the run is not executing.
+		 * The run's execution stops then too, so a host that holds its authority through an outage never goes past it
+		 * (WB-001, 28 Oct 2026). */
+		let nativeDeadline = Number.POSITIVE_INFINITY;
+		// A heartbeat whose answer is late: the next round waits for it rather than rotating the session token twice.
+		let heartbeatInFlight: Promise<unknown> | undefined;
 		const externalAbort = (): void => {
 			executionAbort.abort(workerStopped());
 			maintenanceAbort.abort();
@@ -276,11 +298,11 @@ export class EphemeralCloudRunnerWorker {
 		if (!Number.isFinite(leaseDeadline)) throw new Error("Runner execution requires a finite lease deadline");
 		let observedTime = this.#now();
 		let leaseTimer: ReturnType<typeof setTimeout> | undefined;
+		const sessionDeadline = (): number => Date.parse(this.#options.runner.snapshot().sessionExpiresAt ?? "");
 		const armDeadline = (): void => {
 			if (leaseTimer) clearTimeout(leaseTimer);
 			const now = this.#now();
-			const sessionDeadline = Date.parse(this.#options.runner.snapshot().sessionExpiresAt ?? "");
-			const remaining = now < observedTime ? 0 : Math.min(leaseDeadline, sessionDeadline) - now;
+			const remaining = now < observedTime ? 0 : Math.min(leaseDeadline, sessionDeadline(), nativeDeadline) - now;
 			observedTime = now;
 			const expire = (): void => {
 				maintenanceError = new Error("Runner execution authority expired; outcome requires reconciliation");
@@ -319,27 +341,63 @@ export class EphemeralCloudRunnerWorker {
 							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
 						}
 					}
-					if (renewNativeAuthority) {
+					/* The native lease the same way (WB-001, 28 Oct 2026): a lost or late answer is asked again every
+					 * 10 s until the native lease or the job's is 10 s from its end, so a short control-plane outage
+					 * does not stop the run. A refusal, or either lease's end, still does. */
+					for (;;) {
+						const renew = renewNativeAuthority;
+						// No native lease, or the run ended meanwhile and its release follows.
+						if (!renew) break;
 						const renewal = withCloudDeadline(
-							() => renewNativeAuthority!(),
-							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+							(attempt) => renew(attempt),
+							Math.max(1, Math.min(30_000, leaseDeadline - this.#now(), nativeDeadline - this.#now())),
 							maintenanceAbort.signal,
 						);
 						nativeRenewalInFlight = renewal;
 						try {
-							await renewal;
-						} finally {
-							if (nativeRenewalInFlight === renewal) nativeRenewalInFlight = undefined;
+							try {
+								await renewal;
+							} finally {
+								if (nativeRenewalInFlight === renewal) nativeRenewalInFlight = undefined;
+							}
+							break;
+						} catch (renewError) {
+							if (
+								!nativeRenewalUnanswered(renewError) ||
+								maintenanceAbort.signal.aborted ||
+								!(this.#now() + 10_000 < Math.min(leaseDeadline, nativeDeadline))
+							) {
+								throw renewError;
+							}
+							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
 						}
 					}
 					if (this.#now() >= nextHeartbeat) {
-						await withCloudDeadline(
-							() => this.#options.runner.heartbeat(),
-							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
-							maintenanceAbort.signal,
-						);
-						nextHeartbeat = this.#now() + this.#heartbeatMs;
-						armDeadline();
+						try {
+							await withCloudDeadline(
+								() => {
+									heartbeatInFlight ??= this.#options.runner.heartbeat().finally(() => {
+										heartbeatInFlight = undefined;
+									});
+									return heartbeatInFlight;
+								},
+								Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+								maintenanceAbort.signal,
+							);
+							nextHeartbeat = this.#now() + this.#heartbeatMs;
+							armDeadline();
+						} catch (heartbeatError) {
+							/* A lost or late heartbeat stays due and is asked again next round, without holding up
+							 * either renewal: one is due long before the runner's session ends. A refusal, or a lease
+							 * or session that ends within 10 s of the next round, still stops the run. */
+							if (
+								!heartbeatUnanswered(heartbeatError) ||
+								maintenanceAbort.signal.aborted ||
+								!(this.#now() + this.#leaseRenewalMs + 10_000 < Math.min(leaseDeadline, sessionDeadline()))
+							) {
+								throw heartbeatError;
+							}
+						}
 					}
 				} catch (error) {
 					if (maintenanceAbort.signal.aborted) return;
@@ -374,8 +432,14 @@ export class EphemeralCloudRunnerWorker {
 				const bridge = this.#options.nativeProviderBridge;
 				if (!bridge) throw new Error("Native subscription execution bridge is not configured");
 				const authority = await broker.acquireNativeAuthority();
-				renewNativeAuthority = async () => {
-					await broker.renewNativeAuthority();
+				nativeDeadline = Date.parse(authority.expiresAt);
+				armDeadline();
+				renewNativeAuthority = async (attempt) => {
+					const renewed = await broker.renewNativeAuthority();
+					// An answer that comes after its try was cut is stale: a later try, or the run's end, took its place.
+					if (attempt.aborted) return;
+					nativeDeadline = Date.parse(renewed.expiresAt);
+					armDeadline();
 				};
 				try {
 					execution = await this.#executeJob({
@@ -392,6 +456,9 @@ export class EphemeralCloudRunnerWorker {
 				} finally {
 					renewNativeAuthority = undefined;
 					await nativeRenewalInFlight?.catch(() => undefined);
+					// Execution is over; the completion that follows checks the native lease itself.
+					nativeDeadline = Number.POSITIVE_INFINITY;
+					if (!executionAbort.signal.aborted) armDeadline();
 					// Governed completion validates the still-live native lease and releases it
 					// atomically with the durable completion receipt; a run with no staged
 					// completion releases it here.

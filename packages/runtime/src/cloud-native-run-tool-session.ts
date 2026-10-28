@@ -31,6 +31,7 @@ import {
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
 import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
+import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
@@ -114,7 +115,14 @@ export async function runCloudNativeRunToolSession(options: {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
 	try {
-		run = await CloudNativeToolRun.open(options.binding, options.controlPlane, options.signal);
+		// A short control-plane outage does not close the run (WB-001, 28 Oct 2026): it holds for the native lease's
+		// length. The run's worker renews that lease and stops the run when the lease ends.
+		run = await CloudNativeToolRun.open(
+			options.binding,
+			options.controlPlane,
+			options.signal,
+			NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
+		);
 		admission?.finish("succeeded");
 	} catch (error) {
 		admission?.finish("denied", {

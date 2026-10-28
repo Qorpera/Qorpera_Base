@@ -250,6 +250,7 @@ export class CloudNativeToolRun {
 	readonly binding: CloudNativeToolBinding;
 	readonly signal: AbortSignal;
 	readonly #reader: CloudNativeToolAuthorityReader;
+	readonly #holdMs: number | undefined;
 	readonly #stop = new AbortController();
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
@@ -260,9 +261,15 @@ export class CloudNativeToolRun {
 	#refresh?: ReturnType<typeof setTimeout>;
 	#checking: Promise<void> = Promise.resolve();
 
-	private constructor(binding: CloudNativeToolBinding, reader: CloudNativeToolAuthorityReader, signal: AbortSignal) {
+	private constructor(
+		binding: CloudNativeToolBinding,
+		reader: CloudNativeToolAuthorityReader,
+		signal: AbortSignal,
+		holdMs: number | undefined,
+	) {
 		this.binding = parseCloudNativeToolBinding(binding);
 		this.#reader = reader;
+		this.#holdMs = holdMs;
 		this.signal = AbortSignal.any([signal, this.#stop.signal]);
 		this.signal.addEventListener(
 			"abort",
@@ -274,12 +281,22 @@ export class CloudNativeToolRun {
 		);
 	}
 
+	/**
+	 * `holdMs` (at least the authority window) is how long a run may go on after a read that found its leases
+	 * reaching past the window (an answer of the full window), while reads that follow are lost or late: a native run
+	 * passes its native lease's length, so a short control-plane outage does not end it (WB-001, 28 Oct 2026). Its
+	 * worker, which renews that lease, still stops it when the lease ends; a refusal still closes it at once, and an
+	 * answer shorter than the window is kept exactly. Without it the run goes on for the answer's validity only.
+	 */
 	static async open(
 		binding: CloudNativeToolBinding,
 		reader: CloudNativeToolAuthorityReader,
 		signal: AbortSignal,
+		holdMs?: number,
 	): Promise<CloudNativeToolRun> {
-		const run = new CloudNativeToolRun(binding, reader, signal);
+		if (holdMs !== undefined && (!Number.isSafeInteger(holdMs) || holdMs < CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS))
+			throw new Error("Cloud tool authority hold is invalid");
+		const run = new CloudNativeToolRun(binding, reader, signal, holdMs);
 		try {
 			await run.assertActive(signal);
 			return run;
@@ -343,9 +360,9 @@ export class CloudNativeToolRun {
 	/**
 	 * Asks an idempotent read of this run again while its answer is lost or late (a timeout, a connection or gateway
 	 * error, a serialization failure, a lock or statement timeout), pausing 250 ms doubling to 2 s, until the run's
-	 * authority would lapse (its validity, which the cloud bounds by the run's lease, as renewed meanwhile) or, before
-	 * the first authority, within the authority window. A refusal, a cancellation, or any other failure is thrown at
-	 * once. A slow database is not a stopped run (control calls, 4 Oct 2026).
+	 * authority would lapse (its validity, which the cloud bounds by the run's lease, or the run's hold from `open`, as
+	 * renewed meanwhile) or, before the first authority, within the authority window. A refusal, a cancellation, or any
+	 * other failure is thrown at once. A slow database is not a stopped run (control calls, 4 Oct 2026).
 	 *
 	 * An attempt cut at its deadline gives the next one twice as long, still within the limit: a read slower than one
 	 * attempt, queued behind the transaction its cut attempt left running, still lands (6 Oct 2026). That needs a read
@@ -414,7 +431,13 @@ export class CloudNativeToolRun {
 		if (this.#identityText && this.#identityText !== identityText) throw new Error("Cloud tool authority changed");
 		// A context fence's read may answer after a refresh that started later: the later read's authority stands.
 		if (started <= this.#readAt) return;
-		const deadline = started + authority.validForMs;
+		// The cloud caps validity at the window: an answer of the full window says the leases reach further, so the
+		// run holds for `holdMs`. A nearer end (a lease or the run's deadline within the window) is kept as answered.
+		const deadline =
+			started +
+			(this.#holdMs !== undefined && authority.validForMs === CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS
+				? this.#holdMs
+				: authority.validForMs);
 		if (deadline <= performance.now()) throw new Error("Cloud tool authority expired");
 		this.#readAt = started;
 		this.#identity = authority.identity;

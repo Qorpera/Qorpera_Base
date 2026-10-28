@@ -23,6 +23,21 @@ const TRANSIENT_RETRY_BUDGET_MS = 20_000;
  * renewals run in parallel against the six-minute rolling job lease. */
 const DURABLE_RETRY_BUDGET_MS = 360_000;
 
+/** A broker request the transport gave up on. `transient` says its last failure was a lost or late answer, not a
+ * refusal: no answer, 429, 502, 503 or 504 after the transport's own retries, or an answer cut while its body
+ * arrived. `status` is absent when no full answer came. A worker asks a transient renewal again for as long as its lease allows (WB-001, 28 Oct 2026). */
+export class CloudRunnerBrokerRequestError extends Error {
+	readonly status: number | undefined;
+	readonly transient: boolean;
+
+	constructor(message: string, status: number | undefined, transient: boolean, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "CloudRunnerBrokerRequestError";
+		this.status = status;
+		this.transient = transient;
+	}
+}
+
 export interface CloudRunnerBrokerAuthority {
 	runnerId: string;
 	jobId: string;
@@ -710,7 +725,18 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 				}),
 			cadenceSensitive ? TRANSIENT_RETRY_BUDGET_MS : DURABLE_RETRY_BUDGET_MS,
 		);
-		return record(await response.json(), "response").value;
+		let value: unknown;
+		try {
+			value = await response.json();
+		} catch (error) {
+			/* An answer lost while its body arrived (a reset connection, or the request's own deadline) is as lost as
+			 * no answer (WB-001, 28 Oct 2026). A malformed body, or one this request's caller stopped, is not. */
+			if (error instanceof SyntaxError || this.#signal?.aborted || authority.signal?.aborted) throw error;
+			throw new CloudRunnerBrokerRequestError(`Runner broker request (${action}) failed`, undefined, true, {
+				cause: error,
+			});
+		}
+		return record(value, "response").value;
 	}
 
 	/* Every broker action proxies through an Edge Function whose upstream can
@@ -744,9 +770,9 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			if (!transient || Date.now() + delayMs >= deadline || this.#requestSignal(authority)?.aborted) {
 				if (transportError) {
 					if (this.#requestSignal(authority)?.aborted) throw transportError;
-					throw new Error(`${label} failed`, { cause: transportError });
+					throw new CloudRunnerBrokerRequestError(`${label} failed`, undefined, true, { cause: transportError });
 				}
-				throw new Error(`${label} failed (${status})`);
+				throw new CloudRunnerBrokerRequestError(`${label} failed (${status})`, status, transient);
 			}
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
 		}
