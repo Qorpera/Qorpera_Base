@@ -2,8 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import type { ModelLoginIssue, ModelLoginIssueRequest } from "@qorpera/runtime/cloud-model-login-vault";
 import { type NativeCompanyExecutionRequest, NativeProviderHost } from "@qorpera/runtime/cloud-native-provider-host";
+import { nativeProviderFailureCode } from "@qorpera/runtime/cloud-native-provider-service";
+import { cloudRunnerJobFailureBeforeStartIsRetryable } from "@qorpera/runtime/cloud-runner-worker";
+import { issueModelLogin } from "@qorpera/runtime/cloud-secret-broker-http";
 import { afterEach, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
@@ -53,7 +57,7 @@ function request(): NativeCompanyExecutionRequest {
 }
 
 async function fixture(options: {
-	issue: (request: ModelLoginIssueRequest) => Promise<ModelLoginIssue>;
+	issue: (request: ModelLoginIssueRequest, signal: AbortSignal) => Promise<ModelLoginIssue>;
 	harness?: (identityRoot: string) => Promise<void>;
 	warmIdleMs?: number;
 }) {
@@ -91,7 +95,7 @@ async function fixture(options: {
 			prepareSpare: vi.fn(),
 			async disposeSpares() {},
 		},
-		modelLogins: { issue: (issueRequest, _signal) => issue(issueRequest) },
+		modelLogins: { issue: (issueRequest, signal) => issue(issueRequest, signal) },
 		modelLoginRecheckMs: 20,
 		computeIdentityId,
 		temporaryRoot,
@@ -279,6 +283,113 @@ it("fails a vault run without the vault or when the vault refuses, and keeps no 
 				computeIdentityId,
 			}),
 	).toThrow("capsule key or the login vault");
+});
+
+it("names a login download that got no answer a timeout, which the runner tries again; a refusal stays final", async () => {
+	const companyId = randomUUID();
+	// The run host's own vault client over a fetch that answers as given.
+	const client =
+		(answer: typeof fetch) =>
+		(issueRequest: ModelLoginIssueRequest, signal: AbortSignal): Promise<ModelLoginIssue> =>
+			issueModelLogin(
+				{
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId,
+					holder: () => "holder",
+					fetch: answer,
+				},
+				issueRequest,
+				signal,
+			);
+	const lost = (code: string) => Object.assign(new Error("private transport detail"), { code });
+	for (const [label, issue, code, retried] of [
+		// The client's own deadline (withCloudDeadline).
+		[
+			"deadline",
+			async () => {
+				throw new CloudRequestTimeoutError();
+			},
+			"NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT",
+			true,
+		],
+		[
+			"no connection",
+			client(async () => {
+				throw new TypeError("fetch failed", { cause: lost("ECONNREFUSED") });
+			}),
+			"NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT",
+			true,
+		],
+		[
+			"answer cut",
+			client(
+				async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								controller.error(new TypeError("terminated", { cause: lost("UND_ERR_SOCKET") }));
+							},
+						}),
+					),
+			),
+			"NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT",
+			true,
+		],
+		// The vault's 403: a refused binding, a revoked login, or the broker's own failure.
+		[
+			"403",
+			client(
+				async () =>
+					new Response(JSON.stringify({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }), {
+						status: 403,
+					}),
+			),
+			"NATIVE_CREDENTIAL_DOWNLOAD",
+			false,
+		],
+		["malformed answer", client(async () => new Response("{}")), "NATIVE_CREDENTIAL_DOWNLOAD", false],
+		[
+			"redirect",
+			client(async () => {
+				throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+			}),
+			"NATIVE_CREDENTIAL_DOWNLOAD",
+			false,
+		],
+	] as const) {
+		const harness = vi.fn(async () => undefined);
+		const f = await fixture({ issue, harness });
+		const failure = await f.host.execute(request()).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(nativeProviderFailureCode(failure), label).toBe(code);
+		expect(
+			cloudRunnerJobFailureBeforeStartIsRetryable(
+				new Error(`Native provider bridge request failed (422) [code=${code}]`),
+			),
+			label,
+		).toBe(retried);
+		expect(harness, label).not.toHaveBeenCalled();
+		expect(await readdir(f.temporaryRoot), label).toEqual([]);
+	}
+});
+
+it("never names a stopped run's login download a timeout, whatever stopped it", async () => {
+	const f = await fixture({
+		issue: (_request, signal) =>
+			new Promise<ModelLoginIssue>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			}),
+	});
+	const stop = new AbortController();
+	const running = f.host.execute(request(), stop.signal);
+	await vi.waitFor(() => expect(f.issue).toHaveBeenCalled());
+	// A stop whose reason is itself a timeout, as when the run's authority check went unanswered.
+	stop.abort(new CloudRequestTimeoutError());
+	await expect(running).rejects.toThrow(/^Native provider execution credential-download stage failed$/);
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
 });
 
 it("refuses a vault copy that carries a renewal token and starts no harness", async () => {

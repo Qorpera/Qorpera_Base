@@ -334,10 +334,12 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
 	});
 
-	it("tries a run again when its context or prompt timed out before it started, and nothing else", async () => {
+	it("tries a run again when its login download, context or prompt timed out before it started, and nothing else", async () => {
 		for (const [code, retried] of [
 			["NATIVE_PROMPT_COMPOSITION:TIMEOUT", true],
 			["NATIVE_COMPANY_CONTEXT:TIMEOUT", true],
+			["NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT", true],
+			["NATIVE_CREDENTIAL_DOWNLOAD", false],
 			["NATIVE_PROMPT_COMPOSITION:UNKNOWN", false],
 			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
 			["NATIVE_CODING_SESSION:TIMEOUT", false],

@@ -105,12 +105,13 @@ export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
 }
 
 /** A failure that is safe to try again from the start, and is tried again (the 21 October 2026 amendment, item 7): the
- * native host timed out reading the run's context or composing its prompt, before the run's start was recorded and
- * before any model request or tool call. The database still decides: it queues the job again only while nothing of the
- * attempt is durable and fewer than eight attempts were made, as for any retryable failure. Any other failure is not
- * retried here: once execution starts, a lost answer does not prove that nothing happened. */
+ * native host timed out reading the run's context or composing its prompt, or its download of the run's login got no
+ * answer (28 October 2026), before the run's start was recorded and before any model request or tool call. A download
+ * the vault or the store refused stays final. The database still decides: it queues the job again only while nothing
+ * of the attempt is durable and fewer than eight attempts were made, as for any retryable failure. Any other failure
+ * is not retried here: once execution starts, a lost answer does not prove that nothing happened. */
 const RETRYABLE_BEFORE_START =
-	/ \[code=NATIVE_(?:COMPANY_CONTEXT|WAKE_ENVELOPE|CONNECTOR_TOOLS|PROMPT_COMPOSITION):TIMEOUT\]$/;
+	/ \[code=NATIVE_(?:CREDENTIAL_DOWNLOAD|COMPANY_CONTEXT|WAKE_ENVELOPE|CONNECTOR_TOOLS|PROMPT_COMPOSITION):TIMEOUT\]$/;
 export function cloudRunnerJobFailureBeforeStartIsRetryable(error: unknown): boolean {
 	return error instanceof Error && RETRYABLE_BEFORE_START.test(error.message);
 }
