@@ -117,7 +117,7 @@ select pg_temp.base_assert((select job.attempt_count = 0 and runner.status = 'pe
 	from public.qorpera_runner_jobs job, public.qorpera_runners runner
 	where job.run_id = current_setting('qorpera_test.fa_run')::uuid and runner.id = current_setting('qorpera_test.fa_runner1')::uuid),
 	'A refusal after the release leaves the attempt and its runner alone');
--- A runner that did activate is not revoked: only a pending one.
+-- A runner that activated and never accepted is revoked too, with its session (20260930535000, test 598).
 savepoint activated;
 update public.qorpera_runners set status = 'active', activated_at = clock_timestamp(), session_token_sha256 = repeat('6',64),
 	session_expires_at = clock_timestamp() + interval '1 hour'
@@ -126,11 +126,12 @@ select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
 set local role service_role;
 select set_config('qorpera_test.fa_claim',pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1')::text,true) \g /dev/null
 select pg_temp.base_assert((pg_temp.fa_release('72100000-0000-4000-8000-0000000000b1',current_setting('qorpera_test.fa_claim')::jsonb,
-	'Runner provider request failed (422) [code=PROVIDER_ACQUIRE]') ->> 'attempt_abandoned')::boolean = false,
-	'An activated runner''s attempt is not abandoned');
+	'Runner provider request failed (422) [code=PROVIDER_ACQUIRE]') ->> 'attempt_abandoned')::boolean,
+	'An activated runner''s attempt that never started is abandoned');
 reset role;
-select pg_temp.base_assert((select status = 'active' from public.qorpera_runners where id = current_setting('qorpera_test.fa_runner1')::uuid),
-	'An activated runner is not revoked');
+select pg_temp.base_assert((select status = 'revoked' and session_token_sha256 is null
+	from public.qorpera_runners where id = current_setting('qorpera_test.fa_runner1')::uuid),
+	'The activated runner is revoked and loses its session');
 rollback to savepoint activated;
 -- The next infrastructure failure abandons the attempt.
 select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
