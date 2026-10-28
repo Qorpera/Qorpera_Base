@@ -4,25 +4,29 @@
 //   landed) goes on without one, as they did;
 // - a log: only a resumed attempt continues it (W5b-2, `openCloudRunResume`); an original attempt refuses it;
 // - off (the run's recorded memory mode is Agent notebooks, 20260930508000, a permanent gate; or the run has no
-//   conversation tree): no log;
+//   conversation tree): no log. A resumed attempt in Agent notebooks starts from the run's receipts instead
+//   (`openCloudRunReceiptsResume`, 20260930539000);
 // - gone (a log made once and no longer there): CloudRunLogGone, so the run ends as it does when its log goes mid-run,
 //   rather than go on unlogged past its earlier steps.
 import type { CloudNativeContextComposition, CloudNativeContextRequest } from "./cloud-native-context-composition.ts";
 import { CloudRunLog, type CloudRunLogFolder, type CloudRunLogPlace, CloudRunLogUnavailable } from "./cloud-run-log.ts";
-import { type CloudRunResumePort, openCloudRunResume } from "./cloud-run-resume.ts";
+import { type CloudRunResumePort, openCloudRunReceiptsResume, openCloudRunResume } from "./cloud-run-resume.ts";
 import { CloudRunStepLines, type CloudRunStepLinesOptions } from "./memory-tree/step-lines.ts";
 
-export interface CloudRunLogOpened {
-	readonly log: CloudRunLog;
-	readonly lines: CloudRunStepLines;
+export type CloudRunLogOpened = (
+	| { readonly log: CloudRunLog; readonly lines: CloudRunStepLines }
+	/** A resumed attempt that keeps no log: its composer only tells it its earlier receipts. */
+	| { readonly log: null; readonly lines: null }
+) & {
 	/** The run's work composer (§5.7): one per run, its requests one at a time. */
 	readonly composeContext: (
 		request: CloudNativeContextRequest,
 		signal: AbortSignal,
 	) => Promise<CloudNativeContextComposition>;
-}
+};
 
-/** Null when the run keeps no log. Await it before the run's first provider request or step. */
+/** Null when the run keeps no log and is no resumed attempt that reads its receipts. Await it before the run's first
+ * provider request or step. */
 export async function openCloudRunLog(options: {
 	readonly resume: CloudRunResumePort;
 	readonly folder: CloudRunLogFolder;
@@ -36,11 +40,21 @@ export async function openCloudRunLog(options: {
 	const { runId, signal } = options.log;
 	if (resume.runId !== runId) throw new CloudRunLogUnavailable("resume_run_mismatch");
 	signal.throwIfAborted();
+	// Asked for every run, beside the place, so a run in Agent notebooks waits for no further round trip: one more call
+	// in the same wave. Its answer (null for an original attempt and for any run that keeps a log) is used only when the
+	// run keeps none; a failed read fails only such a run.
+	const receipts = resume.receipts(signal);
+	receipts.catch(() => undefined);
 	let place: CloudRunLogPlace;
 	try {
 		place = await folder.locate(runId, signal);
 	} catch (error) {
-		if (error instanceof CloudRunLogUnavailable && error.reason === "off") return null;
+		if (error instanceof CloudRunLogUnavailable && error.reason === "off") {
+			const earlier = await receipts;
+			if (earlier === null) return null;
+			const resumed = await openCloudRunReceiptsResume({ resume, receipts: earlier, signal });
+			return { log: null, lines: null, composeContext: resumed.composeContext };
+		}
 		throw error;
 	}
 	if (place.exists) {

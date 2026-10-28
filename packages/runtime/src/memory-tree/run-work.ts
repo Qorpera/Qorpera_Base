@@ -15,6 +15,8 @@
 // - A reasoning item goes back only to the model that made it, in the process that made it. After a model switch,
 //   or in a new process (a restart, or another payer, which is one), it is left out.
 // - On a resumed run, whose earlier steps are only in its log, the work message holds them with nothing folded.
+// - A resumed run that keeps no log (Agent notebooks) folds nothing, ever: its work message holds its earlier effects
+//   from its receipts (`cloudRunResumeComposer`, 20260930539000).
 
 import {
 	CLOUD_NATIVE_WORK_MESSAGE_BYTES,
@@ -89,6 +91,27 @@ export function cloudRunWorkMessage(lines: readonly string[]): string {
 		/[<>&\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
 		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
 	);
+}
+
+/**
+ * Composes the provider requests of a resumed run that keeps no log (Agent notebooks, 20260930539000): every item as
+ * Codex built it, nothing folded or left out, and one work message of `lines` just before the run's own work, where a
+ * resumed run's earlier steps would be. The same message in every request, so each starts as the previous one did.
+ */
+export function cloudRunResumeComposer(
+	lines: readonly string[],
+): (request: CloudNativeContextRequest, signal: AbortSignal) => Promise<CloudNativeContextComposition> {
+	const message = cloudRunWorkMessage(lines);
+	// Codex refuses a larger one, and the run with it.
+	if (Buffer.byteLength(message) > CLOUD_NATIVE_WORK_MESSAGE_BYTES) throw new Error("Run work exceeds its bound");
+	return async (request) => {
+		// A prewarm is no turn's request and has no work.
+		if (request.purpose === "prewarm") return cloudNativeContextIdentity(request);
+		const input: CloudNativeContextEntry[] = request.items.map((_, keep) => ({ keep }));
+		const place = request.items.findIndex(work);
+		input.splice(place < 0 ? input.length : place, 0, { work: message });
+		return { input };
+	};
 }
 
 /**

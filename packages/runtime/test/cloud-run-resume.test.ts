@@ -12,8 +12,15 @@ import {
 	CloudNativeToolRun,
 } from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudRunLogFolder, CloudRunLogGone, type CloudRunLogPlace } from "@qorpera/runtime/cloud-run-log";
-import { type CloudRunResumeRequest, CloudRunResumeRpc, openCloudRunResume } from "@qorpera/runtime/cloud-run-resume";
+import {
+	type CloudRunResumeRequest,
+	CloudRunResumeRpc,
+	openCloudRunReceiptsResume,
+	openCloudRunResume,
+	RUN_RESUME_RECEIPTS,
+} from "@qorpera/runtime/cloud-run-resume";
 import { MemoryCompactLane } from "@qorpera/runtime/memory-tree/compact";
+import { cloudRunWorkMessage } from "@qorpera/runtime/memory-tree/run-work";
 import { cloudRunStepText, RUN_STEP_OUTCOME_UNKNOWN } from "@qorpera/runtime/memory-tree/step-lines";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -100,17 +107,19 @@ function fixture() {
 		why: "restart",
 		unknownReceipts: [{ receiptId: randomUUID(), logicalOperationKey: "op.mail-previous-attempt" }],
 	};
+	// A run that keeps no log (Agent notebooks) reads its receipts instead; null for this one, which keeps a log.
+	let receipts: unknown = null;
 	const records: CloudRunResumeRequest[] = [];
 	const control: CloudCompanyPathControl = {
 		call: vi.fn(async (method, args) => {
 			if (method === "qorpera_memory_run_resume") return structuredClone(context);
+			if (method === "qorpera_memory_run_resume_receipts") return structuredClone(receipts);
 			if (method !== "qorpera_memory_run_resume_record") throw new Error(`Unexpected method ${method}`);
 			const sent = args.p_request as CloudRunResumeRequest;
 			records.push(structuredClone(sent));
-			const current = context as {
-				why: string;
-				unknownReceipts: { receiptId: string; logicalOperationKey: string }[];
-			};
+			type Receipt = { receiptId: string; logicalOperationKey: string };
+			const current = (receipts ?? context) as { why: string; unknownReceipts?: Receipt[]; receipts?: Receipt[] };
+			const known = current.receipts ?? current.unknownReceipts!;
 			return {
 				schema: "qorpera.memory-run-resume-record/v1",
 				why: current.why,
@@ -120,7 +129,7 @@ function fixture() {
 					logicalOperationKey:
 						item.receiptId === null
 							? null
-							: current.unknownReceipts.find((entry) => entry.receiptId === item.receiptId)!.logicalOperationKey,
+							: known.find((entry) => entry.receiptId === item.receiptId)!.logicalOperationKey,
 				})),
 			};
 		}),
@@ -174,6 +183,9 @@ function fixture() {
 		},
 		set context(value: unknown) {
 			context = value;
+		},
+		set receipts(value: unknown) {
+			receipts = value;
 		},
 	};
 }
@@ -321,6 +333,165 @@ describe("dormant run resume opening", () => {
 	});
 });
 
+describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)", () => {
+	const SCHEMA = "qorpera.memory-run-resume-receipts/v1";
+	const completed = (logicalOperationKey: string) => ({
+		receiptId: randomUUID(),
+		logicalOperationKey,
+		status: "completed",
+	});
+	const unknown = (logicalOperationKey: string) => ({
+		receiptId: randomUUID(),
+		logicalOperationKey,
+		status: "outcome_unknown",
+	});
+	const open = async (f: ReturnType<typeof fixture>) =>
+		openCloudRunReceiptsResume({ resume: f.resume, receipts: (await f.resume.receipts(signal))!, signal });
+	const shown = ({ receiptId, logicalOperationKey }: { receiptId: string; logicalOperationKey: string }) => ({
+		receiptId,
+		logicalOperationKey,
+	});
+
+	it("tells the attempt each completed effect and each unknown one by its key, no result, and records the unknown ones", async () => {
+		const f = fixture();
+		// Receipt keys as tools store them: with the tool's own prefix, and one begun in SQL with no tool name.
+		const older = completed("manage_todo:todo:plan");
+		const done = completed("hire_agent:hire:researcher");
+		const unsure = unknown("coworker:ask-sara");
+		f.receipts = { schema: SCHEMA, why: "restart", receipts: [older, done, unsure], completedOmitted: 2 };
+		const result = await open(f);
+		// Oldest first, each by its receipt's key as stored.
+		expect(result.lines).toEqual([
+			RUN_RESUME_RECEIPTS,
+			"earlier: 2 older completed effects are not listed",
+			`completed: ${JSON.stringify(shown(older))}`,
+			`completed: ${JSON.stringify(shown(done))}`,
+			`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...shown(unsure) })}`,
+		]);
+		expect(f.records).toEqual([
+			{ stepsRead: 0, unknownCalls: [{ call: null, step: null, receiptId: unsure.receiptId }] },
+		]);
+		expect(result.recorded).toEqual({
+			why: "restart",
+			stepsRead: 0,
+			unknownCalls: [{ call: null, step: null, ...shown(unsure) }],
+		});
+		// Every request of the attempt: Codex's items, and the same one work message before the attempt's own work.
+		const message = cloudRunWorkMessage(result.lines);
+		expect((await result.composeContext(request(), signal)).input).toEqual([{ keep: 0 }, { work: message }]);
+		const next = request();
+		next.items.push(
+			{ kind: "reasoning", role: null, callId: null, id: null, bytes: 50, media: 0 },
+			{ kind: "function_call", role: null, callId: "call_1", id: null, bytes: 50, media: 0 },
+			{ kind: "function_call_output", role: null, callId: "call_1", id: null, bytes: 90_000, media: 0 },
+		);
+		expect((await result.composeContext(next, signal)).input).toEqual([
+			{ keep: 0 },
+			{ work: message },
+			{ keep: 1 },
+			{ keep: 2 },
+			{ keep: 3 },
+		]);
+		expect(f.records).toHaveLength(1);
+		expect(f.folder.locate).not.toHaveBeenCalled();
+		expect(f.folder.commit).not.toHaveBeenCalled();
+	});
+
+	it("lists completed effects alone after a usage-limit reset, and records no unknown one", async () => {
+		const f = fixture();
+		const first = completed("company_write:a");
+		const second = completed("todo:b");
+		f.receipts = { schema: SCHEMA, why: "limit_reset", receipts: [first, second], completedOmitted: 0 };
+		const result = await open(f);
+		expect(result.lines).toEqual([
+			RUN_RESUME_RECEIPTS,
+			`completed: ${JSON.stringify(shown(first))}`,
+			`completed: ${JSON.stringify(shown(second))}`,
+		]);
+		expect(f.records).toEqual([{ stepsRead: 0, unknownCalls: [] }]);
+		expect(result.recorded.why).toBe("limit_reset");
+	});
+
+	it("refuses a record that changes what the prompt would show", async () => {
+		const f = fixture();
+		f.receipts = { schema: SCHEMA, why: "restart", receipts: [unknown("mail_send:intro")], completedOmitted: 0 };
+		const record = f.resume.record.bind(f.resume);
+		const spy = vi.spyOn(f.resume, "record");
+		spy.mockImplementationOnce(async (request, io) => ({ ...(await record(request, io)), why: "limit_reset" }));
+		await expect(open(f)).rejects.toThrow("resume_response_invalid");
+		spy.mockImplementationOnce(async (request, io) => {
+			const recorded = await record(request, io);
+			return {
+				...recorded,
+				unknownCalls: recorded.unknownCalls.map((item) => ({ ...item, logicalOperationKey: "x" })),
+			};
+		});
+		await expect(open(f)).rejects.toThrow("resume_response_invalid");
+	});
+
+	it("refuses oversized receipts rather than leave an unknown effect out", async () => {
+		const f = fixture();
+		f.receipts = {
+			schema: SCHEMA,
+			why: "restart",
+			receipts: Array.from({ length: 1600 }, () => unknown("x".repeat(192))),
+			completedOmitted: 0,
+		};
+		await expect(open(f)).rejects.toThrow("resume_warnings_too_large");
+		expect(f.records).toEqual([]);
+	});
+
+	it("reads null for an attempt that does not resume from its receipts", async () => {
+		const f = fixture();
+		expect(await f.resume.receipts(signal)).toBeNull();
+		expect(vi.mocked(f.control.call).mock.calls).toEqual([
+			[
+				"qorpera_memory_run_resume_receipts",
+				{ p_binding: f.binding },
+				expect.any(AbortSignal),
+				CLOUD_RUN_ROW_READ_MS,
+			],
+		]);
+	});
+
+	it.each([
+		undefined,
+		{},
+		{ schema: "wrong", why: "restart", receipts: [], completedOmitted: 0 },
+		{ schema: SCHEMA, why: "handoff", receipts: [], completedOmitted: 0 },
+		{ schema: SCHEMA, why: "restart", receipts: {}, completedOmitted: 0 },
+		{ schema: SCHEMA, why: "restart", receipts: [], completedOmitted: -1 },
+		{ schema: SCHEMA, why: "restart", receipts: [], completedOmitted: 0, more: true },
+		{ schema: SCHEMA, why: "restart", receipts: [{ ...unknown("key"), receiptId: "bad" }], completedOmitted: 0 },
+		{
+			schema: SCHEMA,
+			why: "restart",
+			receipts: [{ ...unknown("key"), logicalOperationKey: "" }],
+			completedOmitted: 0,
+		},
+		{ schema: SCHEMA, why: "restart", receipts: [{ ...unknown("key"), status: "pending" }], completedOmitted: 0 },
+		// A receipt is read with no stored result, not even an empty one.
+		{
+			schema: SCHEMA,
+			why: "restart",
+			receipts: [{ ...completed("key"), content: { kind: "text", value: "x" } }],
+			completedOmitted: 0,
+		},
+		{ schema: SCHEMA, why: "restart", receipts: [{ ...unknown("key"), content: null }], completedOmitted: 0 },
+	])("rejects malformed receipts %j", async (value) => {
+		const f = fixture();
+		f.receipts = value;
+		await expect(f.resume.receipts(signal)).rejects.toThrow("resume_response_invalid");
+	});
+
+	it("rejects a receipt listed twice", async () => {
+		const f = fixture();
+		const item = unknown("key");
+		f.receipts = { schema: SCHEMA, why: "restart", receipts: [item, item], completedOmitted: 0 };
+		await expect(f.resume.receipts(signal)).rejects.toThrow("resume_response_invalid");
+	});
+});
+
 describe("resume binding RPC", () => {
 	it("uses the immutable full binding and retries an identical record after a lost reply", async () => {
 		const f = fixture();
@@ -339,7 +510,7 @@ describe("resume binding RPC", () => {
 		expect(vi.mocked(f.control.call).mock.calls[0]?.[1]).toEqual({ p_binding: f.binding });
 	});
 
-	it("gives both reads of the run's budget row as long as the database may run them (R1, 28 Oct 2026)", async () => {
+	it("gives every read of the run's budget row as long as the database may run it (R1, 28 Oct 2026)", async () => {
 		const f = fixture();
 		const normal = f.run.retry;
 		const asked: unknown[][] = [];
@@ -348,15 +519,18 @@ describe("resume binding RPC", () => {
 			return normal(read, io);
 		};
 		await f.open();
+		await f.resume.receipts(signal);
 		// Each attempt's transport and the run's retry wait CLOUD_RUN_ROW_READ_MS, and a lost or late answer is asked
 		// again only once that long has passed since its copy was sent.
 		expect(asked).toEqual([
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
 			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
 			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
 		]);
 		expect(vi.mocked(f.control.call).mock.calls.map(([method, , , timeoutMs]) => [method, timeoutMs])).toEqual([
 			["qorpera_memory_run_resume", CLOUD_RUN_ROW_READ_MS],
 			["qorpera_memory_run_resume_record", CLOUD_RUN_ROW_READ_MS],
+			["qorpera_memory_run_resume_receipts", CLOUD_RUN_ROW_READ_MS],
 		]);
 	});
 
@@ -406,15 +580,16 @@ describe("resume binding RPC", () => {
 		expect(f.control.call).not.toHaveBeenCalled();
 	});
 
-	it("permits both RPCs in the concrete closed HTTP client", async () => {
+	it("permits the three RPCs in the concrete closed HTTP client", async () => {
 		const f = fixture();
-		const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("null"));
+		const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response("null"));
 		const control = new HttpCloudCompanyPathControl({
 			supabaseUrl: "https://test.supabase.example",
 			serviceRoleKey: "test-key",
 			fetch: fetcher,
 		});
 		await control.call("qorpera_memory_run_resume", { p_binding: f.binding }, signal);
+		await control.call("qorpera_memory_run_resume_receipts", { p_binding: f.binding }, signal);
 		fetcher.mockResolvedValue(new Response("{}"));
 		await control.call(
 			"qorpera_memory_run_resume_record",
@@ -423,6 +598,7 @@ describe("resume binding RPC", () => {
 		);
 		expect(fetcher.mock.calls.map(([url]) => String(url).split("/").at(-1))).toEqual([
 			"qorpera_memory_run_resume",
+			"qorpera_memory_run_resume_receipts",
 			"qorpera_memory_run_resume_record",
 		]);
 	});

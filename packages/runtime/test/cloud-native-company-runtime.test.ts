@@ -351,6 +351,12 @@ async function fixture(
 				return { off: true };
 			}
 			expect(args.p_binding).toEqual(f.binding);
+			// Read beside the log's place, the receipts a resumed attempt in Agent notebooks starts from: null for an
+			// original attempt (20260930539000).
+			if (method === "qorpera_memory_run_resume_receipts") {
+				expect(args).toEqual({ p_binding: f.binding });
+				return null;
+			}
 			// What a run's machine saved under QorperaOS/interfaces/ or QorperaOS/tables/, noted in its conversation
 			// (Interfaces I10).
 			if (method === "qorpera_folder_note_interface_changes") {
@@ -1918,7 +1924,11 @@ async function memoryTreeFixture(
 		: [];
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
-		if (!method.startsWith("qorpera_memory_") || method === "qorpera_memory_run_log_place")
+		if (
+			!method.startsWith("qorpera_memory_") ||
+			method === "qorpera_memory_run_log_place" ||
+			method === "qorpera_memory_run_resume_receipts"
+		)
 			return original(method, args, signal);
 		expect(args.p_binding).toEqual(f.binding);
 		const request = (args.p_request ?? {}) as Record<string, unknown>;
@@ -1959,11 +1969,16 @@ async function memoryTreeFixture(
 	return f;
 }
 
-/** The summary tree's calls a run made, in order (not its work log's place, which every run asks for). */
+/** The summary tree's calls a run made, in order (not its work log's place or its receipts, which every run asks for). */
 function memoryTreeCalls(f: Awaited<ReturnType<typeof fixture>>) {
 	return f.pathCall.mock.calls
 		.map(([method]) => method)
-		.filter((method) => method.startsWith("qorpera_memory_") && method !== "qorpera_memory_run_log_place");
+		.filter(
+			(method) =>
+				method.startsWith("qorpera_memory_") &&
+				method !== "qorpera_memory_run_log_place" &&
+				method !== "qorpera_memory_run_resume_receipts",
+		);
 }
 
 it("shows an own-thread run its summary tree, released and recorded before the model starts", async () => {
@@ -2399,6 +2414,8 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 	// The run's own check before a model request (the synthetic fence's checks stand for SQL's, inside one call).
 	// It takes the run's budget row, so since R1 (28 Oct 2026) it waits as long as the database may run it: 20 s.
 	expect(budgets("qorpera_assert_company_path_reads")).toContain(20_000);
+	// So does the read of the receipts a resumed attempt in Agent notebooks starts from, which every run asks for.
+	expect(budgets("qorpera_memory_run_resume_receipts")).toEqual([20_000]);
 	// Every other call keeps the transport's own stop; the fence's attempt is still the run's retry's.
 	const budgeted: readonly CloudCompanyPathRpc[] = [
 		"qorpera_describe_company_run_context",
@@ -2406,6 +2423,7 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 		"qorpera_list_native_connector_tools",
 		"qorpera_assert_company_path_reads",
 		"qorpera_fence_native_context",
+		"qorpera_memory_run_resume_receipts",
 	];
 	const others = f.pathCall.mock.calls.filter(([method]) => !budgeted.includes(method));
 	expect(others.length).toBeGreaterThan(0);
@@ -2866,10 +2884,12 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// The run's work log's place (W1c-3: a resumed attempt reads its earlier work before any provider
 	// request) adds one as the tools are built. 11 before the work log, 10 before the bind was split
 	// from the admission (M1b-4b-3), 12 before that fence, 13 before the connector catalog joined the
-	// context reads. Since R1 (28 Oct 2026) each of the three context checks before the fence (once the
+	// context reads. Its receipts, which a resumed attempt in Agent notebooks starts from (20260930539000), are read
+	// beside it and add none. Since R1 (28 Oct 2026) each of the three context checks before the fence (once the
 	// tools are built, and before and after the execution's start) asks for the run's admission and then
 	// its read set, one after the other, not together: 12 before that.
 	expect(wave("qorpera_memory_run_log_place")).toBe(6);
+	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
 		wave("qorpera_begin_native_company_execution_v3"),
 	);
