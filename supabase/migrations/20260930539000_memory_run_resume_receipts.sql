@@ -11,10 +11,11 @@
 --    and a narrow run still takes today's path.
 -- 3. The cut-off (qorpera_resume_run_from_log) resumes it; at its login's usage limit it ends as before, with no pause.
 -- 4. qorpera_memory_run_resume_receipts (service_role, through the run's binding) returns the run's completed receipts
---    (the newest 64, with the results the runtime stored for them, newest first up to 64 KiB in all) and its
---    outcome_unknown ones; null for an original attempt or a run that keeps a log. A resumed attempt of a run that no
---    longer resumes (its machine made it narrow) is refused (55000), so it fails. Only the platform reads it, to build the
---    resumed attempt's first message.
+--    (the newest 64) and its outcome_unknown ones, each by its key and status; null for an original attempt or a run
+--    that keeps a log. It returns no stored result: the run may never have seen one (the check of the call's authority
+--    before its release refused it, or the run was cut off first), and only a replay, which checks that authority
+--    again, returns it. A resumed attempt of a run that no longer resumes (its machine made it narrow) is refused
+--    (55000), so it fails. Only the platform reads it, to build the resumed attempt's first message.
 -- 5. The resume record (qorpera_memory_run_resume_record) accepts such a run with no steps read, and still needs every
 --    unknown receipt listed (20260930340000).
 -- 6. Until the resumed attempt has recorded that, its first receipt is refused (55000), a replay too.
@@ -96,10 +97,9 @@ select pg_temp.g1b_replace('public.qorpera_resume_run_from_log(uuid,text,boolean
 -- 4. The resumed attempt's earlier receipts -------------------------------------------------------------------------------
 
 -- Null for an original attempt, or for a run that does not resume from its receipts. Otherwise {schema, why, receipts,
--- completedOmitted}: each receipt is {receiptId, logicalOperationKey, status, content}, oldest first. A completed one
--- has the content of the result the runtime stored for it (`qorpera.cloud-tool-operation-result/v1`), newest first up
--- to 64 KiB, and null past that or for any other result; an outcome_unknown one has null. Every outcome_unknown receipt
--- is listed, and the newest 64 completed ones; completedOmitted counts the older completed ones left out.
+-- completedOmitted}: each receipt is {receiptId, logicalOperationKey, status}, oldest first, never with its result.
+-- Every outcome_unknown receipt is listed, and the newest 64 completed ones; completedOmitted counts the older completed
+-- ones left out.
 create function public.qorpera_memory_run_resume_receipts(p_binding jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 -- 20260930539000 (G1 b)
@@ -113,25 +113,17 @@ begin
 	if v_resume is null then return null; end if;
 	if not public.qorpera_run_resumes_from_log(v_run) then
 		raise exception 'Run resume is unavailable' using errcode = '55000'; end if;
-	with completed as (
-		select r.id, r.logical_operation_key, r.created_at, r.result, row_number() over newest as n,
-			sum(case when r.result ->> 'schema' = 'qorpera.cloud-tool-operation-result/v1'
-				then octet_length((r.result -> 'content')::text) else 0 end) over newest as bytes
-		from public.qorpera_run_operation_receipts as r
-		where r.run_id = v_run and r.status = 'completed'
-		window newest as (order by r.created_at desc, r.id desc)
-	), shown as (
-		select c.id, c.logical_operation_key, 'completed' as status, c.created_at,
-			case when c.result ->> 'schema' = 'qorpera.cloud-tool-operation-result/v1' and c.bytes <= 65536
-				then c.result -> 'content' end as content
-		from completed as c where c.n <= 64
+	with shown as (
+		select c.id, c.logical_operation_key, 'completed' as status, c.created_at
+		from (select r.id, r.logical_operation_key, r.created_at from public.qorpera_run_operation_receipts as r
+			where r.run_id = v_run and r.status = 'completed' order by r.created_at desc, r.id desc limit 64) as c
 		union all
-		select r.id, r.logical_operation_key, 'outcome_unknown', r.created_at, null
+		select r.id, r.logical_operation_key, 'outcome_unknown', r.created_at
 		from public.qorpera_run_operation_receipts as r
 		where r.run_id = v_run and r.status = 'outcome_unknown'
 	)
 	select coalesce(jsonb_agg(jsonb_build_object('receiptId', s.id, 'logicalOperationKey', s.logical_operation_key,
-		'status', s.status, 'content', s.content) order by s.created_at, s.id), '[]'::jsonb) into v_receipts
+		'status', s.status) order by s.created_at, s.id), '[]'::jsonb) into v_receipts
 	from shown as s;
 	select greatest(count(*) - 64, 0)::integer into v_omitted from public.qorpera_run_operation_receipts as r
 	where r.run_id = v_run and r.status = 'completed';

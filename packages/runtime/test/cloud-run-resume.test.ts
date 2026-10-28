@@ -331,17 +331,15 @@ describe("dormant run resume opening", () => {
 
 describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)", () => {
 	const SCHEMA = "qorpera.memory-run-resume-receipts/v1";
-	const completed = (logicalOperationKey: string, content: unknown) => ({
+	const completed = (logicalOperationKey: string) => ({
 		receiptId: randomUUID(),
 		logicalOperationKey,
 		status: "completed",
-		content,
 	});
 	const unknown = (logicalOperationKey: string) => ({
 		receiptId: randomUUID(),
 		logicalOperationKey,
 		status: "outcome_unknown",
-		content: null,
 	});
 	const open = async (f: ReturnType<typeof fixture>) =>
 		openCloudRunReceiptsResume({ resume: f.resume, receipts: (await f.resume.receipts(signal))!, signal });
@@ -350,21 +348,20 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 		logicalOperationKey,
 	});
 
-	it("tells the attempt each completed effect with its result and each unknown one, and records the unknown ones", async () => {
+	it("tells the attempt each completed effect and each unknown one by its key, no result, and records the unknown ones", async () => {
 		const f = fixture();
 		// Receipt keys as tools store them: with the tool's own prefix, and one begun in SQL with no tool name.
-		const older = completed("manage_todo:todo:plan", null);
-		const done = completed("hire_agent:hire:researcher", { kind: "json", value: { agentId: "a1", saved: true } });
+		const older = completed("manage_todo:todo:plan");
+		const done = completed("hire_agent:hire:researcher");
 		const unsure = unknown("coworker:ask-sara");
 		f.receipts = { schema: SCHEMA, why: "restart", receipts: [older, done, unsure], completedOmitted: 2 };
 		const result = await open(f);
-		// Oldest first, each by its receipt's key as stored; a completed one whose result SQL left out is listed by its
-		// key alone.
+		// Oldest first, each by its receipt's key as stored.
 		expect(result.lines).toEqual([
 			RUN_RESUME_RECEIPTS,
 			"earlier: 2 older completed effects are not listed",
-			`completed, result not shown: ${JSON.stringify(shown(older))}`,
-			`completed: ${JSON.stringify({ ...shown(done), result: done.content })}`,
+			`completed: ${JSON.stringify(shown(older))}`,
+			`completed: ${JSON.stringify(shown(done))}`,
 			`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...shown(unsure) })}`,
 		]);
 		expect(f.records).toEqual([
@@ -396,19 +393,16 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 		expect(f.folder.commit).not.toHaveBeenCalled();
 	});
 
-	it("shows, newest first, each result that still fits in half the run's view, escaped, and lists the rest by their keys", async () => {
+	it("lists completed effects alone after a usage-limit reset, and records no unknown one", async () => {
 		const f = fixture();
-		// Escaped, each `<` is six bytes: 36,000, past the 32,000 a resume may show. The older, smaller one still fits.
-		const old = completed("company_write:a", { kind: "text", value: "a".repeat(12_000) });
-		const large = completed("company_write:b", { kind: "text", value: "<".repeat(6_000) });
-		const newest = completed("company_write:c", { kind: "text", value: "c".repeat(12_000) });
-		f.receipts = { schema: SCHEMA, why: "limit_reset", receipts: [old, large, newest], completedOmitted: 0 };
+		const first = completed("company_write:a");
+		const second = completed("todo:b");
+		f.receipts = { schema: SCHEMA, why: "limit_reset", receipts: [first, second], completedOmitted: 0 };
 		const result = await open(f);
 		expect(result.lines).toEqual([
 			RUN_RESUME_RECEIPTS,
-			`completed: ${JSON.stringify({ ...shown(old), result: old.content })}`,
-			`completed, result not shown: ${JSON.stringify(shown(large))}`,
-			`completed: ${JSON.stringify({ ...shown(newest), result: newest.content })}`,
+			`completed: ${JSON.stringify(shown(first))}`,
+			`completed: ${JSON.stringify(shown(second))}`,
 		]);
 		expect(f.records).toEqual([{ stepsRead: 0, unknownCalls: [] }]);
 		expect(result.recorded.why).toBe("limit_reset");
@@ -467,21 +461,14 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 			completedOmitted: 0,
 		},
 		{ schema: SCHEMA, why: "restart", receipts: [{ ...unknown("key"), status: "pending" }], completedOmitted: 0 },
-		// An unknown effect has no result to show.
+		// A receipt is read with no stored result, not even an empty one.
 		{
 			schema: SCHEMA,
 			why: "restart",
-			receipts: [{ ...unknown("key"), content: { kind: "text", value: "x" } }],
+			receipts: [{ ...completed("key"), content: { kind: "text", value: "x" } }],
 			completedOmitted: 0,
 		},
-		{ schema: SCHEMA, why: "restart", receipts: [completed("key", { kind: "text", value: 3 })], completedOmitted: 0 },
-		{
-			schema: SCHEMA,
-			why: "restart",
-			receipts: [completed("key", { kind: "html", value: "x" })],
-			completedOmitted: 0,
-		},
-		{ schema: SCHEMA, why: "restart", receipts: [completed("key", { kind: "json" })], completedOmitted: 0 },
+		{ schema: SCHEMA, why: "restart", receipts: [{ ...unknown("key"), content: null }], completedOmitted: 0 },
 	])("rejects malformed receipts %j", async (value) => {
 		const f = fixture();
 		f.receipts = value;

@@ -186,12 +186,11 @@ describe("opening a run's work log", () => {
 		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
 		const done = { receiptId: randomUUID(), logicalOperationKey: "company_write:notes" };
 		const unsure = { receiptId: randomUUID(), logicalOperationKey: "mail_send:intro" };
-		const result = { kind: "text", value: "Saved notes.md" } as const;
 		f.receipts = {
 			why: "restart",
 			receipts: [
-				{ ...done, status: "completed", content: result },
-				{ ...unsure, status: "outcome_unknown", content: null },
+				{ ...done, status: "completed" },
+				{ ...unsure, status: "outcome_unknown" },
 			],
 			completedOmitted: 0,
 		};
@@ -215,13 +214,13 @@ describe("opening a run's work log", () => {
 			},
 			signal,
 		);
-		// Its one work message: the completed effect with its result, and the unknown one, each with its key.
+		// Its one work message: the completed effect and the unknown one, each by its key, with no result.
 		expect(composed.input).toEqual([
 			{ keep: 0 },
 			{
 				work: cloudRunWorkMessage([
 					RUN_RESUME_RECEIPTS,
-					`completed: ${JSON.stringify({ ...done, result })}`,
+					`completed: ${JSON.stringify(done)}`,
 					`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...unsure })}`,
 				]),
 			},

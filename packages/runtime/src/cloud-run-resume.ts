@@ -3,13 +3,7 @@
 // A run in Agent notebooks keeps no log: its resumed attempt starts from the run's own receipts instead
 // (`openCloudRunReceiptsResume`, 20260930539000).
 import { parseMemoryRunFile } from "@qorpera/cloud-client/memory-run-files";
-import {
-	type JsonValue,
-	POSTGRES_UUID_PATTERN,
-	parseClosedRecord,
-	parseInteger,
-	WireValueError,
-} from "@qorpera/contracts";
+import { POSTGRES_UUID_PATTERN, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { CLOUD_NATIVE_WORK_MESSAGE_BYTES } from "./cloud-native-context-composition.ts";
 import { type CloudNativeToolRun, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
@@ -20,7 +14,6 @@ import {
 	type CloudRunStepLinesOptions,
 	RUN_STEP_OUTCOME_UNKNOWN,
 } from "./memory-tree/step-lines.ts";
-import { RUN_VIEW } from "./memory-tree/tree.ts";
 
 export type CloudRunResumeReason = "restart" | "limit_reset";
 export interface CloudRunResumeContext {
@@ -42,16 +35,12 @@ export interface CloudRunResumeRecord {
 	readonly stepsRead: number;
 	readonly unknownCalls: readonly CloudRunResumeRecordedUnknown[];
 }
-/** One of the run's receipts from its earlier attempts. A completed one may carry the content the tool returned for
- * it, as the run stored it (null when SQL leaves it out); an outcome_unknown one never does. */
+/** One of the run's receipts from its earlier attempts, by its key and status. Never its stored result: the run may
+ * not have seen it. */
 export interface CloudRunResumeReceipt {
 	readonly receiptId: string;
 	readonly logicalOperationKey: string;
 	readonly status: "completed" | "outcome_unknown";
-	readonly content:
-		| { readonly kind: "text"; readonly value: string }
-		| { readonly kind: "json"; readonly value: JsonValue }
-		| null;
 }
 export interface CloudRunResumeReceipts {
 	readonly why: CloudRunResumeReason;
@@ -82,13 +71,6 @@ function receipt(value: unknown): string {
 function operationKey(value: unknown): string {
 	if (typeof value !== "string" || !value.length) invalid();
 	return value;
-}
-function content(value: unknown): CloudRunResumeReceipt["content"] {
-	const item = parseClosedRecord(value, "Run resume result", ["kind", "value"]);
-	if (item.kind === "text" && typeof item.value === "string")
-		return Object.freeze({ kind: "text", value: item.value });
-	if (item.kind !== "json") invalid();
-	return Object.freeze({ kind: "json", value: item.value as JsonValue });
 }
 
 /** Uses the run's live authority for retries. A lost record reply repeats the same request, never a rediscovered
@@ -144,21 +126,15 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 			if (row.schema !== "qorpera.memory-run-resume-receipts/v1" || !Array.isArray(row.receipts)) invalid();
 			const seen = new Set<string>();
 			const receipts = row.receipts.map((value) => {
-				const item = parseClosedRecord(value, "Run resume receipt", [
-					"receiptId",
-					"logicalOperationKey",
-					"status",
-					"content",
-				]);
+				const item = parseClosedRecord(value, "Run resume receipt", ["receiptId", "logicalOperationKey", "status"]);
 				const receiptId = receipt(item.receiptId);
 				if (seen.has(receiptId)) invalid();
 				seen.add(receiptId);
-				if (item.status !== "completed" && (item.status !== "outcome_unknown" || item.content !== null)) invalid();
+				if (item.status !== "completed" && item.status !== "outcome_unknown") invalid();
 				return Object.freeze({
 					receiptId,
 					logicalOperationKey: operationKey(item.logicalOperationKey),
 					status: item.status,
-					content: item.content === null ? null : content(item.content),
 				});
 			});
 			return Object.freeze({
@@ -341,8 +317,8 @@ export async function openCloudRunResume(options: {
 /** The first line of a resumed attempt's work message when its run keeps no log: what the lines after it are. */
 export const RUN_RESUME_RECEIPTS =
 	"resumed: this run was cut off, and this attempt goes on with the same task. The effects its earlier attempts " +
-	"recorded follow, oldest first, each by its receipt's key. A completed one ran: do not do it again; where its " +
-	"result is not shown, read the current state rather than call it again. An effect whose outcome is unknown may " +
+	"recorded follow, oldest first, each by its receipt's key; their results are not shown. A completed one ran: do " +
+	"not do it again; read the current state where you need what it did. An effect whose outcome is unknown may " +
 	"have run: check it first; its key never runs again. A receipt's key is not always the key a call passed: most " +
 	"begin with the tool's name and a colon, many tools put a prefix of their own before the call's key (as in " +
 	"hire_agent:hire:<operationKey> or coworker:<operationKey>), and some come from no argument. The same tool called " +
@@ -350,11 +326,11 @@ export const RUN_RESUME_RECEIPTS =
 	"arguments under that key are refused.";
 
 /** Opens a resumed attempt of a run that keeps no log (Agent notebooks, 20260930539000) from the run's receipts, which
- * `resume.receipts` read: its work message tells it each completed effect with the result the run stored for it, each
- * effect whose outcome is unknown, and each one's receipt key. Only results this run already saw are shown: newest
- * first, each one that still fits in half the run's view (§5.7); any other completed effect is listed by its key alone.
- * Nothing is written but the resume record, which lists every unknown receipt as for a log; SQL refuses the attempt's
- * first receipt until it is stored. A caller must await this before any provider request or step. */
+ * `resume.receipts` read: its work message lists each completed effect and each effect whose outcome is unknown, each by
+ * its receipt key. It shows no result. A stored result may be one the run never saw: the check of the call's authority
+ * before its release refused it, or the run was cut off first. Only a replay, which checks that authority again,
+ * returns it. Nothing is written but the resume record, which lists every unknown receipt as for a log; SQL refuses the
+ * attempt's first receipt until it is stored. A caller must await this before any provider request or step. */
 export async function openCloudRunReceiptsResume(options: {
 	readonly resume: CloudRunResumePort;
 	readonly receipts: CloudRunResumeReceipts;
@@ -362,29 +338,16 @@ export async function openCloudRunReceiptsResume(options: {
 }) {
 	const { resume, receipts: earlier, signal } = options;
 	signal.throwIfAborted();
-	const empty = Buffer.byteLength(cloudRunWorkMessage([]));
-	let budget = RUN_VIEW / 2;
-	const listed: string[] = [];
-	for (const { receiptId, logicalOperationKey, status, content } of [...earlier.receipts].reverse()) {
-		const item = { receiptId, logicalOperationKey };
-		if (status === "outcome_unknown") {
-			listed.push(`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...item })}`);
-			continue;
-		}
-		const line = content === null ? null : `completed: ${JSON.stringify({ ...item, result: content })}`;
-		// Its share of the message, escaped as sent. One that does not fit leaves room for an older, smaller one.
-		const bytes = line === null ? 0 : Buffer.byteLength(cloudRunWorkMessage([line])) - empty;
-		if (line !== null && bytes <= budget) {
-			budget -= bytes;
-			listed.push(line);
-		} else listed.push(`completed, result not shown: ${JSON.stringify(item)}`);
-	}
 	const lines = Object.freeze([
 		RUN_RESUME_RECEIPTS,
 		...(earlier.completedOmitted > 0
 			? [`earlier: ${earlier.completedOmitted} older completed effects are not listed`]
 			: []),
-		...listed.reverse(),
+		...earlier.receipts.map(({ receiptId, logicalOperationKey, status }) =>
+			status === "outcome_unknown"
+				? `${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, receiptId, logicalOperationKey })}`
+				: `completed: ${JSON.stringify({ receiptId, logicalOperationKey })}`,
+		),
 	]);
 	if (Buffer.byteLength(cloudRunWorkMessage(lines)) > CLOUD_NATIVE_WORK_MESSAGE_BYTES)
 		throw new CloudRunLogUnavailable("resume_warnings_too_large");

@@ -3,9 +3,10 @@
 -- own receipts. Test 924's run of Alice's is in Agent notebooks mode and keeps no run log. It starts, acknowledges,
 -- completes two steps (one with the result the runtime stores, one with another result) and begins a third; then its
 -- runner's lease runs out and the reconcile ends the attempt. The job is queued again with the open step's outcome
--- unknown. The next attempt, on the same run and job, reads the run's receipts: the completed steps (with the stored
--- result) and the unknown one. It begins no step, a replay neither, until it has recorded that it was told of the
--- unknown one. Then a completed step replays its stored result and does not run again, the unknown one never runs
+-- unknown. The next attempt, on the same run and job, reads the run's receipts: the completed steps and the unknown
+-- one, each by its key, never with a stored result (the run may not have seen it). It begins no step, a replay
+-- neither, until it has recorded that it was told of the unknown one. Then a completed step replays its stored result
+-- (the runtime checks the call's authority around that) and does not run again, the unknown one never runs
 -- again, other inputs under a key are refused, and a new step runs. A run in Agent tree mode with no log, a run out of
 -- attempts, a refused run, a run at its usage limit, a narrow run and a coding session's turn keep today's path. The
 -- cut-off of a run with a log is 991.
@@ -263,8 +264,9 @@ begin
 end
 $$;
 
--- 7. The read: every receipt of the run, oldest first; a completed one with the content of the result the runtime
---    stored for it (null for another result), an unknown one with none.
+-- 7. The read: every receipt of the run, oldest first, by its key and status. No stored result: a receipt completes
+--    before the runtime's check of the call's authority releases its result, so that check may have refused it, or
+--    never run.
 do $$
 declare v_next jsonb := current_setting('qorpera_test.rr_next')::jsonb; v_read jsonb;
 begin
@@ -272,17 +274,19 @@ begin
 	perform pg_temp.base_assert(v_read = jsonb_build_object('schema', 'qorpera.memory-run-resume-receipts/v1', 'why', 'restart',
 		'receipts', jsonb_build_array(
 			jsonb_build_object('receiptId', current_setting('qorpera_test.rr_a'), 'logicalOperationKey', 'g1b-step-a',
-				'status', 'completed', 'content', pg_temp.rr_result('The note says: ship on Friday.') -> 'content'),
+				'status', 'completed'),
 			jsonb_build_object('receiptId', current_setting('qorpera_test.rr_o'), 'logicalOperationKey', 'g1b-step-o',
-				'status', 'completed', 'content', null),
+				'status', 'completed'),
 			jsonb_build_object('receiptId', current_setting('qorpera_test.rr_b'), 'logicalOperationKey', 'g1b-step-b',
-				'status', 'outcome_unknown', 'content', null)),
-		'completedOmitted', 0), 'the read names both steps: ' || v_read::text);
+				'status', 'outcome_unknown')),
+		'completedOmitted', 0), 'the read names the three steps: ' || v_read::text);
+	perform pg_temp.base_assert(strpos(v_read::text, 'ship on Friday') = 0 and strpos(v_read::text, '"ok"') = 0,
+		'the read holds no stored result');
 end
 $$;
 
--- The read's limits: the newest 64 completed receipts (older ones only counted), with content newest first up to
--- 64 KiB; every unknown one. Seventy older completed receipts of 2000 bytes each, as the run's earlier work.
+-- The read's limits: the newest 64 completed receipts (older ones only counted); every unknown one. Seventy older
+-- completed receipts of 2000 bytes each, as the run's earlier work.
 savepoint rr_limits;
 set local session_replication_role = replica;
 insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
@@ -295,27 +299,20 @@ from public.qorpera_execution_runs as run, generate_series(1, 70) as i,
 where run.id = pg_temp.rr_run();
 set local session_replication_role = origin;
 do $$
-declare v_read jsonb := pg_temp.rr_read(current_setting('qorpera_test.rr_next')::jsonb); v_bytes bigint; v_cut integer;
-	v_last_null integer; v_first_content integer;
+declare v_read jsonb := pg_temp.rr_read(current_setting('qorpera_test.rr_next')::jsonb);
 begin
 	perform pg_temp.base_assert(jsonb_array_length(v_read -> 'receipts') = 65 and (v_read ->> 'completedOmitted')::integer = 8
 		and v_read #>> '{receipts,64,logicalOperationKey}' = 'g1b-step-b' and v_read #>> '{receipts,64,status}' = 'outcome_unknown'
-		and v_read #> '{receipts,63,content}' = 'null' and v_read #>> '{receipts,62,logicalOperationKey}' = 'g1b-step-a'
-		and jsonb_typeof(v_read #> '{receipts,62,content}') = 'object',
+		and v_read #>> '{receipts,63,logicalOperationKey}' = 'g1b-step-o'
+		and v_read #>> '{receipts,62,logicalOperationKey}' = 'g1b-step-a'
+		and v_read #>> '{receipts,0,logicalOperationKey}' = 'g1b-old-62',
 		'the newest 64 completed and the unknown one: ' || left(v_read::text, 400));
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_read -> 'receipts') r
 		where r ->> 'logicalOperationKey' in ('g1b-old-63', 'g1b-old-64', 'g1b-old-65', 'g1b-old-66', 'g1b-old-67', 'g1b-old-68',
 			'g1b-old-69', 'g1b-old-70')), 'the oldest 8 are only counted');
-	select sum(octet_length((r -> 'content')::text)) filter (where jsonb_typeof(r -> 'content') = 'object'),
-		max(n) filter (where jsonb_typeof(r -> 'content') <> 'object' and r ->> 'logicalOperationKey' like 'g1b-old-%'),
-		min(n) filter (where jsonb_typeof(r -> 'content') = 'object' and r ->> 'logicalOperationKey' like 'g1b-old-%')
-	into v_bytes, v_last_null, v_first_content
-	from jsonb_array_elements(v_read -> 'receipts') with ordinality as e(r, n);
-	select octet_length((result -> 'content')::text)::integer into v_cut from public.qorpera_run_operation_receipts
-	where run_id = pg_temp.rr_run() and logical_operation_key = v_read #>> array['receipts', (v_last_null - 1)::text, 'logicalOperationKey'];
-	perform pg_temp.base_assert(v_bytes <= 65536 and v_last_null < v_first_content and v_bytes + v_cut > 65536,
-		format('content runs newest first up to 64 KiB: %s bytes, the newest without at %s, the oldest with at %s',
-			v_bytes, v_last_null, v_first_content));
+	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_read -> 'receipts') r
+		where (select array_agg(k order by k) from jsonb_object_keys(r) k) <> array['logicalOperationKey', 'receiptId', 'status'])
+		and strpos(v_read::text, 'xxxx') = 0, 'no receipt carries a stored result');
 end
 $$;
 rollback to savepoint rr_limits;
