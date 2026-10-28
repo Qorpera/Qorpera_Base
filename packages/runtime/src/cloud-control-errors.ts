@@ -66,6 +66,28 @@ export class CloudControlRpcRefused extends CloudRuntimeDiagnosticError {
 	}
 }
 
+/** Whether PostgREST's answer with this code says the call's statement ended or never started: any SQLSTATE but a lost
+ * connection's (08), and PostgREST's pool wait (PGRST003). Its other connection errors, a lost connection and an answer
+ * that is not PostgREST's (a proxy's page, a cut body) say nothing of the statement (R1, 28 Oct 2026). */
+export function cloudControlEndedCode(code: string): boolean {
+	return (/^[0-9A-Z]{5}$/.test(code) && !code.startsWith("08")) || code === "PGRST003";
+}
+
+/** A lost or late answer PostgREST itself gave, whose statement ended or never started. It carries no `code`, so it is
+ * asked again as any other lost answer is (cloudControlRetryable). */
+export class CloudControlRpcEnded extends CloudRuntimeDiagnosticError {
+	constructor(safeMessage?: string) {
+		super("transport_unavailable", safeMessage);
+	}
+}
+
+/** Whether a failed control call's statement has ended in the database: its answer said so. */
+export function cloudControlEnded(error: unknown): boolean {
+	if (error instanceof CloudControlRpcEnded) return true;
+	const code = error instanceof CloudRuntimeDiagnosticError ? (error as { code?: unknown }).code : undefined;
+	return typeof code === "string" && cloudControlEndedCode(code);
+}
+
 /** Whether a failed control call may be asked again: its answer was lost or late, it was not refused. */
 export function cloudControlRetryable(error: unknown): boolean {
 	if (!(error instanceof CloudRuntimeDiagnosticError)) return false;

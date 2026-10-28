@@ -6,7 +6,11 @@ import { parseMemoryRunFile } from "@qorpera/cloud-client/memory-run-files";
 import { POSTGRES_UUID_PATTERN, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { CLOUD_NATIVE_WORK_MESSAGE_BYTES } from "./cloud-native-context-composition.ts";
-import { type CloudNativeToolRun, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import {
+	CLOUD_RUN_ROW_READ_MS,
+	type CloudNativeToolRun,
+	parseCloudNativeToolBinding,
+} from "./cloud-native-tool-authority.ts";
 import { CloudRunLog, type CloudRunLogFolder, CloudRunLogUnavailable } from "./cloud-run-log.ts";
 import { cloudRunResumeComposer, cloudRunWorkComposer, cloudRunWorkMessage } from "./memory-tree/run-work.ts";
 import {
@@ -75,7 +79,8 @@ function operationKey(value: unknown): string {
 
 /** Uses the run's live authority for retries. A lost record reply repeats the same request, never a rediscovered
  * list; SQL's per-assignment row replays it even after new steps have committed. A different request for that row is
- * refused (23505, `CloudControlRpcRefused`) and never asked again. No model argument chooses a binding. */
+ * refused (23505, `CloudControlRpcRefused`) and never asked again. No model argument chooses a binding. All three calls
+ * take the run's budget row, so a lost or late one is asked again only once the copy it replaces has ended (R1). */
 export class CloudRunResumeRpc implements CloudRunResumePort {
 	readonly #run: Pick<CloudNativeToolRun, "binding" | "retry">;
 	readonly #control: CloudCompanyPathControl;
@@ -92,8 +97,15 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 	async context(signal: AbortSignal): Promise<CloudRunResumeContext | null> {
 		const { value } = await this.#run.retry(
 			(requestSignal) =>
-				this.#control.call("qorpera_memory_run_resume", { p_binding: this.#binding }, requestSignal),
+				this.#control.call(
+					"qorpera_memory_run_resume",
+					{ p_binding: this.#binding },
+					requestSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				),
 			signal,
+			CLOUD_RUN_ROW_READ_MS,
+			CLOUD_RUN_ROW_READ_MS,
 		);
 		if (value === null) return null;
 		try {
@@ -117,8 +129,15 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 	async receipts(signal: AbortSignal): Promise<CloudRunResumeReceipts | null> {
 		const { value } = await this.#run.retry(
 			(requestSignal) =>
-				this.#control.call("qorpera_memory_run_resume_receipts", { p_binding: this.#binding }, requestSignal),
+				this.#control.call(
+					"qorpera_memory_run_resume_receipts",
+					{ p_binding: this.#binding },
+					requestSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				),
 			signal,
+			CLOUD_RUN_ROW_READ_MS,
+			CLOUD_RUN_ROW_READ_MS,
 		);
 		if (value === null) return null;
 		try {
@@ -157,8 +176,11 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 					"qorpera_memory_run_resume_record",
 					{ p_binding: this.#binding, p_request: sent },
 					requestSignal,
+					CLOUD_RUN_ROW_READ_MS,
 				),
 			signal,
+			CLOUD_RUN_ROW_READ_MS,
+			CLOUD_RUN_ROW_READ_MS,
 		);
 		try {
 			const row = parseClosedRecord(value, "Run resume record", ["schema", "why", "stepsRead", "unknownCalls"]);

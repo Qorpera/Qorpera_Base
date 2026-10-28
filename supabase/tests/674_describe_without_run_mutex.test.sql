@@ -404,8 +404,8 @@ begin
 			v_direct, v_plain, v_receipt, v_view, v_nested; end if;
 end $$;
 
--- 7. Still held: the context fence through the host's long entry point waits for the row (that entry point sets its own
---    8 s lock_timeout, so the wait is read from pg_blocking_pids), and goes on once the row is released.
+-- 7. Still held: the context fence through the host's long entry point waits for the row (the fence sets its own 3 s
+--    lock_timeout, 20260930540000, so the wait is read from pg_blocking_pids), and goes on once the row is released.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_waited boolean; v_outcome jsonb;
 begin

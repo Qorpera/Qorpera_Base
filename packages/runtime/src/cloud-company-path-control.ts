@@ -10,7 +10,13 @@ import {
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
-import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
+import {
+	CloudControlRpcEnded,
+	CloudControlRpcRefused,
+	cloudControlEndedCode,
+	cloudControlRefusalCode,
+	cloudPostgrestError,
+} from "./cloud-control-errors.ts";
 import { CLOUD_TOOL_REQUEST_MAX_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -322,16 +328,19 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 							(method === "qorpera_memory_run_resume_record" && refused.code === "23505"))
 					)
 						throw new CloudControlRpcRefused(refused.code, refused.message, "Company File authority unavailable");
-					throw new CloudRuntimeDiagnosticError(
+					const category =
 						response.status === 401 || response.status === 403
 							? "authority_unavailable"
 							: response.status === 412
 								? "stale_version"
 								: response.status === 400 || response.status === 422
 									? "invalid_arguments"
-									: "transport_unavailable",
-						"Company File authority unavailable",
-					);
+									: "transport_unavailable";
+					// A lost answer PostgREST gave whose statement ended (a lock or statement timeout) or never began (its pool
+					// wait): a read of the run's row may be asked again without waiting out the copy (R1, 28 Oct 2026).
+					if (category === "transport_unavailable" && refused && cloudControlEndedCode(refused.code))
+						throw new CloudControlRpcEnded("Company File authority unavailable");
+					throw new CloudRuntimeDiagnosticError(category, "Company File authority unavailable");
 				}
 				return value;
 			},

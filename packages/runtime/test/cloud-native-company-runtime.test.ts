@@ -2412,7 +2412,10 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 	expect(budgets("qorpera_read_native_wake")).toEqual([10_000]);
 	expect(budgets("qorpera_list_native_connector_tools")).toEqual([10_000]);
 	// The run's own check before a model request (the synthetic fence's checks stand for SQL's, inside one call).
-	expect(budgets("qorpera_assert_company_path_reads")).toContain(10_000);
+	// It takes the run's budget row, so since R1 (28 Oct 2026) it waits as long as the database may run it: 20 s.
+	expect(budgets("qorpera_assert_company_path_reads")).toContain(20_000);
+	// So does the read of the receipts a resumed attempt in Agent notebooks starts from, which every run asks for.
+	expect(budgets("qorpera_memory_run_resume_receipts")).toEqual([20_000]);
 	// Every other call keeps the transport's own stop; the fence's attempt is still the run's retry's.
 	const budgeted: readonly CloudCompanyPathRpc[] = [
 		"qorpera_describe_company_run_context",
@@ -2420,6 +2423,7 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 		"qorpera_list_native_connector_tools",
 		"qorpera_assert_company_path_reads",
 		"qorpera_fence_native_context",
+		"qorpera_memory_run_resume_receipts",
 	];
 	const others = f.pathCall.mock.calls.filter(([method]) => !budgeted.includes(method));
 	expect(others.length).toBeGreaterThan(0);
@@ -2881,7 +2885,9 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// request) adds one as the tools are built. 11 before the work log, 10 before the bind was split
 	// from the admission (M1b-4b-3), 12 before that fence, 13 before the connector catalog joined the
 	// context reads. Its receipts, which a resumed attempt in Agent notebooks starts from (20260930539000), are read
-	// beside it and add none.
+	// beside it and add none. Since R1 (28 Oct 2026) each of the three context checks before the fence (once the
+	// tools are built, and before and after the execution's start) asks for the run's admission and then
+	// its read set, one after the other, not together: 12 before that.
 	expect(wave("qorpera_memory_run_log_place")).toBe(6);
 	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
@@ -2889,7 +2895,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	);
 	expect(wave("qorpera_fence_native_context")).toBeGreaterThan(wave("qorpera_bind_native_company_context"));
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
-	expect(wave("qorpera_record_native_context_view")).toBe(12);
+	expect(wave("qorpera_record_native_context_view")).toBe(15);
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {

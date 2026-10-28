@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import {
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+	CLOUD_RUN_ROW_LONG_READ_MS,
+	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
 	CloudNativeToolRun,
 	cloudToolRequest,
@@ -338,7 +340,8 @@ it("keeps a model request's fence asking while a slow database answers, for as l
 	const clock = fakeClock();
 	const { run, reader, authority } = await admit();
 	// The database answers the fence's reads only at 40 s, past the 30 s authority read at the start; the run's refresh
-	// keeps renewing it. Attempts are cut at 10 s and then 20 s; the third (from 30.75 s) gets the answer.
+	// keeps renewing it. The first attempt (37 s, as long as the database may run it: R1) is cut at 30 s, where the
+	// authority read at its start ends; the second (from 30.25 s) gets the answer.
 	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () =>
 		after(Math.max(0, 40_000 - clock.now), structuredClone(authority)),
 	);
@@ -349,7 +352,7 @@ it("keeps a model request's fence asking while a slow database answers, for as l
 	for (let second = 0; second < 50 && !settled; second += 1) await clock.tick(1_000);
 	await expect(fenced).resolves.toBe(true);
 	expect(clock.now).toBeGreaterThanOrEqual(40_000);
-	expect(fence).toHaveBeenCalledTimes(3);
+	expect(fence).toHaveBeenCalledTimes(2);
 	expect(reader.describeToolAuthority.mock.calls.length).toBeGreaterThanOrEqual(4);
 	expect(run.signal.aborted).toBe(false);
 	// Its answer renewed the authority as a refresh does: the run goes on.
@@ -364,14 +367,15 @@ it("gives a fence read slower than one attempt twice as long next, so it lands b
 	// after it is cut at 10 s, and the second (from 10.25 s) waits for it before its own 12 s. Given 20 s, it lands at
 	// 24 s; given 10 s again, every attempt would be cut and the fence would never land. In the database each attempt
 	// is one statement under the long entry point's 25 s budget (20260930109500), which a cancelled attempt does not
-	// grow: 12 s fits it, and so does a delay outside the statement (a connection pool wait).
+	// grow: 12 s fits it, and so does a delay outside the statement (a connection pool wait). (The fence's own first
+	// attempt waits 37 s since R1; a 10 s one shows the doubling.)
 	let busyUntil = 0;
 	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => {
 		busyUntil = Math.max(clock.now, busyUntil) + 12_000;
 		return after(busyUntil - clock.now, structuredClone(authority));
 	});
 	let settled = false;
-	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).finally(() => {
+	const fenced = run.assertActiveWith(fence, run.signal, 10_000).finally(() => {
 		settled = true;
 	});
 	for (let second = 0; second < 50 && !settled; second += 1) await clock.tick(1_000);
@@ -380,6 +384,89 @@ it("gives a fence read slower than one attempt twice as long next, so it lands b
 	expect(clock.now).toBeGreaterThanOrEqual(24_000);
 	expect(clock.now).toBeLessThan(30_000);
 	expect(run.signal.aborted).toBe(false);
+});
+
+/** A read of the run's row through `retry` (or the fence's `assertActiveWith`) whose calls fail as `fail(call)` says
+ * (undefined answers), with the times its calls began. Its first copy is sent before it returns, so at the clock's
+ * time: the transport sends it a microtask later, after the next tick would have moved the clock. */
+async function rowRead(
+	run: CloudNativeToolRun,
+	authority: unknown,
+	clock: { now: number },
+	fail: (call: number) => { at: number; error: unknown } | "hang" | undefined,
+	fence?: boolean,
+) {
+	const starts: number[] = [];
+	const read = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => {
+		starts.push(clock.now);
+		const failure = fail(starts.length);
+		if (failure === "hang") return new Promise<never>(() => undefined);
+		if (!failure) return structuredClone(authority);
+		await after(failure.at, undefined);
+		throw failure.error;
+	});
+	let settled = false;
+	const sent: Promise<unknown> = fence
+		? run.assertActiveWith(read, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS, CLOUD_RUN_ROW_LONG_READ_MS)
+		: run.retry(read, run.signal, CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS);
+	const result = sent.finally(() => {
+		settled = true;
+	});
+	result.catch(() => undefined);
+	await Promise.resolve();
+	return { starts, read, result, settled: () => settled };
+}
+
+it("sends a read of the run's row again only once the copy it replaces may have ended (R1, 28 Oct 2026)", async () => {
+	const clock = fakeClock();
+	const { run, authority } = await admit(120_000);
+	// A copy cut at its deadline has had all the time the database may give it: the next follows after the pause.
+	const hanging = await rowRead(run, authority, clock, (call) => (call <= 2 ? "hang" : undefined));
+	for (let second = 0; second < 90 && !hanging.settled(); second += 1) await clock.tick(1_000);
+	await expect(hanging.result).resolves.toMatchObject({ started: hanging.starts[2] });
+	expect(hanging.starts).toEqual([0, 20_250, 60_750]);
+	// A copy whose answer was lost after 1 s (a reset connection, a proxy's 502: nothing says its statement ended) may
+	// still wait for the row: the next is sent 20 s after it was, not 250 ms after the loss.
+	const lost = await rowRead(run, authority, clock, (call) =>
+		call === 1 ? { at: 1_000, error: new CloudRuntimeDiagnosticError("transport_unavailable") } : undefined,
+	);
+	const begun = clock.now;
+	for (let second = 0; second < 30 && !lost.settled(); second += 1) await clock.tick(1_000);
+	await expect(lost.result).resolves.toBeDefined();
+	expect(lost.starts.map((start) => start - begun)).toEqual([0, CLOUD_RUN_ROW_READ_MS]);
+	// The fence waits out its 37 s, here after a copy its transport cut at 1 s.
+	const fence = await rowRead(
+		run,
+		authority,
+		clock,
+		(call) => (call === 1 ? { at: 1_000, error: new CloudRuntimeDiagnosticError("timeout") } : undefined),
+		true,
+	);
+	const fenceBegun = clock.now;
+	for (let second = 0; second < 60 && !fence.settled(); second += 1) await clock.tick(1_000);
+	await expect(fence.result).resolves.toBe(true);
+	expect(fence.starts.map((start) => start - fenceBegun)).toEqual([0, CLOUD_RUN_ROW_LONG_READ_MS]);
+	expect(run.signal.aborted).toBe(false);
+});
+
+it("asks a read of the run's row again at once when the database answered that the copy ended, and never a refusal", async () => {
+	const clock = fakeClock();
+	const { run, authority } = await admit(120_000);
+	// A lock wait the database gave up (55P03 from a PostgREST body), or PostgREST's own pool wait: F1's 250 ms.
+	const ended = await rowRead(run, authority, clock, (call) =>
+		call === 1 ? { at: 3_000, error: new CloudControlRpcEnded() } : undefined,
+	);
+	for (let second = 0; second < 10 && !ended.settled(); second += 1) await clock.tick(500);
+	await expect(ended.result).resolves.toBeDefined();
+	expect(ended.starts).toEqual([0, 3_250]);
+	// A refusal is never asked again.
+	const refused = await rowRead(run, authority, clock, () => ({
+		at: 100,
+		error: new CloudControlRpcRefused("55000", "Company execution is paused"),
+	}));
+	for (let second = 0; second < 4 && !refused.settled(); second += 1) await clock.tick(500);
+	await expect(refused.result).rejects.toBeInstanceOf(CloudControlRpcRefused);
+	expect(refused.read).toHaveBeenCalledOnce();
 });
 
 it("never lets an older fence answer shorten the authority a later refresh read, but still closes on a changed identity", async () => {

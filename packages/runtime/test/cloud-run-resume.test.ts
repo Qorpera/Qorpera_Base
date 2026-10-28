@@ -6,7 +6,11 @@ import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextRequest,
 } from "@qorpera/runtime/cloud-native-context-composition";
-import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import {
+	CLOUD_RUN_ROW_READ_MS,
+	type CloudNativeToolBinding,
+	CloudNativeToolRun,
+} from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudRunLogFolder, CloudRunLogGone, type CloudRunLogPlace } from "@qorpera/runtime/cloud-run-log";
 import {
 	type CloudRunResumeRequest,
@@ -441,7 +445,12 @@ describe("a resumed attempt that keeps no log (Agent notebooks, 20260930539000)"
 		const f = fixture();
 		expect(await f.resume.receipts(signal)).toBeNull();
 		expect(vi.mocked(f.control.call).mock.calls).toEqual([
-			["qorpera_memory_run_resume_receipts", { p_binding: f.binding }, expect.any(AbortSignal)],
+			[
+				"qorpera_memory_run_resume_receipts",
+				{ p_binding: f.binding },
+				expect.any(AbortSignal),
+				CLOUD_RUN_ROW_READ_MS,
+			],
 		]);
 	});
 
@@ -499,6 +508,30 @@ describe("resume binding RPC", () => {
 		expect(result.recorded.stepsRead).toBe(4);
 		for (const [, args] of vi.mocked(f.control.call).mock.calls) expect(args.p_binding).toEqual(f.binding);
 		expect(vi.mocked(f.control.call).mock.calls[0]?.[1]).toEqual({ p_binding: f.binding });
+	});
+
+	it("gives every read of the run's budget row as long as the database may run it (R1, 28 Oct 2026)", async () => {
+		const f = fixture();
+		const normal = f.run.retry;
+		const asked: unknown[][] = [];
+		f.run.retry = async (read, io, ...rest) => {
+			asked.push(rest);
+			return normal(read, io);
+		};
+		await f.open();
+		await f.resume.receipts(signal);
+		// Each attempt's transport and the run's retry wait CLOUD_RUN_ROW_READ_MS, and a lost or late answer is asked
+		// again only once that long has passed since its copy was sent.
+		expect(asked).toEqual([
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
+			[CLOUD_RUN_ROW_READ_MS, CLOUD_RUN_ROW_READ_MS],
+		]);
+		expect(vi.mocked(f.control.call).mock.calls.map(([method, , , timeoutMs]) => [method, timeoutMs])).toEqual([
+			["qorpera_memory_run_resume", CLOUD_RUN_ROW_READ_MS],
+			["qorpera_memory_run_resume_record", CLOUD_RUN_ROW_READ_MS],
+			["qorpera_memory_run_resume_receipts", CLOUD_RUN_ROW_READ_MS],
+		]);
 	});
 
 	it.each([
@@ -603,10 +636,16 @@ describe("resume binding RPC", () => {
 			// The refusal ends this record only; the run's authority stands.
 			expect(run.signal.aborted).toBe(false);
 
-			// The real retry does ask a lost answer again, with the same request, and still stops at the refusal.
+			// The real retry does ask a lost answer again, with the same request, and still stops at the refusal. The
+			// first answer is a lock wait the database gave up (55P03), so the copy has ended and it is asked again at
+			// once; a lost answer that does not say so would wait out the copy (R1, see the run's own tests).
 			let answers = 0;
 			const lossy = vi.fn<typeof fetch>(async () => {
-				if (++answers === 1) return new Response("<html>bad gateway</html>", { status: 502 });
+				if (++answers === 1)
+					return Response.json(
+						{ code: "55P03", message: "Run budget row is busy", details: null, hint: null },
+						{ status: 500 },
+					);
 				return Response.json(refusal, { status: 409 });
 			});
 			const retried = resumeWith(lossy);
