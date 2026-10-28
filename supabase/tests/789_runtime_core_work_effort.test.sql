@@ -278,7 +278,7 @@ rollback to ce_routine;
 -- 6. Work that carries on a chain keeps the effort its first run was pinned with; a worker's own run, a member's
 --    finished task and a chain whose first run is unknown or another agent's take the agent.md's effort, else high.
 --    Carol's coworker run (from Bob's delivery) has its wake rewritten to each kind; her member turn, at the medium
---    the owner chose in her thread, is the origin.
+--    the owner chose in her thread, is the origin, and runs after the coworker run's job ends.
 savepoint ce_carried;
 do $$
 declare v_bob jsonb := pg_temp.ce_bob('core-effort-carried'); v_coworker uuid := pg_temp.ce_message(v_bob, 'core-effort-carried-note');
@@ -286,6 +286,13 @@ declare v_bob jsonb := pg_temp.ce_bob('core-effort-carried'); v_coworker uuid :=
 begin
 	perform pg_temp.ce_choose('92400000-0000-4000-8000-000000000032', 'medium');
 	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000032', 'Draft the offer.');
+	-- A conversation runs one run at a time (20260930538000): the member's turn waits while Carol's coworker run is live
+	-- in her thread, and runs once that run's job ends (the resolver below reads the ended run as it was pinned).
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(pg_temp.ce_pass_run(v_pass, '92400000-0000-4000-8000-000000000032') is null,
+		'fixture: Carol''s member turn waits for her coworker run: ' || v_pass::text);
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: Carol''s coworker run ends'
+	where run_id = v_coworker;
 	v_pass := pg_temp.base_materialize();
 	v_member := pg_temp.ce_pass_run(v_pass, '92400000-0000-4000-8000-000000000032');
 	perform pg_temp.base_assert((pg_temp.ce_run(v_member)).reasoning_effort = 'medium'

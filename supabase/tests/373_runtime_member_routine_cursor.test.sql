@@ -9,7 +9,7 @@
 -- position is millisecond-precise: the orchestrator reads it into a JavaScript Date and sends it back as the expected
 -- position, which the enqueue compares exactly. A run's save (a reviewed change set) follows the same rule. Saves are the
 -- owner's commits of Bob's routine files (QorperaOS/agents/bob/routines/<name>.md), on the owner's paying login; "ran" is a slot
--- the scheduler offered that the folder materializer made a run.
+-- the scheduler offered that the folder materializer made a run, which then ended.
 --
 -- Not ported, because a routine file cannot express them: an interval on a wall-clock trigger (the file's weekly timing
 -- always stores 1440 minutes) and several schedule triggers in one routine, or a member's trigger beside an agent's (a
@@ -62,13 +62,16 @@ begin
 		'routine-cursor:' || extensions.gen_random_uuid(), 'file', p_at, v_cursor.last_scheduled_for, p_next, '{}');
 end
 $$;
--- The routine ran: its slot was offered and the folder materializer made it a run.
+-- The routine ran: its slot was offered, the folder materializer made it a run, and the run ended.
 create function pg_temp.rc_ran(p_name text, p_at timestamptz, p_next timestamptz) returns jsonb language plpgsql as $$
 declare v_result jsonb := pg_temp.rc_enqueued(p_name, p_at, p_next);
 begin
 	perform pg_temp.base_materialize();
 	perform pg_temp.base_assert((select status from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid)
 		= 'materialized', 'fixture: the slot became a run: ' || v_result::text);
+	-- A conversation runs one run at a time (20260930538000): the run ends, so Bob's next slot in his thread can run.
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the routine''s run ended'
+	where run_id = (select run_id from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid);
 	return v_result;
 end
 $$;
@@ -89,19 +92,6 @@ $$;
 -- An instant to the millisecond, as the file writes it (the parser's one form: no trailing zeros).
 create function pg_temp.rc_ms(p_at timestamptz) returns text language sql immutable as $$
 	select public.qorpera_company_state_instant_text(date_trunc('milliseconds', p_at))
-$$;
-
--- 0. A run of Bob's, started before anything else is queued: section 15 saves a routine file as this run.
-select pg_temp.rc_save('desk', 'Desk', pg_temp.rc_every(60)) \g /dev/null
-do $$
-declare v_wake jsonb := pg_temp.rc_enqueued('desk', date_trunc('milliseconds', statement_timestamp() - interval '1 minute'),
-	date_trunc('milliseconds', statement_timestamp() + interval '59 minutes'));
-	v_pass jsonb := pg_temp.base_materialize();
-begin
-	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 1, 'fixture: Bob''s desk run: ' || v_pass::text);
-	perform set_config('qorpera_test.rc_bob', pg_temp.base_start((select run_id from public.qorpera_wake_occurrences
-		where id = (v_wake ->> 'occurrence_id')::uuid))::text, true);
-end
 $$;
 
 -- 1. A rename after the routine ran keeps its exact position: nothing is due until the next Monday, so the scheduler
@@ -450,6 +440,9 @@ begin
 	perform pg_temp.base_assert(v_expected = v_cursor.last_scheduled_for
 		and (select status from public.qorpera_wake_occurrences where id = (v_new ->> 'occurrence_id')::uuid) = 'materialized',
 		'the waiting slot runs under the new version');
+	-- A conversation runs one run at a time (20260930538000): the run ends, so Bob's next slot in his thread can run.
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the routine''s run ended'
+	where run_id = (select run_id from public.qorpera_wake_occurrences where id = (v_new ->> 'occurrence_id')::uuid);
 end
 $$;
 
@@ -527,9 +520,9 @@ begin
 end
 $$;
 
--- 15. An agent's save follows the same rule: Bob's run (section 0) saves his routine with changed timing, as a change set
---     its review allowed (an agent's routine change is delegation), and the schedule restarts at its save; its save with
---     the same timing keeps the position.
+-- 15. An agent's save follows the same rule: Bob's desk run saves his routine with changed timing, as a change set its
+--     review allowed (an agent's routine change is delegation), and the schedule restarts at its save; its save with the
+--     same timing keeps the position.
 create function pg_temp.rc_agent_save(p_name text, p_title text, p_trigger jsonb, p_extra jsonb default '{}') returns jsonb
 language plpgsql as $$
 declare v_binding jsonb := current_setting('qorpera_test.rc_bob')::jsonb; v_units jsonb := jsonb_build_array(pg_temp.rc_unit(p_name, p_title,
@@ -556,12 +549,20 @@ begin
 	return v_result;
 end
 $$;
+select pg_temp.rc_save('desk', 'Desk', pg_temp.rc_every(60)) \g /dev/null
 do $$
 declare v_ran timestamptz := date_trunc('milliseconds', statement_timestamp() - interval '3 days');
-	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_cursor public.qorpera_cloud_routine_schedule_cursors; v_desk jsonb; v_pass jsonb;
 begin
 	perform pg_temp.rc_save('agent', 'Monday brief', pg_temp.rc_weekly('["mon"]', '08:00'));
 	perform pg_temp.rc_ran('agent', v_ran, v_ran + interval '7 days');
+	-- Bob's desk run starts once the brief's run has ended: a conversation runs one run at a time (20260930538000).
+	v_desk := pg_temp.rc_enqueued('desk', date_trunc('milliseconds', statement_timestamp() - interval '1 minute'),
+		date_trunc('milliseconds', statement_timestamp() + interval '59 minutes'));
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 1, 'fixture: Bob''s desk run: ' || v_pass::text);
+	perform set_config('qorpera_test.rc_bob', pg_temp.base_start((select run_id from public.qorpera_wake_occurrences
+		where id = (v_desk ->> 'occurrence_id')::uuid))::text, true);
 	perform pg_temp.rc_agent_save('agent', 'Monday brief', pg_temp.rc_weekly('["mon"]', '08:00'), '{"instructions":"Write the brief for the board."}');
 	v_cursor := pg_temp.rc_cursor('agent');
 	perform pg_temp.base_assert((select run_id from public.qorpera_folder_commits where id = (pg_temp.rc_row('agent')).folder_commit_id)

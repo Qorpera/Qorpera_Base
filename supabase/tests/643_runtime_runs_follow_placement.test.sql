@@ -4,8 +4,8 @@
 -- Node A: the fixture orchestrator ...092 as its fast host (adapter 'process') and a fresh-VM
 -- orchestrator as overflow (same adapter). Node B: a fast host (adapter 'native-b').
 -- The fixture's own run (Alice's) is held by ...092, so node A starts busier than node B.
--- The runs are the owner's posts, turned into runs by the folder materializer: the main run is a post in Alice's thread,
--- so it shares its conversation with the fixture's run (the warm checks at the end); any other run is a post in Bob's.
+-- The runs are the owner's posts, turned into runs by the folder materializer: the main run is a post in Bob's thread,
+-- any other run a post in Carol's; the warm checks at the end use a post in Alice's thread, the fixture run's conversation.
 select pg_temp.base_claims('service_role');
 reset role;
 create function pg_temp.fp_claim(p_orchestrator uuid) returns jsonb language sql as $$
@@ -50,17 +50,22 @@ select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000
 select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000a2','Node A fresh VMs','process',repeat('5',64),3600) \g /dev/null
 -- END FAST PLACEMENT FIXTURE (test 810 runs after this line)
 
--- Without roles nothing changes: the first orchestrator to ask takes the run. The run is a post in Alice's thread: it
--- shares its conversation with the fixture's run, which is still leased (nothing is warm yet).
+-- Without roles nothing changes: the first orchestrator to ask takes the run. The run is a post in Bob's thread. A post
+-- in Alice's thread waits, with no run: a conversation runs one run at a time (20260930538000), and the fixture's run
+-- there is still leased. It becomes the run of the warm checks at the end, once the fixture's run has ended.
 reset role;
-select set_config('qorpera_test.fp_r0',pg_temp.fp_run('92400000-0000-4000-8000-000000000030')::text,true);
-select pg_temp.base_assert((select run.session_id = fixture.session_id and run.source_kind = 'room_delivery'
-		and run.staff_agent_id = '92400000-0000-4000-8000-000000000030' and job.status = 'queued'
+select set_config('qorpera_test.fp_warm_wake',pg_temp.base_post('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000030','Work') ->> 0,true);
+select set_config('qorpera_test.fp_r0',pg_temp.fp_run('92400000-0000-4000-8000-000000000031')::text,true);
+select pg_temp.base_assert((select run.session_id <> fixture.session_id and run.source_kind = 'room_delivery'
+		and run.staff_agent_id = '92400000-0000-4000-8000-000000000031' and job.status = 'queued'
 	from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id,
 		public.qorpera_execution_runs fixture
 	where run.id = current_setting('qorpera_test.fp_r0')::uuid
 		and fixture.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid),
-	'The run is queued in the fixture run''s conversation');
+	'The run is queued in Bob''s thread');
+select pg_temp.base_assert((select status = 'queued' and run_id is null from public.qorpera_wake_occurrences
+	where id = current_setting('qorpera_test.fp_warm_wake')::uuid),'The post in Alice''s thread waits for the fixture''s run');
 set local role service_role;
 savepoint no_roles;
 select pg_temp.base_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
@@ -253,10 +258,10 @@ set local role service_role;
 rollback to savepoint reregister;
 
 -- Held claims count as runs: after node B's fast host holds one, A and B are equal and the lower node id wins. The other
--- run is a post in Bob's thread.
+-- run is a post in Carol's thread (Bob's holds the main run).
 savepoint held;
 reset role;
-select set_config('qorpera_test.fp_r1',pg_temp.fp_run('92400000-0000-4000-8000-000000000031')::text,true);
+select set_config('qorpera_test.fp_r1',pg_temp.fp_run('92400000-0000-4000-8000-000000000032')::text,true);
 update public.qorpera_runner_jobs set queued_at = statement_timestamp() - interval '1 minute',
 	created_at = statement_timestamp() - interval '1 minute' where run_id = current_setting('qorpera_test.fp_r1')::uuid;
 set local role service_role;
@@ -318,7 +323,8 @@ select pg_temp.base_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a
 rollback to savepoint preferred;
 
 -- Warm: the conversation's previous run (the fixture's, in Alice's thread) completed on node A's fast host a minute ago.
--- The new run of the same conversation prefers node A although node A is busier.
+-- The post waiting there since the start is now a run of the same conversation; it prefers node A. The main run in Bob's
+-- thread is done with, so its job ends.
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb,'progress','warm-ack') \g /dev/null
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb,'final','warm-final') \g /dev/null
 reset role;
@@ -327,16 +333,26 @@ update public.qorpera_runner_jobs set status = 'completed', finished_at = statem
 where run_id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 update public.qorpera_runner_job_claims set status = 'accepted'
 where run_id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid and status in ('claimed','assigned');
+update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the main run ends'
+where run_id = current_setting('qorpera_test.fp_r0')::uuid;
+do $$
+declare v_pass jsonb := pg_temp.base_materialize();
+begin
+	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array((select run_id from public.qorpera_wake_occurrences
+		where id = current_setting('qorpera_test.fp_warm_wake')::uuid and status = 'materialized')),
+		'The post in Alice''s thread is a run once the fixture''s run has ended: ' || v_pass::text);
+	perform set_config('qorpera_test.fp_warm',v_pass -> 'run_ids' ->> 0,true);
+end $$;
 set local role service_role;
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a'
-	and pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'WARM_CONVERSATION',
-	'A warm conversation prefers its node: ' || pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid)::text);
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a'
+	and pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'reason' = 'WARM_CONVERSATION',
+	'A warm conversation prefers its node: ' || pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid)::text);
 savepoint warm;
 reset role;
-select pg_temp.fp_age(current_setting('qorpera_test.fp_r0')::uuid,-30);
+select pg_temp.fp_age(current_setting('qorpera_test.fp_warm')::uuid,-30);
 set local role service_role;
 select pg_temp.base_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1') = 'null'::jsonb,'The other node leaves a warm run alone');
-select pg_temp.base_assert(pg_temp.fp_claim('92400000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+select pg_temp.base_assert(pg_temp.fp_claim('92400000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_warm'),
 	'The warm node''s fast host takes it');
 rollback to savepoint warm;
 -- A previous run that failed leaves nothing warm.
@@ -345,7 +361,7 @@ reset role;
 update public.qorpera_runner_jobs set status = 'failed', result = null
 where run_id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 set local role service_role;
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'LEAST_BUSY',
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'reason' = 'LEAST_BUSY',
 	'A failed previous run is not warm');
 rollback to savepoint warm_failed;
 -- Past the warm window the conversation is cold again.
@@ -353,29 +369,29 @@ reset role;
 update public.qorpera_runner_jobs set finished_at = statement_timestamp() - interval '6 minutes'
 where run_id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 set local role service_role;
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'LEAST_BUSY',
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'reason' = 'LEAST_BUSY',
 	'Past 5 minutes the conversation is cold');
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a',
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a',
 	'A finished run is not busy: A and B tie and the lower id wins');
 
 -- An emptying node, or a fast host whose heartbeat stopped, is not a place to wait for.
 select public.qorpera_set_runtime_node_serving('64300000-0000-4000-8000-00000000000a',false,1,'update') \g /dev/null
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000b'
-	and jsonb_array_length(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) -> 'fast') = 1,'Only serving nodes count');
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000b'
+	and jsonb_array_length(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) -> 'fast') = 1,'Only serving nodes count');
 select public.qorpera_set_runtime_node_serving('64300000-0000-4000-8000-00000000000a',true,1,'back') \g /dev/null
 reset role;
 update public.qorpera_runner_orchestrators set last_heartbeat_at = statement_timestamp() - interval '1 minute'
 where id = '64300000-0000-4000-8000-0000000000b1';
 set local role service_role;
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a'
-	and jsonb_array_length(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) -> 'fast') = 1,
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a'
+	and jsonb_array_length(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) -> 'fast') = 1,
 	'A fast host that stopped reporting is not waited for');
 reset role;
 update public.qorpera_runner_orchestrators set last_heartbeat_at = statement_timestamp() - interval '1 minute'
 where id = '92400000-0000-4000-8000-000000000092';
 set local role service_role;
-select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'NO_FAST_HOST'
-	and pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+select pg_temp.base_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_warm')::uuid) ->> 'reason' = 'NO_FAST_HOST'
+	and pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_warm'),
 	'With no live fast host the fresh-VM path takes the run at once');
 reset role;
 rollback;

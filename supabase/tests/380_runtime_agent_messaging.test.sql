@@ -4,8 +4,10 @@
 -- wake of the recipient in its own thread under the pair policy; the reply is the same thing the other way. Since runtime
 -- v92 nothing ends an exchange but a member's Stop (or the company pause): no hop budget and no hourly limit per pair.
 -- The sender is the base's leased run of Alice's; each recipient's wake is made a run by the folder materializer and
--- started on a real runner with a native lease. (A departed agent's transcript closing is 877 §6, and a message to an
--- archived agent refused is 656 §4; a message to oneself refused is 656 §4 too.)
+-- started on a real runner with a native lease. A conversation runs one run at a time (20260930538000), so a message back
+-- to an agent whose earlier run still runs in its thread waits, queued, until that run's job ends. (A departed agent's
+-- transcript closing is 877 §6, and a message to an archived agent refused is 656 §4; a message to oneself refused is
+-- 656 §4 too.)
 
 -- An agent's thread conversation.
 create function pg_temp.am_session(p_staff uuid) returns uuid language sql as $$
@@ -17,10 +19,21 @@ create function pg_temp.am_pair(p_one uuid, p_two uuid) returns uuid language sq
 	select id from public.qorpera_shared_sessions where profile_id = '92400000-0000-4000-8000-000000000010'
 		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(p_one, p_two)
 $$;
--- The materializer makes the one queued coworker wake a run; it starts on a real runner. Answers its binding.
-create function pg_temp.am_run(p_occurrence uuid) returns jsonb language plpgsql as $$
-declare v_pass jsonb := pg_temp.base_materialize(); v_run uuid;
+-- The materializer makes the one queued coworker wake a run; it starts on a real runner. Answers its binding. With the
+-- recipient's earlier run still live in its thread (p_earlier), a pass first leaves the wake queued, with no run and no
+-- blocked reason (one run at a time in a conversation, 20260930538000); once that run's job ends, the next pass runs it.
+create function pg_temp.am_run(p_occurrence uuid, p_earlier jsonb default null) returns jsonb language plpgsql as $$
+declare v_pass jsonb; v_run uuid;
 begin
+	if p_earlier is not null then
+		v_pass := pg_temp.base_materialize();
+		perform pg_temp.base_assert(coalesce(jsonb_array_length(v_pass -> 'run_ids'), 0) = 0 and (select status = 'queued' and run_id is null
+			and blocked_reason is null from public.qorpera_wake_occurrences where id = p_occurrence),
+			'Coworker wake waits for the recipient''s live run in its thread: ' || v_pass::text);
+		update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the earlier run ends',
+			lease_token_sha256 = null, lease_expires_at = null where run_id = (p_earlier ->> 'runId')::uuid;
+	end if;
+	v_pass := pg_temp.base_materialize();
 	select run_id into v_run from public.qorpera_wake_occurrences where id = p_occurrence and status = 'materialized';
 	perform pg_temp.base_assert(v_run is not null and v_pass -> 'run_ids' = jsonb_build_array(v_run),
 		'Coworker wake materialized: ' || v_pass::text);
@@ -94,11 +107,13 @@ end $$;
 rollback to savepoint am_shape;
 
 -- 2. No hop budget (runtime v92): eight hops back and forth all go through (the old stop was after six), each counted,
---    each ending with its recipient, and no budget line stops the exchange.
+--    each ending with its recipient, and no budget line stops the exchange. From hop two each hop lands in the thread of
+--    the run that sent the hop before, still live: it waits until that run's job ends (20260930538000).
 savepoint am_budget;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_send jsonb; v_hop integer; v_to uuid; v_pair uuid;
 	v_alice uuid := '92400000-0000-4000-8000-000000000030'; v_bob uuid := '92400000-0000-4000-8000-000000000031';
+	v_earlier jsonb; v_next jsonb;
 begin
 	perform pg_temp.base_public_send(v_binding, 'progress');
 	for v_hop in 1..8 loop
@@ -108,7 +123,9 @@ begin
 		perform pg_temp.base_assert((select causal_hop_count = v_hop and causal_agent_ids[cardinality(causal_agent_ids)] = v_to
 			from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid),
 			'Hop ' || v_hop::text || ' counts and ends with the recipient');
-		v_binding := pg_temp.am_run((v_send ->> 'occurrenceId')::uuid);
+		v_next := pg_temp.am_run((v_send ->> 'occurrenceId')::uuid, v_earlier);
+		v_earlier := v_binding;
+		v_binding := v_next;
 		perform public.qorpera_assert_wake_completion((v_binding ->> 'runId')::uuid);
 	end loop;
 	v_pair := pg_temp.am_pair(v_alice, v_bob);
@@ -189,18 +206,20 @@ end $$;
 --    goes on, a new pair transcript opens and Carol wakes at hop seven. A run at the end of a chain of more than twenty
 --    agents still reads a valid wake and policy. (Admitted identity is immutable, so the fixture puts twenty more agents
 --    at the front of both the sender's and Carol's chains with triggers off; Carol's chain still derives from the
---    sender's.)
+--    sender's.) As in 2, each hop from the second waits for the run that sent the hop before (20260930538000).
 savepoint am_cross_pair;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_send jsonb; v_hop integer; v_wake jsonb;
 	v_alice uuid := '92400000-0000-4000-8000-000000000030'; v_bob uuid := '92400000-0000-4000-8000-000000000031';
-	v_carol uuid := '92400000-0000-4000-8000-000000000032'; v_sender uuid;
+	v_carol uuid := '92400000-0000-4000-8000-000000000032'; v_sender uuid; v_earlier jsonb; v_next jsonb;
 begin
 	perform pg_temp.base_public_send(v_binding, 'progress');
 	for v_hop in 1..6 loop
 		v_send := public.qorpera_send_coworker_message(v_binding, case when v_hop % 2 = 1 then v_bob else v_alice end,
 			'relay-' || v_hop::text, 'Relay ' || v_hop::text);
-		v_binding := pg_temp.am_run((v_send ->> 'occurrenceId')::uuid);
+		v_next := pg_temp.am_run((v_send ->> 'occurrenceId')::uuid, v_earlier);
+		v_earlier := v_binding;
+		v_binding := v_next;
 		perform public.qorpera_assert_wake_completion((v_binding ->> 'runId')::uuid);
 	end loop;
 	select staff_agent_id into strict v_sender from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;

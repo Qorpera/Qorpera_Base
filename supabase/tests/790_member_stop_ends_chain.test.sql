@@ -331,10 +331,10 @@ end $$;
 
 -- 7. An answer starts new work. The approval card's holder is gone, so Allow once wakes Bob although the holder's
 --    heartbeat lay ahead, in a new chain whose run carries no origin: its review reads the answer, not Bob's stopped
---    request. The question card's answer wakes him too. Both become runs; Alice is woken by nothing.
+--    request. The question card's answer wakes him too. Both become runs, one at a time; Alice is woken by nothing.
 do $$
 declare v_answer jsonb; v_wake public.qorpera_wake_occurrences; v_client uuid := '79000000-0000-4000-8000-0000000000a1';
-	v_question public.qorpera_wake_occurrences; v_pass jsonb; v_root uuid;
+	v_question public.qorpera_wake_occurrences; v_pass jsonb; v_root uuid; v_first uuid; v_next jsonb; v_second uuid;
 begin
 	select causal_root_id into strict v_root from public.qorpera_stopped_chains;
 	perform pg_temp.base_assert((select held_until > clock_timestamp() from public.qorpera_action_reviews
@@ -355,14 +355,28 @@ begin
 	where input.client_input_id = v_client;
 	perform pg_temp.base_assert(v_question.status = 'queued' and v_question.causal_root_id = v_question.id,
 		'The question''s answer wakes Bob in new work: ' || to_jsonb(v_question)::text);
+	-- A conversation runs one run at a time (20260930538000): the pass makes one answer Bob's run and the other waits;
+	-- once that run ends, the next pass makes the other.
 	v_pass := pg_temp.base_materialize();
-	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 2
-		and (select bool_and(run.staff_agent_id = '92400000-0000-4000-8000-000000000031')
-			from public.qorpera_execution_runs run where run.id in (select (jsonb_array_elements_text(v_pass -> 'run_ids'))::uuid))
-		and (select status = 'materialized' from public.qorpera_wake_occurrences where id = v_wake.id)
-		and (select status = 'materialized' from public.qorpera_wake_occurrences where id = v_question.id),
-		'Both answers become Bob''s runs, and nothing wakes Alice: ' || v_pass::text);
-	perform set_config('qorpera_test.cs_answer_runs', (v_pass -> 'run_ids')::text, false);
+	v_first := (v_pass -> 'run_ids' ->> 0)::uuid;
+	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 1 and (v_pass ->> 'skipped')::integer = 1
+		and (select count(*) = 1 from public.qorpera_wake_occurrences where id in (v_wake.id, v_question.id)
+			and status = 'materialized' and run_id = v_first)
+		and (select count(*) = 1 from public.qorpera_wake_occurrences where id in (v_wake.id, v_question.id)
+			and status = 'queued' and run_id is null and blocked_reason is null),
+		'One answer becomes Bob''s run, the other waits: ' || v_pass::text);
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(),
+		last_error = 'Fixture: the first answer''s run ended' where run_id = v_first;
+	v_next := pg_temp.base_materialize();
+	v_second := (v_next -> 'run_ids' ->> 0)::uuid;
+	perform pg_temp.base_assert(jsonb_array_length(v_next -> 'run_ids') = 1
+		and (select count(*) = 2 and bool_and(run.staff_agent_id = '92400000-0000-4000-8000-000000000031')
+			from public.qorpera_execution_runs run where run.id in (v_first, v_second))
+		and (select count(*) = 2 from public.qorpera_wake_occurrences where id in (v_wake.id, v_question.id)
+			and run_id in (v_first, v_second))
+		and (select status = 'materialized' from public.qorpera_wake_occurrences where run_id = v_second),
+		'Both answers become Bob''s runs, and nothing wakes Alice: ' || v_pass::text || v_next::text);
+	perform set_config('qorpera_test.cs_answer_runs', jsonb_build_array(v_first, v_second)::text, false);
 end $$;
 
 -- 8. A Stop of a run whose chain holds nothing else ends that run alone.
@@ -375,8 +389,9 @@ select pg_temp.base_assert((select count(*) = 2 from public.qorpera_stopped_chai
 	and (select count(*) = 1 from public.qorpera_runner_audit_receipts receipt
 		where receipt.event_type = 'job_cancelled' and receipt.job_id = (pg_temp.cs_job(current_setting('qorpera_test.cs_carol_run')::uuid)).id)
 	and jsonb_array_length(pg_temp.cs_notes(pg_temp.cs_session('92400000-0000-4000-8000-000000000032'))) = 0
-	and (select bool_and((pg_temp.cs_job(run.value::uuid)).status = 'queued')
-		from jsonb_array_elements_text(current_setting('qorpera_test.cs_answer_runs')::jsonb) run),
-	'Carol''s run ends alone; the answers'' runs stay queued');
+	and (pg_temp.cs_job((current_setting('qorpera_test.cs_answer_runs')::jsonb ->> 0)::uuid)).status = 'failed'
+	and (pg_temp.cs_job((current_setting('qorpera_test.cs_answer_runs')::jsonb ->> 0)::uuid)).cancelled_by_user_id is null
+	and (pg_temp.cs_job((current_setting('qorpera_test.cs_answer_runs')::jsonb ->> 1)::uuid)).status = 'queued',
+	'Carol''s run ends alone; the answers'' runs stay as they were');
 
 rollback;

@@ -3,7 +3,8 @@
 -- 14.6, second cut): a peer message with priority false is written and shown like any other but wakes nobody; the
 -- recipient reads it at its next wake of any kind, once, unless the run that read it failed. No hourly limit holds them
 -- back (runtime v92). The sender is the base's leased run of Alice's; each recipient's wake is made a run by the folder
--- materializer and started on a real runner with a native lease.
+-- materializer and started on a real runner with a native lease. A conversation runs one run at a time (20260930538000),
+-- so each later wake of Bob waits until his run before it has ended.
 
 -- An agent's thread conversation.
 create function pg_temp.hm_session(p_staff uuid) returns uuid language sql as $$
@@ -16,10 +17,22 @@ create function pg_temp.hm_pair() returns uuid language sql as $$
 		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key('92400000-0000-4000-8000-000000000030',
 			'92400000-0000-4000-8000-000000000031')
 $$;
--- The materializer makes the one queued coworker wake a run; it starts on a real runner. Answers its binding.
-create function pg_temp.hm_run(p_occurrence uuid) returns jsonb language plpgsql as $$
-declare v_pass jsonb := pg_temp.base_materialize(); v_run uuid;
+-- The materializer makes the one queued coworker wake a run; it starts on a real runner. Answers its binding. With Bob's
+-- earlier run still live in his thread (p_earlier), a pass first leaves the wake queued, with no run (one run at a time in
+-- a conversation, 20260930538000); that run then completes (it did not fail, so what it read stays read), and the next
+-- pass runs the wake.
+create function pg_temp.hm_run(p_occurrence uuid, p_earlier jsonb default null) returns jsonb language plpgsql as $$
+declare v_pass jsonb; v_run uuid;
 begin
+	if p_earlier is not null then
+		v_pass := pg_temp.base_materialize();
+		perform pg_temp.base_assert(coalesce(jsonb_array_length(v_pass -> 'run_ids'), 0) = 0 and (select status = 'queued' and run_id is null
+			and blocked_reason is null from public.qorpera_wake_occurrences where id = p_occurrence),
+			'Coworker wake waits for Bob''s live run in his thread: ' || v_pass::text);
+		update public.qorpera_runner_jobs set status = 'completed', result = '{}'::jsonb, finished_at = clock_timestamp(),
+			lease_token_sha256 = null, lease_expires_at = null where run_id = (p_earlier ->> 'runId')::uuid;
+	end if;
+	v_pass := pg_temp.base_materialize();
 	select run_id into v_run from public.qorpera_wake_occurrences where id = p_occurrence and status = 'materialized';
 	perform pg_temp.base_assert(v_run is not null and v_pass -> 'run_ids' = jsonb_build_array(v_run),
 		'Coworker wake materialized: ' || v_pass::text);
@@ -85,7 +98,7 @@ begin
 	perform public.qorpera_assert_wake_completion(v_bob_run);
 	-- A later wake of Bob does not see them again.
 	v_send := public.qorpera_send_coworker_message(v_alice, v_bob_id, 'ask-2', 'One more thing.');
-	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid);
+	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid, v_bob);
 	perform pg_temp.base_assert(not (public.qorpera_read_native_wake(v_bob) -> 'payload' ? 'heldMessages'), 'A delivered message is not delivered twice');
 	perform public.qorpera_assert_wake_completion((v_bob ->> 'runId')::uuid);
 	-- A held note the transcript window no longer shows is not swallowed by the same-pair rule.
@@ -95,7 +108,7 @@ begin
 		perform public.qorpera_send_coworker_message(v_alice, v_bob_id, 'filler-' || v_n::text, 'Filler ' || v_n::text, false);
 	end loop;
 	v_send := public.qorpera_send_coworker_message(v_alice, v_bob_id, 'ask-window', 'Windowed question.');
-	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid);
+	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid, v_bob);
 	v_wake := public.qorpera_read_native_wake(v_bob);
 	perform pg_temp.base_assert(jsonb_array_length(v_wake #> '{payload,transcript}') = 12, 'The transcript window is twelve');
 	perform pg_temp.base_assert(v_wake #>> '{payload,heldMessages,0,text}' = 'An old note.' and v_wake #>> '{payload,heldMessages,1,text}' = 'Filler 1'
@@ -104,7 +117,7 @@ begin
 	-- Unless the run that claimed it failed: then the next wake gets it again.
 	v_carol_note := public.qorpera_send_coworker_message(pg_temp.hm_carol(), v_bob_id, 'carol-fyi-2', 'Carol: one correction.', false);
 	v_send := public.qorpera_send_coworker_message(v_alice, v_bob_id, 'ask-3', 'Third thing.');
-	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid);
+	v_bob := pg_temp.hm_run((v_send ->> 'occurrenceId')::uuid, v_bob);
 	perform pg_temp.base_assert(public.qorpera_read_native_wake(v_bob) #>> '{payload,heldMessages,0,text}' = 'Carol: one correction.',
 		'The failing run claimed the note');
 	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture failure', finished_at = statement_timestamp(),
