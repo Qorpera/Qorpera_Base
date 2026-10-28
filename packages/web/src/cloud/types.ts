@@ -257,6 +257,9 @@ export interface HostedRunRecovery {
 	/** Operations still executing or of unknown outcome. The cloud refuses to
 	 * dismiss the run until they settle. */
 	unsettledOperations: number;
+	/** An operation of the run completed, or its outcome is unknown: the cloud refuses to try the run again
+	 * (qorpera_resolve_failed_execution_run), since that could repeat the work. */
+	durableOutcome?: boolean;
 }
 
 export interface HostedAccountEntitlement {

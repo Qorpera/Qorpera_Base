@@ -937,6 +937,26 @@ describe("agent execution state", () => {
 		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});
 
+	it("never offers Try again for a run the cloud refuses to repeat", () => {
+		const { company } = controller();
+		company.store.set({ team });
+		const failed = row("failed", "needs_attention");
+		const post = { ...failed, sourceKind: "room_delivery" as const };
+		const retry = (extra: Partial<HostedRunRecovery>, activity = failed) =>
+			company.canRetryFailedRun({ activity, recovery: recovery({ sourceKind: activity.sourceKind, ...extra }) });
+		expect(retry({})).toBe(true);
+		expect(retry({}, post)).toBe(true);
+		// Work that took effect (WB-001 hired an agent before it stopped), or may have, is never repeated.
+		expect(retry({ durableOutcome: true })).toBe(false);
+		expect(retry({ durableOutcome: true }, post)).toBe(false);
+		// Only the member whose ChatGPT plan paid for a turn tries it again; a post runs on the account selected here.
+		expect(retry({ paidByChatgptPlan: true, requestedByUserId: userA.id })).toBe(true);
+		expect(retry({ paidByChatgptPlan: true, requestedByUserId: userB.id })).toBe(false);
+		expect(retry({ paidByChatgptPlan: true })).toBe(false);
+		expect(retry({ paidByChatgptPlan: false, requestedByUserId: userB.id })).toBe(true);
+		expect(retry({ paidByChatgptPlan: true, requestedByUserId: userB.id }, post)).toBe(true);
+	});
+
 	it("acknowledges a stop an older cloud still lists, so the work it hid shows again", async () => {
 		const { api, company } = controller();
 		company.store.set({ team });

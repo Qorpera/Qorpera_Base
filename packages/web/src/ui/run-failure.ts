@@ -34,6 +34,10 @@ export function classifyRunFailure(
 	// "bridge", as it was before the code. Only its category can: a step that ran out of time
 	// ("[code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]") took too long, it was not refused (Jonas, 21 October 2026).
 	const timedOut = / \[code=(?:[A-Z0-9_]{1,42}:)?(?:[A-Z0-9_]{0,41}_)?(?:TIMEOUT|TIMED_OUT)\]/.test(lastError ?? "");
+	// A step whose code's category is "cancelled" ("[code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]") was stopped from
+	// Qorpera's side while it ran, e.g. when the run's authority could not be read through a database outage (28
+	// October 2026): it was not refused.
+	const stepCancelled = / \[code=[A-Z0-9_]{1,42}:CANCELLED\]/.test(lastError ?? "");
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	// A rate limit is not a usage limit: it passes by itself (contract 17).
 	if (usageLimit === undefined && /usage limit|quota/i.test(error)) return "usage_limit";
@@ -42,8 +46,10 @@ export function classifyRunFailure(
 	if (/dispatch failed|provider request failed|no computer could start/i.test(error)) return "dispatch";
 	// A run has no time limit (2026-09-24): a lapsed lease means the run's renewals stopped reaching the cloud,
 	// never that it ran too long. Its computer or Qorpera's own database may have stopped answering (21 October 2026:
-	// the database), so the member reads that Qorpera lost contact with the run, not which side failed.
+	// the database), so the member reads that Qorpera lost contact with the run, not which side failed. A step
+	// cancelled from Qorpera's side reads the same, unless a member stopped the run.
 	if (/lease expired/i.test(error)) return "lost";
+	if (stepCancelled) return jobStatus === "cancelled" ? "cancelled" : "lost";
 	// One request inside the run got no answer in time (the model socket, the secret broker, a cloud call's own
 	// request deadline, a step whose code's category is a timeout): the run itself was not too long.
 	if (timedOut || /timed? ?out|did not respond/i.test(error)) return "step_timeout";
