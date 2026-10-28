@@ -281,8 +281,10 @@ export class EphemeralCloudRunnerWorker {
 		let maintenanceError: unknown;
 		let renewNativeAuthority: (() => Promise<void>) | undefined;
 		let nativeRenewalInFlight: Promise<void> | undefined;
-		// When the native lease ends, as its acquisition or last renewal answered.
-		let nativeDeadline = Number.NEGATIVE_INFINITY;
+		/* When the native lease ends, as its acquisition or last renewal answered; none while the run is not executing.
+		 * The run's execution stops then too, so a host that holds its authority through an outage never goes past it
+		 * (WB-001, 28 Oct 2026). */
+		let nativeDeadline = Number.POSITIVE_INFINITY;
 		// A heartbeat whose answer is late: the next round waits for it rather than rotating the session token twice.
 		let heartbeatInFlight: Promise<unknown> | undefined;
 		const externalAbort = (): void => {
@@ -300,7 +302,7 @@ export class EphemeralCloudRunnerWorker {
 		const armDeadline = (): void => {
 			if (leaseTimer) clearTimeout(leaseTimer);
 			const now = this.#now();
-			const remaining = now < observedTime ? 0 : Math.min(leaseDeadline, sessionDeadline()) - now;
+			const remaining = now < observedTime ? 0 : Math.min(leaseDeadline, sessionDeadline(), nativeDeadline) - now;
 			observedTime = now;
 			const expire = (): void => {
 				maintenanceError = new Error("Runner execution authority expired; outcome requires reconciliation");
@@ -348,7 +350,7 @@ export class EphemeralCloudRunnerWorker {
 						if (!renew) break;
 						const renewal = withCloudDeadline(
 							() => renew(),
-							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+							Math.max(1, Math.min(30_000, leaseDeadline - this.#now(), nativeDeadline - this.#now())),
 							maintenanceAbort.signal,
 						);
 						nativeRenewalInFlight = renewal;
@@ -431,8 +433,10 @@ export class EphemeralCloudRunnerWorker {
 				if (!bridge) throw new Error("Native subscription execution bridge is not configured");
 				const authority = await broker.acquireNativeAuthority();
 				nativeDeadline = Date.parse(authority.expiresAt);
+				armDeadline();
 				renewNativeAuthority = async () => {
 					nativeDeadline = Date.parse((await broker.renewNativeAuthority()).expiresAt);
+					armDeadline();
 				};
 				try {
 					execution = await this.#executeJob({
@@ -449,6 +453,9 @@ export class EphemeralCloudRunnerWorker {
 				} finally {
 					renewNativeAuthority = undefined;
 					await nativeRenewalInFlight?.catch(() => undefined);
+					// Execution is over; the completion that follows checks the native lease itself.
+					nativeDeadline = Number.POSITIVE_INFINITY;
+					if (!executionAbort.signal.aborted) armDeadline();
 					// Governed completion validates the still-live native lease and releases it
 					// atomically with the durable completion receipt; a run with no staged
 					// completion releases it here.

@@ -1,6 +1,7 @@
 import { parseCloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import {
 	type CloudRunnerBrokerAuthority,
+	CloudRunnerBrokerRequestError,
 	type CloudRunnerBrokerTransport,
 	CloudRunnerJobBroker,
 	NATIVE_AUTHORITY_LEASE_SECONDS,
@@ -461,6 +462,48 @@ describe("cloud runner broker transient retries", () => {
 			"Runner broker request (describe) failed (400)",
 		);
 		expect(calls).toBe(1);
+	});
+
+	it("fails an answer cut while its body arrives as a lost one, but a malformed or stopped one as before (WB-001, 28 Oct 2026)", async () => {
+		const execution = new AbortController();
+		const authority = { runnerId, jobId, sessionToken, leaseToken, signal: execution.signal };
+		const answering = (body: () => ConstructorParameters<typeof Response>[0]) =>
+			new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				(async () => new Response(body())) as typeof fetch,
+			);
+		const cut = await answering(
+			() =>
+				new ReadableStream({
+					start: (controller) => controller.enqueue(new TextEncoder().encode('{"value":')),
+					pull: (controller) => controller.error(new TypeError("terminated")),
+				}),
+		)
+			.renewNativeAuthority(authority, leaseId, NATIVE_AUTHORITY_LEASE_SECONDS)
+			.catch((error: unknown) => error);
+		expect(cut).toBeInstanceOf(CloudRunnerBrokerRequestError);
+		expect(cut).toMatchObject({
+			message: "Runner broker request (renew_native_authority) failed",
+			status: undefined,
+			transient: true,
+		});
+		await expect(
+			answering(() => '{"value":').renewNativeAuthority(authority, leaseId, NATIVE_AUTHORITY_LEASE_SECONDS),
+		).rejects.toBeInstanceOf(SyntaxError);
+		const stopped = await answering(
+			() =>
+				new ReadableStream({
+					pull: (controller) => {
+						execution.abort(new Error("job lease lost"));
+						controller.error(execution.signal.reason);
+					},
+				}),
+		)
+			.renewNativeAuthority(authority, leaseId, NATIVE_AUTHORITY_LEASE_SECONDS)
+			.catch((error: unknown) => error);
+		expect(stopped).toBeInstanceOf(Error);
+		expect(stopped).not.toBeInstanceOf(CloudRunnerBrokerRequestError);
 	});
 });
 

@@ -500,6 +500,31 @@ describe("cloud worker outage recovery", () => {
 		expect(lane.renew).toHaveBeenCalledTimes(6);
 	});
 
+	it("stops the run when the native lease ends while its renewals stall", async () => {
+		const outage = await outageRun();
+		lane.renew.mockImplementation(async () => new Promise<never>(() => undefined));
+		// Asked at 0 s (cut at 30 s) and at 40 s, whose try the lease's end at 60 s cuts: the run goes no further.
+		await vi.advanceTimersByTimeAsync(59_900);
+		expect(outage.signal().aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(outage.signal().aborted).toBe(true);
+		expect(await outage.running).toBeInstanceOf(Error);
+		expect(lane.renew).toHaveBeenCalledTimes(2);
+		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
+	it("stops the run when the native lease ends while the job lease's renewal holds up its own", async () => {
+		const outage = await outageRun();
+		// The job lease (120 s) is asked again through the outage, so the native lease (60 s) is never renewed.
+		outage.control.stallRenewal = true;
+		await vi.advanceTimersByTimeAsync(59_900);
+		expect(outage.signal().aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(String(await outage.running)).toContain("Runner execution authority expired");
+		expect(lane.renew).not.toHaveBeenCalled();
+		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
 	it("asks a lost or late heartbeat again, with the same rotation, without stopping the run", async () => {
 		const outage = await outageRun(1_000);
 		outage.control.heartbeatFailures.push(503, new TypeError("fetch failed"));
