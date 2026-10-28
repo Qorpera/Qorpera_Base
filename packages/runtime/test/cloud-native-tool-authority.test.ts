@@ -387,8 +387,9 @@ it("gives a fence read slower than one attempt twice as long next, so it lands b
 });
 
 /** A read of the run's row through `retry` (or the fence's `assertActiveWith`) whose calls fail as `fail(call)` says
- * (undefined answers), with the times its calls began. */
-function rowRead(
+ * (undefined answers), with the times its calls began. Its first copy is sent before it returns, so at the clock's
+ * time: the transport sends it a microtask later, after the next tick would have moved the clock. */
+async function rowRead(
 	run: CloudNativeToolRun,
 	authority: unknown,
 	clock: { now: number },
@@ -412,6 +413,7 @@ function rowRead(
 		settled = true;
 	});
 	result.catch(() => undefined);
+	await Promise.resolve();
 	return { starts, read, result, settled: () => settled };
 }
 
@@ -419,13 +421,13 @@ it("sends a read of the run's row again only once the copy it replaces may have 
 	const clock = fakeClock();
 	const { run, authority } = await admit(120_000);
 	// A copy cut at its deadline has had all the time the database may give it: the next follows after the pause.
-	const hanging = rowRead(run, authority, clock, (call) => (call <= 2 ? "hang" : undefined));
+	const hanging = await rowRead(run, authority, clock, (call) => (call <= 2 ? "hang" : undefined));
 	for (let second = 0; second < 90 && !hanging.settled(); second += 1) await clock.tick(1_000);
 	await expect(hanging.result).resolves.toMatchObject({ started: hanging.starts[2] });
 	expect(hanging.starts).toEqual([0, 20_250, 60_750]);
 	// A copy whose answer was lost after 1 s (a reset connection, a proxy's 502: nothing says its statement ended) may
 	// still wait for the row: the next is sent 20 s after it was, not 250 ms after the loss.
-	const lost = rowRead(run, authority, clock, (call) =>
+	const lost = await rowRead(run, authority, clock, (call) =>
 		call === 1 ? { at: 1_000, error: new CloudRuntimeDiagnosticError("transport_unavailable") } : undefined,
 	);
 	const begun = clock.now;
@@ -433,7 +435,7 @@ it("sends a read of the run's row again only once the copy it replaces may have 
 	await expect(lost.result).resolves.toBeDefined();
 	expect(lost.starts.map((start) => start - begun)).toEqual([0, CLOUD_RUN_ROW_READ_MS]);
 	// The fence waits out its 37 s, here after a copy its transport cut at 1 s.
-	const fence = rowRead(
+	const fence = await rowRead(
 		run,
 		authority,
 		clock,
@@ -451,14 +453,14 @@ it("asks a read of the run's row again at once when the database answered that t
 	const clock = fakeClock();
 	const { run, authority } = await admit(120_000);
 	// A lock wait the database gave up (55P03 from a PostgREST body), or PostgREST's own pool wait: F1's 250 ms.
-	const ended = rowRead(run, authority, clock, (call) =>
+	const ended = await rowRead(run, authority, clock, (call) =>
 		call === 1 ? { at: 3_000, error: new CloudControlRpcEnded() } : undefined,
 	);
 	for (let second = 0; second < 10 && !ended.settled(); second += 1) await clock.tick(500);
 	await expect(ended.result).resolves.toBeDefined();
 	expect(ended.starts).toEqual([0, 3_250]);
 	// A refusal is never asked again.
-	const refused = rowRead(run, authority, clock, () => ({
+	const refused = await rowRead(run, authority, clock, () => ({
 		at: 100,
 		error: new CloudControlRpcRefused("55000", "Company execution is paused"),
 	}));
