@@ -5,8 +5,9 @@
 -- the version, the active status and the exact millisecond position, which never moves the position and creates no
 -- occurrence. The routine then leaves the scheduler's listing until the slot, shows that slot as its next run, and the
 -- enqueue at the slot compares the same position as before. Routines are the owner's saves of Bob's routine files
--- (QorperaOS/agents/bob/routines/<name>.md); "ran" is a slot the scheduler offered that the folder materializer made a run; the
--- next run is what an agent's routine read shows (qorpera_agent_routine_view) and what a member's list shows.
+-- (QorperaOS/agents/bob/routines/<name>.md); "ran" is a slot the scheduler offered that the folder materializer made a run,
+-- which then ended; the next run is what an agent's routine read shows (qorpera_agent_routine_view) and what a member's list
+-- shows.
 
 create function pg_temp.fs_id(p_name text) returns uuid language sql immutable as $$
 	select md5('first-slot:' || p_name)::uuid
@@ -38,7 +39,8 @@ create function pg_temp.fs_cursor(p_name text) returns public.qorpera_cloud_rout
 	join public.qorpera_cloud_routines r on r.id = c.routine_id and r.current_version = c.routine_version
 	where r.id = pg_temp.fs_id(p_name) and c.trigger_id = 'file'
 $$;
--- The routine ran: the scheduler offered a slot against the position it read, and the folder materializer made it a run.
+-- The routine ran: the scheduler offered a slot against the position it read, the folder materializer made it a run, and
+-- the run ended.
 create function pg_temp.fs_ran(p_name text, p_at timestamptz, p_next timestamptz) returns jsonb language plpgsql as $$
 declare v_cursor public.qorpera_cloud_routine_schedule_cursors := pg_temp.fs_cursor(p_name); v_result jsonb;
 begin
@@ -47,6 +49,9 @@ begin
 	perform pg_temp.base_materialize();
 	perform pg_temp.base_assert((select status from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid)
 		= 'materialized', 'fixture: the slot became a run: ' || v_result::text);
+	-- A conversation runs one run at a time (20260930538000): the run ends, so Bob's next slot in his thread can run.
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the routine''s run ended'
+	where run_id = (select run_id from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid);
 	return v_result;
 end
 $$;

@@ -10,7 +10,8 @@
 --   * qorpera_declare_runtime_node_bundle declares one node's orchestrators at once.
 -- Node A: the fixture orchestrator ...092 (adapter 'process'); it holds the fixture run (Alice's). Node B: a fast
 -- host ...b1 (adapter 'native-b'). Node C: coding, run ('native-c', no orchestrator) and sign-in providers.
--- The queued runs are the owner's posts in Bob's thread, turned into runs by the folder materializer. The coding
+-- The queued runs are the owner's posts, turned into runs by the folder materializer: the first in Bob's thread, the
+-- later ones in Carol's (a conversation runs one run at a time, 20260930538000, and Bob's keeps its run). The coding
 -- workers' todo is a real todo file in Alice's folder, written by the owner's folder commit; the workers, their
 -- machine allocations, a coding executor and a coding session are fixture rows.
 select pg_temp.base_commit(pg_temp.base_owner(), 'runs-switch-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/runs-switch.md',
@@ -50,21 +51,21 @@ $$;
 create function pg_temp.rs_decide(p_provider text,p_bundle text) returns jsonb language sql as $$
 	select public.qorpera_runtime_node_placement_decide(extensions.gen_random_uuid(),'native',p_provider,null::uuid,null::uuid,p_bundle)
 $$;
--- The owner's post in Bob's thread, and the materializer pass that makes it a queued run: a room delivery to Bob,
--- requested by the owner, on the owner's identity and the active bundle, its job queued.
-create function pg_temp.rs_run(p_text text) returns uuid language plpgsql as $$
+-- The owner's post in an agent's thread (Bob's unless named), and the materializer pass that makes it a queued run: a
+-- room delivery to that agent, requested by the owner, on the owner's identity and the active bundle, its job queued.
+create function pg_temp.rs_run(p_text text,p_staff uuid default '92400000-0000-4000-8000-000000000031') returns uuid language plpgsql as $$
 declare v_pass jsonb; v_run public.qorpera_execution_runs;
 begin
-	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001','92400000-0000-4000-8000-000000000031',p_text);
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001',p_staff,p_text);
 	v_pass := pg_temp.base_materialize();
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,'The post is a run: ' || v_pass::text);
 	select * into strict v_run from public.qorpera_execution_runs where id = (v_pass -> 'run_ids' ->> 0)::uuid;
-	perform pg_temp.base_assert(v_run.source_kind = 'room_delivery' and v_run.staff_agent_id = '92400000-0000-4000-8000-000000000031'
+	perform pg_temp.base_assert(v_run.source_kind = 'room_delivery' and v_run.staff_agent_id = p_staff
 		and v_run.requested_by_user_id = '92400000-0000-4000-8000-000000000001'
 		and v_run.compute_identity_id = (current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid
 		and v_run.runtime_bundle_sha256 = (select runtime_bundle_sha256 from public.qorpera_active_runtime_bundle where singleton)
 		and (select status from public.qorpera_runner_jobs where id = v_run.job_id) = 'queued',
-		'Bob''s queued run: ' || to_jsonb(v_run)::text);
+		'The agent''s queued run: ' || to_jsonb(v_run)::text);
 	return v_run.id;
 end $$;
 -- A sign-in's machine on a login provider (the login session is real; the allocation is written as its
@@ -86,11 +87,11 @@ create function pg_temp.rs_login_reserve(p_allocation uuid,p_provider text,p_pol
 	select public.qorpera_reserve_runtime_node_machine(p_allocation,'login',p_provider,p_policy,
 		encode(extensions.digest('runs-switch-login-' || p_allocation::text,'sha256'),'hex'),p_machine,4000,8589934592)
 $$;
--- A queued run in Bob's thread with a runner and a machine allocation on `p_provider`.
+-- A queued run in Carol's thread (Bob's holds the first run) with a runner and a machine allocation on `p_provider`.
 create function pg_temp.rs_run_machine(p_allocation uuid,p_provider text) returns uuid language plpgsql as $$
 declare v_run uuid; v_runner uuid;
 begin
-	v_run := pg_temp.rs_run('Machine');
+	v_run := pg_temp.rs_run('Machine','92400000-0000-4000-8000-000000000032');
 	perform pg_temp.base_claims('service_role');
 	v_runner := (public.qorpera_provision_execution_runner(v_run,p_allocation,p_provider,repeat('1',64)) ->> 'runner_id')::uuid;
 	if public.qorpera_reserve_runtime_machine(p_allocation,p_provider,encode(extensions.digest('runs-switch-run-' || p_allocation::text,'sha256'),'hex'),
@@ -328,8 +329,10 @@ select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000
 select pg_temp.base_assert((pg_temp.rs_candidate('native','process') ->> 'eligible')::boolean
 	and (pg_temp.rs_candidate('login','login-a') ->> 'eligible')::boolean
 	and (pg_temp.rs_status('79500000-0000-4000-8000-00000000000a') ->> 'runsServing')::boolean,'Node A takes runs and sign-ins again');
+-- The new run is a post in Carol's thread: a conversation runs one run at a time (20260930538000), and Bob's holds the
+-- run node B took.
 reset role;
-select set_config('qorpera_test.rs_run2',pg_temp.rs_run('Work')::text,true);
+select set_config('qorpera_test.rs_run2',pg_temp.rs_run('Work','92400000-0000-4000-8000-000000000032')::text,true);
 set local role service_role;
 savepoint claim_again;
 select pg_temp.base_assert(pg_temp.rs_claim('92400000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.rs_run2'),

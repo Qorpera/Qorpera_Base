@@ -116,16 +116,30 @@ rollback to savepoint mn_same_name;
 
 -- A named agent must answer; an agent woken by a post that names nobody may stay silent.
 do $$
-declare v_named uuid; v_unnamed uuid; v_pass jsonb; v_passes integer := 0;
+declare v_named uuid; v_unnamed uuid; v_pass jsonb; v_passes integer := 0; v_agents uuid[];
 begin
 	perform pg_temp.mn_post('@Carol what is the launch date?');
 	perform pg_temp.mn_post('Anyone free for the launch?');
-	-- Passes of sixteen until every wake of the posts above is a run and the company is idle.
+	-- Passes of sixteen until every wake of the posts above is a run and the company is idle. A conversation runs one run
+	-- at a time (20260930538000): in this group chat a pass runs one wake of each agent, Bob's and Carol's side by side,
+	-- and an agent's next wake waits, queued with no run, until its run there ends; each pass's runs end before the next.
 	loop
 		v_pass := pg_temp.base_materialize(16);
 		v_passes := v_passes + 1;
 		exit when v_pass ->> 'state' = 'idle';
-		perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and v_passes < 10, 'A pass runs: ' || v_pass::text);
+		perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and v_passes < 20, 'A pass runs: ' || v_pass::text);
+		select array_agg(run.staff_agent_id order by run.staff_agent_id) into v_agents from public.qorpera_execution_runs run
+		where run.id in (select value::uuid from jsonb_array_elements_text(v_pass -> 'run_ids'));
+		perform pg_temp.base_assert(v_agents = (select array_agg(distinct agent order by agent) from unnest(v_agents) agent)
+			and (v_passes > 1 or v_agents = array['92400000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000032']::uuid[]),
+			'A pass runs one wake of each agent, the first both side by side: ' || v_pass::text);
+		perform pg_temp.base_assert(not exists (select 1 from public.qorpera_wake_occurrences
+			where session_id = current_setting('qorpera_test.mn_session')::uuid and status = 'queued'
+				and (run_id is not null or blocked_reason is not null or not staff_agent_id = any(v_agents))),
+			'A wake left queued waits for its own agent''s run: ' || v_pass::text);
+		update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(),
+			last_error = 'Fixture: the run ends before its agent''s next wake'
+		where run_id in (select value::uuid from jsonb_array_elements_text(v_pass -> 'run_ids'));
 	end loop;
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_wake_occurrences
 		where profile_id = '92400000-0000-4000-8000-000000000010' and status = 'queued'), 'Every wake is a run');

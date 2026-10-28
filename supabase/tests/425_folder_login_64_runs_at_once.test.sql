@@ -2,10 +2,12 @@
 -- A login runs at most 64 runs at once (launch checklist L19.4, its D9 gap: "the 64-runs-at-once limit per account";
 -- 20260828019990: a connection may sponsor several concurrent runs, bounded at 64 per connection). The bound is the
 -- provider policy's 64, which the schema caps there and a sign-in cannot raise. The contributor signs in their own login
--- at that bound and posts 64 times in Bob's thread: 64 queued runs, each holding one of the login's slots. The 65th
--- post waits: its wake stays queued with the quota's reason, on the contributor's own login, and makes no run, job or
--- reservation, while the owner's login, another account, still starts work. When the contributor stops one run, its
--- slot frees and the waiting post becomes a run on the same login.
+-- at that bound and asks Bob 64 times, first in his thread, then in 63 group chats: 64 queued runs, each holding one of
+-- the login's slots (a conversation runs one run at a time, 20260930538000, so the 64 runs are in 64 conversations; an
+-- agent may run in many at once). The 65th post, in another group chat where nothing runs, waits: its wake stays queued
+-- with the quota's reason, on the contributor's own login, and makes no run, job or reservation, while the owner's login,
+-- another account, still starts work. When the contributor stops their run in Bob's thread, its slot frees and the
+-- waiting post becomes a run on the same login.
 
 -- The contributor's sign-in, completed by the node host with the concurrency the login consents to.
 create function pg_temp.lr_complete(p_max integer) returns jsonb language sql as $$
@@ -15,11 +17,25 @@ create function pg_temp.lr_complete(p_max integer) returns jsonb language sql as
 		jsonb_build_object('monthly_microusd', 1000000000, 'reservation_microusd', 1000, 'max_calls_per_run', 32,
 			'max_input_tokens_per_run', 2000000, 'max_output_tokens_per_run', 500000, 'max_concurrent_runs', p_max))
 $$;
--- The contributor's post in Bob's thread, paid by their own login, and the materializer pass after it.
-create function pg_temp.lr_post(p_text text) returns jsonb language plpgsql as $$
+-- Group chat i (2 to 65) below, for post i; its room has the group's id.
+create function pg_temp.lr_group(p_i integer) returns uuid language sql immutable as $$
+	select ('42500000-0000-4000-8000-' || lpad((1000 + p_i)::text, 12, '0'))::uuid
+$$;
+-- The contributor's post in a group chat, or in Bob's thread when none is named, paid by their own login, and the
+-- materializer pass after it.
+create function pg_temp.lr_post(p_text text, p_room uuid default null) returns jsonb language plpgsql as $$
 begin
-	perform set_config('qorpera_test.lr_wakes', pg_temp.base_post('92400000-0000-4000-8000-000000000002',
-		'92400000-0000-4000-8000-000000000031', p_text, current_setting('qorpera_test.lr_binding')::uuid)::text, true);
+	if p_room is null then
+		perform set_config('qorpera_test.lr_wakes', pg_temp.base_post('92400000-0000-4000-8000-000000000002',
+			'92400000-0000-4000-8000-000000000031', p_text, current_setting('qorpera_test.lr_binding')::uuid)::text, true);
+	else
+		perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+		set local role authenticated;
+		perform set_config('qorpera_test.lr_wakes', (public.qorpera_post_company_room_message(p_room, extensions.gen_random_uuid(),
+			jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', p_text), current_setting('qorpera_test.lr_binding')::uuid, 1)
+			-> 'occurrenceIds')::text, true);
+		reset role;
+	end if;
 	return pg_temp.base_materialize();
 end
 $$;
@@ -84,35 +100,54 @@ select set_config('qorpera_test.lr_binding', public.qorpera_create_member_execut
 \g /dev/null
 reset role;
 
--- 3. 64 posts are 64 queued runs, each holding one of the login's slots.
+-- Group chats 2 to 65 of Bob and Carol with the owner and the contributor, saved by the owner. A conversation runs one
+-- run at a time (20260930538000), so 64 runs at once need 64 conversations: Bob's thread and 63 of these.
+select pg_temp.base_claims('service_role');
+select pg_temp.base_commit(pg_temp.base_owner(), 'lr-group-chats', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path',
+	'QorperaOS/agents/groups')) || (select jsonb_agg(jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/questions-' || i,
+		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(g.text))),
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/questions-' || i || '/group.md', 'kind', 'group',
+			'text', g.text, 'parse', jsonb_build_object('kind', 'group', 'id', pg_temp.lr_group(i), 'name', 'Questions ' || i, 'subtitle', null,
+				'agents', '["92400000-0000-4000-8000-000000000031","92400000-0000-4000-8000-000000000032"]'::jsonb,
+				'people', '["92400000-0000-4000-8000-000000000001","92400000-0000-4000-8000-000000000002"]'::jsonb, 'purpose', 'Answer questions.'),
+			'parserVersion', 1))) order by i)
+	from generate_series(2, 65) i
+	cross join lateral (select format(E'---\nid: %s\nname: Questions %s\nagents:\n  - 92400000-0000-4000-8000-000000000031\n'
+		|| E'  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n'
+		|| E'  - 92400000-0000-4000-8000-000000000002\n---\nAnswer questions.\n', pg_temp.lr_group(i), i) as text) g)) \g /dev/null
+
+-- 3. 64 posts to Bob, the first in his thread and each other one in its group chat naming him, are 64 queued runs of
+--    Bob's, each holding one of the login's slots.
 do $$
 declare v_pass jsonb; v_runs uuid[] := '{}'::uuid[];
 begin
 	for i in 1..64 loop
-		v_pass := pg_temp.lr_post('Question ' || i || '.');
+		v_pass := case when i = 1 then pg_temp.lr_post('Question 1.') else pg_temp.lr_post('@Bob question ' || i || '.', pg_temp.lr_group(i)) end;
 		perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,
 			'fixture: post ' || i || ' is one run: ' || v_pass::text);
 		v_runs := v_runs || (v_pass -> 'run_ids' ->> 0)::uuid;
 	end loop;
-	perform pg_temp.base_assert(pg_temp.lr_held() = 64 and (select count(*) = 64
+	perform pg_temp.base_assert(pg_temp.lr_held() = 64 and (select count(*) = 64 and count(distinct run.session_id) = 64
+		and bool_and(run.staff_agent_id = '92400000-0000-4000-8000-000000000031')
 		and bool_and(run.sponsor_binding_id = current_setting('qorpera_test.lr_binding')::uuid and job.status = 'queued'
 			and job.created_by_user_id = '92400000-0000-4000-8000-000000000002' and reservation.status = 'reserved'
 			and reservation.provider_connection_id = current_setting('qorpera_test.lr_connection')::uuid)
 		from public.qorpera_execution_runs as run
 		join public.qorpera_runner_jobs as job on job.id = run.job_id
 		join public.qorpera_execution_sponsor_reservations as reservation on reservation.run_id = run.id
-		where run.id = any(v_runs)), 'the login holds 64 queued runs of the contributor''s');
+		where run.id = any(v_runs)), 'the login holds 64 queued runs of the contributor''s, one in each conversation');
 	perform set_config('qorpera_test.lr_first_run', v_runs[1]::text, true);
 	perform set_config('qorpera_test.lr_session', (select session_id from public.qorpera_execution_runs where id = v_runs[1])::text, true);
 end
 $$;
 
--- 4. The 65th post waits: no run, job or reservation; its wake stays queued with the quota's reason, on the
---    contributor's own login. Another pass leaves it waiting.
+-- 4. The 65th post, in group chat 65 where nothing runs (so it waits for the login, not for its conversation), waits: no
+--    run, job or reservation; its wake stays queued with the quota's reason, on the contributor's own login. Another pass
+--    leaves it waiting.
 do $$
 declare v_counts bigint[] := pg_temp.lr_counts(); v_pass jsonb; v_wake public.qorpera_wake_occurrences;
 begin
-	v_pass := pg_temp.lr_post('Question 65.');
+	v_pass := pg_temp.lr_post('@Bob question 65.', pg_temp.lr_group(65));
 	perform pg_temp.base_assert(jsonb_array_length(current_setting('qorpera_test.lr_wakes')::jsonb) = 1,
 		'fixture: the 65th post wakes Bob once');
 	perform set_config('qorpera_test.lr_waiting', current_setting('qorpera_test.lr_wakes')::jsonb ->> 0, true);
@@ -157,7 +192,8 @@ begin
 end
 $$;
 
--- 6. The contributor stops their oldest run: its slot frees, and the waiting post becomes a run on the same login.
+-- 6. The contributor stops their oldest run, in Bob's thread (a member's Stop is a thread's): its slot frees, and the
+--    waiting post becomes a run on the same login.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.lr_session')::uuid,

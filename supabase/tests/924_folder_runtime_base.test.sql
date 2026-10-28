@@ -404,6 +404,14 @@ create function pg_temp.wb_counts() returns bigint[] language sql as $$
 	select array[(select count(*) from public.qorpera_execution_runs), (select count(*) from public.qorpera_runner_jobs),
 		(select count(*) from public.qorpera_execution_sponsor_reservations)]
 $$;
+-- A conversation runs one run at a time (20260930538000): the live runs in an agent's thread end (their jobs fail, as a lost
+-- attempt's would), so the thread's next post or wake can become a run.
+create function pg_temp.wb_end_runs(p_staff uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the run ended',
+		lease_token_sha256 = null, lease_expires_at = null
+	where status in ('queued', 'leased')
+		and run_id in (select id from public.qorpera_execution_runs where session_id = pg_temp.wb_session(p_staff))
+$$;
 
 -- 5. Wake policies: the five kinds and their silence rule; an omitted reply never grants silence. The base run, the
 --    owner's post in Alice's thread, owes its final report but no acknowledgement, and having reported (section 2) it does
@@ -524,18 +532,26 @@ end
 $$;
 rollback to wb_sponsor_denied;
 
--- 9. A routine's reply policy: a routine file of Bob's with `reply: optional` fires into his thread; its run may finish
---    silently, but once it speaks it owes its final report; the materializer admits the slot once; the run's wake names
---    the routine's immutable intent. The accessor fails closed (the initial and final obligations) on a run whose binding
---    no longer matches its wake: its source, agent version, conversation, sponsor version or binding, or a stored reply
---    policy it does not know. Another requester on the login is refused where runs change (20260928230000).
+-- 9. A routine's reply policy: a routine file of Bob's with `reply: optional` fires into his thread, where the slot waits
+--    for the run already live there (one run at a time, 20260930538000); its run may finish silently, but once it speaks
+--    it owes its final report; the materializer admits the slot once; the run's wake names the routine's immutable
+--    intent. The accessor fails closed (the initial and final obligations) on a run whose binding no longer matches its
+--    wake: its source, agent version, conversation, sponsor version or binding, or a stored reply policy it does not know.
+--    Another requester on the login is refused where runs change (20260928230000).
 savepoint wb_routine_policy;
 select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-routine-tick', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/bob/routines/tick.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e1', 'Tick', pg_temp.wb_every())))) \g /dev/null
 do $$
 declare v_wake uuid := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000e1', 'tick-1'); v_pass jsonb := pg_temp.base_materialize();
-	v_run uuid := pg_temp.wb_wake_run(v_wake); v_binding jsonb; v_original public.qorpera_execution_runs; v_patch jsonb; v_other uuid;
+	v_run uuid; v_binding jsonb; v_original public.qorpera_execution_runs; v_patch jsonb; v_other uuid;
 begin
+	-- A conversation runs one run at a time (20260930538000): while Bob's run of section 3 is live in his thread, the slot
+	-- waits, queued with no run; once that run ends, the next pass admits it.
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'idle' and (select status = 'queued' and run_id is null and blocked_reason is null
+		from public.qorpera_wake_occurrences where id = v_wake), 'the slot waits for the run in Bob''s thread: ' || v_pass::text);
+	perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000031');
+	v_pass := pg_temp.base_materialize();
+	v_run := pg_temp.wb_wake_run(v_wake);
 	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array(v_run), 'the slot is materialized through the queue: ' || v_pass::text);
 	perform pg_temp.base_assert((select session_id from public.qorpera_wake_occurrences where id = v_wake)
 		= pg_temp.wb_session('92400000-0000-4000-8000-000000000031'), 'the routine fires into Bob''s thread');
@@ -607,6 +623,9 @@ do $$
 declare v_reply text; v_id uuid; v_wake uuid; v_run uuid; v_binding jsonb; v_phase text; v_count integer;
 begin
 	foreach v_reply in array array['required', 'silent', 'optional'] loop
+		-- A conversation runs one run at a time (20260930538000): the earlier run in Alice's thread (the base's, then the last
+		-- routine's) ends before the next slot.
+		perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030');
 		v_id := md5('wake-bus-report-' || v_reply)::uuid;
 		perform pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-report-' || v_reply, jsonb_build_array(pg_temp.wb_routine(
 			'QorperaOS/agents/alice/routines/report-' || v_reply || '.md', pg_temp.wb_rparse(v_id, 'Report', pg_temp.wb_every(), v_reply))));
@@ -717,6 +736,8 @@ begin
 		v_candidate := jsonb_populate_record(v_wake, v_patch);
 		perform pg_temp.base_assert(not public.qorpera_wake_authorized(v_candidate), 'a supplied audience must match the agent and environment');
 	end loop;
+	-- A conversation runs one run at a time (20260930538000): Bob's run of section 3 ends, so the materializer reaches the slot.
+	perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000031');
 	v_counts := pg_temp.wb_counts();
 	for v_patch in select value from jsonb_array_elements('[{"status":"closed"},
 		{"execution_scope":{"roomId":"not-cloud-room-authority"}},{"staff_version":2}]') loop
@@ -749,6 +770,8 @@ savepoint wb_coworker;
 select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-listener', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/note.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e6', 'Note', '{"when":"file-change","watch":"note.md","match":"exact"}')))) \g /dev/null
 select public.qorpera_folder_listen_company('92400000-0000-4000-8000-000000000020') \g /dev/null
+-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so her post becomes a run.
+select pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030') \g /dev/null
 do $$
 declare v_alice jsonb := pg_temp.wb_posted('92400000-0000-4000-8000-000000000030', 'Hand Bob the note.'); v_first jsonb; v_again jsonb;
 	v_bob_run uuid; v_bob jsonb; v_read jsonb; v_reply jsonb; v_file public.qorpera_wake_occurrences;
@@ -759,6 +782,12 @@ begin
 	perform pg_temp.base_assert(v_first = v_again and v_first ->> 'status' = 'queued', 'a duplicate delivery returns one durable receipt');
 	perform pg_temp.base_error(format('select public.qorpera_send_coworker_message(%L, %L, %L, %L)', v_alice,
 		'92400000-0000-4000-8000-000000000031', 'handoff-1', 'Different text'), '23505');
+	-- A conversation runs one run at a time (20260930538000): the message waits, queued with no run, while Bob's run of
+	-- section 3 is live in his thread, and is admitted once that run ends.
+	perform pg_temp.base_materialize();
+	perform pg_temp.base_assert((select status = 'queued' and run_id is null from public.qorpera_wake_occurrences
+		where id = (v_first ->> 'occurrenceId')::uuid), 'the coworker wake waits for the run in Bob''s thread');
+	perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000031');
 	perform pg_temp.base_materialize();
 	v_bob_run := pg_temp.wb_wake_run((v_first ->> 'occurrenceId')::uuid);
 	perform pg_temp.base_assert(v_bob_run is not null, 'the coworker wake gets fresh admission');
@@ -792,6 +821,8 @@ rollback to wb_coworker;
 -- 14. A coworker message whose recipient is archived before its run: the archive leaves the queued delivery with no run,
 --     cancelled for good.
 savepoint wb_archived_recipient;
+-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so her post becomes a run.
+select pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030') \g /dev/null
 do $$
 declare v_alice jsonb := pg_temp.wb_posted('92400000-0000-4000-8000-000000000030', 'Ask Carol.'); v_message jsonb; v_pass jsonb;
 begin
@@ -812,6 +843,8 @@ rollback to wb_archived_recipient;
 --     failed run leaves recovery, and the same agent is woken again for the same post, with exactly the first delivery's
 --     payload (the runner parses it as a closed object), and answers in the thread.
 savepoint wb_room_retry;
+-- A conversation runs one run at a time (20260930538000): Bob's run of section 3 ends, so the post becomes a run.
+select pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000031') \g /dev/null
 do $$
 declare v_wakes jsonb := pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Bob, are you there?');
 	v_pass jsonb := pg_temp.base_materialize(); v_first uuid := (v_wakes ->> 0)::uuid; v_run uuid := pg_temp.wb_wake_run(v_first);
@@ -882,6 +915,23 @@ begin
 			pg_temp.wb_every(), 'required')),
 		pg_temp.wb_routine('QorperaOS/agents/bob/routines/queued.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e8', 'Queued',
 			pg_temp.wb_every(), 'required'))));
+	-- A conversation runs one run at a time (20260930538000): Bob's run of section 3 ends first, and each run below in his
+	-- thread ends before the next one there starts, so the post is delivered before the routine's wake runs.
+	perform pg_temp.wb_end_runs(c_bob);
+
+	-- A member's post into the thread is a room delivery, at the agent's current version.
+	v_delivery := pg_temp.wb_posted(c_bob, 'Bob, are you there?');
+	perform pg_temp.base_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.staff_version > s.staff_version
+		from public.qorpera_execution_runs r join public.qorpera_shared_sessions s on s.id = r.session_id
+		where r.id = (v_delivery ->> 'runId')::uuid), 'a post into the thread of an edited agent is delivered at its current version');
+	perform pg_temp.base_public_send(v_delivery, 'progress', 'delivery-after-edit');
+	perform pg_temp.base_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_thread
+		and execution_kind = 'run' and execution_id = (v_delivery ->> 'runId')::uuid), 'an edited agent answers a member in its thread');
+	update public.qorpera_shared_sessions set staff_version = staff_version + 2 where id = v_thread;
+	perform pg_temp.base_error(format('select pg_temp.base_public_send(%L, %L, %L)', v_delivery, 'progress', 'thread-ahead-delivery'), 'PGRST');
+	update public.qorpera_shared_sessions set staff_version = staff_version - 2 where id = v_thread;
+	perform pg_temp.wb_end_runs(c_bob);
+
 	v_wake := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000e7', 'thread-after-edit');
 	perform pg_temp.base_assert((select session_id from public.qorpera_wake_occurrences where id = v_wake) = v_thread,
 		'an edited agent keeps its thread as its public audience');
@@ -895,17 +945,7 @@ begin
 	perform pg_temp.base_assert((select count(*) = 1 from public.qorpera_session_events
 		where session_id = v_thread and execution_kind = 'run' and execution_id = v_run),
 		'the transcript accepts the wake run although the thread records an earlier agent version');
-
-	-- A member's post into the thread is a room delivery, at the agent's current version.
-	v_delivery := pg_temp.wb_posted(c_bob, 'Bob, are you there?');
-	perform pg_temp.base_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.staff_version > s.staff_version
-		from public.qorpera_execution_runs r join public.qorpera_shared_sessions s on s.id = r.session_id
-		where r.id = (v_delivery ->> 'runId')::uuid), 'a post into the thread of an edited agent is delivered at its current version');
-	perform pg_temp.base_public_send(v_delivery, 'progress', 'delivery-after-edit');
-	perform pg_temp.base_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_thread
-		and execution_kind = 'run' and execution_id = (v_delivery ->> 'runId')::uuid), 'an edited agent answers a member in its thread');
 	update public.qorpera_shared_sessions set staff_version = staff_version + 2 where id = v_thread;
-	perform pg_temp.base_error(format('select pg_temp.base_public_send(%L, %L, %L)', v_delivery, 'progress', 'thread-ahead-delivery'), 'PGRST');
 	perform pg_temp.base_error(format('select pg_temp.base_public_send(%L, %L, %L)', v_binding, 'progress', 'thread-ahead-routine'),
 		'42501', 'Admitted wake authority is unavailable');
 	update public.qorpera_shared_sessions set staff_version = staff_version - 2 where id = v_thread;
@@ -934,7 +974,8 @@ begin
 	perform pg_temp.base_assert((select (c #>> '{agent,version}')::bigint = v_row.staff_version and c #>> '{agent,name}' = 'Bob'
 		from public.qorpera_describe_company_run_context(v_binding) c), 'a run in flight describes its agent as of its own version');
 
-	-- The wake that waited through the edit is the agent's next run.
+	-- The wake that waited through the edit is the agent's next run, once the run in flight has ended.
+	perform pg_temp.wb_end_runs(c_bob);
 	perform pg_temp.base_materialize();
 	v_queued_run := pg_temp.wb_wake_run(v_queued);
 	perform pg_temp.base_assert((select r.staff_version = a.version and r.staff_version > w.staff_version
@@ -1055,6 +1096,9 @@ select pg_temp.base_commit(pg_temp.base_owner(), 'bc-withdrawn', jsonb_build_arr
 do $$
 declare v_wake uuid := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000f1', 'before-withdrawal');
 begin
+	-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so the materializer reaches
+	-- the slot.
+	perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030');
 	perform pg_temp.bc_consent(false);
 	perform pg_temp.base_materialize();
 	perform pg_temp.base_assert((select status = 'cancelled' and run_id is null from public.qorpera_wake_occurrences where id = v_wake),
@@ -1072,6 +1116,8 @@ rollback to bc_withdrawn_wake;
 savepoint bc_consent;
 select pg_temp.base_commit(pg_temp.base_owner(), 'bc-consented', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/consented.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f2', 'Consented', pg_temp.wb_every())))) \g /dev/null
+-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so the slot becomes a run.
+select pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030') \g /dev/null
 do $$
 declare v_binding jsonb := pg_temp.bc_routine_run('92400000-0000-4000-8000-0000000000f2', 'before-withdrawal'); v_consent jsonb;
 	v_connection uuid := (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid; v_sponsor jsonb;
@@ -1107,6 +1153,8 @@ rollback to bc_consent;
 -- 21. Withdrawing consent fences an agent's run already reading its wake: a coworker message's run, paid by the member
 --     who started the chain, can no longer read its wake, message a coworker or finish.
 savepoint bc_agent;
+-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so her post becomes a run.
+select pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030') \g /dev/null
 do $$
 declare v_binding jsonb := pg_temp.bc_agent_run('bc-agent');
 begin
@@ -1151,6 +1199,9 @@ declare v_case text[]; b jsonb; v_op public.qorpera_cloud_connector_operations; 
 begin
 	select * into strict v_op from public.qorpera_cloud_connector_operations
 	where connector_id = 'gmail' and operation_id = 'search_messages' and status = 'active';
+	-- A conversation runs one run at a time (20260930538000): the base run in Alice's thread ends, so her routine's slot and
+	-- her post each become a run (each case's run is undone with its case).
+	perform pg_temp.wb_end_runs('92400000-0000-4000-8000-000000000030');
 	foreach v_case slice 1 in array array[['routine', 'none', '', ''],
 		['routine', 'standing_authority', '42501', 'Admitted wake authority is unavailable'],
 		['routine', 'consent', '42501', 'native provider execution authority is unavailable'],

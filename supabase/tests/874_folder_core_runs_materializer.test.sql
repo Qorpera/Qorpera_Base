@@ -2,11 +2,13 @@
 -- Company folder core, C4 (P28 part 1; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-RUNS.md): runs on folder-v2. After a
 -- real creation (856's fixture: the Co-Founder, its thread, the kickoff and Anna's queued turn request), the due list
 -- names the company; the per-company materializer refuses a request whose login is gone (failed, nothing written),
--- turns the first run's request and a founder's post into runs in one pass (no substrate, the folder clock's pin, the
--- reservation, the first-run wake under one admission); answers a later post with a room delivery, admitted; leaves a
--- wake whose login is full queued (the run undone) and runs it once there is room; cancels a wake whose authority is
--- gone; answers paused, not_folder and idle without writing. Both functions are the service role's alone. A run has
--- exactly one pin. The reconcile RPC no longer runs the legacy materializers.
+-- turns the first run's request into a run (no substrate, the folder clock's pin, the reservation, the first-run wake
+-- under one admission) in a pass that leaves a founder's post in the thread waiting, since a conversation runs one run at
+-- a time (20260930538000); answers that post with a room delivery, admitted, once the first run is done; leaves a later
+-- post waiting while the thread's run lives (not due, nothing written) and runs it after; cancels a wake whose authority
+-- is gone; answers paused, not_folder and idle without writing. Both functions are the service role's alone. A run has
+-- exactly one pin. The reconcile RPC no longer runs the legacy materializers. (A full login's wait is 465's: this
+-- company has one conversation, whose own run would hold the login's slot.)
 
 -- Each pass as its own transaction would start it: no admission mark from an earlier statement (a post sets it).
 create function pg_temp.materialize(p_profile uuid, p_limit integer default 16) returns jsonb language plpgsql as $$
@@ -26,6 +28,11 @@ end $$;
 create function pg_temp.listed(p_profile uuid) returns boolean language sql as $$
 	select exists (select 1 from jsonb_array_elements(pg_temp.due() -> 'items') as item(value)
 		where item.value ->> 'profile_id' = p_profile::text)
+$$;
+-- A run is done: its job fails, as a runner reports it (the trigger settles its reservation).
+create function pg_temp.end_run(p_run uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the run is done'
+	where run_id = p_run
 $$;
 -- Anna posts in the Co-Founder's thread with her own login; answers the post's wake.
 create function pg_temp.post(p_client uuid, p_text text) returns uuid language plpgsql as $$
@@ -127,7 +134,7 @@ where id = current_setting('qorpera_test.request')::uuid;
 update public.qorpera_session_inputs set failed_at = null, failure_reason = null
 where id = (select input_id from public.qorpera_session_turn_requests where id = current_setting('qorpera_test.request')::uuid);
 
--- 3. The first run, in one pass with a founder's post ----------------------------------------------------------------
+-- 3. The first run; a founder's post beside it waits -----------------------------------------------------------------
 
 select set_config('qorpera_test.first_post', pg_temp.post('87400000-0000-4000-8000-000000000005', 'Welcome aboard.')::text, true);
 do $$
@@ -138,12 +145,14 @@ declare v_claim jsonb := current_setting('qorpera_test.claim')::jsonb; v_profile
 begin
 	v_admitted := pg_temp.admitted(v_profile);
 	v_result := pg_temp.materialize(v_profile);
-	-- Oldest scan first: the request (scanned in §2), then the post's wake; one admission for the pass.
-	if v_result ->> 'state' is distinct from 'done' or v_result -> 'run_ids' is distinct from jsonb_build_array(
-			current_setting('qorpera_test.request'), (select run_id from public.qorpera_wake_occurrences
-				where id = current_setting('qorpera_test.first_post')::uuid))
-		or (v_result ->> 'failed')::integer <> 0 or (v_result ->> 'skipped')::integer <> 0 then
-		raise exception 'The first run and the post were not materialized in one pass: %', v_result; end if;
+	-- Oldest scan first: the request (scanned in §2), then the post's wake, which the pass skips under the thread's lock:
+	-- the first run is now the conversation's one run (20260930538000). One admission for the pass.
+	if v_result ->> 'state' is distinct from 'done' or v_result -> 'run_ids' is distinct from jsonb_build_array(current_setting('qorpera_test.request'))
+		or (v_result ->> 'failed')::integer <> 0 or (v_result ->> 'skipped')::integer <> 1 then
+		raise exception 'The first run was not materialized, or the post beside it did not wait: %', v_result; end if;
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.first_post')::uuid;
+	if v_wake.status <> 'queued' or v_wake.run_id is not null or v_wake.blocked_reason is not null then
+		raise exception 'The post''s wake does not wait, queued and with no reason: %', to_jsonb(v_wake); end if;
 	select * into strict v_request from public.qorpera_session_turn_requests where id = current_setting('qorpera_test.request')::uuid;
 	select * into strict v_run from public.qorpera_execution_runs where id = v_request.id;
 	-- No substrate or snapshot: the folder clock's pin. The model is the Co-Founder's: its agent.md names none, so the
@@ -181,7 +190,7 @@ begin
 		raise exception 'The pass was not admitted once'; end if;
 	if public.qorpera_folder_company_first_run_state(v_profile) is distinct from 'started' then
 		raise exception 'The table does not show the first run started'; end if;
-	-- Nothing more is due.
+	-- Nothing more is due: the post waits for the first run.
 	if pg_temp.listed(v_profile) or pg_temp.materialize(v_profile) ->> 'state' is distinct from 'idle' then
 		raise exception 'The company is still due after its first run'; end if;
 	-- The runner's description carries the pin.
@@ -190,9 +199,10 @@ begin
 		raise exception 'The broker''s description does not carry company_seq'; end if;
 end $$;
 
--- 4. A founder's post in the thread is answered ----------------------------------------------------------------------
+-- 4. Once the first run is done, the founder's post is answered ------------------------------------------------------
 
-select set_config('qorpera_test.wake', pg_temp.post('87400000-0000-4000-8000-000000000001', 'Hello, Co-Founder.')::text, true);
+select pg_temp.end_run(current_setting('qorpera_test.request')::uuid);
+select set_config('qorpera_test.wake', current_setting('qorpera_test.first_post'), true);
 do $$
 declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_wake public.qorpera_wake_occurrences;
 	v_run public.qorpera_execution_runs; v_job public.qorpera_runner_jobs; v_result jsonb; v_admitted bigint;
@@ -217,38 +227,38 @@ begin
 		raise exception 'The post was not answered with a room delivery: % % %', v_result, to_jsonb(v_wake), to_jsonb(v_run); end if;
 end $$;
 
--- 5. A full login waits, with nothing of the run left; it runs once there is room ------------------------------------
+-- 5. A later post waits while the thread's run lives, with nothing written; it runs after ----------------------------
 
-update public.qorpera_provider_connection_versions set quota_policy = jsonb_set(quota_policy, '{max_concurrent_runs}', '2')
-where connection_id = current_setting('qorpera_test.connection')::uuid;
 select set_config('qorpera_test.wake', pg_temp.post('87400000-0000-4000-8000-000000000002', 'Are you there?')::text, true);
 do $$
 declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_wake public.qorpera_wake_occurrences; v_result jsonb;
 	v_runs bigint := (select count(*) from public.qorpera_execution_runs where profile_id = current_setting('qorpera_test.table')::uuid);
 	v_jobs bigint := (select count(*) from public.qorpera_runner_jobs where profile_id = current_setting('qorpera_test.table')::uuid);
 begin
+	-- §4's room delivery is the thread's one run: the wake is not due and not scanned, and keeps no reason.
 	v_result := pg_temp.materialize(v_profile);
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.wake')::uuid;
-	if v_result -> 'run_ids' <> '[]'::jsonb or (v_result ->> 'blocked')::integer <> 1 or v_wake.status <> 'queued'
-		or v_wake.blocked_reason is distinct from 'Execution sponsor authority or quota is unavailable' then
-		raise exception 'A full login did not leave the wake waiting: % %', v_result, to_jsonb(v_wake); end if;
+	if v_result ->> 'state' is distinct from 'idle' or pg_temp.listed(v_profile) or v_wake.status <> 'queued'
+		or v_wake.run_id is not null or v_wake.blocked_reason is not null then
+		raise exception 'The post did not wait for the thread''s run: % %', v_result, to_jsonb(v_wake); end if;
 	if (select count(*) from public.qorpera_execution_runs where profile_id = v_profile) <> v_runs
 		or (select count(*) from public.qorpera_runner_jobs where profile_id = v_profile) <> v_jobs then
-		raise exception 'A refused reservation left its run or job'; end if;
+		raise exception 'A waiting wake left a run or job'; end if;
 end $$;
-update public.qorpera_provider_connection_versions set quota_policy = jsonb_set(quota_policy, '{max_concurrent_runs}', '32')
-where connection_id = current_setting('qorpera_test.connection')::uuid;
+select pg_temp.end_run((select run_id from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.first_post')::uuid));
 do $$
 declare v_wake public.qorpera_wake_occurrences; v_result jsonb := pg_temp.materialize(current_setting('qorpera_test.table')::uuid);
 begin
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.wake')::uuid;
 	if v_result -> 'run_ids' is distinct from jsonb_build_array(v_wake.run_id) or v_wake.status <> 'materialized'
 		or v_wake.blocked_reason is not null then
-		raise exception 'The waiting wake did not run once there was room: % %', v_result, to_jsonb(v_wake); end if;
+		raise exception 'The waiting wake did not run once the thread''s run was done: % %', v_result, to_jsonb(v_wake); end if;
 end $$;
 
 -- 6. A wake whose authority is gone is cancelled ---------------------------------------------------------------------
 
+-- §5's run is done first, so the next post is scanned.
+select pg_temp.end_run((select run_id from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.wake')::uuid));
 select set_config('qorpera_test.wake', pg_temp.post('87400000-0000-4000-8000-000000000003', 'One more thing.')::text, true);
 update public.qorpera_execution_sponsor_bindings set status = 'revoked' where id = current_setting('qorpera_test.binding')::uuid;
 do $$

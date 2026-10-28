@@ -5,7 +5,8 @@
 -- scheduler, members' posts, and a coworker message from the base's run of Alice's, each turned into a run by the folder
 -- materializer and started on a real runner with a native lease. Authority is a member turn's: the member may write the
 -- conversation and created the run's job (posted the message, saved the routine, started the chain) or is an owner or
--- admin. The read offers a run the member may stop before one they may not, then the working one.
+-- admin. A conversation runs one run at a time (20260930538000), so members' messages wait while a run works and
+-- become runs in turn; the read names the conversation's run.
 
 -- The contributor's own native login and member sponsor, as the base makes the owner's: a post spends only the
 -- poster's own login. Answers the sponsor's binding.
@@ -172,27 +173,30 @@ select pg_temp.base_assert((select status = 'queued' from public.qorpera_runner_
 -- The routine run starts: it holds a runner lease and a native provider lease.
 select set_config('qorpera_test.ms_binding', pg_temp.base_start(current_setting('qorpera_test.ms_run')::uuid)::text, true) \g /dev/null
 
--- 3. Members' own messages in the thread are room posts, and their runs are stoppable too. While the routine run works,
---    the owner is offered the working run; a contributor is offered their own queued message and may not stop another's.
+-- 3. Members' own messages in the thread are room posts, and their runs are stoppable too. A conversation runs one run at
+--    a time (20260930538000): while the routine run works, both messages wait, the owner is offered the working run and a
+--    contributor sees it without a Stop. Once it ends, each message becomes a run in turn: a contributor may not stop
+--    the owner's and is offered their own.
 savepoint ms_member_messages;
 select set_config('qorpera_test.ms_member_binding', pg_temp.ms_member_binding()::text, true) \g /dev/null
+-- The owner's message, then the contributor's (one statement each, so the owner's is the older).
 do $$
-declare v_pass jsonb; v_owner uuid; v_own uuid;
 begin
-	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Bob, also check the invoices.');
-	perform pg_temp.base_post('92400000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000031', 'And the receipts.',
-		current_setting('qorpera_test.ms_member_binding')::uuid);
+	perform set_config('qorpera_test.ms_post_wake', pg_temp.base_post('92400000-0000-4000-8000-000000000001',
+		'92400000-0000-4000-8000-000000000031', 'Bob, also check the invoices.') ->> 0, true);
+end $$;
+do $$
+declare v_pass jsonb;
+begin
+	perform set_config('qorpera_test.ms_own_wake', pg_temp.base_post('92400000-0000-4000-8000-000000000002',
+		'92400000-0000-4000-8000-000000000031', 'And the receipts.', current_setting('qorpera_test.ms_member_binding')::uuid) ->> 0, true);
 	v_pass := pg_temp.base_materialize();
-	select run.id into strict v_owner from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
-	where run.id in (select (jsonb_array_elements_text(v_pass -> 'run_ids'))::uuid) and job.created_by_user_id = '92400000-0000-4000-8000-000000000001';
-	select run.id into strict v_own from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
-	where run.id in (select (jsonb_array_elements_text(v_pass -> 'run_ids'))::uuid) and job.created_by_user_id = '92400000-0000-4000-8000-000000000002';
-	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 2 and (select bool_and(run.source_kind = 'room_delivery'
-		and run.session_id = current_setting('qorpera_test.ms_thread')::uuid and job.status = 'queued')
-		from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id where run.id in (v_owner, v_own)),
-		'Fixture: both messages in Bob''s thread are queued room deliveries: ' || v_pass::text);
-	perform set_config('qorpera_test.ms_post_run', v_owner::text, true);
-	perform set_config('qorpera_test.ms_own_run', v_own::text, true);
+	perform pg_temp.base_assert(coalesce(v_pass -> 'run_ids', '[]'::jsonb) = '[]'::jsonb and (select count(*) = 2
+		and bool_and(status = 'queued' and run_id is null and blocked_reason is null
+			and session_id = current_setting('qorpera_test.ms_thread')::uuid)
+		from public.qorpera_wake_occurrences where id in (current_setting('qorpera_test.ms_post_wake')::uuid,
+			current_setting('qorpera_test.ms_own_wake')::uuid)),
+		'Both messages wait behind the routine run, queued with no run: ' || v_pass::text);
 end $$;
 set local role authenticated;
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
@@ -200,23 +204,66 @@ select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thre
 	'run_id', current_setting('qorpera_test.ms_run'), 'status', 'leased', 'can_cancel', true),
 	'An owner is offered the run the agent is working on');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
-select pg_temp.ms_denied(current_setting('qorpera_test.ms_thread')::uuid, current_setting('qorpera_test.ms_post_run')::uuid);
-select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) = jsonb_build_object(
-	'run_id', current_setting('qorpera_test.ms_own_run'), 'status', 'queued', 'can_cancel', true),
-	'A contributor is offered their own queued message, not the routine run they may not stop');
-select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.ms_thread')::uuid,
-	current_setting('qorpera_test.ms_own_run')::uuid) ->> 'status' = 'cancelled', 'The contributor stops their own message');
 select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) = jsonb_build_object(
 	'run_id', current_setting('qorpera_test.ms_run'), 'status', 'leased', 'can_cancel', false),
-	'Then the contributor sees the routine run, without a Stop');
+	'A contributor sees the routine run, without a Stop');
+reset role;
+-- The routine run ends (its job fails, as a fixture); the next pass makes the owner's message a run, and the
+-- contributor's still waits.
+do $$
+declare v_pass jsonb;
+begin
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(),
+		last_error = 'Fixture: the routine run ended', lease_token_sha256 = null, lease_expires_at = null
+	where run_id = current_setting('qorpera_test.ms_run')::uuid;
+	v_pass := pg_temp.base_materialize();
+	perform set_config('qorpera_test.ms_post_run', (select run_id::text from public.qorpera_wake_occurrences
+		where id = current_setting('qorpera_test.ms_post_wake')::uuid), true);
+	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array(current_setting('qorpera_test.ms_post_run'))
+		and (v_pass ->> 'skipped')::integer = 1 and (select run.source_kind = 'room_delivery'
+			and run.session_id = current_setting('qorpera_test.ms_thread')::uuid and job.status = 'queued'
+			and job.created_by_user_id = '92400000-0000-4000-8000-000000000001'
+			from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
+			where run.id = current_setting('qorpera_test.ms_post_run')::uuid)
+		and (select status = 'queued' and run_id is null from public.qorpera_wake_occurrences
+			where id = current_setting('qorpera_test.ms_own_wake')::uuid),
+		'Fixture: the owner''s message is a queued room delivery, and the contributor''s waits: ' || v_pass::text);
+end $$;
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+select pg_temp.ms_denied(current_setting('qorpera_test.ms_thread')::uuid, current_setting('qorpera_test.ms_post_run')::uuid);
+select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) = jsonb_build_object(
+	'run_id', current_setting('qorpera_test.ms_post_run'), 'status', 'queued', 'can_cancel', false),
+	'A contributor sees the owner''s message run, without a Stop');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.ms_thread')::uuid,
 	current_setting('qorpera_test.ms_post_run')::uuid) ->> 'status' = 'cancelled', 'The owner stops the reply to their own message');
 reset role;
+do $$
+declare v_pass jsonb := pg_temp.base_materialize();
+begin
+	perform set_config('qorpera_test.ms_own_run', (select run_id::text from public.qorpera_wake_occurrences
+		where id = current_setting('qorpera_test.ms_own_wake')::uuid), true);
+	perform pg_temp.base_assert(v_pass -> 'run_ids' = jsonb_build_array(current_setting('qorpera_test.ms_own_run'))
+		and (select run.source_kind = 'room_delivery' and run.session_id = current_setting('qorpera_test.ms_thread')::uuid
+			and job.status = 'queued' and job.created_by_user_id = '92400000-0000-4000-8000-000000000002'
+			from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
+			where run.id = current_setting('qorpera_test.ms_own_run')::uuid),
+		'Fixture: then the contributor''s message is a queued room delivery: ' || v_pass::text);
+end $$;
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) = jsonb_build_object(
+	'run_id', current_setting('qorpera_test.ms_own_run'), 'status', 'queued', 'can_cancel', true),
+	'A contributor is offered their own queued message');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.ms_thread')::uuid,
+	current_setting('qorpera_test.ms_own_run')::uuid) ->> 'status' = 'cancelled', 'The contributor stops their own message');
+reset role;
 select pg_temp.base_assert((select array_agg(cancelled_by_user_id::text order by cancelled_by_user_id) from public.qorpera_runner_jobs
 	where run_id in (current_setting('qorpera_test.ms_post_run')::uuid, current_setting('qorpera_test.ms_own_run')::uuid)
 		and status = 'cancelled') = array['92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000002']
-	and (select status = 'leased' from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.ms_run')::uuid),
+	and (select status = 'failed' and cancelled_by_user_id is null from public.qorpera_runner_jobs
+		where run_id = current_setting('qorpera_test.ms_run')::uuid),
 	'Each Stop cancelled exactly its own run');
 rollback to savepoint ms_member_messages;
 

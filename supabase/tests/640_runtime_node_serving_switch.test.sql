@@ -335,9 +335,11 @@ select pg_temp.base_assert(pg_temp.sw_status('64000000-0000-4000-8000-0000000000
 select pg_temp.base_assert(pg_temp.sw_reserve(1) ->> 'reason' = 'NODE_DISABLED','A sleeping machine does not wake on an emptying node');
 
 -- Replays still work on an emptying node: a claim taken before the switch comes back after it. The run is another post
--- in Bob's thread; the queued run from above is deferred for every orchestrator.
+-- in Bob's thread. A conversation runs one run at a time (20260930538000), so the queued run from above ends first.
 savepoint replay;
 reset role;
+update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the queued run ends'
+where run_id = current_setting('qorpera_test.sw_run')::uuid;
 select set_config('qorpera_test.sw_replay_run',pg_temp.sw_post_run('Replay')::text,true);
 set local role service_role;
 select pg_temp.base_assert(public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092',

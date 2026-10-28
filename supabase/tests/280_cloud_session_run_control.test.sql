@@ -1,10 +1,10 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- A member's Stop of a run in an agent's thread, on folder-v2 (ported from snapshot-v1 in the legacy sweep): the
 -- conversation run control (qorpera_get_session_run_control) and its Stop (qorpera_cancel_session_run). The runs are real:
--- the contributor's posts in Bob's thread, turned into runs by the folder materializer, and the base's leased run of
--- Alice's. The read names the conversation's current run, never an older failed or completed one, with public control
--- fields only. Only the run's creator, while a contributor, or an owner or admin stops it, and only by its exact
--- conversation and run; a retry or a late Stop never reaches another run, and a Stop writes nothing into the
+-- the contributor's posts in Bob's thread, turned into runs by the folder materializer one at a time, and the base's
+-- leased run of Alice's. The read names the conversation's current run, never an older failed or completed one, with
+-- public control fields only. Only the run's creator, while a contributor, or an owner or admin stops it, and only by
+-- its exact conversation and run; a retry or a late Stop never reaches another run, and a Stop writes nothing into the
 -- conversation. A Stop of a leased run takes its execution token and ends its native lease, never the saved login;
 -- completion and failure end that lease the same way; a recovered identity fences the old lease and runner. The grants
 -- (anon none, authenticated both) are 001's allowlist rows.
@@ -76,21 +76,29 @@ insert into auth.users(id, email) values ('28000000-0000-4000-8000-000000000003'
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
 values ('92400000-0000-4000-8000-000000000010', '28000000-0000-4000-8000-000000000003', 'rc-other@example.test', 'Other', 'contributor');
 
--- Four of the contributor's posts in Bob's thread: the oldest failed, then the current run and its successor, both
--- queued, then a newer one that completed (completed with triggers off, as a fixture row: its sends are not this test's).
+-- Four of the contributor's posts in Bob's thread. A conversation runs one run at a time (20260930538000), so each run
+-- ends before the next post: the oldest failed, then one that completed (completed with triggers off, as a fixture row:
+-- its sends are not this test's), then the current run, queued. The fourth post waits behind it, queued with no run; it
+-- becomes the current run's successor once the Stop ends that run (§6).
 select set_config('qorpera_test.rc_member_binding', pg_temp.rc_member_binding()::text, true);
 do $$
+declare v_pass jsonb;
 begin
 	perform set_config('qorpera_test.rc_failed', pg_temp.rc_post('First question.', 9)::text, true);
-	perform set_config('qorpera_test.rc_current', pg_temp.rc_post('Second question.', 8)::text, true);
-	perform set_config('qorpera_test.rc_next', pg_temp.rc_post('Third question.', 7)::text, true);
-	perform set_config('qorpera_test.rc_completed', pg_temp.rc_post('Fourth question.', 6)::text, true);
 	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture failure', finished_at = statement_timestamp()
 	where run_id = current_setting('qorpera_test.rc_failed')::uuid;
+	perform set_config('qorpera_test.rc_completed', pg_temp.rc_post('Second question.', 8)::text, true);
 	set local session_replication_role = replica;
 	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = statement_timestamp()
 	where run_id = current_setting('qorpera_test.rc_completed')::uuid;
 	set local session_replication_role = origin;
+	perform set_config('qorpera_test.rc_current', pg_temp.rc_post('Third question.', 7)::text, true);
+	perform set_config('qorpera_test.rc_next_wake', pg_temp.base_post('92400000-0000-4000-8000-000000000002',
+		'92400000-0000-4000-8000-000000000031', 'Fourth question.', current_setting('qorpera_test.rc_member_binding')::uuid) ->> 0, true);
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'idle' and (select status = 'queued' and run_id is null and blocked_reason is null
+		from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.rc_next_wake')::uuid),
+		'The fourth post waits behind the current run, queued with no run: ' || v_pass::text);
 	perform set_config('qorpera_test.rc_bob', pg_temp.rc_session('92400000-0000-4000-8000-000000000031')::text, true);
 	perform set_config('qorpera_test.rc_alice', pg_temp.rc_session('92400000-0000-4000-8000-000000000030')::text, true);
 	perform set_config('qorpera_test.rc_base_run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', true);
@@ -151,12 +159,24 @@ select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-00000000000
 select pg_temp.rc_denied(current_setting('qorpera_test.rc_alice')::uuid, current_setting('qorpera_test.rc_current')::uuid);
 select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_base_run')::uuid);
 
--- 6. The creator stops their run, and the Stop is confirmed. A lost receipt's retry and late Stops of ended runs read
---    back, and none of them selects the successor.
+-- 6. The creator stops their run, and the Stop is confirmed; the next materializer pass makes the waiting fourth post
+--    its successor. A lost receipt's retry and late Stops of ended runs read back, and none of them selects the successor.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
 	current_setting('qorpera_test.rc_current')::uuid) = jsonb_build_object('session_id', current_setting('qorpera_test.rc_bob'),
 	'run_id', current_setting('qorpera_test.rc_current'), 'status', 'cancelled'), 'The creator''s Stop is confirmed');
+reset role;
+do $$
+declare v_pass jsonb := pg_temp.base_materialize();
+begin
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1
+		and (select run_id::text = v_pass -> 'run_ids' ->> 0 from public.qorpera_wake_occurrences
+			where id = current_setting('qorpera_test.rc_next_wake')::uuid),
+		'Once the Stop ends the current run, the fourth post becomes its successor: ' || v_pass::text);
+	perform set_config('qorpera_test.rc_next', v_pass -> 'run_ids' ->> 0, true);
+end $$;
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
 	current_setting('qorpera_test.rc_current')::uuid) ->> 'status' = 'cancelled', 'A retried Stop reads back the cancelled run');
 select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
@@ -175,7 +195,8 @@ select pg_temp.base_assert(public.qorpera_get_session_run_control(current_settin
 reset role;
 
 -- 8. The cancellation's effects: one audit receipt despite the retry; the member recorded, no finish, no lease and no
---    attempt; Alice's run in her thread untouched; no event written into either conversation.
+--    attempt; Alice's run in her thread untouched; no event written into either conversation (nor by the pass that made
+--    the successor).
 select pg_temp.base_assert((select count(*) from public.qorpera_runner_audit_receipts
 	where job_id = current_setting('qorpera_test.rc_current_job')::uuid and event_type = 'job_cancelled') = 1,
 	'The retry repeated no cancellation');

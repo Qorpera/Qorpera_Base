@@ -5,19 +5,20 @@
 --   * A declared orchestrator claims only runs of its runtime bundle; the declaration can be cleared.
 --   * During a roll the new bundle's node takes new runs and the old bundle's node finishes old ones.
 --   * The roll status shows each bundle's work and whether a serving node can take it.
--- The runs are the owner's posts in Bob's thread, turned into runs by the folder materializer. The fixture's own run
--- (Alice's) is leased through orchestrator ...092. An input not yet turned into a run is a hire's kickoff that waits for
--- its hirer: the contributor, who has no login, hires Dave.
+-- The runs are the owner's posts in Bob's and Carol's threads, turned into runs by the folder materializer (a
+-- conversation runs one run at a time, 20260930538000, so the old and the new run are in two threads). The fixture's own
+-- run (Alice's) is leased through orchestrator ...092. An input not yet turned into a run is a hire's kickoff that waits
+-- for its hirer: the contributor, who has no login, hires Dave.
 select pg_temp.base_claims('service_role');
 reset role;
 create function pg_temp.kv_claim(p_orchestrator uuid) returns jsonb language sql as $$
 	select public.qorpera_claim_runner_job_for_orchestrator(p_orchestrator,extensions.gen_random_uuid(),120)
 $$;
--- The owner's post in Bob's thread, and the materializer pass that makes it a queued run.
-create function pg_temp.kv_run(p_text text) returns uuid language plpgsql as $$
+-- The owner's post in an agent's thread (Bob's unless named), and the materializer pass that makes it a queued run.
+create function pg_temp.kv_run(p_text text,p_staff uuid default '92400000-0000-4000-8000-000000000031') returns uuid language plpgsql as $$
 declare v_pass jsonb;
 begin
-	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001','92400000-0000-4000-8000-000000000031',p_text);
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001',p_staff,p_text);
 	v_pass := pg_temp.base_materialize();
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,'The post is a run: ' || v_pass::text);
 	return (v_pass -> 'run_ids' ->> 0)::uuid;
@@ -104,7 +105,8 @@ from public.qorpera_runtime_bundles b where singleton and b.sha256 = current_set
 set local role service_role;
 select public.qorpera_declare_runner_orchestrator_bundle('92400000-0000-4000-8000-000000000092',current_setting('qorpera_test.kv_old')) \g /dev/null
 reset role;
-select set_config('qorpera_test.kv_run_new',pg_temp.kv_run('Work after the switch.')::text,true);
+-- In Carol's thread: Bob's still holds the old run, and a conversation runs one run at a time (20260930538000).
+select set_config('qorpera_test.kv_run_new',pg_temp.kv_run('Work after the switch.','92400000-0000-4000-8000-000000000032')::text,true);
 select pg_temp.base_assert((select runtime_bundle_sha256 from public.qorpera_execution_runs where id = current_setting('qorpera_test.kv_run_new')::uuid)
 	= current_setting('qorpera_test.kv_new'),'A run after the switch gets the new bundle');
 set local role service_role;
@@ -237,6 +239,11 @@ select pg_temp.base_assert(public.qorpera_declare_runner_orchestrator_bundle('64
 reset role;
 select pg_temp.base_assert((select runtime_bundle_sha256 is null and runtime_bundle_declared_at is null from public.qorpera_runner_orchestrators
 	where id = '64200000-0000-4000-8000-000000000012'),'No declaration left');
+-- The old node has finished the old run, so the next post in Bob's thread is a run (one run at a time in a conversation,
+-- 20260930538000).
+update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(), last_error = 'Fixture: the old run ends',
+	lease_token_sha256 = null, lease_expires_at = null
+where run_id = current_setting('qorpera_test.kv_run_old')::uuid;
 select set_config('qorpera_test.kv_run_any',pg_temp.kv_run('Any work.')::text,true);
 set local role service_role;
 select pg_temp.base_assert(pg_temp.kv_claim('64200000-0000-4000-8000-000000000012') #>> '{work,run_id}' = current_setting('qorpera_test.kv_run_any'),
