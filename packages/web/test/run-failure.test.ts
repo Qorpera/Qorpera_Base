@@ -47,6 +47,24 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/^Qorpera lost contact with this run\./,
 		],
+		// A step cancelled from Qorpera's side was not refused (WB-001, 28 October: the database stopped answering).
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]; durable attempt output requires review",
+			"failed",
+			/^Qorpera lost contact with this run\. The problem is on Qorpera's side\.$/,
+		],
+		// A member's stop stays a stop; a code that only names a cancellation's machinery is still a refusal.
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_HARNESS_EXECUTION:CANCELLED]",
+			"cancelled",
+			/stopped before it finished/,
+		],
+		["Native provider bridge request failed (422) [code=NATIVE_CANCELLED]", "failed", /one of its steps was refused/],
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_CANCEL_WATCH:UNKNOWN]",
+			"failed",
+			/one of its steps was refused/,
+		],
 		// A run has no time limit any more; only older runs carry a deadline.
 		["Execution deadline expired before durable completion", "failed", /took too long/],
 		["No computer could start the run within a day", "failed", /No computer could be started/],
@@ -112,6 +130,11 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		["Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]", "failed", true],
 		["Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]", "failed", true],
 		["Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:UNKNOWN]", "failed", false],
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]; durable attempt output requires review",
+			"failed",
+			true,
+		],
 		["Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]", "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
@@ -159,6 +182,10 @@ describe("why a coding session's turn failed, in the member's words", () => {
 			/^No computer could be started for the session\./,
 		],
 		[`${DID_NOT_FINISH}Runner model socket request timed out`, /^One of the session's steps got no answer in time\./],
+		[
+			`${DID_NOT_FINISH}Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]`,
+			/^Qorpera lost contact with this session\./,
+		],
 		[
 			`${DID_NOT_FINISH}Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]`,
 			/^One of the session's steps got no answer in time\./,

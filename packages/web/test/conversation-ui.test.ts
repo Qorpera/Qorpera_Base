@@ -1939,6 +1939,25 @@ describe("conversation UI boundaries", () => {
 			"Try again",
 			"Dismiss",
 		]);
+		// A step cancelled while the database stopped answering, after the run hired an agent (WB-001, 28 October):
+		// Qorpera lost contact, and the cloud will not repeat work that took effect, so Dismiss only.
+		const cancelled =
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]; durable attempt output requires review";
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...details(cancelled), durableOutcome: true } },
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"Qorpera lost contact with this run. The problem is on Qorpera's side.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details(cancelled) } });
+		await settle();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual([
+			"Try again",
+			"Dismiss",
+		]);
 		// The card is one quiet line, like a company notice: no big mark, no rule.
 		expect(card()?.querySelector(".run-failure-mark")).toBeNull();
 		expect(card()?.querySelector(".run-failure-rule")).toBeNull();

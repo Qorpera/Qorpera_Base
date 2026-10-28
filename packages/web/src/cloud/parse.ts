@@ -469,6 +469,9 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		unsettledOperations: operations.filter(
 			(operation) => operation.status === "executing" || operation.status === "ambiguous",
 		).length,
+		...(operations.some((operation) => operation.status === "completed" || operation.status === "outcome_unknown")
+			? { durableOutcome: true }
+			: {}),
 	};
 }
 

@@ -36,7 +36,13 @@ describe("parsers", () => {
 			jobStatus: "failed",
 			lastError: "Native provider bridge request failed (422)",
 			unsettledOperations: 2,
+			durableOutcome: true,
 		});
+		// A completed operation, or one of unknown outcome, means the cloud will not try the run again.
+		expect(recovery({}, { operations: [{ status: "outcome_unknown" }] }).durableOutcome).toBe(true);
+		expect(recovery({}, { operations: [{ status: "ambiguous" }, { status: "cancelled" }] })).not.toHaveProperty(
+			"durableOutcome",
+		);
 		// A missing or odd error never hides the run.
 		expect(recovery({ last_error: { code: "x" } }, { proposal_id: F })).toMatchObject({ proposalId: F });
 		expect(recovery({ last_error: { code: "x" } }).lastError).toBeUndefined();

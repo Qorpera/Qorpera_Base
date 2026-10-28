@@ -1411,13 +1411,18 @@ export class CompanyController {
 	/** Whether Try again can be offered for this run. A session turn is re-queued by the
 	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
 	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat, and
-	 * neither is a run a member stopped: to repeat the message, they send it again. */
+	 * neither is a run a member stopped: to repeat the message, they send it again. Nor is
+	 * a run whose work already took effect or may have: the cloud refuses to repeat it. */
 	canRetryFailedRun(failed: FailedRun): boolean {
 		const state = this.store.get();
-		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		const recovery = failed.recovery;
+		if (!state.team?.capabilities.write || state.accessLost || recovery?.proposalId) return false;
 		if (failed.activity.jobStatus === "cancelled") return false;
-		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
-		if (failed.activity.sourceKind === "session_turn") return true;
+		if ((recovery?.unsettledOperations ?? 0) > 0 || recovery?.durableOutcome) return false;
+		// Only the member whose ChatGPT plan paid for a session turn may try it again (20260929950000); a post runs
+		// again on the account selected here.
+		if (failed.activity.sourceKind === "session_turn")
+			return recovery?.paidByChatgptPlan !== true || recovery.requestedByUserId === this.#userId.toLowerCase();
 		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
 	}
 
