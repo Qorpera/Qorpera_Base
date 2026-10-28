@@ -1,17 +1,26 @@
 // W5b-2: a resumed attempt opens its existing log and composes its own earlier work (§12–13).
 // This is a dormant component. Production must wire it together with W1c-3 and the closing/erasure gates.
+// A run in Agent notebooks keeps no log: its resumed attempt starts from the run's own receipts instead
+// (`openCloudRunReceiptsResume`, 20260930539000).
 import { parseMemoryRunFile } from "@qorpera/cloud-client/memory-run-files";
-import { POSTGRES_UUID_PATTERN, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
+import {
+	type JsonValue,
+	POSTGRES_UUID_PATTERN,
+	parseClosedRecord,
+	parseInteger,
+	WireValueError,
+} from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { CLOUD_NATIVE_WORK_MESSAGE_BYTES } from "./cloud-native-context-composition.ts";
 import { type CloudNativeToolRun, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { CloudRunLog, type CloudRunLogFolder, CloudRunLogUnavailable } from "./cloud-run-log.ts";
-import { cloudRunWorkComposer, cloudRunWorkMessage } from "./memory-tree/run-work.ts";
+import { cloudRunResumeComposer, cloudRunWorkComposer, cloudRunWorkMessage } from "./memory-tree/run-work.ts";
 import {
 	CloudRunStepLines,
 	type CloudRunStepLinesOptions,
 	RUN_STEP_OUTCOME_UNKNOWN,
 } from "./memory-tree/step-lines.ts";
+import { RUN_VIEW } from "./memory-tree/tree.ts";
 
 export type CloudRunResumeReason = "restart" | "limit_reset";
 export interface CloudRunResumeContext {
@@ -33,9 +42,29 @@ export interface CloudRunResumeRecord {
 	readonly stepsRead: number;
 	readonly unknownCalls: readonly CloudRunResumeRecordedUnknown[];
 }
+/** One of the run's receipts from its earlier attempts. A completed one may carry the content the tool returned for
+ * it, as the run stored it (null when SQL leaves it out); an outcome_unknown one never does. */
+export interface CloudRunResumeReceipt {
+	readonly receiptId: string;
+	readonly logicalOperationKey: string;
+	readonly status: "completed" | "outcome_unknown";
+	readonly content:
+		| { readonly kind: "text"; readonly value: string }
+		| { readonly kind: "json"; readonly value: JsonValue }
+		| null;
+}
+export interface CloudRunResumeReceipts {
+	readonly why: CloudRunResumeReason;
+	/** Oldest first: every outcome_unknown receipt, and the newest completed ones. */
+	readonly receipts: readonly CloudRunResumeReceipt[];
+	/** The older completed receipts left out. */
+	readonly completedOmitted: number;
+}
 export interface CloudRunResumePort {
 	readonly runId: string;
 	context(signal: AbortSignal): Promise<CloudRunResumeContext | null>;
+	/** A resumed attempt of a run that keeps no log (Agent notebooks), from its receipts; null for any other attempt. */
+	receipts(signal: AbortSignal): Promise<CloudRunResumeReceipts | null>;
 	record(request: CloudRunResumeRequest, signal: AbortSignal): Promise<CloudRunResumeRecord>;
 }
 
@@ -53,6 +82,13 @@ function receipt(value: unknown): string {
 function operationKey(value: unknown): string {
 	if (typeof value !== "string" || !value.length) invalid();
 	return value;
+}
+function content(value: unknown): CloudRunResumeReceipt["content"] {
+	const item = parseClosedRecord(value, "Run resume result", ["kind", "value"]);
+	if (item.kind === "text" && typeof item.value === "string")
+		return Object.freeze({ kind: "text", value: item.value });
+	if (item.kind !== "json") invalid();
+	return Object.freeze({ kind: "json", value: item.value as JsonValue });
 }
 
 /** Uses the run's live authority for retries. A lost record reply repeats the same request, never a rediscovered
@@ -90,6 +126,46 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 				return Object.freeze({ receiptId, logicalOperationKey: operationKey(item.logicalOperationKey) });
 			});
 			return Object.freeze({ why: reason(row.why), unknownReceipts: Object.freeze(unknownReceipts) });
+		} catch (error) {
+			if (error instanceof WireValueError) invalid();
+			throw error;
+		}
+	}
+
+	async receipts(signal: AbortSignal): Promise<CloudRunResumeReceipts | null> {
+		const { value } = await this.#run.retry(
+			(requestSignal) =>
+				this.#control.call("qorpera_memory_run_resume_receipts", { p_binding: this.#binding }, requestSignal),
+			signal,
+		);
+		if (value === null) return null;
+		try {
+			const row = parseClosedRecord(value, "Run resume receipts", ["schema", "why", "receipts", "completedOmitted"]);
+			if (row.schema !== "qorpera.memory-run-resume-receipts/v1" || !Array.isArray(row.receipts)) invalid();
+			const seen = new Set<string>();
+			const receipts = row.receipts.map((value) => {
+				const item = parseClosedRecord(value, "Run resume receipt", [
+					"receiptId",
+					"logicalOperationKey",
+					"status",
+					"content",
+				]);
+				const receiptId = receipt(item.receiptId);
+				if (seen.has(receiptId)) invalid();
+				seen.add(receiptId);
+				if (item.status !== "completed" && (item.status !== "outcome_unknown" || item.content !== null)) invalid();
+				return Object.freeze({
+					receiptId,
+					logicalOperationKey: operationKey(item.logicalOperationKey),
+					status: item.status,
+					content: item.content === null ? null : content(item.content),
+				});
+			});
+			return Object.freeze({
+				why: reason(row.why),
+				receipts: Object.freeze(receipts),
+				completedOmitted: parseInteger(row.completedOmitted, "Omitted receipts", 0, 2147483647),
+			});
 		} catch (error) {
 			if (error instanceof WireValueError) invalid();
 			throw error;
@@ -260,4 +336,74 @@ export async function openCloudRunResume(options: {
 		unfolded: warnings,
 	});
 	return { log, lines, firstStep, earlier, recorded, warnings, composeContext };
+}
+
+/** The first line of a resumed attempt's work message when its run keeps no log: what the lines after it are. */
+export const RUN_RESUME_RECEIPTS =
+	"resumed: this run was cut off, and this attempt goes on with the same task. The effects its earlier attempts " +
+	"recorded follow, oldest first. A completed one ran: do not do it again. Called again with the same tool, " +
+	"operation key and arguments, it returns its stored result and runs nothing. An effect whose outcome is unknown " +
+	"may have run: check it first; its key never runs again. A logicalOperationKey starts with its tool's name.";
+
+/** Opens a resumed attempt of a run that keeps no log (Agent notebooks, 20260930539000) from the run's receipts, which
+ * `resume.receipts` read: its work message tells it each completed effect with the result the run stored for it, each
+ * effect whose outcome is unknown, and each one's key. Only results this run already saw are shown, the newest first
+ * within half the run's view (§5.7); past that a completed effect is listed by its key, which returns its result when
+ * called again. Nothing is written but the resume record, which lists every unknown receipt as for a log; SQL refuses
+ * the attempt's first receipt until it is stored. A caller must await this before any provider request or step. */
+export async function openCloudRunReceiptsResume(options: {
+	readonly resume: CloudRunResumePort;
+	readonly receipts: CloudRunResumeReceipts;
+	readonly signal: AbortSignal;
+}) {
+	const { resume, receipts: earlier, signal } = options;
+	signal.throwIfAborted();
+	const empty = Buffer.byteLength(cloudRunWorkMessage([]));
+	let budget = RUN_VIEW / 2;
+	const listed: string[] = [];
+	for (const { receiptId, logicalOperationKey, status, content } of [...earlier.receipts].reverse()) {
+		const item = { receiptId, logicalOperationKey };
+		if (status === "outcome_unknown") {
+			listed.push(`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...item })}`);
+			continue;
+		}
+		const line = content === null ? null : `completed: ${JSON.stringify({ ...item, result: content })}`;
+		// Its share of the message, escaped as sent.
+		const bytes = line === null ? 0 : Buffer.byteLength(cloudRunWorkMessage([line])) - empty;
+		if (line !== null && bytes <= budget) {
+			budget -= bytes;
+			listed.push(line);
+		} else listed.push(`completed, result not shown: ${JSON.stringify(item)}`);
+	}
+	const lines = Object.freeze([
+		RUN_RESUME_RECEIPTS,
+		...(earlier.completedOmitted > 0
+			? [`earlier: ${earlier.completedOmitted} older completed effects are not listed`]
+			: []),
+		...listed.reverse(),
+	]);
+	if (Buffer.byteLength(cloudRunWorkMessage(lines)) > CLOUD_NATIVE_WORK_MESSAGE_BYTES)
+		throw new CloudRunLogUnavailable("resume_warnings_too_large");
+	const unknown = earlier.receipts.filter(({ status }) => status === "outcome_unknown");
+	const unknownCalls: CloudRunResumeUnknown[] = unknown.map(({ receiptId }) => ({
+		call: null,
+		step: null,
+		receiptId,
+	}));
+	const recorded = await resume.record({ stepsRead: 0, unknownCalls }, signal);
+	if (
+		recorded.why !== earlier.why ||
+		recorded.stepsRead !== 0 ||
+		recorded.unknownCalls.length !== unknown.length ||
+		recorded.unknownCalls.some(
+			(item, index) =>
+				item.call !== null ||
+				item.step !== null ||
+				item.receiptId !== unknown[index]!.receiptId ||
+				item.logicalOperationKey !== unknown[index]!.logicalOperationKey,
+		)
+	)
+		invalid();
+	signal.throwIfAborted();
+	return { recorded, lines, composeContext: cloudRunResumeComposer(lines) };
 }

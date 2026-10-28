@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CloudCompanyFolderUnit } from "@qorpera/runtime/cloud-company-folder-client";
+import { CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA } from "@qorpera/runtime/cloud-native-context-composition";
 import {
 	type CloudRunLogFolder,
 	CloudRunLogGone,
@@ -8,20 +9,24 @@ import {
 	CloudRunLogUnavailable,
 } from "@qorpera/runtime/cloud-run-log";
 import { type CloudRunLogOpened, openCloudRunLog } from "@qorpera/runtime/cloud-run-log-open";
-import type {
-	CloudRunResumeContext,
-	CloudRunResumePort,
-	CloudRunResumeRequest,
+import {
+	type CloudRunResumeContext,
+	type CloudRunResumePort,
+	type CloudRunResumeReceipts,
+	type CloudRunResumeRequest,
+	RUN_RESUME_RECEIPTS,
 } from "@qorpera/runtime/cloud-run-resume";
 import { MemoryCompactLane } from "@qorpera/runtime/memory-tree/compact";
+import { cloudRunWorkMessage } from "@qorpera/runtime/memory-tree/run-work";
+import { RUN_STEP_OUTCOME_UNKNOWN } from "@qorpera/runtime/memory-tree/step-lines";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const signal = new AbortController().signal;
 const opened: CloudRunLogOpened[] = [];
 afterEach(async () => {
 	for (const result of opened.splice(0)) {
-		await result.lines.finish(AbortSignal.abort()).catch(() => undefined);
-		await result.log.close(AbortSignal.abort()).catch(() => undefined);
+		await result.lines?.finish(AbortSignal.abort()).catch(() => undefined);
+		await result.log?.close(AbortSignal.abort()).catch(() => undefined);
 	}
 });
 
@@ -63,13 +68,19 @@ function fixture() {
 		}),
 	};
 	let context: CloudRunResumeContext | null = null;
+	let receipts: CloudRunResumeReceipts | null = null;
 	const resume = {
 		runId,
 		context: vi.fn(async () => context),
+		receipts: vi.fn(async (): Promise<CloudRunResumeReceipts | null> => receipts),
 		record: vi.fn(async (request: CloudRunResumeRequest) => ({
-			why: context!.why,
+			why: (context ?? receipts)!.why,
 			stepsRead: request.stepsRead,
-			unknownCalls: [],
+			unknownCalls: request.unknownCalls.map((item) => ({
+				...item,
+				logicalOperationKey:
+					receipts?.receipts.find(({ receiptId }) => receiptId === item.receiptId)?.logicalOperationKey ?? null,
+			})),
 		})),
 	} satisfies CloudRunResumePort;
 	const options = {
@@ -107,11 +118,14 @@ function fixture() {
 		set context(value: CloudRunResumeContext | null) {
 			context = value;
 		},
+		set receipts(value: CloudRunResumeReceipts | null) {
+			receipts = value;
+		},
 	};
 }
 
 function step(result: CloudRunLogOpened): number {
-	return result.log.step({ call: randomUUID(), tool: "company_read", argumentsText: "{}", argumentSha256: null });
+	return result.log!.step({ call: randomUUID(), tool: "company_read", argumentsText: "{}", argumentSha256: null });
 }
 
 describe("opening a run's work log", () => {
@@ -129,8 +143,8 @@ describe("opening a run's work log", () => {
 		expect(f.options.lines.call).not.toHaveBeenCalled();
 		const j = step(result);
 		expect(j).toBe(0);
-		result.log.finish(j, JSON.stringify({ status: "ok", content: { text: "answer" } }), []);
-		await result.log.flush(signal);
+		result.log!.finish(j, JSON.stringify({ status: "ok", content: { text: "answer" } }), []);
+		await result.log!.flush(signal);
 		const units = f.commits[0]!;
 		const made = units.find((unit): unit is NewFolder => unit.op === "new_folder")!;
 		expect(made.path).toBe(f.root);
@@ -160,8 +174,72 @@ describe("opening a run's work log", () => {
 		const f = fixture();
 		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
 		expect(await f.open()).toBeNull();
+		// Its receipts, asked beside the place, are null: it is an original attempt.
+		expect(f.resume.receipts).toHaveBeenCalledTimes(1);
+		expect(f.resume.context).not.toHaveBeenCalled();
+		expect(f.resume.record).not.toHaveBeenCalled();
+		expect(f.folder.commit).not.toHaveBeenCalled();
+	});
+
+	it("starts a resumed attempt in Agent notebooks from its receipts, with no log", async () => {
+		const f = fixture();
+		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
+		const done = { receiptId: randomUUID(), logicalOperationKey: "company_write:notes" };
+		const unsure = { receiptId: randomUUID(), logicalOperationKey: "mail_send:intro" };
+		const result = { kind: "text", value: "Saved notes.md" } as const;
+		f.receipts = {
+			why: "restart",
+			receipts: [
+				{ ...done, status: "completed", content: result },
+				{ ...unsure, status: "outcome_unknown", content: null },
+			],
+			completedOmitted: 0,
+		};
+		const resumed = (await f.open())!;
+		expect(resumed).toMatchObject({ log: null, lines: null });
+		expect(f.resume.record).toHaveBeenCalledWith(
+			{ stepsRead: 0, unknownCalls: [{ call: null, step: null, receiptId: unsure.receiptId }] },
+			signal,
+		);
 		expect(f.resume.context).not.toHaveBeenCalled();
 		expect(f.folder.commit).not.toHaveBeenCalled();
+		const composed = await resumed.composeContext(
+			{
+				schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+				requestId: "request-1",
+				threadId: "thread-1",
+				turnId: "turn-1",
+				purpose: "turn",
+				model: "model",
+				items: [{ kind: "message", role: "user", callId: null, id: null, bytes: 100, media: 0 }],
+			},
+			signal,
+		);
+		// Its one work message: the completed effect with its result, and the unknown one, each with its key.
+		expect(composed.input).toEqual([
+			{ keep: 0 },
+			{
+				work: cloudRunWorkMessage([
+					RUN_RESUME_RECEIPTS,
+					`completed: ${JSON.stringify({ ...done, result })}`,
+					`${RUN_STEP_OUTCOME_UNKNOWN}: ${JSON.stringify({ call: null, step: null, ...unsure })}`,
+				]),
+			},
+		]);
+		expect(f.options.lines.call).not.toHaveBeenCalled();
+	});
+
+	it("needs its receipts only for a run that keeps no log, and fails only that run when they are refused", async () => {
+		const f = fixture();
+		vi.mocked(f.resume.receipts).mockRejectedValue(new Error("55000: Run resume is unavailable"));
+		expect(step((await f.open())!)).toBe(0);
+
+		const off = fixture();
+		vi.mocked(off.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
+		vi.mocked(off.resume.receipts).mockRejectedValue(new Error("55000: Run resume is unavailable"));
+		await expect(off.open()).rejects.toThrow("Run resume is unavailable");
+		expect(off.resume.record).not.toHaveBeenCalled();
+		expect(off.folder.commit).not.toHaveBeenCalled();
 	});
 
 	it("ends a run whose log was made once and is no longer there, rather than go on unlogged past its steps", async () => {

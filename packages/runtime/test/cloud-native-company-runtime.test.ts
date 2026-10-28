@@ -351,6 +351,12 @@ async function fixture(
 				return { off: true };
 			}
 			expect(args.p_binding).toEqual(f.binding);
+			// Read beside the log's place, the receipts a resumed attempt in Agent notebooks starts from: null for an
+			// original attempt (20260930539000).
+			if (method === "qorpera_memory_run_resume_receipts") {
+				expect(args).toEqual({ p_binding: f.binding });
+				return null;
+			}
 			// What a run's machine saved under QorperaOS/interfaces/ or QorperaOS/tables/, noted in its conversation
 			// (Interfaces I10).
 			if (method === "qorpera_folder_note_interface_changes") {
@@ -1918,7 +1924,11 @@ async function memoryTreeFixture(
 		: [];
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
-		if (!method.startsWith("qorpera_memory_") || method === "qorpera_memory_run_log_place")
+		if (
+			!method.startsWith("qorpera_memory_") ||
+			method === "qorpera_memory_run_log_place" ||
+			method === "qorpera_memory_run_resume_receipts"
+		)
 			return original(method, args, signal);
 		expect(args.p_binding).toEqual(f.binding);
 		const request = (args.p_request ?? {}) as Record<string, unknown>;
@@ -1959,11 +1969,16 @@ async function memoryTreeFixture(
 	return f;
 }
 
-/** The summary tree's calls a run made, in order (not its work log's place, which every run asks for). */
+/** The summary tree's calls a run made, in order (not its work log's place or its receipts, which every run asks for). */
 function memoryTreeCalls(f: Awaited<ReturnType<typeof fixture>>) {
 	return f.pathCall.mock.calls
 		.map(([method]) => method)
-		.filter((method) => method.startsWith("qorpera_memory_") && method !== "qorpera_memory_run_log_place");
+		.filter(
+			(method) =>
+				method.startsWith("qorpera_memory_") &&
+				method !== "qorpera_memory_run_log_place" &&
+				method !== "qorpera_memory_run_resume_receipts",
+		);
 }
 
 it("shows an own-thread run its summary tree, released and recorded before the model starts", async () => {
@@ -2865,8 +2880,10 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// The run's work log's place (W1c-3: a resumed attempt reads its earlier work before any provider
 	// request) adds one as the tools are built. 11 before the work log, 10 before the bind was split
 	// from the admission (M1b-4b-3), 12 before that fence, 13 before the connector catalog joined the
-	// context reads.
+	// context reads. Its receipts, which a resumed attempt in Agent notebooks starts from (20260930539000), are read
+	// beside it and add none.
 	expect(wave("qorpera_memory_run_log_place")).toBe(6);
+	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
 		wave("qorpera_begin_native_company_execution_v3"),
 	);
