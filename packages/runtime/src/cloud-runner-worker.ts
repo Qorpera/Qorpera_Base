@@ -279,7 +279,7 @@ export class EphemeralCloudRunnerWorker {
 		const executionAbort = new AbortController();
 		const maintenanceAbort = new AbortController();
 		let maintenanceError: unknown;
-		let renewNativeAuthority: (() => Promise<void>) | undefined;
+		let renewNativeAuthority: ((attempt: AbortSignal) => Promise<void>) | undefined;
 		let nativeRenewalInFlight: Promise<void> | undefined;
 		/* When the native lease ends, as its acquisition or last renewal answered; none while the run is not executing.
 		 * The run's execution stops then too, so a host that holds its authority through an outage never goes past it
@@ -349,7 +349,7 @@ export class EphemeralCloudRunnerWorker {
 						// No native lease, or the run ended meanwhile and its release follows.
 						if (!renew) break;
 						const renewal = withCloudDeadline(
-							() => renew(),
+							(attempt) => renew(attempt),
 							Math.max(1, Math.min(30_000, leaseDeadline - this.#now(), nativeDeadline - this.#now())),
 							maintenanceAbort.signal,
 						);
@@ -434,8 +434,11 @@ export class EphemeralCloudRunnerWorker {
 				const authority = await broker.acquireNativeAuthority();
 				nativeDeadline = Date.parse(authority.expiresAt);
 				armDeadline();
-				renewNativeAuthority = async () => {
-					nativeDeadline = Date.parse((await broker.renewNativeAuthority()).expiresAt);
+				renewNativeAuthority = async (attempt) => {
+					const renewed = await broker.renewNativeAuthority();
+					// An answer that comes after its try was cut is stale: a later try, or the run's end, took its place.
+					if (attempt.aborted) return;
+					nativeDeadline = Date.parse(renewed.expiresAt);
 					armDeadline();
 				};
 				try {

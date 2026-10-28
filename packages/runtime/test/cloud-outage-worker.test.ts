@@ -525,6 +525,26 @@ describe("cloud worker outage recovery", () => {
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 
+	it("never lets a renewal's answer that comes after its try was cut move the native lease back", async () => {
+		const outage = await outageRun();
+		let answerLate = (): void => undefined;
+		// The first renewal's answer stalls past its try (cut at 30 s); the next try, at 40 s, answers, and so does every
+		// round after it. The stalled answer comes at 50 s, naming a lease that has ended by then.
+		lane.renew.mockImplementationOnce(
+			async () =>
+				new Promise<typeof lane.authority>((resolve) => {
+					answerLate = () => resolve({ ...lane.authority, expiresAt: new Date(Date.now() - 1).toISOString() });
+				}),
+		);
+		await vi.advanceTimersByTimeAsync(50_000);
+		answerLate();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(outage.signal().aborted).toBe(false);
+		outage.finish();
+		expect(await outage.running).toMatchObject({ status: "completed" });
+		expect(lane.release).not.toHaveBeenCalledWith("revoked");
+	});
+
 	it("asks a lost or late heartbeat again, with the same rotation, without stopping the run", async () => {
 		const outage = await outageRun(1_000);
 		outage.control.heartbeatFailures.push(503, new TypeError("fetch failed"));
