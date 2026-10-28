@@ -176,7 +176,10 @@ select pg_temp.base_assert(pg_temp.fa_placement(current_setting('qorpera_test.fa
 rollback to savepoint only_b;
 
 -- 3 and 6. Attempt 2 through the claim turn on node A: a new runner, a new allocation and a new placement row.
--- The attempt was queued again, so the head start is node A's: the failed node's fast host gets no turn.
+-- The attempt was queued again, so the head start is node A's: the failed node's fast host gets no turn. The wait
+-- after the failure (20260930537000) is over, and the job is queued again from its end.
+update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+where run_id = current_setting('qorpera_test.fa_run')::uuid;
 set local role service_role;
 select pg_temp.base_assert(pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1') = 'null'::jsonb,
 	'The failed node''s fast host leaves attempt 2 to node A during the head start');

@@ -162,9 +162,6 @@ declare
 	v_start jsonb := current_setting('qorpera_test.rs_start')::jsonb;
 	v_old public.qorpera_native_provider_connection_leases%rowtype;
 	v_outcome jsonb;
-	v_claim jsonb;
-	v_assignment jsonb;
-	v_started jsonb;
 begin
 	select * into strict v_old from public.qorpera_native_provider_connection_leases
 	where run_id = (v_start ->> 'run')::uuid;
@@ -198,6 +195,27 @@ begin
 			raise exception 'the superseded assignment still holds native authority: %', v_outcome;
 		end if;
 	end loop;
+	-- The pristine retry waits first (20260930537000).
+	if public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092',
+		'75200000-0000-4000-8000-000000000006', 120) #>> '{work,job_id}' is not null then
+		raise exception 'the pristine retry did not wait';
+	end if;
+	perform set_config('qorpera_test.rs_old_lease', v_old.id::text, true);
+end $$;
+reset role;
+
+-- The wait is over, and the job is queued again from its end.
+update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+where id = (current_setting('qorpera_test.rs_start')::jsonb ->> 'job')::uuid;
+set local role service_role;
+do $$
+declare
+	v_start jsonb := current_setting('qorpera_test.rs_start')::jsonb;
+	v_old_lease uuid := current_setting('qorpera_test.rs_old_lease')::uuid;
+	v_claim jsonb;
+	v_assignment jsonb;
+	v_started jsonb;
+begin
 	-- The next assignment of the same run starts with a lease of its own.
 	v_claim := public.qorpera_claim_runner_job_for_orchestrator(
 		'92400000-0000-4000-8000-000000000092', '75200000-0000-4000-8000-000000000004', 120);
@@ -210,7 +228,7 @@ begin
 	v_started := public.qorpera_start_runner_assignment((v_start ->> 'runner')::uuid, repeat('2', 64),
 		(v_assignment ->> 'assignment_id')::uuid, (v_start ->> 'job')::uuid, repeat('4', 64), 120);
 	if v_started -> 'native_authority' = 'null'::jsonb
-		or (v_started #>> '{native_authority,lease_id}')::uuid = v_old.id
+		or (v_started #>> '{native_authority,lease_id}')::uuid = v_old_lease
 		or v_started #>> '{native_authority,assignment_id}' <> v_assignment ->> 'assignment_id'
 		or (select count(*) from public.qorpera_native_provider_connection_leases
 			where run_id = (v_start ->> 'run')::uuid and status = 'active') <> 1 then

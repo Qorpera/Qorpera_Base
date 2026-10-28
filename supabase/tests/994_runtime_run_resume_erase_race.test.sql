@@ -21,6 +21,9 @@ begin
 	perform pg_temp.base_claims('service_role');
 	update public.qorpera_runner_jobs set lease_expires_at = statement_timestamp() - interval '1 second' where id = v_run.job_id;
 	perform public.qorpera_reconcile_runner_orchestrator('92400000-0000-4000-8000-000000000092');
+	-- The fresh retry's wait (20260930537000) is over.
+	update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+	where id = v_run.job_id;
 	v_claim := public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092', extensions.gen_random_uuid(), 120);
 	perform pg_temp.base_assert(v_claim #>> '{work,job_id}' = v_run.job_id::text, 'the next attempt is claimed: ' || v_claim::text);
 	v_runner := public.qorpera_provision_execution_runner(v_run.id, extensions.gen_random_uuid(), 'process', repeat('1', 64));

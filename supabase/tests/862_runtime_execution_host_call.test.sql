@@ -398,6 +398,9 @@ begin
 		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 		perform public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid,
 			'failed', 'Runner lease expired before durable completion', true);
+		-- The fresh retry's wait (20260930537000) is over.
+		update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+		where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
 		if public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092', extensions.gen_random_uuid(), 120)
 			#>> '{work,run_id}' is distinct from current_setting('qorpera_test.run') then
 			raise exception 'the retried run was not claimed by the host''s orchestrator'; end if;
@@ -426,6 +429,8 @@ begin
 			perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 			perform public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid,
 				'failed', 'Runner lease expired before durable completion', true);
+			update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+			where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
 			if public.qorpera_claim_runner_job_for_orchestrator(v_orchestrator, extensions.gen_random_uuid(), 120) #>> '{work,run_id}'
 				is distinct from current_setting('qorpera_test.run') then
 				raise exception 'the retried run was not claimed by %', v_orchestrator; end if;

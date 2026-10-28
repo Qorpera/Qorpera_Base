@@ -115,6 +115,10 @@ begin
 	perform public.qorpera_reconcile_runner_orchestrator('92400000-0000-4000-8000-000000000092');
 	perform pg_temp.base_assert((select status from public.qorpera_runner_jobs where id = v_job) = 'queued',
 		'the reconcile requeues the job');
+	-- The fresh retry waits first (20260930537000); then the wait is over.
+	perform pg_temp.base_assert(pg_temp.h_claim() #>> '{work,job_id}' is null, 'the fresh retry waits');
+	update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+	where id = v_job;
 	v_work := pg_temp.h_claim('66700000-0000-4000-8000-000000000001');
 	perform pg_temp.base_assert(v_work #>> '{work,job_id}' = v_job::text, 'the next claim takes it: ' || v_work::text);
 	perform set_config('qorpera_test.h667_claim', v_work ->> 'claim_id', true);

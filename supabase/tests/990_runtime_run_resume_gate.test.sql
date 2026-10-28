@@ -124,6 +124,9 @@ begin
 	perform public.qorpera_reconcile_runner_orchestrator('92400000-0000-4000-8000-000000000092');
 	perform pg_temp.base_assert((select status = 'queued' from public.qorpera_runner_jobs where id = (pg_temp.rg_run()).job_id),
 		'the job is queued again');
+	-- The fresh retry's wait (20260930537000) is over, so only an erase keeps the claim away below.
+	update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp(), queued_at = statement_timestamp()
+	where id = (pg_temp.rg_run()).job_id;
 end
 $$;
 
