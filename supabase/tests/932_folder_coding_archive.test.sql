@@ -9,9 +9,9 @@ begin
 	perform public.qorpera_configure_coding_executor('92400000-0000-4000-8000-000000000020', 'exec-932', true, array['codex']);
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
-	perform pg_temp.base_assert(pg_temp.c3_dispatch(pg_temp.c3_alice(), 'c3b-dispatch-1', 'agents/alice/todos/fix-login/session-a',
+	perform pg_temp.base_assert(pg_temp.c3_dispatch(pg_temp.c3_alice(), 'c3b-dispatch-1', 'QorperaOS/agents/alice/todos/fix-login/session-a',
 		pg_temp.c3_brief('93200000-0000-4000-8000-0000000000b1')) -> 'units' -> 0 ->> 'outcome' = 'saved', 'the coding dispatch');
-	perform pg_temp.base_assert(pg_temp.c3_dispatch(pg_temp.c3_alice(), 'c3b-dispatch-2', 'agents/alice/todos/fix-login/notes',
+	perform pg_temp.base_assert(pg_temp.c3_dispatch(pg_temp.c3_alice(), 'c3b-dispatch-2', 'QorperaOS/agents/alice/todos/fix-login/notes',
 		pg_temp.c3_brief('93200000-0000-4000-8000-0000000000b2', 'in-house')) -> 'units' -> 0 ->> 'outcome' = 'saved',
 		'the in-house dispatch');
 end $$;
@@ -25,10 +25,10 @@ end $$;
 do $$
 declare v_result jsonb; w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 begin
-	v_result := pg_temp.c3b_archive('agents/alice/todos/fix-login/session-a', 'c3b-archive-1');
+	v_result := pg_temp.c3b_archive('QorperaOS/agents/alice/todos/fix-login/session-a', 'c3b-archive-1');
 	w := pg_temp.c3_worker('93200000-0000-4000-8000-0000000000b1'); s := pg_temp.c3_session(w.id);
 	perform pg_temp.base_assert(v_result ->> 'action' = 'archive' and (v_result ->> 'archived')::boolean
-		and v_result ->> 'phase' = 'cancelled' and v_result ->> 'folder' = 'agents/alice/todos/fix-login/session-a'
+		and v_result ->> 'phase' = 'cancelled' and v_result ->> 'folder' = 'QorperaOS/agents/alice/todos/fix-login/session-a'
 		and v_result -> 'worker' ->> 'state' = 'cancelled' and v_result ->> 'runId' = pg_temp.c3_alice() ->> 'runId',
 		'the answer: ' || v_result::text);
 	perform pg_temp.base_assert(w.state = 'cancelled' and w.result ->> 'reason' = 'archived' and s.phase = 'cancelled'
@@ -37,26 +37,26 @@ begin
 	perform pg_temp.base_assert((select count(*) from public.qorpera_coding_session_events e where e.worker_id = w.id
 		and e.kind = 'step' and (e.body ->> 'archived')::boolean and e.body ->> 'by' = 'agent') = 1, 'its archive event');
 	-- A replay of the call answers the first, under its receipt.
-	perform pg_temp.base_assert(pg_temp.c3b_archive('agents/alice/todos/fix-login/session-a', 'c3b-archive-1') = v_result,
+	perform pg_temp.base_assert(pg_temp.c3b_archive('QorperaOS/agents/alice/todos/fix-login/session-a', 'c3b-archive-1') = v_result,
 		'the replay');
 	-- Archived already: nothing more happens.
-	v_result := pg_temp.c3b_archive('agents/alice/todos/fix-login/session-a', 'c3b-archive-2');
+	v_result := pg_temp.c3b_archive('QorperaOS/agents/alice/todos/fix-login/session-a', 'c3b-archive-2');
 	perform pg_temp.base_assert(not (v_result ->> 'archived')::boolean, 'a second archive: ' || v_result::text);
 	perform pg_temp.base_assert((select count(*) from public.qorpera_coding_session_events e where e.worker_id = w.id
 		and (e.body ->> 'archived')::boolean) = 1, 'one archive event');
 end $$;
 
 -- 2. Refusals: an in-house worker, and a folder with no worker ------------------------------------------------------------
-select pg_temp.base_error($$select pg_temp.c3b_archive('agents/alice/todos/fix-login/notes', 'c3b-archive-3')$$, '22023',
+select pg_temp.base_error($$select pg_temp.c3b_archive('QorperaOS/agents/alice/todos/fix-login/notes', 'c3b-archive-3')$$, '22023',
 	'Only a coding session can be archived');
-select pg_temp.base_error($$select pg_temp.c3b_archive('agents/alice/todos/fix-login/nobody', 'c3b-archive-4')$$, 'P0002',
+select pg_temp.base_error($$select pg_temp.c3b_archive('QorperaOS/agents/alice/todos/fix-login/nobody', 'c3b-archive-4')$$, 'P0002',
 	'Worker is unavailable');
-select pg_temp.base_error($$select pg_temp.c3b_archive('agents/alice/todos/Fix-Login/session-a', 'c3b-archive-5')$$, '22023',
+select pg_temp.base_error($$select pg_temp.c3b_archive('QorperaOS/agents/alice/todos/Fix-Login/session-a', 'c3b-archive-5')$$, '22023',
 	'Worker request is invalid');
 
 -- 3. A follow-up reopens it: the next turn queues on the same branch ------------------------------------------------------
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-a'; v_alice jsonb := pg_temp.c3_alice(); v_brief jsonb; v_units jsonb;
+declare v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-a'; v_alice jsonb := pg_temp.c3_alice(); v_brief jsonb; v_units jsonb;
 	v_result jsonb; w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 begin
 	v_brief := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v

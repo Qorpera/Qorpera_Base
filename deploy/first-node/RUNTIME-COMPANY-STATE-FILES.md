@@ -18,32 +18,38 @@ September 2026).
 
 ## 1. The structured files
 
+Every structured file is under `QorperaOS/`, the top folder that holds the platform's own
+folders (contract 5.6; Jonas, 21 October 2026; migration 20260930534000). `code/`, `digital-post/`,
+`bank/`, `members/`, `hooks/` and the company's own work stay at the top beside it (Jonas confirmed
+the four platform-written ones on 24 October 2026), and nothing outside `QorperaOS/` is structured. The TS helpers are `QORPERA_OS_ROOT`, `osPath` and `osRelative` in
+`packages/cloud-client/src/company-state-shared.ts`; the SQL twin is `qorpera_os_relative`.
+
 | Path | Kind | Settings block |
 | --- | --- | --- |
-| `vision/vision.md` | vision | none: the first line is `# <company name>` |
-| `agents/sections.md` | sections | none: `## <section>` then `- <id> …` lines |
-| `agents/<handle>/agent.md` | agent | yes |
-| `agents/groups/<handle>/group.md` | group | yes |
-| `agents/<handle>/routines/<name>.md` | routine | yes |
-| `agents/<handle>/todos/<name>.md` | todo | yes |
-| `agents/<handle>/todos/<todo>/<worker>/brief.md` | worker-brief | yes (platform-only) |
-| `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
-| `connections/<name>.md` | connection | yes (platform-only settings) |
-| `connections/hook-<name>.md` | hook | yes (platform-only settings; E1) |
-| `connections/mailbox-<name>.md` | mailbox | yes (platform-only settings; E1) |
-| `rules/<name>.md` | rule | yes |
-| `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
-| `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
+| `QorperaOS/vision/vision.md` | vision | none: the first line is `# <company name>` |
+| `QorperaOS/agents/sections.md` | sections | none: `## <section>` then `- <id> …` lines |
+| `QorperaOS/agents/<handle>/agent.md` | agent | yes |
+| `QorperaOS/agents/groups/<handle>/group.md` | group | yes |
+| `QorperaOS/agents/<handle>/routines/<name>.md` | routine | yes |
+| `QorperaOS/agents/<handle>/todos/<name>.md` | todo | yes |
+| `QorperaOS/agents/<handle>/todos/<todo>/<worker>/brief.md` | worker-brief | yes (platform-only) |
+| `QorperaOS/agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
+| `QorperaOS/connections/<name>.md` | connection | yes (platform-only settings) |
+| `QorperaOS/connections/hook-<name>.md` | hook | yes (platform-only settings; E1) |
+| `QorperaOS/connections/mailbox-<name>.md` | mailbox | yes (platform-only settings; E1) |
+| `QorperaOS/rules/<name>.md` | rule | yes |
+| `QorperaOS/human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
+| `QorperaOS/contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
 
 A path's kind is decided on the folder's key (`companyPathKey`, the same NFKC-casefold as
 `qorpera_company_path_key`, 20260828005000), because two spellings with one key are one entry:
-`ＡＧＥＮＴＳ/anna/agent.md` is Anna's `agent.md`. The database classifies on `key_text` and
+`qorperaos/ＡＧＥＮＴＳ/anna/agent.md` is Anna's `agent.md`. The database classifies on `key_text` and
 refuses a unit on a structured key that carries no parse. JavaScript and Postgres may case-map a
 few characters differently (`İ`); such a path then fails closed in the database, and the
 comparison test below includes these spellings. Every other file is ordinary: one
 pattern match and nothing else. Files nested deeper (a note in `routines/notes/`, a worker's
-output next to its brief) are ordinary. Core §5's list gains `vision/vision.md`, the two
-worker files, and (H1) `human-tasks/<name>.md` and `contacts/<name>.md`.
+output next to its brief) are ordinary. Core §5's list gains `QorperaOS/vision/vision.md`, the two
+worker files, and (H1) `QorperaOS/human-tasks/<name>.md` and `QorperaOS/contacts/<name>.md`.
 
 The parser is `@qorpera/cloud-client/company-state-files` (`companyStatePath`,
 `parseCompanyStateFile`, the canonical `write*File` writers and `setCompanyStateSettings`).
@@ -54,35 +60,42 @@ on one list of paths, compatibility spellings included.
 ### Names
 
 Folder and file names follow contract 5.6 as written (not only as keys): lowercase `a–z`,
-digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. The whole
-path of a structured file is written exactly as its key, so `agents/anna/Agent.md` or a
-compatibility spelling is refused with the spelling to use. The rule covers agent and group
-folders, routine, todo, rule, connection, human-task and contact files, todo and worker folders,
-the top folders `human-tasks` and `contacts`, and a human task's folder and its `proof/` folder.
+digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. Below the
+root, the path of a structured file is written exactly as its key, so
+`QorperaOS/agents/anna/Agent.md` or a compatibility spelling is refused with the spelling to
+use. The root is the folder's own: it is seeded as `QorperaOS`, its key is `qorperaos`, and any
+spelling with that key is the same folder. So a structured file's stored path is
+`QorperaOS/<its key below the root>`, no longer equal to its key, and code compares keys or
+strips the root first (`osRelative`). The rule covers agent and group folders, routine, todo,
+rule, connection, human-task and contact files, todo and worker folders, the top folders
+`QorperaOS/human-tasks` and `QorperaOS/contacts`, and a human task's folder and its `proof/`
+folder.
 
 These path checks are `companyStatePathProblems(path, folder)`. They need no text, so the
 database runs the same list, and the comparison test covers both. `decide` runs them on the
 path an entry is actually stored under, its parent folder's stored spelling included:
 - for every file a unit writes;
 - for every structured file a move or rename carries, at its new path;
-- for every folder a unit creates or renames at a structured place: `agents/<h>`,
-  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>`,
-  `agents/<h>/todos/<t>/<w>`, `human-tasks`, `contacts`, `human-tasks/<t>` and
-  `human-tasks/<t>/proof`. The two top folders carry no name of their own; they are places only so
-  that a wrong spelling such as `Contacts/` cannot be made and block every later save.
+- for every folder a unit creates or renames at a structured place: `QorperaOS` itself,
+  `QorperaOS/agents/<h>`, `QorperaOS/agents/groups/<g>`, `QorperaOS/agents/<h>/routines`,
+  `QorperaOS/agents/<h>/todos`, `QorperaOS/agents/<h>/todos/<t>`, `QorperaOS/agents/<h>/todos/<t>/<w>`,
+  `QorperaOS/human-tasks`, `QorperaOS/contacts`, `QorperaOS/human-tasks/<t>` and
+  `QorperaOS/human-tasks/<t>/proof`. The root and the two top folders carry no name of their own;
+  they are places only so that a wrong spelling such as `QorperaOS/Contacts/` cannot be made and
+  block every later save.
 
 So a rename can never leave a file that no later save could pass. Renaming
 `routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
-creating an ordinary folder `agents/anna/Routines/`, which would give a later routine the
-wrong spelling. A subtree move checks every folder it carries whose new path is a structured
+creating an ordinary folder `QorperaOS/agents/anna/Routines/`, which would give a later routine
+the wrong spelling. A subtree move checks every folder it carries whose new path is a structured
 place, not only the moved folder itself: an ordinary folder holding `Todos/`, moved to
-`agents/x`, is refused. A failed path check refuses the unit as `structured_invalid` with
-`name` problems.
+`QorperaOS/agents/x`, is refused. A failed path check refuses the unit as `structured_invalid`
+with `name` problems.
 
 `companyStateName` makes a name from a display name: NFC first, then æ → ae, ø → oe,
 å → aa, accents dropped, spaces to hyphens, the rest dropped. `freeCompanyStateName` adds `-2`,
 `-3` for a taken name and uses the fallback (`agent`, `group`) when nothing is left. `groups`
-is reserved under `agents/`. Uniqueness is checked by the database on the key.
+is reserved under `QorperaOS/agents/`. Uniqueness is checked by the database on the key.
 
 Today's routine, todo and worker keys allow `.`, `_` and up to 96 characters
 (20260922170000:24,48; 20260920000000:30). The thin writers (§5) derive file names with
@@ -163,7 +176,7 @@ list lines with it; a key with a value never takes the lines below it.
 
 ## 2. Formats
 
-### `vision/vision.md`
+### `QorperaOS/vision/vision.md`
 
 No settings block. The first line with text is `# ` and the company's name, 1–120 characters.
 A CommonMark closing run of `#` is dropped. That name is the company's name everywhere, so
@@ -181,7 +194,7 @@ renaming the company means editing that line. The rest is free. The platform see
 Every agent reads the file in full at every run (contract 5.6, 9.1). Refused: no `#` name
 first; deleting or moving the file (seeded).
 
-### `agents/<handle>/agent.md`
+### `QorperaOS/agents/<handle>/agent.md`
 
 | Key | Required | Values |
 | --- | --- | --- |
@@ -212,18 +225,18 @@ The seeded Co-Founder has `figure: crown` and `colour: blue`.
 
 **Refused** (contract 5.6):
 - deleting `agent.md` alone;
-- moving an agent folder out of `agents/` or into `agents/groups/`;
+- moving an agent folder out of `QorperaOS/agents/` or into `QorperaOS/agents/groups/`;
 - deleting the Co-Founder's folder;
-- any write under `agents/` from a coding session.
+- any write under `QorperaOS/agents/` from a coding session.
 
-A folder directly under `agents/` without an `agent.md` is not an agent. It has no index row,
+A folder directly under `QorperaOS/agents/` without an `agent.md` is not an agent. It has no index row,
 but its name counts as taken.
 
 **Pending decision 2:** a hire's first task is a todo file in the new folder. It is written in
 the same `new_folder` unit as `agent.md` (§3), instead of the hidden `startupInstructions`
 kickoff.
 
-### `agents/sections.md`
+### `QorperaOS/agents/sections.md`
 
 No settings block.
 - Lines before the first `## ` heading are free text, `###` headings included, except id lines
@@ -264,7 +277,7 @@ The platform seeds:
 Each line is an id. The words after it are only for reading.
 ```
 
-### `agents/groups/<handle>/group.md`
+### `QorperaOS/agents/groups/<handle>/group.md`
 
 | Key | Required | Values |
 | --- | --- | --- |
@@ -298,9 +311,9 @@ closes the conversation; a restore reopens both, with the same conversation.
 
 **Refused:**
 - deleting `group.md` alone. Deleting the folder closes the chat; its conversation stays;
-- moving the folder out of `agents/groups/`.
+- moving the folder out of `QorperaOS/agents/groups/`.
 
-### `connections/<name>.md`
+### `QorperaOS/connections/<name>.md`
 
 | Key | Required | Values |
 | --- | --- | --- |
@@ -356,12 +369,12 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Deleting:** only the platform deletes the file, and only once the vault record is revoked
   (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
   meanwhile is found again through the index on the next claim.
-- **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
+- **Moving:** within `QorperaOS/connections/` the index follows; out of it is a kind change (refused).
 - **Names:** `hook-` and `mailbox-` belong to hooks' and mailboxes' files (below), so a vault file never takes them:
   the name a new file gets has `connection-` before it then (E1, `20260930060000`).
 - Not reviewed.
 
-### `connections/hook-<name>.md` and `connections/mailbox-<name>.md` (E1)
+### `QorperaOS/connections/hook-<name>.md` and `QorperaOS/connections/mailbox-<name>.md` (E1)
 
 A hook (where a service sends events) and a company mailbox (a hook that receives mail) of a folder-v2 company, each
 described by a file (folder core C4, E1, migration `20260930060000`; `RUNTIME-COMPANY-FOLDER-EVENTS.md` §3). The
@@ -396,7 +409,7 @@ every tool that acts on a hook reads the hook, never this file.
 - **Moving:** within the same prefix the index follows; anything else is a kind change (refused).
 - Not reviewed.
 
-### `rules/<name>.md`
+### `QorperaOS/rules/<name>.md`
 
 | Key | Required | Values |
 | --- | --- | --- |
@@ -404,7 +417,7 @@ every tool that acts on a hook reads the hook, never this file.
 | `outcome` | yes | `ask-first` (`ask_first`) or `allow` (`allow_automatically`) |
 | body | yes | how "When an agent wants to …" ends, as today's `when_text`: one line, 1–280 characters trimmed, no controls |
 
-- **Who writes:** only owners and admins write `rules/` (members' commits; the core's
+- **Who writes:** only owners and admins write `QorperaOS/rules/` (members' commits; the core's
   `company_rules` resource scope). A card's "Always allow" writes as the answering owner or admin
   (core C3's writer; until then that path still saves a row). Agents never write it. Personal rules
   stay rows. For folder-v2 companies Settings refuses saving a company rule and removing a rule
@@ -424,7 +437,7 @@ every tool that acts on a hook reads the hook, never this file.
   rule save takes the company row at rank 0 first.
 - Never reviewed.
 
-### `agents/<handle>/routines/<name>.md`
+### `QorperaOS/agents/<handle>/routines/<name>.md`
 
 **Pending decision 3:** exactly one trigger per file. F2-6 (migration 20260928259310) is built on
 it; a different answer changes the parser and `qorpera_company_state_routine_trigger` only.
@@ -582,7 +595,7 @@ retries, nothing is wrong). F1's C1b-3a (#497,
 20260928259230) moved the company row to rank 0, before the members; F2-6 takes it there too (its
 migration stops if that change has not run).
 
-### `agents/<handle>/todos/<name>.md`
+### `QorperaOS/agents/<handle>/todos/<name>.md`
 
 | Key | Required | Values |
 | --- | --- | --- |
@@ -616,7 +629,7 @@ Not reviewed. Dispatching a worker is reviewed.
 
 ### Worker brief and results
 
-`agents/<handle>/todos/<todo>/<worker>/brief.md`:
+`QorperaOS/agents/<handle>/todos/<todo>/<worker>/brief.md`:
 
 | Key | Values |
 | --- | --- |
@@ -648,7 +661,7 @@ decides; a restore of a deleted agent brings them back as they were (§8 "Plan (
 This holds for every worker species (contract 13). The worker's folder also holds the files a
 write-access worker makes (today `work/todos/<agent>/<todo>/<worker>/`).
 
-### `human-tasks/<name>.md`
+### `QorperaOS/human-tasks/<name>.md`
 
 Work an agent hands to a person: a member, or a contact outside the company (Q1 §5, "Work for
 people"). One file per task; the task's folder beside it holds what the person sends back. It is
@@ -693,7 +706,7 @@ The photo, and a note with the time node 2 was back up.
 | `reason` | with `returned` and `declined`; allowed with `cancelled`; refused otherwise | one line, 1–500 bytes: why it went back, why the person can't, or why it was cancelled |
 | `secret` | no; with `member` only | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
 | `secret_state` | with `secret`, and only then | `asked` or `saved` |
-| `connection` | no | the `id` of the `connections/` file the step is for (A1) |
+| `connection` | no | the `id` of the `QorperaOS/connections/` file the step is for (A1) |
 | `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
 | body | yes | 1 byte to 32 KiB trimmed; the headings `## Why`, `## Steps`, `## Done looks like` are the convention, not required |
 
@@ -720,8 +733,8 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   `true`) is written in double quotes, as in `asks`. Repeats are compared by key
   (`companyPathKey`), since two spellings are one entry; the database compares by its own key.
   The two keys fold some characters differently (74 in the BMP today, among them `ß`, `İ` and
-  U+A7F1; §1), so either side may refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
-  `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
+  U+A7F1; §1), so either side may refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `QorperaOS/agents/`,
+  `QorperaOS/contacts/`, `QorperaOS/human-tasks/`, `QorperaOS/connections/`, `QorperaOS/rules/` or `hooks/` is refused: the company's
   people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
   - a listed file opens only if the agent that sent the link may read it at that moment, by its
     standing read authority (not the ended run's), and on a member's own task page only if that
@@ -744,12 +757,12 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   in their contact file. A link's token (kept only as a hash), an email's delivery and a
   secret's value are runtime state or vault records, never the file: every member and agent reads
   the folder.
-- **The task's folder:** `human-tasks/<name>/proof/` holds the person's files (H2 names them as
-  they arrive) and `human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
+- **The task's folder:** `QorperaOS/human-tasks/<name>/proof/` holds the person's files (H2 names them as
+  they arrive) and `QorperaOS/human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
   The folder's name is the task file's name.
 - **What H1 does not decide (H2):** decided in §8 "Plan (H2)". Where the two differ, the plan wins: its
   §1 and §4 replace the person's change "by the platform", the folder carried along with its file, and
-  "only the platform writes under `human-tasks/<name>/`" below.
+  "only the platform writes under `QorperaOS/human-tasks/<name>/`" below.
   - who may set which status: the agent `open`, `accepted`, `returned` and `cancelled`; the
     person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
     its proof, note and `reason`, saved in one change set by the platform as the person's change,
@@ -766,10 +779,10 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   - the task's folder follows its file: the platform's writer carries the folder in the same change
     set when a member or an agent moves or deletes a task file (so a task with proof can still be
     renamed or removed), and a new task file is refused while a folder of its name exists; only
-    the platform writes under `human-tasks/<name>/`, as the person's change; a contact's proof and
+    the platform writes under `QorperaOS/human-tasks/<name>/`, as the person's change; a contact's proof and
     note are outside content (11.1);
-  - the overdue wake and the wake on `done` and `declined`; the index; seeding `human-tasks/` and
-    `contacts/` in new companies (and whether they join the seeded folders that cannot be
+  - the overdue wake and the wake on `done` and `declined`; the index; seeding `QorperaOS/human-tasks/` and
+    `QorperaOS/contacts/` in new companies (and whether they join the seeded folders that cannot be
     deleted or moved);
   - a file saved before H2 is trusted for its shape only: H2's first index of it checks every id
     and every value only the platform may set.
@@ -777,7 +790,7 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   A1's takeover tasks need H2, not only these keys. Until H2 a human-task file is a checked
   format and nothing more.
 
-### `contacts/<name>.md`
+### `QorperaOS/contacts/<name>.md`
 
 Everyone outside the company it deals with, one file per person or firm: contractors, suppliers,
 customers and leads. Agents keep the file current. A contact never has an account; it reaches a
@@ -793,7 +806,7 @@ asks: [bookkeeping review, VAT filing]
 ---
 Our accountant since 2025. Files VAT every quarter.
 ## History
-- 2026-10-08 Filed Q3 VAT (human-tasks/file-vat-q3/proof/receipt.pdf)
+- 2026-10-08 Filed Q3 VAT (QorperaOS/human-tasks/file-vat-q3/proof/receipt.pdf)
 ```
 
 | Key | Required | Values |
@@ -814,7 +827,7 @@ Our accountant since 2025. Files VAT every quarter.
   free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
   which a member removes by hand. The writing skill tells agents to name a contact by id only.
 - **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
-  seeded skill `skills/human-task/SKILL.md`), not a database rule; that `id` is unique among the
+  seeded skill `QorperaOS/skills/human-task/SKILL.md`), not a database rule; that `id` is unique among the
   contacts; the index; a task link (H5).
 
 The parses, with absent values `null` and absent lists `[]`:
@@ -832,7 +845,7 @@ conflict copy.
 Units are decided in order (C1a). A unit sees the index as the earlier clean units of the same
 change set left it, and so does its review class. The dependency rule:
 
-- A routine, todo or worker file under `agents/<h>/` needs a live agent index row for `<h>` as
+- A routine, todo or worker file under `QorperaOS/agents/<h>/` needs a live agent index row for `<h>` as
   of that unit: one that is not retired, whether active or archived. Otherwise it is refused
   (`no_agent`).
 - So a hire and its first todo travel in one `new_folder` unit. They land, park for review, are
@@ -842,7 +855,7 @@ change set left it, and so does its review class. The dependency rule:
 
 A move or copy never changes a file's kind. It is refused (`kind_change`) if any file it
 carries would become a structured file of another kind, or turn from structured to ordinary
-or back. Examples: an ordinary `notes/hire.md` moved to `agents/nora/agent.md`, a todo moved
+or back. Examples: an ordinary `notes/hire.md` moved to `QorperaOS/agents/nora/agent.md`, a todo moved
 into `routines/`, a todo moved out to `notes/`. Write the new file instead.
 
 A copy never lands a structured file (`structured_copy`), which narrows core §5's copy rule
@@ -854,7 +867,7 @@ parse, and the path checks above run on their new paths.
 Outcome shape (core §3 "Outcomes"):
 
 ```json
-{ "unit": 2, "op": "write", "path": "agents/nora-dahl/agent.md", "outcome": "refused",
+{ "unit": 2, "op": "write", "path": "QorperaOS/agents/nora-dahl/agent.md", "outcome": "refused",
   "reason": "structured_invalid",
   "problems": [ { "line": 6, "key": "status", "code": "value",
                   "message": "status must be one of: active, archived (found \"on leave\")" } ] }
@@ -871,9 +884,9 @@ Outcome shape (core §3 "Outcomes"):
 - `structured_rule`: a database rule, such as an id that another folder holds, the Co-Founder
   rules, an unknown time zone, a platform-only field, or `no_agent`.
 - The 5.6 refusals keep their own reasons: `seeded`, `cofounder`, `lone_structured_file`,
-  `kind_change` (which also covers moving an agent's folder out of `agents/` or into
-  `agents/groups/`), `structured_copy`, and later `connected`. A coding session's write under
-  `agents/` or `rules/`, and anyone but an owner or admin writing `rules/`, are `denied` by the
+  `kind_change` (which also covers moving an agent's folder out of `QorperaOS/agents/` or into
+  `QorperaOS/agents/groups/`), `structured_copy`, and later `connected`. A coding session's write under
+  `QorperaOS/agents/` or `QorperaOS/rules/`, and anyone but an owner or admin writing `QorperaOS/rules/`, are `denied` by the
   core's authority (C1b-1).
 - The trust boundary: the parse comes from the shared parser in trusted writers. SQL re-hashes the
   text, re-checks the parse's shape and limits for the kinds it indexes, and applies the database
@@ -943,7 +956,7 @@ of the body, for readers that should not reach the storage server.
   - A `group.md` or `sections.md` parse stored under F2-1 alone was only kind-checked. A malformed
     one is not trusted as a base; a well-formed one is. F2-1 and F2-2 ship in one release, so no
     folder-v2 company (only an operator makes one before C5) saves such a file in between.
-  - The sidebar tables take no lock of their own: `agents/sections.md`'s path lock orders their only
+  - The sidebar tables take no lock of their own: `QorperaOS/agents/sections.md`'s path lock orders their only
     writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
     the sidebar's revision row is not bumped; the web reads the folder feed (C4).
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
@@ -976,14 +989,14 @@ of the body, for readers that should not reach the storage server.
 | Context | Today | `folder-v2` |
 | --- | --- | --- |
 | company name | `qorpera_profiles.name` | the vision index |
-| vision | not composed | `vision/vision.md` in full, every run, version recorded |
+| vision | not composed | `QorperaOS/vision/vision.md` in full, every run, version recorded |
 | agent identity and instructions | staff row, charter | the agent index (settings, instructions copy) pinned to the path version, plus its folder path |
 | first task | kickoff session input | the first todo file (pending decision 2) |
 | coworkers | staff rows | the agent index, with handles |
 | group chats | rooms | the group index |
 | routine intent | routine version prompt, on its wake | the routine index's intent copy of the woken version |
 | open work | todo and worker counts | the same, from the todo index |
-| memory, skills | `agents/<id>/…` | `agents/<handle>/…`, through one agent-folder helper (agreed with the coordinator and the #387/#400 session) |
+| memory, skills | `agents/<id>/…` | `QorperaOS/agents/<handle>/…`, through one agent-folder helper (agreed with the coordinator and the #387/#400 session) |
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
 
@@ -1061,7 +1074,7 @@ entry points: `read`, `readText`, `list`/`listAll`, `commit` and `release`.
 
 **The thin writers on it** go live after core C1c-2b (folder receipts; a writer that sends also needs 2b's send) and
 C1d (bytes):
-- first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`, read and
+- first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`QorperaOS/agents/sections.md`, read and
   rewrite) and `decide_routine` (the run's own routine file: a new `at` or a conclusion,
   `setCompanyStateSettings`);
 - after C2's review recorder (RUNTIME-COMPANY-FOLDER-C2.md, R1), `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
@@ -1091,7 +1104,7 @@ C1d (bytes):
   up the completed receipt for that operation key first.
 
 **Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
-- The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
+- The todo is `QorperaOS/agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
   64 bytes), and a wider key is refused with that rule.
 - `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
   requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
@@ -1111,7 +1124,7 @@ C1d (bytes):
 - The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
 
 **Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
-- It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
+- It reads and rewrites `QorperaOS/agents/sections.md`. A section is named by its name, ignoring case; the file has no section
   ids. Lines before the first section (the company's own notes) are kept as they are, but for the id lines there,
   which order Unassigned (20260930519000): they are written back after the notes, less any id the change put in a
   section; `move_agent` with `section: null` does not add one, so it comes after them. The sections are written back in
@@ -1137,7 +1150,7 @@ C1d (bytes):
 
 **Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
 - The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
-  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
+  `QorperaOS/agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
   with `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`, its line breaks and tabs
   made spaces (the file's conclusion is one line).
 - Refused before the receipt, binding no key (`REFUSED: …`): a title or instructions that differ from the file's
@@ -1163,11 +1176,11 @@ C1d (bytes):
 
 **Built (W4a): `hire_agent`** (`packages/runtime/src/cloud-folder-hiring.ts`), on C2's review recorder
 (RUNTIME-COMPANY-FOLDER-C2.md, R1).
-- One `new_folder` unit `agents/<handle>`: `agent.md` (`writeAgentFile`: kind `agent`, status `active`, the figure,
+- One `new_folder` unit `QorperaOS/agents/<handle>`: `agent.md` (`writeAgentFile`: kind `agent`, status `active`, the figure,
   `jobDescription` as the instructions), the folders `memory`, `skills`, `routines` and `todos` (as the Co-Founder's
   seeded folder), and `todos/first-assignment.md`: the first assignment as an open todo, asked for by the run's
   requester, titled with the assignment's first line (one line, at most 200 bytes).
-- The handle is the name as a folder name, numbered past the names taken under `agents/` and the reserved ones
+- The handle is the name as a folder name, numbered past the names taken under `QorperaOS/agents/` and the reserved ones
   (`freeCompanyStateName`), from a listing taken before the receipt. The agent's and the todo's ids come from the run
   and the operation key (the legacy hire's id format, in a namespace of their own). A rebuilt call may pick another
   handle; what makes it harmless is the receipt, whose target is the agent's id, so a completed call replays.
@@ -1204,11 +1217,11 @@ C1d (bytes):
   saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
 
 **Built (W4b): `create_group_chat`** (`packages/runtime/src/cloud-folder-group-chats.ts`), as W4a.
-- One `new_folder` unit `agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app
+- One `new_folder` unit `QorperaOS/agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app
   shows "Group chat"), the purpose as the body, `agents` the run's own agent and the coworkers named, `people` the
   run's requester unless `includeRequestingMember` is false (an agent's change may add only that member; SQL refuses
-  any other). `agents/groups` is seeded and can be neither deleted nor moved, so it is always there.
-- The handle is the name as a folder name, numbered past the chats under `agents/groups/` (no reserved names
+  any other). `QorperaOS/agents/groups` is seeded and can be neither deleted nor moved, so it is always there.
+- The handle is the name as a folder name, numbered past the chats under `QorperaOS/agents/groups/` (no reserved names
   there); the chat's id comes from
   the run and the operation key (`qorpera.folder-group/v1`) and is the receipt's target. The commit opens the room
   (`chat-<id>`) and its conversation with those members.
@@ -1222,7 +1235,7 @@ C1d (bytes):
 
 **Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; W4c-1 and W4c-2
 built, below). Both write
-the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
+the run agent's own routine files, `QorperaOS/agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
 with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
 change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
 restricted-creator rule applies (contract 14.1 is a hire's only); the old listener checks come back when event and
@@ -1413,12 +1426,12 @@ the kernel enforces the routine run's decision.
 
 | Screen | Reads | A save writes |
 | --- | --- | --- |
-| sidebar | agent, sections and group indexes; own pins and hidden | `agents/sections.md` |
+| sidebar | agent, sections and group indexes; own pins and hidden | `QorperaOS/agents/sections.md` |
 | agent details | agent index; `agent.md` for the instructions | `agent.md` (`setCompanyStateSettings` for one setting, `writeAgentFile` for new) |
 | new agent | — | one `new_folder` unit: `agent.md`, the first todo |
 | group chat details | group index | `group.md` |
 | routines | routine index, runs from occurrences | the routine file |
-| Settings → General → Rules | rule index, own rules | `rules/<name>.md`; own rules as today |
+| Settings → General → Rules | rule index, own rules | `QorperaOS/rules/<name>.md`; own rules as today |
 | Settings → Connections | vault rows, file body | vault actions write the file; the purpose edits the body |
 | company name | vision index | the first line of `vision.md` |
 | Company File page (#386) | the folder | any file; a refused save shows its problems |
@@ -1475,6 +1488,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 - New-folder content paths are spelled with `qorpera_folder_spelled_contents(root, contents)`.
 
 ## 8. Build order
+
+> Since 20260930534000 every platform path below is under `QorperaOS/` (§1): `agents/<handle>/agent.md` is
+> `QorperaOS/agents/<handle>/agent.md`, `rules/` is `QorperaOS/rules/`, and so on. The steps keep the paths as
+> they were built.
 
 1. **F2-0** (this): this document and the shared parser, with tests. No SQL; inert.
 2. **F2-1** vision and agents, in the database (migration 20260928249020):
@@ -2675,7 +2692,7 @@ areas row in the same rank-5 pass; offers will need their own lock.
 ## 9. The seeded tree
 
 > **Scope reset, 2026-10-17.** The list below leaves out P16's seed, which §8 says also adds
-> `interfaces/` and `tables/`. Of that, Pulse, the main interface and the `numbers` and `cards`
+> `QorperaOS/interfaces/` and `QorperaOS/tables/`. Of that, Pulse, the main interface and the `numbers` and `cards`
 > tables are no longer required; a new company needs only what Mailbox, member-to-agent ownership
 > and other kept behavior read ([the scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md),
 > §2). This note records scope; it says nothing about what is built.
@@ -2684,17 +2701,18 @@ areas row in the same rank-5 pass; offers will need their own lock.
 company's folder holds, parents first, and C2's creation commit writes it in one change set as the
 platform:
 
-- `vision/` and `vision/vision.md`: the name, the founders' text from the founding table, then the
-  four seeded headings, with a `- name: role` line per founder under "How we work";
-- `agents/` and `agents/sections.md` (no sections);
-- `agents/co-founder/` with `agent.md` (`kind: co-founder`, `status: active`, colour blue,
+- `QorperaOS/` itself, first;
+- `QorperaOS/vision/` and `QorperaOS/vision/vision.md`: the name, the founders' text from the founding table, then
+  the four seeded headings, with a `- name: role` line per founder under "How we work";
+- `QorperaOS/agents/` and `QorperaOS/agents/sections.md` (no sections);
+- `QorperaOS/agents/co-founder/` with `agent.md` (`kind: co-founder`, `status: active`, colour blue,
   figure crown, and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`, whose first job is the vision), and
   its empty `memory/`, `skills/`, `routines/` and `todos/`;
 - with `firstTodo`, the Co-Founder's first todo at `COMPANY_STATE_FIRST_TODO_PATH` ("Start with the
   founders", requested by the founder who started the table);
-- `agents/groups/`, `connections/`, `human-tasks/`, `contacts/`, `skills/` with the seeded skill
-  `skills/human-task/SKILL.md` (`COMPANY_STATE_HUMAN_TASK_SKILL`, an ordinary file a company may edit),
-  and `rules/`.
+- `QorperaOS/agents/groups/`, `QorperaOS/connections/`, `QorperaOS/human-tasks/`, `QorperaOS/contacts/`,
+  `QorperaOS/skills/` with the seeded skill `QorperaOS/skills/human-task/SKILL.md`
+  (`COMPANY_STATE_HUMAN_TASK_SKILL`, an ordinary file a company may edit), and `QorperaOS/rules/`.
 
 It throws a `RangeError` when a file would not parse (a founders' vision past the size limit), so
 C2 never sends a creation commit the database refuses.

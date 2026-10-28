@@ -1,4 +1,4 @@
-import { writeGroupFile } from "@qorpera/cloud-client/company-state-files";
+import { osPath, writeGroupFile } from "@qorpera/cloud-client/company-state-files";
 import {
 	createStateFolder,
 	WebCompanyFolderRejectedError,
@@ -13,7 +13,7 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** One draft owns its room identity, including retries after an uncertain folder
  * write. Once a session exists, ordinary conversation state owns send recovery. A
- * group chat is a company folder, `agents/groups/<handle>` with its `group.md`
+ * group chat is a company folder, `QorperaOS/agents/groups/<handle>` with its `group.md`
  * (folder core C4, P34a-2); the commit's hook opens its room and conversation. */
 export function createConversationStarter(options: {
 	company: CompanyController;
@@ -110,7 +110,7 @@ export function createConversationStarter(options: {
 					await createStateFolder(
 						folder,
 						{
-							parent: "agents/groups",
+							parent: osPath("agents/groups"),
 							name: created.name,
 							fallback: "group",
 							key: (handle) => `web:room-create:${created.id}:${handle}`,

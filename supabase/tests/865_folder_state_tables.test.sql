@@ -72,14 +72,14 @@ do $$
 declare m jsonb := pg_temp.member(2); r jsonb;
 begin
 	r := pg_temp.commit(m, 'p16t-rows-0001', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/numbers/rows.csv', pg_temp.rows(array['number','at','value','unit','kept_by'],
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/rows.csv', pg_temp.rows(array['number','at','value','unit','kept_by'],
 			array[array['Revenue','2026-10-02T09:44Z','12','EUR','11111111-1111-4111-8111-000000000030']])),
-		pg_temp.p16_write(m, 'tables/numbers/rows.csv', pg_temp.rows(array['number','at','value','unit','kept_by'],
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/rows.csv', pg_temp.rows(array['number','at','value','unit','kept_by'],
 			array[array['Revenue','2026-10-02T09:44Z','12','€','11111111-1111-4111-8111-000000000030'],
 				array['Revenue','2026-10-02T09:44:00Z','13','€','11111111-1111-4111-8111-000000000030']])),
-		pg_temp.p16_folder(m, 'tables/fresh', jsonb_build_object('table.toml', pg_temp.tbl('86500000-0000-4000-8000-000000000002'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/fresh', jsonb_build_object('table.toml', pg_temp.tbl('86500000-0000-4000-8000-000000000002'),
 			'rows.csv', pg_temp.rows(array['number','at'], array[array['Visits','2026-10-02T09:44Z']]))),
-		pg_temp.p16_folder(m, 'tables/fresh', jsonb_build_object('table.toml', pg_temp.tbl('86500000-0000-4000-8000-000000000002'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/fresh', jsonb_build_object('table.toml', pg_temp.tbl('86500000-0000-4000-8000-000000000002'),
 			'rows.csv', pg_temp.rows(array['number','at','value','unit','kept_by'],
 				array[array['Visits','2026-10-02T09:44Z','7','count','11111111-1111-4111-8111-000000000030']])))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'row');
@@ -87,7 +87,7 @@ begin
 	perform pg_temp.refused(r, 2, 'structured_rule', 'duplicate');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'row');
 	perform pg_temp.expect(r, 4, 'saved');
-	if (pg_temp.trow('tables/fresh')).rows_version is distinct from pg_temp.p16_version('tables/fresh/rows.csv') then
+	if (pg_temp.trow('QorperaOS/tables/fresh')).rows_version is distinct from pg_temp.p16_version('QorperaOS/tables/fresh/rows.csv') then
 		raise exception 'A new table''s row points at its rows'; end if;
 end $$;
 
@@ -101,26 +101,26 @@ declare m jsonb := pg_temp.member(2); o jsonb := pg_temp.member(1); a jsonb := p
 		array[array['Visits','2026-10-02T10:00Z','8','count','11111111-1111-4111-8111-000000000030']]);
 begin
 	v_table := pg_temp.tbl('86500000-0000-4000-8000-000000000003') || '{"write":{"agents":"none","members":"owners"}}';
-	r := pg_temp.commit(m, 'p16t-write-0001', jsonb_build_array(pg_temp.p16_folder(m, 'tables/locked', jsonb_build_object(
+	r := pg_temp.commit(m, 'p16t-write-0001', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/locked', jsonb_build_object(
 		'table.toml', v_table, 'rows.csv', pg_temp.fixture('rows-empty') || '{"header":["number","at","value","unit","kept_by"]}'))));
 	perform pg_temp.expect(r, 1, 'saved');
-	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-write-0002', 'tables/locked/rows.csv', v_rows), 1, 'structured_rule', 'write');
-	perform pg_temp.refused(pg_temp.save_rows(g1 -> 'actor', 'p16t-write-0003', 'tables/locked/rows.csv', v_rows), 1, 'structured_rule', 'write');
-	perform pg_temp.expect(pg_temp.save_rows(o, 'p16t-write-0004', 'tables/locked/rows.csv', v_rows), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(a, 'p16t-write-0005', 'tables/locked/rows.csv', pg_temp.fixture('rows-empty')
+	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-write-0002', 'QorperaOS/tables/locked/rows.csv', v_rows), 1, 'structured_rule', 'write');
+	perform pg_temp.refused(pg_temp.save_rows(g1 -> 'actor', 'p16t-write-0003', 'QorperaOS/tables/locked/rows.csv', v_rows), 1, 'structured_rule', 'write');
+	perform pg_temp.expect(pg_temp.save_rows(o, 'p16t-write-0004', 'QorperaOS/tables/locked/rows.csv', v_rows), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save_rows(a, 'p16t-write-0005', 'QorperaOS/tables/locked/rows.csv', pg_temp.fixture('rows-empty')
 		|| '{"header":["number","at","value","unit","kept_by"]}'), 1, 'saved');
 	-- Agents by list; members none, where even an owner is refused and the platform writes.
-	perform pg_temp.expect(pg_temp.commit(o, 'p16t-write-0006', jsonb_build_array(pg_temp.p16_write(o, 'tables/locked/table.toml',
+	perform pg_temp.expect(pg_temp.commit(o, 'p16t-write-0006', jsonb_build_array(pg_temp.p16_write(o, 'QorperaOS/tables/locked/table.toml',
 		v_table || '{"write":{"agents":["63400000-0000-4000-8000-0000000000a1"],"members":"none"}}'))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(g1 -> 'actor', 'p16t-write-0007', 'tables/locked/rows.csv', v_rows), 1, 'saved');
-	perform pg_temp.refused(pg_temp.save_rows(g2 -> 'actor', 'p16t-write-0008', 'tables/locked/rows.csv', pg_temp.fixture('rows-empty')
+	perform pg_temp.expect(pg_temp.save_rows(g1 -> 'actor', 'p16t-write-0007', 'QorperaOS/tables/locked/rows.csv', v_rows), 1, 'saved');
+	perform pg_temp.refused(pg_temp.save_rows(g2 -> 'actor', 'p16t-write-0008', 'QorperaOS/tables/locked/rows.csv', pg_temp.fixture('rows-empty')
 		|| '{"header":["number","at","value","unit","kept_by"]}'), 1, 'structured_rule', 'write');
-	perform pg_temp.refused(pg_temp.save_rows(o, 'p16t-write-0009', 'tables/locked/rows.csv', pg_temp.fixture('rows-empty')
+	perform pg_temp.refused(pg_temp.save_rows(o, 'p16t-write-0009', 'QorperaOS/tables/locked/rows.csv', pg_temp.fixture('rows-empty')
 		|| '{"header":["number","at","value","unit","kept_by"]}'), 1, 'structured_rule', 'write');
-	perform pg_temp.expect(pg_temp.save_rows('{"kind":"platform"}', 'p16t-write-0010', 'tables/locked/rows.csv', pg_temp.fixture('rows-empty')
+	perform pg_temp.expect(pg_temp.save_rows('{"kind":"platform"}', 'p16t-write-0010', 'QorperaOS/tables/locked/rows.csv', pg_temp.fixture('rows-empty')
 		|| '{"header":["number","at","value","unit","kept_by"]}'), 1, 'saved');
 	-- [write] governs rows only: a contributor changes the definition.
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-write-0011', jsonb_build_array(pg_temp.p16_write(m, 'tables/locked/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-write-0011', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/locked/table.toml',
 		v_table || '{"name":"Locked numbers"}'))), 1, 'saved');
 end $$;
 
@@ -131,10 +131,10 @@ declare m jsonb := pg_temp.member(2); r jsonb; v_def jsonb := pg_temp.tbl('86400
 	v_claims jsonb := pg_temp.claims();
 begin
 	r := pg_temp.commit(m, 'p16t-def-0001', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/numbers/table.toml', jsonb_set(v_def, '{columns,3,choices}', '["kr","$"]')),
-		pg_temp.p16_write(m, 'tables/numbers/table.toml', jsonb_set(v_def, '{columns,4,optional}', 'false')),
-		pg_temp.p16_write(m, 'tables/numbers/table.toml', jsonb_set(v_def, '{columns,0,max}', '3')),
-		pg_temp.p16_write(m, 'tables/numbers/table.toml', v_def
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/table.toml', jsonb_set(v_def, '{columns,3,choices}', '["kr","$"]')),
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/table.toml', jsonb_set(v_def, '{columns,4,optional}', 'false')),
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/table.toml', jsonb_set(v_def, '{columns,0,max}', '3')),
+		pg_temp.p16_write(m, 'QorperaOS/tables/numbers/table.toml', v_def
 			|| jsonb_build_object('columns', jsonb_set(v_def -> 'columns', '{2}', (v_def -> 'columns' -> 2) || '{"type":"text","max":500}')))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'row');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'row');
@@ -142,26 +142,26 @@ begin
 	perform pg_temp.refused(r, 3, 'structured_rule', 'row');
 	perform pg_temp.expect(r, 4, 'saved');
 	-- The claims table: a member takes a row; its claim can't go while held, and helper can't gain one while set.
-	r := pg_temp.commit(m, 'p16t-def-0002', jsonb_build_array(pg_temp.p16_folder(m, 'tables/claims', jsonb_build_object(
+	r := pg_temp.commit(m, 'p16t-def-0002', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/claims', jsonb_build_object(
 		'table.toml', v_claims, 'rows.csv', pg_temp.claim_rows(array[array['t1','',''],
 			array['t2','63400000-0000-4000-8000-000000000002','63400000-0000-4000-8000-000000000004']])))));
 	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.commit(m, 'p16t-def-0003', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/claims/table.toml', jsonb_set(v_claims, '{columns,1,needsYes}', 'false') || '{"holder":null}'),
-		pg_temp.p16_write(m, 'tables/claims/table.toml', v_claims || jsonb_build_object('holder', null, 'columns',
+		pg_temp.p16_write(m, 'QorperaOS/tables/claims/table.toml', jsonb_set(v_claims, '{columns,1,needsYes}', 'false') || '{"holder":null}'),
+		pg_temp.p16_write(m, 'QorperaOS/tables/claims/table.toml', v_claims || jsonb_build_object('holder', null, 'columns',
 			jsonb_build_array(v_claims -> 'columns' -> 0, v_claims -> 'columns' -> 2))),
-		pg_temp.p16_write(m, 'tables/claims/table.toml', jsonb_set(v_claims, '{columns,2,needsYes}', 'true'))));
+		pg_temp.p16_write(m, 'QorperaOS/tables/claims/table.toml', jsonb_set(v_claims, '{columns,2,needsYes}', 'true'))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'row');
 	perform pg_temp.refused(r, 3, 'structured_rule', 'claim');
 	-- Emptied, the claim may go, and helper may gain one.
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-def-0004', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-def-0004', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1','',''], array['t2','','']])), 1, 'saved');
 	r := pg_temp.commit(m, 'p16t-def-0005', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/claims/table.toml', jsonb_set(v_claims, '{columns,2,needsYes}', 'true'))));
+		pg_temp.p16_write(m, 'QorperaOS/tables/claims/table.toml', jsonb_set(v_claims, '{columns,2,needsYes}', 'true'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(m, 'p16t-def-0006', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/claims/table.toml', v_claims))), 1, 'saved');
+		pg_temp.p16_write(m, 'QorperaOS/tables/claims/table.toml', v_claims))), 1, 'saved');
 end $$;
 
 -- 5. The claim rule (rule 8): nobody assigns anybody. A member takes an empty cell or releases their own; an agent has
@@ -171,39 +171,39 @@ declare m jsonb := pg_temp.member(2); n jsonb := pg_temp.member(4); r jsonb;
 	c_m constant text := '63400000-0000-4000-8000-000000000002'; c_n constant text := '63400000-0000-4000-8000-000000000004';
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000002');
 begin
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-claim-0001', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-claim-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','','']])), 1, 'saved');
-	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-claim-0002', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-claim-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2',c_n,'']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0003', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0003', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1','',''], array['t2','','']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0004', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0004', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t2','','']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0005', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(n, 'p16t-claim-0005', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2','','']])), 1, 'structured_rule', 'claim');
 	-- Unclaimed columns and new rows are anyone's; the other member takes t2.
-	perform pg_temp.expect(pg_temp.save_rows(n, 'p16t-claim-0006', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(n, 'p16t-claim-0006', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,c_n], array['t2',c_n,''], array['t3','','']])), 1, 'saved');
 	-- An agent: no claimed cell changes, its own rows otherwise.
-	perform pg_temp.refused(pg_temp.save_rows(g -> 'actor', 'p16t-claim-0007', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(g -> 'actor', 'p16t-claim-0007', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,c_n], array['t2',c_n,''], array['t3',c_m,'']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'p16t-claim-0008', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'p16t-claim-0008', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,c_n], array['t2',c_n,''], array['t3','',''], array['t4','','']])), 1, 'saved');
 	-- A member releases their own row by removing it; another's removed is refused.
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-claim-0009', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-claim-0009', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t2',c_n,''], array['t3','',''], array['t4','','']])), 1, 'saved');
-	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-claim-0010', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(m, 'p16t-claim-0010', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t3','',''], array['t4','','']])), 1, 'structured_rule', 'claim');
 	-- The platform clears the other member's cell, and sets none.
-	perform pg_temp.refused(pg_temp.save_rows('{"kind":"platform"}', 'p16t-claim-0011', 'tables/claims/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows('{"kind":"platform"}', 'p16t-claim-0011', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t2',c_n,''], array['t3',c_m,''], array['t4','','']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.expect(pg_temp.save_rows('{"kind":"platform"}', 'p16t-claim-0012', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows('{"kind":"platform"}', 'p16t-claim-0012', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t2','',''], array['t3','',''], array['t4','','']])), 1, 'saved');
 	-- A new table: its maker's own id is a take; anyone else's is refused.
 	r := pg_temp.commit(m, 'p16t-claim-0013', jsonb_build_array(
-		pg_temp.p16_folder(m, 'tables/claims-2', jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000004'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/claims-2', jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000004'),
 			'rows.csv', pg_temp.claim_rows(array[array['a',c_n,'']]))),
-		pg_temp.p16_folder(m, 'tables/claims-2', jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000004'),
+		pg_temp.p16_folder(m, 'QorperaOS/tables/claims-2', jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000004'),
 			'rows.csv', pg_temp.claim_rows(array[array['a',c_m,'']])))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	perform pg_temp.expect(r, 2, 'saved');
@@ -219,27 +219,27 @@ declare m jsonb := pg_temp.member(2); r jsonb; v_areas jsonb := pg_temp.tbl('864
 	h text[] := array['area','owner','supervisor','agents','shared'];
 begin
 	r := pg_temp.commit(m, 'p16t-areas-0001', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/areas/table.toml', v_areas || jsonb_build_object('columns',
+		pg_temp.p16_write(m, 'QorperaOS/tables/areas/table.toml', v_areas || jsonb_build_object('columns',
 			(select jsonb_agg(c) from jsonb_array_elements(v_areas -> 'columns') c where c ->> 'name' <> 'agents'))),
-		pg_temp.p16_write(m, 'tables/areas/table.toml', jsonb_set(v_areas, '{columns,4,needsYes}', 'false')),
-		pg_temp.p16_write(m, 'tables/areas/table.toml', v_areas || '{"name":"Our areas"}')));
+		pg_temp.p16_write(m, 'QorperaOS/tables/areas/table.toml', jsonb_set(v_areas, '{columns,4,needsYes}', 'false')),
+		pg_temp.p16_write(m, 'QorperaOS/tables/areas/table.toml', v_areas || '{"name":"Our areas"}')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'areas');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'areas');
 	perform pg_temp.expect(r, 3, 'saved');
 	r := pg_temp.commit(m, 'p16t-areas-0002', jsonb_build_array(
-		pg_temp.p16_write(m, 'tables/areas/rows.csv', pg_temp.rows(h, array[array['Sales',c_m,'',c_a1 || ' ' || c_a2,'no'],
+		pg_temp.p16_write(m, 'QorperaOS/tables/areas/rows.csv', pg_temp.rows(h, array[array['Sales',c_m,'',c_a1 || ' ' || c_a2,'no'],
 			array['Ops','','',c_a1,'no']])),
-		pg_temp.p16_write(m, 'tables/areas/rows.csv', pg_temp.rows(h, array[array['Sales',c_m,'',c_a1,'no'],
+		pg_temp.p16_write(m, 'QorperaOS/tables/areas/rows.csv', pg_temp.rows(h, array[array['Sales',c_m,'',c_a1,'no'],
 			array['Ops','','',c_a2,'no']]))));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'areas');
 	perform pg_temp.expect(r, 2, 'saved');
 	-- An agent: agents, owner and supervisor are never its to change, whatever their flags; its other cells are.
-	r := pg_temp.save_rows(g -> 'actor', 'p16t-areas-0003', 'tables/areas/rows.csv', pg_temp.rows(h,
+	r := pg_temp.save_rows(g -> 'actor', 'p16t-areas-0003', 'QorperaOS/tables/areas/rows.csv', pg_temp.rows(h,
 		array[array['Sales',c_m,'',c_a1 || ' ' || c_a2,'no'], array['Ops','','','','no']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) <> 'an agent never changes an area''s owner, supervisor or agents' then
 		raise exception 'The areas rule for agents: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'p16t-areas-0004', 'tables/areas/rows.csv', pg_temp.rows(h,
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'p16t-areas-0004', 'QorperaOS/tables/areas/rows.csv', pg_temp.rows(h,
 		array[array['Sales',c_m,'',c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 end $$;
 
@@ -258,22 +258,22 @@ begin
 	v_rows := jsonb_build_object('kind','table-rows','header',(select jsonb_agg('c' || g order by g) from generate_series(1, 40) g),
 		'rows',(select jsonb_agg(jsonb_build_object('line', n + 1, 'fields', jsonb_build_array(lpad(n::text, 5, '0'))
 			|| (select jsonb_agg('x'::text) from generate_series(2, 40))) order by n) from generate_series(1, 800) n));
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0001', jsonb_build_array(pg_temp.p16_folder(m, 'tables/wide',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0001', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/wide',
 		jsonb_build_object('table.toml', v_wide)))), 1, 'saved');
 	v_best := null;
 	for i in 1..2 loop
 		v_start := clock_timestamp();
-		r := pg_temp.save_rows(m, 'p16t-cost-row-' || i, 'tables/wide/rows.csv', v_rows
+		r := pg_temp.save_rows(m, 'p16t-cost-row-' || i, 'QorperaOS/tables/wide/rows.csv', v_rows
 			|| jsonb_build_object('rows', jsonb_set(v_rows -> 'rows', '{0,fields,1}', to_jsonb('y' || i))));
 		v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 		perform pg_temp.expect(r, 1, 'saved');
 		v_best := least(coalesce(v_best, v_ms), v_ms);
 	end loop;
 	perform set_config('qorpera_test.p16_cost', format('a 40-column rows save of 800 rows %s ms (parse %s bytes)', round(v_best),
-		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('tables/wide/rows.csv'))), false);
+		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('QorperaOS/tables/wide/rows.csv'))), false);
 	if v_best > 4000 then raise exception 'A worst-case rows save takes % ms', v_best; end if;
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-def', jsonb_build_array(pg_temp.p16_write(m, 'tables/wide/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-def', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/wide/table.toml',
 		v_wide || '{"name":"Wider"}'))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
@@ -281,40 +281,40 @@ begin
 	if v_ms > 4000 then raise exception 'A worst-case definition change takes % ms', v_ms; end if;
 	-- Short rows: 1,500 claimed rows (task and owner, about 44 bytes each), taken by their maker, then saved again whole.
 	v_rows := pg_temp.claim_rows((select array_agg(array['t' || lpad(n::text, 5, '0'), c_m, ''] order by n) from generate_series(1, 1500) n));
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0002', jsonb_build_array(pg_temp.p16_folder(m, 'tables/many',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0002', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/many',
 		jsonb_build_object('table.toml', v_claims, 'rows.csv', v_rows)))), 1, 'saved');
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0003', 'tables/many/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0003', 'QorperaOS/tables/many/rows.csv',
 		v_rows || jsonb_build_object('rows', jsonb_set(v_rows -> 'rows', '{0,fields,1}', '""'))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
 		|| format('; the claim rule over 1,500 rows %s ms (parse %s bytes)', round(v_ms),
-		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('tables/many/rows.csv'))), false);
+		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('QorperaOS/tables/many/rows.csv'))), false);
 	if v_ms > 4000 then raise exception 'A worst-case claim check takes % ms', v_ms; end if;
 	-- The claim rule's worst case: 10,000 rows of a claims table with its claimed column empty (about 60 KB), saved again
 	-- whole with one row taken, and a definition change over them.
 	v_rows := jsonb_build_object('kind','table-rows','header','["task","owner"]'::jsonb,'rows',(select jsonb_agg(jsonb_build_object(
 		'line', n + 1, 'fields', jsonb_build_array(lpad(to_hex(n), 4, '0'), '')) order by n) from generate_series(1, 10000) n));
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0005', jsonb_build_array(pg_temp.p16_folder(m, 'tables/claims-wide',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0005', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/claims-wide',
 		jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000008'), 'rows.csv', v_rows)))), 1, 'saved');
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0006', 'tables/claims-wide/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0006', 'QorperaOS/tables/claims-wide/rows.csv',
 		v_rows || jsonb_build_object('rows', jsonb_set(v_rows -> 'rows', '{0,fields,1}', to_jsonb(c_m)))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
 		|| format('; the claim rule over 10,000 rows %s ms', round(v_ms)), false);
 	if v_ms > 4000 then raise exception 'The claim rule over 10,000 rows takes % ms', v_ms; end if;
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0007', jsonb_build_array(pg_temp.p16_write(m, 'tables/claims-wide/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0007', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/claims-wide/table.toml',
 		pg_temp.claims('86500000-0000-4000-8000-000000000008') || '{"name":"Wide claims"}'))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
 		|| format('; a definition change over them %s ms', round(v_ms)), false);
 	if v_ms > 4000 then raise exception 'A definition change over 10,000 claimed rows takes % ms', v_ms; end if;
 	-- The claim leaves the column once every row is empty again (the taken row released): rule 7's scan of every row.
-	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0007b', 'tables/claims-wide/rows.csv', v_rows), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0007b', 'QorperaOS/tables/claims-wide/rows.csv', v_rows), 1, 'saved');
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0008', jsonb_build_array(pg_temp.p16_write(m, 'tables/claims-wide/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0008', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/claims-wide/table.toml',
 		jsonb_set(pg_temp.claims('86500000-0000-4000-8000-000000000008'), '{columns,1,needsYes}', 'false') || '{"holder":null}'))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
@@ -324,13 +324,13 @@ begin
 	v_rows := jsonb_build_object('kind','table-rows','header','["c1"]'::jsonb,'rows',(select jsonb_agg(jsonb_build_object('line', n + 1,
 		'fields', jsonb_build_array(lpad(to_hex(n), 4, '0'))) order by n) from generate_series(1, 13000) n));
 	v_start := clock_timestamp();
-	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0004', jsonb_build_array(pg_temp.p16_folder(m, 'tables/tall',
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0004', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/tall',
 		jsonb_build_object('table.toml', v_wide || jsonb_build_object('id','86500000-0000-4000-8000-000000000007','columns',
 			jsonb_build_array(v_wide -> 'columns' -> 0)), 'rows.csv', v_rows)))), 1, 'saved');
 	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
 	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
 		|| format('; a new table of 13,000 one-field rows %s ms (parse %s bytes)', round(v_ms),
-		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('tables/tall/rows.csv'))), false);
+		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('QorperaOS/tables/tall/rows.csv'))), false);
 	if v_ms > 4000 then raise exception 'A table of the most rows takes % ms', v_ms; end if;
 end $$;
 select 'P16 cost: ' || current_setting('qorpera_test.p16_cost') as p16_cost \gset

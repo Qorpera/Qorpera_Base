@@ -278,8 +278,8 @@ it("lists a folder page by page, releasing the folder and every entry shown", as
 	// The top of the folder has no entry of its own.
 	const top = parse(await f.call("company_list", { path: "", after: null, limit: 50 }));
 	expect(top.version).toBeNull();
-	expect(top.entries.map((entry: { path: string }) => entry.path)).toEqual(["agents", "docs"]);
-	expect((f.releases[2]?.p_reads as { path: string }[]).map((read) => read.path)).toEqual(["agents", "docs"]);
+	expect(top.entries.map((entry: { path: string }) => entry.path)).toEqual(["QorperaOS", "docs"]);
+	expect((f.releases[2]?.p_reads as { path: string }[]).map((read) => read.path)).toEqual(["QorperaOS", "docs"]);
 });
 
 it("shows a wide page as the entries that fit one result, going on after the last shown", async () => {
@@ -569,10 +569,10 @@ it("answers a stale version and a missing folder as not applied, with what to do
 it("tells the model a page or table layout change is never made, and another rule's refusal can be fixed", async () => {
 	const layout = { code: "layout_authoring", message: "page and table layout authoring is not available" };
 	const f = await fixture(
-		{ folders: ["interfaces", "docs"] },
+		{ folders: ["QorperaOS/interfaces", "docs"] },
 		{
 			hook: (path) =>
-				path.startsWith("interfaces/")
+				path.startsWith("QorperaOS/interfaces/")
 					? { outcome: "refused", reason: "structured_rule", problems: [layout] }
 					: path === "docs/rule.md"
 						? {
@@ -585,7 +585,7 @@ it("tells the model a page or table layout change is never made, and another rul
 	);
 	const write = async (path: string, operationKey: string) =>
 		parse(await f.call("company_write", { path, operationKey, expectedVersion: null, text: "x" }));
-	const page = await write("interfaces/page.md", "write-page");
+	const page = await write("QorperaOS/interfaces/page.md", "write-page");
 	expect(page).toMatchObject({
 		state: "not_applied",
 		outcome: "refused",
@@ -599,7 +599,7 @@ it("tells the model a page or table layout change is never made, and another rul
 	expect(other).toMatchObject({ state: "not_applied", outcome: "refused", reason: "structured_rule" });
 	expect(other.next).not.toContain("COMPANY_FILE_LAYOUT_AUTHORING");
 	expect(other.next).toContain("call again with a new operationKey");
-	expect(f.text("interfaces/page.md")).toBeNull();
+	expect(f.text("QorperaOS/interfaces/page.md")).toBeNull();
 	expect(f.text("docs/rule.md")).toBeNull();
 });
 
@@ -819,21 +819,21 @@ it("answers a folder that changed after the listing that found it empty as a con
 
 it("notes a change of the company's pages and tables in the run's conversation, a replay's too (I10)", async () => {
 	const f = await fixture({
-		files: { "interfaces/pulse/README.md": "About Pulse.\n", "docs/plan.md": "plan" },
-		folders: ["Tables"],
+		files: { "QorperaOS/interfaces/pulse/README.md": "About Pulse.\n", "docs/plan.md": "plan" },
+		folders: ["QorperaOS/Tables"],
 	});
 	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
 	const asked = { p_binding: f.binding, p_request: {} };
 	const version = (path: string) => f.files.get(path)?.version as string;
 	const readme = {
-		path: "interfaces/pulse/README.md",
+		path: "QorperaOS/interfaces/pulse/README.md",
 		operationKey: "write-1",
-		expectedVersion: version("interfaces/pulse/README.md"),
+		expectedVersion: version("QorperaOS/interfaces/pulse/README.md"),
 		text: "About Pulse, by the agent.\n",
 	};
 	expect(parse(await f.call("company_write", readme))).toMatchObject({ state: "applied" });
 	// A folder by its path in any case: the folder's paths are one path in any case.
-	const mkdir = { path: "Tables/leads", operationKey: "mkdir-1", expectedVersion: null };
+	const mkdir = { path: "QorperaOS/Tables/leads", operationKey: "mkdir-1", expectedVersion: null };
 	expect(parse(await f.call("company_mkdir", mkdir))).toMatchObject({ state: "applied" });
 	// SQL notes each of the run's commits there once.
 	expect(f.notes).toEqual([asked, asked]);
@@ -844,8 +844,9 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	expect(f.notes).toHaveLength(2);
 	// A note that fails after the commit is a folder error, never a refusal (which says nothing happened): the call is
 	// unconfirmed.
-	const folder = parse(await f.call("company_read", { path: "Tables/leads", offset: 0, limit: 4 })).version as string;
-	const deletion = { path: "Tables/leads", operationKey: "delete-1", expectedVersion: folder };
+	const folder = parse(await f.call("company_read", { path: "QorperaOS/Tables/leads", offset: 0, limit: 4 }))
+		.version as string;
+	const deletion = { path: "QorperaOS/Tables/leads", operationKey: "delete-1", expectedVersion: folder };
 	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
 	const error = await f.call("company_delete", deletion).then(
 		() => null,
@@ -853,7 +854,7 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	);
 	expect(error).toBeInstanceOf(CloudCompanyFolderError);
 	expect(error).not.toBeInstanceOf(CloudToolRefusal);
-	expect(f.folders.has("Tables/leads")).toBe(false);
+	expect(f.folders.has("QorperaOS/Tables/leads")).toBe(false);
 	expect(f.notes).toEqual([asked, asked]);
 	// The same call again, as a later turn makes it: its receipt answers, nothing is committed twice, and the change
 	// gets its note.

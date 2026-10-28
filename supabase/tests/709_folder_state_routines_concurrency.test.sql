@@ -99,18 +99,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70900000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 -- P15: the follow-up queue, run at once after a commit that marked something, as its step would: each marked subject
 -- taken, then each dirty one converged (the company first, then the agents).
@@ -146,7 +146,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70900000-0000-4000-8000-000000000020'
@@ -257,22 +257,22 @@ end $$;
 
 -- The creation commit, a hire with a routines folder, an every-hour routine and a dynamic one, committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'race-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Routine Race'),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
-	pg_temp.hire('co-founder', '70900000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 5, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Routine Race'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	pg_temp.hire('co-founder', '70900000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 6, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-0001', jsonb_build_array(
 	pg_temp.hire('nora', '70900000-0000-4000-8000-0000000000a1', 'Nora'),
-	jsonb_build_object('op','mkdir','path','agents/nora/routines'))), 2, 'saved') \g /dev/null
-select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-routine-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents/nora/routines'))), 2, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-routine-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 	pg_temp.rparse('70900000-0000-4000-8000-0000000000e1', 'Inbox', pg_temp.every())))), 1, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.reviewed(pg_temp.routine_run('70900000-0000-4000-8000-0000000000e1'), 'race-dynamic-0001', jsonb_build_array(
-	pg_temp.routine('agents/nora/routines/follow-up.md', pg_temp.rparse('70900000-0000-4000-8000-0000000000e2', 'Follow up',
+	pg_temp.routine('QorperaOS/agents/nora/routines/follow-up.md', pg_temp.rparse('70900000-0000-4000-8000-0000000000e2', 'Follow up',
 		pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved') \g /dev/null
 -- The saves, staged now: staging an object inside the save's own transaction would lock the company row itself.
 select set_config('qorpera_test.slot', (date_trunc('milliseconds', clock_timestamp()) + interval '1 minute')::text, false) \g /dev/null
 select set_config('qorpera_test.retitle', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-retitle-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	pg_temp.owner()::text, 'race-retitle-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e1', 'Inbox, first look', pg_temp.every())))::text), false) \g /dev/null
 select set_config('qorpera_test.enqueue', format('select public.qorpera_enqueue_routine_wake(%L, 1, %L, %L, %L, %L, null, %L)::text',
 	'70900000-0000-4000-8000-0000000000e1', '70900000-0000-4000-8000-0000000000f1', 'race-slot-1', 'file',
@@ -328,7 +328,7 @@ end $$;
 -- the scheduler starts. The scheduler waits for the save at the routine row, and then finds a new version: it refuses,
 -- and reads the routine again.
 select set_config('qorpera_test.retitle_2', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-retitle-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	pg_temp.owner()::text, 'race-retitle-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e1', 'Inbox, second look', pg_temp.every())))::text), false) \g /dev/null
 select set_config('qorpera_test.enqueue_2', format('select public.qorpera_enqueue_routine_wake(%L, 2, %L, %L, %L, %L, %L, %L)::text',
 	'70900000-0000-4000-8000-0000000000e1', '70900000-0000-4000-8000-0000000000f2', 'race-slot-2', 'file',
@@ -339,7 +339,7 @@ declare v jsonb;
 begin
 	perform dblink_exec('rrace_hold', 'begin');
 	perform * from dblink('rrace_hold', $q$select 1 from public.qorpera_folder_entries
-		where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = 'agents/nora/routines/inbox.md' for update$q$) as t(x integer);
+		where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = 'qorperaos/agents/nora/routines/inbox.md' for update$q$) as t(x integer);
 	perform dblink_send_query('rrace_save', current_setting('qorpera_test.retitle_2'));
 	if not pg_temp.waits_for('rrace_save', 'rrace_hold') then raise exception 'The save must wait on the held path'; end if;
 	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.enqueue_2'));
@@ -362,10 +362,10 @@ end $$;
 -- file it no longer matches, and the run owes no decision any more: the member's version superseded it.
 select set_config('qorpera_test.decider', pg_temp.routine_run('70900000-0000-4000-8000-0000000000e2')::text, false) \g /dev/null
 select set_config('qorpera_test.member_edit', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-edit-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/follow-up.md',
+	pg_temp.owner()::text, 'race-edit-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/follow-up.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e2', 'Follow up with Otto', pg_temp.once('2030-01-01T09:00:00Z'))))::text), false) \g /dev/null
 select set_config('qorpera_test.decision', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
-	current_setting('qorpera_test.decider'), 'race-decide-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/follow-up.md',
+	current_setting('qorpera_test.decider'), 'race-decide-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/follow-up.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e2', 'Follow up', pg_temp.once('2030-02-01T09:00:00Z'))))::text), false) \g /dev/null
 do $$
 declare v jsonb;
@@ -374,7 +374,7 @@ begin
 		raise exception 'The run owes its decision'; end if;
 	perform dblink_exec('rrace_hold', 'begin');
 	perform * from dblink('rrace_hold', $q$select 1 from public.qorpera_folder_entries
-		where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = 'agents/nora/routines/follow-up.md' for update$q$) as t(x integer);
+		where environment_id = '70900000-0000-4000-8000-000000000020' and key_text = 'qorperaos/agents/nora/routines/follow-up.md' for update$q$) as t(x integer);
 	perform dblink_send_query('rrace_save', current_setting('qorpera_test.member_edit'));
 	if not pg_temp.waits_for('rrace_save', 'rrace_hold') then raise exception 'The edit must wait on the held path'; end if;
 	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.decision'));
@@ -394,7 +394,7 @@ end $$;
 -- D. A save that makes a version never waits for a login: it reads who pays without the lock an admission takes, so a
 -- login's own change, which holds its row, never meets a commit that holds the clock.
 select set_config('qorpera_test.retitle_3', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
-	pg_temp.owner()::text, 'race-retitle-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	pg_temp.owner()::text, 'race-retitle-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e1', 'Inbox, third look', pg_temp.every())))::text), false) \g /dev/null
 do $$
 declare v jsonb;

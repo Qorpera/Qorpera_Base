@@ -202,29 +202,31 @@ describe("creationUnits", () => {
 			contents?: { path: string; kind: string; file?: PlatformFileReference }[];
 			structured?: { path: string; kind: string; parserVersion: number }[];
 		}[];
+		// QorperaOS/ first, then the platform's folders under it.
 		expect(units.map((unit) => `${unit.op} ${unit.path}`)).toEqual([
-			"mkdir vision",
-			"write vision/vision.md",
-			"mkdir agents",
-			"write agents/sections.md",
-			"new_folder agents/co-founder",
-			"mkdir agents/groups",
-			"mkdir connections",
-			"mkdir human-tasks",
-			"mkdir contacts",
-			"mkdir skills",
-			"mkdir skills/human-task",
-			"write skills/human-task/SKILL.md",
-			"mkdir rules",
-			"mkdir interfaces",
-			"new_folder interfaces/mailbox",
-			"new_folder interfaces/members",
-			"write interfaces/order.md",
-			"mkdir tables",
-			"new_folder tables/areas",
+			"mkdir QorperaOS",
+			"mkdir QorperaOS/vision",
+			"write QorperaOS/vision/vision.md",
+			"mkdir QorperaOS/agents",
+			"write QorperaOS/agents/sections.md",
+			"new_folder QorperaOS/agents/co-founder",
+			"mkdir QorperaOS/agents/groups",
+			"mkdir QorperaOS/connections",
+			"mkdir QorperaOS/human-tasks",
+			"mkdir QorperaOS/contacts",
+			"mkdir QorperaOS/skills",
+			"mkdir QorperaOS/skills/human-task",
+			"write QorperaOS/skills/human-task/SKILL.md",
+			"mkdir QorperaOS/rules",
+			"mkdir QorperaOS/interfaces",
+			"new_folder QorperaOS/interfaces/mailbox",
+			"new_folder QorperaOS/interfaces/members",
+			"write QorperaOS/interfaces/order.md",
+			"mkdir QorperaOS/tables",
+			"new_folder QorperaOS/tables/areas",
 		]);
 		const byPath = (path: string) => units.find((candidate) => candidate.path === path);
-		const cofounder = byPath("agents/co-founder");
+		const cofounder = byPath("QorperaOS/agents/co-founder");
 		expect(cofounder?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
 			"file agent.md",
 			"folder memory",
@@ -233,28 +235,30 @@ describe("creationUnits", () => {
 			"folder todos",
 			"file todos/start-with-the-founders.md",
 		]);
-		expect(cofounder?.contents?.[0]?.file).toBe(files.get("agents/co-founder/agent.md"));
+		expect(cofounder?.contents?.[0]?.file).toBe(files.get("QorperaOS/agents/co-founder/agent.md"));
 		expect(cofounder?.structured?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
-			"agent agents/co-founder/agent.md",
-			"todo agents/co-founder/todos/start-with-the-founders.md",
+			"agent QorperaOS/agents/co-founder/agent.md",
+			"todo QorperaOS/agents/co-founder/todos/start-with-the-founders.md",
 		]);
-		expect(byPath("vision/vision.md")?.structured?.[0]?.kind).toBe("vision");
-		expect(byPath("agents/sections.md")?.structured?.[0]?.kind).toBe("sections");
+		expect(byPath("QorperaOS/vision/vision.md")?.structured?.[0]?.kind).toBe("vision");
+		expect(byPath("QorperaOS/agents/sections.md")?.structured?.[0]?.kind).toBe("sections");
 		// The seeded skill is no structured file: bytes only.
-		expect(byPath("skills/human-task/SKILL.md")?.structured).toBeUndefined();
-		expect(byPath("skills/human-task/SKILL.md")?.file).toBe(files.get("skills/human-task/SKILL.md"));
+		expect(byPath("QorperaOS/skills/human-task/SKILL.md")?.structured).toBeUndefined();
+		expect(byPath("QorperaOS/skills/human-task/SKILL.md")?.file).toBe(
+			files.get("QorperaOS/skills/human-task/SKILL.md"),
+		);
 		// A table's definition and rows go in one unit, so its first rows read the definition it brings (P16).
-		const areas = byPath("tables/areas");
+		const areas = byPath("QorperaOS/tables/areas");
 		expect(areas?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
 			"file table.toml",
 			"file rows.csv",
 		]);
 		expect(areas?.structured?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
-			"table tables/areas/table.toml",
-			"table-rows tables/areas/rows.csv",
+			"table QorperaOS/tables/areas/table.toml",
+			"table-rows QorperaOS/tables/areas/rows.csv",
 		]);
-		expect(byPath("interfaces/order.md")?.structured?.[0]?.kind).toBe("interface-order");
-		expect(byPath("interfaces/mailbox")?.structured?.[0]?.kind).toBe("interface");
+		expect(byPath("QorperaOS/interfaces/order.md")?.structured?.[0]?.kind).toBe("interface-order");
+		expect(byPath("QorperaOS/interfaces/mailbox")?.structured?.[0]?.kind).toBe("interface");
 	});
 
 	it("refuses a file that was not staged", () => {
@@ -270,7 +274,7 @@ describe("CompanyFolderCreator", () => {
 		const create = named("qorpera_folder_company_create");
 		expect(create).toHaveLength(1);
 		expect(create[0]?.args).toMatchObject({ p_worker: workerId, p_creation_id: creationId, p_generation: 2 });
-		expect((create[0]?.args.p_units as unknown[]).length).toBe(19);
+		expect((create[0]?.args.p_units as unknown[]).length).toBe(20);
 		// One upload per file: the vision, the sections, the agent, the first todo and the skill, then the library's two
 		// pages, its order and the areas table's two files.
 		expect(named("qorpera_folder_open_upload")).toHaveLength(10);
@@ -286,7 +290,7 @@ describe("CompanyFolderCreator", () => {
 			contents?: { path: string; file?: { mediaType: string } }[];
 		}[];
 		expect(
-			units.find((unit) => unit.path === "tables/areas")?.contents?.map((entry) => entry.file?.mediaType),
+			units.find((unit) => unit.path === "QorperaOS/tables/areas")?.contents?.map((entry) => entry.file?.mediaType),
 		).toEqual(["text/plain", "text/plain"]);
 		expect(named("qorpera_folder_company_creation_release")).toHaveLength(0);
 		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);

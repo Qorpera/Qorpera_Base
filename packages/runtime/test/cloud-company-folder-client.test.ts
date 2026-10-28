@@ -371,7 +371,7 @@ describe("reads and listings", () => {
 			title: `Todo ${todoKey}`,
 			state: "open",
 			detail: "Call first.",
-			path: `agents/nora/todos/${todoKey}.md`,
+			path: `QorperaOS/agents/nora/todos/${todoKey}.md`,
 			version: randomUUID(),
 			updatedAt: "2026-10-01T10:00:00Z",
 			cursor: randomUUID(),
@@ -452,7 +452,7 @@ describe("reads and listings", () => {
 			outputs: [],
 			reportedAt: null,
 			decision: null,
-			folder: `agents/nora/todos/market-scan/${workerKey}`,
+			folder: `QorperaOS/agents/nora/todos/market-scan/${workerKey}`,
 			cursor: randomUUID(),
 			...extra,
 		});
@@ -525,13 +525,13 @@ describe("commits", () => {
 				{ op: "write", path: "notes/b.md", content: { text: plain }, expectedVersion },
 				{
 					op: "new_folder",
-					path: "agents/nora",
+					path: "QorperaOS/agents/nora",
 					contents: [
 						{ path: "agent.md", kind: "file", content: { text: AGENT_TEXT } },
 						{ path: "memory", kind: "folder" },
 					],
 				},
-				{ op: "write", path: "agents/otto/agent.md", content: { text: refused } },
+				{ op: "write", path: "QorperaOS/agents/otto/agent.md", content: { text: refused } },
 				{ op: "mkdir", path: "notes/old" },
 				{ op: "delete", path: "notes/old", expectedVersion, asOfSeq: 3 },
 				{ op: "move", from: "notes/a.md", to: "notes/c.md", expectedVersion },
@@ -544,8 +544,8 @@ describe("commits", () => {
 		// The same bytes are stored once.
 		expect(bytes.put).toHaveBeenCalledTimes(3);
 		const file = stagedFile(plain);
-		const parse = parseCompanyStateFile("agents/nora/agent.md", AGENT_TEXT);
-		const problems = parseCompanyStateFile("agents/otto/agent.md", refused);
+		const parse = parseCompanyStateFile("QorperaOS/agents/nora/agent.md", AGENT_TEXT);
+		const problems = parseCompanyStateFile("QorperaOS/agents/otto/agent.md", refused);
 		expect(parse?.ok).toBe(true);
 		expect(problems?.ok).toBe(false);
 		expect(calls).toHaveLength(1);
@@ -558,14 +558,14 @@ describe("commits", () => {
 				{ op: "write", path: "notes/b.md", file, expectedVersion },
 				{
 					op: "new_folder",
-					path: "agents/nora",
+					path: "QorperaOS/agents/nora",
 					contents: [
 						{ path: "agent.md", kind: "file", file: stagedFile(AGENT_TEXT) },
 						{ path: "memory", kind: "folder" },
 					],
 					structured: [
 						{
-							path: "agents/nora/agent.md",
+							path: "QorperaOS/agents/nora/agent.md",
 							kind: "agent",
 							text: AGENT_TEXT,
 							parse: parse?.ok ? JSON.parse(JSON.stringify(parse.file)) : null,
@@ -575,11 +575,11 @@ describe("commits", () => {
 				},
 				{
 					op: "write",
-					path: "agents/otto/agent.md",
+					path: "QorperaOS/agents/otto/agent.md",
 					file: stagedFile(refused),
 					structured: [
 						{
-							path: "agents/otto/agent.md",
+							path: "QorperaOS/agents/otto/agent.md",
 							kind: "agent",
 							problems: problems?.ok ? null : JSON.parse(JSON.stringify(problems?.problems)),
 						},
@@ -607,7 +607,7 @@ describe("commits", () => {
 				{
 					unit: 2,
 					op: "write",
-					path: "agents/x/agent.md",
+					path: "QorperaOS/agents/x/agent.md",
 					outcome: "refused",
 					reason: "structured_invalid",
 					problems: [problem, whole],
@@ -619,7 +619,7 @@ describe("commits", () => {
 			"tool-call-2",
 			[
 				{ op: "write", path: "a.md", content: { text: "x" }, expectedVersion: randomUUID() },
-				{ op: "write", path: "agents/x/agent.md", content: { text: AGENT_TEXT } },
+				{ op: "write", path: "QorperaOS/agents/x/agent.md", content: { text: AGENT_TEXT } },
 				{ op: "delete", path: "b", expectedVersion: randomUUID(), asOfSeq: 1 },
 			],
 			{ reviewId: randomUUID() },
@@ -640,7 +640,7 @@ describe("commits", () => {
 			{
 				unit: 2,
 				op: "write",
-				path: "agents/x/agent.md",
+				path: "QorperaOS/agents/x/agent.md",
 				to: null,
 				version: null,
 				outcome: "refused",
@@ -861,13 +861,13 @@ describe("commits", () => {
 	});
 
 	it("sends a structured file whose bytes are not text with its problem, and lets SQL refuse it", async () => {
-		const { client, calls } = fixture(() => saved([{ op: "write", path: "agents/x/agent.md" }]));
+		const { client, calls } = fixture(() => saved([{ op: "write", path: "QorperaOS/agents/x/agent.md" }]));
 		await client.commit(
 			"tool-call-14",
 			[
 				{
 					op: "write",
-					path: "agents/x/agent.md",
+					path: "QorperaOS/agents/x/agent.md",
 					content: { bytes: Uint8Array.of(0xc3, 0x28), mediaType: "text/markdown" },
 				},
 			],
@@ -876,7 +876,7 @@ describe("commits", () => {
 		);
 		expect((calls[0]!.args.p_units as Record<string, unknown>[])[0]!.structured).toEqual([
 			{
-				path: "agents/x/agent.md",
+				path: "QorperaOS/agents/x/agent.md",
 				kind: "agent",
 				problems: [{ line: null, key: null, code: "encoding", message: "the file is not UTF-8 text" }],
 			},
@@ -1152,7 +1152,7 @@ describe("reviewed change sets (C2 R1)", () => {
 		argumentSha256: sha("call"),
 	});
 	const units = [
-		{ op: "write", path: "agents/nora/routines/daily.md", content: { text: "Daily.\n" } },
+		{ op: "write", path: "QorperaOS/agents/nora/routines/daily.md", content: { text: "Daily.\n" } },
 		{ op: "delete", path: "old.md", expectedVersion: randomUUID() },
 	] as const;
 
@@ -1272,20 +1272,26 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		{
 			unit: 1,
 			op: "new_folder",
-			path: "agents/nora",
+			path: "QorperaOS/agents/nora",
 			items: 1,
-			contains: [{ path: "agents/nora/agent.md", kind: "file" }],
+			contains: [{ path: "QorperaOS/agents/nora/agent.md", kind: "file" }],
 			structured: [
-				{ path: "agents/nora/agent.md", kind: "agent", parse: { kind: "agent", id: AGENT_ID, name: "Nora" } },
+				{
+					path: "QorperaOS/agents/nora/agent.md",
+					kind: "agent",
+					parse: { kind: "agent", id: AGENT_ID, name: "Nora" },
+				},
 			],
 		},
 		{ unit: 2, op: "move", path: "docs/a.md", to: "docs/b.md" },
 	] as const;
 	// Every path it names, with its authority (the third unit's too, though it is not listed).
-	const reads = ["agents/nora", "agents/nora/agent.md", "docs/a.md", "docs/b.md", "docs/c.md"].map((path) => ({
-		path,
-		authority: RECEIPT,
-	}));
+	const reads = ["QorperaOS/agents/nora", "QorperaOS/agents/nora/agent.md", "docs/a.md", "docs/b.md", "docs/c.md"].map(
+		(path) => ({
+			path,
+			authority: RECEIPT,
+		}),
+	);
 	const proposal = (extra: Record<string, unknown> = {}) => ({
 		proposalId: PROPOSAL,
 		createdAt: "2026-10-05T10:00:00+00:00",
@@ -1347,7 +1353,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			page({
 				proposals: [
 					proposal({
-						units: [{ ...units[0], contains: [{ path: "agents/nora/agent.md", kind: "x" }] }, units[1]],
+						units: [{ ...units[0], contains: [{ path: "QorperaOS/agents/nora/agent.md", kind: "x" }] }, units[1]],
 					}),
 				],
 			}),
@@ -1375,8 +1381,8 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 
 	it("lists a view's links: a new folder's link with its target, and a link's own unit at its path", async () => {
 		const contains = [
-			{ path: "agents/nora/agent.md", kind: "file" },
-			{ path: "agents/nora/latest", kind: "symlink", target: "../../docs/b.md" },
+			{ path: "QorperaOS/agents/nora/agent.md", kind: "file" },
+			{ path: "QorperaOS/agents/nora/latest", kind: "symlink", target: "../../../docs/b.md" },
 		];
 		const linked = [
 			{ ...units[0], items: 2, contains },
@@ -1393,11 +1399,11 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			page({ proposals: [proposal({ units: [{ ...units[0], contains: [item] }, units[1]] })] });
 		for (const bad of [
 			// A link's item carries its target, of 1 to 4,095 bytes; no other item has one.
-			withItem({ path: "agents/nora/latest", kind: "symlink" }),
-			withItem({ path: "agents/nora/latest", kind: "symlink", target: "" }),
-			withItem({ path: "agents/nora/latest", kind: "symlink", target: "x".repeat(4096) }),
-			withItem({ path: "agents/nora/agent.md", kind: "file", target: "x" }),
-			withItem({ path: "agents/nora/docs", kind: "folder", target: "x" }),
+			withItem({ path: "QorperaOS/agents/nora/latest", kind: "symlink" }),
+			withItem({ path: "QorperaOS/agents/nora/latest", kind: "symlink", target: "" }),
+			withItem({ path: "QorperaOS/agents/nora/latest", kind: "symlink", target: "x".repeat(4096) }),
+			withItem({ path: "QorperaOS/agents/nora/agent.md", kind: "file", target: "x" }),
+			withItem({ path: "QorperaOS/agents/nora/docs", kind: "folder", target: "x" }),
 		]) {
 			answers.push(bad);
 			await expect(client.agentProposals({}, signal()), JSON.stringify(bad)).rejects.toThrow(/invalid/);
@@ -1441,7 +1447,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		const receiptId = randomUUID();
 		const commitId = randomUUID();
 		const results = [
-			{ unit: 1, op: "new_folder", path: "agents/nora", outcome: "saved", version: randomUUID() },
+			{ unit: 1, op: "new_folder", path: "QorperaOS/agents/nora", outcome: "saved", version: randomUUID() },
 			{ unit: 2, op: "move", path: "docs/a.md", to: "docs/b.md", outcome: "conflict", reason: "version_changed" },
 			// Past the list, any op.
 			{ unit: 3, op: "delete", path: "docs/c.md", outcome: "conflict", reason: "missing" },
@@ -1562,7 +1568,7 @@ describe("routines (thin writers W4c)", () => {
 			nextRunAt: "2026-10-02T09:00:00+00:00",
 			conclusion: null,
 			concludedAt: null,
-			path: `agents/nora/routines/${routineKey}.md`,
+			path: `QorperaOS/agents/nora/routines/${routineKey}.md`,
 			folderVersion: randomUUID(),
 			cursor: id,
 			file: { kind: "routine", id, title: `Routine ${routineKey}`, status: "active", instructions: "Look." },

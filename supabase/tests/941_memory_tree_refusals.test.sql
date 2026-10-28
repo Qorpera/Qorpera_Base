@@ -94,10 +94,10 @@ create function pg_temp.group_parse(p_id uuid, p_name text, p_agents uuid[], p_p
 		'people',to_jsonb(coalesce(p_people, '{}'::uuid[])),'purpose','Plan the launch.')
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 
@@ -105,7 +105,7 @@ $$;
 
 do $$
 declare
-	b0 constant text := 'agents/nora/memory/thread/t0/00000000.jsonl'; t1 constant text := 'agents/nora/memory/thread/t1/00000000.jsonl';
+	b0 constant text := 'qorperaos/agents/nora/memory/thread/t0/00000000.jsonl'; t1 constant text := 'qorperaos/agents/nora/memory/thread/t1/00000000.jsonl';
 	full_block text[] := array(select pg_temp.line0(k, k + 1) from generate_series(0, 15) k)
 		|| array(select pg_temp.line(1, k) from generate_series(0, 7) k) || array(select pg_temp.line(2, k) from generate_series(0, 3) k)
 		|| array(select pg_temp.line(3, k) from generate_series(0, 1) k);
@@ -120,8 +120,8 @@ begin
 		pg_temp.block_result(b0, E'\n'),
 		pg_temp.block_result(b0, repeat('x', 65004) || E'\n'),
 		pg_temp.block_result(b0, pg_temp.line0(0, 1) || E'\n\n' || pg_temp.line0(1, 3) || E'\n'),
-		pg_temp.block_result('agents/nora/memory/thread/t15/00000000.jsonl', pg_temp.block(array[pg_temp.line(60, 0)])),
-		pg_temp.block_result('agents/nora/memory/thread/t0/0000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1)]))]),
+		pg_temp.block_result('qorperaos/agents/nora/memory/thread/t15/00000000.jsonl', pg_temp.block(array[pg_temp.line(60, 0)])),
+		pg_temp.block_result('qorperaos/agents/nora/memory/thread/t0/0000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1)]))]),
 		to_jsonb(array['lines 30', size_problem, size_problem, size_problem, size_problem, size_problem,
 			'2 this line is not a summary line', '- a block''s name is t<tier>/<8 digits>.jsonl',
 			'- a block''s name is t<tier>/<8 digits>.jsonl']), 'A block''s count, size and name');
@@ -153,7 +153,7 @@ begin
 		pg_temp.block_result(t1, pg_temp.block(array[pg_temp.line0(0, 1)])),
 		pg_temp.block_result(t1, pg_temp.block(array[pg_temp.line(4, 0), pg_temp.line(4, 15), pg_temp.line(7, 1)])),
 		pg_temp.block_result(t1, pg_temp.block(array[pg_temp.line(4, 16)])),
-		pg_temp.block_result('agents/nora/memory/thread/t1/00000001.jsonl', pg_temp.block(array[pg_temp.line(4, 16), pg_temp.line(7, 3)]))]),
+		pg_temp.block_result('qorperaos/agents/nora/memory/thread/t1/00000001.jsonl', pg_temp.block(array[pg_temp.line(4, 16), pg_temp.line(7, 3)]))]),
 		to_jsonb(array['2 the lines go by level, then by number, each once', '2 the lines go by level, then by number, each once',
 			'2 the lines go by level, then by number, each once', '1 this line does not belong in this block',
 			'1 this line does not belong in this block', '1 this line does not belong in this block',
@@ -198,7 +198,7 @@ declare
 	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; otto constant uuid := '70000000-0000-4000-8000-0000000000a2';
 	launch constant uuid := '70000000-0000-4000-8000-0000000000b1'; ns uuid; gs uuid; r jsonb; i integer;
 	pia constant uuid := '70000000-0000-4000-8000-0000000000a3'; ps uuid;
-	root constant text := 'agents/nora/memory/thread';
+	root constant text := 'QorperaOS/agents/nora/memory/thread';
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'refuse-hire-1', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'),
 		pg_temp.hire('otto', otto, 'Otto'), jsonb_build_object('op','mkdir','path','notes')));
@@ -214,8 +214,8 @@ begin
 		pg_temp.tree_file(root || '/tree.toml', pg_temp.toml(ns)), jsonb_build_object('op','mkdir','path',root || '/t0'),
 		pg_temp.tree_file(root || '/t0/00000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(1, 3)]))), array[ns]);
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	r := pg_temp.memory('refuse-tree-2', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/groups/launch/memory'),
-		pg_temp.tree_file('agents/groups/launch/memory/tree.toml', pg_temp.toml(gs))), array[gs]);
+	r := pg_temp.memory('refuse-tree-2', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups/launch/memory'),
+		pg_temp.tree_file('QorperaOS/agents/groups/launch/memory/tree.toml', pg_temp.toml(gs))), array[gs]);
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 
 	-- A copy out of a tree is a read: its files are ordinary files there, and no tree.
@@ -229,8 +229,8 @@ begin
 		or pg_temp.version('notes/thread-copy/t0/00000000.jsonl') is null then
 		raise exception 'A copy out of a tree indexes nothing'; end if;
 	-- The notebook beside the thread stays the agent's.
-	r := pg_temp.commit(pg_temp.owner(), 'refuse-notebook-1', jsonb_build_array(pg_temp.plain('agents/nora/memory/notes.md', 'Remember.'),
-		jsonb_build_object('op','mkdir','path','agents/nora/memory/people')));
+	r := pg_temp.commit(pg_temp.owner(), 'refuse-notebook-1', jsonb_build_array(pg_temp.plain('QorperaOS/agents/nora/memory/notes.md', 'Remember.'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/nora/memory/people')));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 	-- A folder elsewhere shaped like a tree, to move into agents/.
@@ -245,73 +245,73 @@ begin
 		pg_temp.plain(root || '/notes.md', 'Mine.'),
 		pg_temp.tree_file(root || '/tree.toml', pg_temp.toml(ns, 512), pg_temp.version(root || '/tree.toml')),
 		pg_temp.tree_file(root || '/t0/00000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1)]), pg_temp.version(root || '/t0/00000000.jsonl')),
-		jsonb_build_object('op','mkdir','path','agents/otto/memory/thread'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/otto/memory/thread'),
 		jsonb_build_object('op','mkdir','path',root || '/t1'),
-		jsonb_build_object('op','mkdir','path','agents/groups/launch/memory/t0'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups/launch/memory/t0'),
 		jsonb_set(pg_temp.hire('pia', '70000000-0000-4000-8000-0000000000a3', 'Pia'), '{contents}',
 			(pg_temp.hire('pia', '70000000-0000-4000-8000-0000000000a3', 'Pia') -> 'contents')
 				|| jsonb_build_array(jsonb_build_object('path','memory/thread','kind','folder'))),
 		-- deletes of a tree's files, its root, or the notebook folder that holds the root
 		jsonb_build_object('op','delete','path',root || '/t0/00000000.jsonl','expectedVersion',pg_temp.version(root || '/t0/00000000.jsonl')),
 		jsonb_build_object('op','delete','path',root,'expectedVersion',pg_temp.version(root),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','delete','path','agents/nora/memory','expectedVersion',pg_temp.version('agents/nora/memory'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','delete','path','agents/groups/launch/memory','expectedVersion',pg_temp.version('agents/groups/launch/memory'),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/nora/memory','expectedVersion',pg_temp.version('QorperaOS/agents/nora/memory'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/groups/launch/memory','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch/memory'),
 			'asOfSeq',pg_temp.seq()),
 		-- moves of a tree's parts, onto a root, or carrying a root to another kind of place
-		jsonb_build_object('op','move','from','agents/nora/memory','to','agents/nora/notebook','expectedVersion',
-			pg_temp.version('agents/nora/memory'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','QorperaOS/agents/nora/memory','to','QorperaOS/agents/nora/notebook','expectedVersion',
+			pg_temp.version('QorperaOS/agents/nora/memory'),'asOfSeq',pg_temp.seq()),
 		jsonb_build_object('op','move','from',root || '/t0','to',root || '/t1','expectedVersion',pg_temp.version(root || '/t0'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','notes/thread-copy','to','agents/otto/memory/thread','expectedVersion',
+		jsonb_build_object('op','move','from','notes/thread-copy','to','QorperaOS/agents/otto/memory/thread','expectedVersion',
 			pg_temp.version('notes/thread-copy'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','agents/nora','to','agents/groups/nora','expectedVersion',pg_temp.version('agents/nora'),
+		jsonb_build_object('op','move','from','QorperaOS/agents/nora','to','QorperaOS/agents/groups/nora','expectedVersion',pg_temp.version('QorperaOS/agents/nora'),
 			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','agents/groups/launch','to','agents/launch','expectedVersion',
-			pg_temp.version('agents/groups/launch'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','notes/x','to','agents/x','expectedVersion',pg_temp.version('notes/x'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','QorperaOS/agents/groups/launch','to','QorperaOS/agents/launch','expectedVersion',
+			pg_temp.version('QorperaOS/agents/groups/launch'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','notes/x','to','QorperaOS/agents/x','expectedVersion',pg_temp.version('notes/x'),'asOfSeq',pg_temp.seq()),
 		-- copies into a tree, or of a folder holding one into agents/
-		jsonb_build_object('op','copy','from','agents/nora/memory/notes.md','to',root || '/notes.md'),
-		jsonb_build_object('op','copy','from','notes/thread-copy','to','agents/otto/memory/thread'),
-		jsonb_build_object('op','copy','from','agents/nora','to','agents/nora-copy'),
-		jsonb_build_object('op','copy','from','notes/x','to','agents/x')]) with ordinality x(u, o) order by o loop
+		jsonb_build_object('op','copy','from','QorperaOS/agents/nora/memory/notes.md','to',root || '/notes.md'),
+		jsonb_build_object('op','copy','from','notes/thread-copy','to','QorperaOS/agents/otto/memory/thread'),
+		jsonb_build_object('op','copy','from','QorperaOS/agents/nora','to','QorperaOS/agents/nora-copy'),
+		jsonb_build_object('op','copy','from','notes/x','to','QorperaOS/agents/x')]) with ordinality x(u, o) order by o loop
 		perform pg_temp.refused(r, 1, 'platform_only', 'summary trees are written by the platform only');
 	end loop;
 	-- The platform too, without the memory commit.
 	perform pg_temp.refused(pg_temp.commit('{"kind":"platform"}', 'refuse-platform-1', jsonb_build_array(
 		pg_temp.tree_file(root || '/t0/00000001.jsonl', pg_temp.block(array[pg_temp.line0(16, 18)])))),
 		1, 'platform_only', 'summary trees are written by the platform only');
-	if pg_temp.version(root || '/tree.toml') is null or pg_temp.version('agents/x') is not null or pg_temp.version('agents/nora-copy') is not null
-		or pg_temp.version('agents/otto/memory/thread') is not null then
+	if pg_temp.version(root || '/tree.toml') is null or pg_temp.version('QorperaOS/agents/x') is not null or pg_temp.version('QorperaOS/agents/nora-copy') is not null
+		or pg_temp.version('QorperaOS/agents/otto/memory/thread') is not null then
 		raise exception 'Nothing refused changed the folder'; end if;
 
 	-- Until it holds the root, agents/<agent>/memory is the agent's: Pia clears it away, puts a file there, makes it
 	-- again spelled otherwise and moves it out and back. Then the memory commit makes her root, and it is the platform's.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-1', jsonb_build_array(pg_temp.hire('pia', pia, 'Pia'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-2', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-3', jsonb_build_array(pg_temp.plain('agents/pia/memory', 'A file.'))),
+		'path','QorperaOS/agents/pia/memory','expectedVersion',pg_temp.version('QorperaOS/agents/pia/memory'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-3', jsonb_build_array(pg_temp.plain('QorperaOS/agents/pia/memory', 'A file.'))),
 		1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-4', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory')))), 1, 'saved');
+		'path','QorperaOS/agents/pia/memory','expectedVersion',pg_temp.version('QorperaOS/agents/pia/memory')))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-5', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','agents/pia/Memory'))), 1, 'saved');
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/pia/Memory'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-6', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/pia/Memory','to','agents/pia/notebook','expectedVersion',pg_temp.version('agents/pia/memory'),
+		'from','QorperaOS/agents/pia/Memory','to','QorperaOS/agents/pia/notebook','expectedVersion',pg_temp.version('QorperaOS/agents/pia/memory'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-7', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/pia/notebook','to','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/notebook'),
+		'from','QorperaOS/agents/pia/notebook','to','QorperaOS/agents/pia/memory','expectedVersion',pg_temp.version('QorperaOS/agents/pia/notebook'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	ps := pg_temp.thread(pia);
-	r := pg_temp.memory('refuse-pia-tree', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/pia/memory/thread'),
-		pg_temp.tree_file('agents/pia/memory/thread/tree.toml', pg_temp.toml(ps))), array[ps]);
+	r := pg_temp.memory('refuse-pia-tree', jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/agents/pia/memory/thread'),
+		pg_temp.tree_file('QorperaOS/agents/pia/memory/thread/tree.toml', pg_temp.toml(ps))), array[ps]);
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	for r in select pg_temp.commit(pg_temp.owner(), 'refuse-pia-' || (7 + o), jsonb_build_array(u)) from unnest(array[
-		jsonb_build_object('op','delete','path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory'),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/pia/memory','expectedVersion',pg_temp.version('QorperaOS/agents/pia/memory'),
 			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','agents/pia/memory','to','agents/pia/notebook','expectedVersion',
-			pg_temp.version('agents/pia/memory'),'asOfSeq',pg_temp.seq())]) with ordinality x(u, o) order by o loop
+		jsonb_build_object('op','move','from','QorperaOS/agents/pia/memory','to','QorperaOS/agents/pia/notebook','expectedVersion',
+			pg_temp.version('QorperaOS/agents/pia/memory'),'asOfSeq',pg_temp.seq())]) with ordinality x(u, o) order by o loop
 		perform pg_temp.refused(r, 1, 'platform_only', 'summary trees are written by the platform only');
 	end loop;
-	if pg_temp.version('agents/pia/memory/thread/tree.toml') is null or pg_temp.version('agents/pia/notebook') is not null then
+	if pg_temp.version('QorperaOS/agents/pia/memory/thread/tree.toml') is null or pg_temp.version('QorperaOS/agents/pia/notebook') is not null then
 		raise exception 'Pia''s tree stays where it is'; end if;
 end $$;
 
@@ -322,8 +322,8 @@ declare
 	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; otto constant uuid := '70000000-0000-4000-8000-0000000000a2';
 	ns uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000a1'); os uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000a2');
 	cs uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0');
-	root constant text := 'agents/nora/memory/thread'; oroot constant text := 'agents/otto/memory/thread'; r jsonb;
-	block0 constant text := 'agents/nora/memory/thread/t0/00000000.jsonl';
+	root constant text := 'QorperaOS/agents/nora/memory/thread'; oroot constant text := 'QorperaOS/agents/otto/memory/thread'; r jsonb;
+	block0 constant text := 'QorperaOS/agents/nora/memory/thread/t0/00000000.jsonl';
 	only_tree constant text := 'a summary tree holds only tree.toml, its blocks and its images; only blocks and images are deleted';
 	no_generation constant text := 'a summary tree''s change names its conversation''s generation';
 	mismatch constant text := 'a level-0 line does not match its message (seq, hash and number)';
@@ -336,7 +336,7 @@ begin
 		'to',root || '/t0/00000001.jsonl')), array[ns]), 1, 'structured_rule', 'a summary tree''s files are not moved or copied');
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-3', jsonb_build_array(pg_temp.plain('notes/a.md', 'A.')), array[ns]),
 		1, 'structured_rule', 'a memory commit writes only summary trees');
-	perform pg_temp.refused(pg_temp.memory('refuse-memory-4', jsonb_build_array(pg_temp.plain('agents/nora/memory/other.md', 'B.')),
+	perform pg_temp.refused(pg_temp.memory('refuse-memory-4', jsonb_build_array(pg_temp.plain('QorperaOS/agents/nora/memory/other.md', 'B.')),
 		array[ns]), 1, 'structured_rule', 'a memory commit writes only summary trees');
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-5', jsonb_build_array(pg_temp.plain(root || '/notes.md', 'C.')), array[ns]),
 		1, 'structured_rule', only_tree);
@@ -347,7 +347,7 @@ begin
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-8', jsonb_build_array(jsonb_build_object('op','mkdir','path',root || '/t15')),
 		array[ns]), 1, 'structured_rule', only_tree);
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-9', jsonb_build_array(jsonb_build_object('op','mkdir','path',root || '/T1')),
-		array[ns]), 1, 'structured_invalid', 'write the path in lowercase, as ' || root || '/t1', 'name');
+		array[ns]), 1, 'structured_invalid', 'write the path below QorperaOS/ in lowercase, as ' || root || '/t1', 'name');
 
 	-- Each tree.toml or t<n> unit names its conversation; the root alone needs none.
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-10', jsonb_build_array(
@@ -397,16 +397,16 @@ begin
 		1, 'structured_invalid', 'tree.toml is format = 1, conversation = "<id>" and node_bytes = 1 to 1024, one per line');
 	insert into public.qorpera_memory_trees(environment_id, session_id, root_path, root_key, owner_kind, owner_id, node_bytes,
 		toml_path_version, commit_id)
-	values ('70000000-0000-4000-8000-000000000020', os, 'agents/ghost/memory/thread', 'agents/ghost/memory/thread', 'agent', otto, 1024,
+	values ('70000000-0000-4000-8000-000000000020', os, 'QorperaOS/agents/ghost/memory/thread', 'qorperaos/agents/ghost/memory/thread', 'agent', otto, 1024,
 		extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-21', jsonb_build_array(pg_temp.tree_file(oroot || '/tree.toml', pg_temp.toml(os))),
 		array[os]), 1, 'structured_rule', 'another tree holds this conversation or this place');
 	-- The place: a tree of the Co-Founder's conversation at Otto's root. The change names both.
 	if cs is null then raise exception 'The Co-Founder has a thread'; end if;
-	update public.qorpera_memory_trees set session_id = cs, root_path = oroot, root_key = oroot where session_id = os;
+	update public.qorpera_memory_trees set session_id = cs, root_path = oroot, root_key = public.qorpera_folder_key(oroot) where session_id = os;
 	perform pg_temp.refused(pg_temp.memory('refuse-memory-22', jsonb_build_array(pg_temp.tree_file(oroot || '/tree.toml', pg_temp.toml(os))),
 		array[os, cs]), 1, 'structured_rule', 'another tree holds this conversation or this place');
-	delete from public.qorpera_memory_trees where root_key = oroot;
+	delete from public.qorpera_memory_trees where root_key = public.qorpera_folder_key(oroot);
 	perform pg_temp.expect(pg_temp.memory('refuse-memory-23', jsonb_build_array(pg_temp.tree_file(oroot || '/tree.toml', pg_temp.toml(os))),
 		array[os]), 1, 'saved');
 

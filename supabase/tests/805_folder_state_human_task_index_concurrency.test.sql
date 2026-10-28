@@ -95,18 +95,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '80500000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -125,7 +125,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '80500000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '80500000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '80500000-0000-4000-8000-000000000020'
@@ -158,29 +158,29 @@ $$;
 
 -- The company, the asking agent Nora, a task for the member with its proof folder, and a contact; committed.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'race-seed-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Task Race'),
-	jsonb_build_object('op','mkdir','path','agents'),
-	pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
-	pg_temp.hire('co-founder', '80500000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 5, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Task Race'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+	pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	pg_temp.hire('co-founder', '80500000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))), 6, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-0001', jsonb_build_array(
 	pg_temp.hire('nora', '80500000-0000-4000-8000-0000000000a1', 'Nora'))), 1, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-tasks-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','human-tasks'), jsonb_build_object('op','mkdir','path','contacts'),
-	pg_temp.save('contacts/maria.md', pg_temp.contact_parse()),
-	pg_temp.save('human-tasks/fit.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e1')))), 4, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks'), jsonb_build_object('op','mkdir','path','QorperaOS/contacts'),
+	pg_temp.save('QorperaOS/contacts/maria.md', pg_temp.contact_parse()),
+	pg_temp.save('QorperaOS/human-tasks/fit.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e1')))), 4, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'race-proof-0001', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','human-tasks/fit'), jsonb_build_object('op','mkdir','path','human-tasks/fit/proof'),
-	pg_temp.put('human-tasks/fit/proof/photo-1.jpg', 'a photo'))), 3, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit'), jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks/fit/proof'),
+	pg_temp.put('QorperaOS/human-tasks/fit/proof/photo-1.jpg', 'a photo'))), 3, 'saved') \g /dev/null
 -- The change sets, staged now: staging inside a change set's own transaction would take other locks first.
 select set_config('qorpera_test.h2_done', pg_temp.sql_commit('80500000-0000-4000-8000-000000000020', pg_temp.mem()::text, 'race-done-0001',
-	jsonb_build_array(pg_temp.save('human-tasks/fit.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e1', '{"status":"done"}')))::text), false) \g /dev/null
+	jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/fit.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e1', '{"status":"done"}')))::text), false) \g /dev/null
 select set_config('qorpera_test.h2_proof', pg_temp.sql_commit('80500000-0000-4000-8000-000000000020', pg_temp.mem()::text, 'race-proof-0002',
-	jsonb_build_array(pg_temp.put('human-tasks/fit/proof/photo-2.jpg', 'another'))::text), false) \g /dev/null
+	jsonb_build_array(pg_temp.put('QorperaOS/human-tasks/fit/proof/photo-2.jpg', 'another'))::text), false) \g /dev/null
 select set_config('qorpera_test.h2_task', pg_temp.sql_commit('80500000-0000-4000-8000-000000000020', pg_temp.owner()::text, 'race-task-0002',
-	jsonb_build_array(pg_temp.save('human-tasks/vat.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e2',
+	jsonb_build_array(pg_temp.save('QorperaOS/human-tasks/vat.md', pg_temp.task_parse('80500000-0000-4000-8000-0000000000e2',
 		'{"member":null,"contact":"80500000-0000-4000-8000-0000000000f1","proof":["file"]}')))::text), false) \g /dev/null
 select set_config('qorpera_test.h2_forget', pg_temp.sql_commit('80500000-0000-4000-8000-000000000020', pg_temp.owner()::text, 'race-forget-0001',
-	jsonb_build_array(jsonb_build_object('op','delete','path','contacts/maria.md','expectedVersion',pg_temp.version('contacts/maria.md'),
+	jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/contacts/maria.md','expectedVersion',pg_temp.version('QorperaOS/contacts/maria.md'),
 		'asOfSeq',pg_temp.seq()))::text), false) \g /dev/null
 
 select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['h2race_a','h2race_b']) name;

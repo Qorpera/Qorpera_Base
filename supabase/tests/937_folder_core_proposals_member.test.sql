@@ -59,7 +59,8 @@ end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); y jsonb; c jsonb;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40c-agents-folder', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40c-agents-folder',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved');
 	perform set_config('qorpera_test.p1', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-1',
 		jsonb_build_array(pg_temp.deletes('rr1.txt'))))).id::text, true);
 	perform set_config('qorpera_test.p2', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-2',
@@ -93,7 +94,7 @@ begin
 	if (l -> 'proposals' -> 0 ->> 'createdAt')::timestamptz is distinct from (pg_temp.proposal(pg_temp.pid('p1'))).created_at then
 		raise exception 'Its time: %', l -> 'proposals' -> 0; end if;
 	perform pg_temp.same((l -> 'proposals' -> 2) - 'createdAt' - 'proposalId', '{"viewKind":"run_box","createsAgent":true,"unitCount":1,
-		"units":[{"unit":1,"op":"new_folder","path":"agents/nora","structured":[{"path":"agents/nora/agent.md","kind":"agent",
+		"units":[{"unit":1,"op":"new_folder","path":"QorperaOS/agents/nora","structured":[{"path":"QorperaOS/agents/nora/agent.md","kind":"agent",
 		"parse":{"name":"Nora","role":"Sales","status":"active"}}]}],"moreUnits":0}', 'A listed hire');
 	m := pg_temp.mlist(p_request => jsonb_build_object('cursor', pg_temp.pid('p4')));
 	perform pg_temp.same(pg_temp.listed(m), '["p5"]', 'The page after the cursor');

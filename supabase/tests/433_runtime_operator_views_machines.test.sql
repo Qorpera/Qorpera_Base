@@ -11,7 +11,7 @@
 
 -- A coding worker of Alice's, on a real todo in her folder, with an unreserved company allocation for one
 -- 2 CPU / 4 GiB machine (the dispatch path allows one coding session per owner and harness, so it is a fixture row).
-select pg_temp.base_commit(pg_temp.base_owner(), 'machine-requests-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/machine-requests.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'machine-requests-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/machine-requests.md',
 	'todo', E'---\nid: 43300000-0000-4000-8000-0000000000d1\ntitle: Machine requests\nstatus: open\n---\n\n',
 	'{"kind":"todo","id":"43300000-0000-4000-8000-0000000000d1","title":"Machine requests","status":"open","requestedBy":null,"detail":""}'))) \g /dev/null
 reset role;

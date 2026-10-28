@@ -19,8 +19,8 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-const TODO = "agents/nora/todos/market-scan.md";
-const FOLDER = "agents/nora/todos/market-scan/prices";
+const TODO = "QorperaOS/agents/nora/todos/market-scan.md";
+const FOLDER = "QorperaOS/agents/nora/todos/market-scan/prices";
 const todoText = (status: "open" | "blocked" | "done" = "open") =>
 	writeTodoFile({
 		id: "4b0e9c1a-0000-4000-8000-0000000000d1",
@@ -139,7 +139,7 @@ it("dispatches a worker as its folder with brief.md, under the call's review and
 	const [commit] = f.commits;
 	expect(commit).toMatchObject({ key: "worker-file:dispatch-1", receiptId: result.receiptId });
 	expect(commit?.units.map((unit) => [unit.op, unit.path])).toEqual([
-		["mkdir", "agents/nora/todos/market-scan"],
+		["mkdir", "QorperaOS/agents/nora/todos/market-scan"],
 		["new_folder", FOLDER],
 	]);
 	expect((commit?.units[1]?.contents as { path: string }[]).map((item) => item.path)).toEqual(["brief.md"]);
@@ -178,7 +178,10 @@ it("dispatches a worker as its folder with brief.md, under the call's review and
 });
 
 it("dispatches into a todo folder that exists without making it again", async () => {
-	const f = await fixture({ files: { [TODO]: todoText("blocked") }, folders: ["agents/nora/todos/market-scan"] });
+	const f = await fixture({
+		files: { [TODO]: todoText("blocked") },
+		folders: ["QorperaOS/agents/nora/todos/market-scan"],
+	});
 	expect(parse(await f.workers().change(DISPATCH, f.context)).outcome).toBe("saved");
 	expect(f.commits[0]?.units.map((unit) => unit.op)).toEqual(["new_folder"]);
 });
@@ -188,7 +191,7 @@ it("reports a dispatch by its worker folder: a todo folder another dispatch made
 	// Read missing; made by another dispatch before this one commits: its mkdir is a conflict, its worker folder saves.
 	const stage = f.folder.stage.bind(f.folder);
 	vi.spyOn(f.folder, "stage").mockImplementation(async (units, signal) => {
-		f.folders.add("agents/nora/todos/market-scan");
+		f.folders.add("QorperaOS/agents/nora/todos/market-scan");
 		return stage(units, signal);
 	});
 	const result = parse(await f.workers().change(DISPATCH, f.context));
@@ -418,8 +421,15 @@ it("writes a worker run's report in its own folder, from its wake", async () => 
 		needs: "Which Delta?",
 		files: [`${FOLDER}/prices.md`],
 	});
-	// A run whose wake names no folder of this agent's never reports in one.
-	for (const outputFolder of [undefined, "agents/otto/todos/market-scan/prices", "work/todos/x"]) {
+	// A run whose wake names no folder of this agent's never reports in one, nor one spelled other than the database
+	// takes it.
+	for (const outputFolder of [
+		undefined,
+		"QorperaOS/agents/otto/todos/market-scan/prices",
+		"qorperaos/agents/nora/todos/market-scan/prices",
+		"agents/nora/todos/market-scan/prices",
+		"work/todos/x",
+	]) {
 		const other = await fixture({}, outputFolder ? { outputFolder } : {});
 		await expect(
 			other.workers().report({ operationKey: "report-2", outcome: "failed", summary: "No." }, other.context),
@@ -429,7 +439,7 @@ it("writes a worker run's report in its own folder, from its wake", async () => 
 
 it("lists one todo's workers, filtered, and reads one worker's whole result from its file", async () => {
 	const workers = {
-		"market-scan": [view("succeeded"), view("running", "stock", "agents/nora/todos/market-scan/stock")],
+		"market-scan": [view("succeeded"), view("running", "stock", "QorperaOS/agents/nora/todos/market-scan/stock")],
 	};
 	const f = await fixture({ files: { [`${FOLDER}/results.md`]: resultsText() } }, { workers });
 	const fits = () => true;
@@ -442,7 +452,7 @@ it("lists one todo's workers, filtered, and reads one worker's whole result from
 	});
 	expect(all.workers.map((worker: { workerKey: string; path: string }) => [worker.workerKey, worker.path])).toEqual([
 		["prices", FOLDER],
-		["stock", "agents/nora/todos/market-scan/stock"],
+		["stock", "QorperaOS/agents/nora/todos/market-scan/stock"],
 	]);
 	// Outputs as paths; no cursor shown with a worker.
 	expect(all.workers[0]).toMatchObject({ outputs: [`${FOLDER}/prices.md`] });

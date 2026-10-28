@@ -21,8 +21,9 @@ begin
 	v_seed := public.qorpera_folder_commit(env, '{"kind":"platform"}', 'client-shape-seed', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','notes'),
 		jsonb_build_object('op','write','path','notes/a.md','file',pg_temp.stage('hello')),
-		jsonb_build_object('op','mkdir','path','agents'),
-		jsonb_build_object('op','mkdir','path','agents/x')));
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/x')));
 	if exists (select 1 from jsonb_array_elements(v_seed -> 'units') u where u ->> 'outcome' <> 'saved') then
 		raise exception 'Fixture: %', v_seed; end if;
 
@@ -100,8 +101,8 @@ begin
 	-- A structured file refused with problems: the commit strips nulls inside each outcome, so a problem without a
 	-- line or key comes back without those keys (the client reads them as null).
 	v_units := jsonb_build_array(
-		jsonb_build_object('op','write','path','agents/x/agent.md','file',pg_temp.stage('not an agent'),
-			'structured', jsonb_build_array(jsonb_build_object('path','agents/x/agent.md','kind','agent','problems',
+		jsonb_build_object('op','write','path','QorperaOS/agents/x/agent.md','file',pg_temp.stage('not an agent'),
+			'structured', jsonb_build_array(jsonb_build_object('path','QorperaOS/agents/x/agent.md','kind','agent','problems',
 				jsonb_build_array(jsonb_build_object('line', null, 'key', null, 'code', 'front_matter', 'message', 'no front matter'),
 					jsonb_build_object('line', 2, 'key', 'name', 'code', 'value', 'message', 'a name'))))));
 	perform pg_temp.possess(env, a, v_units);

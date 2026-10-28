@@ -91,7 +91,7 @@ returns jsonb language sql as $$
 		|| case when p_expected is not null then jsonb_build_object('expectedVersion', p_expected) else '{}'::jsonb end
 $$;
 create function pg_temp.base_version(p_path text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '92400000-0000-4000-8000-000000000020' and key_text = p_path
+	select version from public.qorpera_folder_entries where environment_id = '92400000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_path)
 $$;
 create function pg_temp.base_agent_text(p_id uuid, p_name text, p_kind text default 'agent') returns text language sql as $$
 	select format(E'---\nid: %s\nname: %s\nrole: Research\nkind: %s\nstatus: active\n---\nRead and change the company folder.\n',
@@ -99,12 +99,12 @@ create function pg_temp.base_agent_text(p_id uuid, p_name text, p_kind text defa
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.base_hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op', 'new_folder', 'path', 'agents/' || p_handle,
+	select jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path', 'agent.md', 'kind', 'file', 'file', pg_temp.base_stage(pg_temp.base_agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path', 'memory', 'kind', 'folder'), jsonb_build_object('path', 'routines', 'kind', 'folder'),
 			jsonb_build_object('path', 'todos', 'kind', 'folder')),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/' || p_handle || '/agent.md', 'kind', 'agent',
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/' || p_handle || '/agent.md', 'kind', 'agent',
 			'text', pg_temp.base_agent_text(p_id, p_name, p_kind), 'parserVersion', 1,
 			'parse', jsonb_build_object('kind', 'agent', 'id', p_id, 'name', p_name, 'role', 'Research', 'agentKind', p_kind,
 				'status', 'active', 'colour', null, 'figure', null, 'model', null, 'effort', null,
@@ -210,11 +210,12 @@ $$;
 -- The company's creation commit, as the platform seeds it, then the owner hires Alice, Bob and Carol. The queue
 -- converges each hire before the owner has a login, so their first runs stay the owner's to start (877 §4).
 select pg_temp.base_commit('{"kind":"platform"}', 'base-seed', jsonb_build_array(
-	jsonb_build_object('op', 'mkdir', 'path', 'vision'),
-	pg_temp.base_write('vision/vision.md', 'vision', E'# Folder runtime base\n\n## What we build\n',
-		'{"kind":"vision","name":"Folder runtime base"}', pg_temp.base_version('vision/vision.md')),
-	jsonb_build_object('op', 'mkdir', 'path', 'agents'),
-	pg_temp.base_write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS'),
+	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/vision'),
+	pg_temp.base_write('QorperaOS/vision/vision.md', 'vision', E'# Folder runtime base\n\n## What we build\n',
+		'{"kind":"vision","name":"Folder runtime base"}', pg_temp.base_version('QorperaOS/vision/vision.md')),
+	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents'),
+	pg_temp.base_write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 	pg_temp.base_hire('co-founder', '92400000-0000-4000-8000-000000000033', 'Co-Founder', 'co-founder'))) \g /dev/null
 select pg_temp.base_commit(pg_temp.base_owner(), 'base-hire', jsonb_build_array(
 	pg_temp.base_hire('alice', '92400000-0000-4000-8000-000000000030', 'Alice'),
@@ -291,7 +292,7 @@ begin
 		where staff.profile_id = '92400000-0000-4000-8000-000000000010' and staff.employment_status = 'active'
 			and staff.staff_agent_id in ('92400000-0000-4000-8000-000000000030', '92400000-0000-4000-8000-000000000031',
 				'92400000-0000-4000-8000-000000000032')
-			and pg_temp.base_version('agents/' || lower(staff.display_name) || '/agent.md') is not null
+			and pg_temp.base_version('QorperaOS/agents/' || lower(staff.display_name) || '/agent.md') is not null
 			and kickoff.author_user_id = '92400000-0000-4000-8000-000000000001'
 			and not exists (select 1 from public.qorpera_session_turn_requests turn where turn.input_id = kickoff.id)) = 3,
 		'the hires are indexed, and their kickoffs wait');
@@ -364,11 +365,11 @@ $$;
 -- An agent.md saved over the version read: a rename, new instructions, another role or status is an agent edit.
 create function pg_temp.wb_agent(p_handle text, p_id uuid, p_name text, p_instructions text, p_status text default 'active',
 	p_role text default 'Research') returns jsonb language sql as $$
-	select pg_temp.base_write('agents/' || p_handle || '/agent.md', 'agent',
+	select pg_temp.base_write('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 		format(E'---\nid: %s\nname: %s\nrole: %s\nkind: agent\nstatus: %s\n---\n%s\n', p_id, p_name, p_role, p_status, p_instructions),
 		jsonb_build_object('kind', 'agent', 'id', p_id, 'name', p_name, 'role', p_role, 'agentKind', 'agent', 'status', p_status,
 			'colour', null, 'figure', null, 'model', null, 'effort', null, 'instructions', p_instructions),
-		pg_temp.base_version('agents/' || p_handle || '/agent.md'))
+		pg_temp.base_version('QorperaOS/agents/' || p_handle || '/agent.md'))
 $$;
 -- A started run as the folder commit's actor.
 create function pg_temp.wb_actor(p_binding jsonb) returns jsonb language sql as $$
@@ -529,7 +530,7 @@ rollback to wb_sponsor_denied;
 --    no longer matches its wake: its source, agent version, conversation, sponsor version or binding, or a stored reply
 --    policy it does not know. Another requester on the login is refused where runs change (20260928230000).
 savepoint wb_routine_policy;
-select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-routine-tick', jsonb_build_array(pg_temp.wb_routine('agents/bob/routines/tick.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-routine-tick', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/bob/routines/tick.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e1', 'Tick', pg_temp.wb_every())))) \g /dev/null
 do $$
 declare v_wake uuid := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000e1', 'tick-1'); v_pass jsonb := pg_temp.base_materialize();
@@ -608,7 +609,7 @@ begin
 	foreach v_reply in array array['required', 'silent', 'optional'] loop
 		v_id := md5('wake-bus-report-' || v_reply)::uuid;
 		perform pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-report-' || v_reply, jsonb_build_array(pg_temp.wb_routine(
-			'agents/alice/routines/report-' || v_reply || '.md', pg_temp.wb_rparse(v_id, 'Report', pg_temp.wb_every(), v_reply))));
+			'QorperaOS/agents/alice/routines/report-' || v_reply || '.md', pg_temp.wb_rparse(v_id, 'Report', pg_temp.wb_every(), v_reply))));
 		v_wake := pg_temp.wb_slot(v_id, 'report-' || v_reply);
 		perform pg_temp.base_materialize();
 		v_run := pg_temp.wb_wake_run(v_wake);
@@ -660,7 +661,7 @@ begin
 			where id = pg_temp.wb_session('92400000-0000-4000-8000-000000000031');
 			v_id := md5('wake-bus-audience-' || v_n)::uuid;
 			perform pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-audience-' || v_n, jsonb_build_array(pg_temp.wb_routine(
-				'agents/bob/routines/audience-' || v_n || '.md', pg_temp.wb_rparse(v_id, 'Audience', pg_temp.wb_every(), 'required'))));
+				'QorperaOS/agents/bob/routines/audience-' || v_n || '.md', pg_temp.wb_rparse(v_id, 'Audience', pg_temp.wb_every(), 'required'))));
 			v_counts := pg_temp.wb_counts();
 			perform pg_temp.base_error(format('select pg_temp.wb_slot(%L, %L)', v_id, 'no-audience-' || v_n), '42501',
 				'Wake public audience is unavailable');
@@ -676,7 +677,7 @@ begin
 	foreach v_reply in array array['optional', 'silent'] loop
 		v_id := md5('wake-bus-private-' || v_reply)::uuid;
 		perform pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-private-' || v_reply, jsonb_build_array(pg_temp.wb_routine(
-			'agents/bob/routines/private-' || v_reply || '.md', pg_temp.wb_rparse(v_id, 'Private', pg_temp.wb_every(), v_reply))));
+			'QorperaOS/agents/bob/routines/private-' || v_reply || '.md', pg_temp.wb_rparse(v_id, 'Private', pg_temp.wb_every(), v_reply))));
 		v_wake := pg_temp.wb_slot(v_id, 'private-' || v_reply);
 		v_pass := pg_temp.base_materialize();
 		select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_wake and session_id is null;
@@ -696,7 +697,7 @@ rollback to wb_routine_audience;
 --     Bob never had, the admitted slot is not authorized, and the materializer cancels it for good, with no run and no
 --     reservation.
 savepoint wb_routine_pin;
-select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-routine-pin', jsonb_build_array(pg_temp.wb_routine('agents/bob/routines/pin.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-routine-pin', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/bob/routines/pin.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e5', 'Pin', pg_temp.wb_every(), 'required')))) \g /dev/null
 do $$
 declare v_id uuid := extensions.gen_random_uuid(); v_wake public.qorpera_wake_occurrences; v_candidate public.qorpera_wake_occurrences;
@@ -745,7 +746,7 @@ rollback to wb_routine_pin;
 --     run then writes wakes Alice's file-change routine: an agent earlier in the chain is woken again and moves to its
 --     end. (An agent's own write never wakes its own routine: 887 §4.)
 savepoint wb_coworker;
-select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-listener', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/note.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-listener', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/note.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e6', 'Note', '{"when":"file-change","watch":"note.md","match":"exact"}')))) \g /dev/null
 select public.qorpera_folder_listen_company('92400000-0000-4000-8000-000000000020') \g /dev/null
 do $$
@@ -877,9 +878,9 @@ begin
 	perform pg_temp.base_assert((select version from public.qorpera_profile_staff
 		where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = c_bob) = 2, 'fixture: the edit is Bob''s version 2');
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'wake-bus-after-edit', jsonb_build_array(
-		pg_temp.wb_routine('agents/bob/routines/after-edit.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e7', 'After edit',
+		pg_temp.wb_routine('QorperaOS/agents/bob/routines/after-edit.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e7', 'After edit',
 			pg_temp.wb_every(), 'required')),
-		pg_temp.wb_routine('agents/bob/routines/queued.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e8', 'Queued',
+		pg_temp.wb_routine('QorperaOS/agents/bob/routines/queued.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000e8', 'Queued',
 			pg_temp.wb_every(), 'required'))));
 	v_wake := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000e7', 'thread-after-edit');
 	perform pg_temp.base_assert((select session_id from public.qorpera_wake_occurrences where id = v_wake) = v_thread,
@@ -1049,7 +1050,7 @@ $$;
 
 -- 19. Withdrawing unattended-work consent on the login a routine pays with cancels its queued wake: no run is admitted.
 savepoint bc_withdrawn_wake;
-select pg_temp.base_commit(pg_temp.base_owner(), 'bc-withdrawn', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/withdrawn.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-withdrawn', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/withdrawn.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f1', 'Withdrawn', pg_temp.wb_every())))) \g /dev/null
 do $$
 declare v_wake uuid := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000f1', 'before-withdrawal');
@@ -1069,7 +1070,7 @@ rollback to bc_withdrawn_wake;
 --     300's consent races (a version admitted before a withdrawal is refused after it, the renewed one too): the races
 --     need rows committed for other connections, which this one-transaction fixture can't give dblink.
 savepoint bc_consent;
-select pg_temp.base_commit(pg_temp.base_owner(), 'bc-consented', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/consented.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-consented', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/consented.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f2', 'Consented', pg_temp.wb_every())))) \g /dev/null
 do $$
 declare v_binding jsonb := pg_temp.bc_routine_run('92400000-0000-4000-8000-0000000000f2', 'before-withdrawal'); v_consent jsonb;
@@ -1131,7 +1132,7 @@ rollback to bc_agent;
 --     consent; a member's delivery not once it has sent its final report. A refused call audits nothing as authorized.
 --     (300's founder stop is the legacy pause: dropped.)
 savepoint bc_broker;
-select pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/broker.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker', jsonb_build_array(pg_temp.wb_routine('QorperaOS/agents/alice/routines/broker.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())))) \g /dev/null
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
 values ('92400000-0000-4000-8000-0000000000b0', '92400000-0000-4000-8000-000000000010', 'https://broker.example.test', 'bc-kek',
@@ -1170,7 +1171,7 @@ begin
 				repeat('b', 64), false);
 			if v_case[2] = 'standing_authority' then
 				perform pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker-pause', jsonb_build_array(pg_temp.wb_routine(
-					'agents/alice/routines/broker.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())
+					'QorperaOS/agents/alice/routines/broker.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())
 						|| '{"status":"paused"}')));
 			elsif v_case[2] = 'consent' then perform pg_temp.bc_consent(false);
 			elsif v_case[2] = 'final' then perform pg_temp.base_public_send(b, 'final', 'bc-broker-final');

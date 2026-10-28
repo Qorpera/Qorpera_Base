@@ -14,9 +14,9 @@ import { t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
-/* A group chat is a company folder, `agents/groups/<handle>`, described by its `group.md` (folder core C4, P34a-2;
- * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5). Editing one rewrites that file; deleting its folder
- * closes the chat for everyone. The commit's hook keeps the room, its members and its conversation. */
+/* A group chat is a company folder, `QorperaOS/agents/groups/<handle>`, described by its `group.md` (folder core C4,
+ * P34a-2; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5). Editing one rewrites that file; deleting its
+ * folder closes the chat for everyone. The commit's hook keeps the room, its members and its conversation. */
 
 /** This invocation failed before sending a write; an earlier invocation may still be uncertain. */
 export class GroupUpdateNotWrittenError extends Error {}

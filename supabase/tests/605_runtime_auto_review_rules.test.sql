@@ -25,10 +25,10 @@ begin
 	return v_result;
 end
 $$;
--- A company rule's file in rules/, as the parser sends it (outcome ask-first or allow).
+-- A company rule's file in QorperaOS/rules/, as the parser sends it (outcome ask-first or allow).
 create function pg_temp.rv_rule_file(p_name text, p_id uuid, p_outcome text, p_text text) returns jsonb language sql as $$
-	select pg_temp.base_write('rules/' || p_name || '.md', 'rule', format(E'---\nid: %s\noutcome: %s\n---\n%s\n', p_id, p_outcome, p_text),
-		jsonb_build_object('kind', 'rule', 'id', p_id, 'outcome', p_outcome, 'text', p_text), pg_temp.base_version('rules/' || p_name || '.md'))
+	select pg_temp.base_write('QorperaOS/rules/' || p_name || '.md', 'rule', format(E'---\nid: %s\noutcome: %s\n---\n%s\n', p_id, p_outcome, p_text),
+		jsonb_build_object('kind', 'rule', 'id', p_id, 'outcome', p_outcome, 'text', p_text), pg_temp.base_version('QorperaOS/rules/' || p_name || '.md'))
 $$;
 create function pg_temp.rv_record(p_binding jsonb, p_call text, p_digest text, p_decision text, p_rules uuid[],
 	p_built_in text default 'none', p_proposed text default null) returns jsonb language sql as $$
@@ -55,12 +55,12 @@ begin
 end
 $$;
 
--- Rules: members write their own through Settings; company rules are the files in rules/, which only owners and admins
+-- Rules: members write their own through Settings; company rules are the files in QorperaOS/rules/, which only owners and admins
 -- write (Settings refuses a company rule on folder-v2, 706 §5).
 do $$
 declare v_list jsonb; v_units jsonb; v_result jsonb;
 begin
-	perform pg_temp.base_commit(pg_temp.base_owner(), 'rv-rules-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'rules'),
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'rv-rules-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/rules'),
 		pg_temp.rv_rule_file('outside-email', '60500000-0000-4000-8000-000000000a01', 'ask-first', 'sending any email to someone outside the company'),
 		pg_temp.rv_rule_file('github-issues', '60500000-0000-4000-8000-000000000a03', 'allow', 'creating issues in our own GitHub repositories')));
 	perform pg_temp.base_assert((select count(*) from public.qorpera_review_rules where profile_id = '92400000-0000-4000-8000-000000000010'
@@ -76,7 +76,7 @@ begin
 	-- A retried save is the same rule.
 	perform pg_temp.rv_rule('92400000-0000-4000-8000-000000000001', '60500000-0000-4000-8000-000000000a02', 'member',
 		'Spørg mig først før du sender noget til en kunde', 'ask_first');
-	-- A contributor writes no company rule: not as a file in rules/ (held as its own upload would), not through Settings.
+	-- A contributor writes no company rule: not as a file in QorperaOS/rules/ (held as its own upload would), not through Settings.
 	v_units := jsonb_build_array(pg_temp.rv_rule_file('deleting-files', '60500000-0000-4000-8000-000000000a09', 'ask-first', 'deleting files'));
 	perform pg_temp.base_seal('{"kind":"member","userId":"92400000-0000-4000-8000-000000000002"}', (select manifest_text
 		from public.qorpera_folder_upload_intents where environment_id = '92400000-0000-4000-8000-000000000020'
@@ -267,10 +267,10 @@ declare v_text text := E'---\nid: 60500000-0000-4000-8000-0000000000c1\nname: Ac
 		|| E'  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nTalk to Acme.\n';
 	v_binding jsonb; v_record jsonb;
 begin
-	perform pg_temp.base_commit(pg_temp.base_owner(), 'rv-group-acme', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
-		jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/acme',
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'rv-group-acme', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
+		jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/acme',
 			'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(v_text))),
-			'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/acme/group.md', 'kind', 'group', 'text', v_text,
+			'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/acme/group.md', 'kind', 'group', 'text', v_text,
 				'parse', jsonb_build_object('kind', 'group', 'id', '60500000-0000-4000-8000-0000000000c1', 'name', 'Acme', 'subtitle', null,
 					'agents', '["92400000-0000-4000-8000-000000000031","92400000-0000-4000-8000-000000000032"]'::jsonb,
 					'people', '["92400000-0000-4000-8000-000000000001"]'::jsonb, 'purpose', 'Talk to Acme.'), 'parserVersion', 1)))));

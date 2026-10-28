@@ -1,7 +1,7 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- Summary trees M4c (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §5.3, §5.5; 20260930310000): a group-chat run's
 -- primary view and branches, on the host calls 946 and 970 test for a thread run. The view: the chat as `.`, T before
--- the post that woke the run, the chat's tree under agents/groups/<group>/memory, the same for every agent in the chat;
+-- the post that woke the run, the chat's tree under QorperaOS/agents/groups/<group>/memory, the same for every agent in the chat;
 -- its record names the chat. The branches: the agent's thread and its other group chats, never the chat itself, with
 -- their trees. On 970's fixture: the launch chat (Nora and Otto) has messages at 1-3, Nora's thread 10-11, Otto's
 -- thread 5 and a tree with one line.
@@ -32,7 +32,7 @@ $$;
 -- room wake that names the post, with the transcript start at the post.
 do $$
 declare
-	r jsonb; i integer; launch uuid := pg_temp.chat('launch'); root constant text := 'agents/groups/launch/memory';
+	r jsonb; i integer; launch uuid := pg_temp.chat('launch'); root constant text := 'QorperaOS/agents/groups/launch/memory';
 	post constant uuid := pg_temp.event_id(3); poster constant uuid := '63400000-0000-4000-8000-000000000002'; who text;
 begin
 	r := pg_temp.memory('group-chat-tree', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
@@ -72,7 +72,7 @@ begin
 	perform pg_temp.same(pg_temp.view('nora') -> 'tree', public.qorpera_memory_tree_read(env, launch), 'The chat''s tree');
 	perform pg_temp.same(jsonb_build_array(pg_temp.view('nora') #> '{tree,root}', pg_temp.view('nora') #> '{tree,messages}',
 		jsonb_array_length(pg_temp.view('nora') #> '{tree,lines}'), pg_temp.view('nora') #> '{tree,blocks,0,path}'),
-		'["agents/groups/launch/memory", 3, 3, "agents/groups/launch/memory/t0/00000000.jsonl"]',
+		'["QorperaOS/agents/groups/launch/memory", 3, 3, "QorperaOS/agents/groups/launch/memory/t0/00000000.jsonl"]',
 		'The tree under the group''s folder, with its line for the post');
 	perform pg_temp.same(pg_temp.view('otto'), pg_temp.view('nora'), 'Otto''s view is the same');
 
@@ -116,7 +116,7 @@ begin
 	answer := pg_temp.branches('otto', jsonb_build_object('sessions', jsonb_build_array(otto, launch)));
 	perform pg_temp.same(answer -> 'trees', jsonb_build_array(public.qorpera_memory_tree_read(env, otto)), 'His thread''s tree');
 	perform pg_temp.same(jsonb_build_array(answer #> '{trees,0,root}', jsonb_array_length(answer #> '{trees,0,lines}')),
-		'["agents/otto/memory/thread", 1]', 'With its line');
+		'["QorperaOS/agents/otto/memory/thread", 1]', 'With its line');
 end $$;
 
 rollback;

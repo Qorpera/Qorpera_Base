@@ -14,8 +14,8 @@ begin
 	return public.qorpera_folder_commit('70900000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
 end $$;
 create function pg_temp.agent(p_handle text, p_id uuid, p_status text, p_name text default null) returns jsonb language sql as $$
-	select pg_temp.write('agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, coalesce(p_name, p_handle), 'agent', p_status),
-		pg_temp.agent_parse(p_id, coalesce(p_name, p_handle), 'agent', p_status), pg_temp.version('agents/' || p_handle || '/agent.md'))
+	select pg_temp.write('QorperaOS/agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, coalesce(p_name, p_handle), 'agent', p_status),
+		pg_temp.agent_parse(p_id, coalesce(p_name, p_handle), 'agent', p_status), pg_temp.version('QorperaOS/agents/' || p_handle || '/agent.md'))
 $$;
 create function pg_temp.work(p_id uuid, p_kind text default 'agent') returns public.qorpera_folder_follow_ups language sql as $$
 	select * from public.qorpera_folder_follow_ups where environment_id = '70900000-0000-4000-8000-000000000020'
@@ -324,9 +324,9 @@ end $$;
 
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-vic', jsonb_build_array(
 	pg_temp.hire('vic', '87800000-0000-4000-8000-0000000000a9', 'Vic'),
-	jsonb_build_object('op','mkdir','path','agents/vic/routines'))), 2, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents/vic/routines'))), 2, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-vic-routine', jsonb_build_array(
-	pg_temp.routine('agents/vic/routines/inbox.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f3', 'Inbox', pg_temp.every())))),
+	pg_temp.routine('QorperaOS/agents/vic/routines/inbox.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f3', 'Inbox', pg_temp.every())))),
 	1, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-archive-vic', jsonb_build_array(
 	pg_temp.agent('vic', '87800000-0000-4000-8000-0000000000a9', 'archived', 'Vic'))), 1, 'saved') \g /dev/null
@@ -371,10 +371,10 @@ end $$;
 
 select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-hire-quinn', jsonb_build_array(
 	pg_temp.hire('quinn', '87800000-0000-4000-8000-0000000000a4', 'Quinn'),
-	jsonb_build_object('op','mkdir','path','agents/quinn/routines'))), 2, 'saved') \g /dev/null
+	jsonb_build_object('op','mkdir','path','QorperaOS/agents/quinn/routines'))), 2, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-quinn-routines', jsonb_build_array(
-	pg_temp.routine('agents/quinn/routines/inbox.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())),
-	pg_temp.routine('agents/quinn/routines/digest.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every())))),
+	pg_temp.routine('QorperaOS/agents/quinn/routines/inbox.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())),
+	pg_temp.routine('QorperaOS/agents/quinn/routines/digest.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every())))),
 	2, 'saved') \g /dev/null
 select public.qorpera_agent_pair_session_internal('70900000-0000-4000-8000-000000000010', '70900000-0000-4000-8000-000000000020',
 	'87800000-0000-4000-8000-0000000000a4', '87800000-0000-4000-8000-0000000000a2', '70900000-0000-4000-8000-000000000001') \g /dev/null

@@ -40,7 +40,7 @@ $$;
 
 -- Committed: docs/ and a listener of Nora's on it; a first step brings the cursor up to now.
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'lrace-0001', jsonb_build_array(jsonb_build_object('op','mkdir','path','docs'),
-	pg_temp.routine('agents/nora/routines/watch.md', pg_temp.rparse('88800000-0000-4000-8000-0000000000e3', 'Watch docs',
+	pg_temp.routine('QorperaOS/agents/nora/routines/watch.md', pg_temp.rparse('88800000-0000-4000-8000-0000000000e3', 'Watch docs',
 		jsonb_build_object('when','file-change','watch','docs','match','subtree'))))), 2, 'saved') \g /dev/null
 select public.qorpera_folder_listen_company('70900000-0000-4000-8000-000000000020') \g /dev/null
 
@@ -136,7 +136,7 @@ end $$;
 select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'lrace-0007', jsonb_build_array(pg_temp.put('docs/e.md', 'epsilon'))), 1, 'saved')
 	\g /dev/null
 select set_config('qorpera_test.retitle_watch', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020', pg_temp.owner()::text,
-	'lrace-0008', jsonb_build_array(pg_temp.routine('agents/nora/routines/watch.md', pg_temp.rparse('88800000-0000-4000-8000-0000000000e3',
+	'lrace-0008', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/watch.md', pg_temp.rparse('88800000-0000-4000-8000-0000000000e3',
 		'Watch docs closely', jsonb_build_object('when','file-change','watch','docs','match','subtree'))))::text), false) \g /dev/null
 do $$
 declare r jsonb;

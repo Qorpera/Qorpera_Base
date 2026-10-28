@@ -1,7 +1,7 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- C5 (20260930508000) with the beta off, on the real path. Test 924's company never chose Shared context, so a run the
 -- materializer makes is recorded with Agent notebooks. Alice's next run writes, forgets and reads back her own
--- notebook (agents/alice/memory, as the runtime's update_memory and forget write it: one commit as the run), and its
+-- notebook (QorperaOS/agents/alice/memory, as the runtime's update_memory and forget write it: one commit as the run), and its
 -- context still carries her thread's history. The run has no run log place and no view, and after it the company has no
 -- tree, run log, view or other tree data at all. The row's trigger decides a new run's mode, not the inserter: an insert
 -- that asks for the beta in this company gets notebooks, and one that asks for notebooks while the company uses the beta
@@ -75,15 +75,15 @@ $$;
 do $$
 declare b jsonb := current_setting('qorpera_test.nb_binding')::jsonb; a jsonb := pg_temp.nb_actor(b);
 	d text := to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM-DD');
-	p constant text := 'agents/alice/memory/profile.md';
-	l text := 'agents/alice/memory/log/' || to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM') || '.md';
+	p constant text := 'QorperaOS/agents/alice/memory/profile.md';
+	l text := 'QorperaOS/agents/alice/memory/log/' || to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM') || '.md';
 	v_profile text := '- (' || d || E') Prefers short answers.\n- (' || d || E') Pays the rent on the first.\n';
 	v_kept text := '- (' || d || E') Prefers short answers.\n';
 	v_note text := '- (' || d || E') [note] The landlord asked for the receipt.\n';
 begin
 	perform pg_temp.base_commit(a, 'nb-profile', jsonb_build_array(jsonb_build_object('op', 'write', 'path', p,
 		'file', pg_temp.base_stage(v_profile))));
-	perform pg_temp.base_commit(a, 'nb-log-note', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/alice/memory/log'),
+	perform pg_temp.base_commit(a, 'nb-log-note', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/memory/log'),
 		jsonb_build_object('op', 'write', 'path', l, 'file', pg_temp.base_stage(v_note))));
 	perform pg_temp.nb_reads(b, p, v_profile);
 	perform pg_temp.nb_reads(b, l, v_note);
@@ -127,7 +127,7 @@ begin
 		where environment_id = '92400000-0000-4000-8000-000000000020' and memory_generation <> 0), 'every conversation is at generation 0');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_folder_entries
 		where environment_id = '92400000-0000-4000-8000-000000000020' and kind <> 'claim'
-			and (key_text ~ '^agents/[^/]+/memory/thread(/|$)' or key_text ~ '^agents/groups/[^/]+/memory(/|$)')), 'no tree file');
+			and (key_text ~ '^qorperaos/agents/[^/]+/memory/thread(/|$)' or key_text ~ '^qorperaos/agents/groups/[^/]+/memory(/|$)')), 'no tree file');
 end
 $$;
 

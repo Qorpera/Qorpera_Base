@@ -81,6 +81,8 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	for (const instructions of runs)
 		for (const rule of [
 			"never put the company's work in them. code/ holds git repositories only.",
+			// Jonas, 24 October 2026: these stay at the top, outside QorperaOS/, and are never an agent's area folders.
+			"The platform writes digital-post/, bank/, members/ and hooks/ (the company's official mail, bank data, members and events): read them, but never put your own files there.",
 			"\n# Keeping the company's work in order\nEverything outside the platform's folders is the company's own work. Keep it so a person finds anything in a few clicks:\n",
 			"A place a member or your assignment names always wins.",
 			"The top level holds areas of the business: sales/, marketing/, product/, finance/, legal/, operations/, people/ and so on. Use an area that fits, and make an area's folder when its first file arrives. Never make two folders for one area (no selling/ beside sales/).",
@@ -532,7 +534,7 @@ it("composes the whole profile, and degrades memory instead of failing when a no
 		available: true,
 		tools: ["update_memory", "recall_memory"],
 		profile: {
-			path: `agents/${context.agent.id}/memory/profile.md`,
+			path: `QorperaOS/agents/${context.agent.id}/memory/profile.md`,
 			version: randomUUID(),
 			// Angle brackets are escaped six bytes each: the worst case another writer can leave.
 			facts: Array.from({ length: count }, (_, index) => ({
@@ -560,7 +562,7 @@ it("shows the changes waiting for review just before the skills, only when the r
 				proposalId: randomUUID(),
 				savedAt: "2026-10-05T10:00:00+00:00",
 				savedFrom: "a computer",
-				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "agents/mira" }],
+				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "QorperaOS/agents/mira" }],
 			},
 		],
 	};
@@ -663,7 +665,7 @@ it.each(["cofounder", "employee"] as const)(
 			available: false,
 			reason: "not_composed",
 			own: { skills: [] },
-			company: { path: "skills", skills: [] },
+			company: { path: "QorperaOS/skills", skills: [] },
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
@@ -693,7 +695,8 @@ it.each(["cofounder", "employee"] as const)(
 it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
-	for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
+	for (const path of ["QorperaOS/vision/vision.md", "QorperaOS/agents/sections.md", "agent.md"])
+		expect(cofounder).toContain(path);
 	// Jonas, 4 October 2026: the first job is building the vision. The Co-Founder drafts it in its own words and revises
 	// it until every founder approves. The 2026-10-22 amendment, item 3 (Jonas, 22 October): the company starts with
 	// the first conversation, so it hires the team that builds the vision at once, and the run where every founder
@@ -707,15 +710,15 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
 	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
 	expect(cofounder).toContain("Hire freely for continuing work; never hire for a one-off task");
-	expect(cofounder).toContain("Read vision/vision.md first");
+	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
 	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
 	expect(cofounder).toContain(
-		"When every founder has approved, in that same run and without asking again: write the vision to vision/vision.md, with the company's name as its first line and a last line \"Agreed by",
+		"When every founder has approved, in that same run and without asking again: write the vision to QorperaOS/vision/vision.md, with the company's name as its first line and a last line \"Agreed by",
 	);
 	expect(cofounder).toContain("give each continuing responsibility the agreed vision needs an owner");
-	expect(cofounder).toContain("looking in agents/ first so you never hire the same owner twice");
+	expect(cofounder).toContain("looking in QorperaOS/agents/ first so you never hire the same owner twice");
 	expect(cofounder).toContain("close your first todo, Start with the founders");
 	expect(cofounder).toContain("never restart the onboarding");
 	// A company whose vision was agreed before v6 has no "Agreed by" line, but its first todo is closed.
@@ -725,6 +728,9 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("Your daily plan is a weekly routine on weekday mornings");
 	expect(cofounder).toContain("Until the vision is agreed, also bring your team's findings into the draft");
 	expect(cofounder).toContain("operations/company-plan.md, one file updated in place");
+	// The plan reads the human tasks in the platform's folder; the plan itself is the company's own work, at the top.
+	expect(cofounder).toContain("todos and routines, and QorperaOS/human-tasks/, and fix");
+	expect(cofounder).not.toContain("QorperaOS/operations");
 	expect(cofounder).toContain("Treat every report of done as a claim");
 	expect(cofounder).toContain("On Mondays always write");
 	expect(cofounder).not.toContain("blank page");
@@ -735,8 +741,9 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		firstTodo: { id: "44444444-4444-4444-8444-444444444445", requestedBy: null },
 	});
 	const paths = new Set(seeded.map((entry) => entry.path));
-	for (const path of ["vision/vision.md", "agents/sections.md"]) expect(paths.has(path)).toBe(true);
-	expect(paths.has(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
+	for (const path of ["QorperaOS/vision/vision.md", "QorperaOS/agents/sections.md"])
+		expect(paths.has(path)).toBe(true);
+	expect(paths.has(`QorperaOS/agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
 	const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
 	expect(todo?.text).toContain("title: Start with the founders");
 	expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
@@ -951,6 +958,7 @@ it.each([
 	"attachment-count",
 	"image-count",
 	"image-path",
+	"image-outside-root",
 	"image-not-a-path",
 	"image-input-id",
 	"image-on-job",
@@ -958,7 +966,7 @@ it.each([
 ])("rejects mismatched context: %s", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const context = structuredClone(f.context);
-	const image = `agents/nora/memory/thread/images/${randomUUID()}/${"a".repeat(64)}.png`;
+	const image = `QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${"a".repeat(64)}.png`;
 	if (kind === "company") context.company.id = randomUUID();
 	else if (kind === "agent") context.agent.id = randomUUID();
 	else if (kind === "requester") context.currentInputs[0].authorUserId = f.authority.identity.sponsorUserId;
@@ -973,10 +981,11 @@ it.each([
 	else if (kind === "invalid-acknowledgement") Object.assign(context, { initialAcknowledgementSatisfied: "true" });
 	else if (kind === "attachment-count") Object.assign(context.currentInputs[0], { attachmentCount: 0 });
 	else if (kind === "image-count") context.currentInputs[0].images = Array.from({ length: 6 }, () => image);
-	else if (kind === "image-path") context.currentInputs[0].images = ["agents/nora/memory/thread/notes.md"];
+	else if (kind === "image-path") context.currentInputs[0].images = ["QorperaOS/agents/nora/memory/thread/notes.md"];
+	else if (kind === "image-outside-root") context.currentInputs[0].images = [image.slice("QorperaOS/".length)];
 	else if (kind === "image-input-id")
 		context.currentInputs[0].images = [
-			`agents/nora/memory/thread/images/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/${"a".repeat(64)}.png`,
+			`QorperaOS/agents/nora/memory/thread/images/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/${"a".repeat(64)}.png`,
 		];
 	else if (kind === "image-not-a-path") Object.assign(context.currentInputs[0], { images: 1 });
 	else if (kind === "image-on-job") context.job.images = [image];
@@ -993,8 +1002,10 @@ it.each([
 
 it("lists a member's images by their folder paths, current and earlier, for company_read to open", () => {
 	const f = nativeCompanyContextFixture();
-	const thread = [1, 2].map((n) => `agents/nora/memory/thread/images/${randomUUID()}/${String(n).repeat(64)}.jpg`);
-	const group = `agents/groups/launch/memory/images/${randomUUID()}/${"c".repeat(64)}.webp`;
+	const thread = [1, 2].map(
+		(n) => `QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${String(n).repeat(64)}.jpg`,
+	);
+	const group = `QorperaOS/agents/groups/launch/memory/images/${randomUUID()}/${"c".repeat(64)}.webp`;
 	f.context.currentInputs[0].images = thread;
 	f.context.history[0] = {
 		...f.context.history[0],
@@ -1180,7 +1191,7 @@ it("rejects changed data or provenance on a later source page", async () => {
 			},
 		},
 		// The same words with an image the run's context did not list.
-		{ ...source, images: [`agents/nora/memory/thread/images/${randomUUID()}/${"d".repeat(64)}.gif`] },
+		{ ...source, images: [`QorperaOS/agents/nora/memory/thread/images/${randomUUID()}/${"d".repeat(64)}.gif`] },
 	];
 	for (const [index, page] of changed.entries()) {
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => page);
@@ -1346,8 +1357,8 @@ it("names the company's agent folders, and refuses a context that names none", (
 	expect(context.folder).toEqual(folder);
 	expect(cloudAgentFolderPlace(context)).toEqual({ core: "folder-v2", handle: "anna-berg" });
 	const prompt = composeCloudNativeCompanyPrompt(context);
-	expect(prompt).toContain('"folder":"agents/anna-berg"');
-	expect(prompt).toContain('"folder":"agents/ida-lund"');
+	expect(prompt).toContain('"folder":"QorperaOS/agents/anna-berg"');
+	expect(prompt).toContain('"folder":"QorperaOS/agents/ida-lund"');
 	// A coworker without a folder (an agent from before the files) is shown as it is.
 	const unnamed = parseCloudNativeCompanyContext(
 		{ ...f.context, folder: { agent: "anna-berg", coworkers: {} } },
@@ -1482,53 +1493,64 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
 // work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
 // (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
-// conversations as the members' quick way in), and taken again when a member's "push it" or "open a PR" became a
-// coding session's hand-in (C4-1, 26 October 2026). A change to either is a change to every run's bytes.
+// conversations as the members' quick way in), taken again when a member's "push it" or "open a PR" became a coding
+// session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
+// Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026). A change to either is a
+// change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "1930e680333d613d40ab288ceea7b566da8bd9a3ba9084c7adee7488b6ecd27f",
-			prompt: "a71b0999eb78e8ccf7e21663209c8af3d6ed8e380dbbba875da3ee5ac07c443d",
+			instructions: "425fa31bdb12fa14e55caec0d984fbb8a16f96e5f4a1dc6fd6c83ffb103df5e7",
+			prompt: "efb3b8a386ed0b226351b38078c1382ad9641dd52df3a4527f1c36143c1096a6",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "3fa1dda604b1d28b35f896604c4706b7c479e2161293b55e99f797c7952e4790",
-			prompt: "ab53d932d8bad88e3893b9dbf0f1bf613cc11c6455142564e86d09092c4ca60c",
+			instructions: "7b8e65a3077f1736efc057d7f38261650aa9e63ada114b10c8c2e9a35117131c",
+			prompt: "8b70f741e6b20b4ad888248ee51e8e26e640c343ae7bdef619a8f7a6ed619b56",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "1930e680333d613d40ab288ceea7b566da8bd9a3ba9084c7adee7488b6ecd27f",
-			prompt: "d1dc9be4d86a1ec3a5df80ad432d637d1a1913d36f5d54e22ee8fbf908448831",
+			instructions: "425fa31bdb12fa14e55caec0d984fbb8a16f96e5f4a1dc6fd6c83ffb103df5e7",
+			prompt: "a1cf7d991f48d53a1a27bdf2fbeaba1e65f6b415e1992ad12ef5a9be1fd8e4ef",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
 });
 
-// The 21 October 2026 amendment "how agents start work and use the company folder".
+// The 21 October 2026 amendment "how agents start work and use the company folder"; the platform's folders are in
+// QorperaOS/ (Jonas, 21 October 2026).
 it("tells every agent the seeded folders, how to make files and how to link them, with no invented paths", () => {
 	for (const [name, about] of CLOUD_COMPANY_TOP_FOLDERS)
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(`\n- ${name}/ — ${about}\n`);
 	expect(CLOUD_COMPANY_TOP_FOLDERS.map(([name]) => name)).toEqual([
-		"vision",
-		"agents",
-		"rules",
-		"connections",
-		"skills",
-		"contacts",
-		"human-tasks",
-		"interfaces",
-		"tables",
+		"QorperaOS/vision",
+		"QorperaOS/agents",
+		"QorperaOS/rules",
+		"QorperaOS/connections",
+		"QorperaOS/skills",
+		"QorperaOS/contacts",
+		"QorperaOS/human-tasks",
+		"QorperaOS/interfaces",
+		"QorperaOS/tables",
 		"code",
 	]);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"At its top, the platform keeps QorperaOS/, which holds the platform's own folders, and code/:\n- QorperaOS/vision/ — ",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"\n- code/ — Code projects (git repositories).\nThey belong to the platform:",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("the company's vision, QorperaOS/vision/vision.md: the file's");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("such as QorperaOS/vision/vision.md. Keep the first messages");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Everything outside the platform's folders is the company's own work.",
 	);

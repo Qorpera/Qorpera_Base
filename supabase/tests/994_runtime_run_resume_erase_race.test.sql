@@ -14,8 +14,8 @@ begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 	insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
-	values (v_run.environment_id, v_run.id, extensions.gen_random_uuid(), 'agents/alice/runs/' || v_run.id,
-		'agents/alice/runs/' || v_run.id, extensions.gen_random_uuid(), extensions.gen_random_uuid());
+	values (v_run.environment_id, v_run.id, extensions.gen_random_uuid(), 'QorperaOS/agents/alice/runs/' || v_run.id,
+		'qorperaos/agents/alice/runs/' || v_run.id, extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	insert into public.qorpera_memory_run_generations(environment_id, run_id, log_created_at)
 	values (v_run.environment_id, v_run.id, clock_timestamp());
 	perform pg_temp.base_claims('service_role');

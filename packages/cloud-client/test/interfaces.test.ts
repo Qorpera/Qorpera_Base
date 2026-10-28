@@ -360,10 +360,13 @@ ${verb === "message" ? `to = "co-founder"\ntext = ${JSON.stringify(text)}\n` : '
 			"file:hooks/stripe/2026-10/evt_1.md",
 			"file:Hooks/stripe/evt_1.md",
 			"file:ｈｏｏｋｓ/stripe/evt_1.md",
-			"file:human-tasks/sign-lease/reply.md",
+			"file:QorperaOS/human-tasks/sign-lease/reply.md",
 		])
 			expect(problems(from, "Please file this: {text}")).toEqual(["outside_value"]);
-		expect(interfaceOutsideColumns("file:HUMAN-TASKS/x/reply.md")).toEqual(["text"]);
+		expect(interfaceOutsideColumns("file:QorperaOS/HUMAN-TASKS/x/reply.md")).toEqual(["text"]);
+		expect(interfaceOutsideColumns("file:qorperaos/human-tasks/x/reply.md")).toEqual(["text"]);
+		// A top folder of the company's own named human-tasks/ is not the platform's.
+		expect(interfaceOutsideColumns("file:human-tasks/x/reply.md")).toEqual([]);
 	});
 
 	it("lets the company's own files and the quote list's sources through", () => {
@@ -405,19 +408,28 @@ ${verb === "message" ? `to = "co-founder"\ntext = ${JSON.stringify(text)}\n` : '
 
 describe("paths and order", () => {
 	it("knows each interface file by its path's key", () => {
-		expect(interfaceStatePath("interfaces/pulse/interface.toml")).toEqual({ kind: "interface", name: "pulse" });
-		expect(interfaceStatePath("Interfaces/Order.md")).toEqual({ kind: "interface-order", name: null });
-		expect(interfaceStatePath("tables/numbers/table.toml")).toEqual({ kind: "table", name: "numbers" });
-		expect(interfaceStatePath("Tables/Numbers/ROWS.csv")).toEqual({ kind: "table-rows", name: "numbers" });
-		expect(interfaceStatePath("tables/numbers.csv")).toBeNull();
-		expect(interfaceStatePath("tables/big_table/rows.csv")).toBeNull();
-		expect(interfaceStatePath("agents/x/agent.md")).toBeNull();
-		expect(interfacePathProblems("interfaces/pulse/README.md")).toEqual([]);
-		expect(interfacePathProblems("interfaces/pulse/script.js")).toHaveLength(1);
-		expect(interfacePathProblems("tables/notes.txt")).toHaveLength(1);
-		expect(interfacePathProblems("tables/numbers/notes.txt")).toHaveLength(1);
-		expect(interfacePathProblems("tables/numbers")).toEqual([]);
-		expect(interfacePathProblems("tables/numbers/README.md")).toEqual([]);
+		expect(interfaceStatePath("QorperaOS/interfaces/pulse/interface.toml")).toEqual({
+			kind: "interface",
+			name: "pulse",
+		});
+		expect(interfaceStatePath("QorperaOS/Interfaces/Order.md")).toEqual({ kind: "interface-order", name: null });
+		expect(interfaceStatePath("QorperaOS/tables/numbers/table.toml")).toEqual({ kind: "table", name: "numbers" });
+		expect(interfaceStatePath("QorperaOS/Tables/Numbers/ROWS.csv")).toEqual({ kind: "table-rows", name: "numbers" });
+		expect(interfaceStatePath("QorperaOS/tables/numbers.csv")).toBeNull();
+		expect(interfaceStatePath("QorperaOS/tables/big_table/rows.csv")).toBeNull();
+		expect(interfaceStatePath("QorperaOS/agents/x/agent.md")).toBeNull();
+		// Under QorperaOS/ only, whatever the root's spelling.
+		expect(interfaceStatePath("qorperaos/tables/numbers/table.toml")).toEqual({ kind: "table", name: "numbers" });
+		for (const path of ["interfaces/pulse/interface.toml", "interfaces/order.md", "tables/numbers/rows.csv"])
+			expect(interfaceStatePath(path), path).toBeNull();
+		expect(interfacePathProblems("interfaces/pulse/script.js")).toEqual([]);
+		expect(interfacePathProblems("Tables/Numbers")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/interfaces/pulse/README.md")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/interfaces/pulse/script.js")).toHaveLength(1);
+		expect(interfacePathProblems("QorperaOS/tables/notes.txt")).toHaveLength(1);
+		expect(interfacePathProblems("QorperaOS/tables/numbers/notes.txt")).toHaveLength(1);
+		expect(interfacePathProblems("QorperaOS/tables/numbers")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/tables/numbers/README.md")).toEqual([]);
 		expect(interfacePathProblems("work/anything.csv")).toEqual([]);
 	});
 
@@ -440,24 +452,24 @@ describe("paths and order", () => {
 		const files = interfaceLibraryFiles(() => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`);
 		// No Pulse, numbers or cards since 21 October 2026.
 		expect(Object.keys(files).sort()).toEqual([
-			"interfaces/mailbox/interface.toml",
-			"interfaces/members/interface.toml",
-			"interfaces/order.md",
-			"tables/areas/rows.csv",
-			"tables/areas/table.toml",
+			"QorperaOS/interfaces/mailbox/interface.toml",
+			"QorperaOS/interfaces/members/interface.toml",
+			"QorperaOS/interfaces/order.md",
+			"QorperaOS/tables/areas/rows.csv",
+			"QorperaOS/tables/areas/table.toml",
 		]);
-		const mailbox = parseInterfaceFile(files["interfaces/mailbox/interface.toml"] ?? "");
+		const mailbox = parseInterfaceFile(files["QorperaOS/interfaces/mailbox/interface.toml"] ?? "");
 		expect(mailbox.ok && mailbox.file.id).toBe("00000000-0000-4000-8000-000000000001");
-		const members = parseInterfaceFile(files["interfaces/members/interface.toml"] ?? "");
+		const members = parseInterfaceFile(files["QorperaOS/interfaces/members/interface.toml"] ?? "");
 		expect(members.ok && members.file.id).toBe("00000000-0000-4000-8000-000000000002");
-		const order = parseInterfaceOrderFile(files["interfaces/order.md"] ?? "");
+		const order = parseInterfaceOrderFile(files["QorperaOS/interfaces/order.md"] ?? "");
 		expect(order.ok && order.file.ids).toEqual([
 			"00000000-0000-4000-8000-000000000001",
 			"00000000-0000-4000-8000-000000000002",
 		]);
 		for (const name of ["areas"]) {
-			const definition = table(files[`tables/${name}/table.toml`] ?? "");
-			const rows = parseTableRows(definition, files[`tables/${name}/rows.csv`] ?? "");
+			const definition = table(files[`QorperaOS/tables/${name}/table.toml`] ?? "");
+			const rows = parseTableRows(definition, files[`QorperaOS/tables/${name}/rows.csv`] ?? "");
 			expect(rows).toEqual({ rows: [], problems: [], readable: true });
 		}
 	});
@@ -989,10 +1001,11 @@ describe("review round 1", () => {
 	});
 
 	it("checks names as written, and lets the seeded folders themselves be", () => {
-		expect(interfacePathProblems("interfaces")).toEqual([]);
-		expect(interfacePathProblems("tables/")).toEqual([]);
-		expect(interfacePathProblems("interfaces/Pulse/interface.toml")).toHaveLength(1);
-		expect(interfacePathProblems("tables/ＡＲＥＡＳ/rows.csv")).toHaveLength(1);
+		expect(interfacePathProblems("QorperaOS")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/interfaces")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/tables/")).toEqual([]);
+		expect(interfacePathProblems("QorperaOS/interfaces/Pulse/interface.toml")).toHaveLength(1);
+		expect(interfacePathProblems("QorperaOS/tables/ＡＲＥＡＳ/rows.csv")).toHaveLength(1);
 	});
 
 	it("reads -0 as 0, refuses a lone carriage return in CSV and a broken character in order.md", () => {
@@ -1037,8 +1050,10 @@ describe("review round 2", () => {
 
 	it("trims slashes in linear time and refuses an over-long path", () => {
 		const started = performance.now();
-		expect(interfacePathProblems(`${"/".repeat(5_000)}interfaces`)).toHaveLength(1);
-		expect(interfacePathProblems(`/interfaces/pulse/interface.toml/`)).toEqual([]);
+		expect(interfacePathProblems(`${"/".repeat(5_000)}QorperaOS/interfaces`)).toHaveLength(1);
+		expect(interfacePathProblems(`qorperaos/tables/${"a".repeat(5_000)}`)).toHaveLength(1);
+		expect(interfacePathProblems(`tables/${"a".repeat(5_000)}`)).toEqual([]);
+		expect(interfacePathProblems(`/QorperaOS/interfaces/pulse/interface.toml/`)).toEqual([]);
 		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 

@@ -30,10 +30,10 @@ import { type FolderFake, folderFake } from "./folder-fake.ts";
  * areas in lanes, an area in the open pile is taken and one in the member's own lane released, with a button or a
  * drag, through the member's own folder client (folder-fake.ts); its People view reads the members source with a
  * lookup into the areas. Step I9c: an area is offered to another member, and an offer is answered on its card. The
- * page is the one the web ships, switched on (Interfaces C6a); the folder's interfaces/ is never read. Interfaces C6d:
- * the page hides the cards, which an older company's folder still holds; a member adds an area and changes its
- * agents; and a cell that names someone who left stays theirs in the file but counts as empty for the members who
- * stay. */
+ * page is the one the web ships, switched on (Interfaces C6a); the folder's QorperaOS/interfaces/ is never read.
+ * Interfaces C6d: the page hides the cards, which an older company's folder still holds; a member adds an area and
+ * changes its agents; and a cell that names someone who left stays theirs in the file but counts as empty for the
+ * members who stay. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
 const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada", role: "Bookkeeper" };
@@ -48,8 +48,8 @@ const gone = id(49);
 const CALL = id(701);
 const SEND = id(702);
 
-const AREAS = "tables/areas/rows.csv";
-const CARDS = "tables/cards/rows.csv";
+const AREAS = "QorperaOS/tables/areas/rows.csv";
+const CARDS = "QorperaOS/tables/cards/rows.csv";
 const areaRows = [
 	`Sales,Deals and leads,${me},no,${bea},${ada.id}`,
 	`Support,,${bea},no,,`,
@@ -117,7 +117,7 @@ function seeded(rows: string = areas(...areaRows)): FolderFake {
 	let next = 500;
 	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, text);
 	fake.put(AREAS, rows);
-	fake.put("tables/cards/table.toml", CARDS_TABLE);
+	fake.put("QorperaOS/tables/cards/table.toml", CARDS_TABLE);
 	fake.put(CARDS, cards);
 	return fake;
 }
@@ -198,7 +198,7 @@ function offersFake(fake?: FolderFake) {
 		const supervision: MemberInterfaceSupervision = {
 			id: id(++consented),
 			table: fake ? areasTable(fake) : "",
-			folder: "tables/areas",
+			folder: "QorperaOS/tables/areas",
 			key,
 			user,
 			state: "live",
@@ -218,7 +218,7 @@ function offersFake(fake?: FolderFake) {
 	) => {
 		const offer: MemberInterfaceOffer = {
 			id: id(++made),
-			folder: "tables/areas",
+			folder: "QorperaOS/tables/areas",
 			column: "owner",
 			state: "open",
 			agent: null,
@@ -266,7 +266,7 @@ function offersFake(fake?: FolderFake) {
 
 /** A table's id in `fake`, as an offer or a consent names it. */
 const tableId = (fake: FolderFake, table: string) =>
-	/^id = "([0-9a-f-]{36})"$/m.exec(fake.text(`tables/${table}/table.toml`) ?? "")?.[1] ?? "";
+	/^id = "([0-9a-f-]{36})"$/m.exec(fake.text(`QorperaOS/tables/${table}/table.toml`) ?? "")?.[1] ?? "";
 const areasTable = (fake: FolderFake) => tableId(fake, "areas");
 /** The words of a card's offer lines. */
 const offerWords = (element: HTMLElement) => texts(element, ".interface-card-offer > span:first-child");
@@ -523,7 +523,7 @@ describe("the Members board (I9a)", () => {
 
 	it("draws Take, Release and Add an area only for owners and admins where only they write the rows", async () => {
 		const fake = seeded();
-		const toml = "tables/areas/table.toml";
+		const toml = "QorperaOS/tables/areas/table.toml";
 		fake.put(toml, fake.text(toml)!.replace('members = "all"', 'members = "owners"'));
 		const contributor = await members(fake, "contributor");
 		expect(contributor.main.querySelector(".interface-board .interface-actions")).toBeNull();
@@ -833,7 +833,7 @@ describe("offers on the Members board (I9c)", () => {
 
 	it("offers only to members who may change the rows, and draws no offers for a viewer", async () => {
 		const fake = seeded();
-		const toml = "tables/areas/table.toml";
+		const toml = "QorperaOS/tables/areas/table.toml";
 		fake.put(toml, fake.text(toml)!.replace('members = "all"', 'members = "owners"'));
 		const { main } = await members(fake, "owner", offersFake());
 		buttonOf(card(main, "Ops"), "Offer…")!.click();
@@ -1106,7 +1106,7 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 	/** The library's files, as founding writes them. */
 	const library = interfaceLibraryFiles(() => id(1));
 	/** The areas' rows file as founding writes it: its first line alone. */
-	const noAreas = library["tables/areas/rows.csv"]!;
+	const noAreas = library["QorperaOS/tables/areas/rows.csv"]!;
 	/** The seeded areas with Sales's agents cell set to `agents`, and Support's to `support`. */
 	const withAgents = (agents: string, support = "") =>
 		areas(`Sales,Deals and leads,${me},no,${bea},${agents}`, `Support,,${bea},no,,${support}`, ...areaRows.slice(2));
@@ -1228,7 +1228,7 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 
 	it("draws the board empty with no areas table, and the first area writes the library's table first", async () => {
 		const fake = seeded();
-		fake.remove("tables/areas");
+		fake.remove("QorperaOS/tables/areas");
 		const { main, hint } = await members(fake);
 		expect(main.querySelector(".interface-missing")).toBeNull();
 		expect(main.textContent).not.toContain("This page isn't available here yet.");
@@ -1243,13 +1243,13 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 		expect(fake.commits[0]?.operationKey).toMatch(/^web:areas-table:[0-9a-f-]{36}$/);
 		expect(fake.commits[0]?.units).toHaveLength(1);
 		expect(madeFolder(fake)).toEqual({
-			path: "tables/areas",
+			path: "QorperaOS/tables/areas",
 			contents: [
-				{ path: "table.toml", kind: "file", text: idless(library["tables/areas/table.toml"]) },
+				{ path: "table.toml", kind: "file", text: idless(library["QorperaOS/tables/areas/table.toml"]) },
 				{ path: "rows.csv", kind: "file", text: noAreas },
 			],
 		});
-		expect(fake.text("tables/areas/table.toml")).toMatch(/^id = "[0-9a-f-]{36}"$/m);
+		expect(fake.text("QorperaOS/tables/areas/table.toml")).toMatch(/^id = "[0-9a-f-]{36}"$/m);
 		// Then the row, written with the version the new rows file has.
 		expect(fake.commits[1]?.operationKey).toMatch(/^web:area-add:[0-9a-f-]{36}$/);
 		expect(made()).toBeDefined();
@@ -1257,15 +1257,16 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 			{ op: "write", path: AREAS, text: areas(`Hiring,,${me},no,,`), expectedVersion: made() },
 		]);
 		// Nothing else: no rules file, and the cards as they were.
-		expect(fake.has("rules/shared-areas.md")).toBe(false);
+		expect(fake.has("QorperaOS/rules/shared-areas.md")).toBe(false);
 		expect(fake.text(CARDS)).toBe(cards);
 		await hint();
 		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Hiring"]));
 		expect(main.querySelector(".interface-area-add .interface-empty")).toBeNull();
 	});
 
-	it("makes tables/ with the areas table in it where the folder has no tables, and no cards table", async () => {
-		const fake = folderFake({ seed: [] });
+	it("makes QorperaOS/tables/ with the areas table where the folder has no tables, and no cards table", async () => {
+		// QorperaOS/ itself is always there: it is seeded and never deleted.
+		const fake = folderFake({ seed: ["QorperaOS"] });
 		const { main } = await members(fake);
 		const made = versionAfter(fake);
 		buttonNamed(main, "Add an area")!.click();
@@ -1273,29 +1274,32 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 		buttonNamed(form(main)!, "Save")!.click();
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
 		expect(madeFolder(fake)).toEqual({
-			path: "tables",
+			path: "QorperaOS/tables",
 			contents: [
 				{ path: "areas", kind: "folder" },
-				{ path: "areas/table.toml", kind: "file", text: idless(library["tables/areas/table.toml"]) },
+				{ path: "areas/table.toml", kind: "file", text: idless(library["QorperaOS/tables/areas/table.toml"]) },
 				{ path: "areas/rows.csv", kind: "file", text: noAreas },
 			],
 		});
 		expect(fake.commits[1]?.units).toEqual([
 			{ op: "write", path: AREAS, text: areas(`Hiring,,${me},no,,`), expectedVersion: made() },
 		]);
-		expect(fake.children("tables")).toEqual(["tables/areas"]);
-		expect(fake.children("tables/areas")).toEqual(["tables/areas/rows.csv", "tables/areas/table.toml"]);
+		expect(fake.children("QorperaOS/tables")).toEqual(["QorperaOS/tables/areas"]);
+		expect(fake.children("QorperaOS/tables/areas")).toEqual([
+			"QorperaOS/tables/areas/rows.csv",
+			"QorperaOS/tables/areas/table.toml",
+		]);
 	});
 
 	it("looks again when another member made the areas table meanwhile, and adds the row to theirs", async () => {
 		const fake = seeded();
-		fake.remove("tables/areas");
+		fake.remove("QorperaOS/tables/areas");
 		const { main } = await members(fake);
 		const original = fake.folder.commit.getMockImplementation()!;
 		let theirs: string | undefined;
 		// Bea's first area makes the table between the member's look and their write.
 		fake.folder.commit.mockImplementationOnce(async (...args) => {
-			fake.put("tables/areas/table.toml", library["tables/areas/table.toml"]!);
+			fake.put("QorperaOS/tables/areas/table.toml", library["QorperaOS/tables/areas/table.toml"]!);
 			theirs = fake.put(AREAS, areas(`Press,,${bea},no,,`));
 			return original(...args);
 		});
@@ -1304,7 +1308,7 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 		buttonNamed(form(main)!, "Save")!.click();
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
 		// The new folder was answered that it exists; the row is written to Bea's file, with the version it read.
-		expect(madeFolder(fake)?.path).toBe("tables/areas");
+		expect(madeFolder(fake)?.path).toBe("QorperaOS/tables/areas");
 		expect(fake.commits[1]?.units).toEqual([
 			{
 				op: "write",
@@ -1313,14 +1317,14 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 				expectedVersion: theirs,
 			},
 		]);
-		expect(fake.text("tables/areas/table.toml")).toBe(library["tables/areas/table.toml"]);
+		expect(fake.text("QorperaOS/tables/areas/table.toml")).toBe(library["QorperaOS/tables/areas/table.toml"]);
 		expect(main.querySelector(".notice")).toBeNull();
 	});
 
 	it("draws an areas table with no rows file yet empty, and the first area writes the file's first line first", async () => {
 		const fake = seeded();
 		fake.remove(AREAS);
-		const table = fake.text("tables/areas/table.toml");
+		const table = fake.text("QorperaOS/tables/areas/table.toml");
 		const { main, hint } = await members(fake);
 		expect(main.querySelector(".interface-missing")).toBeNull();
 		expect(main.querySelector(".interface-area-add .interface-empty")?.textContent).toBe("No areas yet.");
@@ -1337,7 +1341,7 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 		expect(fake.commits[1]?.units).toEqual([
 			{ op: "write", path: AREAS, text: areas(`Hiring,,${me},no,,`), expectedVersion: made() },
 		]);
-		expect(fake.text("tables/areas/table.toml")).toBe(table);
+		expect(fake.text("QorperaOS/tables/areas/table.toml")).toBe(table);
 		await hint();
 		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Hiring"]));
 	});
@@ -1601,14 +1605,14 @@ describe("the cards the Members page hides, which founding no longer seeds (Inte
 	it("seeds no cards table, though the library's members interface still names it, and keeps its bytes", () => {
 		let n = 0;
 		const files = interfaceLibraryFiles(() => id(++n));
-		expect(files["tables/cards/table.toml"]).toBeUndefined();
-		expect(files["tables/cards/rows.csv"]).toBeUndefined();
-		expect(files["interfaces/members/interface.toml"]).toContain('from = "table:cards"');
+		expect(files["QorperaOS/tables/cards/table.toml"]).toBeUndefined();
+		expect(files["QorperaOS/tables/cards/rows.csv"]).toBeUndefined();
+		expect(files["QorperaOS/interfaces/members/interface.toml"]).toContain('from = "table:cards"');
 		// The hash pins the library's bytes as master has them (C6d changes none; founding stopped seeding Pulse, numbers
-		// and cards on 21 October 2026).
+		// and cards on 21 October 2026, and the same day moved them under QorperaOS/).
 		const entries = Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1));
 		expect(createHash("sha256").update(JSON.stringify(entries)).digest("hex")).toBe(
-			"92c05205b748c9df20920f133bcf3fd07ce0eac9bf7204955c81427757dcb0a9",
+			"46f43d8eb010867c4dc41c05c1f4b708a387de54bae526b22df8eb55787eaa8e",
 		);
 	});
 });

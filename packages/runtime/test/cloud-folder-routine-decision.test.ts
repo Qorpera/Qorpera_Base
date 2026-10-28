@@ -18,7 +18,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const PATH = "agents/nora/routines/market-check.md";
+const PATH = "QorperaOS/agents/nora/routines/market-check.md";
 const BASE = {
 	id: "4b8f2c1d-6e3a-4f5b-9c7d-8e9f0a1b2c3d",
 	title: "Check the market",
@@ -209,7 +209,7 @@ it("rewrites the instructions alone, and a renamed file at its new name", async 
 			trigger: { when: "once", at: "2026-10-03T07:30:00Z" },
 		}),
 	);
-	const moved = "agents/nora/routines/market-watch.md";
+	const moved = "QorperaOS/agents/nora/routines/market-watch.md";
 	const g = await fixture(null, undefined, { [moved]: ROUTINE });
 	const renamed = await g.decide({
 		action: "next",
@@ -445,10 +445,13 @@ it("refuses an unreadable routine file, and a run that cannot complete a folder 
 });
 
 it("finds its routine after a member renamed the file mid-run, by the routine's id in its folder", async () => {
-	const moved = "agents/nora/routines/market-watch.md";
+	const moved = "QorperaOS/agents/nora/routines/market-watch.md";
 	const f = await fixture(null, undefined, {
-		"agents/nora/routines/a-broken-one.md": "---\nid: nope\n---\nx\n",
-		"agents/nora/routines/another.md": writeRoutineFile({ ...BASE, id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d" }),
+		"QorperaOS/agents/nora/routines/a-broken-one.md": "---\nid: nope\n---\nx\n",
+		"QorperaOS/agents/nora/routines/another.md": writeRoutineFile({
+			...BASE,
+			id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+		}),
 		[moved]: ROUTINE,
 	});
 	const request = { action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" } as const;
@@ -467,7 +470,7 @@ it("finds its routine after a member renamed the file mid-run, by the routine's 
 	// Renamed again before the same call is retried: it is the same call, answered from its receipt.
 	const stored = f.files.get(moved);
 	if (!stored) throw new Error("Missing fixture file");
-	f.files.set("agents/nora/routines/market-later.md", stored);
+	f.files.set("QorperaOS/agents/nora/routines/market-later.md", stored);
 	f.files.delete(moved);
 	const commits = f.commits.length;
 	await expect(f.decide(request)).resolves.toEqual({ result, decided: true });
@@ -498,13 +501,13 @@ it("releases the read a settled answer shows", async () => {
 });
 
 it("pages through the routines folder until it finds the file", async () => {
-	const moved = "agents/nora/routines/market-watch.md";
+	const moved = "QorperaOS/agents/nora/routines/market-watch.md";
 	const f = await fixture(null, undefined, { [moved]: ROUTINE });
 	// A first page that holds no routine and names more to come.
-	f.listed.mockResolvedValueOnce({ asOfSeq: 1, entries: [], next: "agents/nora/routines/a.md" });
+	f.listed.mockResolvedValueOnce({ asOfSeq: 1, entries: [], next: "QorperaOS/agents/nora/routines/a.md" });
 	await expect(
 		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
 	).resolves.toMatchObject({ decided: true, result: { routine: { path: moved } } });
 	expect(f.listed).toHaveBeenCalledTimes(2);
-	expect(f.listed.mock.calls[1]?.[1]).toEqual({ after: "agents/nora/routines/a.md" });
+	expect(f.listed.mock.calls[1]?.[1]).toEqual({ after: "QorperaOS/agents/nora/routines/a.md" });
 });

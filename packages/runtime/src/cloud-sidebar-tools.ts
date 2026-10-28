@@ -1,3 +1,4 @@
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFolderSidebar, CloudFolderSidebarRequest } from "./cloud-folder-sidebar.ts";
 import {
 	type CloudNativeToolBinding,
@@ -24,11 +25,11 @@ export const CLOUD_SIDEBAR_TOOL_DESCRIPTION =
 	"action list shows every section with its agents in order, then the Unassigned agents. create_section makes a section (a name that already exists is that section). rename_section and delete_section name the section by its id or name; deleting a section keeps its agents, they become Unassigned. move_agent moves agentId (yourself or a coworker id from your context) into section, or out of any section when section is null; it goes last in that section. " +
 	"Sections are shared structure, not a place for notes: short plain names such as Research or Customer support. Tell the member what you changed. When the result has refused, nothing changed and it says why (no such section, the name is taken, the Co-Founder stays on top): correct the request or tell the member. Pins and hidden agents are each member's own and not yours to change.";
 
-/** A folder-v2 company's sections are agents/sections.md, named by their names (thin writers, W2). */
+/** A folder-v2 company's sections are QorperaOS/agents/sections.md, named by their names (thin writers, W2). */
 const CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER = `${CLOUD_SIDEBAR_TOOL_DESCRIPTION.replace(
 	"rename_section and delete_section name the section by its id or name;",
 	"rename_section and delete_section name the section by its name;",
-)} In this company the sections live in the file agents/sections.md; a change already made saves nothing and says so, and a save can come back refused when the file changed since it was read: call again.`;
+)} In this company the sections live in the file ${osPath("agents/sections.md")}; a change already made saves nothing and says so, and a save can come back refused when the file changed since it was read: call again.`;
 
 function sectionName(value: unknown): string {
 	if (typeof value !== "string") throw new Error("Invalid sidebar section name");

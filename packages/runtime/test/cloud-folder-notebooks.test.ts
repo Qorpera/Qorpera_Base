@@ -17,7 +17,7 @@ afterEach(() => {
 
 const PLACE = { core: "folder-v2", handle: "nora" } as const;
 const NOW = new Date("2026-10-03T08:00:00Z");
-const LOG = "agents/nora/memory/log/2026-10.md";
+const LOG = "QorperaOS/agents/nora/memory/log/2026-10.md";
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const parse = (content: CloudToolContent) => JSON.parse(String(content.value));
 
@@ -27,7 +27,7 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
 	const notebooks = new CloudFolderNotebooks({
 		folder: f.folder,
 		runId: f.identity.runId,
-		agentFolder: "agents/nora",
+		agentFolder: "QorperaOS/agents/nora",
 	});
 	const tools = [
 		...notebooks.tools((files) => cloudMemoryTools(files, f.identity, PLACE, () => NOW), f.operations()),
@@ -60,8 +60,8 @@ it("writes a fact into the agent's notebook through the folder core, making its 
 	expect(
 		f.commits.map((commit) => [commit.key.split(":")[0], commit.units.map((unit) => [unit.op, unit.path])]),
 	).toEqual([
-		["update_memory", [["mkdir", "agents/nora/memory"]]],
-		["update_memory", [["mkdir", "agents/nora/memory/log"]]],
+		["update_memory", [["mkdir", "QorperaOS/agents/nora/memory"]]],
+		["update_memory", [["mkdir", "QorperaOS/agents/nora/memory/log"]]],
 		["update_memory", [["write", LOG]]],
 	]);
 	expect(f.commits.every((commit) => typeof commit.receiptId === "string")).toBe(true);
@@ -121,14 +121,15 @@ it("reads the notebook again and redoes a write that met a newer version", async
 it("composes the notebook and the skill catalog through the folder, and releases what it read once, under the context", async () => {
 	const f = await fixture({
 		files: {
-			"agents/nora/memory/profile.md": "- (2026-09-01) I am Nora, the bookkeeper\n",
+			"QorperaOS/agents/nora/memory/profile.md": "- (2026-09-01) I am Nora, the bookkeeper\n",
 			[LOG]: "- (2026-10-02) The bank is Nordea\n",
-			"skills/invoices/SKILL.md": "---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n",
+			"QorperaOS/skills/invoices/SKILL.md":
+				"---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n",
 		},
-		folders: ["skills"],
+		folders: ["QorperaOS/skills"],
 	});
 	const signal = new AbortController().signal;
-	const memory = await composeCloudAgentMemory(f.notebooks.composition, "agents/nora", NOW, signal);
+	const memory = await composeCloudAgentMemory(f.notebooks.composition, "QorperaOS/agents/nora", NOW, signal);
 	expect(memory.profile.facts).toEqual([{ date: "2026-09-01", tier: "profile", fact: "I am Nora, the bookkeeper" }]);
 	expect(memory.recentLog.facts).toEqual([{ date: "2026-10-02", tier: "log", fact: "The bank is Nordea" }]);
 	const skills = await composeCloudAgentSkills(f.notebooks.composition, f.identity, signal, PLACE);
@@ -139,7 +140,9 @@ it("composes the notebook and the skill catalog through the folder, and releases
 	expect(f.releases).toHaveLength(1);
 	expect(f.releases[0]?.p_output_sha256).toBe(context);
 	const paths = (f.releases[0]?.p_reads as { path: string }[]).map((read) => read.path);
-	expect(paths).toEqual(expect.arrayContaining(["agents/nora/memory/profile.md", LOG, "skills/invoices/SKILL.md"]));
+	expect(paths).toEqual(
+		expect.arrayContaining(["QorperaOS/agents/nora/memory/profile.md", LOG, "QorperaOS/skills/invoices/SKILL.md"]),
+	);
 	// Released once: nothing more to release.
 	await f.notebooks.releaseComposition(context, signal);
 	expect(f.releases).toHaveLength(1);
@@ -151,20 +154,23 @@ it("composes the notebook and the skill catalog through the folder, and releases
 
 it("never follows a link: reading one is not text, a listing leaves it out, and a SKILL.md that is one is not loaded", async () => {
 	const f = await fixture({
-		files: { "skills/invoices/SKILL.md": "---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n" },
+		files: {
+			"QorperaOS/skills/invoices/SKILL.md":
+				"---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n",
+		},
 		links: {
-			"skills/latest": "invoices",
-			"skills/invoices/NOTES.md": "SKILL.md",
-			"skills/reports/SKILL.md": "../invoices/SKILL.md",
+			"QorperaOS/skills/latest": "invoices",
+			"QorperaOS/skills/invoices/NOTES.md": "SKILL.md",
+			"QorperaOS/skills/reports/SKILL.md": "../invoices/SKILL.md",
 		},
 	});
 	const signal = new AbortController().signal;
 	const { composition } = f.notebooks;
-	const link = composition.readTrusted("skills/invoices/NOTES.md", signal);
+	const link = composition.readTrusted("QorperaOS/skills/invoices/NOTES.md", signal);
 	await expect(link).rejects.toThrow("Company folder path is a link");
-	expect((await composition.listTrusted("skills", signal)).map((entry) => entry.path)).toEqual([
-		"skills/invoices",
-		"skills/reports",
+	expect((await composition.listTrusted("QorperaOS/skills", signal)).map((entry) => entry.path)).toEqual([
+		"QorperaOS/skills/invoices",
+		"QorperaOS/skills/reports",
 	]);
 	// The catalog names a skill whose SKILL.md is a link as one it cannot read, never the file the link names.
 	const skills = await composeCloudAgentSkills(composition, f.identity, signal, PLACE);
@@ -175,8 +181,8 @@ it("never follows a link: reading one is not text, a listing leaves it out, and 
 });
 
 it("creates, reads and deletes the agent's own skill through the folder core; the deletion records its review", async () => {
-	const f = await fixture({ folders: ["agents/nora/skills"] });
-	const path = "agents/nora/skills/call-the-bank/SKILL.md";
+	const f = await fixture({ folders: ["QorperaOS/agents/nora/skills"] });
+	const path = "QorperaOS/agents/nora/skills/call-the-bank/SKILL.md";
 	const created = parse(
 		await f.call("update_skill", {
 			action: "create",
@@ -208,8 +214,11 @@ it("creates, reads and deletes the agent's own skill through the folder core; th
 
 it("refuses an update_skill deletion outside the agent's own skills before anything is written", async () => {
 	const f = await fixture({
-		files: { "skills/invoices/SKILL.md": "---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n" },
-		folders: ["skills"],
+		files: {
+			"QorperaOS/skills/invoices/SKILL.md":
+				"---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n",
+		},
+		folders: ["QorperaOS/skills"],
 	});
 	const commits = f.commits.length;
 	const deleted = parse(
@@ -217,18 +226,18 @@ it("refuses an update_skill deletion outside the agent's own skills before anyth
 			action: "delete",
 			scope: "company",
 			name: "invoices",
-			version: f.files.get("skills/invoices/SKILL.md")?.version as string,
+			version: f.files.get("QorperaOS/skills/invoices/SKILL.md")?.version as string,
 		}),
 	);
 	expect(deleted).toMatchObject({ state: "denied", saved: false });
 	expect(f.commits).toHaveLength(commits);
 	expect(f.recordings).toHaveLength(0);
-	expect(f.files.has("skills/invoices/SKILL.md")).toBe(true);
+	expect(f.files.has("QorperaOS/skills/invoices/SKILL.md")).toBe(true);
 });
 
 it("creates a skill again after deleting it in the same run, rather than replaying the first creation", async () => {
-	const f = await fixture({ folders: ["agents/nora/skills"] });
-	const path = "agents/nora/skills/call-the-bank/SKILL.md";
+	const f = await fixture({ folders: ["QorperaOS/agents/nora/skills"] });
+	const path = "QorperaOS/agents/nora/skills/call-the-bank/SKILL.md";
 	const create = {
 		action: "create",
 		scope: "agent",
@@ -252,10 +261,10 @@ it("creates a skill again after deleting it in the same run, rather than replayi
 });
 
 it("reads a notebook file that starts with a byte order mark as the legacy reader did", async () => {
-	const f = await fixture({ files: { "agents/nora/memory/profile.md": "﻿- (2026-09-01) I am Nora\n" } });
+	const f = await fixture({ files: { "QorperaOS/agents/nora/memory/profile.md": "﻿- (2026-09-01) I am Nora\n" } });
 	const memory = await composeCloudAgentMemory(
 		f.notebooks.composition,
-		"agents/nora",
+		"QorperaOS/agents/nora",
 		NOW,
 		new AbortController().signal,
 	);
@@ -263,8 +272,8 @@ it("reads a notebook file that starts with a byte order mark as the legacy reade
 });
 
 it("refuses a skill deletion with no approval before taking a receipt", async () => {
-	const f = await fixture({ folders: ["agents/nora/skills"] });
-	const path = "agents/nora/skills/call-the-bank/SKILL.md";
+	const f = await fixture({ folders: ["QorperaOS/agents/nora/skills"] });
+	const path = "QorperaOS/agents/nora/skills/call-the-bank/SKILL.md";
 	await f.call("update_skill", {
 		action: "create",
 		scope: "agent",
@@ -292,7 +301,7 @@ it("refuses a skill deletion with no approval before taking a receipt", async ()
 });
 
 it("says nothing was saved, rather than an unknown outcome, when the notebook file keeps changing", async () => {
-	const f = await fixture({ files: { [LOG]: "- (2026-10-01) First\n" }, folders: ["agents/nora/memory"] });
+	const f = await fixture({ files: { [LOG]: "- (2026-10-01) First\n" }, folders: ["QorperaOS/agents/nora/memory"] });
 	const original = CloudCompanyFolderClient.prototype.commit;
 	let writers = 0;
 	vi.spyOn(CloudCompanyFolderClient.prototype, "commit").mockImplementation(async function (
@@ -313,7 +322,7 @@ it("says nothing was saved, rather than an unknown outcome, when the notebook fi
 });
 
 it("treats a notebook month that is not text as a named gap, and refuses only a write into it", async () => {
-	const months = "agents/nora/memory/log";
+	const months = "QorperaOS/agents/nora/memory/log";
 	const f = await fixture({
 		files: {
 			[`${months}/2026-07.md`]: "- (2026-07-01) Bills go out monthly\n",
@@ -321,7 +330,7 @@ it("treats a notebook month that is not text as a named gap, and refuses only a 
 			[`${months}/2026-06.md`]: "a".repeat(40 * 1024),
 			[`${months}/2026-05.md`]: "abc",
 		},
-		folders: ["agents/nora/memory"],
+		folders: ["QorperaOS/agents/nora/memory"],
 	});
 	const range = CloudCompanyFolderClient.prototype.readRange;
 	vi.spyOn(CloudCompanyFolderClient.prototype, "readRange").mockImplementation(async function (
@@ -355,7 +364,7 @@ it("treats a notebook month that is not text as a named gap, and refuses only a 
 });
 
 it("does not append a fact to a month another run created with it after the listing", async () => {
-	const f = await fixture({ folders: ["agents/nora/memory", "agents/nora/memory/log"] });
+	const f = await fixture({ folders: ["QorperaOS/agents/nora/memory", "QorperaOS/agents/nora/memory/log"] });
 	const read = CloudCompanyFolderClient.prototype.read;
 	let raced = false;
 	vi.spyOn(CloudCompanyFolderClient.prototype, "read").mockImplementation(async function (
@@ -379,30 +388,35 @@ it("does not append a fact to a month another run created with it after the list
 });
 
 it("composes around a recent month that is not notebook text and names it, but not around an unreadable profile", async () => {
-	const profile = "agents/nora/memory/profile.md";
+	const profile = "QorperaOS/agents/nora/memory/profile.md";
 	const f = await fixture({
 		files: {
 			[LOG]: "- (2026-10-02) Current fact\n",
-			"agents/nora/memory/log/2026-09.md": "a".repeat(40 * 1024),
+			"QorperaOS/agents/nora/memory/log/2026-09.md": "a".repeat(40 * 1024),
 			[profile]: "- (2026-01-01) I keep the books\n",
 		},
 	});
 	const signal = new AbortController().signal;
-	expect(await composeCloudAgentMemory(f.notebooks.composition, "agents/nora", NOW, signal)).toMatchObject({
+	expect(await composeCloudAgentMemory(f.notebooks.composition, "QorperaOS/agents/nora", NOW, signal)).toMatchObject({
 		available: true,
 		profile: { facts: [{ fact: "I keep the books" }] },
-		recentLog: { facts: [{ fact: "Current fact" }], unreadable: ["agents/nora/memory/log/2026-09.md"] },
+		recentLog: { facts: [{ fact: "Current fact" }], unreadable: ["QorperaOS/agents/nora/memory/log/2026-09.md"] },
 	});
 	// An unreadable profile cannot be composed whole, so the block degrades with a named reason.
 	f.seed(profile, "b".repeat(40 * 1024));
-	await expect(composeCloudAgentMemory(f.notebooks.composition, "agents/nora", NOW, signal)).rejects.toMatchObject({
+	await expect(
+		composeCloudAgentMemory(f.notebooks.composition, "QorperaOS/agents/nora", NOW, signal),
+	).rejects.toMatchObject({
 		category: "invalid_response",
 	});
 });
 
 it("never answers not found or an empty recall when the notebook could not be listed", async () => {
-	const kept = "agents/nora/memory/log/2026-08.md";
-	const f = await fixture({ files: { [kept]: "- (2026-08-01) Kept fact\n" }, folders: ["agents/nora/memory"] });
+	const kept = "QorperaOS/agents/nora/memory/log/2026-08.md";
+	const f = await fixture({
+		files: { [kept]: "- (2026-08-01) Kept fact\n" },
+		folders: ["QorperaOS/agents/nora/memory"],
+	});
 	vi.spyOn(CloudCompanyFolderClient.prototype, "listAll").mockRejectedValue(new Error("PRIVATE_OUTAGE"));
 	const calls: [string, JsonValue][] = [
 		["recall_memory", { query: "Kept fact" }],
@@ -415,7 +429,7 @@ it("never answers not found or an empty recall when the notebook could not be li
 });
 
 it("searches and forgets across every month, past one listing page", async () => {
-	const log = "agents/nora/memory/log";
+	const log = "QorperaOS/agents/nora/memory/log";
 	const files: Record<string, string> = {};
 	// 205 monthly files: more than the two-year horizon and more than one 200-entry listing page.
 	for (let index = 0; index < 205; index++) {
@@ -425,7 +439,7 @@ it("searches and forgets across every month, past one listing page", async () =>
 	}
 	// The same fact again this month, written before notebook-wide dedupe existed.
 	files[LOG] = "- (2026-10-02) ancient archive  needle.\n";
-	const f = await fixture({ files, folders: ["agents/nora/memory"] });
+	const f = await fixture({ files, folders: ["QorperaOS/agents/nora/memory"] });
 	const pages = vi.spyOn(CloudCompanyFolderClient.prototype, "list");
 	const recalled = parse(await f.call("recall_memory", { query: "Ancient archive needle" }));
 	expect(pages.mock.calls.filter(([parent]) => parent === log).length).toBeGreaterThan(1);

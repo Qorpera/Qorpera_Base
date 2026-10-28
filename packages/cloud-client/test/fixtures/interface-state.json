@@ -1,7 +1,7 @@
 [
 	{
 		"name": "valid interface",
-		"path": "interfaces/pulse/interface.toml",
+		"path": "QorperaOS/interfaces/pulse/interface.toml",
 		"result": {
 			"ok": true,
 			"path": {
@@ -393,7 +393,7 @@
 	},
 	{
 		"name": "valid order",
-		"path": "interfaces/order.md",
+		"path": "QorperaOS/interfaces/order.md",
 		"result": {
 			"ok": true,
 			"path": {
@@ -415,7 +415,7 @@
 	},
 	{
 		"name": "valid table",
-		"path": "tables/numbers/table.toml",
+		"path": "QorperaOS/tables/numbers/table.toml",
 		"result": {
 			"ok": true,
 			"path": {
@@ -517,7 +517,7 @@
 	},
 	{
 		"name": "valid areas table",
-		"path": "tables/areas/table.toml",
+		"path": "QorperaOS/tables/areas/table.toml",
 		"result": {
 			"ok": true,
 			"path": {
@@ -610,7 +610,7 @@
 	},
 	{
 		"name": "valid rows",
-		"path": "tables/numbers/rows.csv",
+		"path": "QorperaOS/tables/numbers/rows.csv",
 		"result": {
 			"ok": true,
 			"path": {
@@ -657,7 +657,7 @@
 	},
 	{
 		"name": "valid rows, header only",
-		"path": "tables/cards/rows.csv",
+		"path": "QorperaOS/tables/cards/rows.csv",
 		"result": {
 			"ok": true,
 			"path": {
@@ -685,7 +685,7 @@
 	},
 	{
 		"name": "too_large",
-		"path": "tables/numbers/rows.csv",
+		"path": "QorperaOS/tables/numbers/rows.csv",
 		"result": {
 			"ok": false,
 			"path": {
@@ -708,7 +708,7 @@
 	},
 	{
 		"name": "encoding",
-		"path": "interfaces/pulse/interface.toml",
+		"path": "QorperaOS/interfaces/pulse/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -731,7 +731,7 @@
 	},
 	{
 		"name": "toml",
-		"path": "interfaces/pulse/interface.toml",
+		"path": "QorperaOS/interfaces/pulse/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -754,7 +754,7 @@
 	},
 	{
 		"name": "format",
-		"path": "interfaces/pulse/interface.toml",
+		"path": "QorperaOS/interfaces/pulse/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -777,7 +777,7 @@
 	},
 	{
 		"name": "unknown_key",
-		"path": "interfaces/pulse/interface.toml",
+		"path": "QorperaOS/interfaces/pulse/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -800,7 +800,7 @@
 	},
 	{
 		"name": "missing_key",
-		"path": "tables/numbers/table.toml",
+		"path": "QorperaOS/tables/numbers/table.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -823,7 +823,7 @@
 	},
 	{
 		"name": "bad_value",
-		"path": "tables/numbers/table.toml",
+		"path": "QorperaOS/tables/numbers/table.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -846,7 +846,7 @@
 	},
 	{
 		"name": "duplicate",
-		"path": "tables/numbers/table.toml",
+		"path": "QorperaOS/tables/numbers/table.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -869,7 +869,7 @@
 	},
 	{
 		"name": "unknown_source",
-		"path": "interfaces/outside/interface.toml",
+		"path": "QorperaOS/interfaces/outside/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -892,7 +892,7 @@
 	},
 	{
 		"name": "unknown_column",
-		"path": "interfaces/outside/interface.toml",
+		"path": "QorperaOS/interfaces/outside/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -915,7 +915,7 @@
 	},
 	{
 		"name": "unknown_button",
-		"path": "interfaces/outside/interface.toml",
+		"path": "QorperaOS/interfaces/outside/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -938,7 +938,7 @@
 	},
 	{
 		"name": "unknown_target",
-		"path": "interfaces/outside/interface.toml",
+		"path": "QorperaOS/interfaces/outside/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -961,7 +961,7 @@
 	},
 	{
 		"name": "outside_value",
-		"path": "interfaces/outside/interface.toml",
+		"path": "QorperaOS/interfaces/outside/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -984,7 +984,7 @@
 	},
 	{
 		"name": "row",
-		"path": "tables/numbers/rows.csv",
+		"path": "QorperaOS/tables/numbers/rows.csv",
 		"result": {
 			"ok": false,
 			"path": {
@@ -1007,7 +1007,7 @@
 	},
 	{
 		"name": "row header",
-		"path": "tables/numbers/rows.csv",
+		"path": "QorperaOS/tables/numbers/rows.csv",
 		"result": {
 			"ok": false,
 			"path": {
@@ -1030,7 +1030,7 @@
 	},
 	{
 		"name": "path",
-		"path": "interfaces/Bad_Name/interface.toml",
+		"path": "QorperaOS/interfaces/Bad_Name/interface.toml",
 		"result": {
 			"ok": false,
 			"path": {
@@ -1053,7 +1053,7 @@
 	},
 	{
 		"name": "plain",
-		"path": "interfaces/pulse/README.md",
+		"path": "QorperaOS/interfaces/pulse/README.md",
 		"result": null
 	}
 ]

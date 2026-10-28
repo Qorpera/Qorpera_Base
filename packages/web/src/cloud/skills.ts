@@ -1,11 +1,12 @@
 import { CloudMemberFolderAccessDenied, type CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { isCloudSkillName, parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
-import { COMPANY_STATE_FILE_MAX_BYTES } from "@qorpera/cloud-client/company-state-files";
+import { COMPANY_STATE_FILE_MAX_BYTES, osPath } from "@qorpera/cloud-client/company-state-files";
 import { parentPath } from "./company-folder-writes.ts";
 
 /** A skill the composer can offer after "/" (contract 15.2): the company library
- * (skills/<name>/SKILL.md) and the agent's own (agents/<handle>/skills/<name>/SKILL.md),
- * read through the member's own access to the company's folder, as agents read them. */
+ * (QorperaOS/skills/<name>/SKILL.md) and the agent's own
+ * (QorperaOS/agents/<handle>/skills/<name>/SKILL.md), read through the member's own access to
+ * the company's folder, as agents read them. */
 export interface SkillSuggestion {
 	readonly name: string;
 	readonly description: string | null;
@@ -16,7 +17,7 @@ export interface SkillSuggestion {
 /** What the loader reads through. */
 export type SkillFolder = Pick<CloudMemberFolderClient, "list" | "read" | "readFile" | "stateFolders">;
 
-const COMPANY_LIBRARY = "skills";
+const COMPANY_LIBRARY = osPath("skills");
 /** A library listing stops after this many pages. */
 const LISTED_PAGES = 10;
 const PAGE = 100;
@@ -70,7 +71,7 @@ export async function loadSkillSuggestions(
 	agentId: string | null,
 	signal: AbortSignal,
 ): Promise<SkillSuggestion[]> {
-	// The agent's folder is where its agent.md is (agents/<handle>, folder core state files).
+	// The agent's folder is where its agent.md is (QorperaOS/agents/<handle>, folder core state files).
 	const agentFile = agentId
 		? ((await folder.stateFolders(signal)).agents.find((agent) => agent.staffAgentId === agentId.toLowerCase())
 				?.file ?? null)

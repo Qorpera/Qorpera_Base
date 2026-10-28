@@ -561,25 +561,25 @@ describe("writes through the mount", () => {
 
 	it("says which rule refused a change and why, as the core names it; the boundary's other changes save", async () => {
 		const { core, open } = await fixture();
-		core.seed([folder("interfaces")]);
+		core.seed([folder("QorperaOS"), folder("QorperaOS/interfaces")]);
 		core.rule = (path) =>
-			path.startsWith("interfaces/")
+			path.startsWith("QorperaOS/interfaces/")
 				? { code: "layout_authoring", message: "page and table layout authoring is not available" }
 				: undefined;
 		const view = await open();
-		await write(view, "interfaces/page.md", "p");
+		await write(view, "QorperaOS/interfaces/page.md", "p");
 		await write(view, "notes.md", "n");
 		const report = await view.publish();
 		expect(report.paths).toHaveLength(2);
 		expect(report.paths).toContainEqual({
-			path: "interfaces/page.md",
+			path: "QorperaOS/interfaces/page.md",
 			outcome: "refused",
 			reason: "structured_rule: layout_authoring (page and table layout authoring is not available)",
 			kept: true,
 		});
 		expect(report.paths).toContainEqual({ path: "notes.md", outcome: "saved" });
 		expect(core.entries.has("notes.md")).toBe(true);
-		expect(core.entries.has("interfaces/page.md")).toBe(false);
+		expect(core.entries.has("QorperaOS/interfaces/page.md")).toBe(false);
 	});
 
 	it("publishes what is pending first when a change needs it", async () => {
@@ -1579,13 +1579,13 @@ describe("writes through the mount", () => {
 
 	it("fails a boundary whose company-state file cannot be read back as a request error", async () => {
 		const { root, core, uploads, open } = await fixture();
-		core.seed([folder("vision")]);
+		core.seed([folder("QorperaOS"), folder("QorperaOS/vision")]);
 		const view = await open();
-		await write(view, "vision/vision.md", "# Where we are going");
+		await write(view, "QorperaOS/vision/vision.md", "# Where we are going");
 		// The staged manifest is gone from the share before the boundary reads the file to parse it.
 		await rm(join(root, PROFILE, uploads.puts.at(-1)!));
 		await refused(view.publish(), "UNAVAILABLE");
-		expect(core.entries.has("vision/vision.md")).toBe(false);
+		expect(core.entries.has("QorperaOS/vision/vision.md")).toBe(false);
 	});
 
 	it("answers a close it cannot cut, for want of the origin's bytes, and keeps the handle", async () => {

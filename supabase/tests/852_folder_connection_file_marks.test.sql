@@ -8,12 +8,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit(pg_temp.platform(), 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Connections'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','connections')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/connections')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
 create function pg_temp.marks(p_secret uuid) returns bigint language sql as $$
@@ -195,7 +195,7 @@ begin
 			'connectedBy', '70400000-0000-4000-8000-000000000001',
 			'connectedAt', public.qorpera_company_state_instant_text((select created_at from public.qorpera_cloud_secrets
 				where id = '85200000-0000-4000-8000-0000000000e7')))
-		or c ->> 'present' <> 'true' or c ->> 'path' <> 'connections/gmail-b.md' or c -> 'current' <> 'null'::jsonb then
+		or c ->> 'present' <> 'true' or c ->> 'path' <> 'QorperaOS/connections/gmail-b.md' or c -> 'current' <> 'null'::jsonb then
 		raise exception 'A new Gmail connection''s file: %', c; end if;
 	w := pg_temp.work('85200000-0000-4000-8000-0000000000e7');
 	if not w.dirty or w.lease_owner <> '85200000-0000-4000-8000-00000000000a' or w.lease_until <= clock_timestamp()
@@ -209,7 +209,7 @@ begin
 				from public.qorpera_cloud_connector_operations where connector_id = 'gmail' and status = 'active'
 					and operation_id <> (pg_temp.operation('gmail', 1)).operation_id),
 			'connectedBy', '70400000-0000-4000-8000-000000000001', 'connectedAt', public.qorpera_company_state_instant_text(e1.created_at))
-		or c ->> 'path' <> 'connections/gmail.md' then
+		or c ->> 'path' <> 'QorperaOS/connections/gmail.md' then
 		raise exception 'The primary Gmail connection''s file: %', c; end if;
 	perform set_config('qorpera_test.claim_e1', c::text, true);
 	-- The website account, by the vault's account row.
@@ -219,7 +219,7 @@ begin
 			'account', 'ops+portal@nordlys.test', 'status', 'pending', 'actions', '[]'::jsonb,
 			'connectedBy', '70400000-0000-4000-8000-000000000001', 'connectedAt', public.qorpera_company_state_instant_text(account.created_at),
 			'site', 'portal.example.com', 'twoStep', 'authenticator', 'openedFor', null)
-		or c ->> 'path' <> 'connections/portal-example-com.md' then
+		or c ->> 'path' <> 'QorperaOS/connections/portal-example-com.md' then
 		raise exception 'A website account''s file: %', c; end if;
 	perform set_config('qorpera_test.claim_eb', c::text, true);
 	-- The disconnected GitHub connection has no file, and none to delete.
@@ -256,8 +256,8 @@ begin
 	if exists (select 1 from public.qorpera_folder_connection_file_work where dirty or lease_owner is not null)
 		or pg_temp.claim() is not null then
 		raise exception 'All files match the vault'; end if;
-	if (pg_temp.idx('70400000-0000-4000-8000-0000000000e1')).folder_path is distinct from 'connections/gmail.md'
-		or (pg_temp.idx('85200000-0000-4000-8000-0000000000eb')).folder_path is distinct from 'connections/portal-example-com.md' then
+	if (pg_temp.idx('70400000-0000-4000-8000-0000000000e1')).folder_path is distinct from 'QorperaOS/connections/gmail.md'
+		or (pg_temp.idx('85200000-0000-4000-8000-0000000000eb')).folder_path is distinct from 'QorperaOS/connections/portal-example-com.md' then
 		raise exception 'The files are indexed for their accounts'; end if;
 end $$;
 
@@ -268,21 +268,21 @@ declare c jsonb; r jsonb; w public.qorpera_folder_connection_file_work; v_before
 begin
 	-- A member writes the text below the settings.
 	c := current_setting('qorpera_test.claim_e1')::jsonb;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'member-0001', jsonb_build_array(pg_temp.write('connections/gmail.md',
-		'connection', 'The team inbox.', pg_temp.file_parse(c, 'The team inbox.'), pg_temp.version('connections/gmail.md')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'member-0001', jsonb_build_array(pg_temp.write('QorperaOS/connections/gmail.md',
+		'connection', 'The team inbox.', pg_temp.file_parse(c, 'The team inbox.'), pg_temp.version('QorperaOS/connections/gmail.md')))), 1, 'saved');
 	-- A new grant: the claim names the file and its current version.
 	perform pg_temp.grant_op('85200000-0000-4000-8000-0000000000f4', '70400000-0000-4000-8000-0000000000e1', 'gmail', 1);
 	c := pg_temp.expect_claim(pg_temp.claim(), '70400000-0000-4000-8000-0000000000e1', 2, 1);
-	if c -> 'current' ->> 'path' <> 'connections/gmail.md'
-		or (c -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('connections/gmail.md')
+	if c -> 'current' ->> 'path' <> 'QorperaOS/connections/gmail.md'
+		or (c -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('QorperaOS/connections/gmail.md')
 		or c -> 'current' ->> 'fileSha256' is distinct from encode(extensions.digest(convert_to('The team inbox.', 'utf8'), 'sha256'), 'hex')
 		or c -> 'settings' -> 'actions' <> (select jsonb_agg(operation_id order by operation_id collate "C")
 			from public.qorpera_cloud_connector_operations where connector_id = 'gmail' and status = 'active') then
 		raise exception 'The claim names the current file: %', c; end if;
 	-- Meanwhile the member edits the text again: the writer's version is stale, so it backs off with the reason.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'member-0002', jsonb_build_array(pg_temp.write('connections/gmail.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'member-0002', jsonb_build_array(pg_temp.write('QorperaOS/connections/gmail.md',
 		'connection', 'The team''s inbox.', pg_temp.file_parse(current_setting('qorpera_test.claim_e1')::jsonb, 'The team''s inbox.'),
-		pg_temp.version('connections/gmail.md')))), 1, 'saved');
+		pg_temp.version('QorperaOS/connections/gmail.md')))), 1, 'saved');
 	r := pg_temp.write_claim(c, 'The team inbox.');
 	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
 	begin
@@ -300,7 +300,7 @@ begin
 	update public.qorpera_folder_connection_file_work set not_before = clock_timestamp() - interval '1 second'
 	where secret_id = '70400000-0000-4000-8000-0000000000e1';
 	c := pg_temp.expect_claim(pg_temp.claim(), '70400000-0000-4000-8000-0000000000e1', 3, 0);
-	if (c -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('connections/gmail.md') or (c ->> 'attempt')::integer <> 2 then
+	if (c -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('QorperaOS/connections/gmail.md') or (c ->> 'attempt')::integer <> 2 then
 		raise exception 'The retry sees the member''s version: %', c; end if;
 	perform pg_temp.expect(pg_temp.write_claim(c, 'The team''s inbox.'), 1, 'saved');
 	if not pg_temp.finish(c) or (pg_temp.work('70400000-0000-4000-8000-0000000000e1')).dirty then
@@ -320,7 +320,7 @@ begin
 	update public.qorpera_folder_connection_file_work set lease_until = clock_timestamp() - interval '1 second'
 	where secret_id = '85200000-0000-4000-8000-0000000000e7';
 	b := pg_temp.expect_claim(pg_temp.claim('85200000-0000-4000-8000-00000000000b'), '85200000-0000-4000-8000-0000000000e7', 3, 0);
-	if (b -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('connections/gmail-b.md')
+	if (b -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('QorperaOS/connections/gmail-b.md')
 		or b -> 'current' <> a -> 'current' then
 		raise exception 'B sees the file A saw: %', b; end if;
 	-- A commits first; B's version is then stale and it backs off; A's late finish is refused.
@@ -332,7 +332,7 @@ begin
 	where secret_id = '85200000-0000-4000-8000-0000000000e7';
 	b := pg_temp.expect_claim(pg_temp.claim('85200000-0000-4000-8000-00000000000b'), '85200000-0000-4000-8000-0000000000e7', 4, 0);
 	if b -> 'settings' ->> 'account' <> 'sales-team@nordlys.test'
-		or (b -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('connections/gmail-b.md') then
+		or (b -> 'current' ->> 'version')::uuid is distinct from pg_temp.version('QorperaOS/connections/gmail-b.md') then
 		raise exception 'The next claim is the current state: %', b; end if;
 	-- A change while B holds the lease: B's finish leaves the secret due for the next claim.
 	update public.qorpera_cloud_secrets set account_label = 'sales@nordlys.test' where id = '85200000-0000-4000-8000-0000000000e7';
@@ -365,7 +365,7 @@ begin
 		perform pg_temp.expect(pg_temp.delete_claim(c), 1, 'saved');
 		if not pg_temp.finish(c) then raise exception 'The delete finishes'; end if;
 	end loop;
-	if pg_temp.version('connections/gmail.md') is not null or pg_temp.version('connections/portal-example-com.md') is not null
+	if pg_temp.version('QorperaOS/connections/gmail.md') is not null or pg_temp.version('QorperaOS/connections/portal-example-com.md') is not null
 		or (pg_temp.idx('70400000-0000-4000-8000-0000000000e1')).retired_at is null then
 		raise exception 'No file says a connection that is gone'; end if;
 	if pg_temp.claim() is not null then raise exception 'Nothing else is due'; end if;
@@ -384,10 +384,10 @@ begin
 	values ('85200000-0000-4000-8000-0000000000ec','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020',
 		v_site, 'ops+long@nordlys.test', 'pending', '70400000-0000-4000-8000-000000000001');
 	v_state := public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000ec');
-	if v_state ->> 'path' <> 'connections/' || repeat('a', 60) || '-bbb.md' then
+	if v_state ->> 'path' <> 'QorperaOS/connections/' || repeat('a', 60) || '-bbb.md' then
 		raise exception 'A long site is cut to 64 characters, never ending in a hyphen: %', v_state ->> 'path'; end if;
 	v_state := public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000ed');
-	if v_state ->> 'path' <> 'connections/google-drive-team-files.md' then
+	if v_state ->> 'path' <> 'QorperaOS/connections/google-drive-team-files.md' then
 		raise exception 'Underscores become single hyphens: %', v_state ->> 'path'; end if;
 end $$;
 
@@ -432,7 +432,7 @@ begin
 	if v_state -> 'settings' ->> 'connectedBy' <> '70400000-0000-4000-8000-0000000000c0'
 		or v_state -> 'settings' ->> 'connectedAt' <> '2026-10-02T09:30:00.25Z'
 		or v_state -> 'settings' ->> 'openedFor' <> '85200000-0000-4000-8000-0000000000d7'
-		or v_state -> 'settings' ->> 'status' <> 'connected' or v_state ->> 'path' <> 'connections/agent-example-com.md' then
+		or v_state -> 'settings' ->> 'status' <> 'connected' or v_state ->> 'path' <> 'QorperaOS/connections/agent-example-com.md' then
 		raise exception 'An agent''s connected account: %', v_state; end if;
 	-- A closed account on a secret not yet revoked has no file.
 	if public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000fa') ->> 'present' <> 'false' then

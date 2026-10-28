@@ -19,17 +19,17 @@ $$;
 -- Alice's todo file with this key, written as the parser sends it; an existing file keeps its id and is written over the
 -- version read.
 create function pg_temp.tw_todo(p_key text, p_title text, p_status text default 'open') returns jsonb language sql as $$
-	select pg_temp.base_write('agents/alice/todos/' || p_key || '.md', 'todo',
+	select pg_temp.base_write('QorperaOS/agents/alice/todos/' || p_key || '.md', 'todo',
 		format(E'---\nid: %s\ntitle: %s\nstatus: %s\n---\n\n', todo.id, p_title, p_status),
 		jsonb_build_object('kind', 'todo', 'id', todo.id, 'title', p_title, 'status', p_status, 'requestedBy', null, 'detail', ''),
-		pg_temp.base_version('agents/alice/todos/' || p_key || '.md'))
-	from (select coalesce((select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/alice/todos/' || p_key || '.md'
-		and folder_retired_at is null), md5('agents/alice/todos/' || p_key || '.md')::uuid) id) todo
+		pg_temp.base_version('QorperaOS/agents/alice/todos/' || p_key || '.md'))
+	from (select coalesce((select id from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/alice/todos/' || p_key || '.md'
+		and folder_retired_at is null), md5('QorperaOS/agents/alice/todos/' || p_key || '.md')::uuid) id) todo
 $$;
 -- A todo's file with its title and state changed.
 create function pg_temp.tw_change(p_key text, p_title text default null, p_status text default null) returns jsonb language sql as $$
 	select pg_temp.tw_todo(p_key, coalesce(p_title, todo.title), coalesce(p_status, todo.state))
-	from public.qorpera_runtime_agent_todos todo where todo.folder_path = 'agents/alice/todos/' || p_key || '.md'
+	from public.qorpera_runtime_agent_todos todo where todo.folder_path = 'QorperaOS/agents/alice/todos/' || p_key || '.md'
 		and todo.folder_retired_at is null
 $$;
 -- Alice's open and blocked todos, as the index holds them.
@@ -72,7 +72,7 @@ $$;
 -- The run's reviewed dispatch of a read-only worker on one of Alice's todos: its brief, staged by the run, saved in the
 -- worker's folder under the todo's folder with the run's own allow of the call.
 create function pg_temp.tw_dispatch(p_todo text, p_worker text) returns jsonb language plpgsql as $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_folder text := 'agents/alice/todos/' || p_todo || '/' || p_worker;
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_folder text := 'QorperaOS/agents/alice/todos/' || p_todo || '/' || p_worker;
 	v_brief jsonb := jsonb_build_object('kind', 'worker-brief', 'id', extensions.gen_random_uuid(), 'title', 'Side task ' || p_worker,
 		'species', 'in-house', 'access', 'read', 'revival', 'batch',
 		'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUps', 0, 'followedUpAt', null,
@@ -80,8 +80,8 @@ declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; 
 		|| public.qorpera_company_state_worker_standing('in-house', 'read', 'batch');
 	v_units jsonb; v_action uuid; v_review jsonb; v_result jsonb;
 begin
-	v_units := case when pg_temp.base_version('agents/alice/todos/' || p_todo) is null
-			then jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/alice/todos/' || p_todo)) else '[]'::jsonb end
+	v_units := case when pg_temp.base_version('QorperaOS/agents/alice/todos/' || p_todo) is null
+			then jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/' || p_todo)) else '[]'::jsonb end
 		|| jsonb_build_array(jsonb_build_object('op', 'new_folder', 'path', v_folder,
 			'contents', jsonb_build_array(jsonb_build_object('path', 'brief.md', 'kind', 'file',
 				'file', pg_temp.base_seal(pg_temp.tw_actor(), pg_temp.base_manifest(v_brief::text)) -> 'file')),
@@ -227,7 +227,7 @@ begin
 		where worker_key = 'side-a' and staff_agent_id = '92400000-0000-4000-8000-000000000030';
 		perform pg_temp.base_assert(public.qorpera_describe_agent_open_work(current_setting('qorpera_test.base_binding')::jsonb) -> 'workers'
 			= '{"active":3,"blocked":3}'::jsonb, 'Blocked workers are counted');
-		update public.qorpera_runtime_agent_todos set state = 'done' where folder_path = 'agents/alice/todos/t-11.md';
+		update public.qorpera_runtime_agent_todos set state = 'done' where folder_path = 'QorperaOS/agents/alice/todos/t-11.md';
 		perform pg_temp.base_assert(public.qorpera_describe_agent_open_work(current_setting('qorpera_test.base_binding')::jsonb) -> 'workers'
 			= '{"active":2,"blocked":2}'::jsonb, 'Workers of a closed todo are not open work');
 		raise exception 'rollback-open-work-probe';

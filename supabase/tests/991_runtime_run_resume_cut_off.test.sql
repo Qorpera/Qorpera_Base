@@ -76,7 +76,7 @@ rollback to savepoint rc_gate_off;
 
 -- The run gets a log, as its runtime's first batch indexes runs/<run>/run.toml, and the gate is on for it.
 insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
-select run.environment_id, run.id, extensions.gen_random_uuid(), 'agents/alice/runs/' || run.id, 'agents/alice/runs/' || run.id,
+select run.environment_id, run.id, extensions.gen_random_uuid(), 'QorperaOS/agents/alice/runs/' || run.id, 'qorperaos/agents/alice/runs/' || run.id,
 	extensions.gen_random_uuid(), extensions.gen_random_uuid()
 from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 select pg_temp.base_assert(public.qorpera_run_resumes_from_log((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid),

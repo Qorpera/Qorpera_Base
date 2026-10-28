@@ -48,8 +48,8 @@ describe("the folder writers' text helpers", () => {
 	});
 
 	it("finds a path's parent", () => {
-		expect(parentPath("agents/ledger/agent.md")).toBe("agents/ledger");
-		expect(parentPath("agents")).toBe("");
+		expect(parentPath("QorperaOS/agents/ledger/agent.md")).toBe("QorperaOS/agents/ledger");
+		expect(parentPath("QorperaOS")).toBe("");
 	});
 });
 
@@ -86,31 +86,31 @@ describe("reading a state file", () => {
 
 	it("decodes strict UTF-8 and keeps a byte-order mark", async () => {
 		const text = "\ufeff---\nid: a\n---\nÆble.\n";
-		const read = await readStateFile(single(new TextEncoder().encode(text)), "agents/a/agent.md", signal());
+		const read = await readStateFile(single(new TextEncoder().encode(text)), "QorperaOS/agents/a/agent.md", signal());
 		expect(read?.text).toBe(text);
 		expect(read?.entry.version).toBe(id(40));
 	});
 
 	it("refuses bytes that are not UTF-8, a folder, and a file past 64 KiB, and answers null for a missing path", async () => {
 		await expect(
-			readStateFile(single(Uint8Array.from([0x2d, 0xff, 0x2d])), "agents/a/agent.md", signal()),
+			readStateFile(single(Uint8Array.from([0x2d, 0xff, 0x2d])), "QorperaOS/agents/a/agent.md", signal()),
 		).rejects.toThrow();
-		await expect(readStateFile(single(new Uint8Array(), "folder"), "agents/a/agent.md", signal())).rejects.toThrow(
-			"not a company state file",
-		);
-		await expect(readStateFile(single(new Uint8Array(64 * 1024 + 1)), "agents/a/agent.md", signal())).rejects.toThrow(
-			"not a company state file",
-		);
-		expect(await readStateFile(folderFake().folder, "agents/a/agent.md", signal())).toBeNull();
+		await expect(
+			readStateFile(single(new Uint8Array(), "folder"), "QorperaOS/agents/a/agent.md", signal()),
+		).rejects.toThrow("not a company state file");
+		await expect(
+			readStateFile(single(new Uint8Array(64 * 1024 + 1)), "QorperaOS/agents/a/agent.md", signal()),
+		).rejects.toThrow("not a company state file");
+		expect(await readStateFile(folderFake().folder, "QorperaOS/agents/a/agent.md", signal())).toBeNull();
 	});
 });
 
 describe("listing a folder's names", () => {
 	it("reads every page, in lowercase", async () => {
 		const fake = folderFake();
-		for (let index = 0; index < 1000; index++) fake.mkdir(`agents/a-${String(index).padStart(4, "0")}`);
-		fake.mkdir("agents/Ledger");
-		const names = await folderNames(fake.folder, "agents", signal());
+		for (let index = 0; index < 1000; index++) fake.mkdir(`QorperaOS/agents/a-${String(index).padStart(4, "0")}`);
+		fake.mkdir("QorperaOS/agents/Ledger");
+		const names = await folderNames(fake.folder, "QorperaOS/agents", signal());
 		// The 1,000 made here, Ledger and the seeded groups.
 		expect(names.size).toBe(1002);
 		expect(names.has("ledger")).toBe(true);
@@ -125,7 +125,7 @@ describe("creating a state folder", () => {
 		const error = await createStateFolder(
 			fake.folder,
 			{
-				parent: "agents/groups",
+				parent: "QorperaOS/agents/groups",
 				name: "Launch",
 				fallback: "group",
 				key: (handle) => `web:test:${handle}`,
@@ -146,7 +146,7 @@ describe("creating a state folder", () => {
 		const path = await createStateFolder(
 			fake.folder,
 			{
-				parent: "agents/groups",
+				parent: "QorperaOS/agents/groups",
 				name: "東京",
 				fallback: "group",
 				key: (handle) => `web:test:${handle}`,
@@ -156,13 +156,13 @@ describe("creating a state folder", () => {
 			signal(),
 			check,
 		);
-		expect(path).toBe("agents/groups/group");
-		expect(fake.kind("agents/groups/group/group.md")).toBe("file");
+		expect(path).toBe("QorperaOS/agents/groups/group");
+		expect(fake.kind("QorperaOS/agents/groups/group/group.md")).toBe("file");
 	});
 });
 
 describe("rewriting a state file", () => {
-	const PATH = "agents/groups/launch/group.md";
+	const PATH = "QorperaOS/agents/groups/launch/group.md";
 
 	it("sends nothing when the rewrite has nothing to write", async () => {
 		const fake = folderFake();
@@ -232,11 +232,11 @@ describe("rewriting a state file", () => {
 describe("deleting a state folder", () => {
 	it("refuses a file where the folder should be", async () => {
 		const fake = folderFake();
-		fake.put("agents/groups/launch", "Not a folder.");
+		fake.put("QorperaOS/agents/groups/launch", "Not a folder.");
 		await expect(
 			deleteStateFolder(
 				fake.folder,
-				{ locate: async () => "agents/groups/launch", key: () => "web:test:1", failure: "Not deleted." },
+				{ locate: async () => "QorperaOS/agents/groups/launch", key: () => "web:test:1", failure: "Not deleted." },
 				signal(),
 				check,
 			),
@@ -246,18 +246,18 @@ describe("deleting a state folder", () => {
 
 	it("gives up after three more tries when something keeps changing under the folder", async () => {
 		const fake = folderFake();
-		fake.put("agents/groups/launch/group.md", group("Launch"));
+		fake.put("QorperaOS/agents/groups/launch/group.md", group("Launch"));
 		const read = fake.folder.read.getMockImplementation()!;
 		let notes = 0;
 		fake.folder.read.mockImplementation(async (...args) => {
 			const answer = await read(...args);
-			fake.put(`agents/groups/launch/note-${++notes}.md`, "A note.");
+			fake.put(`QorperaOS/agents/groups/launch/note-${++notes}.md`, "A note.");
 			return answer;
 		});
 		const error = await deleteStateFolder(
 			fake.folder,
 			{
-				locate: async () => "agents/groups/launch",
+				locate: async () => "QorperaOS/agents/groups/launch",
 				key: () => `web:test:${crypto.randomUUID()}`,
 				failure: "Not deleted.",
 			},
@@ -267,6 +267,6 @@ describe("deleting a state folder", () => {
 		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
 		expect(error).toMatchObject({ outcome: "conflict", reason: "unseen_change", message: "Not deleted." });
 		expect(fake.commits).toHaveLength(4);
-		expect(fake.has("agents/groups/launch")).toBe(true);
+		expect(fake.has("QorperaOS/agents/groups/launch")).toBe(true);
 	});
 });

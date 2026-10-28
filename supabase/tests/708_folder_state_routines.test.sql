@@ -136,20 +136,20 @@ $$;
 
 -- A hire with its routines, as one unit: p_routines is [[name, parse], ...].
 create function pg_temp.hire_routines(p_handle text, p_id uuid, p_routines jsonb) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		-- The routines come first, so the agent they need is indexed in the same unit only if apply orders them after it.
 		'contents', jsonb_build_array(jsonb_build_object('path','routines','kind','folder'))
 			|| (select jsonb_agg(jsonb_build_object('path','routines/' || (t ->> 0) || '.md','kind','file',
 				'file',pg_temp.stage(E'---\n' || (t -> 1)::text || E'\n---\n'))) from jsonb_array_elements(p_routines) t)
 			|| jsonb_build_array(jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_handle)))),
-		'structured', (select jsonb_agg(pg_temp.entry('agents/' || p_handle || '/routines/' || (t ->> 0) || '.md', 'routine',
+		'structured', (select jsonb_agg(pg_temp.entry('QorperaOS/agents/' || p_handle || '/routines/' || (t ->> 0) || '.md', 'routine',
 				E'---\n' || (t -> 1)::text || E'\n---\n', t -> 1)) from jsonb_array_elements(p_routines) t)
-			|| jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, p_handle),
+			|| jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, p_handle),
 				pg_temp.agent_parse(p_id, p_handle))))
 $$;
 -- A parse the platform reads differently from its rules: refused, naming the field.
 create function pg_temp.misread(p_key text, p_parse jsonb, p_field text) returns void language plpgsql as $$
-declare r jsonb := pg_temp.commit(pg_temp.owner(), p_key, jsonb_build_array(pg_temp.routine('agents/nora/routines/misread.md', p_parse)));
+declare r jsonb := pg_temp.commit(pg_temp.owner(), p_key, jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/misread.md', p_parse)));
 begin
 	if not pg_temp.refused(r, 'structured_invalid')
 		or pg_temp.problem(r) is distinct from 'the platform read this file differently from its rules (' || p_field || ')' then
@@ -162,16 +162,17 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Routines'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Routines'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70700000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a1', 'Nora'),
 		pg_temp.hire('otto', '70700000-0000-4000-8000-0000000000a2', 'Otto')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'mkdir-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','agents/nora/routines'), jsonb_build_object('op','mkdir','path','agents/otto/routines')));
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/nora/routines'), jsonb_build_object('op','mkdir','path','QorperaOS/agents/otto/routines')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
@@ -180,7 +181,7 @@ end $$;
 do $$
 declare t jsonb; x public.qorpera_cloud_routines; v public.qorpera_cloud_routine_versions; c public.qorpera_cloud_routine_schedule_cursors;
 	e1 constant uuid := '70800000-0000-4000-8000-0000000000e1';
-	u jsonb := pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000e1', 'Inbox', pg_temp.every()));
+	u jsonb := pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000e1', 'Inbox', pg_temp.every()));
 begin
 	-- A new routine's save takes the company row only, at rank 0 (20260928259230).
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
@@ -192,8 +193,8 @@ begin
 	if x.origin is distinct from 'member' or x.owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a1'
 		or x.routine_key is distinct from 'inbox' or x.status is distinct from 'active' or x.pause_reason is not null
 		or x.client_routine_id is distinct from e1 or x.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000001'
-		or x.current_version is distinct from 1::bigint or x.folder_path is distinct from 'agents/nora/routines/inbox.md'
-		or x.folder_path_version is distinct from pg_temp.version('agents/nora/routines/inbox.md') or x.folder_retired_at is not null
+		or x.current_version is distinct from 1::bigint or x.folder_path is distinct from 'QorperaOS/agents/nora/routines/inbox.md'
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/agents/nora/routines/inbox.md') or x.folder_retired_at is not null
 		or x.expires_at is not null or x.max_occurrences is not null or x.quiet_start is not null then
 		raise exception 'A routine file is a routine of the agent whose folder holds it: %', to_jsonb(x); end if;
 	if v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a1' or v.title is distinct from 'Inbox'
@@ -209,13 +210,13 @@ begin
 	-- Its edit takes its row at rank 5 as well, and so does a move of a folder that holds it.
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse(e1, 'Inbox!', pg_temp.every())))) y;
+		pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md', pg_temp.rparse(e1, 'Inbox!', pg_temp.every())))) y;
 	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
 			{"rank":5,"tbl":"qorpera_cloud_routines","key":"70800000-0000-4000-8000-0000000000e1","mode":"nokeyupdate"}]' then
 		raise exception 'A routine edit locks its row at rank 5: %', t; end if;
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
-		jsonb_build_array(pg_temp.move('agents/nora/routines', 'agents/nora/routines-old'))) y;
+		jsonb_build_array(pg_temp.move('QorperaOS/agents/nora/routines', 'QorperaOS/agents/nora/routines-old'))) y;
 	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
 			{"rank":5,"tbl":"qorpera_cloud_routines","key":"70800000-0000-4000-8000-0000000000e1","mode":"nokeyupdate"}]' then
 		raise exception 'A moved folder locks its routines: %', t; end if;
@@ -229,12 +230,12 @@ declare x public.qorpera_cloud_routines; c public.qorpera_cloud_routine_schedule
 begin
 	-- The member has no login that pays for unattended work: they pause the routine, limit it and move its quiet hours,
 	-- but starting or extending its work needs a paying login (S2).
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"status":"paused"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'paused' or x.pause_reason is distinct from 'member' or x.current_version is distinct from 1::bigint then
 		raise exception 'A pause is the row''s: %', to_jsonb(x); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"status":"paused","ends":"2031-01-01T00:00:00Z","runs":40,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
@@ -243,32 +244,32 @@ begin
 		or x.quiet_start is distinct from '22:00'::time or x.quiet_end is distinct from '07:00'::time
 		or x.quiet_time_zone is distinct from 'Europe/Copenhagen' then
 		raise exception 'The end, the runs and quiet hours are the row''s: %', to_jsonb(x); end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0031', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0031', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
 		raise exception 'A resume needs the saver''s paying login'; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0032', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0032', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.pause_reason is not null or x.current_version is distinct from 1::bigint then
 		raise exception 'The owner resumes on the login already pinned: %', to_jsonb(x); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0033', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0033', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":30,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
 	if (pg_temp.rt(e1)).max_occurrences is distinct from 30 or (pg_temp.rt(e1)).status is distinct from 'active' then
 		raise exception 'Fewer runs and an earlier end need no login: %', to_jsonb(pg_temp.rt(e1)); end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0034', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0034', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":50,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again'
-		or pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0035', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		or pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0035', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-06-01T00:00:00Z","runs":30,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
 		raise exception 'More runs or a later end need the saver''s paying login'; end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0004', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0004', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox today', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":30,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
@@ -292,7 +293,7 @@ begin
 	v_at := date_trunc('milliseconds', statement_timestamp()) - interval '1 hour';
 	perform pg_temp.fx(format('update public.qorpera_cloud_routine_schedule_cursors set last_scheduled_for = %L, next_due_at = %L
 		where routine_id = %L and routine_version = 1', v_at, v_at + interval '2 hours', e1));
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0005', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0005', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox today', pg_temp.every(), '{"effort":"high"}')))), 1, 'saved');
 	x := pg_temp.rt(e1); c := pg_temp.cursor(e1);
 	if x.current_version is distinct from 2::bigint or (pg_temp.rv(e1)).title is distinct from 'Inbox today'
@@ -302,7 +303,7 @@ begin
 		or c.next_due_at is distinct from v_at + interval '2 hours' then
 		raise exception 'The same timing keeps the position: %, %', to_jsonb(x), to_jsonb(c); end if;
 	-- New timing starts again at the save.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0006', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0006', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox today', pg_temp.every(30), '{"effort":"high"}')))), 1, 'saved');
 	c := pg_temp.cursor(e1);
 	if c.routine_version is distinct from 3::bigint or c.last_scheduled_for is distinct from date_trunc('milliseconds', (pg_temp.rv(e1)).created_at)
@@ -323,45 +324,45 @@ begin
 	-- Suspended after three authorization failures, as the wake trigger leaves it; the file still says active.
 	perform pg_temp.fx(format('update public.qorpera_cloud_routines set status = %L, pause_reason = %L, authorization_failures = 3
 		where id = %L', 'paused', 'authorization_failed', e1));
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'paused' or x.pause_reason is distinct from 'authorization_failed' or x.authorization_failures is distinct from 3
 		or x.current_version is distinct from 4::bigint then
 		raise exception 'An edit leaves the platform''s pause: %', to_jsonb(x); end if;
 	-- The platform writing the pause into the file (core C2's queue) keeps the record's reason.
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'record-0006', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'record-0006', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","status":"paused"}')))), 1, 'saved');
 	if (pg_temp.rt(e1)).pause_reason is distinct from 'authorization_failed' or (pg_temp.rt(e1)).current_version is distinct from 4::bigint then
 		raise exception 'The platform''s pause keeps its reason: %', to_jsonb(pg_temp.rt(e1)); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0007', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0007', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high"}')))), 1, 'saved');
 	-- The file's own pause and resume are the saver's word.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","status":"paused"}')))), 1, 'saved');
 	if (pg_temp.rt(e1)).pause_reason is distinct from 'member' then raise exception 'A member''s pause: %', to_jsonb(pg_temp.rt(e1)); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.pause_reason is not null or x.authorization_failures is distinct from 0 then
 		raise exception 'A resume clears the failures: %', to_jsonb(x); end if;
 	-- An end that has passed ends the routine at the save (20260930056000; the sweep finds nothing left to do); a save
 	-- with a later end revives it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0004', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0004', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2020-01-01T00:00:00Z"}')))), 1, 'saved');
 	perform public.qorpera_expire_cloud_routines();
 	if (pg_temp.rt(e1)).status is distinct from 'expired' then raise exception 'An ended routine expires'; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0005', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0005', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.expired_while_active or x.expires_at is distinct from '2031-01-01T00:00:00Z'::timestamptz then
 		raise exception 'A save revives an expired routine: %', to_jsonb(x); end if;
 	-- A routine whose runs are used up has ended; more runs start it again.
 	perform pg_temp.occurred(e1);
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0008', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0008', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z","runs":1}')))), 1, 'saved');
 	if (pg_temp.rt(e1)).status is distinct from 'expired' then raise exception 'Used-up runs end it: %', to_jsonb(pg_temp.rt(e1)); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0009', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0009', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z"}')))), 1, 'saved');
 	if (pg_temp.rt(e1)).status is distinct from 'active' then raise exception 'More runs start it again: %', to_jsonb(pg_temp.rt(e1)); end if;
 end $$;
@@ -372,9 +373,9 @@ do $$
 declare r jsonb; e2 constant uuid := '70800000-0000-4000-8000-0000000000e2'; e3 constant uuid := '70800000-0000-4000-8000-0000000000e3';
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'timing-0001', jsonb_build_array(
-		pg_temp.routine('agents/nora/routines/weekly-report.md', pg_temp.rparse(e2, 'Weekly report',
+		pg_temp.routine('QorperaOS/agents/nora/routines/weekly-report.md', pg_temp.rparse(e2, 'Weekly report',
 			'{"when":"weekly","days":["mon","fri"],"time":"09:00","starts":"2030-01-06T07:00:00Z"}')),
-		pg_temp.routine('agents/otto/routines/winter-watch.md', pg_temp.rparse(e3, 'Winter watch',
+		pg_temp.routine('QorperaOS/agents/otto/routines/winter-watch.md', pg_temp.rparse(e3, 'Winter watch',
 			'{"when":"window","minutes":30,"from":"08:00","to":"16:00","days":["sat"],"months":[12,1]}',
 			'{"reply":"silent","quiet":{"start":"12:00","end":"13:00","timezone":"America/New_York"}}'))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
@@ -397,25 +398,25 @@ declare e1 constant uuid := '70800000-0000-4000-8000-0000000000e1'; ea constant 
 begin
 	-- A routine lives next to an agent.md.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'ghost-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
-		'path','agents/ghost','contents',jsonb_build_array(jsonb_build_object('path','routines','kind','folder'))))), 1, 'saved');
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0001', jsonb_build_array(pg_temp.routine('agents/ghost/routines/boo.md',
+		'path','QorperaOS/agents/ghost','contents',jsonb_build_array(jsonb_build_object('path','routines','kind','folder'))))), 1, 'saved');
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/ghost/routines/boo.md',
 		pg_temp.rparse(ea, 'Boo', pg_temp.every()))))) is distinct from 'a routine lives in an agent''s folder, next to its agent.md' then
 		raise exception 'A routine needs an agent'; end if;
 	-- The id never changes, and belongs to one file.
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(ea, 'Inbox', pg_temp.every()))))) is distinct from 'id never changes; it is ' || e1 then
 		raise exception 'A routine''s id never changes'; end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0003', jsonb_build_array(pg_temp.routine('agents/otto/routines/twin.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/otto/routines/twin.md',
 		pg_temp.rparse(e1, 'Twin', pg_temp.every()))))) is distinct from
-		'this id belongs to the routine at agents/nora/routines/inbox.md; give this routine a new id' then
+		'this id belongs to the routine at QorperaOS/agents/nora/routines/inbox.md; give this routine a new id' then
 		raise exception 'One file per routine'; end if;
 	-- A saved parse is the file's only when the index points at that path for its routine: one that names another
 	-- routine's id (say, stored by an older parser) is no base, and the file's own id is saved over it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'trust-0001', jsonb_build_array(pg_temp.routine('agents/otto/routines/trust.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'trust-0001', jsonb_build_array(pg_temp.routine('QorperaOS/agents/otto/routines/trust.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ed', 'Trust', pg_temp.every())))), 1, 'saved');
 	update public.qorpera_folder_path_versions set structured = jsonb_set(structured, '{parse,id}', to_jsonb(e1::text))
-	where version = pg_temp.version('agents/otto/routines/trust.md');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'trust-0002', jsonb_build_array(pg_temp.routine('agents/otto/routines/trust.md',
+	where version = pg_temp.version('QorperaOS/agents/otto/routines/trust.md');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'trust-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/otto/routines/trust.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ed', 'Trust me', pg_temp.every())))), 1, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'rule-0004', jsonb_build_array(pg_temp.hire_routines('wren', '70800000-0000-4000-8000-0000000000a4',
 		jsonb_build_array(jsonb_build_array('one', pg_temp.rparse(ea, 'One', pg_temp.every())),
@@ -424,29 +425,29 @@ begin
 		raise exception 'One file per routine within a unit: %', r; end if;
 	-- Timing the scheduler runs: a file-change routine watches only what its agent may read (P29, 20260930020000; 887 has
 	-- the rest); time zones the database knows; starts to the millisecond.
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0005', jsonb_build_array(pg_temp.routine('agents/nora/routines/watch.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0005', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/watch.md',
 		pg_temp.rparse(ea, 'Watch', '{"when":"file-change","watch":"members/70700000-0000-4000-8000-000000000002/private","match":"subtree"}'))))) is distinct from
 		'this routine''s agent may not read members/70700000-0000-4000-8000-000000000002/private, so it cannot watch it' then
 		raise exception 'file-change watches only what its agent may read: %', pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0005b',
-			jsonb_build_array(pg_temp.routine('agents/nora/routines/watch.md', pg_temp.rparse(ea, 'Watch',
+			jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/watch.md', pg_temp.rparse(ea, 'Watch',
 				'{"when":"file-change","watch":"members/70700000-0000-4000-8000-000000000002/private","match":"subtree"}'))))); end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0006', jsonb_build_array(pg_temp.routine('agents/nora/routines/mars.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0006', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/mars.md',
 		pg_temp.rparse(ea, 'Mars', '{"when":"weekly","days":["mon"],"time":"09:00","starts":null}', '{"timezone":"Mars/Olympus"}'))))) is distinct from
 		'the platform does not know the time zone Mars/Olympus; use a name like Europe/Copenhagen' then
 		raise exception 'An unknown time zone'; end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0007', jsonb_build_array(pg_temp.routine('agents/nora/routines/mars.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0007', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/mars.md',
 		pg_temp.rparse(ea, 'Mars', pg_temp.every(), '{"quiet":{"start":"22:00","end":"07:00","timezone":"Mars/Olympus"}}'))))) is distinct from
 		'the platform does not know the time zone Mars/Olympus; use a name like Europe/Copenhagen' then
 		raise exception 'An unknown quiet time zone'; end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.routine('agents/nora/routines/fine.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/fine.md',
 		pg_temp.rparse(ea, 'Fine', pg_temp.every(60, '2030-01-06T07:00:00.0001Z')))))) is distinct from 'starts is given to the millisecond at most' then
 		raise exception 'starts to the millisecond'; end if;
 	-- Only an agent makes a routine dynamic.
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0009', jsonb_build_array(pg_temp.routine('agents/nora/routines/next.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0009', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/next.md',
 		pg_temp.rparse(ea, 'Next', pg_temp.once('2030-01-01T09:00:00Z')))))) is distinct from 'only an agent makes a routine dynamic (when: once)' then
 		raise exception 'A member makes no dynamic routine'; end if;
 	-- The platform pays for nothing, so it starts no routine.
-	if pg_temp.problem(pg_temp.commit('{"kind":"platform"}', 'rule-0013', jsonb_build_array(pg_temp.routine('agents/nora/routines/seeded.md',
+	if pg_temp.problem(pg_temp.commit('{"kind":"platform"}', 'rule-0013', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/seeded.md',
 		pg_temp.rparse(ea, 'Seeded', pg_temp.every()))))) is distinct from 'the platform does not start routines' then
 		raise exception 'The platform starts no routine'; end if;
 	-- Rows from before the files: a member's routine (id e4, client id eb) and Nora's routine called legacy.
@@ -457,12 +458,12 @@ begin
 		created_by_user_id, origin, owner_staff_agent_id, routine_key) values (%L, %L, %L, %L, 'active', %L, 'agent', %L, 'legacy')$f$,
 		'70800000-0000-4000-8000-0000000000e5', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020',
 		extensions.gen_random_uuid(), '70700000-0000-4000-8000-000000000001', '70700000-0000-4000-8000-0000000000a1'));
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0010', jsonb_build_array(pg_temp.routine('agents/nora/routines/old.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0010', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/old.md',
 		pg_temp.rparse(e4, 'Old', pg_temp.every()))))) is distinct from 'this id belongs to another routine; give this routine a new id'
-		or pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0011', jsonb_build_array(pg_temp.routine('agents/nora/routines/old.md',
+		or pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0011', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/old.md',
 		pg_temp.rparse(eb, 'Old', pg_temp.every()))))) is distinct from 'this id belongs to another routine; give this routine a new id' then
 		raise exception 'A routine row from before the files keeps its ids'; end if;
-	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.routine('agents/nora/routines/legacy.md',
+	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/legacy.md',
 		pg_temp.rparse(ea, 'Legacy', pg_temp.every()))))) is distinct from 'this agent has another routine called legacy; choose another name' then
 		raise exception 'An agent''s routine names stay unique'; end if;
 	-- The name index covers file routines of either origin: no row of any origin takes the name of a member's file routine.
@@ -510,17 +511,17 @@ begin
 		raise exception 'A hire''s routine is the new agent''s: %', to_jsonb(pg_temp.rt(e6)); end if;
 	-- A rename is the new key, nothing a run pins.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(
-		pg_temp.move('agents/nora/routines/weekly-report.md', 'agents/nora/routines/report.md'))), 1, 'saved');
+		pg_temp.move('QorperaOS/agents/nora/routines/weekly-report.md', 'QorperaOS/agents/nora/routines/report.md'))), 1, 'saved');
 	x := pg_temp.rt(e2);
-	if x.routine_key is distinct from 'report' or x.folder_path is distinct from 'agents/nora/routines/report.md' or x.current_version is distinct from 1::bigint
-		or x.folder_path_version is distinct from pg_temp.version('agents/nora/routines/report.md') then
+	if x.routine_key is distinct from 'report' or x.folder_path is distinct from 'QorperaOS/agents/nora/routines/report.md' or x.current_version is distinct from 1::bigint
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/agents/nora/routines/report.md') then
 		raise exception 'A renamed routine: %', to_jsonb(x); end if;
 	-- A handover: the new agent's runs, paid as before, at the same position (an overdue slot stays due).
 	v_at := date_trunc('milliseconds', statement_timestamp()) - interval '1 hour';
 	perform pg_temp.fx(format('update public.qorpera_cloud_routine_schedule_cursors set last_scheduled_for = %L, next_due_at = %L
 		where routine_id = %L and routine_version = 1', v_at, v_at + interval '30 minutes', e2));
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0002', jsonb_build_array(
-		pg_temp.move('agents/nora/routines/report.md', 'agents/otto/routines/report.md'))), 1, 'saved');
+		pg_temp.move('QorperaOS/agents/nora/routines/report.md', 'QorperaOS/agents/otto/routines/report.md'))), 1, 'saved');
 	x := pg_temp.rt(e2); c := pg_temp.cursor(e2);
 	if x.owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or x.current_version is distinct from 2::bigint
 		or (pg_temp.rv(e2)).staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2'
@@ -531,43 +532,43 @@ begin
 		raise exception 'A handover: %, %', to_jsonb(x), to_jsonb(c); end if;
 	-- A routine moves only into an agent's routines folder, onto a free name.
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'move-0003', jsonb_build_array(
-		pg_temp.move('agents/otto/routines/report.md', 'agents/otto/todos/report.md'))), 'kind_change') then
+		pg_temp.move('QorperaOS/agents/otto/routines/report.md', 'QorperaOS/agents/otto/todos/report.md'))), 'kind_change') then
 		raise exception 'A routine is never moved into todos'; end if;
 	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'move-0004', jsonb_build_array(
-		pg_temp.move('agents/otto/routines/report.md', 'agents/ghost/routines/report.md')))) is distinct from
+		pg_temp.move('QorperaOS/agents/otto/routines/report.md', 'QorperaOS/agents/ghost/routines/report.md')))) is distinct from
 		'a routine moves only into an agent''s routines folder' then
 		raise exception 'A routine moves only to an agent'; end if;
 	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'move-0005', jsonb_build_array(
-		pg_temp.move('agents/otto/routines/report.md', 'agents/nora/routines/legacy.md')))) is distinct from
+		pg_temp.move('QorperaOS/agents/otto/routines/report.md', 'QorperaOS/agents/nora/routines/legacy.md')))) is distinct from
 		'that agent has another routine called legacy; choose another name' then
 		raise exception 'A moved routine keeps names unique'; end if;
 	-- A handover makes the new agent's runs: a member without a paying login cannot move a routine to another agent.
 	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'move-0051', jsonb_build_array(
-		pg_temp.move('agents/otto/routines/report.md', 'agents/nora/routines/report.md')))) is distinct from
+		pg_temp.move('QorperaOS/agents/otto/routines/report.md', 'QorperaOS/agents/nora/routines/report.md')))) is distinct from
 		'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, then move it again' then
 		raise exception 'A handover needs the mover''s paying login'; end if;
 	-- An agent's rename carries its routines, which keep their agent and version.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0006', jsonb_build_array(pg_temp.move('agents/otto', 'agents/otis'))), 1, 'saved');
-	if (pg_temp.rt(e2)).folder_path is distinct from 'agents/otis/routines/report.md' or (pg_temp.rt(e2)).current_version is distinct from 2::bigint
-		or (pg_temp.rt(e3)).folder_path is distinct from 'agents/otis/routines/winter-watch.md'
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0006', jsonb_build_array(pg_temp.move('QorperaOS/agents/otto', 'QorperaOS/agents/otis'))), 1, 'saved');
+	if (pg_temp.rt(e2)).folder_path is distinct from 'QorperaOS/agents/otis/routines/report.md' or (pg_temp.rt(e2)).current_version is distinct from 2::bigint
+		or (pg_temp.rt(e3)).folder_path is distinct from 'QorperaOS/agents/otis/routines/winter-watch.md'
 		or (pg_temp.rt(e3)).owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2'
-		or (pg_temp.rt(e3)).folder_path_version is distinct from pg_temp.version('agents/otis/routines/winter-watch.md') then
+		or (pg_temp.rt(e3)).folder_path_version is distinct from pg_temp.version('QorperaOS/agents/otis/routines/winter-watch.md') then
 		raise exception 'A renamed agent keeps its routines: %, %', to_jsonb(pg_temp.rt(e2)), to_jsonb(pg_temp.rt(e3)); end if;
 	-- Deleting retires the routine and frees its name; a restore brings it back.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0001', jsonb_build_array(pg_temp.del('agents/nora/routines/inbox.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0001', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/inbox.md'))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'retired' or x.folder_retired_at is null or x.routine_key is distinct from 'inbox.' || replace(e1::text, '-', '') then
 		raise exception 'A deleted routine retires: %', to_jsonb(x); end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(ec, 'New inbox', pg_temp.every())))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox-old.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0003', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox-old.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.folder_retired_at is not null or x.routine_key is distinct from 'inbox-old'
 		or x.current_version is distinct from 4::bigint then
 		raise exception 'A restore brings the routine back: %', to_jsonb(x); end if;
 	-- Deleting an agent's folder retires its routines.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0004', jsonb_build_array(pg_temp.del('agents/vera'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0004', jsonb_build_array(pg_temp.del('QorperaOS/agents/vera'))), 1, 'saved');
 	if (pg_temp.rt(e6)).status is distinct from 'retired' then raise exception 'An agent''s routines retire with its folder'; end if;
 end $$;
 
@@ -575,14 +576,14 @@ end $$;
 
 do $$
 declare a jsonb; b jsonb; c jsonb; d jsonb; u jsonb; x public.qorpera_cloud_routines; v public.qorpera_cloud_routine_versions;
-	e8 constant uuid := '70800000-0000-4000-8000-0000000000e8'; p text := 'agents/nora/routines/follow-up.md';
+	e8 constant uuid := '70800000-0000-4000-8000-0000000000e8'; p text := 'QorperaOS/agents/nora/routines/follow-up.md';
 	decision_left constant text := 'this run owes its routine''s decision: set a new at (and, if needed, the title, instructions, '
 		|| 'effort or reply), or conclude it with a conclusion';
 begin
 	-- A run of Nora's inbox (a member's routine) never makes that routine dynamic, and starting a dynamic routine of its
 	-- own is delegation, so it waits for a review.
 	a := pg_temp.routine_run('70800000-0000-4000-8000-0000000000ec');
-	if pg_temp.problem(pg_temp.commit(a, 'dynamic-0000', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	if pg_temp.problem(pg_temp.commit(a, 'dynamic-0000', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ec', 'New inbox', pg_temp.once('2030-01-01T09:00:00Z')))))) is distinct from
 		'a routine a member made does not become dynamic (when: once)' then
 		raise exception 'A member''s routine does not become dynamic'; end if;
@@ -604,7 +605,7 @@ begin
 		raise exception 'A dynamic routine''s run never pauses it'; end if;
 	if pg_temp.problem(pg_temp.commit(b, 'dynamic-0004', jsonb_build_array(pg_temp.del(p)))) is distinct from
 		'this run cannot remove or move its own routine; conclude it instead'
-		or pg_temp.problem(pg_temp.commit(b, 'dynamic-0005', jsonb_build_array(pg_temp.move('agents/nora/routines', 'agents/nora/later')))) is distinct from
+		or pg_temp.problem(pg_temp.commit(b, 'dynamic-0005', jsonb_build_array(pg_temp.move('QorperaOS/agents/nora/routines', 'QorperaOS/agents/nora/later')))) is distinct from
 		'this run cannot remove or move its own routine; conclude it instead' then
 		raise exception 'A dynamic routine''s run never removes or moves it'; end if;
 	if pg_temp.problem(pg_temp.commit(b, 'dynamic-0006', jsonb_build_array(pg_temp.routine(p,
@@ -666,16 +667,16 @@ begin
 	if x.status is distinct from 'active' or x.conclusion is not null or x.concluded_by_run_id is not null or x.current_version is distinct from 4::bigint then
 		raise exception 'A member reopens a dynamic routine: %', to_jsonb(x); end if;
 	-- A run a schedule woke is no dynamic run, even of a routine that has since become dynamic: its change is delegation.
-	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0013', jsonb_build_array(pg_temp.routine('agents/nora/routines/later.md',
+	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0013', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/later.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ef', 'Later', pg_temp.every())))), 1, 'saved');
 	b := pg_temp.routine_run('70800000-0000-4000-8000-0000000000ef');
-	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0014', jsonb_build_array(pg_temp.routine('agents/nora/routines/later.md',
+	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0014', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/later.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ef', 'Later', pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved');
-	if pg_temp.review_class(b, pg_temp.routine('agents/nora/routines/later.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000ef',
+	if pg_temp.review_class(b, pg_temp.routine('QorperaOS/agents/nora/routines/later.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000ef',
 		'Later', pg_temp.once('2030-02-01T09:00:00Z')))) is distinct from 'delegation' then
 		raise exception 'A scheduled run''s change is delegation'; end if;
 	-- A run of a fixed routine concludes it (a reviewed change) and keeps working to its end.
-	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0015', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0015', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ec', 'New inbox', pg_temp.every(), '{"status":"concluded","conclusion":"Inbox zero."}')))),
 		1, 'saved');
 	if (pg_temp.rt('70800000-0000-4000-8000-0000000000ec')).concluded_by_run_id is distinct from (a ->> 'runId')::uuid then
@@ -683,7 +684,7 @@ begin
 	perform public.qorpera_folder_run_resolve('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010', a);
 	-- A dynamic routine handed to another agent keeps being dynamic, on the mover's login.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'dynamic-0016', jsonb_build_array(
-		pg_temp.move(p, 'agents/otis/routines/follow-up.md'))), 1, 'saved');
+		pg_temp.move(p, 'QorperaOS/agents/otis/routines/follow-up.md'))), 1, 'saved');
 	x := pg_temp.rt(e8); v := pg_temp.rv(e8);
 	if x.owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or x.current_version is distinct from 5::bigint
 		or v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or v.triggers -> 0 ->> 'kind' is distinct from 'once'
@@ -695,7 +696,7 @@ end $$;
 
 do $$
 declare a jsonb; x public.qorpera_cloud_routines; v public.qorpera_cloud_routine_versions;
-	e9 constant uuid := '70800000-0000-4000-8000-0000000000e9'; p text := 'agents/nora/routines/digest.md';
+	e9 constant uuid := '70800000-0000-4000-8000-0000000000e9'; p text := 'QorperaOS/agents/nora/routines/digest.md';
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'waits-0001', jsonb_build_array(pg_temp.routine(p,
 		pg_temp.rparse(e9, 'Digest', pg_temp.every())))), 1, 'saved');
@@ -725,7 +726,7 @@ begin
 		raise exception 'A paying login ends the wait: %, %', to_jsonb(x), to_jsonb(v); end if;
 	-- The member hands the owner's routine to Otto: the new agent's runs are on the mover's login.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'waits-0031', jsonb_build_array(
-		pg_temp.move('agents/nora/routines/inbox-old.md', 'agents/otis/routines/inbox-old.md'))), 1, 'saved');
+		pg_temp.move('QorperaOS/agents/nora/routines/inbox-old.md', 'QorperaOS/agents/otis/routines/inbox-old.md'))), 1, 'saved');
 	v := pg_temp.rv('70800000-0000-4000-8000-0000000000e1');
 	if v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b2'
 		or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000002' then
@@ -748,19 +749,19 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_cloud_routines set status = %L, pause_reason = %L where id = %L',
 		'paused', 'needs_model_account', e9));
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'waits-0006', jsonb_build_array(
-		pg_temp.move(p, 'agents/otis/routines/digest.md'))), 1, 'saved');
+		pg_temp.move(p, 'QorperaOS/agents/otis/routines/digest.md'))), 1, 'saved');
 	x := pg_temp.rt(e9); v := pg_temp.rv(e9);
 	if x.status is distinct from 'active' or x.pause_reason is not null or v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2'
 		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b1' then
 		raise exception 'A paid handover ends the wait: %, %', to_jsonb(x), to_jsonb(v); end if;
 	-- An agent acting with no run (a coding session, or a desktop whose run ended: C1b-3a's views) has no login of its own
 	-- to pin: the member it acts for pays, as a member's save does, and one without a paying login is refused.
-	p := 'agents/otis/routines/digest.md';
+	p := 'QorperaOS/agents/otis/routines/digest.md';
 	if (public.qorpera_company_state_routine_rules('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010',
 			jsonb_build_object('kind','staff_agent','staffAgentId','70700000-0000-4000-8000-0000000000a2',
 				'requesterUserId','70700000-0000-4000-8000-000000000002','audience',jsonb_build_object('kind','company'),
 				'sessionKind','coding','workerAccess','write','runId',null),
-			p, pg_temp.rparse(e9, 'Digest from code', pg_temp.every(120)), false) -> 'problems' -> 0 ->> 'message') is distinct from
+			public.qorpera_folder_key(p), pg_temp.rparse(e9, 'Digest from code', pg_temp.every(120)), false) -> 'problems' -> 0 ->> 'message') is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
 		raise exception 'An agent with no run pays with its member''s login'; end if;
 	-- The same for a handover it makes.
@@ -768,7 +769,7 @@ begin
 			jsonb_build_object('kind','staff_agent','staffAgentId','70700000-0000-4000-8000-0000000000a2',
 				'requesterUserId','70700000-0000-4000-8000-000000000002','audience',jsonb_build_object('kind','company'),
 				'sessionKind','coding','workerAccess','write','runId',null),
-			extensions.gen_random_uuid(), 1, pg_temp.move(p, 'agents/nora/routines/digest.md'), p, 'agents/nora/routines/digest.md')
+			extensions.gen_random_uuid(), 1, pg_temp.move(p, 'QorperaOS/agents/nora/routines/digest.md'), p, 'QorperaOS/agents/nora/routines/digest.md')
 			-> 'problems' -> 0 ->> 'message') is distinct from
 		'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, then move it again' then
 		raise exception 'An agent with no run hands over on its member''s login'; end if;

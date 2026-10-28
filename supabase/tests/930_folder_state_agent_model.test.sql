@@ -31,33 +31,33 @@ declare
 begin
 	perform pg_temp.same(pg_temp.model_of(cofounder),
 		'{"provider":"openai","model":"gpt-6-astra","mapping":[{"provider":"openai","model":"gpt-6-astra"}]}', 'The seeded Co-Founder');
-	r := pg_temp.commit(pg_temp.owner(), 'model-hire-1', jsonb_build_array(jsonb_build_object('op','new_folder','path','agents/ada',
+	r := pg_temp.commit(pg_temp.owner(), 'model-hire-1', jsonb_build_array(jsonb_build_object('op','new_folder','path','QorperaOS/agents/ada',
 		'contents', jsonb_build_array(jsonb_build_object('path','agent.md','kind','file',
 			'file', pg_temp.stage(pg_temp.model_text(ada, 'Ada', 'gpt-6-sol'))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/ada/agent.md', 'agent', pg_temp.model_text(ada, 'Ada', 'gpt-6-sol'),
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/ada/agent.md', 'agent', pg_temp.model_text(ada, 'Ada', 'gpt-6-sol'),
 			pg_temp.model_parse(ada, 'Ada', 'gpt-6-sol'))))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.same(pg_temp.model_of(ada),
 		'{"provider":"openai","model":"gpt-6-sol","mapping":[{"provider":"openai","model":"gpt-6-sol"}]}', 'A hire with a model');
-	r := pg_temp.commit(pg_temp.owner(), 'model-edit-1', jsonb_build_array(pg_temp.write('agents/ada/agent.md', 'agent',
-		pg_temp.model_text(ada, 'Ada', 'gpt-6-luna'), pg_temp.model_parse(ada, 'Ada', 'gpt-6-luna'), pg_temp.version('agents/ada/agent.md'))));
+	r := pg_temp.commit(pg_temp.owner(), 'model-edit-1', jsonb_build_array(pg_temp.write('QorperaOS/agents/ada/agent.md', 'agent',
+		pg_temp.model_text(ada, 'Ada', 'gpt-6-luna'), pg_temp.model_parse(ada, 'Ada', 'gpt-6-luna'), pg_temp.version('QorperaOS/agents/ada/agent.md'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.same(pg_temp.model_of(ada),
 		'{"provider":"openai","model":"gpt-6-luna","mapping":[{"provider":"openai","model":"gpt-6-luna"}]}', 'An edit of the model');
 	select version into v_mapping_version from public.qorpera_staff_provider_models
 	where profile_id = '70000000-0000-4000-8000-000000000010' and staff_agent_id = ada and provider = 'openai';
 	-- A rename keeps the model, and the mapping stays as it was.
-	r := pg_temp.commit(pg_temp.owner(), 'model-rename-1', jsonb_build_array(pg_temp.write('agents/ada/agent.md', 'agent',
+	r := pg_temp.commit(pg_temp.owner(), 'model-rename-1', jsonb_build_array(pg_temp.write('QorperaOS/agents/ada/agent.md', 'agent',
 		pg_temp.model_text(ada, 'Ada Lovelace', 'gpt-6-luna'), pg_temp.model_parse(ada, 'Ada Lovelace', 'gpt-6-luna'),
-		pg_temp.version('agents/ada/agent.md'))));
+		pg_temp.version('QorperaOS/agents/ada/agent.md'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	if (select version from public.qorpera_staff_provider_models where profile_id = '70000000-0000-4000-8000-000000000010'
 		and staff_agent_id = ada and provider = 'openai') is distinct from v_mapping_version then
 		raise exception 'An edit that keeps the model moved its mapping'; end if;
-	r := pg_temp.commit(pg_temp.owner(), 'model-none-1', jsonb_build_array(pg_temp.write('agents/ada/agent.md', 'agent',
+	r := pg_temp.commit(pg_temp.owner(), 'model-none-1', jsonb_build_array(pg_temp.write('QorperaOS/agents/ada/agent.md', 'agent',
 		pg_temp.model_text(ada, 'Ada Lovelace', null), pg_temp.model_parse(ada, 'Ada Lovelace', null),
-		pg_temp.version('agents/ada/agent.md'))));
+		pg_temp.version('QorperaOS/agents/ada/agent.md'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.same(pg_temp.model_of(ada),
 		'{"provider":"openai","model":"gpt-6-astra","mapping":[{"provider":"openai","model":"gpt-6-astra"}]}', 'A file without a model');

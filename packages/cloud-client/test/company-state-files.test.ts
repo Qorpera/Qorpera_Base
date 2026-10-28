@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
 	appendWorkerFollowUp,
+	COMPANY_STATE_FIRST_TODO_PATH,
 	COMPANY_STATE_HUMAN_TASK_SKILL_PATH,
 	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
@@ -15,6 +16,7 @@ import {
 	companyStateTimeZoneProblem,
 	companyStateValue,
 	freeCompanyStateName,
+	HUMAN_TASK_CONTACT_REFUSED_ROOTS,
 	type HumanTaskFile,
 	humanTaskFolder,
 	humanTaskNotePath,
@@ -22,7 +24,11 @@ import {
 	humanTaskProofPath,
 	isCompanyStateName,
 	isCompanyStateTimeZoneName,
+	osPath,
+	osRelative,
 	parseCompanyStateFile,
+	QORPERA_OS_KEY,
+	QORPERA_OS_ROOT,
 	type RoutineFile,
 	setCompanyStateSettings,
 	WORKER_BRIEF_SECTIONS,
@@ -113,87 +119,87 @@ describe("companyStatePath", () => {
 	it("recognises every structured file and nothing else", () => {
 		const kinds = Object.fromEntries(
 			[
-				"vision/vision.md",
-				"agents/sections.md",
-				"agents/anna-berg/agent.md",
-				"agents/anna-berg/routines/morning-lead-sweep.md",
-				"agents/anna-berg/todos/pricing-page.md",
-				"agents/anna-berg/todos/pricing-page/w1/brief.md",
-				"agents/anna-berg/todos/pricing-page/w1/results.md",
-				"agents/groups/launch-team/group.md",
-				"connections/gmail-sales-nordlys-dk.md",
-				"connections/hook-stripe-payments.md",
-				"connections/mailbox-support.md",
-				"Connections/Hook-Forms.MD",
-				"connections/hooks.md",
-				"connections/mailbox.md",
-				"rules/ask-before-emailing-customers.md",
-				"human-tasks/fit-disk-node-2.md",
-				"contacts/maria-jensen.md",
-				"Human-Tasks/Fit-Disk.MD",
-				"human-tasks/fit-disk-node-2/note.md",
-				"human-tasks/fit-disk-node-2/proof/label.md",
-				"contacts/archive/old.md",
-				"Agents/Anna-Berg/Agent.md",
-				"rules/.md",
-				"vision/notes.md",
-				"agents/anna-berg/memory/profile.md",
-				"agents/anna-berg/routines/notes/x.md",
-				"agents/anna-berg/todos/pricing-page/w1/draft.md",
-				"agents/anna-berg/skills/cold-email/SKILL.md",
-				"agents/groups/launch-team/notes.md",
-				"agents/groups/agent.md",
-				"connections/archive/old.md",
-				"rules/readme.txt",
-				"skills/x/SKILL.md",
-				"rules/network.toml",
-				"Rules/Network.TOML",
-				"rules/network.md",
-				"rules/sub/network.toml",
+				"QorperaOS/vision/vision.md",
+				"QorperaOS/agents/sections.md",
+				"QorperaOS/agents/anna-berg/agent.md",
+				"QorperaOS/agents/anna-berg/routines/morning-lead-sweep.md",
+				"QorperaOS/agents/anna-berg/todos/pricing-page.md",
+				"QorperaOS/agents/anna-berg/todos/pricing-page/w1/brief.md",
+				"QorperaOS/agents/anna-berg/todos/pricing-page/w1/results.md",
+				"QorperaOS/agents/groups/launch-team/group.md",
+				"QorperaOS/connections/gmail-sales-nordlys-dk.md",
+				"QorperaOS/connections/hook-stripe-payments.md",
+				"QorperaOS/connections/mailbox-support.md",
+				"QorperaOS/Connections/Hook-Forms.MD",
+				"QorperaOS/connections/hooks.md",
+				"QorperaOS/connections/mailbox.md",
+				"QorperaOS/rules/ask-before-emailing-customers.md",
+				"QorperaOS/human-tasks/fit-disk-node-2.md",
+				"QorperaOS/contacts/maria-jensen.md",
+				"QorperaOS/Human-Tasks/Fit-Disk.MD",
+				"QorperaOS/human-tasks/fit-disk-node-2/note.md",
+				"QorperaOS/human-tasks/fit-disk-node-2/proof/label.md",
+				"QorperaOS/contacts/archive/old.md",
+				"QorperaOS/Agents/Anna-Berg/Agent.md",
+				"QorperaOS/rules/.md",
+				"QorperaOS/vision/notes.md",
+				"QorperaOS/agents/anna-berg/memory/profile.md",
+				"QorperaOS/agents/anna-berg/routines/notes/x.md",
+				"QorperaOS/agents/anna-berg/todos/pricing-page/w1/draft.md",
+				"QorperaOS/agents/anna-berg/skills/cold-email/SKILL.md",
+				"QorperaOS/agents/groups/launch-team/notes.md",
+				"QorperaOS/agents/groups/agent.md",
+				"QorperaOS/connections/archive/old.md",
+				"QorperaOS/rules/readme.txt",
+				"QorperaOS/skills/x/SKILL.md",
+				"QorperaOS/rules/network.toml",
+				"QorperaOS/Rules/Network.TOML",
+				"QorperaOS/rules/network.md",
+				"QorperaOS/rules/sub/network.toml",
 				"network.toml",
 			].map((path) => [path, companyStatePath(path)?.kind ?? null]),
 		);
 		expect(kinds).toEqual({
-			"vision/vision.md": "vision",
-			"agents/sections.md": "sections",
-			"agents/anna-berg/agent.md": "agent",
-			"agents/anna-berg/routines/morning-lead-sweep.md": "routine",
-			"agents/anna-berg/todos/pricing-page.md": "todo",
-			"agents/anna-berg/todos/pricing-page/w1/brief.md": "worker-brief",
-			"agents/anna-berg/todos/pricing-page/w1/results.md": "worker-results",
-			"agents/groups/launch-team/group.md": "group",
-			"connections/gmail-sales-nordlys-dk.md": "connection",
-			"connections/hook-stripe-payments.md": "hook",
-			"connections/mailbox-support.md": "mailbox",
-			"Connections/Hook-Forms.MD": "hook",
-			"connections/hooks.md": "connection",
-			"connections/mailbox.md": "connection",
-			"rules/ask-before-emailing-customers.md": "rule",
-			"human-tasks/fit-disk-node-2.md": "human-task",
-			"contacts/maria-jensen.md": "contact",
-			"Human-Tasks/Fit-Disk.MD": "human-task",
-			"human-tasks/fit-disk-node-2/note.md": null,
-			"human-tasks/fit-disk-node-2/proof/label.md": null,
-			"contacts/archive/old.md": null,
-			"Agents/Anna-Berg/Agent.md": "agent",
-			"rules/.md": "rule",
-			"vision/notes.md": null,
-			"agents/anna-berg/memory/profile.md": null,
-			"agents/anna-berg/routines/notes/x.md": null,
-			"agents/anna-berg/todos/pricing-page/w1/draft.md": null,
-			"agents/anna-berg/skills/cold-email/SKILL.md": null,
-			"agents/groups/launch-team/notes.md": null,
-			"agents/groups/agent.md": null,
-			"connections/archive/old.md": null,
-			"rules/readme.txt": null,
-			"skills/x/SKILL.md": null,
-			"rules/network.toml": "network-rules",
-			"Rules/Network.TOML": "network-rules",
-			"rules/network.md": "rule",
-			"rules/sub/network.toml": null,
+			"QorperaOS/vision/vision.md": "vision",
+			"QorperaOS/agents/sections.md": "sections",
+			"QorperaOS/agents/anna-berg/agent.md": "agent",
+			"QorperaOS/agents/anna-berg/routines/morning-lead-sweep.md": "routine",
+			"QorperaOS/agents/anna-berg/todos/pricing-page.md": "todo",
+			"QorperaOS/agents/anna-berg/todos/pricing-page/w1/brief.md": "worker-brief",
+			"QorperaOS/agents/anna-berg/todos/pricing-page/w1/results.md": "worker-results",
+			"QorperaOS/agents/groups/launch-team/group.md": "group",
+			"QorperaOS/connections/gmail-sales-nordlys-dk.md": "connection",
+			"QorperaOS/connections/hook-stripe-payments.md": "hook",
+			"QorperaOS/connections/mailbox-support.md": "mailbox",
+			"QorperaOS/Connections/Hook-Forms.MD": "hook",
+			"QorperaOS/connections/hooks.md": "connection",
+			"QorperaOS/connections/mailbox.md": "connection",
+			"QorperaOS/rules/ask-before-emailing-customers.md": "rule",
+			"QorperaOS/human-tasks/fit-disk-node-2.md": "human-task",
+			"QorperaOS/contacts/maria-jensen.md": "contact",
+			"QorperaOS/Human-Tasks/Fit-Disk.MD": "human-task",
+			"QorperaOS/human-tasks/fit-disk-node-2/note.md": null,
+			"QorperaOS/human-tasks/fit-disk-node-2/proof/label.md": null,
+			"QorperaOS/contacts/archive/old.md": null,
+			"QorperaOS/Agents/Anna-Berg/Agent.md": "agent",
+			"QorperaOS/rules/.md": "rule",
+			"QorperaOS/vision/notes.md": null,
+			"QorperaOS/agents/anna-berg/memory/profile.md": null,
+			"QorperaOS/agents/anna-berg/routines/notes/x.md": null,
+			"QorperaOS/agents/anna-berg/todos/pricing-page/w1/draft.md": null,
+			"QorperaOS/agents/anna-berg/skills/cold-email/SKILL.md": null,
+			"QorperaOS/agents/groups/launch-team/notes.md": null,
+			"QorperaOS/agents/groups/agent.md": null,
+			"QorperaOS/connections/archive/old.md": null,
+			"QorperaOS/rules/readme.txt": null,
+			"QorperaOS/skills/x/SKILL.md": null,
+			"QorperaOS/rules/network.toml": "network-rules",
+			"QorperaOS/Rules/Network.TOML": "network-rules",
+			"QorperaOS/rules/network.md": "rule",
+			"QorperaOS/rules/sub/network.toml": null,
 			"network.toml": null,
 		});
-		expect(companyStatePath("agents/anna-berg/todos/pricing-page/w1/brief.md")).toMatchObject({
+		expect(companyStatePath("QorperaOS/agents/anna-berg/todos/pricing-page/w1/brief.md")).toMatchObject({
 			agent: "anna-berg",
 			todo: "pricing-page",
 			worker: "w1",
@@ -201,54 +207,183 @@ describe("companyStatePath", () => {
 	});
 
 	it("decides the kind on the folder's key, as the database does", () => {
-		for (const path of ["ａｇｅｎｔｓ/anna/agent.md", "agentſ/anna/agent.md", "AGENTS/anna/AGENT.MD"]) {
-			expect(companyPathKey(path)).toBe("agents/anna/agent.md");
+		for (const path of [
+			"QorperaOS/ａｇｅｎｔｓ/anna/agent.md",
+			"QorperaOS/agentſ/anna/agent.md",
+			"QorperaOS/AGENTS/anna/AGENT.MD",
+			"ＱｏｒｐｅｒａＯＳ/agents/anna/agent.md",
+		]) {
+			expect(companyPathKey(path)).toBe("qorperaos/agents/anna/agent.md");
 			expect(companyStatePath(path)?.kind).toBe("agent");
 		}
 		// The names as written still follow the rule, and so does the extension.
-		expect(refused("AGENTS/anna/AGENT.MD", agentText).map((problem) => problem.code)).toEqual(["name"]);
-		expect(refused("rules/.md", "---\n---\n")[0]?.code).toBe("name");
+		expect(refused("QorperaOS/AGENTS/anna/AGENT.MD", agentText).map((problem) => problem.code)).toEqual(["name"]);
+		expect(refused("QorperaOS/rules/.md", "---\n---\n")[0]?.code).toBe("name");
 	});
 
 	it("checks a path on its own, for renames and for folders at structured places", () => {
 		const codes = (path: string, folder = false) =>
 			companyStatePathProblems(path, folder).map((problem) => problem.code);
-		expect(codes("agents/anna/routines/daily.md")).toEqual([]);
-		expect(codes("agents/anna/routines/Daily report.md")).toEqual(["name"]);
-		expect(codes("agents/anna/routines/Daily.md")).toEqual(["name"]);
-		expect(codes("agents/anna/Routines/daily.md")).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna/routines/daily.md")).toEqual([]);
+		expect(codes("QorperaOS/agents/anna/routines/Daily report.md")).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna/routines/Daily.md")).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna/Routines/daily.md")).toEqual(["name"]);
 		expect(codes("sales/Leads.md")).toEqual([]);
-		expect(codes("agents/anna", true)).toEqual([]);
-		expect(codes("agents/Anna", true)).toEqual(["name"]);
-		expect(codes("agents/anna/Routines", true)).toEqual(["name"]);
-		expect(codes("agents/anna/todos/Old Stuff", true)).toEqual(["name"]);
-		expect(codes("agents/groups/Launch", true)).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna", true)).toEqual([]);
+		expect(codes("QorperaOS/agents/Anna", true)).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna/Routines", true)).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/anna/todos/Old Stuff", true)).toEqual(["name"]);
+		expect(codes("QorperaOS/agents/groups/Launch", true)).toEqual(["name"]);
 		// The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
-		expect(codes("agents/groups", true)).toEqual([]);
-		for (const spelled of ["Agents/Groups", "agents/Groups", "AGENTS/GROUPS", "Agents/groups/launch"])
+		expect(codes("QorperaOS/agents/groups", true)).toEqual([]);
+		for (const spelled of [
+			"QorperaOS/Agents/Groups",
+			"QorperaOS/agents/Groups",
+			"QorperaOS/AGENTS/GROUPS",
+			"QorperaOS/Agents/groups/launch",
+		])
 			expect(codes(spelled, true)).toEqual(["name"]);
-		expect(codes("agents/anna/Notes", true)).toEqual([]);
+		expect(codes("QorperaOS/agents/anna/Notes", true)).toEqual([]);
 		expect(codes("Sales", true)).toEqual([]);
-		expect(codes("agents/Anna/", true)).toEqual(["name"]);
-		expect(companyStatePathProblems("agents/a/todos/T", true)[0]?.message).toContain("for example t");
-		expect(companyStatePathProblems("agents/a/todos/t/日本", true)[0]?.message).toContain("for example worker");
-		expect(companyStatePathProblems("agents/a/todos/日本", true)[0]?.message).toContain("for example todo");
+		expect(codes("QorperaOS/agents/Anna/", true)).toEqual(["name"]);
+		expect(companyStatePathProblems("QorperaOS/agents/a/todos/T", true)[0]?.message).toContain("for example t");
+		expect(companyStatePathProblems("QorperaOS/agents/a/todos/t/日本", true)[0]?.message).toContain(
+			"for example worker",
+		);
+		expect(companyStatePathProblems("QorperaOS/agents/a/todos/日本", true)[0]?.message).toContain("for example todo");
 		// Human tasks and contacts (H1): the file names, the top folders and a task's folder and proof/.
-		expect(codes("human-tasks/fit-disk.md")).toEqual([]);
-		expect(codes("human-tasks/my_task.md")).toEqual(["name"]);
-		expect(codes("contacts/Maria.md")).toEqual(["name"]);
-		expect(codes("contacts/.md")).toEqual(["name"]);
-		for (const folder of ["human-tasks", "contacts", "human-tasks/fit-disk", "human-tasks/fit-disk/proof"])
+		expect(codes("QorperaOS/human-tasks/fit-disk.md")).toEqual([]);
+		expect(codes("QorperaOS/human-tasks/my_task.md")).toEqual(["name"]);
+		expect(codes("QorperaOS/contacts/Maria.md")).toEqual(["name"]);
+		expect(codes("QorperaOS/contacts/.md")).toEqual(["name"]);
+		for (const folder of [
+			"QorperaOS/human-tasks",
+			"QorperaOS/contacts",
+			"QorperaOS/human-tasks/fit-disk",
+			"QorperaOS/human-tasks/fit-disk/proof",
+		])
 			expect(codes(folder, true)).toEqual([]);
-		for (const folder of ["Human-Tasks", "Contacts", "human-tasks/Fit Disk", "human-tasks/fit-disk/Proof"])
+		for (const folder of [
+			"QorperaOS/Human-Tasks",
+			"QorperaOS/Contacts",
+			"QorperaOS/human-tasks/Fit Disk",
+			"QorperaOS/human-tasks/fit-disk/Proof",
+		])
 			expect(codes(folder, true)).toEqual(["name"]);
-		expect(codes("human-tasks/fit-disk/photos", true)).toEqual([]);
-		expect(codes("contacts/archive", true)).toEqual([]);
-		expect(companyStatePathProblems("human-tasks/日本", true)[0]?.message).toContain("for example task");
+		expect(codes("QorperaOS/human-tasks/fit-disk/photos", true)).toEqual([]);
+		expect(codes("QorperaOS/contacts/archive", true)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/human-tasks/日本", true)[0]?.message).toContain("for example task");
 	});
 
 	it("leaves ordinary files alone", () => {
 		expect(parseCompanyStateFile("sales/leads/list.md", "anything")).toBeNull();
+	});
+});
+
+describe("the QorperaOS root (Jonas, 21 October 2026)", () => {
+	it("names a platform path from the part below the root", () => {
+		expect(QORPERA_OS_ROOT).toBe("QorperaOS");
+		expect(QORPERA_OS_KEY).toBe("qorperaos");
+		expect(companyPathKey(QORPERA_OS_ROOT)).toBe(QORPERA_OS_KEY);
+		expect(osPath("vision/vision.md")).toBe("QorperaOS/vision/vision.md");
+		expect(osPath("agents/co-founder")).toBe("QorperaOS/agents/co-founder");
+		expect(osPath("")).toBe("QorperaOS");
+	});
+
+	it("finds the part below the root, as written, on a path or a key and whatever the root's spelling", () => {
+		expect(osRelative("QorperaOS/agents/co-founder")).toBe("agents/co-founder");
+		expect(osRelative("qorperaos/agents/co-founder")).toBe("agents/co-founder");
+		expect(osRelative("QORPERAOS/Agents/Co-Founder")).toBe("Agents/Co-Founder");
+		expect(osRelative("ＱｏｒｐｅｒａＯＳ/vision/vision.md")).toBe("vision/vision.md");
+		expect(osRelative("QorperaOS")).toBe("");
+		expect(osRelative("qorperaos")).toBe("");
+		for (const outside of [
+			"agents/co-founder",
+			"qorperaosx/agents",
+			"QorperaOSx",
+			"Qorpera/agents",
+			"x/QorperaOS/agents",
+			"code/QorperaOS",
+			"/QorperaOS/agents",
+			"",
+		])
+			expect(osRelative(outside), outside).toBeNull();
+		for (const below of ["", "vision", "agents/co-founder/agent.md"]) expect(osRelative(osPath(below))).toBe(below);
+	});
+
+	it("holds the part below the root to the case rule, and the root to its key alone", () => {
+		expect(ok("QorperaOS/agents/co-founder/agent.md", agentText)).toMatchObject({ kind: "agent", id: ANNA });
+		expect(ok("qorperaos/agents/co-founder/agent.md", agentText)).toMatchObject({ kind: "agent", id: ANNA });
+		for (const path of ["QorperaOS/agents/co-founder/agent.md", "qorperaos/agents/co-founder/agent.md"])
+			expect(companyStatePathProblems(path), path).toEqual([]);
+		expect(companyStatePathProblems("QORPERAOS/agents/co-founder/agent.md")).toEqual([]);
+		const problems = refused("QorperaOS/Agents/co-founder/agent.md", agentText);
+		expect(problems.map((problem) => [problem.code, problem.message])).toEqual([
+			["name", "write the path below QorperaOS/ in lowercase, as QorperaOS/agents/co-founder/agent.md"],
+		]);
+		expect(companyStatePathProblems("qorperaos/agents/co-founder/Todos/t.md")[0]?.message).toBe(
+			"write the path below QorperaOS/ in lowercase, as QorperaOS/agents/co-founder/todos/t.md",
+		);
+		// Folders too, and the root itself is a place any spelling of its key may name.
+		expect(companyStatePathProblems("QorperaOS/Agents/co-founder", true).map((problem) => problem.message)).toEqual([
+			"write the path below QorperaOS/ in lowercase, as QorperaOS/agents/co-founder",
+		]);
+		for (const root of ["QorperaOS", "qorperaos", "QORPERAOS", "QorperaOS/"])
+			expect(companyStatePathProblems(root, true), root).toEqual([]);
+		expect(companyStatePath("QorperaOS")).toBeNull();
+	});
+
+	it("structures nothing outside the root", () => {
+		for (const path of [
+			"vision/vision.md",
+			"agents/sections.md",
+			"agents/co-founder/agent.md",
+			"agents/co-founder/todos/t.md",
+			"agents/groups/launch/group.md",
+			"agents/co-founder/memory/thread/tree.toml",
+			"connections/hook-stripe.md",
+			"rules/r.md",
+			"rules/network.toml",
+			"human-tasks/t.md",
+			"contacts/c.md",
+			"interfaces/order.md",
+			"tables/areas/rows.csv",
+			"qorperaosx/agents/co-founder/agent.md",
+			"x/QorperaOS/agents/co-founder/agent.md",
+		]) {
+			expect(companyStatePath(path), path).toBeNull();
+			expect(parseCompanyStateFile(path, "anything"), path).toBeNull();
+		}
+		// The case rule and the naming rule are the platform's: a company's own folders are spelled as it likes.
+		expect(companyStatePathProblems("Agents/Co-Founder/agent.md")).toEqual([]);
+		expect(companyStatePathProblems("agents/Co Founder", true)).toEqual([]);
+		expect(companyStatePathProblems("Human-Tasks/Fit Disk", true)).toEqual([]);
+		expect(companyStatePathProblems("rules/network.toml", true)).toEqual([]);
+	});
+
+	it("seeds and protects the root, and names every platform path under it", () => {
+		expect(COMPANY_STATE_SEEDED_PATHS[0]).toBe("QorperaOS");
+		expect(
+			COMPANY_STATE_SEEDED_PATHS.filter((path) => !path.startsWith("QorperaOS/") && path !== "QorperaOS"),
+		).toEqual([]);
+		expect(COMPANY_STATE_SEEDED_PATHS).toContain("QorperaOS/agents/sections.md");
+		expect(COMPANY_STATE_FIRST_TODO_PATH).toBe("QorperaOS/agents/co-founder/todos/start-with-the-founders.md");
+		expect(COMPANY_STATE_HUMAN_TASK_SKILL_PATH).toBe("QorperaOS/skills/human-task/SKILL.md");
+		expect(HUMAN_TASK_CONTACT_REFUSED_ROOTS).toEqual([
+			"QorperaOS/agents",
+			"QorperaOS/contacts",
+			"QorperaOS/human-tasks",
+			"QorperaOS/connections",
+			"QorperaOS/rules",
+			"hooks",
+		]);
+		const tree = companyStateSeedTree({
+			companyName: "Nordlys Studio",
+			cofounderId: ANNA,
+			firstTodo: { id: ID, requestedBy: JONAS },
+		});
+		expect(tree[0]).toEqual({ path: "QorperaOS", kind: "folder" });
+		expect(tree.map((entry) => entry.path)).toContain(COMPANY_STATE_FIRST_TODO_PATH);
 	});
 });
 
@@ -276,14 +411,16 @@ describe("names", () => {
 
 	it("suggests a name of the right kind", () => {
 		const text = `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, ${IDA}]\n---\nx\n`;
-		expect(refused("agents/groups/日本/group.md", text)[0]?.message).toContain("for example group");
-		expect(refused("agents/groups/Launch Team/group.md", text)[0]?.message).toContain("for example launch-team");
+		expect(refused("QorperaOS/agents/groups/日本/group.md", text)[0]?.message).toContain("for example group");
+		expect(refused("QorperaOS/agents/groups/Launch Team/group.md", text)[0]?.message).toContain(
+			"for example launch-team",
+		);
 	});
 });
 
 describe("agent.md", () => {
 	it("reads the settings and the instructions", () => {
-		expect(ok("agents/anna-berg/agent.md", agentText)).toEqual({
+		expect(ok("QorperaOS/agents/anna-berg/agent.md", agentText)).toEqual({
 			kind: "agent",
 			id: ANNA,
 			name: "Anna Berg",
@@ -301,7 +438,7 @@ describe("agent.md", () => {
 
 	it("reads CRLF files, a byte-order mark, notes and quotes", () => {
 		const text = `\ufeff---\r\n# who\r\nid: ${ANNA} # never changes\r\nname: "Anna \\"AB\\" Berg"\r\nrole: 'Head of ''Sales'''\r\nkind: agent\r\nstatus: active\r\n---\r\n\r\n    Sell.\r\n`;
-		expect(ok("agents/anna-berg/agent.md", text)).toMatchObject({
+		expect(ok("QorperaOS/agents/anna-berg/agent.md", text)).toMatchObject({
 			id: ANNA,
 			name: 'Anna "AB" Berg',
 			role: "Head of 'Sales'",
@@ -310,9 +447,9 @@ describe("agent.md", () => {
 	});
 
 	it("writes a file that reads back the same", () => {
-		const file = ok("agents/anna-berg/agent.md", agentText) as AgentFile;
+		const file = ok("QorperaOS/agents/anna-berg/agent.md", agentText) as AgentFile;
 		const { kind: _kind, ...fields } = file;
-		expect(ok("agents/anna-berg/agent.md", writeAgentFile(fields))).toEqual(file);
+		expect(ok("QorperaOS/agents/anna-berg/agent.md", writeAgentFile(fields))).toEqual(file);
 		for (const name of [
 			"Ops: #1",
 			"true",
@@ -326,15 +463,15 @@ describe("agent.md", () => {
 			"'quoted'",
 			'"x"',
 		])
-			expect(ok("agents/a/agent.md", writeAgentFile({ ...fields, name }))).toMatchObject({ name });
+			expect(ok("QorperaOS/agents/a/agent.md", writeAgentFile({ ...fields, name }))).toMatchObject({ name });
 		const bare = { ...fields, colour: null, figure: null, model: null, effort: null };
-		expect(ok("agents/anna-berg/agent.md", writeAgentFile(bare))).toEqual({ ...bare, kind: "agent" });
+		expect(ok("QorperaOS/agents/anna-berg/agent.md", writeAgentFile(bare))).toEqual({ ...bare, kind: "agent" });
 	});
 
 	it("names each problem with its line, the same way every time", () => {
 		const text =
 			"---\nname: Anna\nrole: Sales\nkind: agent\nstatus: on leave\nteam: sales\nname: Again\n---\nSell.\n";
-		const problems = refused("agents/anna-berg/agent.md", text);
+		const problems = refused("QorperaOS/agents/anna-berg/agent.md", text);
 		expect(problems.map((problem) => [problem.line, problem.key, problem.code])).toEqual([
 			[7, "name", "duplicate_key"],
 			[null, "id", "missing"],
@@ -344,44 +481,56 @@ describe("agent.md", () => {
 		expect(problems.find((problem) => problem.key === "team")?.message).toContain(
 			"allowed: colour, effort, figure, id",
 		);
-		expect(parseCompanyStateFile("agents/anna-berg/agent.md", agentFields({ id: "ANNA" }))).toEqual(
-			parseCompanyStateFile("agents/anna-berg/agent.md", agentFields({ id: "ANNA" })),
+		expect(parseCompanyStateFile("QorperaOS/agents/anna-berg/agent.md", agentFields({ id: "ANNA" }))).toEqual(
+			parseCompanyStateFile("QorperaOS/agents/anna-berg/agent.md", agentFields({ id: "ANNA" })),
 		);
-		expect(refused("agents/a/agent.md", agentFields({ id: ANNA.toUpperCase() }))[0]?.message).toBe(
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ id: ANNA.toUpperCase() }))[0]?.message).toBe(
 			"id must be written in lowercase",
 		);
 	});
 
 	it("refuses values YAML would read differently", () => {
-		expect(keys(refused("agents/a/agent.md", agentFields({ name: "42", role: "null" })))).toEqual([
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ name: "42", role: "null" })))).toEqual([
 			["name", "quote"],
 			["role", "quote"],
 		]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ name: '"  padded  "' })))).toEqual([["name", "value"]]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ name: ",Anna" })))).toEqual([
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ name: '"  padded  "' })))).toEqual([
+			["name", "value"],
+		]);
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ name: ",Anna" })))).toEqual([
 			["name", "syntax"],
 			["name", "missing"],
 		]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ name: '"a\\tb"' })))).toEqual([["name", "value"]]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ colour: "[]" })))).toEqual([["colour", "missing"]]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ effort: "" })))).toEqual([["effort", "missing"]]);
-		expect(keys(refused("agents/a/agent.md", agentFields({ figure: "brain" })))).toEqual([["figure", "value"]]);
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ name: '"a\\tb"' })))).toEqual([
+			["name", "value"],
+		]);
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ colour: "[]" })))).toEqual([
+			["colour", "missing"],
+		]);
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ effort: "" })))).toEqual([
+			["effort", "missing"],
+		]);
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ figure: "brain" })))).toEqual([
+			["figure", "value"],
+		]);
 	});
 
 	it("refuses escapes that make half a character", () => {
-		expect(refused("agents/a/agent.md", agentFields({ name: '"\\ud800"' }))[0]?.message).toBe(
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ name: '"\\ud800"' }))[0]?.message).toBe(
 			"a \\u escape is half of a character",
 		);
-		expect(ok("agents/a/agent.md", agentFields({ name: '"\\ud83d\\ude00 A"' }))).toMatchObject({ name: "😀 A" });
-		expect(refused("agents/a/agent.md", agentFields({ name: '"\\x41"' }))[0]?.code).toBe("syntax");
-		expect(refused("agents/a/agent.md", `${agentFields()}\ud800`)[0]?.code).toBe("encoding");
+		expect(ok("QorperaOS/agents/a/agent.md", agentFields({ name: '"\\ud83d\\ude00 A"' }))).toMatchObject({
+			name: "😀 A",
+		});
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ name: '"\\x41"' }))[0]?.code).toBe("syntax");
+		expect(refused("QorperaOS/agents/a/agent.md", `${agentFields()}\ud800`)[0]?.code).toBe("encoding");
 	});
 
 	it("refuses broken settings blocks", () => {
-		expect(refused("agents/anna-berg/agent.md", "no settings")[0]?.code).toBe("front_matter");
-		expect(refused("agents/anna-berg/agent.md", "---\nid: x\n")[0]?.code).toBe("front_matter");
+		expect(refused("QorperaOS/agents/anna-berg/agent.md", "no settings")[0]?.code).toBe("front_matter");
+		expect(refused("QorperaOS/agents/anna-berg/agent.md", "---\nid: x\n")[0]?.code).toBe("front_matter");
 		const syntax = refused(
-			"agents/anna-berg/agent.md",
+			"QorperaOS/agents/anna-berg/agent.md",
 			`---\nid: ${ANNA}\n\tname: A\nrole: {a: 1}\nkind: agent\nstatus: active\nfree text\n  - stray\nname:x\n  indented: 1\nx\u2028y: 1\n---\nx\n`,
 		);
 		expect(syntax.filter((problem) => problem.code === "syntax").map((problem) => problem.line)).toEqual([
@@ -390,104 +539,119 @@ describe("agent.md", () => {
 	});
 
 	it("refuses control characters anywhere in a settings line, notes included", () => {
-		expect(refused("agents/a/agent.md", agentFields({ name: "a\rb" }))[0]?.code).toBe("syntax");
-		expect(refused("agents/a/agent.md", agentFields({ name: "a # note\u0007" }))[0]?.code).toBe("syntax");
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ name: "a\rb" }))[0]?.code).toBe("syntax");
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ name: "a # note\u0007" }))[0]?.code).toBe("syntax");
 	});
 
 	it("wants an empty list written as []", () => {
 		const group = `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, ${IDA}]\npeople:\n---\nx\n`;
-		expect(keys(refused("agents/groups/l/group.md", group))).toEqual([["people", "missing"]]);
-		expect(ok("agents/groups/l/group.md", group.replace("people:", "people: []"))).toMatchObject({ people: [] });
+		expect(keys(refused("QorperaOS/agents/groups/l/group.md", group))).toEqual([["people", "missing"]]);
+		expect(ok("QorperaOS/agents/groups/l/group.md", group.replace("people:", "people: []"))).toMatchObject({
+			people: [],
+		});
 	});
 
 	it("wants the fixed names in lowercase, as written", () => {
-		for (const path of ["agents/anna/Agent.md", "Agents/anna/agent.md"]) {
+		for (const path of ["QorperaOS/agents/anna/Agent.md", "QorperaOS/Agents/anna/agent.md"]) {
 			expect(companyStatePath(path)?.kind).toBe("agent");
 			expect(refused(path, agentText)[0]?.code).toBe("name");
 		}
-		expect(refused("ａｇｅｎｔｓ/anna/agent.md", agentText)[0]?.message).toBe(
-			"write the path in lowercase, as agents/anna/agent.md",
+		expect(refused("QorperaOS/ａｇｅｎｔｓ/anna/agent.md", agentText)[0]?.message).toBe(
+			"write the path below QorperaOS/ in lowercase, as QorperaOS/agents/anna/agent.md",
 		);
 	});
 
 	it("keeps list items lined up, as YAML reads them", () => {
 		const group = (list: string) => `---\nid: ${GROUP}\nname: L\nagents:\n${list}\n---\nx\n`;
-		expect(refused("agents/groups/l/group.md", group(`  - ${ANNA}\n    - ${IDA}`))[0]?.message).toBe(
+		expect(refused("QorperaOS/agents/groups/l/group.md", group(`  - ${ANNA}\n    - ${IDA}`))[0]?.message).toBe(
 			"list items must line up under the first one",
 		);
-		expect(ok("agents/groups/l/group.md", group(`- ${ANNA}\n- ${IDA}`))).toMatchObject({ agents: [ANNA, IDA] });
-		expect(ok("agents/groups/l/group.md", group(`  - ${ANNA}\n  # the second\n\n  - ${IDA}`))).toMatchObject({
+		expect(ok("QorperaOS/agents/groups/l/group.md", group(`- ${ANNA}\n- ${IDA}`))).toMatchObject({
 			agents: [ANNA, IDA],
 		});
 		expect(
-			refused("agents/groups/l/group.md", `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, a{b}]\n---\nx\n`)[0]?.code,
+			ok("QorperaOS/agents/groups/l/group.md", group(`  - ${ANNA}\n  # the second\n\n  - ${IDA}`)),
+		).toMatchObject({
+			agents: [ANNA, IDA],
+		});
+		expect(
+			refused(
+				"QorperaOS/agents/groups/l/group.md",
+				`---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, a{b}]\n---\nx\n`,
+			)[0]?.code,
 		).toBe("syntax");
 	});
 
 	it("refuses control characters in the instructions, keeping tabs", () => {
-		expect(refused("agents/a/agent.md", agentFields().replace("Sell.", "Sell\u0007."))[0]?.code).toBe("body");
-		expect(ok("agents/a/agent.md", agentFields().replace("Sell.", "Sell\tnow."))).toMatchObject({
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields().replace("Sell.", "Sell\u0007."))[0]?.code).toBe(
+			"body",
+		);
+		expect(ok("QorperaOS/agents/a/agent.md", agentFields().replace("Sell.", "Sell\tnow."))).toMatchObject({
 			instructions: "Sell\tnow.",
 		});
 	});
 
 	it("refuses an empty body and a folder name that breaks the rule", () => {
-		expect(refused("agents/anna-berg/agent.md", agentText.replace(/---\nYou[\s\S]*$/, "---\n"))[0]?.code).toBe(
-			"body",
-		);
-		const name = refused("agents/Anna Berg/agent.md", agentText);
+		expect(
+			refused("QorperaOS/agents/anna-berg/agent.md", agentText.replace(/---\nYou[\s\S]*$/, "---\n"))[0]?.code,
+		).toBe("body");
+		const name = refused("QorperaOS/agents/Anna Berg/agent.md", agentText);
 		expect(name[0]).toMatchObject({ code: "name" });
 		expect(name[0]?.message).toContain("anna-berg");
 	});
 
 	it("refuses files that are too large or not text", () => {
-		expect(refused("agents/a/agent.md", `${agentText}${"x".repeat(70_000)}`)[0]?.code).toBe("too_large");
-		expect(refused("agents/a/agent.md", "---\u0000")[0]?.code).toBe("encoding");
-		expect(ok("agents/a/agent.md", `${agentFields()}�`)).toMatchObject({ instructions: "Sell.\n�" });
+		expect(refused("QorperaOS/agents/a/agent.md", `${agentText}${"x".repeat(70_000)}`)[0]?.code).toBe("too_large");
+		expect(refused("QorperaOS/agents/a/agent.md", "---\u0000")[0]?.code).toBe("encoding");
+		expect(ok("QorperaOS/agents/a/agent.md", `${agentFields()}�`)).toMatchObject({ instructions: "Sell.\n�" });
 	});
 
 	it("reports at most 50 problems, and shortens quoted input", () => {
 		const lines = `---\n${"x\n".repeat(30_000)}---\nx\n`;
-		const problems = refused("agents/a/agent.md", lines);
+		const problems = refused("QorperaOS/agents/a/agent.md", lines);
 		expect(problems).toHaveLength(51);
 		expect(problems.at(-1)?.message).toMatch(/^and \d+ more problems$/);
-		const long = refused("agents/a/agent.md", agentFields({ [`k${"x".repeat(5000)}`]: "v" }));
+		const long = refused("QorperaOS/agents/a/agent.md", agentFields({ [`k${"x".repeat(5000)}`]: "v" }));
 		expect(long[0]?.message.length).toBeLessThan(400);
 		const twice = `---\n${`k${"x".repeat(5000)}: 1\n`.repeat(2)}---\nx\n`;
-		expect(JSON.stringify(refused("agents/a/agent.md", twice)).length).toBeLessThan(3000);
+		expect(JSON.stringify(refused("QorperaOS/agents/a/agent.md", twice)).length).toBeLessThan(3000);
 		expect(JSON.stringify(long).length).toBeLessThan(2000);
 	});
 
 	it("keeps Unicode spaces, as YAML does, and refuses them at the edges", () => {
-		expect(ok("agents/a/agent.md", agentFields({ name: "a\u00a0#b" }))).toMatchObject({ name: "a\u00a0#b" });
-		expect(keys(refused("agents/a/agent.md", agentFields({ name: "Anna\u00a0" })))).toEqual([["name", "value"]]);
-		expect(refused("agents/a/agent.md", agentFields({ note: "x" }).replace("note: x", "\u00a0# note"))[0]?.code).toBe(
-			"syntax",
-		);
+		expect(ok("QorperaOS/agents/a/agent.md", agentFields({ name: "a\u00a0#b" }))).toMatchObject({
+			name: "a\u00a0#b",
+		});
+		expect(keys(refused("QorperaOS/agents/a/agent.md", agentFields({ name: "Anna\u00a0" })))).toEqual([
+			["name", "value"],
+		]);
+		expect(
+			refused("QorperaOS/agents/a/agent.md", agentFields({ note: "x" }).replace("note: x", "\u00a0# note"))[0]?.code,
+		).toBe("syntax");
 		const group = `---\nid: ${GROUP}\nname: L\nagents:\n  - \u00a0${ANNA}\n  - ${IDA}\n---\nx\n`;
-		expect(refused("agents/groups/l/group.md", group)[0]?.key).toBe("agents");
-		expect(refused("agents/a/agent.md", agentFields({ name: "a # note\ufffe" }))[0]?.code).toBe("syntax");
-		expect(refused("vision/vision.md", `#${" ".repeat(10)}\rx\n`)[0]?.code).toBe("body");
+		expect(refused("QorperaOS/agents/groups/l/group.md", group)[0]?.key).toBe("agents");
+		expect(refused("QorperaOS/agents/a/agent.md", agentFields({ name: "a # note\ufffe" }))[0]?.code).toBe("syntax");
+		expect(refused("QorperaOS/vision/vision.md", `#${" ".repeat(10)}\rx\n`)[0]?.code).toBe("body");
 	});
 
 	// A quadratic path costs seconds on these inputs; a linear one milliseconds. The bound leaves room for a busy machine.
 	it("reads a pathological 64 KiB file in linear time", () => {
 		const spaces = " ".repeat(65_000);
 		const inputs: [string, string][] = [
-			["vision/vision.md", `# a${spaces}b`],
-			["agents/sections.md", `## a${spaces}b`],
-			["agents/sections.md", `## Sales\n- ${ANNA}${spaces}x`],
-			["agents/a/agent.md", `---\nname: a${spaces}b\n---\n`],
-			["agents/a/agent.md", `---\nname: a${":".repeat(65_000)}\n---\n`],
-			["agents/a/agent.md", `---\nname: ${"1".repeat(65_000)}x\n---\n`],
-			["agents/a/agent.md", `---\nagents: [${"a,".repeat(30_000)}]\n---\n`],
-			["agents/a/agent.md", `---\nname:${spaces}\rx\n---\nx\n`],
-			["agents/a/agent.md", `---\nagents:\n  -${spaces}\rx\n---\nx\n`],
-			["agents/a/agent.md", `---\nname: a # ${spaces}\rx\n---\nx\n`],
-			["agents/a/agent.md", `---\nname: a${spaces}\n---\nx\n`],
-			["agents/a/agent.md", `---\nname:${spaces}a${spaces}\n---\nx\n`],
-			["agents/a/agent.md", `---\n${"x\n".repeat(30_000)}---\nx\n`],
-			["agents/sections.md", `## Sales\n- ${ANNA}\t${spaces}\rx`],
+			["QorperaOS/vision/vision.md", `# a${spaces}b`],
+			["QorperaOS/agents/sections.md", `## a${spaces}b`],
+			["QorperaOS/agents/sections.md", `## Sales\n- ${ANNA}${spaces}x`],
+			["QorperaOS/agents/a/agent.md", `---\nname: a${spaces}b\n---\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname: a${":".repeat(65_000)}\n---\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname: ${"1".repeat(65_000)}x\n---\n`],
+			["QorperaOS/agents/a/agent.md", `---\nagents: [${"a,".repeat(30_000)}]\n---\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname:${spaces}\rx\n---\nx\n`],
+			["QorperaOS/agents/a/agent.md", `---\nagents:\n  -${spaces}\rx\n---\nx\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname: a # ${spaces}\rx\n---\nx\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname: a${spaces}\n---\nx\n`],
+			["QorperaOS/agents/a/agent.md", `---\nname:${spaces}a${spaces}\n---\nx\n`],
+			["QorperaOS/agents/a/agent.md", `---\n${"x\n".repeat(30_000)}---\nx\n`],
+			["QorperaOS/agents/sections.md", `## Sales\n- ${ANNA}\t${spaces}\rx`],
 		];
 		for (const [path, text] of inputs) {
 			const started = performance.now();
@@ -501,14 +665,14 @@ describe("vision.md", () => {
 	it("takes the company's name from the first line", () => {
 		const text = writeVisionFile("Nordlys Studio", "## What we build\nBooking software.");
 		expect(text).toBe("# Nordlys Studio\n\n## What we build\nBooking software.\n");
-		expect(ok("vision/vision.md", `\n\n${text}`)).toEqual({ kind: "vision", name: "Nordlys Studio" });
-		expect(ok("vision/vision.md", "# C# Makers\n")).toEqual({ kind: "vision", name: "C# Makers" });
-		expect(ok("vision/vision.md", "# Nordlys ##\n")).toEqual({ kind: "vision", name: "Nordlys" });
-		expect(ok("vision/vision.md", "#   Nordlys   \n")).toEqual({ kind: "vision", name: "Nordlys" });
-		expect(refused("vision/vision.md", "Nordlys\n")[0]).toMatchObject({ code: "body", line: 1 });
-		expect(refused("vision/vision.md", "## Nordlys\n")[0]?.code).toBe("body");
-		expect(refused("vision/vision.md", "# \n")[0]?.code).toBe("body");
-		expect(refused("vision/vision.md", `# ${"n".repeat(121)}\n`)[0]?.code).toBe("body");
+		expect(ok("QorperaOS/vision/vision.md", `\n\n${text}`)).toEqual({ kind: "vision", name: "Nordlys Studio" });
+		expect(ok("QorperaOS/vision/vision.md", "# C# Makers\n")).toEqual({ kind: "vision", name: "C# Makers" });
+		expect(ok("QorperaOS/vision/vision.md", "# Nordlys ##\n")).toEqual({ kind: "vision", name: "Nordlys" });
+		expect(ok("QorperaOS/vision/vision.md", "#   Nordlys   \n")).toEqual({ kind: "vision", name: "Nordlys" });
+		expect(refused("QorperaOS/vision/vision.md", "Nordlys\n")[0]).toMatchObject({ code: "body", line: 1 });
+		expect(refused("QorperaOS/vision/vision.md", "## Nordlys\n")[0]?.code).toBe("body");
+		expect(refused("QorperaOS/vision/vision.md", "# \n")[0]?.code).toBe("body");
+		expect(refused("QorperaOS/vision/vision.md", `# ${"n".repeat(121)}\n`)[0]?.code).toBe("body");
 	});
 });
 
@@ -531,7 +695,7 @@ Each line is an id. The words after it are only for reading.
 `;
 
 	it("reads sections in order, with their members", () => {
-		expect(ok("agents/sections.md", text)).toEqual({
+		expect(ok("QorperaOS/agents/sections.md", text)).toEqual({
 			kind: "sections",
 			sections: [
 				{
@@ -551,18 +715,18 @@ Each line is an id. The words after it are only for reading.
 			[ANNA, "Anna Berg"],
 			[IDA, "Ida Lund"],
 		]);
-		const file = ok("agents/sections.md", text);
+		const file = ok("QorperaOS/agents/sections.md", text);
 		if (file.kind !== "sections") throw new Error("kind");
 		const written = writeSectionsFile(file, names);
 		expect(written).toContain(`- ${ANNA} Anna Berg\n`);
 		expect(
-			(ok("agents/sections.md", written) as typeof file).sections.map((section) => section.members.length),
+			(ok("QorperaOS/agents/sections.md", written) as typeof file).sections.map((section) => section.members.length),
 		).toEqual([3, 1, 0]);
 	});
 
 	it("refuses lines it cannot place", () => {
 		const problems = refused(
-			"agents/sections.md",
+			"QorperaOS/agents/sections.md",
 			`- ${IDA.toUpperCase()}\n## Sales\n- ${TOM}\nsome prose\n- ${TOM}\n## sales\n### Deep\n##\n##Team\n## A\tB\n## X\n- ${ANNA.toUpperCase()}\n`,
 		);
 		expect(problems.map((problem) => problem.line)).toEqual([1, 4, 5, 6, 7, 8, 9, 10, 12]);
@@ -582,7 +746,7 @@ Each line is an id. The words after it are only for reading.
 ## Sales
 - ${ANNA}
 `;
-		const file = ok("agents/sections.md", ordered);
+		const file = ok("QorperaOS/agents/sections.md", ordered);
 		expect(file).toEqual({
 			kind: "sections",
 			sections: [{ name: "Sales", line: 9, members: [{ id: ANNA, line: 10 }] }],
@@ -592,20 +756,20 @@ Each line is an id. The words after it are only for reading.
 			],
 		});
 		// None listed: the parse has no key for them, as before.
-		expect(ok("agents/sections.md", text)).not.toHaveProperty("unassigned");
+		expect(ok("QorperaOS/agents/sections.md", text)).not.toHaveProperty("unassigned");
 		// An id is listed once in the whole file.
-		expect(refused("agents/sections.md", `- ${ANNA}\n## Sales\n- ${ANNA}\n`).map((problem) => problem.line)).toEqual([
-			3,
-		]);
-		expect(refused("agents/sections.md", `- ${ANNA}\n- ${ANNA}\n`).map((problem) => problem.message)).toEqual([
-			`${ANNA} is listed twice`,
-		]);
+		expect(
+			refused("QorperaOS/agents/sections.md", `- ${ANNA}\n## Sales\n- ${ANNA}\n`).map((problem) => problem.line),
+		).toEqual([3]);
+		expect(
+			refused("QorperaOS/agents/sections.md", `- ${ANNA}\n- ${ANNA}\n`).map((problem) => problem.message),
+		).toEqual([`${ANNA} is listed twice`]);
 		if (file.kind !== "sections") throw new Error("kind");
 		const written = writeSectionsFile(file, new Map([[TOM, "Tom Holm"]]));
 		expect(written).toBe(
 			`# Sections\n\nEach line is an id. The words after it are only for reading.\n\n- ${TOM} Tom Holm\n- ${GROUP}\n\n## Sales\n- ${ANNA}\n`,
 		);
-		expect(ok("agents/sections.md", written)).toEqual({
+		expect(ok("QorperaOS/agents/sections.md", written)).toEqual({
 			kind: "sections",
 			sections: [{ name: "Sales", line: 8, members: [{ id: ANNA, line: 9 }] }],
 			unassigned: [
@@ -630,7 +794,7 @@ people:
 ---
 Plan and ship version 2 by 1 November.
 `;
-		const file = ok("agents/groups/launch-team/group.md", text);
+		const file = ok("QorperaOS/agents/groups/launch-team/group.md", text);
 		expect(file).toEqual({
 			kind: "group",
 			id: GROUP,
@@ -644,10 +808,10 @@ Plan and ship version 2 by 1 November.
 		const { kind: _kind, ...fields } = file;
 		const written = writeGroupFile(fields, new Map([[ANNA, "Anna Berg"]]));
 		expect(written).toContain(`  - ${ANNA} # Anna Berg\n`);
-		expect(ok("agents/groups/launch-team/group.md", written)).toEqual(file);
+		expect(ok("QorperaOS/agents/groups/launch-team/group.md", written)).toEqual(file);
 		for (const subtitle of [null, ""])
 			expect(
-				ok("agents/groups/launch-team/group.md", writeGroupFile({ ...fields, subtitle, people: [] })),
+				ok("QorperaOS/agents/groups/launch-team/group.md", writeGroupFile({ ...fields, subtitle, people: [] })),
 			).toMatchObject({
 				people: [],
 				subtitle,
@@ -656,7 +820,7 @@ Plan and ship version 2 by 1 November.
 
 	it("needs two agents, ids and a purpose", () => {
 		const problems = refused(
-			"agents/groups/launch-team/group.md",
+			"QorperaOS/agents/groups/launch-team/group.md",
 			`---\nid: ${GROUP}\nname: Launch\nagents: [${ANNA}, nope, ${ANNA}]\n---\n`,
 		);
 		expect(keys(problems)).toEqual([
@@ -665,11 +829,15 @@ Plan and ship version 2 by 1 November.
 			[null, "body"],
 		]);
 		expect(
-			refused("agents/groups/launch/group.md", `---\nid: ${GROUP}\nname: Launch\nagents: [${ANNA}]\n---\nx\n`)[0]
-				?.message,
+			refused(
+				"QorperaOS/agents/groups/launch/group.md",
+				`---\nid: ${GROUP}\nname: Launch\nagents: [${ANNA}]\n---\nx\n`,
+			)[0]?.message,
 		).toBe("a group chat needs at least two agents");
 		expect(
-			keys(refused("agents/groups/launch/group.md", `---\nid: ${GROUP}\nname: Launch\nagents: []\n---\nx\n`)),
+			keys(
+				refused("QorperaOS/agents/groups/launch/group.md", `---\nid: ${GROUP}\nname: Launch\nagents: []\n---\nx\n`),
+			),
 		).toEqual([["agents", "value"]]);
 	});
 });
@@ -696,7 +864,7 @@ describe("hook and mailbox files (E1)", () => {
 	};
 
 	it("reads a hook and a mailbox and writes them back, with the parse the database checks", () => {
-		const parsed = ok("connections/hook-stripe-payments.md", writeHookFile(hook));
+		const parsed = ok("QorperaOS/connections/hook-stripe-payments.md", writeHookFile(hook));
 		expect(parsed).toStrictEqual({ kind: "hook", ...hook });
 		// The keys the database's parse shape names (20260930060000).
 		expect(Object.keys(parsed).sort()).toEqual(
@@ -713,19 +881,24 @@ describe("hook and mailbox files (E1)", () => {
 				"status",
 			].sort(),
 		);
-		const mail = ok("connections/mailbox-support.md", writeMailboxFile(box));
+		const mail = ok("QorperaOS/connections/mailbox-support.md", writeMailboxFile(box));
 		expect(mail).toStrictEqual({ kind: "mailbox", ...box });
 		expect(Object.keys(mail).sort()).toEqual(
 			["address", "createdAt", "createdBy", "id", "kind", "purpose", "status"].sort(),
 		);
 		// A name YAML would read as something else is quoted, and reads back the same.
-		expect(ok("connections/hook-yes.md", writeHookFile({ ...hook, name: "yes" }))).toMatchObject({ name: "yes" });
-		expect(ok("connections/hook-x.md", writeHookFile({ ...hook, name: "a--b-" }))).toMatchObject({ name: "a--b-" });
+		expect(ok("QorperaOS/connections/hook-yes.md", writeHookFile({ ...hook, name: "yes" }))).toMatchObject({
+			name: "yes",
+		});
+		expect(ok("QorperaOS/connections/hook-x.md", writeHookFile({ ...hook, name: "a--b-" }))).toMatchObject({
+			name: "a--b-",
+		});
 	});
 
 	it("refuses settings outside the hook's own rules, and any other key", () => {
 		const text = writeHookFile(hook);
-		const problems = (from: string, to: string) => keys(refused("connections/hook-p.md", text.replace(from, to)));
+		const problems = (from: string, to: string) =>
+			keys(refused("QorperaOS/connections/hook-p.md", text.replace(from, to)));
 		expect(problems("proof: stripe", "proof: paypal")).toEqual([["proof", "value"]]);
 		expect(problems("status: active", "status: removed")).toEqual([["status", "value"]]);
 		expect(problems("max_body_bytes: 65536", "max_body_bytes: 1023")).toEqual([["max_body_bytes", "value"]]);
@@ -735,11 +908,16 @@ describe("hook and mailbox files (E1)", () => {
 		expect(problems("per_minute: 60", "per_minute: 60\naddress: x")).toEqual([["address", "unknown_key"]]);
 		expect(problems(`created_by: ${JONAS}`, "created_by: someone")).toEqual([["created_by", "value"]]);
 		const mail = writeMailboxFile(box);
-		expect(keys(refused("connections/mailbox-s.md", mail.replace("support@inbox.qorpera.com", "Support@x")))).toEqual(
-			[["address", "value"]],
-		);
 		expect(
-			keys(refused("connections/mailbox-s.md", mail.replace("status: paused", "status: active\nproof: mail"))),
+			keys(refused("QorperaOS/connections/mailbox-s.md", mail.replace("support@inbox.qorpera.com", "Support@x"))),
+		).toEqual([["address", "value"]]);
+		expect(
+			keys(
+				refused(
+					"QorperaOS/connections/mailbox-s.md",
+					mail.replace("status: paused", "status: active\nproof: mail"),
+				),
+			),
 		).toEqual([["proof", "unknown_key"]]);
 		// A vault connection's file at a hook's name is read as a hook's file, which it is not.
 		const vault = writeConnectionFile({
@@ -752,7 +930,7 @@ describe("hook and mailbox files (E1)", () => {
 			connectedAt: "2026-10-04T08:00:00Z",
 			purpose: "",
 		});
-		expect(keys(refused("connections/hook-gmail.md", vault))).toContainEqual(["service", "unknown_key"]);
+		expect(keys(refused("QorperaOS/connections/hook-gmail.md", vault))).toContainEqual(["service", "unknown_key"]);
 	});
 });
 
@@ -768,13 +946,13 @@ describe("connections, rules, todos and worker files", () => {
 			connectedAt: "2026-09-28T10:14:00Z",
 			purpose: "The shared sales inbox.",
 		};
-		expect(ok("connections/gmail-sales-nordlys-dk.md", writeConnectionFile(file))).toEqual({
+		expect(ok("QorperaOS/connections/gmail-sales-nordlys-dk.md", writeConnectionFile(file))).toEqual({
 			kind: "connection",
 			...file,
 		});
 		const block = `---\nid: ${ID}\nservice: google_drive\naccount: a@b.dk\nstatus: broken\nactions:\n  - list_files\nconnected_by: ${JONAS}\nconnected_at: 2026-02-30T10:00Z\n---\n`;
-		expect(refused("connections/drive.md", block).map((problem) => problem.key)).toEqual(["connected_at"]);
-		expect(ok("connections/drive.md", block.replace("02-30", "02-28"))).toMatchObject({
+		expect(refused("QorperaOS/connections/drive.md", block).map((problem) => problem.key)).toEqual(["connected_at"]);
+		expect(ok("QorperaOS/connections/drive.md", block.replace("02-30", "02-28"))).toMatchObject({
 			actions: ["list_files"],
 			purpose: "",
 			connectedAt: "2026-02-28T10:00:00Z",
@@ -797,9 +975,11 @@ describe("connections, rules, todos and worker files", () => {
 		};
 		const text = writeConnectionFile(file);
 		expect(text).toContain("site: accounts.example.com\ntwo_step: authenticator\nopened_for: ");
-		expect(ok("connections/example-portal.md", text)).toStrictEqual({ kind: "connection", ...file });
+		expect(ok("QorperaOS/connections/example-portal.md", text)).toStrictEqual({ kind: "connection", ...file });
 		for (const status of ["connected", "needs_person", "broken"] as const)
-			expect(ok("connections/p.md", writeConnectionFile({ ...file, status, openedFor: null }))).toMatchObject({
+			expect(
+				ok("QorperaOS/connections/p.md", writeConnectionFile({ ...file, status, openedFor: null })),
+			).toMatchObject({
 				status,
 				openedFor: null,
 			});
@@ -813,12 +993,13 @@ describe("connections, rules, todos and worker files", () => {
 			openedFor: undefined,
 		});
 		expect(gmail).not.toContain("site:");
-		expect(Object.keys(ok("connections/g.md", gmail) as object).sort()).toEqual(
+		expect(Object.keys(ok("QorperaOS/connections/g.md", gmail) as object).sort()).toEqual(
 			["kind", "id", "service", "account", "status", "actions", "connectedBy", "connectedAt", "purpose"].sort(),
 		);
 		const block = (lines: string, service = "website") =>
 			`---\nid: ${ID}\nservice: ${service}\naccount: a@b.dk\nstatus: connected\nactions: []\nconnected_by: ${JONAS}\nconnected_at: 2026-10-02T08:00:00Z\n${lines}\n---\n`;
-		const problems = (lines: string, service?: string) => keys(refused("connections/p.md", block(lines, service)));
+		const problems = (lines: string, service?: string) =>
+			keys(refused("QorperaOS/connections/p.md", block(lines, service)));
 		expect(problems("two_step: none")).toEqual([["site", "missing"]]);
 		expect(problems("site: example.com")).toEqual([["two_step", "missing"]]);
 		for (const site of [
@@ -835,12 +1016,14 @@ describe("connections, rules, todos and worker files", () => {
 		])
 			expect(problems(`site: "${site}"\ntwo_step: none`)).toEqual([["site", "value"]]);
 		// The vault's rule, exactly: labels of 1-63 characters, a host of up to 253.
-		expect(ok("connections/p.md", block(`site: ${"a".repeat(63)}.com\ntwo_step: none`))).toBeTruthy();
+		expect(ok("QorperaOS/connections/p.md", block(`site: ${"a".repeat(63)}.com\ntwo_step: none`))).toBeTruthy();
 		// A host YAML would read as a number is written in quotes, and reads back as the host.
 		for (const site of ["1.5", "1.5e10", "10.0"])
-			expect(ok("connections/p.md", writeConnectionFile({ ...file, site }))).toMatchObject({ site });
+			expect(ok("QorperaOS/connections/p.md", writeConnectionFile({ ...file, site }))).toMatchObject({ site });
 		const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
-		expect(ok("connections/p.md", block(`site: ${longest}\ntwo_step: none`))).toMatchObject({ site: longest });
+		expect(ok("QorperaOS/connections/p.md", block(`site: ${longest}\ntwo_step: none`))).toMatchObject({
+			site: longest,
+		});
 		expect(problems(`site: ${longest}d\ntwo_step: none`)).toEqual([["site", "value"]]);
 		expect(problems("site: example.com\ntwo_step: phone")).toEqual([["two_step", "value"]]);
 		expect(problems("site: example.com\ntwo_step: none\nopened_for: todo-1")).toEqual([["opened_for", "value"]]);
@@ -853,23 +1036,38 @@ describe("connections, rules, todos and worker files", () => {
 		// A website account's states are four.
 		expect(
 			keys(
-				refused("connections/p.md", block("site: example.com\ntwo_step: none").replace("connected\n", "closed\n")),
+				refused(
+					"QorperaOS/connections/p.md",
+					block("site: example.com\ntwo_step: none").replace("connected\n", "closed\n"),
+				),
 			),
 		).toEqual([["status", "value"]]);
 		expect(
-			keys(refused("connections/p.md", block("").replace("connected\n", "pending\n").replace("website", "gmail"))),
+			keys(
+				refused(
+					"QorperaOS/connections/p.md",
+					block("").replace("connected\n", "pending\n").replace("website", "gmail"),
+				),
+			),
 		).toEqual([["status", "value"]]);
 	});
 
 	it("keeps a rule to how the sentence ends", () => {
 		const file = { id: ID, outcome: "ask-first" as const, text: "send an email to a customer." };
-		expect(ok("rules/ask-before-emailing-customers.md", writeRuleFile(file))).toEqual({ kind: "rule", ...file });
-		expect(ok("rules/r.md", `---\nid: ${ID}\noutcome: allow\n---\n\n\n   ${"x".repeat(280)}   \n`)).toMatchObject({
+		expect(ok("QorperaOS/rules/ask-before-emailing-customers.md", writeRuleFile(file))).toEqual({
+			kind: "rule",
+			...file,
+		});
+		expect(
+			ok("QorperaOS/rules/r.md", `---\nid: ${ID}\noutcome: allow\n---\n\n\n   ${"x".repeat(280)}   \n`),
+		).toMatchObject({
 			text: "x".repeat(280),
 		});
 		for (const text of ["One.\nTwo.", "a\tb", "x".repeat(281)])
-			expect(refused("rules/r.md", `---\nid: ${ID}\noutcome: ask-first\n---\n${text}\n`)[0]?.code).toBe("body");
-		expect(refused("rules/r.md", `---\nid: ${ID}\noutcome: deny\n---\nOne.\n`)[0]?.key).toBe("outcome");
+			expect(refused("QorperaOS/rules/r.md", `---\nid: ${ID}\noutcome: ask-first\n---\n${text}\n`)[0]?.code).toBe(
+				"body",
+			);
+		expect(refused("QorperaOS/rules/r.md", `---\nid: ${ID}\noutcome: deny\n---\nOne.\n`)[0]?.key).toBe("outcome");
 	});
 
 	it("reads a todo, counting its title in bytes", () => {
@@ -882,18 +1080,22 @@ describe("connections, rules, todos and worker files", () => {
 		};
 		const text = writeTodoFile(file, "Jonas");
 		expect(text).toContain(`requested_by: ${JONAS} # Jonas\n`);
-		expect(ok("agents/anna-berg/todos/pricing-page.md", text)).toEqual({ kind: "todo", ...file });
-		expect(ok("agents/a/todos/t.md", writeTodoFile({ ...file, requestedBy: null, detail: "" }))).toMatchObject({
+		expect(ok("QorperaOS/agents/anna-berg/todos/pricing-page.md", text)).toEqual({ kind: "todo", ...file });
+		expect(
+			ok("QorperaOS/agents/a/todos/t.md", writeTodoFile({ ...file, requestedBy: null, detail: "" })),
+		).toMatchObject({
 			requestedBy: null,
 			detail: "",
 		});
-		expect(ok("agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(100) }))).toMatchObject({
+		expect(ok("QorperaOS/agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(100) }))).toMatchObject({
 			title: "ø".repeat(100),
 		});
-		expect(refused("agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(150) }))[0]?.message).toBe(
-			"title must be 1–200 bytes",
+		expect(
+			refused("QorperaOS/agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(150) }))[0]?.message,
+		).toBe("title must be 1–200 bytes");
+		expect(refused("QorperaOS/agents/a/todos/t.md", `---\nid: ${ID}\ntitle: T\nstatus: waiting\n---\n`)[0]?.key).toBe(
+			"status",
 		);
-		expect(refused("agents/a/todos/t.md", `---\nid: ${ID}\ntitle: T\nstatus: waiting\n---\n`)[0]?.key).toBe("status");
 	});
 
 	it("reads a worker's brief and results", () => {
@@ -913,7 +1115,7 @@ describe("connections, rules, todos and worker files", () => {
 			...workerStandingTexts({ species: "in-house", access: "write", revival: "each" }),
 			followUp: null,
 		};
-		expect(ok("agents/a/todos/t/w1/brief.md", writeWorkerBriefFile(brief))).toEqual({
+		expect(ok("QorperaOS/agents/a/todos/t/w1/brief.md", writeWorkerBriefFile(brief))).toEqual({
 			kind: "worker-brief",
 			...brief,
 		});
@@ -926,22 +1128,22 @@ describe("connections, rules, todos and worker files", () => {
 			needs: null,
 			files: [],
 		};
-		expect(ok("agents/a/todos/t/w1/results.md", writeWorkerResultsFile(results))).toEqual({
+		expect(ok("QorperaOS/agents/a/todos/t/w1/results.md", writeWorkerResultsFile(results))).toEqual({
 			kind: "worker-results",
 			...results,
 		});
 		expect(
 			refused(
-				"agents/a/todos/t/w1/results.md",
+				"QorperaOS/agents/a/todos/t/w1/results.md",
 				"---\noutcome: succeeded\nreported_at: 2026-09-28T11:00:00Z\nnote: x\n---\nr\n",
 			)[0]?.key,
 		).toBe("note");
-		expect(refused("agents/a/todos/T/w1/brief.md", writeWorkerBriefFile(brief))[0]?.code).toBe("name");
+		expect(refused("QorperaOS/agents/a/todos/T/w1/brief.md", writeWorkerBriefFile(brief))[0]?.code).toBe("name");
 	});
 
 	describe("worker files' sections (F2-5b)", () => {
-		const PATH = "agents/a/todos/t/w1/brief.md";
-		const RESULTS = "agents/a/todos/t/w1/results.md";
+		const PATH = "QorperaOS/agents/a/todos/t/w1/brief.md";
+		const RESULTS = "QorperaOS/agents/a/todos/t/w1/results.md";
 		const standing = workerStandingTexts({ species: "in-house", access: "read", revival: "batch" });
 		const brief: Omit<WorkerBriefFile, "kind"> = {
 			id: ID,
@@ -1291,7 +1493,7 @@ describe("human tasks and contacts (H1)", () => {
 		);
 		expect(text).toContain(`member: ${JONAS} # Jonas\n`);
 		expect(text).toContain(`todo: ${TODO} # node-2-storage\n`);
-		expect(ok("human-tasks/fit-disk-node-2.md", text)).toEqual({
+		expect(ok("QorperaOS/human-tasks/fit-disk-node-2.md", text)).toEqual({
 			kind: "human-task",
 			...base,
 			steps: [
@@ -1312,7 +1514,7 @@ describe("human tasks and contacts (H1)", () => {
 			step: "phone_code" as const,
 			todo: null,
 		};
-		expect(ok("human-tasks/github-code.md", writeHumanTaskFile(takeover))).toMatchObject({
+		expect(ok("QorperaOS/human-tasks/github-code.md", writeHumanTaskFile(takeover))).toMatchObject({
 			secret: "Code from the SMS",
 			secretState: "asked",
 			connection: GROUP,
@@ -1321,14 +1523,14 @@ describe("human tasks and contacts (H1)", () => {
 			files: [],
 		});
 		const forContact = { ...base, member: null, contact: IDA, files: ["finance/vat-q3-draft.pdf"] };
-		expect(ok("human-tasks/file-vat-q3.md", writeHumanTaskFile(forContact))).toMatchObject({
+		expect(ok("QorperaOS/human-tasks/file-vat-q3.md", writeHumanTaskFile(forContact))).toMatchObject({
 			contact: IDA,
 			member: null,
 		});
 	});
 
 	it("is for exactly one person, and keeps the secret to a member's task", () => {
-		const problems = (lines: string) => keys(refused("human-tasks/t.md", task(lines)));
+		const problems = (lines: string) => keys(refused("QorperaOS/human-tasks/t.md", task(lines)));
 		expect(problems(`status: open\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z`)).toEqual([["member", "missing"]]);
 		expect(problems(`${member}\ncontact: ${IDA}`)).toEqual([["member", "value"]]);
 		expect(problems(`${member}\ncomputer: ${ID}`)).toEqual([["computer", "unknown_key"]]);
@@ -1339,25 +1541,27 @@ describe("human tasks and contacts (H1)", () => {
 		expect(problems(`${member}\nsecret: Code`)).toEqual([["secret_state", "missing"]]);
 		expect(problems(`${member}\nsecret_state: saved`)).toEqual([["secret", "missing"]]);
 		expect(problems(`${member}\nsecret: Code\nsecret_state: kept`)).toEqual([["secret_state", "value"]]);
-		expect(ok("human-tasks/t.md", task(`${member}\nsecret: Code\nsecret_state: saved`))).toMatchObject({
+		expect(ok("QorperaOS/human-tasks/t.md", task(`${member}\nsecret: Code\nsecret_state: saved`))).toMatchObject({
 			secretState: "saved",
 		});
 	});
 
 	it("says why only when a task went back, was declined or cancelled", () => {
-		const problems = (lines: string) => keys(refused("human-tasks/t.md", task(lines)));
+		const problems = (lines: string) => keys(refused("QorperaOS/human-tasks/t.md", task(lines)));
 		const withStatus = (status: string) => member.replace("status: open", `status: ${status}`);
 		for (const status of ["returned", "declined"]) {
 			expect(problems(withStatus(status))).toEqual([["reason", "missing"]]);
 			expect(
-				ok("human-tasks/t.md", task(`${withStatus(status)}\nreason: The serial is not readable`)),
+				ok("QorperaOS/human-tasks/t.md", task(`${withStatus(status)}\nreason: The serial is not readable`)),
 			).toMatchObject({
 				status,
 				reason: "The serial is not readable",
 			});
 		}
-		expect(ok("human-tasks/t.md", task(withStatus("cancelled")))).toMatchObject({ reason: null });
-		expect(ok("human-tasks/t.md", task(`${withStatus("cancelled")}\nreason: No longer needed`))).toMatchObject({
+		expect(ok("QorperaOS/human-tasks/t.md", task(withStatus("cancelled")))).toMatchObject({ reason: null });
+		expect(
+			ok("QorperaOS/human-tasks/t.md", task(`${withStatus("cancelled")}\nreason: No longer needed`)),
+		).toMatchObject({
 			reason: "No longer needed",
 		});
 		for (const status of ["open", "done", "accepted"])
@@ -1368,12 +1572,12 @@ describe("human tasks and contacts (H1)", () => {
 	});
 
 	it("checks the other settings and needs a body", () => {
-		const problems = (lines: string, text?: string) => keys(refused("human-tasks/t.md", task(lines, text)));
+		const problems = (lines: string, text?: string) => keys(refused("QorperaOS/human-tasks/t.md", task(lines, text)));
 		expect(problems(`${member}\nminutes: 481`)).toEqual([["minutes", "value"]]);
 		expect(problems(`${member}\nminutes: 0`)).toEqual([["minutes", "value"]]);
 		expect(problems(`${member}\nproof: []`)).toEqual([["proof", "value"]]);
 		// A list key with no items is left out, not written empty.
-		expect(refused("human-tasks/t.md", task(`${member}\nproof:`))).toMatchObject([
+		expect(refused("QorperaOS/human-tasks/t.md", task(`${member}\nproof:`))).toMatchObject([
 			{ key: "proof", code: "missing", message: "proof has no items; give it one or remove the line" },
 		]);
 		expect(problems(`${member}\nproof: [photo, video]`)).toEqual([["proof", "value"]]);
@@ -1387,9 +1591,9 @@ describe("human tasks and contacts (H1)", () => {
 	});
 
 	it("reads files as literal paths of files, each once, and keeps a contact's task out of the company's own", () => {
-		const problems = (lines: string) => keys(refused("human-tasks/t.md", task(lines)));
+		const problems = (lines: string) => keys(refused("QorperaOS/human-tasks/t.md", task(lines)));
 		const files = (list: string) => `${member}\nfiles: ${list}`;
-		expect(ok("human-tasks/t.md", task(files('[sales/q3 draft.pdf, "a*b.md"]')))).toMatchObject({
+		expect(ok("QorperaOS/human-tasks/t.md", task(files('[sales/q3 draft.pdf, "a*b.md"]')))).toMatchObject({
 			files: ["sales/q3 draft.pdf", "a*b.md"],
 		});
 		for (const bad of ["[sales/]", "[/sales/a.pdf]", "[sales//a.pdf]", "[sales/../a.pdf]", "[./a.pdf]", "[]"])
@@ -1411,7 +1615,7 @@ describe("human tasks and contacts (H1)", () => {
 			["files", "quote"],
 			["files", "quote"],
 		]);
-		expect(ok("human-tasks/t.md", task(files('["42", "true"]')))).toMatchObject({ files: ["42", "true"] });
+		expect(ok("QorperaOS/human-tasks/t.md", task(files('["42", "true"]')))).toMatchObject({ files: ["42", "true"] });
 		expect(problems(files(`[a${"x".repeat(4096)}]`))).toEqual([["files", "value"]]);
 		// Repeats are compared by key: two spellings are one entry.
 		expect(problems(files("[Sales/A.pdf, sales/a.pdf]"))).toEqual([["files", "value"]]);
@@ -1420,25 +1624,33 @@ describe("human tasks and contacts (H1)", () => {
 		]);
 		const contactFiles = (list: string) => `${contactTask}\nfiles: ${list}`;
 		for (const root of [
-			"agents/a/memory/x.md",
-			"Contacts/b.md",
-			"human-tasks/other/proof/p.jpg",
-			"connections/c.md",
-			"rules/r.md",
+			"QorperaOS/agents/a/memory/x.md",
+			"QorperaOS/Contacts/b.md",
+			"QorperaOS/human-tasks/other/proof/p.jpg",
+			"QorperaOS/connections/c.md",
+			"QorperaOS/rules/r.md",
 			"hooks/h/e.json",
 		])
-			expect(keys(refused("human-tasks/t.md", task(contactFiles(`[${root}]`))))).toEqual([["files", "value"]]);
-		expect(ok("human-tasks/t.md", task(contactFiles("[finance/vat-q3-draft.pdf, agentsx/a.pdf]")))).toMatchObject({
-			files: ["finance/vat-q3-draft.pdf", "agentsx/a.pdf"],
+			expect(keys(refused("QorperaOS/human-tasks/t.md", task(contactFiles(`[${root}]`))))).toEqual([
+				["files", "value"],
+			]);
+		// Only the platform's folders under QorperaOS/ stay inside: a top folder of the company's own named like one is shown.
+		expect(
+			ok(
+				"QorperaOS/human-tasks/t.md",
+				task(contactFiles("[finance/vat-q3-draft.pdf, QorperaOS/agentsx/a.pdf, agents/a.pdf, rules/r.md]")),
+			),
+		).toMatchObject({
+			files: ["finance/vat-q3-draft.pdf", "QorperaOS/agentsx/a.pdf", "agents/a.pdf", "rules/r.md"],
 		});
 		// A member's task may list them.
-		expect(ok("human-tasks/t.md", task(files("[agents/a/memory/x.md]")))).toMatchObject({
-			files: ["agents/a/memory/x.md"],
+		expect(ok("QorperaOS/human-tasks/t.md", task(files("[QorperaOS/agents/a/memory/x.md]")))).toMatchObject({
+			files: ["QorperaOS/agents/a/memory/x.md"],
 		});
 	});
 
 	it("reads the steps of the first exact ## Steps section only", () => {
-		const steps = (text: string) => (ok("human-tasks/t.md", task(member, text)) as HumanTaskFile).steps;
+		const steps = (text: string) => (ok("QorperaOS/human-tasks/t.md", task(member, text)) as HumanTaskFile).steps;
 		// The body starts on line 9 (six settings between the two --- lines).
 		expect(
 			steps(
@@ -1456,16 +1668,17 @@ describe("human tasks and contacts (H1)", () => {
 		]);
 		expect(steps("Why.\r\n## Steps\r\n- [ ] A\r\n")).toEqual([{ line: 11, text: "A", done: false }]);
 		expect(steps("No steps here.")).toEqual([]);
-		const problems = (text: string) => refused("human-tasks/t.md", task(member, text)).map((p) => [p.line, p.code]);
+		const problems = (text: string) =>
+			refused("QorperaOS/human-tasks/t.md", task(member, text)).map((p) => [p.line, p.code]);
 		expect(problems("## Steps\n- [ ]   \n")).toEqual([[10, "body"]]);
 		expect(problems("## Steps\n- [ ] a\tb\n")).toEqual([[10, "body"]]);
 		expect(problems("## Steps\n- [ ] a\u2028b\n")).toEqual([[10, "body"]]);
 		// One carriage return before a line end is dropped, not two.
 		expect(problems("## Steps\n- [ ] A\r\r\n")).toEqual([[10, "body"]]);
 		expect(problems(`## Steps\n- [ ] ${"x".repeat(501)}\n`)).toEqual([[10, "body"]]);
-		expect(ok("human-tasks/t.md", task(member, `## Steps\n- [ ] ${"ø".repeat(250)}\n`))).toBeTruthy();
+		expect(ok("QorperaOS/human-tasks/t.md", task(member, `## Steps\n- [ ] ${"ø".repeat(250)}\n`))).toBeTruthy();
 		const many = (n: number) => `## Steps\n${Array.from({ length: n }, (_, i) => `- [ ] Step ${i}`).join("\n")}\n`;
-		expect((ok("human-tasks/t.md", task(member, many(50))) as HumanTaskFile).steps).toHaveLength(50);
+		expect((ok("QorperaOS/human-tasks/t.md", task(member, many(50))) as HumanTaskFile).steps).toHaveLength(50);
 		expect(problems(many(51))).toEqual([[9, "body"]]);
 	});
 
@@ -1479,21 +1692,21 @@ describe("human tasks and contacts (H1)", () => {
 			asks: ["bookkeeping review", "VAT filing"],
 			notes: "Our accountant since 2025.\n## History\n- 2026-10-08 Filed Q3 VAT",
 		};
-		expect(ok("contacts/maria-jensen.md", writeContactFile(file))).toEqual({ kind: "contact", ...file });
+		expect(ok("QorperaOS/contacts/maria-jensen.md", writeContactFile(file))).toEqual({ kind: "contact", ...file });
 		const bare = { ...file, organization: null, email: null, phone: null, asks: [], notes: "" };
 		expect(writeContactFile(bare)).toBe(`---\nid: ${IDA}\nname: Maria Jensen\n---\n`);
-		expect(ok("contacts/m.md", writeContactFile(bare))).toEqual({ kind: "contact", ...bare });
+		expect(ok("QorperaOS/contacts/m.md", writeContactFile(bare))).toEqual({ kind: "contact", ...bare });
 		// A phone without spaces would read as a number in YAML: the writer quotes it, and the parse keeps it.
-		expect(ok("contacts/m.md", writeContactFile({ ...bare, phone: "+4512345678" }))).toMatchObject({
+		expect(ok("QorperaOS/contacts/m.md", writeContactFile({ ...bare, phone: "+4512345678" }))).toMatchObject({
 			phone: "+4512345678",
 		});
 	});
 
 	it("checks a contact's email, phone and asks", () => {
 		const contactText = (lines: string) => `---\nid: ${IDA}\nname: Maria\n${lines}\n---\n`;
-		const problems = (lines: string) => keys(refused("contacts/m.md", contactText(lines)));
+		const problems = (lines: string) => keys(refused("QorperaOS/contacts/m.md", contactText(lines)));
 		for (const email of ["a@b", "x@y.dk", "first.last+tag@sub.example.org", '"o\'brien@x.ie"'])
-			expect(ok("contacts/m.md", contactText(`email: ${email}`))).toBeTruthy();
+			expect(ok("QorperaOS/contacts/m.md", contactText(`email: ${email}`))).toBeTruthy();
 		for (const email of [
 			"ab",
 			"maria.example.com",
@@ -1508,7 +1721,7 @@ describe("human tasks and contacts (H1)", () => {
 		])
 			expect(problems(`email: ${email}`)).toEqual([["email", "value"]]);
 		for (const phone of ['"+4512345678"', "+45 12 34 56 78", '"+123456"', `"+${"1".repeat(20)}"`])
-			expect(ok("contacts/m.md", contactText(`phone: ${phone}`))).toBeTruthy();
+			expect(ok("QorperaOS/contacts/m.md", contactText(`phone: ${phone}`))).toBeTruthy();
 		for (const phone of [
 			'"+12345"',
 			`"+${"1".repeat(21)}"`,
@@ -1524,8 +1737,10 @@ describe("human tasks and contacts (H1)", () => {
 			Array.from({ length: 6 }, () => ["asks", "quote"]),
 		);
 		expect(problems("asks:\n  - false")).toEqual([["asks", "quote"]]);
-		expect(ok("contacts/m.md", contactText('asks: ["true", "42"]'))).toMatchObject({ asks: ["true", "42"] });
-		expect(ok("contacts/m.md", contactText("asks: [VAT filing, vat filing]"))).toMatchObject({
+		expect(ok("QorperaOS/contacts/m.md", contactText('asks: ["true", "42"]'))).toMatchObject({
+			asks: ["true", "42"],
+		});
+		expect(ok("QorperaOS/contacts/m.md", contactText("asks: [VAT filing, vat filing]"))).toMatchObject({
 			asks: ["VAT filing", "vat filing"],
 		});
 		expect(problems(`asks: [${"x".repeat(101)}]`)).toEqual([["asks", "value"]]);
@@ -1545,17 +1760,22 @@ describe("human tasks: the proof's names and the person's change (H2a)", () => {
 	const OPS = "7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77";
 	const file = (status: string, extra = "", body = "## Steps\n- [ ] Order the disk\n- [x] Agree a window\n") =>
 		`---\nid: ${ID}\ntitle: Fit the disk\nstatus: ${status}\nmember: ${JONAS}\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z\n${extra}---\n${body}`;
-	const path = "human-tasks/fit-disk.md";
+	const path = "QorperaOS/human-tasks/fit-disk.md";
 
 	it("names the task's folder, its proof and its note", () => {
-		expect(humanTaskFolder(path)).toBe("human-tasks/fit-disk");
-		expect(humanTaskProofPath(path, "photo", 1, "jpg")).toBe("human-tasks/fit-disk/proof/photo-1.jpg");
-		expect(humanTaskProofPath(path, "signature", 2, "png")).toBe("human-tasks/fit-disk/proof/signature-2.png");
-		expect(humanTaskNotePath(path)).toBe("human-tasks/fit-disk/note.md");
-		expect(() => humanTaskFolder("contacts/maria.md")).toThrow(RangeError);
+		expect(humanTaskFolder(path)).toBe("QorperaOS/human-tasks/fit-disk");
+		expect(humanTaskProofPath(path, "photo", 1, "jpg")).toBe("QorperaOS/human-tasks/fit-disk/proof/photo-1.jpg");
+		expect(humanTaskProofPath(path, "signature", 2, "png")).toBe(
+			"QorperaOS/human-tasks/fit-disk/proof/signature-2.png",
+		);
+		expect(humanTaskNotePath(path)).toBe("QorperaOS/human-tasks/fit-disk/note.md");
+		expect(() => humanTaskFolder("QorperaOS/contacts/maria.md")).toThrow(RangeError);
 		// Only the spelling the database keeps: a compatibility or upper-case spelling is refused here, not later.
-		expect(() => humanTaskFolder("ＨＵＭＡＮ-TASKS/fit.md")).toThrow(RangeError);
-		expect(() => humanTaskFolder("human-tasks/Fit.md")).toThrow(RangeError);
+		expect(() => humanTaskFolder("QorperaOS/ＨＵＭＡＮ-TASKS/fit.md")).toThrow(RangeError);
+		// Outside QorperaOS/ no file is a human task's; the root itself may be spelled any way that finds it.
+		expect(() => humanTaskFolder("human-tasks/fit-disk.md")).toThrow(RangeError);
+		expect(humanTaskFolder("qorperaos/human-tasks/fit-disk.md")).toBe("qorperaos/human-tasks/fit-disk");
+		expect(() => humanTaskFolder("QorperaOS/human-tasks/Fit.md")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "note" as "photo", 1, "md")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "photo", 0, "jpg")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "photo", 1, "JPG")).toThrow(RangeError);
@@ -1597,7 +1817,9 @@ describe("human tasks: the proof's names and the person's change (H2a)", () => {
 		expect(() => humanTaskPersonChange(path, file("open"), { kind: "declined", reason: "" })).toThrow(
 			/would be refused/,
 		);
-		expect(() => humanTaskPersonChange("human-tasks/x.md", "not a task", { kind: "done" })).toThrow(/parses/);
+		expect(() => humanTaskPersonChange("QorperaOS/human-tasks/x.md", "not a task", { kind: "done" })).toThrow(
+			/parses/,
+		);
 	});
 });
 
@@ -1619,7 +1841,7 @@ Go through new leads in sales/leads/.
 	const routine = (lines: string) => `---\nid: ${ID}\ntitle: T\nstatus: active\n${lines}\n---\nx\n`;
 
 	it("reads a weekly routine", () => {
-		expect(ok("agents/anna-berg/routines/morning-lead-sweep.md", weekly)).toEqual({
+		expect(ok("QorperaOS/agents/anna-berg/routines/morning-lead-sweep.md", weekly)).toEqual({
 			kind: "routine",
 			id: ID,
 			title: "Morning lead sweep",
@@ -1661,7 +1883,7 @@ Go through new leads in sales/leads/.
 		];
 		for (const trigger of triggers) {
 			const file = { ...base, trigger };
-			expect(ok("agents/a/routines/r.md", writeRoutineFile(file))).toEqual({ kind: "routine", ...file });
+			expect(ok("QorperaOS/agents/a/routines/r.md", writeRoutineFile(file))).toEqual({ kind: "routine", ...file });
 		}
 		const concluded = {
 			...base,
@@ -1674,7 +1896,7 @@ Go through new leads in sales/leads/.
 		};
 		const written = writeRoutineFile(concluded);
 		expect(written).toContain("quiet_timezone: Europe/Oslo\n");
-		expect(ok("agents/a/routines/r.md", written)).toEqual({ kind: "routine", ...concluded });
+		expect(ok("QorperaOS/agents/a/routines/r.md", written)).toEqual({ kind: "routine", ...concluded });
 	});
 
 	it("gives instants one form, so a new spelling is not a new timing", () => {
@@ -1688,7 +1910,9 @@ Go through new leads in sales/leads/.
 		expect(canonicalCompanyStateInstant("2026-09-30T24:00:00Z")).toBeNull();
 		expect(canonicalCompanyStateInstant("2026-09-30T07:00:60Z")).toBeNull();
 		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00+02:00")).toBeNull();
-		expect(ok("agents/a/routines/r.md", routine("when: once\nat: 2026-09-30T07:00Z\ntimezone: UTC"))).toMatchObject({
+		expect(
+			ok("QorperaOS/agents/a/routines/r.md", routine("when: once\nat: 2026-09-30T07:00Z\ntimezone: UTC")),
+		).toMatchObject({
 			trigger: { at: "2026-09-30T07:00:00Z" },
 		});
 	});
@@ -1696,14 +1920,14 @@ Go through new leads in sales/leads/.
 	it("compares at and ends to the microsecond", () => {
 		expect(
 			ok(
-				"agents/a/routines/r.md",
+				"QorperaOS/agents/a/routines/r.md",
 				routine("when: once\nat: 2026-09-30T07:00:00Z\nends: 2026-09-30T07:00:00.000001Z\ntimezone: UTC"),
 			),
 		).toMatchObject({ ends: "2026-09-30T07:00:00.000001Z" });
 		for (const ends of ["2026-09-30T07:00:00Z", "2026-09-30T06:59:59.999999Z"])
 			expect(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine(`when: once\nat: 2026-09-30T07:00:00Z\nends: ${ends}\ntimezone: UTC`),
 				)[0]?.key,
 			).toBe("at");
@@ -1711,19 +1935,22 @@ Go through new leads in sales/leads/.
 
 	it("defaults effort and reply, and asks for match", () => {
 		expect(
-			ok("agents/a/routines/r.md", routine("when: file-change\nwatch: sales/\nmatch: subtree\ntimezone: UTC")),
+			ok(
+				"QorperaOS/agents/a/routines/r.md",
+				routine("when: file-change\nwatch: sales/\nmatch: subtree\ntimezone: UTC"),
+			),
 		).toMatchObject({
 			effort: "medium",
 			reply: "optional",
 			trigger: { when: "file-change", watch: "sales", match: "subtree" },
 		});
 		expect(
-			keys(refused("agents/a/routines/r.md", routine("when: file-change\nwatch: sales\ntimezone: UTC"))),
+			keys(refused("QorperaOS/agents/a/routines/r.md", routine("when: file-change\nwatch: sales\ntimezone: UTC"))),
 		).toEqual([["match", "missing"]]);
 		for (const empty of ["effort:", "effort: []", "reply:", "match:"])
 			expect(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine(`when: file-change\nwatch: sales\nmatch: exact\ntimezone: UTC\n${empty}`),
 				).length,
 			).toBeGreaterThan(0);
@@ -1732,30 +1959,32 @@ Go through new leads in sales/leads/.
 	it("reads an event routine: its hook, and the types it takes or every type", () => {
 		expect(
 			ok(
-				"agents/a/routines/r.md",
+				"QorperaOS/agents/a/routines/r.md",
 				routine(`when: event\nhook: ${ID}\nonly: [invoice.paid, "charge.refunded"]\ntimezone: UTC`),
 			),
 		).toMatchObject({
 			trigger: { when: "event", hook: ID, only: ["invoice.paid", "charge.refunded"] },
 			timezone: "UTC",
 		});
-		expect(ok("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\ntimezone: UTC`))).toMatchObject({
+		expect(ok("QorperaOS/agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\ntimezone: UTC`))).toMatchObject({
 			trigger: { when: "event", hook: ID, only: null },
 		});
-		expect(keys(refused("agents/a/routines/r.md", routine("when: event\ntimezone: UTC")))).toEqual([
+		expect(keys(refused("QorperaOS/agents/a/routines/r.md", routine("when: event\ntimezone: UTC")))).toEqual([
 			["hook", "missing"],
 		]);
-		expect(keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}`)))).toEqual([
+		expect(keys(refused("QorperaOS/agents/a/routines/r.md", routine(`when: event\nhook: ${ID}`)))).toEqual([
 			["timezone", "missing"],
 		]);
 		expect(
-			refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID.toUpperCase()}\ntimezone: UTC`))[0]
-				?.message,
+			refused(
+				"QorperaOS/agents/a/routines/r.md",
+				routine(`when: event\nhook: ${ID.toUpperCase()}\ntimezone: UTC`),
+			)[0]?.message,
 		).toBe("hook must be written in lowercase");
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine(`when: event\nhook: ${ID}\nonly: ["invoice paid", a, a]\nwatch: sales\ntimezone: UTC`),
 				),
 			),
@@ -1768,7 +1997,7 @@ Go through new leads in sales/leads/.
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine(`when: event\nhook: ${ID}\nonly: [404, true, null, ~, "200"]\ntimezone: UTC`),
 				),
 			),
@@ -1779,19 +2008,29 @@ Go through new leads in sales/leads/.
 			["only", "quote"],
 		]);
 		expect(
-			ok("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\nonly: ["404", "true"]\ntimezone: UTC`)),
+			ok(
+				"QorperaOS/agents/a/routines/r.md",
+				routine(`when: event\nhook: ${ID}\nonly: ["404", "true"]\ntimezone: UTC`),
+			),
 		).toMatchObject({ trigger: { when: "event", hook: ID, only: ["404", "true"] } });
 		for (const only of ["only: []", "only:", "only: invoice.paid"])
 			expect(
-				keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\n${only}\ntimezone: UTC`))),
+				keys(
+					refused("QorperaOS/agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\n${only}\ntimezone: UTC`)),
+				),
 			).toEqual([["only", only === "only:" ? "missing" : "value"]]);
 		const many = Array.from({ length: 21 }, (_, n) => `t${n}`).join(", ");
 		expect(
-			keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\nonly: [${many}]\ntimezone: UTC`))),
+			keys(
+				refused(
+					"QorperaOS/agents/a/routines/r.md",
+					routine(`when: event\nhook: ${ID}\nonly: [${many}]\ntimezone: UTC`),
+				),
+			),
 		).toEqual([["only", "value"]]);
 		// Another trigger's settings name the event's as unknown to it.
 		expect(
-			keys(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\nhook: ${ID}\nonly: [a]`))),
+			keys(refused("QorperaOS/agents/a/routines/r.md", routine(`when: every\nminutes: 5\nhook: ${ID}\nonly: [a]`))),
 		).toEqual([
 			["hook", "unknown_key"],
 			["only", "unknown_key"],
@@ -1802,7 +2041,7 @@ Go through new leads in sales/leads/.
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine(
 						"when: once\nat: 2026-09-30T07:00:00Z\nminutes: 5\nruns: 3\nends: 2026-09-01T00:00:00Z\nconclusion: early",
 					),
@@ -1818,7 +2057,7 @@ Go through new leads in sales/leads/.
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					`---\nid: ${ID}\ntitle: T\nstatus: concluded\nwhen: every\nminutes: 4\n---\nx\n`,
 				),
 			),
@@ -1826,22 +2065,22 @@ Go through new leads in sales/leads/.
 			["minutes", "value"],
 			["conclusion", "missing"],
 		]);
-		expect(keys(refused("agents/a/routines/r.md", routine('when: every\nminutes: "30"')))).toEqual([
+		expect(keys(refused("QorperaOS/agents/a/routines/r.md", routine('when: every\nminutes: "30"')))).toEqual([
 			["minutes", "value"],
 		]);
-		expect(keys(refused("agents/a/routines/r.md", routine('when: every\nminutes: 5\nquiet: "22:00-07:00"')))).toEqual(
-			[["timezone", "missing"]],
-		);
+		expect(
+			keys(refused("QorperaOS/agents/a/routines/r.md", routine('when: every\nminutes: 5\nquiet: "22:00-07:00"'))),
+		).toEqual([["timezone", "missing"]]);
 		expect(
 			ok(
-				"agents/a/routines/r.md",
+				"QorperaOS/agents/a/routines/r.md",
 				routine('when: every\nminutes: 5\nquiet: "22:00-07:00"\nquiet_timezone: Europe/Oslo'),
 			),
 		).toMatchObject({ timezone: null, quiet: { timezone: "Europe/Oslo" } });
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine('when: weekly\ndays: [mon, funday, mon]\ntime: "25:00"\ntimezone: mars/olympus'),
 				),
 			),
@@ -1851,27 +2090,27 @@ Go through new leads in sales/leads/.
 			["time", "value"],
 			["timezone", "value"],
 		]);
-		expect(refused("agents/a/routines/r.md", routine("when: hourly"))[0]?.key).toBe("when");
+		expect(refused("QorperaOS/agents/a/routines/r.md", routine("when: hourly"))[0]?.key).toBe("when");
 		expect(
 			keys(
 				refused(
-					"agents/a/routines/r.md",
+					"QorperaOS/agents/a/routines/r.md",
 					routine('when: window\nminutes: 60\nfrom: "09:00"\nto: "17:00"\nmonths: []\ntimezone: UTC'),
 				),
 			),
 		).toEqual([["months", "value"]]);
 		for (const effort of ["xhigh", "max"])
-			expect(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\neffort: ${effort}`))[0]?.key).toBe(
-				"effort",
-			);
-		expect(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\ntitle2: x`))[0]?.code).toBe(
+			expect(
+				refused("QorperaOS/agents/a/routines/r.md", routine(`when: every\nminutes: 5\neffort: ${effort}`))[0]?.key,
+			).toBe("effort");
+		expect(refused("QorperaOS/agents/a/routines/r.md", routine(`when: every\nminutes: 5\ntitle2: x`))[0]?.code).toBe(
 			"unknown_key",
 		);
 	});
 
 	it("counts the title and the conclusion in bytes", () => {
 		const text = routine("when: every\nminutes: 5").replace("title: T", `title: ${"é".repeat(81)}`);
-		expect(refused("agents/a/routines/r.md", text)[0]).toMatchObject({
+		expect(refused("QorperaOS/agents/a/routines/r.md", text)[0]).toMatchObject({
 			key: "title",
 			message: "title must be 1–160 bytes",
 		});
@@ -1944,21 +2183,21 @@ describe("companyStateValue", () => {
 			expect(performance.now() - started).toBeLessThan(1000);
 		}
 		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
-		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([
-			["name", "value"],
-		]);
-		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\tBerg" })))).toEqual([
-			["name", "value"],
-		]);
+		expect(
+			keys(refused("QorperaOS/agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" }))),
+		).toEqual([["name", "value"]]);
+		expect(
+			keys(refused("QorperaOS/agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\tBerg" }))),
+		).toEqual([["name", "value"]]);
 		for (const name of ["Anna\ufffe", "Anna\uffff"]) {
 			expect(companyStateValue(name)).toMatch(/^"Anna\\uff/);
-			expect(ok("agents/a/agent.md", writeAgentFile({ ...agentBase(), name }))).toMatchObject({ name });
+			expect(ok("QorperaOS/agents/a/agent.md", writeAgentFile({ ...agentBase(), name }))).toMatchObject({ name });
 		}
 		const group = writeGroupFile(
 			{ id: GROUP, name: "L", subtitle: null, agents: [ANNA, IDA], people: [], purpose: "P" },
 			new Map([[ANNA, "Anna\ufffeBerg"]]),
 		);
-		expect(ok("agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
+		expect(ok("QorperaOS/agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
 		for (const text of ["2026-09-30", "2026-9-3", "._5"]) expect(companyStateValue(text)).toBe(`"${text}"`);
 		// A canonical instant stays plain, as the file writers write it.
 		expect(companyStateValue("2026-09-30T07:00:00Z")).toBe("2026-09-30T07:00:00Z");
@@ -1969,8 +2208,11 @@ describe("companyStateValue", () => {
 describe("heading writers", () => {
 	it("write names that read back the same, and refuse names that are not one line", () => {
 		for (const name of ["Sales #", "Top ##", "#", "C# team"]) {
-			expect(ok("vision/vision.md", writeVisionFile(name, ""))).toEqual({ kind: "vision", name });
-			const file = ok("agents/sections.md", writeSectionsFile({ sections: [{ name, line: 0, members: [] }] }));
+			expect(ok("QorperaOS/vision/vision.md", writeVisionFile(name, ""))).toEqual({ kind: "vision", name });
+			const file = ok(
+				"QorperaOS/agents/sections.md",
+				writeSectionsFile({ sections: [{ name, line: 0, members: [] }] }),
+			);
 			expect(file.kind === "sections" && file.sections[0]?.name).toBe(name);
 		}
 		expect(() => writeSectionsFile({ sections: [{ name: `Sales\n- ${ANNA}`, line: 0, members: [] }] })).toThrow();
@@ -1984,7 +2226,7 @@ describe("heading writers", () => {
 			{ id: GROUP, name: "L", subtitle: null, agents: [ANNA, IDA], people: [], purpose: "P" },
 			names,
 		);
-		expect(ok("agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
+		expect(ok("QorperaOS/agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
 	});
 });
 
@@ -2046,35 +2288,50 @@ describe("companyStateSeedTree", () => {
 				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
+		// Everything seeded is under QorperaOS/, which comes first (Jonas, 21 October 2026).
+		expect(paths[0]).toBe("QorperaOS");
+		expect(tree[0]?.kind).toBe("folder");
+		expect(paths.filter((path) => osRelative(path) === null)).toEqual([]);
+		expect(paths.filter((path) => !path.startsWith("QorperaOS/") && path !== "QorperaOS")).toEqual([]);
 		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct), then
 		// interfaces/ and tables/ with the library (P16).
-		expect(paths.filter((path) => !path.includes("/"))).toEqual([
-			"vision",
-			"agents",
-			"connections",
-			"human-tasks",
-			"contacts",
-			"skills",
-			"rules",
-			"interfaces",
-			"tables",
+		expect(paths.filter((path) => path.split("/").length === 2)).toEqual([
+			"QorperaOS/vision",
+			"QorperaOS/agents",
+			"QorperaOS/connections",
+			"QorperaOS/human-tasks",
+			"QorperaOS/contacts",
+			"QorperaOS/skills",
+			"QorperaOS/rules",
+			"QorperaOS/interfaces",
+			"QorperaOS/tables",
 		]);
 		// No folder is seeded with a README.md (Jonas, 21 October 2026).
 		expect(paths.filter((path) => /(^|\/)readme\.md$/i.test(path))).toEqual([]);
 		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
 		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
 		expect(skill).toContain("`## Steps`");
-		expect(ok("vision/vision.md", tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "")).toEqual({
+		expect(
+			ok(
+				"QorperaOS/vision/vision.md",
+				tree.find((entry) => entry.path === "QorperaOS/vision/vision.md")?.text ?? "",
+			),
+		).toEqual({
 			kind: "vision",
 			name: "Nordlys Studio",
 		});
 		expect(
 			ok(
-				"agents/co-founder/agent.md",
-				tree.find((entry) => entry.path === "agents/co-founder/agent.md")?.text ?? "",
+				"QorperaOS/agents/co-founder/agent.md",
+				tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/agent.md")?.text ?? "",
 			),
 		).toMatchObject({ id: ANNA, agentKind: "co-founder", status: "active", colour: null, figure: "crown" });
-		expect(ok("agents/sections.md", tree.find((entry) => entry.path === "agents/sections.md")?.text ?? "")).toEqual({
+		expect(
+			ok(
+				"QorperaOS/agents/sections.md",
+				tree.find((entry) => entry.path === "QorperaOS/agents/sections.md")?.text ?? "",
+			),
+		).toEqual({
 			kind: "sections",
 			sections: [],
 		});
@@ -2089,19 +2346,19 @@ describe("companyStateSeedTree", () => {
 			return id;
 		};
 		const tree = companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, newId });
-		const library = tree.filter((entry) => /^(interfaces|tables)(\/|$)/.test(entry.path));
+		const library = tree.filter((entry) => /^QorperaOS\/(interfaces|tables)(\/|$)/.test(entry.path));
 		// Pulse, its numbers table and the cards table are no longer seeded (Jonas, 21 October 2026).
 		expect(library.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
-			"folder interfaces",
-			"folder interfaces/mailbox",
-			"file interfaces/mailbox/interface.toml",
-			"folder interfaces/members",
-			"file interfaces/members/interface.toml",
-			"file interfaces/order.md",
-			"folder tables",
-			"folder tables/areas",
-			"file tables/areas/table.toml",
-			"file tables/areas/rows.csv",
+			"folder QorperaOS/interfaces",
+			"folder QorperaOS/interfaces/mailbox",
+			"file QorperaOS/interfaces/mailbox/interface.toml",
+			"folder QorperaOS/interfaces/members",
+			"file QorperaOS/interfaces/members/interface.toml",
+			"file QorperaOS/interfaces/order.md",
+			"folder QorperaOS/tables",
+			"folder QorperaOS/tables/areas",
+			"file QorperaOS/tables/areas/table.toml",
+			"file QorperaOS/tables/areas/rows.csv",
 		]);
 		const parsed = (path: string) => {
 			const result = parseCompanyStateFile(path, tree.find((entry) => entry.path === path)?.text ?? "");
@@ -2109,48 +2366,60 @@ describe("companyStateSeedTree", () => {
 			return result.file;
 		};
 		expect(ids).toHaveLength(3);
-		const mailbox = parsed("interfaces/mailbox/interface.toml");
+		const mailbox = parsed("QorperaOS/interfaces/mailbox/interface.toml");
 		expect(mailbox).toMatchObject({ kind: "interface", main: false });
-		expect(parsed("interfaces/members/interface.toml")).toMatchObject({ kind: "interface", main: false });
-		const members = parsed("interfaces/members/interface.toml") as { id: string };
-		expect(parsed("interfaces/order.md")).toEqual({
+		expect(parsed("QorperaOS/interfaces/members/interface.toml")).toMatchObject({ kind: "interface", main: false });
+		const members = parsed("QorperaOS/interfaces/members/interface.toml") as { id: string };
+		expect(parsed("QorperaOS/interfaces/order.md")).toEqual({
 			kind: "interface-order",
 			ids: [(mailbox as { id: string }).id, members.id],
 		});
-		expect(parsed("tables/areas/rows.csv")).toEqual({ kind: "table-rows", header: expect.any(Array), rows: [] });
+		expect(parsed("QorperaOS/tables/areas/rows.csv")).toEqual({
+			kind: "table-rows",
+			header: expect.any(Array),
+			rows: [],
+		});
 		// Every id the library drew is in its files.
 		const drawn = library.flatMap((entry) => ids.filter((id) => entry.text?.includes(id)));
 		expect(new Set(drawn)).toEqual(new Set(ids));
 	});
 
 	it("reads interfaces and tables by the path's shape, with their own parser and names", () => {
-		expect(companyStatePath("interfaces/order.md")?.kind).toBe("interface-order");
-		expect(companyStatePath("interfaces/pulse/interface.toml")).toMatchObject({ kind: "interface", name: "pulse" });
-		expect(companyStatePath("Interfaces/Bad_Name/interface.toml")).toMatchObject({
+		expect(companyStatePath("QorperaOS/interfaces/order.md")?.kind).toBe("interface-order");
+		expect(companyStatePath("QorperaOS/interfaces/pulse/interface.toml")).toMatchObject({
+			kind: "interface",
+			name: "pulse",
+		});
+		expect(companyStatePath("QorperaOS/Interfaces/Bad_Name/interface.toml")).toMatchObject({
 			kind: "interface",
 			name: "bad_name",
 		});
-		expect(companyStatePath("tables/numbers/table.toml")).toMatchObject({ kind: "table", name: "numbers" });
-		expect(companyStatePath("tables/numbers/rows.csv")).toMatchObject({ kind: "table-rows", name: "numbers" });
+		expect(companyStatePath("QorperaOS/tables/numbers/table.toml")).toMatchObject({ kind: "table", name: "numbers" });
+		expect(companyStatePath("QorperaOS/tables/numbers/rows.csv")).toMatchObject({
+			kind: "table-rows",
+			name: "numbers",
+		});
 		for (const path of [
-			"interfaces/pulse/README.md",
-			"interfaces/a/b/interface.toml",
-			"tables/rows.csv",
+			"QorperaOS/interfaces/pulse/README.md",
+			"QorperaOS/interfaces/a/b/interface.toml",
+			"QorperaOS/tables/rows.csv",
 			"drafts/x/table.toml",
 		])
 			expect(companyStatePath(path)).toBeNull();
 		// Named by their kind: no .md rule; the folder's name follows the naming rule.
-		expect(companyStatePathProblems("tables/numbers/rows.csv")).toEqual([]);
-		expect(companyStatePathProblems("interfaces/Bad_Name/interface.toml")[0]?.message).toMatch(
+		expect(companyStatePathProblems("QorperaOS/tables/numbers/rows.csv")).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/interfaces/Bad_Name/interface.toml")[0]?.message).toMatch(
 			/^the name of an interface's folder \(Bad_Name\)/,
 		);
-		expect(companyStatePathProblems("tables/x_y", true)[0]?.message).toMatch(/^the name of a table's folder \(x_y\)/);
-		expect(companyStatePathProblems("interfaces", true)).toEqual([]);
-		expect(companyStatePathProblems("tables/x/y", true)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/tables/x_y", true)[0]?.message).toMatch(
+			/^the name of a table's folder \(x_y\)/,
+		);
+		expect(companyStatePathProblems("QorperaOS/interfaces", true)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/tables/x/y", true)).toEqual([]);
 		// The dispatch gives parseInterfaceStateFile's answer.
-		const rows = parseCompanyStateFile("tables/numbers/rows.csv", "number,at\nVisits,2026-10-02T09:44Z\n");
+		const rows = parseCompanyStateFile("QorperaOS/tables/numbers/rows.csv", "number,at\nVisits,2026-10-02T09:44Z\n");
 		expect(rows).toMatchObject({ ok: true, path: { kind: "table-rows", name: "numbers" } });
-		expect(parseCompanyStateFile("tables/numbers/table.toml", "format = 1\n")).toMatchObject({ ok: false });
+		expect(parseCompanyStateFile("QorperaOS/tables/numbers/table.toml", "format = 1\n")).toMatchObject({ ok: false });
 	});
 
 	it("seeds the founding table's vision, roles and the Co-Founder's first todo", () => {
@@ -2165,20 +2434,20 @@ describe("companyStateSeedTree", () => {
 			],
 			firstTodo: { id: ID, requestedBy: JONAS },
 		});
-		const vision = tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "";
-		expect(ok("vision/vision.md", vision)).toEqual({ kind: "vision", name: "Nordlys Studio" });
+		const vision = tree.find((entry) => entry.path === "QorperaOS/vision/vision.md")?.text ?? "";
+		expect(ok("QorperaOS/vision/vision.md", vision)).toEqual({ kind: "vision", name: "Nordlys Studio" });
 		expect(vision).toBe(
 			"# Nordlys Studio\n\nWe book physiotherapy.\n\nFor small clinics.\n\n## What we build\n\n## For whom\n\n## Why\n\n## How we work\n- Jonas: Product and sales\n- Ida Lund\n",
 		);
-		const todo = tree.find((entry) => entry.path === "agents/co-founder/todos/start-with-the-founders.md");
+		const todo = tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/todos/start-with-the-founders.md");
 		expect(ok(todo?.path ?? "", todo?.text ?? "")).toMatchObject({ id: ID, status: "open", requestedBy: JONAS });
 		const paths = tree.map((entry) => entry.path);
-		expect(paths.indexOf("agents/co-founder/todos")).toBeLessThan(paths.indexOf(todo?.path ?? ""));
+		expect(paths.indexOf("QorperaOS/agents/co-founder/todos")).toBeLessThan(paths.indexOf(todo?.path ?? ""));
 	});
 
 	it("throws rather than seed a file the database would refuse", () => {
 		expect(() =>
 			companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, vision: "x".repeat(70000) }),
-		).toThrow(/vision\/vision\.md would be refused/);
+		).toThrow(/^The seeded QorperaOS\/vision\/vision\.md would be refused/);
 	});
 });

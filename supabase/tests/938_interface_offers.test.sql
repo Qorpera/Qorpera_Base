@@ -96,29 +96,29 @@ do $$
 declare m jsonb := pg_temp.member(2); n jsonb := pg_temp.member(4);
 	c_m constant text := '63400000-0000-4000-8000-000000000002'; c_n constant text := '63400000-0000-4000-8000-000000000004';
 begin
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-setup-0001', jsonb_build_array(pg_temp.p16_folder(m, 'tables/offers',
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-setup-0001', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/offers',
 		jsonb_build_object('table.toml', pg_temp.claims('93800000-0000-4000-8000-000000000001'), 'rows.csv',
 			pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','',''], array['t3','',''], array['t4','','']]))))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9c-setup-0002', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9c-setup-0002', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'saved');
 end $$;
 
 -- 2. An offer made, made again, and everything that refuses one.
 do $$
 declare r jsonb; v_id uuid; v_ask jsonb := pg_temp.i9c_ask('t1', 2, 4);
-	v_rows uuid := pg_temp.p16_version('tables/offers/rows.csv');
+	v_rows uuid := pg_temp.p16_version('QorperaOS/tables/offers/rows.csv');
 begin
 	r := pg_temp.i9c_offer(2, v_ask);
 	v_id := pg_temp.i9c_made(r);
 	if r ->> 'schema' <> 'qorpera.interface-offer/v1' or (r -> 'offer') - 'id' - 'at' <> jsonb_build_object(
-			'table', '93800000-0000-4000-8000-000000000001', 'folder', 'tables/offers', 'key', '["t1"]'::jsonb, 'column', 'owner',
+			'table', '93800000-0000-4000-8000-000000000001', 'folder', 'QorperaOS/tables/offers', 'key', '["t1"]'::jsonb, 'column', 'owner',
 			'from', pg_temp.i9c_user(2), 'was', pg_temp.i9c_user(2), 'to', pg_temp.i9c_user(4), 'state', 'open', 'agent', null,
 			'closedAt', null)
 		or r -> 'offer' ->> 'at' is null then
 		raise exception 'An offer: %', r; end if;
 	-- The file is as it was.
-	if pg_temp.p16_version('tables/offers/rows.csv') is distinct from v_rows
-		or (pg_temp.trow('tables/offers')).rows_version is distinct from v_rows then
+	if pg_temp.p16_version('QorperaOS/tables/offers/rows.csv') is distinct from v_rows
+		or (pg_temp.trow('QorperaOS/tables/offers')).rows_version is distinct from v_rows then
 		raise exception 'An offer changed the rows'; end if;
 	-- Offered again: the open offer, not another.
 	r := pg_temp.i9c_offer(2, v_ask);
@@ -162,7 +162,7 @@ begin
 	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || '{"key":"t1"}'), '22023');
 	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || jsonb_build_object('key', jsonb_build_array(repeat('x', 4100)))), '22023');
 	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || '{"column":""}'), '22023');
-	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || '{"table":"tables/offers"}'), '22023');
+	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || '{"table":"QorperaOS/tables/offers"}'), '22023');
 	perform pg_temp.i9c_error(pg_temp.i9c_offer(2, v_ask || '{"to":"63400000-0000-4000-8000-0000000000A1"}'), '22023');
 	-- Not a member.
 	perform pg_temp.i9c_error(pg_temp.i9c_offer(99, v_ask), '42501');
@@ -177,27 +177,27 @@ declare r jsonb; v_n uuid; v_admin uuid; v_id uuid;
 	c_n constant text := '63400000-0000-4000-8000-000000000004'; c_a constant text := '63400000-0000-4000-8000-000000000005';
 begin
 	v_n := (select o.id from public.qorpera_interface_offers o where o.to_user = c_n::uuid and o.state = 'open');
-	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(1), 'i9c-accept-0001', 'tables/offers/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(1), 'i9c-accept-0001', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_o,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'structured_rule', 'claim');
 	v_admin := pg_temp.i9c_made(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', 2, 5)));
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0002', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0002', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'saved');
 	if pg_temp.i9c_state(v_n) <> 'accepted' or pg_temp.i9c_state(v_admin) <> 'lapsed' then
 		raise exception 'Taken: %, %', pg_temp.i9c_state(v_n), pg_temp.i9c_state(v_admin); end if;
-	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(5), 'i9c-accept-0003', 'tables/offers/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(5), 'i9c-accept-0003', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_a,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'structured_rule', 'claim');
 
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(4, pg_temp.i9c_ask('t1', 4, 2)));
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0004', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0004', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1','',''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'lapsed' then raise exception 'Released: %', pg_temp.i9c_state(v_id); end if;
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0005', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0005', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'saved');
-	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(2), 'i9c-accept-0006', 'tables/offers/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(2), 'i9c-accept-0006', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','',''], array['t3',c_n,''], array['t4','','']])), 1, 'structured_rule', 'claim');
 
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t2', null, 4)));
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0007', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9c-accept-0007', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2',c_n,''], array['t3',c_n,''], array['t4','','']])), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'accepted' then raise exception 'An empty cell taken: %', pg_temp.i9c_state(v_id); end if;
 	if exists (select 1 from public.qorpera_interface_offers o where o.state = 'open') then
@@ -214,44 +214,44 @@ declare r jsonb; v_id uuid; v_keep uuid; m jsonb := pg_temp.member(2); n jsonb :
 	v_two jsonb := pg_temp.claims('93800000-0000-4000-8000-000000000002');
 begin
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t4', null, 4)));
-	perform pg_temp.expect(pg_temp.save_rows(a, 'i9c-lapse-0001', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(a, 'i9c-lapse-0001', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2',c_n,''], array['t3',c_n,''], array['t4',c_a,'']])), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'lapsed' then raise exception 'Taken by another: %', pg_temp.i9c_state(v_id); end if;
 
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(4, pg_temp.i9c_ask('t3', 4, 2)));
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9c-lapse-0002', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9c-lapse-0002', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2',c_n,''], array['t4',c_a,'']])), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'lapsed' then raise exception 'The row removed: %', pg_temp.i9c_state(v_id); end if;
 
 	v_keep := pg_temp.i9c_made(pg_temp.i9c_offer(4, pg_temp.i9c_ask('t1', 4, 2)));
-	perform pg_temp.expect(pg_temp.save_rows(a, 'i9c-lapse-0003', 'tables/offers/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(a, 'i9c-lapse-0003', 'QorperaOS/tables/offers/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2',c_n,''], array['t4',c_a,c_m]])), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0004', jsonb_build_array(pg_temp.p16_write(m, 'tables/offers/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0004', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/offers/table.toml',
 		pg_temp.claims('93800000-0000-4000-8000-000000000001') || '{"name":"Offered claims"}'))), 1, 'saved');
 	if pg_temp.i9c_state(v_keep) <> 'open' then raise exception 'Other changes: %', pg_temp.i9c_state(v_keep); end if;
 
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0005', jsonb_build_array(pg_temp.p16_folder(m, 'tables/offers-2',
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0005', jsonb_build_array(pg_temp.p16_folder(m, 'QorperaOS/tables/offers-2',
 		jsonb_build_object('table.toml', v_two, 'rows.csv', pg_temp.claim_rows(array[array['a','','']]))))), 1, 'saved');
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(2, pg_temp.i9c_ask('a', null, 4, 'owner', '93800000-0000-4000-8000-000000000002')));
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0006', jsonb_build_array(pg_temp.p16_write(m, 'tables/offers-2/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0006', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/offers-2/table.toml',
 		jsonb_set(v_two, '{columns,1,needsYes}', 'false') || '{"holder":null}'))), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'lapsed' then raise exception 'The claim gone: %', pg_temp.i9c_state(v_id); end if;
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0007', jsonb_build_array(pg_temp.p16_write(m, 'tables/offers-2/table.toml',
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0007', jsonb_build_array(pg_temp.p16_write(m, 'QorperaOS/tables/offers-2/table.toml',
 		v_two))), 1, 'saved');
 	v_id := pg_temp.i9c_made(pg_temp.i9c_offer(2, pg_temp.i9c_ask('a', null, 4, 'owner', '93800000-0000-4000-8000-000000000002')));
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0008', jsonb_build_array(pg_temp.p16_delete('tables/offers-2'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0008', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/offers-2'))), 1, 'saved');
 	if pg_temp.i9c_state(v_id) <> 'lapsed' then raise exception 'The folder deleted: %', pg_temp.i9c_state(v_id); end if;
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('a', null, 4, 'owner', '93800000-0000-4000-8000-000000000002')),
 		'gone', 'This table is gone.');
 
-	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0009', jsonb_build_array(pg_temp.p16_move('tables/offers', 'tables/moved'))),
+	perform pg_temp.expect(pg_temp.commit(m, 'i9c-lapse-0009', jsonb_build_array(pg_temp.p16_move('QorperaOS/tables/offers', 'QorperaOS/tables/moved'))),
 		1, 'saved');
 	if pg_temp.i9c_state(v_keep) <> 'open' then raise exception 'Moved: %', pg_temp.i9c_state(v_keep); end if;
 	r := pg_temp.i9c_list(2);
 	if jsonb_array_length(r -> 'offers') <> 1 or r -> 'offers' -> 0 ->> 'id' <> v_keep::text
-		or r -> 'offers' -> 0 ->> 'folder' <> 'tables/moved' then
+		or r -> 'offers' -> 0 ->> 'folder' <> 'QorperaOS/tables/moved' then
 		raise exception 'The list after a move: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(m, 'i9c-lapse-0010', 'tables/moved/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(m, 'i9c-lapse-0010', 'QorperaOS/tables/moved/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2',c_n,''], array['t4',c_a,c_m]])), 1, 'saved');
 	if pg_temp.i9c_state(v_keep) <> 'accepted' then raise exception 'Taken after a move: %', pg_temp.i9c_state(v_keep); end if;
 end $$;
@@ -271,7 +271,7 @@ begin
 	perform pg_temp.i9c_error(pg_temp.i9c_close(4, 'decline', '93800000-0000-4000-8000-0000000000ff'), '22023');
 	r := pg_temp.i9c_close(4, 'decline', v_d);
 	if r ->> 'ok' <> 'true' or r ->> 'changed' <> 'true' or r -> 'offer' ->> 'state' <> 'declined' or r -> 'offer' ->> 'id' <> v_d::text
-		or r -> 'offer' ->> 'closedAt' is null or r -> 'offer' -> 'key' <> 'null' or r -> 'offer' ->> 'folder' <> 'tables/moved' then
+		or r -> 'offer' ->> 'closedAt' is null or r -> 'offer' -> 'key' <> 'null' or r -> 'offer' ->> 'folder' <> 'QorperaOS/tables/moved' then
 		raise exception 'Declined: %', r; end if;
 	r := pg_temp.i9c_close(4, 'decline', v_d);
 	if r ->> 'changed' <> 'false' or r -> 'offer' ->> 'state' <> 'declined' then raise exception 'Declined twice: %', r; end if;
@@ -282,7 +282,7 @@ begin
 	if pg_temp.i9c_state(v_d) <> 'declined' or pg_temp.i9c_state(v_w) <> 'withdrawn' then
 		raise exception 'Closed: %, %', pg_temp.i9c_state(v_d), pg_temp.i9c_state(v_w); end if;
 	-- A declined offer takes nothing.
-	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(4), 'i9c-close-0001', 'tables/moved/rows.csv',
+	perform pg_temp.refused(pg_temp.save_rows(pg_temp.member(4), 'i9c-close-0001', 'QorperaOS/tables/moved/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,''], array['t2',c_n,''], array['t4',c_a,c_m]])), 1, 'structured_rule', 'claim');
 end $$;
 
@@ -298,7 +298,7 @@ begin
 	if r ->> 'schema' <> 'qorpera.member-interface-offers/v1' or r ->> 'truncated' <> 'false'
 		or (select jsonb_agg(o ->> 'id') from jsonb_array_elements(r -> 'offers') o) <> jsonb_build_array(v_three, v_two, v_one)
 		or (r -> 'offers' -> 1) - 'id' - 'at' <> jsonb_build_object('table', '93800000-0000-4000-8000-000000000001',
-			'folder', 'tables/moved', 'key', '["t2"]'::jsonb, 'column', 'owner', 'from', pg_temp.i9c_user(4),
+			'folder', 'QorperaOS/tables/moved', 'key', '["t2"]'::jsonb, 'column', 'owner', 'from', pg_temp.i9c_user(4),
 			'was', pg_temp.i9c_user(4), 'to', pg_temp.i9c_user(2), 'state', 'open', 'agent', null, 'closedAt', null) then
 		raise exception 'The list: %', r; end if;
 	if pg_temp.i9c_list(1) <> r then raise exception 'The owner''s list: %', pg_temp.i9c_list(1); end if;

@@ -13,10 +13,10 @@ select pg_temp.base_assert((select string_agg(display_name, ',' order by user_id
 	from public.qorpera_profile_members where profile_id = '92400000-0000-4000-8000-000000000010'
 		and user_id in ('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000002')),
 	'Fixture: the owner is Owen and the member Mia');
-select pg_temp.base_commit(pg_temp.base_owner(), 'mn-group-launch', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
-	jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/launch',
+select pg_temp.base_commit(pg_temp.base_owner(), 'mn-group-launch', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
+	jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/launch',
 		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file', 'file', pg_temp.base_stage(g.text))),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/launch/group.md', 'kind', 'group', 'text', g.text,
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/launch/group.md', 'kind', 'group', 'text', g.text,
 			'parse', jsonb_build_object('kind', 'group', 'id', '62600000-0000-4000-8000-000000000628', 'name', 'Launch', 'subtitle', null,
 				'agents', '["92400000-0000-4000-8000-000000000031","92400000-0000-4000-8000-000000000032"]'::jsonb,
 				'people', '["92400000-0000-4000-8000-000000000001","92400000-0000-4000-8000-000000000002"]'::jsonb, 'purpose', 'Plan the launch.'),
@@ -46,10 +46,10 @@ end $$;
 -- An agent's name, saved in its agent.md by the owner.
 create function pg_temp.mn_rename(p_handle text, p_id uuid, p_name text) returns void language sql as $$
 	select pg_temp.base_commit(pg_temp.base_owner(), 'mn-rename-' || p_handle || '-' || md5(p_name), jsonb_build_array(pg_temp.base_write(
-		'agents/' || p_handle || '/agent.md', 'agent', pg_temp.base_agent_text(p_id, p_name),
+		'QorperaOS/agents/' || p_handle || '/agent.md', 'agent', pg_temp.base_agent_text(p_id, p_name),
 		jsonb_build_object('kind', 'agent', 'id', p_id, 'name', p_name, 'role', 'Research', 'agentKind', 'agent', 'status', 'active',
 			'colour', null, 'figure', null, 'model', null, 'effort', null, 'instructions', 'Read and change the company folder.'),
-		pg_temp.base_version('agents/' || p_handle || '/agent.md'))))::text::void
+		pg_temp.base_version('QorperaOS/agents/' || p_handle || '/agent.md'))))::text::void
 $$;
 
 do $$

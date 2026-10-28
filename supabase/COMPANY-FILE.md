@@ -1,9 +1,9 @@
 # Company File
 
-**Status:** Normative. Rewritten 2026-09-27 for the company folder model. The
-layout is fixed in section 5.6 of the
-[runtime contract](../QORPERA-RUNTIME-CONTRACT.md), and the machine side is
-designed in
+**Status:** Normative. Rewritten 2026-09-27 for the company folder model; the
+platform's folders moved under `QorperaOS/` on 2026-10-21. The layout is fixed
+in section 5.6 of the [runtime contract](../QORPERA-RUNTIME-CONTRACT.md), and
+the machine side is designed in
 [the company folder on every machine](../deploy/first-node/RUNTIME-COMPANY-FOLDER.md).
 Where this file and the contract differ, the contract governs.
 
@@ -17,7 +17,9 @@ Supabase, and its bytes are stored on the NAS.
 No machine holds the folder or a copy of it. The agent's run box, Company
 Computers and coding machines each project onto the one folder and stream only
 the bytes they open, so many machines can work across a folder of many
-terabytes. A path `/company/<p>` on a machine is the logical path `<p>`.
+terabytes. A path `/company/<p>` on a machine is the logical path `<p>`, so
+the vision is `/company/QorperaOS/vision/vision.md`. Paths on a machine are
+case-sensitive.
 
 Three things sit beside the folder:
 
@@ -38,25 +40,47 @@ Three things sit beside the folder:
 
 ## Layout
 
-The platform seeds this tree when a company is created (contract 5.6):
+The platform's own folders sit under one top folder, `QorperaOS/` (Jonas,
+21 October 2026; migration `20260930534000`). The platform seeds it when a
+company is created (contract 5.6):
 
 ```
-vision/vision.md             the company's AGENTS.md; every agent reads it
-agents/sections.md           sidebar sections, in order, with their agents
-agents/<agent-name>/         agent.md, memory/, skills/, routines/, todos/
-agents/groups/<group-name>/  group.md, one folder per group chat
-connections/<connection>.md  one file per connected account, no secrets
-human-tasks/<task>.md        work an agent hands to a member or a contact
-contacts/<contact>.md        one file per outside person or firm
-skills/<skill>/SKILL.md      company skills
-rules/<rule>.md              company review rules, written by owners and admins
-interfaces/                  order.md, mailbox/ and members/: the app's pages
-tables/areas/                table.toml and rows.csv: the company's areas
+QorperaOS/vision/vision.md             the company's AGENTS.md; every agent reads it
+QorperaOS/agents/sections.md           sidebar sections, in order, with their agents
+QorperaOS/agents/<agent-name>/         agent.md, memory/, skills/, routines/, todos/
+QorperaOS/agents/groups/<group-name>/  group.md, one folder per group chat
+QorperaOS/connections/<connection>.md  one file per connected account, no secrets
+QorperaOS/human-tasks/<task>.md        work an agent hands to a member or a contact
+QorperaOS/contacts/<contact>.md        one file per outside person or firm
+QorperaOS/skills/<skill>/SKILL.md      company skills
+QorperaOS/rules/<rule>.md              company review rules, written by owners and admins
+QorperaOS/interfaces/                  order.md, mailbox/ and members/: the app's pages
+QorperaOS/tables/areas/                table.toml and rows.csv: the company's areas
 ```
 
-`code/<owner>/<name>/` holds repositories and is created when coding starts.
-Everything else the company makes goes in folders it creates, one per
-category of files, such as `designs/` or `documents/`.
+The folder is written exactly `QorperaOS`, and its key is `qorperaos`, so
+`QorperaOS/x` and `qorperaos/x` are one path. Below it, structured paths are
+written in lowercase, as their keys. A structured file's stored path is
+therefore `QorperaOS/<its key below the root>`: it is no longer equal to its
+key, so code compares keys, or strips the root first (`osRelative` in
+`packages/cloud-client/src/company-state-shared.ts`, `qorpera_os_relative` in
+SQL). `QorperaOS/` itself is seeded and is never moved or deleted.
+
+Beside `QorperaOS/`, at the top:
+
+- `code/<owner>/<name>/` holds repositories and is created when coding starts;
+- `hooks/<hook>/` holds the events the platform saved for a hook;
+- `digital-post/` holds the company's Digital Post letters and their index
+  `letters.json`, which the platform writes from the first letter on
+  (deploy/first-node/RUNTIME-DIGITAL-POST.md);
+- `bank/summary.json` is the summary of the company's bank accounts that the
+  platform writes for the Bank page;
+- `digital-post/`, `bank/`, `members/` (none on `folder-v2` today) and
+  `hooks/` are the platform's to write (Jonas, 24 October 2026): agents read
+  them but never put their own files there; and
+- everything else is the company's own work, kept by area of the business
+  first, then by kind, such as `sales/` and, once it is crowded,
+  `sales/proposals/` (contract, 2026-10-21 amendment, item 1).
 
 ## Durable content
 
@@ -86,7 +110,8 @@ outside effects, hiring, archiving and reactivating agents, new group chats,
 any change to a routine file (except a routine run's own end-of-run decision
 that leaves its instructions and title alone), deletes and moves, made by an
 agent on any write path. Members' own changes are not reviewed. Coding
-sessions are not reviewed, so they see `agents/` and `rules/` read-only.
+sessions are not reviewed, so they see `QorperaOS/agents/` and
+`QorperaOS/rules/` read-only.
 Any change can be restored from the version history. The seeded folders
 cannot be deleted or moved.
 

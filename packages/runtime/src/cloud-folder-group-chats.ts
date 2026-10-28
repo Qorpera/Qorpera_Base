@@ -1,4 +1,9 @@
-import { freeCompanyStateName, parseCompanyStateFile, writeGroupFile } from "@qorpera/cloud-client/company-state-files";
+import {
+	freeCompanyStateName,
+	osPath,
+	parseCompanyStateFile,
+	writeGroupFile,
+} from "@qorpera/cloud-client/company-state-files";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
 import { hashedId, invalidMessage } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -13,11 +18,11 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `create_group_chat` as a thin writer of a folder-v2 company's group chats (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
- * §2 "group.md", §5; RUNTIME-COMPANY-FOLDER-C2.md §4): one `new_folder` unit `agents/groups/<handle>` holding
- * `group.md`. Its agents are the run's own agent and the coworkers named; its people the run's requester, unless the
- * call leaves them out (an agent's change may add only that member). The commit opens the chat's room and conversation
- * in the same transaction. A new `group.md` is delegation, so the save carries the automatic review's approval of this
- * call, recorded for exactly this unit (C2 R1).
+ * §2 "group.md", §5; RUNTIME-COMPANY-FOLDER-C2.md §4): one `new_folder` unit `QorperaOS/agents/groups/<handle>`
+ * holding `group.md`. Its agents are the run's own agent and the coworkers named; its people the run's requester,
+ * unless the call leaves them out (an agent's change may add only that member). The commit opens the chat's room and
+ * conversation in the same transaction. A new `group.md` is delegation, so the save carries the automatic review's
+ * approval of this call, recorded for exactly this unit (C2 R1).
  *
  * As the hire (cloud-folder-hiring.ts): the file is checked with the arguments, before the review (`check`); every
  * other refusal comes before the receipt; the chat's id comes from the run and the operation key, and the receipt's
@@ -25,7 +30,7 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  */
 
 const TOOL_VERSION = "folder-v2/1";
-const GROUPS = "agents/groups";
+const GROUPS = osPath("agents/groups");
 /** The group folder listing this writer reads, at most: far beyond any company's chats. */
 const MAX_GROUPS = 10_000;
 const PLACEHOLDER_ID = "00000000-0000-4000-8000-000000000000";
@@ -93,8 +98,8 @@ export class CloudFolderGroupChats {
 		const runId = this.#identity.runId;
 		const chatId = hashedId("qorpera.folder-group/v1", runId, request.operationKey);
 		const text = this.#text(request, chatId);
-		// The handle: the name as a folder name, numbered past the chats there (§1 "Names"). agents/groups is seeded and
-		// can be neither deleted nor moved, so it is always there.
+		// The handle: the name as a folder name, numbered past the chats there (§1 "Names"). QorperaOS/agents/groups is
+		// seeded and can be neither deleted nor moved, so it is always there.
 		const listing = await this.#folder.listAll(GROUPS, { maxEntries: MAX_GROUPS }, signal);
 		const taken = new Set<string>();
 		for (const entry of listing.entries) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());

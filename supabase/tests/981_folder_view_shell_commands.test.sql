@@ -215,13 +215,13 @@ begin
 		or r -> 'view' -> 'companyWide' is distinct from 'true'::jsonb or r -> 'view' -> 'runActor' is distinct from v then
 		raise exception 'Live command view: %', r; end if;
 	r := pg_temp.vcommit(s, 'cmd-live-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/c.txt','file',a),
-		jsonb_build_object('op','write','path','secret/c.txt','file',a), jsonb_build_object('op','write','path','rules/c.txt','file',a)));
+		jsonb_build_object('op','write','path','secret/c.txt','file',a), jsonb_build_object('op','write','path','QorperaOS/rules/c.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied'); perform pg_temp.expect(r, 3, 'denied', 'denied');
 	m := pg_temp.last_commit(r);
 	if m.run_id is distinct from (v ->> 'runId')::uuid or m.view_kind is distinct from 'computer_shell_command'
 		or m.view_id is distinct from (s ->> 'viewId')::uuid then raise exception 'Live command commit: %', to_jsonb(m); end if;
 	if (pg_temp.read('secret/s.txt', pg_temp.vactor(s)) ->> 'found')::boolean
-		or not (pg_temp.read('rules/tone.txt', pg_temp.vactor(s)) ->> 'found')::boolean then
+		or not (pg_temp.read('QorperaOS/rules/tone.txt', pg_temp.vactor(s)) ->> 'found')::boolean then
 		raise exception 'The company-wide view for a command''s reads'; end if;
 	-- The run's job lease lapses (the run's turn ended; the command runs on).
 	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',

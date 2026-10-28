@@ -7,6 +7,11 @@ coding machines mount the folder too and keep repositories and worktrees in
 it, is part of that amendment. This document is the design those decisions
 refer to.
 
+> Since 20260930534000 every platform path is under `QorperaOS/` (contract 5.6), so a machine shows
+> `/company/QorperaOS/rules/`, `/company/QorperaOS/agents/` and so on, and `/company/code/` beside them. Paths on
+> the mount are case-sensitive: `QorperaOS` is spelled exactly so. The design sections say so; the build order
+> (section 9) keeps the paths as they were built.
+
 > **Note, 2026-09-27 (evening).** The contract's company folder layout (section
 > 5.6 and the layout amendment in section 19) fixes the folder's seeded tree,
 > makes everything approved by default (no path needs a member's approval),
@@ -182,8 +187,8 @@ Computer) hosts up to six computers.
 | Machine | View | Owner of saves |
 | --- | --- | --- |
 | Run box (section 4) | the run's authority | the run |
-| Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
-| Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
+| Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `QorperaOS/rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
+| Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `QorperaOS/agents/**` and `QorperaOS/rules/**` read-only | the session |
 | Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled by the compute amendment, item 4) | the agent whose command made the change; changes made with no command running go to the machine's starter |
 
 - A company machine never shows a narrower folder, even to an agent that
@@ -567,16 +572,16 @@ These refusals happen as a file is opened or named:
   `credentials`, `secrets` and any `node_modules`. Code areas are the
   exception (section 6). (Amended 2026-09-27: `agents/*/instructions.md` and
   the retired `departments/*` prefixes are no longer refused; an agent's
-  instructions are its `agents/<agent-name>/agent.md`, contract 5.6);
-- deleting or moving a seeded folder or file is refused (`EPERM`): `vision/`,
-  `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`; the Co-Founder's folder and its
-  `agent.md` cannot be deleted (contract 5.6);
+  instructions are its `QorperaOS/agents/<agent-name>/agent.md`, contract 5.6);
+- deleting or moving a seeded folder or file is refused (`EPERM`): `QorperaOS/` itself
+  and the seeded folders and files below it, such as `QorperaOS/vision/vision.md`,
+  `QorperaOS/agents/sections.md` and `QorperaOS/rules/` (contract 5.6 lists them); the
+  Co-Founder's folder and its `agent.md` cannot be deleted (contract 5.6);
 - deleting an `agent.md` or a `group.md` on its own is refused (`EPERM`); the
   folder is deleted instead (contract 5.6);
-- moving an agent's folder out of `agents/` or into `agents/groups/`, or a
-  group's folder out of `agents/groups/`, is refused (`EPERM`) (contract 5.6);
-- `rules/` is mounted read-only for agents (`EACCES`); only owners and admins
+- moving an agent's folder out of `QorperaOS/agents/` or into `QorperaOS/agents/groups/`, or a
+  group's folder out of `QorperaOS/agents/groups/`, is refused (`EPERM`) (contract 5.6);
+- `QorperaOS/rules/` is mounted read-only for agents (`EACCES`); only owners and admins
   write it (contract 5.6);
 - names the Company File forbids are refused (`EINVAL`; under `code/`, git's
   rules apply instead, section 6): control characters,
@@ -817,8 +822,8 @@ session is detached from its machine, sleeps or is archived.
 **Review.** Coding sessions are not reviewed (2026-09-25 amendment, item 2).
 Their deletes and moves, in `code/` and elsewhere, therefore apply without
 the automatic review, and nothing a coding session does is ever partly
-parked. Because of that, a coding session's mount shows `agents/` and
-`rules/` read-only (contract 5.6): it cannot hire, create a group chat,
+parked. Because of that, a coding session's mount shows `QorperaOS/agents/` and
+`QorperaOS/rules/` read-only (contract 5.6): it cannot hire, create a group chat,
 touch routines or rules, or archive an agent.
 
 **What the session's own NAS folders keep:** the per-session cache (see

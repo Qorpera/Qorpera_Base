@@ -112,18 +112,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70400000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 -- P15: the follow-up queue, run at once after a commit that marked something, as its step would: each marked subject
 -- taken, then each dirty one converged (the company first, then the agents).
@@ -159,7 +159,8 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70400000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70400000-0000-4000-8000-000000000020'
@@ -176,8 +177,8 @@ create function pg_temp.conn_parse(p_id uuid, p_service text, p_account text, p_
 		'actions',jsonb_build_array('send_message'),'connectedBy','70400000-0000-4000-8000-000000000001','connectedAt','2026-09-28T12:00:00Z','purpose',p_purpose)
 $$;
 create function pg_temp.conn(p_name text, p_id uuid, p_service text, p_account text, p_purpose text default '') returns jsonb language sql as $$
-	select pg_temp.write('connections/' || p_name || '.md', 'connection', pg_temp.conn_text(p_id, p_service, p_account, p_purpose),
-		pg_temp.conn_parse(p_id, p_service, p_account, p_purpose), pg_temp.version('connections/' || p_name || '.md'))
+	select pg_temp.write('QorperaOS/connections/' || p_name || '.md', 'connection', pg_temp.conn_text(p_id, p_service, p_account, p_purpose),
+		pg_temp.conn_parse(p_id, p_service, p_account, p_purpose), pg_temp.version('QorperaOS/connections/' || p_name || '.md'))
 $$;
 create function pg_temp.platform() returns jsonb language sql as $$ select '{"kind":"platform"}'::jsonb $$;
 create function pg_temp.member() returns jsonb language sql as $$
@@ -200,17 +201,18 @@ do $$
 declare r jsonb; i integer; x public.qorpera_folder_connection_index;
 begin
 	r := pg_temp.commit(pg_temp.platform(), 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Connections'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','connections')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/connections')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'conn-0001', jsonb_build_array(
 		pg_temp.conn('hello', '70400000-0000-4000-8000-0000000000e1', 'gmail', 'hello@nordlys.test'))), 1, 'saved');
 	x := pg_temp.idx('70400000-0000-4000-8000-0000000000e1');
-	if x.secret_id is null or x.folder_path is distinct from 'connections/hello.md' or x.purpose is distinct from ''
-		or x.folder_path_version is distinct from pg_temp.version('connections/hello.md') or x.retired_at is not null then
+	if x.secret_id is null or x.folder_path is distinct from 'QorperaOS/connections/hello.md' or x.purpose is distinct from ''
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/connections/hello.md') or x.retired_at is not null then
 		raise exception 'The platform''s connection file is indexed: %', to_jsonb(x); end if;
 	if (select ctid::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from current_setting('qorpera_test.vault_ctid') then
 		raise exception 'A save never writes the vault row'; end if;
@@ -267,20 +269,20 @@ begin
 		pg_temp.conn('mine', '70400000-0000-4000-8000-0000000000e6', 'gmail', 'owner@nordlys.test')))) then
 		raise exception 'A member''s own account gets no company file'; end if;
 	-- The shape: a clock past 23:59:59 and an action listed twice are not a connection.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0009', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0009', jsonb_build_array(pg_temp.write('QorperaOS/connections/code.md', 'connection',
 		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '  ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"connectedAt":"2026-09-28T24:00:00Z"}',
-		pg_temp.version('connections/code.md')))), 1, 'refused', 'structured_invalid');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0010', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
+		pg_temp.version('QorperaOS/connections/code.md')))), 1, 'refused', 'structured_invalid');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0010', jsonb_build_array(pg_temp.write('QorperaOS/connections/code.md', 'connection',
 		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '   ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"actions":["send_message","send_message"]}',
-		pg_temp.version('connections/code.md')))), 1, 'refused', 'structured_invalid');
+		pg_temp.version('QorperaOS/connections/code.md')))), 1, 'refused', 'structured_invalid');
 	-- The shape: an unknown status is not a connection.
-	r := pg_temp.commit(pg_temp.platform(), 'vault-0006', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
+	r := pg_temp.commit(pg_temp.platform(), 'vault-0006', jsonb_build_array(pg_temp.write('QorperaOS/connections/code.md', 'connection',
 		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || ' ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"status":"up"}',
-		pg_temp.version('connections/code.md'))));
+		pg_temp.version('QorperaOS/connections/code.md'))));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid');
 	-- Never reviewed.
 	if public.qorpera_folder_structured_review_class('70400000-0000-4000-8000-000000000020', jsonb_build_object('kind','staff_agent','requesterUserId','70400000-0000-4000-8000-000000000002'),
-		pg_temp.conn('code', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys', 'Code.'), 'connections/code.md', null) is distinct from 'plain' then
+		pg_temp.conn('code', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys', 'Code.'), 'QorperaOS/connections/code.md', null) is distinct from 'plain' then
 		raise exception 'A connection file is never reviewed'; end if;
 end $$;
 
@@ -290,24 +292,24 @@ do $$
 declare r jsonb; x public.qorpera_folder_connection_index;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'move-0001', jsonb_build_array(jsonb_build_object('op','move',
-		'from','connections/hello.md','to','connections/support.md','expectedVersion',pg_temp.version('connections/hello.md')))), 1, 'saved');
+		'from','QorperaOS/connections/hello.md','to','QorperaOS/connections/support.md','expectedVersion',pg_temp.version('QorperaOS/connections/hello.md')))), 1, 'saved');
 	x := pg_temp.idx('70400000-0000-4000-8000-0000000000e1');
-	if x.folder_path is distinct from 'connections/support.md' or x.folder_path_version is distinct from pg_temp.version('connections/support.md') then
+	if x.folder_path is distinct from 'QorperaOS/connections/support.md' or x.folder_path_version is distinct from pg_temp.version('QorperaOS/connections/support.md') then
 		raise exception 'The index follows a move: %', to_jsonb(x); end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'move-0002', jsonb_build_array(jsonb_build_object('op','move',
-		'from','connections/support.md','to','support.md','expectedVersion',pg_temp.version('connections/support.md')))), 1, 'refused', 'kind_change');
+		'from','QorperaOS/connections/support.md','to','support.md','expectedVersion',pg_temp.version('QorperaOS/connections/support.md')))), 1, 'refused', 'kind_change');
 	-- Deleting is refused while the account is connected, for the platform too.
 	if not pg_temp.refused(pg_temp.commit(pg_temp.platform(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md'))))) then
+		'path','QorperaOS/connections/support.md','expectedVersion',pg_temp.version('QorperaOS/connections/support.md'))))) then
 		raise exception 'A connected account''s file stays'; end if;
 	-- Disconnected: a member still does not delete it; the platform removes the file, and the index row retires.
 	update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = '70400000-0000-4000-8000-000000000001'
 	where id = '70400000-0000-4000-8000-0000000000e1';
 	if not pg_temp.refused(pg_temp.commit(pg_temp.member(), 'delete-0003', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md'))))) then
+		'path','QorperaOS/connections/support.md','expectedVersion',pg_temp.version('QorperaOS/connections/support.md'))))) then
 		raise exception 'Only the platform removes a connection''s file'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'delete-0002', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md')))), 1, 'saved');
+		'path','QorperaOS/connections/support.md','expectedVersion',pg_temp.version('QorperaOS/connections/support.md')))), 1, 'saved');
 	if (pg_temp.idx('70400000-0000-4000-8000-0000000000e1')).retired_at is null then raise exception 'Removing the file retires its index row'; end if;
 end $$;
 
@@ -316,7 +318,7 @@ end $$;
 do $$
 declare r jsonb;
 begin
-	-- As if connections/code.md had been saved before F2-3 (no index row points at it): a member's edit is a new file.
+	-- As if QorperaOS/connections/code.md had been saved before F2-3 (no index row points at it): a member's edit is a new file.
 	delete from public.qorpera_folder_connection_index where secret_id = '70400000-0000-4000-8000-0000000000e2';
 	if not pg_temp.refused(pg_temp.commit(pg_temp.member(), 'old-0001', jsonb_build_array(
 		pg_temp.conn('code', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys', 'Code.')))) then
@@ -326,13 +328,15 @@ begin
 		pg_temp.conn('github', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys'))), 1, 'saved');
 	-- The other company's creation commit: one new folder carrying two files for one account.
 	perform public.qorpera_folder_enable('70400000-0000-4000-8000-000000000021');
+	perform pg_temp.expect(pg_temp.commit_in('70400000-0000-4000-8000-000000000021', pg_temp.platform(), 'pair-root',
+		'[{"op":"mkdir","path":"QorperaOS"}]'), 1, 'saved');
 	r := pg_temp.commit_in('70400000-0000-4000-8000-000000000021', pg_temp.platform(), 'pair-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
-		'path','connections','contents',jsonb_build_array(
+		'path','QorperaOS/connections','contents',jsonb_build_array(
 			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'), '70400000-0000-4000-8000-000000000011')),
 			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'), '70400000-0000-4000-8000-000000000011'))),
 		'structured',jsonb_build_array(
-			pg_temp.entry('connections/a.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test')),
-			pg_temp.entry('connections/b.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'))))));
+			pg_temp.entry('QorperaOS/connections/a.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test')),
+			pg_temp.entry('QorperaOS/connections/b.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'))))));
 	if not pg_temp.refused(r) then raise exception 'Two files for one account in one unit are refused: %', r; end if;
 end $$;
 

@@ -13,7 +13,15 @@
 
 import { type CloudCodingRepository, parseCloudCodingBranch, parseCloudCodingRepository } from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
-import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
+import {
+	AGENT_COLOURS,
+	type AgentColour,
+	companyPathKey,
+	osPath,
+	osRelative,
+	QORPERA_OS_KEY,
+	QORPERA_OS_ROOT,
+} from "./company-state-shared.ts";
 import { interfaceLibraryFiles } from "./interface-library.ts";
 import {
 	type InterfaceFile,
@@ -56,7 +64,7 @@ export type CompanyStateFileKind =
 	| "interface-order"
 	| "table"
 	| "table-rows"
-	/** The company's network rules, `rules/network.toml` (./network-rules.ts, RUNTIME-AGENT-EXIT.md §10). */
+	/** The company's network rules, `QorperaOS/rules/network.toml` (./network-rules.ts, RUNTIME-AGENT-EXIT.md §10). */
 	| "network-rules"
 	/** Run metadata, step blocks and run summary blocks (W1b, ./memory-run-files.ts). */
 	| MemoryRunFileKind
@@ -114,7 +122,7 @@ const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const encoder = new TextEncoder();
 
-export { AGENT_COLOURS, type AgentColour, companyPathKey };
+export { AGENT_COLOURS, type AgentColour, companyPathKey, osPath, osRelative, QORPERA_OS_KEY, QORPERA_OS_ROOT };
 export const AGENT_MODELS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const);
 /** Effort an agent or a routine may ask for; runs accept these three today. */
 export const COMPANY_STATE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
@@ -154,11 +162,11 @@ export const HUMAN_TASK_STEPS = Object.freeze([
 /** Where a contact's task may not point `files`: the company's people, other tasks, accounts and
  * rules are not for outside readers. Compared on the path's key. */
 export const HUMAN_TASK_CONTACT_REFUSED_ROOTS = Object.freeze([
-	"agents",
-	"contacts",
-	"human-tasks",
-	"connections",
-	"rules",
+	osPath("agents"),
+	osPath("contacts"),
+	osPath("human-tasks"),
+	osPath("connections"),
+	osPath("rules"),
 	"hooks",
 ] as const);
 
@@ -233,9 +241,9 @@ export interface ConnectionFile {
 	readonly purpose: string;
 }
 
-/** A hook's connection file, `connections/hook-<name>.md` (folder core C4, E1). Its settings are the platform's, kept in
- * line with the hook (the database stays the authority, and never writes the hook's address or a secret here); its body
- * is the company's: what the hook is for. */
+/** A hook's connection file, `QorperaOS/connections/hook-<name>.md` (folder core C4, E1). Its settings are the
+ * platform's, kept in line with the hook (the database stays the authority, and never writes the hook's address or a
+ * secret here); its body is the company's: what the hook is for. */
 export interface HookFile {
 	readonly kind: "hook";
 	readonly id: string;
@@ -249,7 +257,8 @@ export interface HookFile {
 	readonly purpose: string;
 }
 
-/** A mailbox's connection file, `connections/mailbox-<name>.md` (E1): the platform's settings, the company's body. */
+/** A mailbox's connection file, `QorperaOS/connections/mailbox-<name>.md` (E1): the platform's settings, the company's
+ * body. */
 export interface MailboxFile {
 	readonly kind: "mailbox";
 	readonly id: string;
@@ -384,7 +393,7 @@ export interface HumanTaskFile {
 	/** The label of the one secret the person enters; its value goes to the vault. */
 	readonly secret: string | null;
 	readonly secretState: "asked" | "saved" | null;
-	/** The id of the connections/ file the step is for. */
+	/** The id of the QorperaOS/connections/ file the step is for. */
 	readonly connection: string | null;
 	readonly step: (typeof HUMAN_TASK_STEPS)[number] | null;
 	/** The body, trimmed: why, the steps and what done looks like. */
@@ -432,7 +441,7 @@ export type CompanyStateFile =
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
 	readonly kind: CompanyStateFileKind;
-	/** The agent's folder name, for files inside `agents/<handle>/`. */
+	/** The agent's folder name, for files inside `QorperaOS/agents/<handle>/`. */
 	readonly agent: string | null;
 	/** The group's folder name, for `group.md`. */
 	readonly group: string | null;
@@ -450,9 +459,11 @@ export type CompanyStateFileResult =
 
 /** The kind of structured file a path holds, or null for an ordinary file. Kinds are decided
  * on the path's key, as the folder decides which entry a path is; the names as written are
- * checked by {@link parseCompanyStateFile}. */
+ * checked by {@link parseCompanyStateFile}. Every structured file is under QorperaOS/. */
 export function companyStatePath(path: string): CompanyStatePath | null {
-	const parts = companyPathKey(path).split("/");
+	const below = osRelative(companyPathKey(path));
+	if (below === null) return null;
+	const parts = below.split("/");
 	const none = { agent: null, group: null, name: null, todo: null, worker: null };
 	const stem = (part: string | undefined) => (part?.endsWith(".md") ? part.slice(0, -3) : null);
 	const [a, b, c, d, e, f] = parts;
@@ -470,7 +481,7 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	}
 	if (parts.length === 2 && a === "rules" && stem(b) !== null) return { kind: "rule", ...none, name: stem(b) };
 	// Not a review rule: the network rules have their own format and parser (E8).
-	if (parts.join("/") === NETWORK_RULES_PATH) return { kind: "network-rules", ...none };
+	if (below === osRelative(companyPathKey(NETWORK_RULES_PATH))) return { kind: "network-rules", ...none };
 	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
 		return { kind: "human-task", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "contacts" && stem(b) !== null) return { kind: "contact", ...none, name: stem(b) };
@@ -534,7 +545,7 @@ export function companyStateName(display: string): string {
 	return words.slice(0, COMPANY_STATE_NAME_MAX_CHARS).replace(/-$/, "");
 }
 
-/** Folder names under `agents/` that no agent may take (contract 5.6). */
+/** Folder names under `QorperaOS/agents/` that no agent may take (contract 5.6). */
 export const COMPANY_STATE_RESERVED_AGENT_NAMES = Object.freeze(["groups"] as const);
 
 /** The first free name: the name itself, then -2, -3 and so on. `taken` holds lowercase names,
@@ -1882,7 +1893,10 @@ function humanTaskFiles(fields: Fields, problems: Problems, forContact: boolean)
 				`"${shown(path)}" is not a file's path in the company folder, like sales/q3-draft.pdf`,
 			);
 		else if (seen.has(key)) problems.add("value", item.line, "files", `${shown(path)} is listed twice`);
-		else if (forContact && HUMAN_TASK_CONTACT_REFUSED_ROOTS.some((root) => key.startsWith(`${root}/`)))
+		else if (
+			forContact &&
+			HUMAN_TASK_CONTACT_REFUSED_ROOTS.some((root) => key.startsWith(`${companyPathKey(root)}/`))
+		)
 			problems.add(
 				"value",
 				item.line,
@@ -2023,9 +2037,12 @@ function contact(split: Split, fields: Fields, problems: Problems): ContactFile 
 }
 
 /** Where a folder sits in the layout of structured files, or null for an ordinary folder. A
- * folder at one of these places is checked like the files it will hold. */
+ * folder at one of these places is checked like the files it will hold. `parts` are the key's
+ * parts below QorperaOS/ ([""] for the root itself), and each place's number points into them. */
 function structuredFolderNames(parts: readonly string[]): [number, string][] | null {
 	const [a, b, c, d, e] = parts;
+	// QorperaOS/ itself is a place too: it holds the platform's folders.
+	if (parts.length === 1 && a === "") return [];
 	// The two top folders have no name of their own; they are places so a wrong spelling cannot be made.
 	if (a === "contacts") return parts.length === 1 ? [] : null;
 	// Interfaces and tables (P16): the roots, and one named folder per interface or table.
@@ -2058,20 +2075,28 @@ function structuredFolderNames(parts: readonly string[]): [number, string][] | n
 }
 
 /** The problems with a path itself, before any content: the names it carries follow the naming
- * rule of contract 5.6, and the whole path is written as its key. The database runs the same
- * checks on the path an entry is actually stored under (its parent's spelling included) for
- * every file and folder a unit writes, creates or renames at a structured place, so a rename
- * can never leave a file that no later save could pass. `folder` checks a folder path. */
+ * rule of contract 5.6, and the part below QorperaOS/ is written as its key (the root is the
+ * folder's own, whatever the spelling that finds it). The database runs the same checks on the
+ * path an entry is actually stored under (its parent's spelling included) for every file and
+ * folder a unit writes, creates or renames at a structured place, so a rename can never leave a
+ * file that no later save could pass. `folder` checks a folder path. */
 export function companyStatePathProblems(path: string, folder = false): CompanyStateProblem[] {
 	const problems = new Problems();
-	const written = path.split("/");
+	let whole = path;
+	if (folder) {
+		let end = whole.length;
+		while (end > 1 && whole[end - 1] === "/") end--;
+		whole = whole.slice(0, end);
+	}
+	const below = osRelative(whole);
+	// Every structured place is under QorperaOS/.
+	if (below === null) return [];
+	const written = below.split("/");
 	const named: [string | undefined, string][] = [];
 	if (folder) {
-		let end = written.length;
-		while (end > 1 && written[end - 1] === "") end--;
-		const key = companyPathKey(written.slice(0, end).join("/"));
+		const key = companyPathKey(below);
 		// The network rules' path is a file's.
-		if (key === NETWORK_RULES_PATH) {
+		if (key === osRelative(companyPathKey(NETWORK_RULES_PATH))) {
 			problems.add("name", null, null, `${NETWORK_RULES_PATH} is the name of the network rules file, not a folder`);
 			return problems.list;
 		}
@@ -2120,7 +2145,7 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 			);
 	const kind = folder ? null : companyStatePath(path)?.kind;
 	// Interface and table files are named by their kind (interface.toml, table.toml, rows.csv, order.md), and so is
-	// rules/network.toml.
+	// QorperaOS/rules/network.toml.
 	const fixedName =
 		kind === "interface" ||
 		kind === "interface-order" ||
@@ -2134,8 +2159,13 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		kind === "memory-block";
 	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
-	else if (!problems.list.length && path !== companyPathKey(path))
-		problems.add("name", null, null, `write the path in lowercase, as ${shown(companyPathKey(path))}`);
+	else if (!problems.list.length && below !== companyPathKey(below))
+		problems.add(
+			"name",
+			null,
+			null,
+			`write the path below ${QORPERA_OS_ROOT}/ in lowercase, as ${shown(osPath(companyPathKey(below)))}`,
+		);
 	return problems.list;
 }
 
@@ -2735,23 +2765,25 @@ export const COMPANY_STATE_COFOUNDER_HANDLE = "co-founder";
 /** Seeded paths that cannot be deleted or moved (contract 5.6, "Approval"). The Co-Founder's folder
  * and its `agent.md` are protected by the Co-Founder rules instead, since they may be renamed. */
 export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
-	"vision",
-	"vision/vision.md",
-	"agents",
-	"agents/sections.md",
-	"agents/groups",
-	"connections",
-	"human-tasks",
-	"contacts",
-	"skills",
-	"rules",
+	// The platform's folder itself (Jonas, 21 October 2026): everything below it is the platform's.
+	QORPERA_OS_ROOT,
+	osPath("vision"),
+	osPath("vision/vision.md"),
+	osPath("agents"),
+	osPath("agents/sections.md"),
+	osPath("agents/groups"),
+	osPath("connections"),
+	osPath("human-tasks"),
+	osPath("contacts"),
+	osPath("skills"),
+	osPath("rules"),
 	// Interfaces and tables (P16, RUNTIME-INTERFACES.md §6.1 rule 2).
-	"interfaces",
-	"interfaces/order.md",
-	"tables",
-	"tables/areas",
-	"tables/areas/table.toml",
-	"tables/areas/rows.csv",
+	osPath("interfaces"),
+	osPath("interfaces/order.md"),
+	osPath("tables"),
+	osPath("tables/areas"),
+	osPath("tables/areas/table.toml"),
+	osPath("tables/areas/rows.csv"),
 ] as const);
 
 /** The Co-Founder's instructions when a company is created: a thin job, not the platform's brain
@@ -2759,11 +2791,11 @@ export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
 export const COMPANY_STATE_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You hold the company-level work: the vision, who does what, resourcing, and the relationship with the founders.
 
 ## Your first job
-Fill in vision/vision.md with the founders: what the company builds, for whom, why, and how it works. Keep the company's name as its first line. Keep the vision current as the company changes; every agent reads it at every run.
+Fill in QorperaOS/vision/vision.md with the founders: what the company builds, for whom, why, and how it works. Keep the company's name as its first line. Keep the vision current as the company changes; every agent reads it at every run.
 
 ## How you work
 - Bring the founders the decisions, blockers and real risks, each with the position you recommend.
-- Hire agents when the work needs them, and keep agents/sections.md tidy so the team is easy to find.
+- Hire agents when the work needs them, and keep QorperaOS/agents/sections.md tidy so the team is easy to find.
 - Hand bounded work to agents, group chats and workers, and keep the founders informed without copying every message.
 - Work by changing the company's files. Make no commitments outside the company without the member responsible.`;
 
@@ -2795,7 +2827,9 @@ export interface CompanyStateSeedOptions {
 }
 
 /** The Co-Founder's first todo when the founding table starts the company. */
-export const COMPANY_STATE_FIRST_TODO_PATH = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}/todos/start-with-the-founders.md`;
+export const COMPANY_STATE_FIRST_TODO_PATH = osPath(
+	`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/todos/start-with-the-founders.md`,
+);
 
 /** The vision a new company starts with: the name, the founders' text, then the four headings, with the founders
  * and their roles under "How we work". */
@@ -2836,12 +2870,13 @@ export function companyStateSeedTree(options: CompanyStateSeedOptions): CompanyS
 }
 
 function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
-	const cofounder = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}`;
+	const cofounder = osPath(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}`);
 	return [
-		{ path: "vision", kind: "folder" },
-		{ path: "vision/vision.md", kind: "file", text: seedVision(options) },
-		{ path: "agents", kind: "folder" },
-		{ path: "agents/sections.md", kind: "file", text: writeSectionsFile({ sections: [] }) },
+		{ path: QORPERA_OS_ROOT, kind: "folder" },
+		{ path: osPath("vision"), kind: "folder" },
+		{ path: osPath("vision/vision.md"), kind: "file", text: seedVision(options) },
+		{ path: osPath("agents"), kind: "folder" },
+		{ path: osPath("agents/sections.md"), kind: "file", text: writeSectionsFile({ sections: [] }) },
 		{ path: cofounder, kind: "folder" },
 		{
 			path: `${cofounder}/agent.md`,
@@ -2874,29 +2909,30 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 							status: "open",
 							requestedBy: options.firstTodo.requestedBy,
 							detail:
-								"Meet the founders in your thread. Shape vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
+								"Meet the founders in your thread. Shape QorperaOS/vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
 						}),
 					},
 				]
 			: []),
-		{ path: "agents/groups", kind: "folder" },
-		{ path: "connections", kind: "folder" },
-		{ path: "human-tasks", kind: "folder" },
-		{ path: "contacts", kind: "folder" },
-		{ path: "skills", kind: "folder" },
-		{ path: "skills/human-task", kind: "folder" },
+		{ path: osPath("agents/groups"), kind: "folder" },
+		{ path: osPath("connections"), kind: "folder" },
+		{ path: osPath("human-tasks"), kind: "folder" },
+		{ path: osPath("contacts"), kind: "folder" },
+		{ path: osPath("skills"), kind: "folder" },
+		{ path: osPath("skills/human-task"), kind: "folder" },
 		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
-		{ path: "rules", kind: "folder" },
+		{ path: osPath("rules"), kind: "folder" },
 		...seedLibrary(options.newId ?? (() => globalThis.crypto.randomUUID())),
 	];
 }
 
-/** interfaces/ and tables/ with the library's pages and tables (RUNTIME-INTERFACES.md §8), parents before children. */
+/** QorperaOS/interfaces/ and QorperaOS/tables/ with the library's pages and tables (RUNTIME-INTERFACES.md §8), parents
+ * before children. */
 function seedLibrary(newId: () => string): CompanyStateSeedEntry[] {
 	const files = interfaceLibraryFiles(newId);
 	const entries: CompanyStateSeedEntry[] = [];
 	const folders = new Set<string>();
-	for (const root of ["interfaces", "tables"]) {
+	for (const root of [osPath("interfaces"), osPath("tables")]) {
 		entries.push({ path: root, kind: "folder" });
 		folders.add(root);
 		for (const path of Object.keys(files).filter((file) => file.startsWith(`${root}/`))) {
@@ -2915,10 +2951,10 @@ function seedLibrary(newId: () => string): CompanyStateSeedEntry[] {
 // Human tasks: the seeded skill, the proof's names, and the person's change (H2).
 
 /** The seeded company skill on writing human tasks (Q1 §5). A company may edit or remove it. */
-export const COMPANY_STATE_HUMAN_TASK_SKILL_PATH = "skills/human-task/SKILL.md";
+export const COMPANY_STATE_HUMAN_TASK_SKILL_PATH = osPath("skills/human-task/SKILL.md");
 export const COMPANY_STATE_HUMAN_TASK_SKILL = `---
 name: human-task
-description: Hand work only a person can do to a member or a contact as a human task in human-tasks/, and follow it until it is accepted.
+description: Hand work only a person can do to a member or a contact as a human task in QorperaOS/human-tasks/, and follow it until it is accepted.
 ---
 # Human tasks
 
@@ -2934,11 +2970,11 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 - Name a contact only by \`contact:\` (their id), never by name, in titles, steps, reasons and notes: if they ask to be forgotten, nothing else names them.
 
 ## The file
-\`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
+\`QorperaOS/human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
 
 ## Follow it
 - You are woken when someone else changes your task: the person marks it done or says they can't, a member accepts, returns or cancels it, hands it to another person, or hands it to you. You are also woken once when it is overdue. Your own changes never wake you. When the agent that asked is gone, the Co-Founder is woken instead.
-- Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
+- Done: check the proof in \`QorperaOS/human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
 - Declined: find another route or another person.
 - Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.
 - No longer needed: set \`cancelled\`, with a \`reason\` when the person had already finished.
@@ -2947,7 +2983,7 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 /** The proof kinds that arrive as files under the task's `proof/` folder; `note` is `note.md`. */
 export const HUMAN_TASK_PROOF_FILE_KINDS = Object.freeze(["photo", "file", "signature"] as const);
 
-/** A task's own folder, beside its file: `human-tasks/<t>.md` → `human-tasks/<t>`. */
+/** A task's own folder, beside its file: `QorperaOS/human-tasks/<t>.md` → `QorperaOS/human-tasks/<t>`. */
 export function humanTaskFolder(taskPath: string): string {
 	const where = companyStatePath(taskPath);
 	if (where?.kind !== "human-task" || companyStatePathProblems(taskPath).length)
@@ -2955,7 +2991,7 @@ export function humanTaskFolder(taskPath: string): string {
 	return taskPath.slice(0, -3);
 }
 
-/** Where the writers keep a piece of proof: `human-tasks/<t>/proof/<kind>-<n>.<ext>`, so the database
+/** Where the writers keep a piece of proof: `QorperaOS/human-tasks/<t>/proof/<kind>-<n>.<ext>`, so the database
  * can tell each listed kind is there (H2 §1). `n` counts from 1; `extension` is lowercase. */
 export function humanTaskProofPath(
 	taskPath: string,
@@ -2969,7 +3005,7 @@ export function humanTaskProofPath(
 	return `${humanTaskFolder(taskPath)}/proof/${kind}-${n}.${extension}`;
 }
 
-/** The person's note: `human-tasks/<t>/note.md`. */
+/** The person's note: `QorperaOS/human-tasks/<t>/note.md`. */
 export function humanTaskNotePath(taskPath: string): string {
 	return `${humanTaskFolder(taskPath)}/note.md`;
 }

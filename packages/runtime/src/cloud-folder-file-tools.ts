@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
@@ -422,7 +422,11 @@ export function cloudFolderFileTools(options: {
 		// A change of the company's pages and tables shows in the run's conversation, with Undo (Interfaces I10): SQL
 		// notes each of the run's commits there once, a replay's too. Its failure is a folder error, never a refusal,
 		// so the call is unconfirmed: the same call again notes it.
-		if ([request.path, request.to ?? ""].some((path) => /^(?:interfaces|tables)\//.test(companyPathKey(path))))
+		if (
+			[request.path, request.to ?? ""].some((path) =>
+				/^(?:interfaces|tables)\//.test(osRelative(companyPathKey(path)) ?? ""),
+			)
+		)
 			await folder.noteInterfaceChanges(context.signal);
 		return content;
 	};

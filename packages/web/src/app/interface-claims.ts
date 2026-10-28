@@ -1,3 +1,4 @@
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import {
 	parseTableFile,
 	parseTableRows,
@@ -57,10 +58,10 @@ export function claimFailure(verb: ClaimVerb): string {
 	return verb === "release" ? t("The card could not be released.") : t("The offer could not be accepted.");
 }
 
-/** Takes or releases one row's holder cell (or the cell `column` names) in `tables/<table>/rows.csv`, or accepts the
- * offer of a cell. Answers whether it wrote: false when the cell already says it. Throws `ClaimLostError` when the cell
- * changed under the card, and a refusal (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim
- * don't pass. */
+/** Takes or releases one row's holder cell (or the cell `column` names) in `QorperaOS/tables/<table>/rows.csv`, or
+ * accepts the offer of a cell. Answers whether it wrote: false when the cell already says it. Throws `ClaimLostError`
+ * when the cell changed under the card, and a refusal (`WebCompanyFolderRejectedError`) with the problems when the rows
+ * or the claim don't pass. */
 export async function claimTableCell(options: {
 	readonly folder: WebMemberFolder;
 	readonly table: string;
@@ -109,9 +110,9 @@ export async function claimTableCell(options: {
 	);
 }
 
-/** A rewrite's `locate` for `tables/<table>/rows.csv`. The definition is read again on every try and handed to
- * `found`, so the rows are always parsed against the current one; a definition that doesn't parse is refused with its
- * problems. */
+/** A rewrite's `locate` for `QorperaOS/tables/<table>/rows.csv`. The definition is read again on every try and handed
+ * to `found`, so the rows are always parsed against the current one; a definition that doesn't parse is refused with
+ * its problems. */
 export function rowsLocator(
 	folder: WebMemberFolder,
 	table: string,
@@ -120,7 +121,7 @@ export function rowsLocator(
 	found: (definition: TableFile) => void,
 ): () => Promise<string | null> {
 	return async () => {
-		const read = await readStateFile(folder, `tables/${table}/table.toml`, signal);
+		const read = await readStateFile(folder, osPath(`tables/${table}/table.toml`), signal);
 		if (read === null) return null;
 		const parsed = parseTableFile(read.text);
 		if (!parsed.ok)
@@ -129,7 +130,7 @@ export function rowsLocator(
 				parsed.problems.map((problem) => problem.message),
 			);
 		found(parsed.file);
-		return `tables/${table}/rows.csv`;
+		return osPath(`tables/${table}/rows.csv`);
 	};
 }
 

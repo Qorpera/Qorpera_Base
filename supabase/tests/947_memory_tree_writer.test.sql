@@ -47,7 +47,7 @@ end $$;
 -- 1. A new tree is derived from the live owner even before a tree index exists. Real staged TOML has the exact media
 -- type and executable bit; normal parsing, generation checks and the index run in the same folder route as production.
 do $$
-declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'qorperaos/agents/nora/memory/thread';
 	s uuid := pg_temp.thread('nora'); u jsonb; r jsonb; i integer; before_ uuid;
 begin
 	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), null, 'No indexed tree before its first write');
@@ -59,7 +59,7 @@ begin
 	perform pg_temp.same(u #> '{1,file,executable}', 'false', 'The TOML is not executable');
 	r := pg_temp.writer_commit('nora', 'writer-new-tree', u, pg_temp.generations(s));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb(root), 'The new tree is indexed');
+	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb('QorperaOS' || substr(root, 10)), 'The new tree is indexed');
 	perform pg_temp.same((select jsonb_agg(jsonb_build_array(n.l, n.k, n.seq, n.event_hash)) from public.qorpera_memory_tree_nodes n
 		where n.environment_id = env and n.session_id = s), jsonb_build_array(jsonb_build_array(0, 0, 10, pg_temp.ehash(10))),
 		'The level-zero line is indexed with its original event');
@@ -77,11 +77,11 @@ end $$;
 -- 2. Other conversations, logs without runLog, paths outside the tree, deletes/moves/copies/new_folder, and an absent,
 -- foreign or extra session generation never save. Ordinary run writes still cannot bypass the memory route.
 do $$
-declare root constant text := 'agents/nora/memory/thread'; s uuid := pg_temp.thread('nora'); units_ jsonb; p jsonb;
+declare root constant text := 'qorperaos/agents/nora/memory/thread'; s uuid := pg_temp.thread('nora'); units_ jsonb; p jsonb;
 	i integer := 0; before_ jsonb := pg_temp.read(root || '/t0/00000000.jsonl');
 begin
 	foreach units_ in array array[
-		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/otto/memory/thread/t1')),
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'qorperaos/agents/otto/memory/thread/t1')),
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/runs')),
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/runs/' || pg_temp.run_id('nora'))),
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'writer-outside')),
@@ -114,7 +114,7 @@ end $$;
 -- 3. A generation raise after the read discards every unit of the batch, including a new folder. Rebuilding with
 -- the fresh generation then succeeds. No stale block version or index line is partly adopted.
 do $$
-declare root constant text := 'agents/nora/memory/thread'; s uuid := pg_temp.thread('nora'); r jsonb; u jsonb;
+declare root constant text := 'qorperaos/agents/nora/memory/thread'; s uuid := pg_temp.thread('nora'); r jsonb; u jsonb;
 	before_ uuid := (pg_temp.read(root || '/t0/00000000.jsonl') #>> '{entry,version}')::uuid;
 begin
 	u := jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t1'),
@@ -138,7 +138,7 @@ declare s uuid := pg_temp.thread('nora'); r jsonb; request_ jsonb; i integer;
 begin
 	perform pg_temp.event(s, 9, 'session_info');
 	r := public.qorpera_memory_events_run(pg_temp.b('nora'), base);
-	perform pg_temp.same(r - 'events', '{"schema":"qorpera.memory-events/v1","root":"agents/nora/memory/thread"}', 'The page and its root');
+	perform pg_temp.same(r - 'events', '{"schema":"qorpera.memory-events/v1","root":"qorperaos/agents/nora/memory/thread"}', 'The page and its root');
 	perform pg_temp.same(r -> 'events', public.qorpera_memory_events(s, 0, 128), 'The existing event renderer is unchanged');
 	perform pg_temp.same(jsonb_build_array(r #> '{events,0,sequence}', r #> '{events,0,eventHash}', r #> '{events,1,sequence}'),
 		jsonb_build_array(10, pg_temp.ehash(10), 11), 'Original sequence and hash, with non-included event skipped');
@@ -256,7 +256,7 @@ end $$;
 -- tree, before it is indexed and after, while that run's ordinary write is denied.
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; vera constant uuid := '97000000-0000-4000-8000-0000000000a5';
-	root constant text := 'agents/vera/memory/thread'; x jsonb; r jsonb; s uuid; i integer;
+	root constant text := 'qorperaos/agents/vera/memory/thread'; x jsonb; r jsonb; s uuid; i integer;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'writer-hire-vera',
 		jsonb_build_array(pg_temp.hire('vera', vera, 'Vera'))), 1, 'saved');
@@ -269,20 +269,20 @@ begin
 	if s is null or (select session_id from public.qorpera_execution_runs where id = (x -> 'actor' ->> 'runId')::uuid)
 		is distinct from s then raise exception 'Vera''s run is in Vera''s thread'; end if;
 	perform pg_temp.same(to_jsonb(public.qorpera_memory_conversation_root(env, '63400000-0000-4000-8000-000000000010', s)),
-		'"agents/vera/memory/thread"', 'The owner gives the root''s key');
+		'"qorperaos/agents/vera/memory/thread"', 'The owner gives the root''s key');
 	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('vera'), jsonb_build_object('session', s, 'start', 0, 'count', 1))
 		-> 'root', to_jsonb(root), 'The events call gives the root before any tree');
 	if public.qorpera_folder_actor_allowed(env, '63400000-0000-4000-8000-000000000010',
 		public.qorpera_folder_tool_run(pg_temp.b('vera'), '[]'::jsonb) -> 'resolved', root || '/t0', 'write') then
 		raise exception 'Vera''s run holds no write grant'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.writer_actor('vera'), 'writer-vera-plain',
-		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/vera/notes'))), 1, 'denied', 'denied');
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/vera/notes'))), 1, 'denied', 'denied');
 	perform pg_temp.event(s, 200);
 	r := pg_temp.writer_commit('vera', 'writer-vera-new-tree', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root),
 		pg_temp.writer_file('vera', root || '/tree.toml', pg_temp.toml(s)), jsonb_build_object('op', 'mkdir', 'path', root || '/t0'),
 		pg_temp.writer_file('vera', root || '/t0/00000000.jsonl', pg_temp.line0(0, 200) || E'\n')), pg_temp.generations(s));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb(root), 'The tree is indexed');
+	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb('QorperaOS' || substr(root, 10)), 'The tree is indexed');
 	r := pg_temp.writer_commit('vera', 'writer-vera-indexed-tree',
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t1')), pg_temp.generations(s));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -293,8 +293,8 @@ end $$;
 -- another conversation's tree under that conversation's generation, and a second session's generation. (A tier folder
 -- past t14 never reaches the run rule: M1a's tree check refuses it first, block 2.)
 do $$
-declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
-	other constant text := 'agents/otto/memory/thread'; s uuid := pg_temp.thread('nora'); a jsonb; p text; r jsonb; u jsonb;
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'qorperaos/agents/nora/memory/thread';
+	other constant text := 'qorperaos/agents/otto/memory/thread'; s uuid := pg_temp.thread('nora'); a jsonb; p text; r jsonb; u jsonb;
 	i integer := 0;
 	outside constant text := 'a run writes only its own conversation tree folders, tree.toml and blocks';
 	scope constant text := 'a run tree change names exactly its own conversation and generation';
@@ -349,7 +349,7 @@ create function pg_temp.bind_sql(p_binding jsonb, p_sha256 text, p_bytes integer
 	select format('select public.qorpera_bind_native_company_context(%L,%L,%L)', p_binding, p_sha256, p_bytes)
 $$;
 do $$
-declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'qorperaos/agents/nora/memory/thread';
 	b jsonb := pg_temp.b('nora'); run_ uuid := pg_temp.run_id('nora'); s uuid := pg_temp.thread('nora');
 	bundle_ public.qorpera_active_runtime_bundle%rowtype; manifest_ jsonb; bin text; sha text; policy text; tool jsonb;
 	cat jsonb; cat2 jsonb; bad text; contexts text[] := array[null, repeat('C', 64), repeat('c', 63), repeat('c', 64), repeat('c', 64)];

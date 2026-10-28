@@ -4,7 +4,7 @@ import {
 	type CloudMemberFolderEntry,
 	type CloudMemberFolderFeedPosition,
 } from "@qorpera/cloud-client/cloud-member-folder";
-import { COMPANY_STATE_FILE_MAX_BYTES, companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { COMPANY_STATE_FILE_MAX_BYTES, companyPathKey, osPath } from "@qorpera/cloud-client/company-state-files";
 import {
 	decodeInterfaceFile,
 	type InterfaceFile,
@@ -29,7 +29,7 @@ import { folderSources } from "./interfaces.ts";
  * RUNTIME-INTERFACES.md §2–§5 and §10): the tables and files the pages' drawn blocks read (app/interfaces.ts,
  * `folderSources`), with the folders and files of the company folder's own sources they name (`vision`, `agents`,
  * `todos`…; app/interface-sources.ts), all with the member's own authority. The pages are the definitions the web
- * ships, as app/interfaces.ts hands them over (`read`); the folder's interfaces/ is never read.
+ * ships, as app/interfaces.ts hands them over (`read`); the folder's QorperaOS/interfaces/ is never read.
  *
  * Every text is parsed here with the cloud client's parsers each time it is read, never taken from a stored parse
  * (§6.1 rule 1).
@@ -78,8 +78,8 @@ export interface InterfaceFolderSource {
 	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
 }
 
-const tablePath = (name: string) => `tables/${name}/table.toml`;
-const rowsPath = (name: string) => `tables/${name}/rows.csv`;
+const tablePath = (name: string) => osPath(`tables/${name}/table.toml`);
+const rowsPath = (name: string) => osPath(`tables/${name}/rows.csv`);
 /** A `file:` source reads at most this much (RUNTIME-INTERFACES.md §4). */
 const FILE_MAX_BYTES = 256 * 1024;
 const LIST_PAGE = CLOUD_MEMBER_FOLDER_PAGE;
@@ -318,7 +318,8 @@ export class CompanyInterfaceFolder {
 
 	/** Lists and reads what the company folder sources the pages' drawn blocks name read: the folders `again` names and
 	 * those not listed yet, then each listed file whose version is not the one last read. An agent's folder is found by
-	 * listing `agents/`, its `todos/` by listing the agent's folder, so the listing goes a level deeper each round. */
+	 * listing `QorperaOS/agents/`, its `todos/` by listing the agent's folder, so the listing goes a level deeper each
+	 * round. */
 	async #readFolderSources(again: (folderKey: string) => boolean): Promise<void> {
 		const { sources } = this.#sources();
 		if (sources.size === 0) return;
@@ -395,7 +396,7 @@ export class CompanyInterfaceFolder {
 		};
 		await this.#readSources(hit);
 		// A folder is listed again when something in it, under it or above it changed: a new agent's folder shows in
-		// `agents/` whether or not the feed names the folder itself.
+		// `QorperaOS/agents/` whether or not the feed names the folder itself.
 		await this.#readFolderSources((folder) =>
 			touched.some(
 				(changed) => changed === folder || changed.startsWith(`${folder}/`) || folder.startsWith(`${changed}/`),

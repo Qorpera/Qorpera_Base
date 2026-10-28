@@ -59,8 +59,11 @@ const FILE_ID = "10000000-0000-4000-8000-000000000003";
 /** Another routine's file id. */
 const OTHER_FILE = "10000000-0000-4000-8000-0000000000e1";
 /** The agent's folder in the company's folder, and the routine's file in it. */
-const AGENT_PATH = "agents/nora/agent.md";
-const PATH = "agents/nora/routines/morning-brief.md";
+const AGENT_PATH = "QorperaOS/agents/nora/agent.md";
+const PATH = "QorperaOS/agents/nora/routines/morning-brief.md";
+const ROUTINES = "QorperaOS/agents/nora/routines";
+const WEEKLY = `${ROUTINES}/weekly-close.md`;
+const WEEKLY_2 = `${ROUTINES}/weekly-close-2.md`;
 const CONSENT = "qorpera_consent_provider_connection_autonomous";
 const SPONSOR = "qorpera_create_member_execution_sponsor";
 const routine = (update: Partial<CloudRoutine> = {}): CloudRoutine => ({
@@ -185,7 +188,7 @@ function seeded(options: { text?: string | null; routinesFolder?: boolean; lists
 			instructions: "Design.",
 		}),
 	);
-	if (options.routinesFolder !== false) fake.mkdir("agents/nora/routines");
+	if (options.routinesFolder !== false) fake.mkdir(ROUTINES);
 	if (options.text !== null) fake.put(PATH, options.text ?? routineText());
 	return fake;
 }
@@ -1451,10 +1454,7 @@ describe("agent routines section", () => {
 describe("a new routine's file (P34r)", () => {
 	it("writes the file in the agent's routines folder, its name from the title, after the consent and binding", async () => {
 		const fake = seeded();
-		fake.put(
-			"agents/nora/routines/weekly-close.md",
-			writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })),
-		);
+		fake.put(WEEKLY, writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })));
 		const f = mountFolder([], { fake });
 		await openEditor(f.view, "New routine");
 		field(f.view.el, "Routine name").value = "Weekly close";
@@ -1462,7 +1462,7 @@ describe("a new routine's file (P34r)", () => {
 		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		// The name is free among the listed routines' file names, without their .md.
-		const path = "agents/nora/routines/weekly-close-2.md";
+		const path = WEEKLY_2;
 		const [commit] = fake.commits;
 		expect(commit!.operationKey).toMatch(/^web:routine-create:[0-9a-f-]{36}$/);
 		expect(commit!.units).toEqual([{ op: "write", path, text: expect.any(String) }]);
@@ -1490,14 +1490,12 @@ describe("a new routine's file (P34r)", () => {
 		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
 		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([
 			[
-				["mkdir", "agents/nora/routines"],
-				["write", "agents/nora/routines/weekly-close.md"],
+				["mkdir", ROUTINES],
+				["write", WEEKLY],
 			],
 		]);
-		expect(fake.kind("agents/nora/routines")).toBe("folder");
-		expect(
-			parsed(fake.text("agents/nora/routines/weekly-close.md"), "agents/nora/routines/weekly-close.md"),
-		).toMatchObject({
+		expect(fake.kind(ROUTINES)).toBe("folder");
+		expect(parsed(fake.text(WEEKLY), WEEKLY)).toMatchObject({
 			id: newDraft().clientRoutineId,
 			trigger: { when: "weekly", days: ["mon", "fri"], time: "16:00", starts: null },
 			timezone: "Europe/Copenhagen",
@@ -1508,19 +1506,19 @@ describe("a new routine's file (P34r)", () => {
 		const read = fake.folder.read.getMockImplementation()!;
 		fake.folder.read.mockImplementationOnce(async (...args) => {
 			const answer = await read(...args);
-			fake.mkdir("agents/nora/routines");
+			fake.mkdir(ROUTINES);
 			return answer;
 		});
 		const f = writer(fake);
 		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
 		expect(fake.commits).toHaveLength(1);
-		expect(fake.has("agents/nora/routines/weekly-close.md")).toBe(true);
+		expect(fake.has(WEEKLY)).toBe(true);
 
 		// The mkdir is exists and the write was not saved: the folder is read again and the write goes alone.
 		const other = seeded({ routinesFolder: false, text: null });
 		const g = writer(other);
 		other.folder.commit.mockImplementationOnce(async (_key, units) => {
-			other.mkdir("agents/nora/routines");
+			other.mkdir(ROUTINES);
 			return {
 				commitId: "10000000-0000-4000-8000-0000000000f1",
 				seq: null,
@@ -1541,10 +1539,10 @@ describe("a new routine's file (P34r)", () => {
 		const sent = other.folder.commit.mock.calls.map(([, units]) => paths(units));
 		expect(sent).toEqual([
 			[
-				["mkdir", "agents/nora/routines"],
-				["write", "agents/nora/routines/weekly-close.md"],
+				["mkdir", ROUTINES],
+				["write", WEEKLY],
 			],
-			[["write", "agents/nora/routines/weekly-close.md"]],
+			[["write", WEEKLY]],
 		]);
 	});
 	it("takes the next name, with a new operation key, when another writer took the file since the listing", async () => {
@@ -1552,25 +1550,15 @@ describe("a new routine's file (P34r)", () => {
 		const list = fake.folder.list.getMockImplementation()!;
 		fake.folder.list.mockImplementationOnce(async (...args) => {
 			const page = await list(...args);
-			fake.put(
-				"agents/nora/routines/weekly-close.md",
-				writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })),
-			);
+			fake.put(WEEKLY, writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })));
 			return page;
 		});
 		const f = writer(fake);
 		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
-		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([
-			[["write", "agents/nora/routines/weekly-close.md"]],
-			[["write", "agents/nora/routines/weekly-close-2.md"]],
-		]);
+		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([[["write", WEEKLY]], [["write", WEEKLY_2]]]);
 		expect(fake.commits[1]!.operationKey).not.toBe(fake.commits[0]!.operationKey);
-		expect(parsed(fake.text("agents/nora/routines/weekly-close.md"), "agents/nora/routines/weekly-close.md").id).toBe(
-			OTHER_FILE,
-		);
-		expect(
-			parsed(fake.text("agents/nora/routines/weekly-close-2.md"), "agents/nora/routines/weekly-close-2.md").id,
-		).toBe(newDraft().clientRoutineId);
+		expect(parsed(fake.text(WEEKLY), WEEKLY).id).toBe(OTHER_FILE);
+		expect(parsed(fake.text(WEEKLY_2), WEEKLY_2).id).toBe(newDraft().clientRoutineId);
 	});
 	it("sends a change set whose answer was lost again as it was; a file there with the draft's id is this routine", async () => {
 		const fake = seeded({ text: null });
@@ -1580,12 +1568,12 @@ describe("a new routine's file (P34r)", () => {
 		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
 		expect(fake.commits).toHaveLength(2);
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
-		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(fake.children(ROUTINES)).toEqual([WEEKLY]);
 		// A save that does not know that change set finds the draft's id at the name it takes: it is saved.
 		fake.folder.list.mockResolvedValueOnce({ asOfSeq: fake.seq, entries: [], next: null });
 		await expect(f.routines.save(newDraft(), account, "save-2")).resolves.toBe("saved");
 		expect(fake.commits).toHaveLength(3);
-		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(fake.children(ROUTINES)).toEqual([WEEKLY]);
 	});
 	it("saves a new routine whose answer was lost with the next Save, as one file, and the list comes back", async () => {
 		const fake = seeded({ text: null });
@@ -1603,7 +1591,7 @@ describe("a new routine's file (P34r)", () => {
 		// The second Save sends the same change set again, under its key: a replay of the routine it made.
 		expect(fake.commits).toHaveLength(2);
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
-		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(fake.children(ROUTINES)).toEqual([WEEKLY]);
 		expect(f.view.el.textContent).not.toContain("Nothing changed.");
 		f.stop.abort();
 	});
@@ -1617,7 +1605,7 @@ describe("a new routine's file (P34r)", () => {
 		await expect(f.routines.save(again, account, "save-1")).resolves.toBe("saved");
 		expect(fake.commits).toHaveLength(2);
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
-		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(fake.children(ROUTINES)).toEqual([WEEKLY]);
 	});
 	it("opens a new routine that a lost answer made on its file when someone changed it before the draft's change", async () => {
 		const fake = seeded({ text: null });
@@ -1640,7 +1628,7 @@ describe("a new routine's file (P34r)", () => {
 			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
 		);
 		// Someone renames the routine the lost answer made, and the member changes their draft.
-		const made = "agents/nora/routines/weekly-close.md";
+		const made = WEEKLY;
 		const renamed = fake.put(made, fake.text(made)!.replace("title: Weekly close", "title: Friday close"));
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
 		click(f.view.el, "Save");
@@ -1651,7 +1639,7 @@ describe("a new routine's file (P34r)", () => {
 		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").value).toBe("Close the week.");
 		expect(fake.commits).toHaveLength(3);
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
-		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		expect(fake.children(ROUTINES)).toEqual([made]);
 		// The next Save edits the file as it is now.
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
 		click(f.view.el, "Save");
@@ -1665,7 +1653,7 @@ describe("a new routine's file (P34r)", () => {
 			title: "Friday close",
 			instructions: "Close the week, with totals.",
 		});
-		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		expect(fake.children(ROUTINES)).toEqual([made]);
 		f.stop.abort();
 	});
 	it("saves no trigger a member's editor does not make, such as a file change", async () => {
@@ -1734,7 +1722,7 @@ describe("an edit of a routine's file (P34r)", () => {
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
 		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
-		const made = "agents/nora/routines/weekly-close.md";
+		const made = WEEKLY;
 		expect(parsed(fake.text(made), made)).toMatchObject({ title: "Weekly close", effort: "low" });
 		expect(parsed(fake.text(made), made).id).not.toBe(FILE_ID);
 		f.stop.abort();

@@ -881,8 +881,13 @@ describe("a view's pending changes", () => {
 
 	it("refuses at once what the folder never takes, folded as the core folds", () => {
 		const f = setup({
-			vision: null,
-			"vision/vision.md": "v",
+			QorperaOS: null,
+			"QorperaOS/vision": null,
+			"QorperaOS/vision/vision.md": "v",
+			"QorperaOS/agents": null,
+			"QorperaOS/agents/nora": null,
+			"QorperaOS/agents/nora/agent.md": "a",
+			"QorperaOS/agents/nora/notes.md": "n",
 			agents: null,
 			"agents/nora": null,
 			"agents/nora/agent.md": "a",
@@ -891,9 +896,15 @@ describe("a view's pending changes", () => {
 			code: null,
 			"code/repo": null,
 		});
-		refused(() => f.view.unlink("vision/vision.md"), "NOT_PERMITTED");
-		refused(() => f.view.unlink("agents/nora/agent.md"), "NOT_PERMITTED");
-		refused(() => f.view.rename("agents/nora", "docs/nora"), "NOT_PERMITTED");
+		// The platform's seeded paths and agents' folders, under QorperaOS/.
+		refused(() => f.view.rmdir("QorperaOS"), "NOT_PERMITTED");
+		refused(() => f.view.unlink("QorperaOS/vision/vision.md"), "NOT_PERMITTED");
+		refused(() => f.view.unlink("QorperaOS/agents/nora/agent.md"), "NOT_PERMITTED");
+		refused(() => f.view.rename("QorperaOS/agents/nora", "docs/nora"), "NOT_PERMITTED");
+		refused(() => f.view.rename("QorperaOS/agents/nora", "agents/nora"), "NOT_PERMITTED");
+		// A file of an agent's folder may go; an agents/ folder of the company's own, outside QorperaOS/, is ordinary.
+		f.view.unlink("QorperaOS/agents/nora/notes.md");
+		f.view.unlink("agents/nora/agent.md");
 		refused(() => f.view.mkdir("docs/con.txt"), "BAD_REQUEST");
 		refused(() => f.view.mkdir("docs/a:b"), "BAD_REQUEST");
 		refused(() => f.view.mkdir("Secrets"), "NOT_PERMITTED");

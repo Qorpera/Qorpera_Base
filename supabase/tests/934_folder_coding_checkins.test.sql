@@ -17,10 +17,10 @@ begin
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	for i in 1 .. 4 loop
 		perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'c3c-dispatch-' || i,
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('93400000-0000-4000-8000-0000000000b' || i)::uuid))
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), pg_temp.c3_brief(('93400000-0000-4000-8000-0000000000b' || i)::uuid))
 			-> 'units' -> 0 ->> 'outcome' = 'saved', 'dispatch ' || i);
 		perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder',
-			'agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'c3c-cancel-' || i));
+			'QorperaOS/agents/alice/todos/fix-login/session-' || chr(96 + i), 'operationKey', 'c3c-cancel-' || i));
 	end loop;
 	-- Quiet for a day and more: b3 and b4 longest, then b1, then b2.
 	update public.qorpera_coding_sessions set busy_at = null, updated_at = clock_timestamp() - case worker_id
@@ -189,7 +189,7 @@ select pg_temp.base_assert(pg_temp.c3c_step() ->> 'state' = 'idle' and not pg_te
 
 -- 3. A new turn since the question: its run may neither cancel nor archive the session --------------------------------
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-a';
+declare v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-a';
 	v_q1 jsonb := pg_temp.c3c_run((pg_temp.c3c_wake('93400000-0000-4000-8000-0000000000b1', 1)).id);
 begin
 	perform pg_temp.c3_answer('93400000-0000-4000-8000-0000000000b1', 'Keep going.');
@@ -218,7 +218,7 @@ begin
 		and (pg_temp.c3_session('93400000-0000-4000-8000-0000000000b4')).quiet_asked_days = 1, 'b3 and b4 not asked at 3 days');
 	-- The question's run may cancel another session: its question is b2's.
 	v_q2 := pg_temp.c3c_run((pg_temp.c3c_wake('93400000-0000-4000-8000-0000000000b2', 1)).id);
-	perform pg_temp.c3c_cancel(v_q2, 'agents/alice/todos/fix-login/session-a', 'c3c-q2-cancel');
+	perform pg_temp.c3c_cancel(v_q2, 'QorperaOS/agents/alice/todos/fix-login/session-a', 'c3c-q2-cancel');
 	perform pg_temp.base_assert((pg_temp.c3_worker('93400000-0000-4000-8000-0000000000b1')).state = 'cancelled', 'b1 cancelled by Q2');
 	perform pg_temp.c3c_end(v_q2, 'completed');
 	-- A mark asked already (its marks lost): the same key is refused, and the mark counts as asked.

@@ -40,8 +40,8 @@ begin
 	insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, parent_run_id, parent_step, continues_run_id,
 		narrow, run_path, run_key, toml_path_version, commit_id)
 	values ('92400000-0000-4000-8000-000000000020', p_run, (v_origin ->> 'conversation')::uuid, (v_origin ->> 'parent')::uuid,
-		(v_origin ->> 'step')::integer, (v_origin ->> 'continues')::uuid, p_narrow, 'agents/alice/memory/thread/runs/' || p_run,
-		'agents/alice/memory/thread/runs/' || p_run, extensions.gen_random_uuid(), extensions.gen_random_uuid());
+		(v_origin ->> 'step')::integer, (v_origin ->> 'continues')::uuid, p_narrow, 'QorperaOS/agents/alice/memory/thread/runs/' || p_run,
+		'qorperaos/agents/alice/memory/thread/runs/' || p_run, extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	set local session_replication_role = origin;
 end $$;
 -- A manage_worker step of a run's log (call call-921-<j>), finished or pending, narrow or not, as W1b's apply indexes its
@@ -53,8 +53,8 @@ begin
 	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished, line_sha256,
 		fixed_sha256, block_path, block_key, block_path_version, commit_id)
 	values ('92400000-0000-4000-8000-000000000020', p_run, p_j, 'manage_worker', 'call-921-' || p_j, p_narrow, false, p_finished,
-		repeat('a', 64), repeat('b', 64), 'agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl',
-		'agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid())
+		repeat('a', 64), repeat('b', 64), 'QorperaOS/agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl',
+		'qorperaos/agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid())
 	on conflict (environment_id, run_id, j) do update set narrow = excluded.narrow;
 	set local session_replication_role = origin;
 end $$;
@@ -141,7 +141,7 @@ begin
 	perform pg_temp.base_assert(public.qorpera_coding_turn_mark_narrow(w.id) and (pg_temp.ct_turn(w.id, 2)).narrow
 		and (pg_temp.ct_turn(w.id, 2)).occurrence_id is null, 'the open turn is marked');
 	perform public.qorpera_folder_cancel_agent_worker(pg_temp.c3_alice(), jsonb_build_object('folder',
-		'agents/alice/todos/fix-login/session-b', 'operationKey', 'ct-cancel-b'));
+		'QorperaOS/agents/alice/todos/fix-login/session-b', 'operationKey', 'ct-cancel-b'));
 	perform pg_temp.base_assert((pg_temp.ct_turn(w.id, 2)).outcome is not null and (pg_temp.ct_turn(w.id, 2)).narrow
 		and public.qorpera_coding_session_narrow(w.id), 'it ended narrow');
 	-- Busy for an hour since, with two commands.
@@ -179,7 +179,7 @@ declare c_env constant uuid := '92400000-0000-4000-8000-000000000020';
 	w public.qorpera_runtime_workers := pg_temp.c3_worker('98800000-0000-4000-8000-0000000000b1');
 	v_root uuid; v_sales uuid; v_view uuid; v_claim jsonb; v_token uuid; v_run2 uuid; v_run3 uuid; v_run4 uuid; v_bind3 jsonb;
 	v_bind4 jsonb; v_key text; v_wide text; v_narrow text;
-	c_paths constant jsonb := '["/company/vision/vision.md","/company/sales/q3.md"]';
+	c_paths constant jsonb := '["/company/QorperaOS/vision/vision.md","/company/sales/q3.md"]';
 begin
 	-- As if its second turn had not been narrow.
 	perform pg_temp.ct_wide(w.id);
@@ -215,7 +215,7 @@ begin
 	-- every-agent part), and W1b's file rules take a wide block.
 	v_bind3 := pg_temp.base_start(v_run3);
 	perform pg_temp.ct_log(v_run3, false);
-	v_key := 'agents/alice/memory/thread/runs/' || v_run3 || '/log/00000000.jsonl';
+	v_key := 'qorperaos/agents/alice/memory/thread/runs/' || v_run3 || '/log/00000000.jsonl';
 	v_wide := '{"j":0,"tool":"coding_run_command","call":"call-921","args":"{\"command\":\"npm test\"}","args_bytes":22,'
 		'"args_hash":null,"result":null,"reads":[],"releases":[],"paths":[],"text":"","at":"2026-10-09T12:00:00Z"}' || E'\n';
 	v_narrow := format('{"j":0,"tool":"coding_run_command","call":"call-921","args_hash":"%s","narrow":true,"finished":false,'
@@ -276,7 +276,7 @@ end $$;
 --    no view is narrow, but its first turn's run is by its place, so its check-in names it only as narrow --------------
 do $$
 declare c_env constant uuid := '92400000-0000-4000-8000-000000000020'; c_id constant uuid := '92100000-0000-4000-8000-0000000000b3';
-	c_folder constant text := 'agents/alice/todos/fix-login/session-c'; v_alice jsonb := pg_temp.c3_alice(); v_result jsonb;
+	c_folder constant text := 'QorperaOS/agents/alice/todos/fix-login/session-c'; v_alice jsonb := pg_temp.c3_alice(); v_result jsonb;
 	v_claim jsonb; v_token uuid; v_wakes jsonb; v_bind jsonb; v_y jsonb; v_s uuid := (pg_temp.c3_alice() ->> 'runId')::uuid;
 	v_t1 uuid; v_y_run uuid; v_t2 uuid;
 begin

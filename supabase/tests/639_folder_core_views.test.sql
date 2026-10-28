@@ -135,15 +135,16 @@ begin
 	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
 end $$;
 
--- Setup: shared/ and a narrower secret/ that agent A holds a grant on, and rules/.
+-- Setup: shared/ and a narrower secret/ that agent A holds a grant on, and QorperaOS/rules/.
 do $$
 declare a jsonb := pg_temp.stage('alpha'); v_secret uuid;
 begin
 	perform pg_temp.office();
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'views-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','shared'),
 		jsonb_build_object('op','write','path','shared/a.txt','file',a), jsonb_build_object('op','mkdir','path','secret'),
-		jsonb_build_object('op','write','path','secret/s.txt','file',a), jsonb_build_object('op','mkdir','path','rules'),
-		jsonb_build_object('op','write','path','rules/tone.txt','file',a), jsonb_build_object('op','mkdir','path','code'))), 7, 'saved');
+		jsonb_build_object('op','write','path','secret/s.txt','file',a), jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules'),
+		jsonb_build_object('op','write','path','QorperaOS/rules/tone.txt','file',a), jsonb_build_object('op','mkdir','path','code'))), 8, 'saved');
 	v_secret := public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'secret', 'subtree',
 		'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant('63200000-0000-4000-8000-000000000020', pg_temp.member(1), v_secret, 'staff_agent',
@@ -215,12 +216,12 @@ begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	r := pg_temp.vcommit(d, 'desk-live-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/d.txt','file',a),
-		jsonb_build_object('op','write','path','secret/d.txt','file',a), jsonb_build_object('op','write','path','rules/d.txt','file',a)));
+		jsonb_build_object('op','write','path','secret/d.txt','file',a), jsonb_build_object('op','write','path','QorperaOS/rules/d.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied'); perform pg_temp.expect(r, 3, 'denied', 'denied');
 	c := pg_temp.last_commit(r);
 	if c.run_id <> (v ->> 'runId')::uuid or c.view_kind <> 'computer_desktop' then raise exception 'Live desktop commit: %', to_jsonb(c); end if;
 	if (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'secret/s.txt') ->> 'found')::boolean
-		or not (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'rules/tone.txt') ->> 'found')::boolean then
+		or not (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'QorperaOS/rules/tone.txt') ->> 'found')::boolean then
 		raise exception 'The company-wide view for reads'; end if;
 	-- A live-run view carries its run's review: a delete that needs one saves with a record for the run.
 	perform pg_temp.expect(pg_temp.vcommit(d, 'desk-rv-setup', jsonb_build_array(jsonb_build_object('op','write','path','shared/rv.txt','file',a))),
@@ -328,7 +329,7 @@ begin
 	perform public.qorpera_folder_view_close((d2 ->> 'viewId')::uuid, d2 ->> 'pass');
 end $$;
 
--- A coding session: detached as its agent and owner under the coding rule (code/ yes, agents/ no), never reviewed; the
+-- A coding session: detached as its agent and owner under the coding rule (code/ yes, QorperaOS/agents/ no), never reviewed; the
 -- attachment's refusal (a disabled executor, a lapsed attachment) ends it, and an archive once its 240 s for the final
 -- boundary have passed (20260930517000; 539).
 do $$
@@ -357,7 +358,7 @@ begin
 	values (cm, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('9', 64), cm, clock_timestamp());
 	set local session_replication_role = origin;
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
-	r := pg_temp.vcommit(cv, 'coding-view-1', '[{"op":"mkdir","path":"code/repo"},{"op":"mkdir","path":"agents"}]');
+	r := pg_temp.vcommit(cv, 'coding-view-1', '[{"op":"mkdir","path":"code/repo"},{"op":"mkdir","path":"QorperaOS/agents"}]');
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	c := pg_temp.last_commit(r);
 	if c.session_kind <> 'coding' or c.run_id is not null or c.view_kind <> 'coding_session' or c.review_id is not null then

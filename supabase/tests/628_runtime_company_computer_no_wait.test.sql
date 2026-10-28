@@ -137,11 +137,11 @@ end $$;
 
 -- An agent's agent.md saved with a status, over the version read (924's agent text and parse).
 create function pg_temp.nw_status(p_handle text,p_id uuid,p_name text,p_status text) returns jsonb language sql as $$
-	select pg_temp.base_write('agents/'||p_handle||'/agent.md','agent',
+	select pg_temp.base_write('QorperaOS/agents/'||p_handle||'/agent.md','agent',
 		replace(pg_temp.base_agent_text(p_id,p_name),E'status: active\n','status: '||p_status||E'\n'),
 		jsonb_build_object('kind','agent','id',p_id,'name',p_name,'role','Research','agentKind','agent','status',p_status,
 			'colour',null,'figure',null,'model',null,'effort',null,'instructions','Read and change the company folder.'),
-		pg_temp.base_version('agents/'||p_handle||'/agent.md'))
+		pg_temp.base_version('QorperaOS/agents/'||p_handle||'/agent.md'))
 $$;
 
 -- Six more agents, hired through their agent.md in the owner's commit.

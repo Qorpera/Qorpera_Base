@@ -6,6 +6,10 @@ F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
 `P18-design-review-r1.md` (round 1).
 
+> Since 20260930534000 every platform path is under `QorperaOS/` (contract 5.6): a thread's `tree.toml` is
+> `QorperaOS/agents/<agent>/memory/thread/tree.toml`, `rules/` is `QorperaOS/rules/`, and so on. The sections below
+> keep the paths as they were built. `QorperaOS/` itself is seeded and never deleted, so it is never erased.
+
 ## 1. What erasure is, and what it leaves
 
 An owner or admin purges one or more **deleted** paths of a folder-v2 environment (a contact's file, a human task's

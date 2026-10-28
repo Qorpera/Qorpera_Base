@@ -74,7 +74,7 @@ describe("uncertain agent creation", () => {
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent title"]')!.value).toBe("Finance");
 		expect(f.view.el.querySelector<HTMLButtonElement>('[type="submit"]')!.textContent).toBe("Create agent");
 		expect(f.create).toHaveBeenCalledTimes(1);
-		expect(f.fake.has("agents/ledger")).toBe(false);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(false);
 		// The corrected draft is a new creation, with a new identity.
 		f.input("Agent name", "Bookkeeper");
 		f.submit();
@@ -83,7 +83,9 @@ describe("uncertain agent creation", () => {
 		expect(f.create.mock.calls[1]![1].id).not.toBe(f.create.mock.calls[0]![1].id);
 		const created = f.create.mock.calls[1]![1].id;
 		await vi.waitFor(() => expect(f.view.el.querySelector(`[data-remove-recipient="${created}"]`)).not.toBeNull());
-		expect(f.fake.stateFolders().agents).toEqual([{ staffAgentId: created, file: "agents/bookkeeper/agent.md" }]);
+		expect(f.fake.stateFolders().agents).toEqual([
+			{ staffAgentId: created, file: "QorperaOS/agents/bookkeeper/agent.md" },
+		]);
 	});
 
 	it("keeps the submitted identity and draft across Back, then clears them after recovery", async () => {
@@ -102,7 +104,7 @@ describe("uncertain agent creation", () => {
 		f.submit();
 		// The folder was created, but its answer was lost.
 		await vi.waitFor(() => expect(f.view.el.textContent).toContain("Creation could not be confirmed"));
-		expect(f.fake.has("agents/ledger")).toBe(true);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(true);
 		const first = f.create.mock.calls[0]![1];
 		expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(true);
 		[...f.view.el.querySelectorAll("button")].find((button) => button.textContent === "Back")!.click();
@@ -116,7 +118,7 @@ describe("uncertain agent creation", () => {
 		expect(f.create).toHaveBeenCalledTimes(2);
 		expect(f.create.mock.calls[1]![1]).toBe(first);
 		expect(f.fake.commits).toHaveLength(1);
-		expect(f.fake.children("agents")).toEqual(["agents/groups", "agents/ledger"]);
+		expect(f.fake.children("QorperaOS/agents")).toEqual(["QorperaOS/agents/groups", "QorperaOS/agents/ledger"]);
 		f.chooseCreate();
 		expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(false);
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')!.value).toBe("");

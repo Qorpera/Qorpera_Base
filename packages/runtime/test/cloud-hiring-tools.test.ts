@@ -15,7 +15,7 @@ afterEach(() => {
 
 /** The hiring tools on their folder writers, behind the boundary, with a review that lets every call run. */
 async function fixture() {
-	const f = await folderWriterFixture({ folders: ["agents/groups"] });
+	const f = await folderWriterFixture({ folders: ["QorperaOS/agents/groups"] });
 	runs.push(f.run);
 	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
 	const tools = cloudHiringTools(f.identity, {
@@ -63,7 +63,7 @@ describe("agent hiring tool", () => {
 	it.each([
 		["a grant", { grants: { resources: [] } }],
 		["an identity", { agentId: "6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8a12" }],
-		["a path", { path: "agents/mikkel" }],
+		["a path", { path: "QorperaOS/agents/mikkel" }],
 		["a model", { modelId: "gpt" }],
 		["an unknown figure", { figure: "dragon" }],
 		["an empty job", { jobDescription: "  " }],
@@ -77,12 +77,15 @@ describe("agent hiring tool", () => {
 		const f = await fixture();
 		const alpha = { ...hire, name: "Alpha" };
 		const first = outcome(await f.boundary.invoke("hire_1", "qorpera", "hire_agent", alpha));
-		expect(first.receipt).toMatchObject({ outcome: "saved", agent: { name: "Alpha", folder: "agents/alpha" } });
+		expect(first.receipt).toMatchObject({
+			outcome: "saved",
+			agent: { name: "Alpha", folder: "QorperaOS/agents/alpha" },
+		});
 		const beta = outcome(await f.boundary.invoke("hire_2", "qorpera", "hire_agent", { ...alpha, name: "Beta" }));
 		expect(beta.status).toBe("denied");
 		expect(beta.text).toMatch(/^INVALID_ARGUMENTS: operationKey is already used in this run for a different hire/);
 		// The first hire may exist already: the refusal says where to look, not to hire anew.
-		expect(beta.text).toContain("check agents/ before hiring again");
+		expect(beta.text).toContain("check QorperaOS/agents/ before hiring again");
 		expect(beta.text).not.toContain("Beta");
 		expect(f.commits).toHaveLength(1);
 		// Only the same request replays, from the first call's receipt: nothing is written again.
@@ -98,7 +101,7 @@ describe("agent hiring tool", () => {
 		expect(JSON.parse(String((await tool?.execute(alpha, f.context))?.value)).outcome).toBe("saved");
 		const second = { ...f.context, callId: randomUUID(), actionReviewId: randomUUID() };
 		await expect(tool?.execute(beta, second)).rejects.toThrow(
-			/^operationKey is already used in this run for a different hire, .*check agents\/ before/,
+			/^operationKey is already used in this run for a different hire, .*check QorperaOS\/agents\/ before/,
 		);
 		expect(f.commits).toHaveLength(1);
 	});
@@ -108,7 +111,10 @@ describe("group chat tool", () => {
 	it("refuses a reused group chat key with changed arguments before any write", async () => {
 		const f = await fixture();
 		const first = outcome(await f.boundary.invoke("chat_1", "qorpera", "create_group_chat", chat));
-		expect(first.receipt).toMatchObject({ outcome: "saved", chat: { folder: "agents/groups/onboarding-sync" } });
+		expect(first.receipt).toMatchObject({
+			outcome: "saved",
+			chat: { folder: "QorperaOS/agents/groups/onboarding-sync" },
+		});
 		const renamed = outcome(
 			await f.boundary.invoke("chat_2", "qorpera", "create_group_chat", { ...chat, name: "Billing sync" }),
 		);
@@ -116,7 +122,7 @@ describe("group chat tool", () => {
 		expect(renamed.text).toMatch(
 			/^INVALID_ARGUMENTS: operationKey is already used in this run for a different group chat/,
 		);
-		expect(renamed.text).toContain("check agents/groups/ before opening another");
+		expect(renamed.text).toContain("check QorperaOS/agents/groups/ before opening another");
 		expect(f.commits).toHaveLength(1);
 		// The same chat with its coworkers in another order is the same request.
 		const replay = outcome(

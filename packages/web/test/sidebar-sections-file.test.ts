@@ -46,7 +46,7 @@ const seeded = () =>
 		names,
 	);
 
-describe("agents/sections.md from the rail", () => {
+describe("QorperaOS/agents/sections.md from the rail", () => {
 	it("names the request's sections as the member sees them", () => {
 		const sidebar: CompanySidebar = {
 			sections: [
@@ -223,5 +223,8 @@ describe("agents/sections.md from the rail", () => {
 		expect(() =>
 			rewriteSectionsFile(`## Ops\nnot an id\n`, { action: "delete_section", name: "Ops" }, words),
 		).toThrow(SectionsChangeRefusal);
+		expect(() =>
+			rewriteSectionsFile(`## Ops\nnot an id\n`, { action: "delete_section", name: "Ops" }, words),
+		).toThrow("Ask the Co-Founder to correct QorperaOS/agents/sections.md.");
 	});
 });

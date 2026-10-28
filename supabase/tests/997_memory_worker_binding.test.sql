@@ -8,7 +8,7 @@ insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400
 
 do $$
 declare ada jsonb := current_setting('qorpera_test.ada')::jsonb;
-	f text := 'agents/ada/todos/plan-the-trip/binding-worker';
+	f text := 'QorperaOS/agents/ada/todos/plan-the-trip/binding-worker';
 	b jsonb := pg_temp.brief('99700000-0000-4000-8000-000000000001'); u jsonb; x jsonb; v jsonb;
 begin
 	v := pg_temp.w4_view(current_setting('qorpera_test.w4_seq')::bigint, 0, jsonb_build_array(pg_temp.w4_block(1)));
@@ -81,7 +81,7 @@ begin
 	perform pg_temp.w4_same(pg_temp.w4b_host('qorpera_memory_view_reference_check_run', jsonb_build_object('p_binding', b,
 		'p_view', jsonb_set(v, '{conversations,0,blocks,0,version}', to_jsonb(extensions.gen_random_uuid())))) #>> '{}',
 		'block_gone', 'Pruned reference');
-	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/ada/memory/thread', 2)));
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('QorperaOS/agents/ada/memory/thread', 2)));
 	perform pg_temp.w4_same(pg_temp.w4b_host('qorpera_memory_view_reference_check_run',
 		jsonb_build_object('p_binding', b, 'p_view', v)) #>> '{}', 'erasure_covers', 'Open folder erasure');
 	delete from public.qorpera_folder_erasures where id = e;

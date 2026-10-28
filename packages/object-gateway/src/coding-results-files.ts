@@ -1,6 +1,7 @@
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	isCompanyStateName,
+	osRelative,
 	parseCompanyStateFile,
 	WORKER_TEXT_MAX_BYTES,
 	type WorkerResultsFile,
@@ -77,7 +78,7 @@ export interface CodingResultsClaim {
 	readonly sequence: number;
 	readonly generation: number;
 	readonly operationKey: string;
-	/** agents/<agent>/todos/<todo>/<worker>/results.md */
+	/** QorperaOS/agents/<agent>/todos/<todo>/<worker>/results.md */
 	readonly path: string;
 	/** The file's version now, which the commit expects; null when there is none. */
 	readonly currentVersion: string | null;
@@ -102,9 +103,9 @@ export function codingResultsOperationKey(codingWorkerId: string, sequence: numb
 	return `coding-results:${codingWorkerId}:${sequence}:${generation}`;
 }
 
-/** A worker's results path: agents/<agent>/todos/<todo>/<worker>/results.md, each name by the naming rule. */
+/** A worker's results path: QorperaOS/agents/<agent>/todos/<todo>/<worker>/results.md, each name by the naming rule. */
 function resultsPath(value: unknown): string {
-	const parts = typeof value === "string" ? value.split("/") : [];
+	const parts = typeof value === "string" ? (osRelative(value)?.split("/") ?? []) : [];
 	return parts.length === 6 &&
 		parts[0] === "agents" &&
 		parts[2] === "todos" &&

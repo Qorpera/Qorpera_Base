@@ -136,9 +136,9 @@ declare v jsonb := public.qorpera_member_company_state_folders('70200000-0000-40
 begin
 	perform pg_temp.same(v ->> 'schema', 'qorpera.member-company-state-folders/v1', 'the schema');
 	perform pg_temp.same(pg_temp.files(v, 'agents', 'staffAgentId'),
-		'c0:agents/co-founder/agent.md,a1:agents/nora/agent.md,a2:agents/otto/agent.md,a3:agents/vera/agent.md',
+		'c0:QorperaOS/agents/co-founder/agent.md,a1:QorperaOS/agents/nora/agent.md,a2:QorperaOS/agents/otto/agent.md,a3:QorperaOS/agents/vera/agent.md',
 		'every agent''s file');
-	perform pg_temp.same(pg_temp.files(v, 'groups', 'roomId'), 'b1:agents/groups/launch/group.md', 'the group chat''s file');
+	perform pg_temp.same(pg_temp.files(v, 'groups', 'roomId'), 'b1:QorperaOS/agents/groups/launch/group.md', 'the group chat''s file');
 	-- Routines' files since P34r (20260930038000; SQL test 899).
 	perform pg_temp.same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'agents,groups,routines,schema',
 		'the answer''s keys');
@@ -148,14 +148,14 @@ end $$;
 select pg_temp.as_service();
 do $$ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'member-writes-0002', jsonb_build_array(
-		jsonb_build_object('op', 'delete', 'path', 'agents/vera', 'expectedVersion', pg_temp.version('agents/vera'),
+		jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/vera', 'expectedVersion', pg_temp.version('QorperaOS/agents/vera'),
 			'asOfSeq', pg_temp.seq()))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'member-writes-0003', jsonb_build_array(
-		jsonb_build_object('op', 'delete', 'path', 'agents/groups/launch', 'expectedVersion',
-			pg_temp.version('agents/groups/launch'), 'asOfSeq', pg_temp.seq()))), 1, 'saved');
+		jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/groups/launch', 'expectedVersion',
+			pg_temp.version('QorperaOS/agents/groups/launch'), 'asOfSeq', pg_temp.seq()))), 1, 'saved');
 	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy,
 		created_by_user_id)
-	values ('70200000-0000-4000-8000-000000000020', 'agents/otto', 'subtree', 'member_private',
+	values ('70200000-0000-4000-8000-000000000020', 'QorperaOS/agents/otto', 'subtree', 'member_private',
 		'70200000-0000-4000-8000-000000000001', 'normal', '70200000-0000-4000-8000-000000000001');
 end $$;
 select pg_temp.as_user('02');
@@ -163,13 +163,13 @@ do $$
 declare v jsonb := public.qorpera_member_company_state_folders('70200000-0000-4000-8000-000000000020');
 begin
 	perform pg_temp.same(pg_temp.files(v, 'agents', 'staffAgentId'),
-		'c0:agents/co-founder/agent.md,a1:agents/nora/agent.md', 'a deleted agent and an unreadable one are left out');
+		'c0:QorperaOS/agents/co-founder/agent.md,a1:QorperaOS/agents/nora/agent.md', 'a deleted agent and an unreadable one are left out');
 	perform pg_temp.same(pg_temp.files(v, 'groups', 'roomId'), '', 'a deleted group chat is left out');
 end $$;
 select pg_temp.as_user('01');
 do $$ begin
 	perform pg_temp.same(pg_temp.files(public.qorpera_member_company_state_folders('70200000-0000-4000-8000-000000000020'),
-		'agents', 'staffAgentId'), 'c0:agents/co-founder/agent.md,a1:agents/nora/agent.md,a2:agents/otto/agent.md',
+		'agents', 'staffAgentId'), 'c0:QorperaOS/agents/co-founder/agent.md,a1:QorperaOS/agents/nora/agent.md,a2:QorperaOS/agents/otto/agent.md',
 		'the private folder''s owner reads it');
 end $$;
 select pg_temp.as_service();

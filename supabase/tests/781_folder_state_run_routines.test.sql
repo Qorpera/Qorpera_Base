@@ -90,7 +90,7 @@ begin
 		(v_review ->> 'reviewId')::uuid);
 end $$;
 create function pg_temp.digest(p_extra jsonb default '{}') returns jsonb language sql as $$
-	select pg_temp.routine('agents/nora/routines/digest.md', pg_temp.rparse('78100000-0000-4000-8000-0000000000e3', 'Digest',
+	select pg_temp.routine('QorperaOS/agents/nora/routines/digest.md', pg_temp.rparse('78100000-0000-4000-8000-0000000000e3', 'Digest',
 		pg_temp.every(60), p_extra))
 $$;
 
@@ -99,7 +99,7 @@ declare a jsonb; b jsonb; x public.qorpera_cloud_routines;
 	e2 constant uuid := '78100000-0000-4000-8000-0000000000e2'; e3 constant uuid := '78100000-0000-4000-8000-0000000000e3';
 begin
 	-- Nora's run, woken by a routine the owner made: it acts for the owner, on the owner's login.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-own', jsonb_build_array(pg_temp.routine('agents/nora/routines/own.md',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-own', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/own.md',
 		pg_temp.rparse(e2, 'Own', pg_temp.every())))), 1, 'saved');
 	a := pg_temp.routine_run(e2);
 	b := pg_temp.native(a);
@@ -132,12 +132,12 @@ begin
 	if (pg_temp.rt(e3)).status is distinct from 'concluded' then
 		raise exception 'The run concludes its routine: %', to_jsonb(pg_temp.rt(e3)); end if;
 	-- 6. A removal is a deletion: not saved without the review; with it the routine retires and its name is free.
-	perform pg_temp.expect(pg_temp.commit(a, 'run-digest-del-none', jsonb_build_array(pg_temp.del('agents/nora/routines/digest.md'))),
+	perform pg_temp.expect(pg_temp.commit(a, 'run-digest-del-none', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/digest.md'))),
 		1, 'denied', 'review_required');
-	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0006', jsonb_build_array(pg_temp.del('agents/nora/routines/digest.md'))), 1, 'saved');
-	if (pg_temp.rt(e3)).folder_retired_at is null or pg_temp.version('agents/nora/routines/digest.md') is not null then
+	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0006', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/digest.md'))), 1, 'saved');
+	if (pg_temp.rt(e3)).folder_retired_at is null or pg_temp.version('QorperaOS/agents/nora/routines/digest.md') is not null then
 		raise exception 'The run removes its routine: %', to_jsonb(pg_temp.rt(e3)); end if;
-	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0007', jsonb_build_array(pg_temp.routine('agents/nora/routines/digest.md',
+	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0007', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/digest.md',
 		pg_temp.rparse('78100000-0000-4000-8000-0000000000e4', 'Digest again', pg_temp.every(60))))), 1, 'saved');
 end $$;
 
@@ -146,7 +146,7 @@ end $$;
 do $$
 declare a jsonb; b jsonb; d jsonb; u jsonb; v public.qorpera_cloud_routine_versions;
 	e2 constant uuid := '78100000-0000-4000-8000-0000000000e2'; e5 constant uuid := '78100000-0000-4000-8000-0000000000e5';
-	p constant text := 'agents/nora/routines/follow-up.md';
+	p constant text := 'QorperaOS/agents/nora/routines/follow-up.md';
 begin
 	a := pg_temp.routine_run(e2);
 	b := pg_temp.native(a);

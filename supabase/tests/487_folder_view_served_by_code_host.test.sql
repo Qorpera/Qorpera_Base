@@ -169,7 +169,7 @@ begin
 		or not public.qorpera_folder_actor_allowed(env, prof, a, 'code/acme/app.git/HEAD', 'write')
 		or not public.qorpera_folder_actor_allowed(env, prof, a, 'Code/acme', 'write')
 		or public.qorpera_folder_actor_allowed(env, prof, a, 'shared/x', 'read')
-		or public.qorpera_folder_actor_allowed(env, prof, a, 'rules', 'read')
+		or public.qorpera_folder_actor_allowed(env, prof, a, 'QorperaOS/rules', 'read')
 		or public.qorpera_folder_actor_allowed(env, prof, a, 'codex', 'write')
 		or not public.qorpera_folder_actor_allowed(env, prof, '{"kind":"platform"}', 'shared/x', 'read') then
 		raise exception 'Code host fence (actor_allowed)'; end if;
@@ -197,7 +197,7 @@ begin
 		or c.session_kind is not null then
 		raise exception 'Code host commit: %', to_jsonb(c); end if;
 	perform pg_temp.expect(pg_temp.vcommit(ch, 'code-host-2', '[{"op":"mkdir","path":"code/acme/app.git"}]'), 1, 'saved');
-	perform pg_temp.expect(pg_temp.vcommit(ch, 'code-host-3', '[{"op":"mkdir","path":"rules/by-host"}]'), 1, 'denied', 'denied');
+	perform pg_temp.expect(pg_temp.vcommit(ch, 'code-host-3', '[{"op":"mkdir","path":"QorperaOS/rules/by-host"}]'), 1, 'denied', 'denied');
 	r := public.qorpera_folder_record_release(env, pg_temp.vactor(ch), rel, jsonb_build_array(jsonb_build_object('path', 'code/acme',
 		'authority', jsonb_build_object('resourceId', extensions.gen_random_uuid(), 'resourceRevision', '1'))), repeat('a', 64));
 	if r is distinct from jsonb_build_object('schema','qorpera.folder-release/v1','releaseId',rel,'reads',1,'replay',false,'runId',null)

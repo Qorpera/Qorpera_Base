@@ -38,7 +38,7 @@ begin
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	perform pg_temp.base_assert(pg_temp.c3_dispatch(pg_temp.c3_alice(), 'mask-dispatch-613',
-		'agents/alice/todos/fix-login/session-613', pg_temp.c3_brief('61300000-0000-4000-8000-0000000000b1'))
+		'QorperaOS/agents/alice/todos/fix-login/session-613', pg_temp.c3_brief('61300000-0000-4000-8000-0000000000b1'))
 		-> 'units' -> 0 ->> 'outcome' = 'saved', 'the dispatch');
 	perform set_config('session_replication_role', 'replica', true);
 	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner,

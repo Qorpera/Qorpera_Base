@@ -3,6 +3,8 @@ import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateSeedEntry,
 	companyStateSeedTree,
+	osPath,
+	osRelative,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
@@ -119,21 +121,23 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 	};
 }
 
-/** The seeded tree as the creation commit's units, in the tree's order: the Co-Founder's folder is one new_folder
- * unit with its contents; every other folder is a mkdir and every other file a write. A structured file carries its
- * parse; a file no parser reads (the seeded skill) is written as bytes only. */
+/** The seeded tree as the creation commit's units, in the tree's order (QorperaOS/ first, then the platform's folders
+ * under it): the Co-Founder's folder is one new_folder unit with its contents; every other folder is a mkdir and every
+ * other file a write. A structured file carries its parse; a file no parser reads (the seeded skill) is written as bytes
+ * only. */
 export function creationUnits(
 	tree: readonly CompanyStateSeedEntry[],
 	files: ReadonlyMap<string, PlatformFileReference>,
 ): unknown[] {
-	const cofounder = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}`;
+	const cofounder = osPath(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}`);
 	// Folders made whole, as one new_folder unit: the Co-Founder's (the agent with its first todo), and each interface
 	// and table (a table's rows read the definition its own unit brings; P16).
 	const whole = new Set(
 		tree
 			.filter(
 				(entry) =>
-					entry.kind === "folder" && (entry.path === cofounder || /^(interfaces|tables)\/[^/]+$/.test(entry.path)),
+					entry.kind === "folder" &&
+					(entry.path === cofounder || /^(interfaces|tables)\/[^/]+$/.test(osRelative(entry.path) ?? "")),
 			)
 			.map((entry) => entry.path),
 	);

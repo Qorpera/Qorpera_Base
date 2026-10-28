@@ -51,7 +51,7 @@ end $$;
 create function pg_temp.layouts() returns jsonb language sql as $$
 	select coalesce(jsonb_object_agg(key_text, coalesce(version::text, kind) order by key_text), '{}') from public.qorpera_folder_entries
 	where environment_id = '63400000-0000-4000-8000-000000000020' and kind <> 'claim'
-		and key_text ~ '^(interfaces(/|$)|tables(/[^/]+(/table\.toml)?)?$)'
+		and key_text ~ '^qorperaos/(interfaces(/|$)|tables(/[^/]+(/table\.toml)?)?$)'
 $$;
 -- The rule off, as before 20260930510000, or on again: for a proposal parked before the migration.
 create function pg_temp.rule(p_on boolean) returns void language plpgsql as $$
@@ -71,24 +71,24 @@ end $$;
 do $$
 declare m jsonb := pg_temp.member(2); r jsonb;
 begin
-	if array(select jsonb_object_keys(pg_temp.layouts()) k order by k) <> array['interfaces', 'interfaces/mailbox',
-			'interfaces/mailbox/interface.toml', 'interfaces/order.md', 'interfaces/pulse', 'interfaces/pulse/interface.toml',
-			'interfaces/pulse/readme.md', 'tables', 'tables/areas', 'tables/areas/table.toml', 'tables/numbers',
-			'tables/numbers/table.toml'] then
+	if array(select jsonb_object_keys(pg_temp.layouts()) k order by k) <> array['qorperaos/interfaces', 'qorperaos/interfaces/mailbox',
+			'qorperaos/interfaces/mailbox/interface.toml', 'qorperaos/interfaces/order.md', 'qorperaos/interfaces/pulse',
+			'qorperaos/interfaces/pulse/interface.toml', 'qorperaos/interfaces/pulse/readme.md', 'qorperaos/tables', 'qorperaos/tables/areas',
+			'qorperaos/tables/areas/table.toml', 'qorperaos/tables/numbers', 'qorperaos/tables/numbers/table.toml'] then
 		raise exception 'The seed: %', pg_temp.layouts(); end if;
 	r := pg_temp.commit('{"kind":"platform"}', 'c6-platform-0001', jsonb_build_array(
-		pg_temp.p16_folder('{"kind":"platform"}', 'tables/cards', jsonb_build_object(
+		pg_temp.p16_folder('{"kind":"platform"}', 'QorperaOS/tables/cards', jsonb_build_object(
 			'table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013') || '{"name":"Cards"}', 'rows.csv', pg_temp.fixture('rows'))),
-		pg_temp.p16_write('{"kind":"platform"}', 'tables/areas/table.toml',
+		pg_temp.p16_write('{"kind":"platform"}', 'QorperaOS/tables/areas/table.toml',
 			pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas') || '{"about":"The company''s areas."}'),
-		pg_temp.p16_write('{"kind":"platform"}', 'interfaces/mailbox/README.md', '"About Mailbox."')));
+		pg_temp.p16_write('{"kind":"platform"}', 'QorperaOS/interfaces/mailbox/README.md', '"About Mailbox."')));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.expect(r, 3, 'saved');
 	r := pg_temp.commit(m, 'c6-member-0001', jsonb_build_array(
-		pg_temp.p16_folder(m, 'interfaces/member-page', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(m, 'QorperaOS/interfaces/member-page', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000021', 'Member page', false))),
-		pg_temp.p16_write(m, 'interfaces/pulse/README.md', '"About Pulse, by a member."')));
+		pg_temp.p16_write(m, 'QorperaOS/interfaces/pulse/README.md', '"About Pulse, by a member."')));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
 end $$;
@@ -98,26 +98,26 @@ end $$;
 -- interfaces/); then moves out and in, a copy in and a link; then the same call again. Nothing the rule keeps changed.
 do $$
 declare g jsonb := pg_temp.agent_run(); p jsonb := g -> 'actor'; v_before jsonb := pg_temp.layouts(); v_units jsonb; r jsonb; i integer;
-	v_rows uuid := pg_temp.p16_version('tables/numbers/rows.csv');
+	v_rows uuid := pg_temp.p16_version('QorperaOS/tables/numbers/rows.csv');
 begin
 	v_units := jsonb_build_array(
-		pg_temp.p16_write(p, 'interfaces/member-page/README.md', '"About the member''s page, by the agent."'),
-		pg_temp.p16_folder(p, 'interfaces/agent-page', jsonb_build_object('interface.toml',
+		pg_temp.p16_write(p, 'QorperaOS/interfaces/member-page/README.md', '"About the member''s page, by the agent."'),
+		pg_temp.p16_folder(p, 'QorperaOS/interfaces/agent-page', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000022', 'Agent page', false))),
-		jsonb_build_object('op','mkdir','path','interfaces/agent-folder'),
-		pg_temp.p16_write(p, 'interfaces/order.md', pg_temp.fixture('order')),
-		pg_temp.p16_delete('interfaces/mailbox'),
-		pg_temp.p16_write(p, 'tables/numbers/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}'),
-		pg_temp.p16_folder(p, 'tables/agent-table', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000023'))),
-		jsonb_build_object('op','mkdir','path','tables/agent-empty'),
-		pg_temp.p16_delete('tables/areas/table.toml'),
-		jsonb_build_object('op','copy','from','tables/areas/rows.csv','to','tables/numbers-2'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/agent-folder'),
+		pg_temp.p16_write(p, 'QorperaOS/interfaces/order.md', pg_temp.fixture('order')),
+		pg_temp.p16_delete('QorperaOS/interfaces/mailbox'),
+		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}'),
+		pg_temp.p16_folder(p, 'QorperaOS/tables/agent-table', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000023'))),
+		jsonb_build_object('op','mkdir','path','QorperaOS/tables/agent-empty'),
+		pg_temp.p16_delete('QorperaOS/tables/areas/table.toml'),
+		jsonb_build_object('op','copy','from','QorperaOS/tables/areas/rows.csv','to','QorperaOS/tables/numbers-2'),
 		pg_temp.p16_write(p, 'c6-plain.md', '"A plain file."'),
 		pg_temp.p16_write(p, 'c6-plain-2.md', '"Another plain file."'),
-		pg_temp.p16_write(p, 'tables/numbers/rows.csv', jsonb_set(jsonb_set(pg_temp.fixture('rows'), '{rows,0,fields,2}', '"1300"'),
+		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/rows.csv', jsonb_set(jsonb_set(pg_temp.fixture('rows'), '{rows,0,fields,2}', '"1300"'),
 			'{rows,2}', '{"line":4,"fields":["Orders","2026-10-17T10:00:00Z","7","count","11111111-1111-4111-8111-000000000030"]}')),
-		pg_temp.p16_write(p, 'tables/numbers/README.md', '"About the numbers."'),
-		jsonb_build_object('op','copy','from','interfaces/pulse/readme.md','to','c6-pulse.md'));
+		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/README.md', '"About the numbers."'),
+		jsonb_build_object('op','copy','from','QorperaOS/interfaces/pulse/readme.md','to','c6-pulse.md'));
 	r := pg_temp.commit(p, 'c6-run-0001', v_units);
 	for i in 1..10 loop perform pg_temp.layout(r, i); end loop;
 	for i in 11..15 loop perform pg_temp.expect(r, i, 'saved'); end loop;
@@ -125,19 +125,19 @@ begin
 	if pg_temp.commit(p, 'c6-run-0001', v_units) -> 'units' is distinct from r -> 'units' then
 		raise exception 'The same call again: %', r; end if;
 	r := pg_temp.commit(p, 'c6-run-0002', jsonb_build_array(
-		pg_temp.p16_move('interfaces/pulse/readme.md', 'c6-readme.md'),
-		pg_temp.p16_move('c6-plain.md', 'interfaces/pulse/c6.md'),
-		jsonb_build_object('op','copy','from','c6-plain-2.md','to','interfaces/c6-copy.md'),
-		jsonb_build_object('op','symlink','path','interfaces/pulse/c6.lnk','target','README.md'),
-		pg_temp.p16_move('tables/numbers', 'c6-numbers'),
-		pg_temp.p16_move('tables/areas/table.toml', 'c6-areas.toml'),
-		jsonb_build_object('op','copy','from','c6-pulse.md','to','tables/c6')));
+		pg_temp.p16_move('QorperaOS/interfaces/pulse/readme.md', 'c6-readme.md'),
+		pg_temp.p16_move('c6-plain.md', 'QorperaOS/interfaces/pulse/c6.md'),
+		jsonb_build_object('op','copy','from','c6-plain-2.md','to','QorperaOS/interfaces/c6-copy.md'),
+		jsonb_build_object('op','symlink','path','QorperaOS/interfaces/pulse/c6.lnk','target','README.md'),
+		pg_temp.p16_move('QorperaOS/tables/numbers', 'c6-numbers'),
+		pg_temp.p16_move('QorperaOS/tables/areas/table.toml', 'c6-areas.toml'),
+		jsonb_build_object('op','copy','from','c6-pulse.md','to','QorperaOS/tables/c6')));
 	for i in 1..7 loop perform pg_temp.layout(r, i); end loop;
 	if r ->> 'seq' is not null then raise exception 'A commit of refusals takes no seq: %', r; end if;
 	if pg_temp.layouts() is distinct from v_before then raise exception 'The layouts changed: % %', v_before, pg_temp.layouts(); end if;
 	if pg_temp.p16_version('c6-plain.md') is null or pg_temp.p16_version('c6-pulse.md') is null
-		or pg_temp.p16_version('tables/numbers/readme.md') is null or v_rows is null
-		or pg_temp.p16_version('tables/numbers/rows.csv') is not distinct from v_rows then
+		or pg_temp.p16_version('QorperaOS/tables/numbers/readme.md') is null or v_rows is null
+		or pg_temp.p16_version('QorperaOS/tables/numbers/rows.csv') is not distinct from v_rows then
 		raise exception 'The other units saved'; end if;
 end $$;
 
@@ -147,9 +147,9 @@ do $$
 declare g jsonb := pg_temp.agent_run(); v_before jsonb := pg_temp.layouts(); v_units jsonb; v_review uuid; r jsonb;
 begin
 	v_units := jsonb_build_array(
-		pg_temp.p16_folder(g -> 'actor', 'interfaces/approved-page', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(g -> 'actor', 'QorperaOS/interfaces/approved-page', jsonb_build_object('interface.toml',
 			pg_temp.iface('86400000-0000-4000-8000-000000000024', 'Approved page', false))),
-		pg_temp.p16_write(g -> 'actor', 'tables/numbers/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}'));
+		pg_temp.p16_write(g -> 'actor', 'QorperaOS/tables/numbers/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}'));
 	v_review := (pg_temp.record(g -> 'binding', pg_temp.action(g -> 'binding', 'c6-call-1', 'allow', 'delegation', 'save_interface'),
 		v_units) ->> 'reviewId')::uuid;
 	if v_review is null then raise exception 'The recorder records the approval'; end if;
@@ -166,9 +166,9 @@ declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); v 
 	v_before jsonb := pg_temp.layouts(); r jsonb;
 begin
 	r := pg_temp.vcommit(b, 'c6-view-0001', jsonb_build_array(
-		pg_temp.p16_write(v, 'interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse now', true)),
-		pg_temp.p16_delete('interfaces/member-page'),
-		pg_temp.p16_write(v, 'tables/areas/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas')),
+		pg_temp.p16_write(v, 'QorperaOS/interfaces/pulse/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse now', true)),
+		pg_temp.p16_delete('QorperaOS/interfaces/member-page'),
+		pg_temp.p16_write(v, 'QorperaOS/tables/areas/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas')),
 		pg_temp.p16_write(v, 'c6-view.md', '"From the machine."')));
 	perform pg_temp.layout(r, 1);
 	perform pg_temp.layout(r, 2);
@@ -185,7 +185,7 @@ declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); v_
 	v_proposal uuid;
 begin
 	perform pg_temp.rule(false);
-	r := pg_temp.vcommit(b, 'c6-park-0001', jsonb_build_array(pg_temp.p16_delete('interfaces/member-page')));
+	r := pg_temp.vcommit(b, 'c6-park-0001', jsonb_build_array(pg_temp.p16_delete('QorperaOS/interfaces/member-page')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	v_proposal := (pg_temp.parked(r)).id;
 	perform pg_temp.rule(true);
@@ -200,9 +200,9 @@ end $$;
 -- the patched body names this migration.
 do $$
 begin
-	if not (pg_temp.layouts() ?& array['interfaces/mailbox/interface.toml', 'interfaces/member-page/interface.toml',
-			'interfaces/order.md', 'interfaces/pulse/interface.toml', 'interfaces/pulse/readme.md', 'tables/areas/table.toml',
-			'tables/cards/table.toml', 'tables/numbers/table.toml'])
+	if not (pg_temp.layouts() ?& array['qorperaos/interfaces/mailbox/interface.toml', 'qorperaos/interfaces/member-page/interface.toml',
+			'qorperaos/interfaces/order.md', 'qorperaos/interfaces/pulse/interface.toml', 'qorperaos/interfaces/pulse/readme.md',
+			'qorperaos/tables/areas/table.toml', 'qorperaos/tables/cards/table.toml', 'qorperaos/tables/numbers/table.toml'])
 		or position('20260930510000 (C6)' in pg_get_functiondef(
 			'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure)) = 0 then
 		raise exception 'Kept: %', pg_temp.layouts(); end if;

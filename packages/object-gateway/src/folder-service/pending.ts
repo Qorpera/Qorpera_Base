@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
+import { COMPANY_STATE_SEEDED_PATHS, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { folderKey } from "@qorpera/contracts";
 import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
@@ -157,7 +157,8 @@ export function unpublished(path: string, codeHost: boolean): boolean {
 	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path, codeHost);
 }
 
-const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
+/** The seeded paths by key: QorperaOS/ and the platform's folders and files under it. */
+const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS.map((path) => folderKey(path)));
 
 /** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key: git's directories only below
  * code/<owner>/<name>/ (20260930446100). */
@@ -195,19 +196,21 @@ function checkNewPath(path: string, codeHost: boolean): void {
 	if (gitRefused(path, codeHost)) fail(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
 }
 
-/** Seeded paths, a lone `agent.md` or `group.md`, and agent and group folders may not go, or go elsewhere (§2,
- * contract 5.6). The core refuses them too; here the machine hears at once. */
+/** Seeded paths, a lone `agent.md` or `group.md`, and agent and group folders (all under QorperaOS/agents/) may not
+ * go, or go elsewhere (§2, contract 5.6). The core refuses them too; here the machine hears at once. */
 function checkRemovable(path: string): void {
 	const key = folderKey(path);
 	if (SEEDED.has(key)) fail(ErrorCode.notPermitted, "A seeded path stays");
-	if (/^agents\/[^/]+\/agent\.md$/.test(key) || /^agents\/groups\/[^/]+\/group\.md$/.test(key))
+	const below = osRelative(key) ?? "";
+	if (/^agents\/[^/]+\/agent\.md$/.test(below) || /^agents\/groups\/[^/]+\/group\.md$/.test(below))
 		fail(ErrorCode.notPermitted, "Remove the agent's or group's folder instead");
 }
 
 function checkMove(from: string, to: string): void {
 	checkRemovable(from);
-	const source = folderKey(from);
-	const target = folderKey(to);
+	// Below QorperaOS/; "" for a path outside it, which is no agent's or group's folder.
+	const source = osRelative(folderKey(from)) ?? "";
+	const target = osRelative(folderKey(to)) ?? "";
 	const agent = (key: string) => /^agents\/[^/]+$/.test(key) && key !== "agents/groups";
 	const group = (key: string) => /^agents\/groups\/[^/]+$/.test(key);
 	if ((agent(source) && !agent(target)) || (group(source) && !group(target)))

@@ -56,25 +56,29 @@ with `interface_read`, and changes one with `save_interface` (§7).
 
 ## 2. Where things live
 
+Both folders are under `QorperaOS/`, the platform's top folder (contract 5.6; migration 20260930534000). Below it,
+paths are written in lowercase, as their keys.
+
 ```
-interfaces/                       seeded; can't be deleted or moved
-  order.md                        the Interfaces tab's order
-  <interface>/                    named like an agent's folder (contract 5.6)
-    interface.toml                the page
-    README.md                     optional: what it is for
-tables/                           seeded; can't be deleted or moved
-  <table>/                        one folder per table, created, moved and deleted as one unit
-    table.toml                    the table: its columns, key and writers
-    rows.csv                      its rows
+QorperaOS/
+  interfaces/                     seeded; can't be deleted or moved
+    order.md                      the Interfaces tab's order
+    <interface>/                  named like an agent's folder (contract 5.6)
+      interface.toml              the page
+      README.md                   optional: what it is for
+  tables/                         seeded; can't be deleted or moved
+    <table>/                      one folder per table, created, moved and deleted as one unit
+      table.toml                  the table: its columns, key and writers
+      rows.csv                    its rows
 ```
 
 - **Names.** Folder names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most 64
   characters, `-2`, `-3` when taken. A table's name is its folder's name.
-- **Seeded at founding** (§8): `interfaces/` and `tables/`, Mailbox and Members, and the `areas` table. Pulse and the
+- **Seeded at founding** (§8): `QorperaOS/interfaces/` and `QorperaOS/tables/`, Mailbox and Members, and the `areas` table. Pulse and the
   `numbers` and `cards` tables were seeded until 21 October 2026.
 - **Cannot be deleted or moved:**
-  - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
-  - `tables/`, and the `tables/areas/` folder, which the platform reads supervision from (§5.1);
+  - `QorperaOS/interfaces/`, `QorperaOS/interfaces/order.md`, and the main interface's folder and its `interface.toml`;
+  - `QorperaOS/tables/`, and the `QorperaOS/tables/areas/` folder, which the platform reads supervision from (§5.1);
   - `table.toml` and `rows.csv` on their own: deleting a table's folder deletes the table.
 
 > **Scope reset, 2026-10-17.** Seeding Pulse and the `numbers` and `cards` tables is no longer required, and there
@@ -86,10 +90,10 @@ tables/                           seeded; can't be deleted or moved
 
 | Path | Kind | Checked at save | Limit |
 | --- | --- | --- | --- |
-| `interfaces/order.md` | interface-order | yes | 16 KiB |
-| `interfaces/<name>/interface.toml` | interface | yes | 64 KiB |
-| `tables/<name>/table.toml` | table | yes | 16 KiB |
-| `tables/<name>/rows.csv` | table-rows | yes, against its definition | 64 KiB (the core's limit for checked files) |
+| `QorperaOS/interfaces/order.md` | interface-order | yes | 16 KiB |
+| `QorperaOS/interfaces/<name>/interface.toml` | interface | yes | 64 KiB |
+| `QorperaOS/tables/<name>/table.toml` | table | yes | 16 KiB |
+| `QorperaOS/tables/<name>/rows.csv` | table-rows | yes, against its definition | 64 KiB (the core's limit for checked files) |
 
 A file's kind comes from its path alone, as for the state files. These are the folder's first structured kinds that
 are not markdown. A save that is refused is refused for that file with its problems (§6). `README.md` is a plain
@@ -238,7 +242,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - A `file:` source's `text` is the file without its settings block (front matter: the `---` lines and the settings
     between them), as a rule's or an agent's file starts. The vision and sections files have none, so a leading `---`
     there is part of the text.
-  - A `file:` source under `hooks/` or `human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
+  - A `file:` source under `hooks/` or `QorperaOS/human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
     show the outside-content mark (I7).
 - **Numbers (proposed, built with the folder pages):**
   - The tiles are the rows the block's query keeps. With `latest_by`, that is the newest row of each group, and the
@@ -340,7 +344,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     releases it. No other drop does anything, and a Shared card, which stays in the Shared lane either way, has no
     drag. Only the lane a card may land in is marked while it is dragged. The buttons stay the way on a phone and from
     the keyboard.
-  - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell's text
+  - The write reads `QorperaOS/tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell's text
     (every other byte stays as written), checks the claim rule (§5) before sending, and names the version it read.
     When the file changed meanwhile, it is read and checked again: a cell no longer empty (take) or no longer the
     viewer's (release) stops the write, and the board says "Someone else took it first." or "That changed while you
@@ -374,7 +378,7 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | Source | Columns | Exists when |
 | --- | --- | --- |
 | `vision` | text | always |
-| `file:<path>` | text (markdown, at most 256 KiB read) | the file exists |
+| `file:<path>` | text (markdown, at most 256 KiB read); `<path>` is the file's whole path, such as `file:QorperaOS/rules/shared-areas.md` | the file exists |
 | `agents` | id, name, role, figure, colour, status, section | always |
 | `groups` | id, name, agents, people | always |
 | `todos` | id, agent, title, status, requested_by, updated | always |
@@ -406,9 +410,9 @@ not exist yet is not drawn: the client contract's rule against rendering missing
   outside content:
   - `mail`'s `from_name`, `from_address` and `subject`;
   - a `file:` source's `text` under `hooks/<hook>/` (saved events, and received mail once it moves there with I11);
-  - a `file:` source's `text` under `human-tasks/<task>/`, whoever sent it back.
+  - a `file:` source's `text` under `QorperaOS/human-tasks/<task>/`, whoever sent it back.
 
-  A path counts as under `hooks/` or `human-tasks/` by its folder key, as the folder finds files: case and
+  A path counts as under `hooks/` or `QorperaOS/human-tasks/` by its folder key, as the folder finds files: case and
   full-width letters don't matter.
 
   A source added later names its own.
@@ -420,7 +424,7 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 
 ## 5. Tables
 
-A table is the folder `tables/<name>/`. Its definition is `table.toml` and its rows are `rows.csv`. Its rows are
+A table is the folder `QorperaOS/tables/<name>/`. Its definition is `table.toml` and its rows are `rows.csv`. Its rows are
 company state.
 
 ```toml
@@ -519,7 +523,7 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 
 ### 5.1 Supervision
 
-`tables/areas/` is the table the platform reads supervision from. It is seeded and can't be deleted or moved, and its
+`QorperaOS/tables/areas/` is the table the platform reads supervision from. It is seeded and can't be deleted or moved, and its
 `owner`, `supervisor` and `agents` columns are fixed. An area's supervisor is the member its agents answer to.
 Jonas, 2 October 2026 (decision 4); contract amendment item 10.
 
@@ -606,7 +610,7 @@ files or state:
   its `table.toml`, and any other file in a table folder than those two and `README.md`;
 - `[write]`;
 - the claim rule (§5), with `claim`;
-- `tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
+- `QorperaOS/tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
   one area per agent;
 - two live interfaces, or two live tables, with one id (`duplicate`), and a table's id changed in place.
 
@@ -631,10 +635,10 @@ is the state files' `COMPANY_STATE_PARSER_VERSION`, which `parseCompanyStateFile
 - **Fixtures:** `test/fixtures/interface-state.json` holds the exact answer for one valid file of each kind and one
   file per parser code; `test/interface-state.test.ts` keeps it equal to the parser.
 - **The kind comes from the path's shape:**
-  - `interfaces/order.md`;
-  - `interfaces/*/interface.toml`;
-  - `tables/*/table.toml`;
-  - `tables/*/rows.csv`.
+  - `QorperaOS/interfaces/order.md`;
+  - `QorperaOS/interfaces/*/interface.toml`;
+  - `QorperaOS/tables/*/table.toml`;
+  - `QorperaOS/tables/*/rows.csv`.
 
   A badly named folder is still that kind, and its name is a parse problem, so no interface or table file is ever
   saved unchecked.
@@ -656,21 +660,21 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
      and `access.edit` typed, and the rest by JSON type and size. SQL can't prove a parse came from its text, so the
      readers never trust the stored parse (§10, I7 and I8), and a later slice that reads or indexes a field adds its
      full check.
-2. **Placement** (`placement`), for every unit under `interfaces/` or `tables/`:
+2. **Placement** (`placement`), for every unit under `QorperaOS/interfaces/` or `QorperaOS/tables/`:
    - **Allowed paths:**
-     - `interfaces/`, `interfaces/order.md`, `interfaces/<name>/`, `interfaces/<name>/interface.toml` and
-       `interfaces/<name>/README.md`;
-     - `tables/`, `tables/<name>/`, `tables/<name>/table.toml`, `tables/<name>/rows.csv` and
-       `tables/<name>/README.md`.
+     - `QorperaOS/interfaces/`, `QorperaOS/interfaces/order.md`, `QorperaOS/interfaces/<name>/`, `QorperaOS/interfaces/<name>/interface.toml` and
+       `QorperaOS/interfaces/<name>/README.md`;
+     - `QorperaOS/tables/`, `QorperaOS/tables/<name>/`, `QorperaOS/tables/<name>/table.toml`, `QorperaOS/tables/<name>/rows.csv` and
+       `QorperaOS/tables/<name>/README.md`.
    - **Names:** `<name>` matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is at most 64 characters, and is written as its key.
      `README.md` may be written `README.md` or `readme.md`.
-   - **Never deleted or moved:** `interfaces/`, `interfaces/order.md`, the main interface's folder and its
-     `interface.toml`, `tables/`, and `tables/areas/` with its files.
+   - **Never deleted or moved:** `QorperaOS/interfaces/`, `QorperaOS/interfaces/order.md`, the main interface's folder and its
+     `interface.toml`, `QorperaOS/tables/`, and `QorperaOS/tables/areas/` with its files.
    - **Tables move whole:** `table.toml` or `rows.csv` is deleted or moved only with its folder. A `rows.csv` needs a
      `table.toml` in its folder at commit.
    - **Ids** (`duplicate`): one live interface per `[interface] id`, and one live table per `[table] id`. A table's
      id never changes: a `table.toml` save that changes it is refused, and its folder keeps it when it moves.
-   - **Coding sessions** change nothing under `interfaces/`, and no `table.toml`, so they make or remove no table
+   - **Coding sessions** change nothing under `QorperaOS/interfaces/`, and no `table.toml`, so they make or remove no table
      folder either (the 2026-10-02 interfaces amendment, items 7 and 12). They may write a `rows.csv` under rule 5,
      as an agent.
 3. **One main interface** (`main`). Decide sees one unit at a time, and a change set isn't atomic, so this is a
@@ -742,7 +746,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
 
    This is `tableDefinitionProblems`.
 8. **The claim rule** (`claim`), on a `rows.csv` save: the port of `tableClaimProblems`.
-   - **Columns checked:** every `needs_yes` column, and, for an agent, `tables/areas/`'s `owner`, `supervisor` and
+   - **Columns checked:** every `needs_yes` column, and, for an agent, `QorperaOS/tables/areas/`'s `owner`, `supervisor` and
      `agents` whatever their flags.
    - **The platform** passes only when it clears cells: a leaving member's (the 2026-10-02 interfaces amendment,
      item 6, "Leaving").
@@ -761,7 +765,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
          offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 
        Offers are records the platform keeps (§5, built in I9c). An agent never accepts one.
-9. **`tables/areas/`** (`areas`):
+9. **`QorperaOS/tables/areas/`** (`areas`):
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
    - after a rows save, no agent id is in more than one row's `agents` (one area per agent);
@@ -772,8 +776,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
 definition and its rows. F2's per-table index row (keyed by the table's id) is the lock a rows save and a definition
 change take, so each sees the other's commit. A file with no stored parse reads as not main and open to anyone, or,
 for a `table.toml`, as no definition; none exists, since the folder core starts empty. The review recorder (C2 R1,
-F2's) gains `save_interface`, classified as §7 says, for a call whose units are all at or under `interfaces/` or
-`tables/`.
+F2's) gains `save_interface`, classified as §7 says, for a call whose units are all at or under `QorperaOS/interfaces/` or
+`QorperaOS/tables/`.
 
 ## 7. Who changes what, and review
 
@@ -790,13 +794,13 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
   `save_interface`; through the mount or a shell they are refused.
 - **Changes that apply at once:** layout, wording, order and sources, whatever carries them. The agent's thread shows
   the change with Undo (decision 2).
-- **Coding sessions** see `interfaces/` and table definitions read-only.
+- **Coding sessions** see `QorperaOS/interfaces/` and table definitions read-only.
 
 > **Scope reset, 2026-10-17.** Agents do not create or redesign pages. Writing pages leaves the agent tools
 > (`save_interface`, with its review recorder part and Undo), and the same boundary holds for older or replayed tool
 > calls, ordinary file writes and writes through a mounted folder. So the review of an agent creating an interface,
 > adding a button or changing `[access]` has nothing left to count. Agents also do not create, change, move or delete
-> a table's definition (`tables/<table>/table.toml`) or a table's folder. They keep writing a table's rows
+> a table's definition (`QorperaOS/tables/<table>/table.toml`) or a table's folder. They keep writing a table's rows
 > (`rows.csv`) under the claim rule, and the table reads and writes the two pages and other kept behavior need stay.
 > Members and the platform keep their file writes. Even so, layouts and actions are the platform's for members too:
 > an owner or admin turns a page on or off and sets its allowed source fields.
@@ -805,16 +809,16 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
 
 > **Scope reset, 2026-10-17.** The library, adding interfaces from it, update offers and outside templates are out
 > of this rebuild, and so are Pulse and the main interface. Mailbox and Members are the platform's pages and start
-> off. The Interfaces tab lists only the pages that are on, so `interfaces/order.md`'s Pulse line and its rule for
+> off. The Interfaces tab lists only the pages that are on, so `QorperaOS/interfaces/order.md`'s Pulse line and its rule for
 > the main interface no longer hold. Stored copies and order files stay.
 
 - **The library.** Qorpera's library holds interfaces in this same format: a folder of an `interface.toml`, its
   tables and a README. Pulse, Mailbox and Members are its first three.
-- **Adding one** copies its files into `interfaces/` and `tables/` in one change set. The copy is marked with
+- **Adding one** copies its files into `QorperaOS/interfaces/` and `QorperaOS/tables/` in one change set. The copy is marked with
   `[template] from` and `version`, and from then on it is the company's to change. The platform never relies on
-  `[template]`: supervision is read from `tables/areas/` by its path.
+  `[template]`: supervision is read from `QorperaOS/tables/areas/` by its path.
 - **Seeding.** At founding the platform copies Mailbox and Members with the `areas` table and lists the two in
-  `interfaces/order.md` (until 21 October 2026 also Pulse with `numbers`, and `cards`). Mailbox needs `mail`; Members
+  `QorperaOS/interfaces/order.md` (until 21 October 2026 also Pulse with `numbers`, and `cards`). Mailbox needs `mail`; Members
   needs `team`.
 - **Updates.** When the library has a newer version, the platform offers it and never applies it by itself. Lines the
   company didn't change update. A line both sides changed becomes a choice with both versions side by side. Removing
@@ -822,7 +826,7 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
 - **Outside templates** (the marketplace, later) are files of this format only. Before one is added, the platform says
   in plain words what it reads and what its buttons do.
 
-### `interfaces/order.md`
+### `QorperaOS/interfaces/order.md`
 
 ```
 - <id> Pulse
@@ -830,7 +834,7 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
 - <id> Members
 ```
 
-One line per interface, `- <id>` and a name for reading, as in `agents/sections.md`. The main interface is drawn on top
+One line per interface, `- <id>` and a name for reading, as in `QorperaOS/agents/sections.md`. The main interface is drawn on top
 wherever it is listed. Interfaces not listed follow by name.
 
 ## 9. Decisions (Jonas, 2 October 2026)
@@ -852,6 +856,10 @@ wherever it is listed. Interfaces not listed follow by name.
 > rows stay in a CSV file, and the larger table store is out of this rebuild. Decisions 3 and 4 are not changed.
 
 ## 10. Build order
+
+> Since 20260930534000 every platform path below is under `QorperaOS/` (§2): `interfaces/order.md` is
+> `QorperaOS/interfaces/order.md`, `tables/areas` is `QorperaOS/tables/areas`, and `file:rules/shared-areas.md` is
+> `file:QorperaOS/rules/shared-areas.md`. The steps keep the paths as they were built.
 
 > **Scope reset, 2026-10-17.** The steps are bounded to the two pages (the scope amendment's §5):
 > - I1 holds for the two pages only: the rail's Interfaces tab lists Mailbox and Members once they are on, and

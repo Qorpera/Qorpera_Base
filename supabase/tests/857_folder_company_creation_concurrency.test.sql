@@ -110,33 +110,33 @@ begin
 	v_todo := format(E'---\nid: %s\ntitle: Start with the founders\nstatus: open\nrequested-by: %s\n---\nMeet the founders.\n',
 		p_claim ->> 'firstTodoId', v_kickoff);
 	return jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'),
-		jsonb_build_object('op','write','path','vision/vision.md','file',pg_temp.stage(v_env, v_vision),
-			'structured', jsonb_build_array(pg_temp.entry('vision/vision.md','vision',v_vision,jsonb_build_object('kind','vision','name',v_name)))),
-		jsonb_build_object('op','mkdir','path','agents'),
-		jsonb_build_object('op','write','path','agents/sections.md','file',pg_temp.stage(v_env, v_sections),
-			'structured', jsonb_build_array(pg_temp.entry('agents/sections.md','sections',v_sections,'{"kind":"sections","sections":[]}'))),
-		jsonb_build_object('op','new_folder','path','agents/co-founder',
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'),
+		jsonb_build_object('op','write','path','QorperaOS/vision/vision.md','file',pg_temp.stage(v_env, v_vision),
+			'structured', jsonb_build_array(pg_temp.entry('QorperaOS/vision/vision.md','vision',v_vision,jsonb_build_object('kind','vision','name',v_name)))),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		jsonb_build_object('op','write','path','QorperaOS/agents/sections.md','file',pg_temp.stage(v_env, v_sections),
+			'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/sections.md','sections',v_sections,'{"kind":"sections","sections":[]}'))),
+		jsonb_build_object('op','new_folder','path','QorperaOS/agents/co-founder',
 			'contents', jsonb_build_array(
 				jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(v_env, v_agent)),
 				jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','skills','kind','folder'),
 				jsonb_build_object('path','routines','kind','folder'), jsonb_build_object('path','todos','kind','folder'),
 				jsonb_build_object('path','todos/start-with-the-founders.md','kind','file','file',pg_temp.stage(v_env, v_todo))),
 			'structured', jsonb_build_array(
-				pg_temp.entry('agents/co-founder/agent.md','agent',v_agent,jsonb_build_object('kind','agent','id',v_agent_id,
+				pg_temp.entry('QorperaOS/agents/co-founder/agent.md','agent',v_agent,jsonb_build_object('kind','agent','id',v_agent_id,
 					'name','Co-Founder','role','Co-Founder','agentKind','co-founder','status','active','colour',null,'figure',null,
 					'model',null,'effort',null,'instructions','Found the company.')),
-				pg_temp.entry('agents/co-founder/todos/start-with-the-founders.md','todo',v_todo,jsonb_build_object('kind','todo',
+				pg_temp.entry('QorperaOS/agents/co-founder/todos/start-with-the-founders.md','todo',v_todo,jsonb_build_object('kind','todo',
 					'id',p_claim ->> 'firstTodoId','title','Start with the founders','status','open','requestedBy',v_kickoff,
 					'detail','Meet the founders.')))),
-		jsonb_build_object('op','mkdir','path','agents/groups'),
-		jsonb_build_object('op','mkdir','path','connections'),
-		jsonb_build_object('op','mkdir','path','human-tasks'),
-		jsonb_build_object('op','mkdir','path','contacts'),
-		jsonb_build_object('op','mkdir','path','skills'),
-		jsonb_build_object('op','mkdir','path','skills/human-task'),
-		jsonb_build_object('op','write','path','skills/human-task/SKILL.md','file',pg_temp.stage(v_env, v_skill)),
-		jsonb_build_object('op','mkdir','path','rules'));
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/connections'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/human-tasks'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/contacts'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/skills'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/skills/human-task'),
+		jsonb_build_object('op','write','path','QorperaOS/skills/human-task/SKILL.md','file',pg_temp.stage(v_env, v_skill)),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules'));
 end $$;
 
 -- Companies opened and seeded directly (Cy owns them), each claimed by its own worker; the create call is kept as text

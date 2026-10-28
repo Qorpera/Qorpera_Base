@@ -7,9 +7,9 @@ const agent = "22222222-2222-4222-8222-222222222222";
 const place = { core: "folder-v2", handle: "anna-berg" } as const;
 
 describe("an agent's folder", () => {
-	it("is its folder name, where its agent.md is", () => {
+	it("is its folder name under QorperaOS/agents, where its agent.md is", () => {
 		const folder = cloudAgentFolder(company, agent, place);
-		expect(folder).toBe("agents/anna-berg");
+		expect(folder).toBe("QorperaOS/agents/anna-berg");
 		expect(companyStatePath(`${folder}/agent.md`)?.kind).toBe("agent");
 		expect(companyStatePath(`${folder}/routines/daily.md`)?.kind).toBe("routine");
 	});
@@ -26,20 +26,27 @@ describe("an agent's folder", () => {
 			"Invalid agent folder name",
 		);
 		expect(cloudAgentFolder(company, agent, { core: "folder-v2", handle: "a".repeat(64) })).toBe(
-			`agents/${"a".repeat(64)}`,
+			`QorperaOS/agents/${"a".repeat(64)}`,
 		);
 	});
 
 	it("tells an agent's folder from other paths", () => {
 		expect(isCloudAgentFolder(cloudAgentFolder(company, agent, place))).toBe(true);
+		// The database's keys name the root in lowercase.
+		expect(isCloudAgentFolder("qorperaos/agents/anna-berg")).toBe(true);
 		for (const path of [
+			"QorperaOS",
+			"QorperaOS/agents",
 			"agents",
-			"agents/",
-			"agents/groups",
-			"agents/-a",
-			"agents/a--b",
-			"agents/Anna",
-			"agents/a/b",
+			"agents/anna-berg",
+			"qorperaosx/agents/anna-berg",
+			"work/QorperaOS/agents/anna-berg",
+			"QorperaOS/agents/",
+			"QorperaOS/agents/groups",
+			"QorperaOS/agents/-a",
+			"QorperaOS/agents/a--b",
+			"QorperaOS/agents/Anna",
+			"QorperaOS/agents/a/b",
 			"work/anna",
 		])
 			expect(isCloudAgentFolder(path)).toBe(false);

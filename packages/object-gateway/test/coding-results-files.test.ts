@@ -19,7 +19,7 @@ const environmentId = "92400000-0000-4000-8000-000000000020";
 const profileId = "92400000-0000-4000-8000-000000000010";
 const intentId = "98200000-0000-4000-8000-0000000000f0";
 const version = "98200000-0000-4000-8000-0000000000c1";
-const path = "agents/alice/todos/fix-login/session-1/results.md";
+const path = "QorperaOS/agents/alice/todos/fix-login/session-1/results.md";
 const pullRequest = "https://github.com/Qorpera/Qorpera_Base/pull/7";
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const bytesOf = (text: string) => new TextEncoder().encode(text).byteLength;
@@ -181,9 +181,10 @@ describe("coding results claims", () => {
 		["another schema", { schema: "qorpera.connection-file-claim/v1" }],
 		["another operation key", { operationKey: `coding-results:${codingWorkerId}:1:2` }],
 		["a generation no claim takes", { generation: 0, operationKey: `coding-results:${codingWorkerId}:1:0` }],
-		["a worker's brief", { path: "agents/alice/todos/fix-login/session-1/brief.md" }],
-		["a path outside a worker's folder", { path: "rules/results.md" }],
-		["a badly named folder", { path: "agents/alice/todos/fix-login/../results.md" }],
+		["a worker's brief", { path: "QorperaOS/agents/alice/todos/fix-login/session-1/brief.md" }],
+		["a path outside a worker's folder", { path: "QorperaOS/rules/results.md" }],
+		["a worker's folder outside QorperaOS/", { path: "agents/alice/todos/fix-login/session-1/results.md" }],
+		["a badly named folder", { path: "QorperaOS/agents/alice/todos/fix-login/../results.md" }],
 		["a blocked turn without needs", { ...blocked, needs: null }],
 		["needs on a turn that is not blocked", { needs: "A decision." }],
 		["an outcome a turn never reports", { outcome: "cancelled" }],
@@ -241,8 +242,12 @@ describe("coding results text", () => {
 		expect(codingResultsText("Done.\r\n## Needs\nNothing.\n##  Files #\n- a.md\n## Notes")).toBe(
 			"Done.\n### Needs\nNothing.\n###  Files #\n- a.md\n## Notes",
 		);
-		const { parse } = parsed({ summary: "Done.\n## Files\n- agents/alice/notes.md", pullRequest: null });
-		expect(parse).toMatchObject({ summary: "Done.\n### Files\n- agents/alice/notes.md", needs: null, files: [] });
+		const { parse } = parsed({ summary: "Done.\n## Files\n- QorperaOS/agents/alice/notes.md", pullRequest: null });
+		expect(parse).toMatchObject({
+			summary: "Done.\n### Files\n- QorperaOS/agents/alice/notes.md",
+			needs: null,
+			files: [],
+		});
 		expect(parsed({ ...blocked, needs: "Pick one.\n## Needs" }).parse.needs).toBe(
 			"Pick one.\n### Needs\n\nOptions:\n- Google\n- GitHub",
 		);

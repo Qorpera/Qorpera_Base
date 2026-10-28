@@ -5,8 +5,8 @@
 -- goes. A write sent after the removal committed is refused. A mailbox's creation and a new mail domain serialize on the
 -- mail settings (review r2 F2). On 648's committed company; the fixture goes at the end.
 
--- The company's connections/ folder, which 648's seed does not make.
-select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'e1-race-mkdir-1', '[{"op":"mkdir","path":"connections"}]'), 1,
+-- The company's QorperaOS/connections/ folder, which 648's seed does not make.
+select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'e1-race-mkdir-1', '[{"op":"mkdir","path":"QorperaOS/connections"}]'), 1,
 	'saved') \g /dev/null
 
 -- A folder-v2 hook, made directly (its creation is 912's), and its first claim by writer A, finished.
@@ -37,7 +37,7 @@ begin
 end $$;
 -- The write's unit, its bytes staged now (committed), for fence_one to send.
 select set_config('qorpera_test.unit', pg_temp.hook_unit(current_setting('qorpera_test.claim')::jsonb,
-	'connections/hook-race.md')::text, false) \g /dev/null
+	'QorperaOS/connections/hook-race.md')::text, false) \g /dev/null
 select dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
 
 -- R1. fence_one commits the file as the platform in an open transaction; fence_two's removal waits for it, at the hook row.
@@ -70,7 +70,7 @@ end $$;
 do $$
 declare c jsonb := pg_temp.claim();
 begin
-	if c ->> 'present' <> 'false' or c -> 'current' ->> 'path' is distinct from 'connections/hook-race.md' then
+	if c ->> 'present' <> 'false' or c -> 'current' ->> 'path' is distinct from 'QorperaOS/connections/hook-race.md' then
 		raise exception 'R1: after the removal the claim finds the file: %', c; end if;
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', c ->> 'operationKey', jsonb_build_array(jsonb_build_object('op',
 		'delete', 'path', c -> 'current' ->> 'path', 'expectedVersion', c -> 'current' ->> 'version'))), 1, 'saved');

@@ -18,7 +18,7 @@ select pg_temp.base_assert(exists (
 ), 'The base run is logged awake at its runner''s acceptance and queued for the meter');
 
 -- The coding worker of part 2 needs a todo: the owner's todo file in Alice's folder.
-select pg_temp.base_commit(pg_temp.base_owner(), 'hours-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/hours.md', 'todo',
+select pg_temp.base_commit(pg_temp.base_owner(), 'hours-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/hours.md', 'todo',
 	E'---\nid: 71000000-0000-4000-8000-0000000000d1\ntitle: Measure computer hours\nstatus: open\n---\n\n',
 	'{"kind":"todo","id":"71000000-0000-4000-8000-0000000000d1","title":"Measure computer hours","status":"open","requestedBy":null,"detail":""}'))) \g /dev/null
 select pg_temp.base_assert(todo_key = 'hours' and staff_agent_id = '92400000-0000-4000-8000-000000000030', 'Alice''s todo')

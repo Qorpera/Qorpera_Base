@@ -11,7 +11,7 @@ import {
 	type CloudMemberFolderUnit,
 	type CloudMemberFolderUnitResult,
 } from "@qorpera/cloud-client/cloud-member-folder";
-import { companyPathKey, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osPath, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { vi } from "vitest";
 import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 
@@ -54,7 +54,7 @@ type Answer =
 	| { readonly kind: "throw"; readonly error: unknown };
 
 /** The folder seeded as a new company's, without the files the tests do not use. */
-const SEEDED = ["agents", "agents/groups", "skills"];
+const SEEDED = [osPath("agents"), osPath("agents/groups"), osPath("skills")];
 
 const encoder = new TextEncoder();
 

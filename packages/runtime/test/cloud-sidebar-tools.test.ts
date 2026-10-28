@@ -110,7 +110,7 @@ describe("a folder-v2 company's sections", () => {
 			folderSidebar: { run } as unknown as CloudFolderSidebar,
 		});
 		if (!tool) throw new Error("Missing sidebar tool");
-		expect(tool.description).toContain("agents/sections.md");
+		expect(tool.description).toContain("QorperaOS/agents/sections.md");
 		expect(tool.description).toContain("name the section by its name;");
 		expect(tool.description).not.toContain("by its id or name");
 		const context = {

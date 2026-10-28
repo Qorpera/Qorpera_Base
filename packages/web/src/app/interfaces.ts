@@ -3,8 +3,9 @@
  * until an owner or admin switches it on in Settings → Company (app/views/settings-pages.ts; read by
  * app/interface-pages.ts), and the Interfaces tab lists those that are on, in that order. A page is drawn from the
  * definition the web ships (the cloud client's library; Bank's is app/bank-page.ts and views/bank.ts draws it), never
- * from the company's folder: whatever its interfaces/ holds, Pulse, a page an agent wrote or a file named like one of
- * the three, is never shown, and every other page name, in the tab, a link or a button, is a page that isn't there.
+ * from the company's folder: whatever its QorperaOS/interfaces/ holds, Pulse, a page an agent wrote or a file named like
+ * one of the three, is never shown, and every other page name, in the tab, a link or a button, is a page that isn't
+ * there.
  *
  * Only the parts whose source the client can read are drawn: a part without its source is not drawn, and a page with no
  * part to draw is not listed (the client contract's rule against rendering missing machinery). Those sources are the
@@ -12,6 +13,7 @@
  * (app/interface-mail.ts), and its tables and files that hold no outside content, read from its folder
  * (app/interface-folder.ts). */
 
+import { osRelative } from "@qorpera/cloud-client/company-state-files";
 import { AREAS_TABLE, INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
 	type InterfaceBlock,
@@ -166,9 +168,9 @@ export function isLiveSource(source: string): boolean {
 }
 
 let noAreas: FolderTable | undefined;
-/** A table source as the folder was last read. A company whose folder has no `tables/areas/` yet reads it as the
- * library's table with no rows (Interfaces C6d): the Members page draws its board empty, and the first area a member
- * adds writes the table (app/interface-areas.ts). */
+/** A table source as the folder was last read. A company whose folder has no `QorperaOS/tables/areas/` yet reads it as
+ * the library's table with no rows (Interfaces C6d): the Members page draws its board empty, and the first area a
+ * member adds writes the table (app/interface-areas.ts). A `table:<name>` source is `QorperaOS/tables/<name>/`. */
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
 	if (!source.startsWith("table:")) return undefined;
 	const name = source.slice("table:".length);
@@ -196,7 +198,9 @@ export function offeredRow(
 	company: CompanyController,
 	offer: MemberInterfaceOffer,
 ): { readonly table: string; readonly definition: TableFile; readonly row: TableRow } | undefined {
-	const { key, column, folder } = offer;
+	const { key, column } = offer;
+	// The folder as the database lists it, `QorperaOS/tables/<name>`.
+	const folder = offer.folder === null ? null : osRelative(offer.folder);
 	if (offer.state !== "open" || key === null || column === null || !folder?.startsWith("tables/")) return undefined;
 	const table = folder.slice("tables/".length);
 	const read = folderTable(company, `table:${table}`);
@@ -209,8 +213,8 @@ export function offeredRow(
 }
 
 /** A `file:` source's text, without its settings block. A file whose text is outside content (under `hooks/` or
- * `human-tasks/`, §4) is not read: the blocks can't show it with its outside-content mark yet (the 2026-10-02 interfaces
- * amendment, item 3). */
+ * `QorperaOS/human-tasks/`, §4) is not read: the blocks can't show it with its outside-content mark yet (the 2026-10-02
+ * interfaces amendment, item 3). The source names the file's whole path, as `file:QorperaOS/rules/shared-areas.md`. */
 function folderText(company: CompanyController, source: string): string | undefined {
 	if (!source.startsWith("file:") || interfaceOutsideColumns(source).length > 0) return undefined;
 	const path = source.slice("file:".length);

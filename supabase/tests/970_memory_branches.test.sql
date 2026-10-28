@@ -27,11 +27,11 @@ create function pg_temp.agent_parse(p_id uuid, p_name text) returns jsonb langua
 $$;
 -- A new agent folder with its agent.md, as one unit, staged by the owner who commits it (as 943).
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name), pg_temp.member(1))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name), pg_temp.agent_parse(p_id, p_name))))
 $$;
 -- A group chat's folder (as 940), with the owner among its people, staged by the owner.
@@ -40,10 +40,10 @@ create function pg_temp.group_text(p_id uuid, p_name text, p_agents uuid[]) retu
 		p_id, p_name, (select string_agg(format(E'  - %s\n', a), '') from unnest(p_agents) a))
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents), pg_temp.member(1)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents),
 			jsonb_build_object('kind','group','id',p_id,'name',p_name,'subtitle',null,'agents',to_jsonb(p_agents),
 				'people','["63400000-0000-4000-8000-000000000001"]'::jsonb,'purpose','Plan the launch.'))))
@@ -127,10 +127,11 @@ $$;
 insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
 insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400000-0000-4000-8000-000000000010', 'tree');
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'branches-setup',
-	'[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'), 2, 'saved') \g /dev/null
+	'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/groups"}]'), 3, 'saved')
+	\g /dev/null
 do $$
 declare
-	x jsonb; r jsonb; i integer; s uuid; all_ uuid[]; root constant text := 'agents/otto/memory/thread';
+	x jsonb; r jsonb; i integer; s uuid; all_ uuid[]; root constant text := 'QorperaOS/agents/otto/memory/thread';
 	nora constant uuid := pg_temp.id('nora'); otto constant uuid := pg_temp.id('otto'); pia constant uuid := pg_temp.id('pia');
 begin
 	r := pg_temp.commit(pg_temp.member(1), 'branches-hire', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'),
@@ -279,7 +280,7 @@ begin
 		public.qorpera_memory_tree_read(env, launch)), 'The trees, in the branches'' order');
 	perform pg_temp.same(jsonb_build_array(answer #> '{trees,0,root}', answer #> '{trees,0,messages}',
 		jsonb_array_length(answer #> '{trees,0,lines}'), answer #> '{trees,0,blocks,0,path}', answer #> '{trees,1,root}',
-		answer #> '{trees,1,lines}'), '["agents/otto/memory/thread", 1, 1, "agents/otto/memory/thread/t0/00000000.jsonl", null, []]',
+		answer #> '{trees,1,lines}'), '["QorperaOS/agents/otto/memory/thread", 1, 1, "QorperaOS/agents/otto/memory/thread/t0/00000000.jsonl", null, []]',
 		'Otto''s tree has its line; the launch chat has no tree');
 	perform pg_temp.same(answer -> 'branches', pg_temp.branches('nora') -> 'branches', 'The same branches');
 	-- A retired tree has no lines.

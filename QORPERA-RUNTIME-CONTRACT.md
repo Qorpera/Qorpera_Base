@@ -107,7 +107,9 @@ company state lives in one company folder on the NAS, which every machine
 projects onto; the database holds only non-company data and indexes of the
 folder; the folder is seeded with `vision/`, `agents/`, `connections/`,
 `skills/` and `rules/`; and everything is approved by default. Where earlier
-text describes company state as database objects, 5.6 governs.
+text describes company state as database objects, 5.6 governs. On 2026-10-21
+the founder moved the platform's seeded folders under one top folder,
+`QorperaOS/` (5.6).
 
 ## 2. Product thesis
 
@@ -358,7 +360,7 @@ result names the current stage and revision and the one allowed next write).
 The projection still enforces the rule when the proposal is approved
 (2026-09-28). (Superseded by the 2026-09-27 amendment "the company folder
 layout": a company folder has no `organization/formation.json`, whose content
-belongs in `vision/vision.md`, and the runtime has had no
+belongs in `QorperaOS/vision/vision.md`, and the runtime has had no
 `COMPANY_FORMATION_REFUSED` since legacy sweep step C, C-P6, 2026-10-14.)
 
 The Company File is worked on as one live folder. Every agent and member
@@ -376,8 +378,8 @@ Ordinary paths update live by default. Configured money, identity, membership,
 destructive, production, and other high-impact paths use a durable proposal or
 action-specific grant. Review policy belongs to those paths, not to every
 Company File write. Since 2026-09-27 no path is configured this way by
-default: everything is approved by default, and the seeded folders, `rules/`
-and the structured files have their own rules (5.6). The automatic review of the 2026-09-25
+default: everything is approved by default, and the seeded folders,
+`QorperaOS/rules/` and the structured files have their own rules (5.6). The automatic review of the 2026-09-25
 amendment is a separate layer and still applies.
 
 ### 5.3 Change events
@@ -446,6 +448,13 @@ not design intent and MUST NOT be presented as product limits.
 
 ### 5.6 Company folder layout
 
+> **Amended 2026-10-21.** The platform's folders sit under one top folder,
+> `QorperaOS/` (Jonas, 21 October 2026: "you want to have clear view of what's
+> about the platform and what's about the company"). `code/` and the company's
+> own work stay at the top beside it. The tree and every path below show it.
+> Migration `20260930534000` made the change. Nothing was migrated: a company
+> made before it is deleted and made again.
+
 > **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
 > seeded and kept; their files join the structured files, and the automatic
 > review gains the interface changes. See the
@@ -460,10 +469,11 @@ not design intent and MUST NOT be presented as product limits.
 > item 2.
 
 > **Amended 2026-10-06 (not built yet).** An agent's thread keeps its summary
-> tree in `agents/<agent-name>/memory/thread/`, and a group chat keeps its tree
-> in `agents/groups/<group-name>/memory/`, each with its runs' work logs under
-> `runs/`. Only the platform writes, moves or deletes them, or moves or deletes
-> `agents/<agent-name>/memory/`; a tree moves only with its owning folder. A
+> tree in `QorperaOS/agents/<agent-name>/memory/thread/`, and a group chat
+> keeps its tree in `QorperaOS/agents/groups/<group-name>/memory/`, each with
+> its runs' work logs under `runs/`. Only the platform writes, moves or deletes
+> them, or moves or deletes `QorperaOS/agents/<agent-name>/memory/`; a tree
+> moves only with its owning folder. A
 > member's permanent erasure that names a tree's `tree.toml` alone is refused:
 > it is erased with its tree. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
@@ -486,7 +496,9 @@ company is, its agents, what they know, what they do, and everything they
 make. The folder lives once, on the NAS. No machine holds it or a copy of it.
 Every machine projects onto it and streams only the bytes it opens, so many
 machines can work across a folder of many terabytes. `/company/<p>` on a
-machine is logical path `<p>`.
+machine is logical path `<p>`, so the vision is
+`/company/QorperaOS/vision/vision.md`. Paths on a machine are case-sensitive,
+so `QorperaOS` is always spelled exactly so there.
 
 The database holds only what is not company state:
 
@@ -508,63 +520,91 @@ model logins and browser sign-ins. The company owns them, but they never enter
 the folder, and agents never read them. Platform tools and platform rules stay
 in code. Machines keep only their system, applications and caches.
 
-The platform seeds this tree when a company is created. The line after each
-folder (`#`) is what it is for:
+The top of the company folder holds `QorperaOS/`, `code/` and the company's
+own work. The platform seeds `QorperaOS/` and its folders when a company is
+created. The line after each folder (`#`) is what it is for:
 
 ```
-vision/                      # What the company is and where it is going. Every agent reads it.
-  vision.md                  the company's name, what it builds, for whom, why,
-                             and how it works
-agents/                      # The team: each agent's settings, memory, skills, routines and tasks.
-  sections.md                sidebar sections, in order, with their agents
-  <agent-name>/              one folder per agent
-    agent.md                 settings in front matter; instructions in the body
-    memory/                  the agent's notebook (15.1)
-    skills/<skill>/SKILL.md  the agent's own skills (15.2)
-    routines/<routine>.md    its routines (16.3)
-    todos/<todo>.md          its open work (13)
-  groups/
-    <group-name>/group.md    one folder per group chat
-connections/                 # Services the company has connected. Secrets are kept elsewhere.
-  <connection>.md            one file per connected account
-human-tasks/                 # Jobs agents have handed to people.
-  <task>.md                  work an agent hands to a member or a contact
-  <task>/                    what the person sends back: proof/ and note.md
-contacts/                    # People and companies the company deals with.
-  <contact>.md               one file per outside person or firm
-skills/                      # Know-how every agent can use.
-  <skill>/SKILL.md           company skills
-rules/                       # Rules for agents. Only owners and admins change them.
-  <rule>.md                  company review rules
-interfaces/                  # Settings for the pages in the app.
-  order.md                   the pages, in order
-  mailbox/interface.toml     the Mailbox page
-  members/interface.toml     the Members page
-tables/                      # The company's tables.
-  areas/table.toml           the areas: whose call each one is, and who its
-  areas/rows.csv             agents answer to
+QorperaOS/                     # The platform's own folders.
+  vision/                      # What the company is and where it is going. Every agent reads it.
+    vision.md                  the company's name, what it builds, for whom, why,
+                               and how it works
+  agents/                      # The team: each agent's settings, memory, skills, routines and tasks.
+    sections.md                sidebar sections, in order, with their agents
+    <agent-name>/              one folder per agent
+      agent.md                 settings in front matter; instructions in the body
+      memory/                  the agent's notebook (15.1)
+      skills/<skill>/SKILL.md  the agent's own skills (15.2)
+      routines/<routine>.md    its routines (16.3)
+      todos/<todo>.md          its open work (13)
+    groups/
+      <group-name>/group.md    one folder per group chat
+  connections/                 # Services the company has connected. Secrets are kept elsewhere.
+    <connection>.md            one file per connected account
+  human-tasks/                 # Jobs agents have handed to people.
+    <task>.md                  work an agent hands to a member or a contact
+    <task>/                    what the person sends back: proof/ and note.md
+  contacts/                    # People and companies the company deals with.
+    <contact>.md               one file per outside person or firm
+  skills/                      # Know-how every agent can use.
+    <skill>/SKILL.md           company skills
+  rules/                       # Rules for agents. Only owners and admins change them.
+    <rule>.md                  company review rules
+  interfaces/                  # Settings for the pages in the app.
+    order.md                   the pages, in order
+    mailbox/interface.toml     the Mailbox page
+    members/interface.toml     the Members page
+  tables/                      # The company's tables.
+    areas/table.toml           the areas: whose call each one is, and who its
+    areas/rows.csv             agents answer to
+code/                          # Code projects (git repositories).
+  <owner>/<name>/              one repository
+sales/, product/, ...          # The company's own work, by area of the business.
 ```
+
+`QorperaOS` is written exactly so, and its folder key is `qorperaos`. Below
+it, structured paths are written in lowercase, as their keys:
+`QorperaOS/agents/sections.md`, never `QorperaOS/Agents/Sections.md`.
+`QorperaOS/` itself is seeded, and it is never moved or deleted.
 
 `human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
 the 2026-10-02 amendment "work for people", item 5). `interfaces/` and
-`tables/` joined it on 2 October 2026 (section 19, item 12).
+`tables/` joined it on 2 October 2026 (section 19, item 12). All nine moved
+under `QorperaOS/` on 21 October 2026.
 
 Pulse, its numbers table and the cards table are no longer seeded (the scope
 reset of 17 October; Jonas, 21 October 2026).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
-9). Its line is "Code projects (git repositories)." Everything else the
-company makes goes in folders it creates, one folder per category of files,
-such as `designs/` or `documents/`.
+9). Its line is "Code projects (git repositories)." `hooks/<hook>/`, where
+the platform saves verified events (the 2026-09-29 amendment "events wake
+agents"), also stays at the top. So do `digital-post/`, where the platform
+saves the company's Digital Post letters and their index `letters.json`
+(deploy/first-node/RUNTIME-DIGITAL-POST.md), and `bank/summary.json`, the
+summary of the company's bank accounts that the platform writes for the Bank
+page: like saved events, they are the company's own records that the platform
+writes, created when the first one arrives, not seeded platform folders. Jonas
+confirmed on 24 October 2026 that `digital-post/`, `bank/`, `members/` and
+`hooks/` stay at the top, outside `QorperaOS/` (`folder-v2` makes no
+`members/` folder today: the 2026-09-17 amendment, "No member-private
+conversations"). The platform writes them: agents read them but never put
+their own files there, and every run's instructions say so.
+Everything else at the top is the company's own work, kept by area of the
+business first, then by kind (Jonas, 21 October 2026): areas such as `sales/`
+or `product/`, and inside a crowded area, subfolders by kind, such as
+`sales/proposals/`. See the
+[2026-10-21 amendment](#2026-10-21-amendment-how-agents-start-work-and-use-the-company-folder),
+item 1.
 
-**`vision/`.** Filling `vision/vision.md` is the Co-Founder's first
-responsibility, and keeping it current is a standing one. Every agent reads it,
-in full, at every run: it is the company's AGENTS.md. It starts with the
-company's name. Other files in `vision/` are read on demand.
+**`QorperaOS/vision/`.** Filling `QorperaOS/vision/vision.md` is the
+Co-Founder's first responsibility, and keeping it current is a standing one.
+Every agent reads it, in full, at every run: it is the company's AGENTS.md. It
+starts with the company's name. Other files in `QorperaOS/vision/` are read on
+demand.
 
-**`agents/<agent-name>/`.** An agent is its folder. Hiring an agent creates its
-folder and its `agent.md`.
+**`QorperaOS/agents/<agent-name>/`.** An agent is its folder. Hiring an agent
+creates its folder and its `agent.md`.
 
 The folder name is the agent's handle:
 - It is made from the agent's name when the agent is hired: lowercase letters
@@ -574,8 +614,8 @@ The folder name is the agent's handle:
 - It is unique among the agents, ignoring case. `groups` and `sections.md` are
   reserved. A handle that is taken or reserved gets `-2`, `-3` and so on. A
   name that leaves nothing becomes `agent`, numbered the same way.
-- An agent's folder can only be renamed within `agents/`. Moving it anywhere
-  else, including into `agents/groups/`, is refused.
+- An agent's folder can only be renamed within `QorperaOS/agents/`. Moving it
+  anywhere else, including into `QorperaOS/agents/groups/`, is refused.
 - `name` in `agent.md` is how the agent is shown, and may use any characters.
   Renaming an agent changes both and moves its folder. Editing `name` alone
   does not move the folder.
@@ -614,24 +654,24 @@ An agent leaves in one of three ways:
   item 3). This is a separate operation that only owners and admins perform
   (14.1). Receipts and audit records keep their attribution.
 
-**`agents/sections.md`.** The sidebar's sections in order, each with its agents
-in order, listed by `id` (a name beside an id is only for reading). A section
-may be empty. An agent that no section lists sits in
-Unassigned, and the Co-Founder is never listed (2026-09-24 amendment).
+**`QorperaOS/agents/sections.md`.** The sidebar's sections in order, each with
+its agents in order, listed by `id` (a name beside an id is only for reading).
+A section may be empty. An agent that no section lists sits in Unassigned, and
+the Co-Founder is never listed (2026-09-24 amendment).
 
-**`agents/groups/<group-name>/group.md`.** A group chat must have a name, and
-its folder is named from it by the same rules as an agent's folder. The front
-matter holds the group's stable `id`, its `name`, and its members, both people
-and agents, listed by id (a name beside an id is only for reading). The body
-states its purpose. A group's folder is only renamed within `agents/groups/`
-(a name that leaves nothing becomes `group`). Deleting `group.md` on its own
-is refused. Deleting the folder closes the group chat: its conversation stays,
-and the folder can be restored. An agent's own conversation thread follows the
-agent's folder and has no file of its own.
+**`QorperaOS/agents/groups/<group-name>/group.md`.** A group chat must have a
+name, and its folder is named from it by the same rules as an agent's folder.
+The front matter holds the group's stable `id`, its `name`, and its members,
+both people and agents, listed by id (a name beside an id is only for reading).
+The body states its purpose. A group's folder is only renamed within
+`QorperaOS/agents/groups/` (a name that leaves nothing becomes `group`).
+Deleting `group.md` on its own is refused. Deleting the folder closes the group
+chat: its conversation stays, and the folder can be restored. An agent's own
+conversation thread follows the agent's folder and has no file of its own.
 
-**`connections/<connection>.md`.** Each file describes one connected account,
-shared by all agents: the service, the account, its status, the actions agents
-may take with it, and who connected it and when.
+**`QorperaOS/connections/<connection>.md`.** Each file describes one connected
+account, shared by all agents: the service, the account, its status, the
+actions agents may take with it, and who connected it and when.
 
 - Only the platform writes these fields. A vault change marks the file due,
   and the platform's writer then brings it to the vault's current state
@@ -644,34 +684,35 @@ may take with it, and who connected it and when.
   Disconnecting removes the file; deleting the file is refused while the
   account is connected.
 
-**`rules/<rule>.md`.** Company review rules (2026-09-25 amendment), one file per
-rule, written, moved, deleted and restored only by owners and admins. Agents
-read them and never write them. The reviewer reads every company rule's text,
+**`QorperaOS/rules/<rule>.md`.** Company review rules (2026-09-25 amendment),
+one file per rule, written, moved, deleted and restored only by owners and
+admins. Agents read them and never write them. The reviewer reads every company rule's text,
 so a rule an agent could write would be a way to instruct its own reviewer.
 A member's personal rules stay in the database with that member's other
 settings. An agent may still add an Ask first personal rule for the member it
 works for when that member asks (2026-09-25 amendment, item 1).
 
-> **Amended 2026-10-03 (not built yet).** `rules/network.toml` holds the
-> company's network rules for the agent exit: a block list, or "only listed"
-> sites. It is written like every file in `rules/`, but it is not a review
-> rule: the reviewer does not read it, its format is checked when it is saved,
-> and a company without it is open ("agent traffic leaves through the agent
-> exit", section 19, item 8).
+> **Amended 2026-10-03 (not built yet).** `QorperaOS/rules/network.toml` holds
+> the company's network rules for the agent exit: a block list, or "only listed"
+> sites. It is written like every file in `QorperaOS/rules/`, but it is not a
+> review rule: the reviewer does not read it, its format is checked when it is
+> saved, and a company without it is open ("agent traffic leaves through the
+> agent exit", section 19, item 8).
 
 **Approval.** Everything is approved by default:
 - No path needs a member's approval or a proposal. The mechanism for protected
   paths stays, but nothing is configured by default. The one standing
   exception is 14.1: an agent whose own authority is restricted cannot hire
   unassisted, and its hire waits for a member.
-- Seeded folders and files cannot be deleted or moved: `vision/`,
-  `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `human-tasks/`, `contacts/`, `skills/`, `rules/`,
-  `interfaces/`, `interfaces/order.md`, `tables/` and `tables/areas/` with its
-  two files (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The
-  Co-Founder's folder and its `agent.md` cannot be deleted; the folder is only
-  renamed within `agents/` when the Co-Founder is renamed.
-- Only owners and admins write `rules/`.
+- Seeded folders and files cannot be deleted or moved: `QorperaOS/` itself,
+  and below it `vision/`, `vision/vision.md`, `agents/`, `agents/sections.md`,
+  `agents/groups/`, `connections/`, `human-tasks/`, `contacts/`, `skills/`,
+  `rules/`, `interfaces/`, `interfaces/order.md`, `tables/` and `tables/areas/`
+  with its two files (`human-tasks/` and `contacts/`: Jonas, 2 October 2026;
+  `QorperaOS/`: Jonas, 21 October 2026). The Co-Founder's folder and its
+  `agent.md` cannot be deleted; the folder is only renamed within
+  `QorperaOS/agents/` when the Co-Founder is renamed.
+- Only owners and admins write `QorperaOS/rules/`.
 
 The automatic review (2026-09-25 amendment) is unchanged:
 - Outside effects pass it first.
@@ -692,15 +733,15 @@ The automatic review (2026-09-25 amendment) is unchanged:
   carries them: a tool, the mount or a desktop application. A change is
   classified by its path and what it changes. A tool that writes these paths is not "internal"
   because it is a file write. Members' own changes are not reviewed.
-- Coding sessions stay unreviewed, so in a coding session `agents/` and
-  `rules/` are read-only.
+- Coding sessions stay unreviewed, so in a coding session `QorperaOS/agents/`
+  and `QorperaOS/rules/` are read-only.
 - Everything else applies at once, and any change can be restored from the
   version history.
 
-**Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
-files, `group.md`, connection files, rule files, human task files and contact
-files have a fixed format (the last two: the 2026-10-02 amendment "work for
-people"). A save updates the file's index in the same step. A save the
+**Structured files.** `agent.md`, `QorperaOS/agents/sections.md`, routine
+files, todo files, `group.md`, connection files, rule files, human task files
+and contact files have a fixed format (the last two: the 2026-10-02 amendment
+"work for people"). A save updates the file's index in the same step. A save the
 platform cannot read correctly is refused for that file, with the reason. A
 human, an agent's shell and a tool all save through this same path.
 
@@ -1011,7 +1052,7 @@ record into one permanent prompt.
 The composer selects and labels:
 
 - company identity and policy revision;
-- the company vision, `vision/vision.md`, in full at every run (5.6);
+- the company vision, `QorperaOS/vision/vision.md`, in full at every run (5.6);
 - executing agent identity and hire overlay (its `agent.md`, 5.6);
 - authenticated human principals and current audience;
 - wake envelope and silence policy;
@@ -1027,7 +1068,7 @@ The composer selects and labels:
 - presence: who is currently working in the relevant Company File objects;
 - available tools and grants;
 - routine intent only on that routine's wake;
-- connector availability without secret values (from `connections/`, 5.6);
+- connector availability without secret values (from `QorperaOS/connections/`, 5.6);
 - recent canonical transcript; and
 - additional Company File, project, or artifact references selected for this
   wake.
@@ -1110,8 +1151,9 @@ only public mouth and that tool results are untrusted data.
 An agent's instructions file contains a thin job specification: name, mission,
 responsibilities, voice, escalation preferences, and startup assignment. It
 MUST NOT contain a second copy of the platform brain. Since 2026-09-27 the
-instructions are the body of the agent's `agents/<agent-name>/agent.md`, and
-the company's own instructions file is `vision/vision.md` (5.6).
+instructions are the body of the agent's
+`QorperaOS/agents/<agent-name>/agent.md`, and the company's own instructions
+file is `QorperaOS/vision/vision.md` (5.6).
 
 ## 10. Tool plane and schema law
 
@@ -1391,11 +1433,11 @@ A worker starts blank. Its dispatch MUST include:
 Workers cannot communicate directly with humans. They report to the parent,
 which owns the public mouth.
 
-Todos are files in the agent's folder, `agents/<agent-name>/todos/`, with a
-worker's brief and results beside its todo (5.6, amended 2026-09-27). The
-platform writes the brief when the worker is dispatched and the results when
-it reports, for every worker species, including coding workers, whose view of
-`agents/` is read-only. Worker
+Todos are files in the agent's folder, `QorperaOS/agents/<agent-name>/todos/`,
+with a worker's brief and results beside its todo (5.6, amended 2026-09-27).
+The platform writes the brief when the worker is dispatched and the results
+when it reports, for every worker species, including coding workers, whose
+view of `QorperaOS/agents/` is read-only. Worker
 handles, leases and revival state are runtime state in the database. The
 model updates todos by editing their files, but a prose promise to remember or
 poll is not a todo system.
@@ -1445,8 +1487,9 @@ Membership and roles stay in the database.
 
 ### 14.1 Company and agent creation
 
-> **Amended 2026-09-27.** An agent is its folder, `agents/<agent-name>/`
-> (5.6). Creating an agent creates the folder and its `agent.md`, and the
+> **Amended 2026-09-27.** An agent is its folder,
+> `QorperaOS/agents/<agent-name>/` (5.6). Creating an agent creates the folder
+> and its `agent.md`, and the
 > index rows follow in the same step. The Co-Founder's folder is seeded and
 > cannot be deleted. Agent documents are no longer protected paths: no member
 > approval is needed, and hiring passes the automatic review as delegation
@@ -1545,7 +1588,7 @@ archive retains restorable state; delete is human-authorized and permanent.
 ### 14.2 Co-Founder and company formation
 
 > **Amended 2026-09-27.** The formation workflow's product is the company
-> vision, `vision/vision.md` (5.6). Filling it is the Co-Founder's first
+> vision, `QorperaOS/vision/vision.md` (5.6). Filling it is the Co-Founder's first
 > responsibility, and every agent reads it. "Goals" and "direction" in this
 > section mean the vision. The Co-Founder writes it directly: everything is
 > approved by default, so no protected proposal or ratification step applies.
@@ -1746,8 +1789,8 @@ a permanent hire when the responsibility ends with the project.
 > item 2.
 
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
-> Co-Founder, then the sections of `agents/sections.md` with their agents,
-> then group chats (5.6).
+> Co-Founder, then the sections of `QorperaOS/agents/sections.md` with their
+> agents, then group chats (5.6).
 
 > **Amended 2026-09-20.** Item 2 below is withdrawn: clients present no
 > dedicated responsibility area and no responsibility pages. The hierarchy is
@@ -1828,9 +1871,10 @@ company-visible and answerable:
 
 ### 14.7 Rooms
 
-> **Amended 2026-09-27.** A group chat is `agents/groups/<group-name>/group.md`
-> and must have a name. An agent's own thread follows the agent's folder and
-> has no file of its own (5.6).
+> **Amended 2026-09-27.** A group chat is
+> `QorperaOS/agents/groups/<group-name>/group.md` and must have a name. An
+> agent's own thread follows the agent's folder and has no file of its own
+> (5.6).
 
 A room is an explicit member list with an audience and capability policy.
 Posting creates a cloud fan-out wake for each eligible agent. Fan-out is used
@@ -1880,8 +1924,9 @@ the Company File. A fact about the company belongs in its own Company File
 object; memory never grants authority and never replaces a current source.
 
 Ownership is company first. An agent's notebook is
-`agents/<agent-name>/memory/` in the Company File (it was
-`agents/<staffAgentId>/memory/` until the 2026-09-27 layout amendment): company state, owned by
+`QorperaOS/agents/<agent-name>/memory/` in the Company File (it was
+`agents/<staffAgentId>/memory/` until the 2026-09-27 layout amendment, and
+`agents/<agent-name>/memory/` until 21 October 2026): company state, owned by
 the company like the rest of the agent's folder. There is no per-member memory
 and no member shard; the Grok Bot's user scope is deliberately not adopted.
 What an agent learns about a member is a fact in its own notebook. The memory
@@ -1936,7 +1981,7 @@ never blocks the run.
 
 Export and import: a portable notebook is `profile.md` plus the `log/` files
 with `[note]` and `[episode]` lines removed. A Grok Bot import maps the bot's
-agent memory onto `agents/<agent-name>/memory/` unchanged; a Grok Bot export
+agent memory onto `QorperaOS/agents/<agent-name>/memory/` unchanged; a Grok Bot export
 carries no user memory, and the import creates none.
 
 The constitution tells agents what is worth remembering and not to bloat a
@@ -1957,15 +2002,14 @@ Two libraries, both ordinary versioned Company File objects:
 
 | Library | Path | Who writes it |
 | --- | --- | --- |
-| company | `skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
-| agent (own) | `agents/<agent-name>/skills/<name>/SKILL.md` in the agent's folder (5.6) | the agent itself, and members, under the usual path authority |
+| company | `QorperaOS/skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
+| agent (own) | `QorperaOS/agents/<agent-name>/skills/<name>/SKILL.md` in the agent's folder (5.6) | the agent itself, and members, under the usual path authority |
 
 Skill files have no path rule of their own. Every reader and writer finds an
-agent's folder through one resolver (`cloudAgentFolder`). Until agents live in
-named folders with an `agent.md` and its index, that folder is
-`agents/<staffAgentId>`, and only the resolver changes when they do.
+agent's folder through one resolver (`cloudAgentFolder`), which gives
+`QorperaOS/agents/<agent-name>`.
 
-A flat `skills/<name>.md` is read as a skill too; a new skill is always a
+A flat `QorperaOS/skills/<name>.md` is read as a skill too; a new skill is always a
 folder. An agent's own skill wins over a company skill of the same name.
 
 The turn receives a catalog, not the bodies (9.1). Every turn composes a
@@ -2064,7 +2108,7 @@ the approvals window.
 ### 16.3 Routines and listeners
 
 > **Amended 2026-09-27.** A routine is a file,
-> `agents/<agent-name>/routines/<routine>.md` (5.6). When it runs (a schedule,
+> `QorperaOS/agents/<agent-name>/routines/<routine>.md` (5.6). When it runs (a schedule,
 > or a folder to watch) is in its front matter, and what to do is in its body.
 > Schedule positions, occurrences and run history are runtime state in the
 > database. The rules below apply to the routine the file describes.
@@ -3313,7 +3357,7 @@ Orders 9, 7 and 8. See
 
 Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 2026-09-19/20 amendment, item 4. Since 2026-09-27 the sections, their order
-and their agents are the file `agents/sections.md` (5.6); the decisions below
+and their agents are the file `QorperaOS/agents/sections.md` (5.6); the decisions below
 keep their meaning.
 
 1. **Sections are company structure.** The rail groups agents under named
@@ -3600,6 +3644,12 @@ calls the Company Computer, and a *computer* is one of its screens. The
    Nothing a company owns is kept on a node or a machine disk to rescue them.
 
 ### 2026-09-27 amendment: the company folder layout
+
+> **Amended 2026-10-21.** The platform's folders below now sit under
+> `QorperaOS/` (5.6): `agents/<agent-name>/` is
+> `QorperaOS/agents/<agent-name>/`, `vision/vision.md` is
+> `QorperaOS/vision/vision.md`, and so on. The paths below are as decided on
+> 27 September; 5.6 governs.
 
 Founder decisions of 27 September 2026 (evening). They complete section 5 and
 the 2026-09-27 amendment "every machine works in the company folder", and are
@@ -4176,7 +4226,7 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      (reasons: RUNTIME-FOLDER-TEST-MACHINES.md, Review).
    - Once the company folder is mounted on machines (/company), a machine
      shows the company-wide view, as a company machine does: the paths under
-     the root company-shared resource, and rules/ read-only. The folder is
+     the root company-shared resource, and QorperaOS/rules/ read-only. The folder is
      mounted only when the starting agent's authority covers that view.
      Narrower folders are never mounted on a machine; they are worked on from
      the agent's own run box. Any agent of the company whose authority covers
@@ -4439,8 +4489,9 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    owners and admins open only address hooks there. Owners, admins
    and agents create and remove hooks; an agent's new hook passes the
    automatic review as a new connection. For `folder-v2` companies a hook is
-   described by its connection file, `connections/hook-<name>.md` (5.6), and
-   a mailbox by `connections/mailbox-<name>.md`; the platform's writer brings
+   described by its connection file, `QorperaOS/connections/hook-<name>.md`
+   (5.6), and a mailbox by `QorperaOS/connections/mailbox-<name>.md`; the
+   platform's writer brings
    the file in line with the hook within seconds of each change, as it does an
    account's (amended 4 October 2026, E1: core §3, "the vault never calls the
    commit"). The prefixes keep hooks' and mailboxes' files apart from account
@@ -4579,14 +4630,15 @@ and can still be renamed. Formats:
 
 1. **Physical work is a file.** Work only a person can do (signing, paying,
    posting letters, fitting hardware, a step a website demands of a person) is
-   a human task: `human-tasks/<task>.md`, with instructions a stranger could
-   follow, a checklist, a due date and the proof that counts as done. What the
-   person sends back lands beside it in `human-tasks/<task>/`. The task names
+   a human task: `QorperaOS/human-tasks/<task>.md`, with instructions a
+   stranger could follow, a checklist, a due date and the proof that counts as
+   done. What the person sends back lands beside it in
+   `QorperaOS/human-tasks/<task>/`. The task names
    its person (a member, or a contact) and the agent that asked.
 2. **16.1's last step widens.** Step 6 reads: "a typed request to the
    relevant member, or, for work only a person can do, a human task for a
    member or a contact (5.6)". Cards stay for quick answers.
-3. **Outside people are contacts, never accounts.** `contacts/<contact>.md`
+3. **Outside people are contacts, never accounts.** `QorperaOS/contacts/<contact>.md`
    holds one person or firm the company deals with: name, organization, how to
    reach them and what they may be asked to do. A contact reaches a task only
    through a link to that one task, sent through a reviewed outside action. A
@@ -4642,8 +4694,8 @@ This amendment:
 
 Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 
-1. **An interface is a page the company keeps as a file.** `interfaces/<interface>/interface.toml` says what the page
-   shows, where each part reads from, which buttons it has and who sees it.
+1. **An interface is a page the company keeps as a file.** `QorperaOS/interfaces/<interface>/interface.toml` says what
+   the page shows, where each part reads from, which buttons it has and who sees it.
    - The client draws it from a fixed set of building blocks that ship with the client.
    - An interface holds no code: no script, style, markup or network request from a file runs in a member's browser
      or on any Qorpera origin.
@@ -4669,7 +4721,7 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      button carries it.
    - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
 4. **Tables are company state.**
-   - A table is a folder, `tables/<table>/`, so creating, moving or deleting a table is one unit:
+   - A table is a folder, `QorperaOS/tables/<table>/`, so creating, moving or deleting a table is one unit:
      - `table.toml` defines it: its columns, its key and who writes it;
      - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
        2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
@@ -4725,11 +4777,11 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
    - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
      Undo, and it can be restored from the version history.
    - Members' own changes are not reviewed.
-   - Coding sessions see `interfaces/` and table definitions read-only.
+   - Coding sessions see `QorperaOS/interfaces/` and table definitions read-only.
 8. **The rail has two tabs (amends 14.5).**
    - Agents is the hierarchy 14.5 describes.
    - Interfaces lists the company's active interfaces: the main interface on top, then the others in the order of
-     `interfaces/order.md`.
+     `QorperaOS/interfaces/order.md`.
      - *Scope reset, 2026-10-17:* Interfaces lists only Mailbox and member-to-agent ownership, once a member has
        turned them on, and only these two can be active on any route. There is no main interface (scope
        amendment, item 2).
@@ -4744,7 +4796,7 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
    An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
 10. **Supervision (founder decision, 2 October 2026; amends section 17).**
     - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
-      `tables/areas/rows.csv`, the seeded table the platform reads supervision from.
+      `QorperaOS/tables/areas/rows.csv`, the seeded table the platform reads supervision from.
     - **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
       file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
     - **What follows from it.** For the agents' work alone:
@@ -4782,7 +4834,7 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
       amendment, item 1).
     - **Until it is built** (step I9b), today's rules apply.
 11. **Seeded interfaces and the library.**
-    - At founding the platform seeds `interfaces/` and `tables/` with:
+    - At founding the platform seeds `QorperaOS/interfaces/` and `QorperaOS/tables/` with:
       - Pulse, the main interface, and its numbers table;
       - Mailbox;
       - Members, with its areas and cards tables.
@@ -4814,12 +4866,13 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
       - each member's pins and hidden interfaces;
       - their supervision consent records;
       - open offers, as runtime state.
-    - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
+    - "Structured files" gains interface files, `QorperaOS/interfaces/order.md`, table definitions and table rows.
     - The seeded folders that can't be deleted or moved gain:
-      - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
-      - `tables/`, and the `tables/areas/` folder with its two files.
+      - `QorperaOS/interfaces/`, `QorperaOS/interfaces/order.md`, and the main interface's folder and file;
+      - `QorperaOS/tables/`, and the `QorperaOS/tables/areas/` folder with its two files.
     - The automatic review's list gains item 7's changes.
-    - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
+    - Coding sessions see `QorperaOS/interfaces/` and table definitions read-only, beside `QorperaOS/agents/` and
+      `QorperaOS/rules/`.
     - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
 
 ### 2026-10-02 amendment: light threads
@@ -5201,8 +5254,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
   and "the browser keeps its own separate path"; in item 4, "it reaches the internet but no private network".
 - The 2026-09-27 amendment "every machine works in the company folder", items 1 and 9, and the 2026-10-02 amendment
   "light threads", item 5: coding sessions keep their open network.
-- The 2026-09-25 amendment, item 3: "all company rules" means the review rules (`rules/*.md`).
-- 5.6, `rules/`: a second kind of file there.
+- The 2026-09-25 amendment, item 3: "all company rules" means the review rules (`QorperaOS/rules/*.md`).
+- 5.6, `QorperaOS/rules/`: a second kind of file there.
 - 7.4: what remains.
 - Section 19, "Minimum operational observability": a required record.
 - Section 23: network paths.
@@ -5284,9 +5337,10 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - Qorpera uses the log to answer abuse reports. A refused connection tells the agent only that it was refused;
      which rule refused it is in the log.
 8. **Company network rules (choice 4).**
-   - `rules/network.toml` in the company folder holds either a block list or a list of the only sites allowed.
+   - `QorperaOS/rules/network.toml` in the company folder holds either a block list or a list of the only sites
+     allowed.
    - It is not a review rule: the reviewer does not read it.
-   - Like every file in `rules/`, it is written, moved, deleted and restored only by owners and admins. Agents read it
+   - Like every file in `QorperaOS/rules/`, it is written, moved, deleted and restored only by owners and admins. Agents read it
      and never write it (5.6).
    - Its format is checked when it is saved, and a save that fails the check is refused. A company without the file
      is open.
@@ -5355,9 +5409,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 - Every-machine items 1 and 9, and light-threads item 5: coding sessions keep their open network, through the agent
   exit, with item 4's refusals, the company's rules and the line guard, and with their model traffic on the platform
   road.
-- The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
-  `rules/network.toml`.
-- 5.6: `rules/` also holds `network.toml` (changed in place).
+- The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`QorperaOS/rules/*.md`), not
+  `QorperaOS/rules/network.toml`.
+- 5.6: `QorperaOS/rules/` also holds `network.toml` (changed in place).
 - 7.4: the line guard and the connection bounds of item 4 join what remains (changed in place).
 - Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
 - Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
@@ -5407,8 +5461,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
   alone (with 5.6's permanent erasure).
 
 1. **A conversation is a folder of logs** (M1, W1). Each conversation has a tree root in the company folder:
-   `agents/<agent-name>/memory/thread/` for an agent's thread, and `agents/groups/<group-name>/memory/` for a group
-   chat.
+   `QorperaOS/agents/<agent-name>/memory/thread/` for an agent's thread, and
+   `QorperaOS/agents/groups/<group-name>/memory/` for a group chat.
    - The conversation's log holds its words: messages and cards. Each run has its own work log under the root, in
      `runs/<run>/`: its tool calls and their results, in order, as steps. A run's sends link to its log, and a
      worker's log nests under the step that dispatched it.
@@ -5419,7 +5473,7 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - Tree files are ordinary versioned company files, in blocks of at most 64 KiB (the design, §4.2 and §4.5).
 2. **Only the platform writes a tree** (M1).
    - Writes, moves and deletes at or under a tree root by members, agents or machines are refused (`platform_only`).
-     So is a move or a delete of `agents/<agent-name>/memory/`, which holds the thread's root. A move counts by its
+     So is a move or a delete of `QorperaOS/agents/<agent-name>/memory/`, which holds the thread's root. A move counts by its
      source and its target.
    - A tree moves or goes only with its owning folder: an agent rename, a group folder's delete, or erasure. A
      member's restore of the owning folder leaves out every path under a tree root (a unit that spells one is
@@ -5430,7 +5484,7 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - Each conversation and each run log has an erasure generation. A batch of summaries computed before an erase is
      discarded whole (the design, §4.3 and §4.5).
 3. **Every model request is composed from the folder** (M1, M4, W2, W3). In a fixed order, it holds:
-   - **the head** (W3): the approved `vision/vision.md`, whole, and the agent's job specification and profile page
+   - **the head** (W3): the approved `QorperaOS/vision/vision.md`, whole, and the agent's job specification and profile page
      (or its pins, item 9). So the vision is read at every run, as 9.1 already asks;
    - **the views** (M1, M4): the view of the conversation the run answers in, of fixed size, and shorter views
      (branches) of the agent's other conversations;
@@ -5894,18 +5948,21 @@ an agent starts work and where the results go.
      `ask_member` card's text only introduces the card.
    - Never end with "I'll do it". Say what is done and where it is, and what still runs (a worker, or a todo behind
      it).
-   - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 and keeps its
-     onboarding role for new companies.
+   - Do what a member asks first. Vision work never holds it up: the Co-Founder overlay is v5 (v6 since the
+     2026-10-22 amendment, v7 since the QorperaOS/ paths, 20260930534000) and keeps its onboarding role for new
+     companies.
    - A file the member asked for is the work, not an extra.
    - HTML pages and prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from
      the network). Members open them live in the app.
 
-   The instructions name the platform's top-level folders once, one line each: `vision/`, `agents/`, `rules/`,
-   `connections/`, `skills/`, `contacts/`, `human-tasks/`, `interfaces/`, `tables/` and `code/`. They belong to the
-   platform: an agent changes them only through their own files, as its instructions and tools describe, and never
-   puts the company's work in them. `code/` holds git repositories only. The constitution is v3. Its law 2 now says
-   "company folder" where it said "Company File". Its law 6 no longer names public websites, because web search is
-   off; the company's browser reaches them.
+   The instructions name the platform's folders once, one line each. Since 21 October 2026 they are the nine folders
+   under `QorperaOS/` (5.6): `QorperaOS/vision/`, `QorperaOS/agents/`, `QorperaOS/rules/`, `QorperaOS/connections/`,
+   `QorperaOS/skills/`, `QorperaOS/contacts/`, `QorperaOS/human-tasks/`, `QorperaOS/interfaces/` and
+   `QorperaOS/tables/`, with `code/` at the top beside `QorperaOS/`. They belong to the platform: an agent changes
+   them only through their own files, as its instructions and tools describe, and never puts the company's work in
+   them. `code/` holds git repositories only. The constitution is v3. Its law 2 now says "company folder" where it
+   said "Company File". Its law 6 no longer names public websites, because web search is off; the company's browser
+   reaches them.
 
    Everything else is the company's own work, kept by area of the business first, then by kind (Jonas, 21 October
    2026). This replaces the kind-first rule this amendment first gave ("name a folder for a kind of thing, never for
@@ -6022,7 +6079,7 @@ run that hired, set up a routine or started a worker could wait for nobody. This
 3. **The company starts with the first conversation.** No company's strategy is complete at its start, so the company
    moves while the vision is built (founder, 22 October). This replaces 14.2's formation workflow, formation project and
    protected direction proposal (superseded on 27 September by "the Co-Founder writes it directly") with what
-   follows. The Co-Founder overlay is v6.
+   follows. The Co-Founder overlay is v6 (v7 since the QorperaOS/ paths, 5.6).
    - The Co-Founder hires and manages; domain work, such as research, finance, sales or product, belongs to the agents
      it hires. As soon as it knows what the company is about, from what the founders wrote at the founding table or
      their first answer, it hires the team that builds the vision with it: at least a researcher for the customers and
@@ -6033,23 +6090,24 @@ run that hired, set up a routine or started a worker could wait for nobody. This
    - It builds the vision with the founders one or two questions at a time, from their answers and the team's
      findings, then posts the whole draft with its evidence and unknowns and revises it until every founder approves.
      Until then the draft guides the team's work, and the Co-Founder keeps it current with what the team learns.
-   - In the run where every founder has approved, the Co-Founder, without asking again, writes vision/vision.md with
-     the company's name as its first line and a last line "Agreed by <the founders>, <date>."; gives each continuing
-     responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in agents/ first so
-     that no owner is hired twice; closes its first todo, Start with the founders; and tells the founders in a few
-     lines who works on what. A step that fails is named and finished in the next planning run. The vision counts as
-     agreed once that line is there or that todo is closed, and the onboarding never restarts. A founder who joins
-     later is greeted, given the vision and asked to approve it or say what to change.
+   - In the run where every founder has approved, the Co-Founder, without asking again, writes
+     `QorperaOS/vision/vision.md` with the company's name as its first line and a last line "Agreed by <the founders>,
+     <date>."; gives each continuing responsibility the agreed vision needs an owner, by changing an agent.md or hiring,
+     looking in `QorperaOS/agents/` first so that no owner is hired twice; closes its first todo, Start with the
+     founders; and tells the founders in a few lines who works on what. A step that fails is named and finished in the
+     next planning run. The vision counts as agreed once that line is there or that todo is closed, and the onboarding
+     never restarts. A founder who joins later is greeted, given the vision and asked to approve it or say what to
+     change.
    - The daily plan is a weekly routine on weekday mornings in the founders' time zone, with one living plan file,
-     operations/company-plan.md. It reads the vision, the plan, every agent's agent.md, todos and routines, and
-     human-tasks/; fixes what holds the company back most (continuing work with no owner, an agent stuck or idle, two
-     agents on the same work, an overdue human task, a decision only the founders can make); until the vision is
-     agreed, brings the team's findings into the draft and chooses the next questions for the founders; opens one or
-     two things owners called done and checks them; and writes to the founders only when something changed that they
-     should know or a decision waits for them, decisions first, each with a recommendation. On Mondays it always
-     writes the week; on the first Monday of a month it also compares the vision with the evidence and, when they
-     disagree, proposes a change for every founder to approve. None of this needs a founder's approval, but work a
-     member asked for is never cancelled or changed without telling that member.
+     operations/company-plan.md (the company's own work, at the top). It reads the vision, the plan, every agent's
+     agent.md, todos and routines, and `QorperaOS/human-tasks/`; fixes what holds the company back most (continuing work
+     with no owner, an agent stuck or idle, two agents on the same work, an overdue human task, a decision only the
+     founders can make); until the vision is agreed, brings the team's findings into the draft and chooses the next
+     questions for the founders; opens one or two things owners called done and checks them; and writes to the founders
+     only when something changed that they should know or a decision waits for them, decisions first, each with a
+     recommendation. On Mondays it always writes the week; on the first Monday of a month it also compares the vision
+     with the evidence and, when they disagree, proposes a change for every founder to approve. None of this needs a
+     founder's approval, but work a member asked for is never cancelled or changed without telling that member.
    - Hiring: freely for continuing work, one owner per responsibility; never a hire for one-off work, which goes to a
      worker. A job description names a mission tied to a goal or an open question in the vision, what progress looks
      like for each responsibility and where to see it, when to speak up and to whom, and what belongs to others. A

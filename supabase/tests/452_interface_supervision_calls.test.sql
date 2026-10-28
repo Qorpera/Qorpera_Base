@@ -90,9 +90,9 @@ declare r jsonb; v_id uuid; o jsonb := pg_temp.member(1);
 	c_m constant text := '63400000-0000-4000-8000-000000000002';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 begin
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'i9b-calls-0001', 'tables/areas/rows.csv', pg_temp.i9b_areas(
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'i9b-calls-0001', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(
 		array[array['Sales','',c_m,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(o, 'i9b-calls-0002', jsonb_build_array(pg_temp.p16_folder(o, 'tables/claims',
+	perform pg_temp.expect(pg_temp.commit(o, 'i9b-calls-0002', jsonb_build_array(pg_temp.p16_folder(o, 'QorperaOS/tables/claims',
 		jsonb_build_object('table.toml', pg_temp.claims('45200000-0000-4000-8000-000000000001'),
 			'rows.csv', pg_temp.claim_rows(array[array['t1','',''], array['t2','','']]))))), 1, 'saved');
 	v_id := pg_temp.i9b_live('["Sales"]');
@@ -100,7 +100,7 @@ begin
 	if v_id is null or r ->> 'schema' is distinct from 'qorpera.member-interface-supervisions/v1' or r ->> 'truncated' is distinct from 'false'
 		or jsonb_array_length(r -> 'supervisions') is distinct from 1
 		or (r -> 'supervisions' -> 0) - 'at' is distinct from jsonb_build_object('id', v_id, 'table', '86400000-0000-4000-8000-000000000012',
-			'folder', 'tables/areas', 'key', '["Sales"]'::jsonb, 'user', c_m, 'state', 'live', 'endedAt', null)
+			'folder', 'QorperaOS/tables/areas', 'key', '["Sales"]'::jsonb, 'user', c_m, 'state', 'live', 'endedAt', null)
 		or r -> 'supervisions' -> 0 ->> 'at' is null then
 		raise exception 'The list: %', r; end if;
 	if pg_temp.i9b_list(2) is distinct from r or pg_temp.i9b_list(1) is distinct from r then raise exception 'The list differs by member'; end if;
@@ -110,7 +110,7 @@ end $$;
 -- 2. Withdraw: only its member. The file is as it was and the cell keeps naming them, but the area's agent acts for no
 -- one, and the others concerned are told. Withdrawn again: unchanged. A save that keeps the cell makes no consent.
 do $$
-declare r jsonb; v_id uuid := pg_temp.i9b_live('["Sales"]'); v_rows uuid := pg_temp.p16_version('tables/areas/rows.csv');
+declare r jsonb; v_id uuid := pg_temp.i9b_live('["Sales"]'); v_rows uuid := pg_temp.p16_version('QorperaOS/tables/areas/rows.csv');
 	c_m constant text := '63400000-0000-4000-8000-000000000002';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
@@ -122,20 +122,20 @@ begin
 	r := pg_temp.i9b_withdraw(2, v_id);
 	if r ->> 'schema' is distinct from 'qorpera.interface-supervision/v1' or r ->> 'ok' is distinct from 'true' or r ->> 'changed' is distinct from 'true'
 		or (r -> 'supervision') - 'at' - 'endedAt' is distinct from jsonb_build_object('id', v_id, 'table', '86400000-0000-4000-8000-000000000012',
-			'folder', 'tables/areas', 'key', null, 'user', c_m, 'state', 'withdrawn')
+			'folder', 'QorperaOS/tables/areas', 'key', null, 'user', c_m, 'state', 'withdrawn')
 		or r -> 'supervision' ->> 'endedAt' is null then
 		raise exception 'Withdrawn: %', r; end if;
 	if pg_temp.i9b_told(v_id) is distinct from array[1,5] then raise exception 'Told of a withdrawal: %', pg_temp.i9b_told(v_id); end if;
-	if pg_temp.p16_version('tables/areas/rows.csv') is distinct from v_rows then raise exception 'A withdrawal changed the file'; end if;
+	if pg_temp.p16_version('QorperaOS/tables/areas/rows.csv') is distinct from v_rows then raise exception 'A withdrawal changed the file'; end if;
 	r := pg_temp.i9b_withdraw(2, v_id);
 	if r ->> 'changed' is distinct from 'false' or r -> 'supervision' ->> 'state' is distinct from 'withdrawn' then raise exception 'Withdrawn twice: %', r; end if;
 	if jsonb_array_length(pg_temp.i9b_list(2) -> 'supervisions') is distinct from 0 then raise exception 'A withdrawn consent is listed'; end if;
-	r := pg_temp.save_rows(g -> 'actor', 'i9b-calls-0003', 'tables/claims/rows.csv',
+	r := pg_temp.save_rows(g -> 'actor', 'i9b-calls-0003', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','','']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) is distinct from 'nobody assigns anybody: only the member named changes owner' then
 		raise exception 'An agent under a withdrawn consent: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'i9b-calls-0004', 'tables/areas/rows.csv', pg_temp.i9b_areas(
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'i9b-calls-0004', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(
 		array[array['Sales','',c_m,c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if pg_temp.i9b_live('["Sales"]') is not null then raise exception 'A save that keeps the cell consented again'; end if;
 end $$;
@@ -166,7 +166,7 @@ begin
 	v_id := (r -> 'supervision' ->> 'id')::uuid;
 	if r ->> 'schema' is distinct from 'qorpera.interface-supervision/v1' or r ->> 'ok' is distinct from 'true' or r ->> 'created' is distinct from 'true'
 		or (r -> 'supervision') - 'id' - 'at' is distinct from jsonb_build_object('table', '86400000-0000-4000-8000-000000000012',
-			'folder', 'tables/areas', 'key', '["Sales"]'::jsonb, 'user', c_m, 'state', 'live', 'endedAt', null) then
+			'folder', 'QorperaOS/tables/areas', 'key', '["Sales"]'::jsonb, 'user', c_m, 'state', 'live', 'endedAt', null) then
 		raise exception 'Consented: %', r; end if;
 	if pg_temp.i9b_live('["Sales"]') is distinct from v_id then raise exception 'The consent is not live'; end if;
 	r := pg_temp.i9b_consent(2, '{"key":["Sales"]}');
@@ -174,7 +174,7 @@ begin
 		raise exception 'Consented twice: %', r; end if;
 	if (select count(*) from public.qorpera_interface_supervisions s where s.state = 'live') is distinct from 1 then
 		raise exception 'A consent made twice is stored twice'; end if;
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-calls-0005', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-calls-0005', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','','']])), 1, 'saved');
 end $$;
 

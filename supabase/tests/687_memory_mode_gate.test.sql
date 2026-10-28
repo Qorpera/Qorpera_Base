@@ -20,7 +20,8 @@ language sql as $$
 		jsonb_build_object('runLog', jsonb_build_object('run', pg_temp.run_id(p_who), 'path', p_path)) || p_more)
 $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key)
 		and kind is distinct from 'claim'
 $$;
 create function pg_temp.refused(p_result jsonb, p_unit integer, p_reason text, p_message text, p_code text default 'value',
@@ -41,7 +42,7 @@ $$;
 -- A run's write to its own conversation's tree (no run log): the root's mkdir at the conversation's generation.
 create function pg_temp.tree_root(p_who text, p_key text) returns jsonb language sql as $$
 	select public.qorpera_folder_memory_commit('63400000-0000-4000-8000-000000000020', pg_temp.writer_actor(p_who), p_key,
-		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/' || p_who || '/memory/thread')),
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'qorperaos/agents/' || p_who || '/memory/thread')),
 		jsonb_build_object('sessionGenerations', jsonb_build_array(jsonb_build_object('sessionId', pg_temp.thread(p_who),
 			'generation', (select memory_generation from public.qorpera_shared_sessions where id = pg_temp.thread(p_who))))))
 $$;
@@ -86,7 +87,7 @@ end $$;
 --    before C5 (no mode) is a notebook run too. Nothing is written.
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; pia constant uuid := pg_temp.run_id('pia');
-	root constant text := 'agents/pia/memory/thread'; v_mode text; v_name text; r jsonb;
+	root constant text := 'qorperaos/agents/pia/memory/thread'; v_mode text; v_name text; r jsonb;
 begin
 	foreach v_mode in array array['notebooks', null] loop
 		perform pg_temp.pia_mode(v_mode);
@@ -118,7 +119,7 @@ end $$;
 -- 2. The beta's runs keep theirs after the switch: their views, tools, logs and tree writes.
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; otto constant uuid := pg_temp.run_id('otto');
-	root constant text := 'agents/otto/memory/thread'; v_who text;
+	root constant text := 'QorperaOS/agents/otto/memory/thread'; v_who text;
 begin
 	foreach v_who in array array['nora', 'otto'] loop
 		if public.qorpera_memory_view(pg_temp.b(v_who)) is null then raise exception '%''s beta run has its view', v_who; end if;
@@ -197,7 +198,7 @@ end $$;
 delete from public.qorpera_company_memory_modes where profile_id = '63400000-0000-4000-8000-000000000010';
 delete from public.qorpera_memory_tree_companies where profile_id = '63400000-0000-4000-8000-000000000010';
 do $$
-declare root constant text := 'agents/otto/memory/thread'; s uuid := pg_temp.thread('otto'); r jsonb;
+declare root constant text := 'qorperaos/agents/otto/memory/thread'; s uuid := pg_temp.thread('otto'); r jsonb;
 begin
 	if public.qorpera_company_memory_mode_effective('63400000-0000-4000-8000-000000000010') is distinct from 'notebooks'
 		or public.qorpera_company_memory_beta_offered('63400000-0000-4000-8000-000000000010') then

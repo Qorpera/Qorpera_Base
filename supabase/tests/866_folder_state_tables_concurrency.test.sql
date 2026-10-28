@@ -62,84 +62,84 @@ end $$;
 -- The stored rows of a table fit its stored definition.
 create function pg_temp.fits(p_folder text) returns boolean language sql as $$
 	select jsonb_array_length(public.qorpera_interface_rows(
-		public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', p_folder || '/table.toml'),
-		public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', p_folder || '/rows.csv')) -> 'problems') = 0
+		public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_folder || '/table.toml')),
+		public.qorpera_interface_stored('64800000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_folder || '/rows.csv'))) -> 'problems') = 0
 $$;
 create function pg_temp.trow(p_folder text) returns public.qorpera_folder_table_index language sql as $$
 	select * from public.qorpera_folder_table_index where environment_id = '64800000-0000-4000-8000-000000000020'
-		and folder_key = p_folder and retired_at is null
+		and folder_key = public.qorpera_folder_key(p_folder) and retired_at is null
 $$;
 
 -- The tables and pages, committed: each race's table holds one row in euros under a definition of euros and counts;
 -- two pages, neither main.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p16-race-seed', jsonb_build_array(
-	jsonb_build_object('op','mkdir','path','interfaces'),
-	jsonb_build_object('op','mkdir','path','tables'),
-	pg_temp.table_folder('tables/race-a', pg_temp.def('86600000-0000-4000-8000-00000000000a', array['€','count']),
+	jsonb_build_object('op','mkdir','path','QorperaOS/interfaces'),
+	jsonb_build_object('op','mkdir','path','QorperaOS/tables'),
+	pg_temp.table_folder('QorperaOS/tables/race-a', pg_temp.def('86600000-0000-4000-8000-00000000000a', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
-	pg_temp.table_folder('tables/race-b', pg_temp.def('86600000-0000-4000-8000-00000000000b', array['€','count']),
+	pg_temp.table_folder('QorperaOS/tables/race-b', pg_temp.def('86600000-0000-4000-8000-00000000000b', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
-	pg_temp.table_folder('tables/race-m', pg_temp.def('86600000-0000-4000-8000-00000000000c', array['€','count']),
+	pg_temp.table_folder('QorperaOS/tables/race-m', pg_temp.def('86600000-0000-4000-8000-00000000000c', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
-	pg_temp.table_folder('tables/race-d', pg_temp.def('86600000-0000-4000-8000-00000000000d', array['€','count']),
+	pg_temp.table_folder('QorperaOS/tables/race-d', pg_temp.def('86600000-0000-4000-8000-00000000000d', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
-	pg_temp.table_folder('tables/race-g', pg_temp.def('86600000-0000-4000-8000-00000000000f', array['€','count']),
+	pg_temp.table_folder('QorperaOS/tables/race-g', pg_temp.def('86600000-0000-4000-8000-00000000000f', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
-	jsonb_build_object('op','mkdir','path','tables/race-w'),
-	jsonb_build_object('op','new_folder','path','interfaces/one','contents',jsonb_build_array(jsonb_build_object('path','interface.toml',
+	jsonb_build_object('op','mkdir','path','QorperaOS/tables/race-w'),
+	jsonb_build_object('op','new_folder','path','QorperaOS/interfaces/one','contents',jsonb_build_array(jsonb_build_object('path','interface.toml',
 		'kind','file','file',pg_temp.stage(pg_temp.iface('86600000-0000-4000-8000-000000000001', false)::text))),
-		'structured',jsonb_build_array(pg_temp.entry('interfaces/one/interface.toml','interface',
+		'structured',jsonb_build_array(pg_temp.entry('QorperaOS/interfaces/one/interface.toml','interface',
 			pg_temp.iface('86600000-0000-4000-8000-000000000001', false)::text, pg_temp.iface('86600000-0000-4000-8000-000000000001', false)))),
-	jsonb_build_object('op','new_folder','path','interfaces/two','contents',jsonb_build_array(jsonb_build_object('path','interface.toml',
+	jsonb_build_object('op','new_folder','path','QorperaOS/interfaces/two','contents',jsonb_build_array(jsonb_build_object('path','interface.toml',
 		'kind','file','file',pg_temp.stage(pg_temp.iface('86600000-0000-4000-8000-000000000002', false)::text))),
-		'structured',jsonb_build_array(pg_temp.entry('interfaces/two/interface.toml','interface',
+		'structured',jsonb_build_array(pg_temp.entry('QorperaOS/interfaces/two/interface.toml','interface',
 			pg_temp.iface('86600000-0000-4000-8000-000000000002', false)::text, pg_temp.iface('86600000-0000-4000-8000-000000000002', false)))))),
 	10, 'saved') \g /dev/null
 
 -- Each race's units, staged and held by the member who commits them, committed before the blocks that drive the fences:
 -- a row this session wrote and has not committed would make the other sessions wait on it while it waits on them.
-select set_config('qorpera_test.a_def', jsonb_build_array(pg_temp.w('tables/race-a/table.toml',
+select set_config('qorpera_test.a_def', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-a/table.toml',
 	pg_temp.def('86600000-0000-4000-8000-00000000000a', array['€'])))::text, false) \g /dev/null
-select set_config('qorpera_test.a_rows', jsonb_build_array(pg_temp.w('tables/race-a/rows.csv',
+select set_config('qorpera_test.a_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-a/rows.csv',
 	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
-select set_config('qorpera_test.b_def', jsonb_build_array(pg_temp.w('tables/race-b/table.toml',
+select set_config('qorpera_test.b_def', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-b/table.toml',
 	pg_temp.def('86600000-0000-4000-8000-00000000000b', array['€'])))::text, false) \g /dev/null
-select set_config('qorpera_test.b_rows', jsonb_build_array(pg_temp.w('tables/race-b/rows.csv',
+select set_config('qorpera_test.b_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-b/rows.csv',
 	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
-select set_config('qorpera_test.m_move', jsonb_build_array(jsonb_build_object('op','move','from','tables/race-m','to','tables/race-n',
-	'expectedVersion',pg_temp.version('tables/race-m'),
+select set_config('qorpera_test.m_move', jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/tables/race-m','to','QorperaOS/tables/race-n',
+	'expectedVersion',pg_temp.version('QorperaOS/tables/race-m'),
 	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
 	false) \g /dev/null
-select set_config('qorpera_test.m_rows', jsonb_build_array(pg_temp.w('tables/race-m/rows.csv',
+select set_config('qorpera_test.m_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-m/rows.csv',
 	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
-select set_config('qorpera_test.d_delete', jsonb_build_array(jsonb_build_object('op','delete','path','tables/race-d',
-	'expectedVersion',pg_temp.version('tables/race-d'),
+select set_config('qorpera_test.d_delete', jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/tables/race-d',
+	'expectedVersion',pg_temp.version('QorperaOS/tables/race-d'),
 	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
 	false) \g /dev/null
-select set_config('qorpera_test.d_rows', jsonb_build_array(pg_temp.w('tables/race-d/rows.csv',
+select set_config('qorpera_test.d_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-d/rows.csv',
 	pg_temp.rows(array[array['Visits','count']])))::text, false) \g /dev/null
 -- The window: the table is made in a change set that also writes its README; the rows save writes the README first.
 select set_config('qorpera_test.w_make', jsonb_build_array(
-	pg_temp.write('tables/race-w/README.md', 'plain', 'About the table.', null),
-	pg_temp.w('tables/race-w/table.toml', pg_temp.def('86600000-0000-4000-8000-00000000000e', array['€'])))::text, false) \g /dev/null
+	pg_temp.write('QorperaOS/tables/race-w/README.md', 'plain', 'About the table.', null),
+	pg_temp.w('QorperaOS/tables/race-w/table.toml', pg_temp.def('86600000-0000-4000-8000-00000000000e', array['€'])))::text, false) \g /dev/null
 select set_config('qorpera_test.w_rows', jsonb_build_array(
-	pg_temp.write('tables/race-w/README.md', 'plain', 'About the rows.', null),
-	pg_temp.w('tables/race-w/rows.csv', pg_temp.rows(array[array['Visits','count']])))::text, false) \g /dev/null
-select set_config('qorpera_test.p_one', jsonb_build_array(pg_temp.w('interfaces/one/interface.toml',
+	pg_temp.write('QorperaOS/tables/race-w/README.md', 'plain', 'About the rows.', null),
+	pg_temp.w('QorperaOS/tables/race-w/rows.csv', pg_temp.rows(array[array['Visits','count']])))::text, false) \g /dev/null
+select set_config('qorpera_test.p_one', jsonb_build_array(pg_temp.w('QorperaOS/interfaces/one/interface.toml',
 	pg_temp.iface('86600000-0000-4000-8000-000000000001', true)))::text, false) \g /dev/null
-select set_config('qorpera_test.p_two', jsonb_build_array(pg_temp.w('interfaces/two/interface.toml',
+select set_config('qorpera_test.p_two', jsonb_build_array(pg_temp.w('QorperaOS/interfaces/two/interface.toml',
 	pg_temp.iface('86600000-0000-4000-8000-000000000002', true)))::text, false) \g /dev/null
-select set_config('qorpera_test.g_rows', jsonb_build_array(pg_temp.w('tables/race-g/rows.csv',
+select set_config('qorpera_test.g_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/race-g/rows.csv',
 	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
 -- (An asOfSeq past every change, so the core's unseen_change never answers first and the table guard does.)
-select set_config('qorpera_test.g_move', jsonb_build_array(jsonb_build_object('op','move','from','tables/race-g','to','tables/race-h',
-	'expectedVersion',pg_temp.version('tables/race-g'),
+select set_config('qorpera_test.g_move', jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/tables/race-g','to','QorperaOS/tables/race-h',
+	'expectedVersion',pg_temp.version('QorperaOS/tables/race-g'),
 	'asOfSeq',(select last_seq + 1000000 from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
 	false) \g /dev/null
 -- Two new tables with one id, in two folders.
-select set_config('qorpera_test.t_one', jsonb_build_array(pg_temp.table_folder('tables/twin-one',
+select set_config('qorpera_test.t_one', jsonb_build_array(pg_temp.table_folder('QorperaOS/tables/twin-one',
 	pg_temp.def('86600000-0000-4000-8000-000000000010', array['€']), pg_temp.rows(array[]::text[][])))::text, false) \g /dev/null
-select set_config('qorpera_test.t_two', jsonb_build_array(pg_temp.table_folder('tables/twin-two',
+select set_config('qorpera_test.t_two', jsonb_build_array(pg_temp.table_folder('QorperaOS/tables/twin-two',
 	pg_temp.def('86600000-0000-4000-8000-000000000010', array['€']), pg_temp.rows(array[]::text[][])))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.owner(), current_setting('qorpera_test.' || name)::jsonb)
 from unnest(array['a_def','b_def','m_move','d_delete','w_make','p_one','g_move','t_one']) name \g /dev/null
@@ -167,7 +167,7 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'version_changed' then raise exception 'A rows save behind a definition: %', r; end if;
-	if not pg_temp.fits('tables/race-a') then raise exception 'Rows that don''t fit their definition landed'; end if;
+	if not pg_temp.fits('QorperaOS/tables/race-a') then raise exception 'Rows that don''t fit their definition landed'; end if;
 end $$;
 
 -- B. A rows save holds the row; a definition change waits there, then reads again: the definition never lands over rows
@@ -186,7 +186,7 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'version_changed' then raise exception 'A definition behind a rows save: %', r; end if;
-	if not pg_temp.fits('tables/race-b') then raise exception 'A definition landed over rows it doesn''t fit'; end if;
+	if not pg_temp.fits('QorperaOS/tables/race-b') then raise exception 'A definition landed over rows it doesn''t fit'; end if;
 end $$;
 
 -- C. A table's folder moved holds its row; a rows save in the old folder waits, then is refused; the row follows the
@@ -203,9 +203,9 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'outcome' = 'saved' then raise exception 'A rows save landed in a moved table''s old folder: %', r; end if;
-	t := pg_temp.trow('tables/race-n');
-	if t.id is distinct from '86600000-0000-4000-8000-00000000000c' or t.rows_version is distinct from pg_temp.version('tables/race-n/rows.csv')
-		or t.definition_version is distinct from pg_temp.version('tables/race-n/table.toml') or not pg_temp.fits('tables/race-n') then
+	t := pg_temp.trow('QorperaOS/tables/race-n');
+	if t.id is distinct from '86600000-0000-4000-8000-00000000000c' or t.rows_version is distinct from pg_temp.version('QorperaOS/tables/race-n/rows.csv')
+		or t.definition_version is distinct from pg_temp.version('QorperaOS/tables/race-n/table.toml') or not pg_temp.fits('QorperaOS/tables/race-n') then
 		raise exception 'The moved table''s row: %', to_jsonb(t); end if;
 end $$;
 
@@ -222,7 +222,7 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'outcome' = 'saved' then raise exception 'A rows save landed in a deleted table: %', r; end if;
-	if (pg_temp.trow('tables/race-d')).id is not null or pg_temp.version('tables/race-d/rows.csv') is not null then
+	if (pg_temp.trow('QorperaOS/tables/race-d')).id is not null or pg_temp.version('QorperaOS/tables/race-d/rows.csv') is not null then
 		raise exception 'The deleted table''s row retires and its rows stay gone'; end if;
 end $$;
 
@@ -242,7 +242,7 @@ begin
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 1 ->> 'reason' is distinct from 'version_changed' then
 		raise exception 'A rows save that holds no row of a table made meanwhile: %', r; end if;
-	if pg_temp.version('tables/race-w/rows.csv') is not null then raise exception 'The rows landed unlocked'; end if;
+	if pg_temp.version('QorperaOS/tables/race-w/rows.csv') is not null then raise exception 'The rows landed unlocked'; end if;
 end $$;
 
 -- G. A rows save holds the table's row; the table's folder moved behind it waits at that row (before its paths, so it
@@ -262,7 +262,7 @@ begin
 	r := pg_temp.result('fence_two')::jsonb;
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'version_changed' then
 		raise exception 'A move behind a rows save reads again: %', r; end if;
-	if (pg_temp.trow('tables/race-g')).rows_version is distinct from pg_temp.version('tables/race-g/rows.csv') then
+	if (pg_temp.trow('QorperaOS/tables/race-g')).rows_version is distinct from pg_temp.version('QorperaOS/tables/race-g/rows.csv') then
 		raise exception 'The table stays with its new rows'; end if;
 end $$;
 
@@ -280,8 +280,8 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	v := pg_temp.result('fence_two');
 	if v not like 'ERROR 23505 %' then raise exception 'The second table with one id must fail whole: %', v; end if;
-	if (pg_temp.trow('tables/twin-one')).id is distinct from '86600000-0000-4000-8000-000000000010'
-		or pg_temp.version('tables/twin-two') is not null then
+	if (pg_temp.trow('QorperaOS/tables/twin-one')).id is distinct from '86600000-0000-4000-8000-000000000010'
+		or pg_temp.version('QorperaOS/tables/twin-two') is not null then
 		raise exception 'The first table keeps its row and the second never lands'; end if;
 end $$;
 
@@ -329,13 +329,13 @@ create function pg_temp.claims_as(p_conn text, p_member boolean) returns void la
 $$;
 -- (The member makes them: they may put themselves in an empty cell; the platform only clears one.)
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9c-race-seed', jsonb_build_array(
-	pg_temp.table_folder('tables/offer-a', pg_temp.offer_def('86600000-0000-4000-8000-000000000011'),
+	pg_temp.table_folder('QorperaOS/tables/offer-a', pg_temp.offer_def('86600000-0000-4000-8000-000000000011'),
 		pg_temp.offer_rows(pg_temp.member() ->> 'userId')),
-	pg_temp.table_folder('tables/offer-b', pg_temp.offer_def('86600000-0000-4000-8000-000000000012'),
+	pg_temp.table_folder('QorperaOS/tables/offer-b', pg_temp.offer_def('86600000-0000-4000-8000-000000000012'),
 		pg_temp.offer_rows(pg_temp.member() ->> 'userId')))), 2, 'saved') \g /dev/null
-select set_config('qorpera_test.oa_rows', jsonb_build_array(pg_temp.w('tables/offer-a/rows.csv', pg_temp.offer_rows('')))::text,
+select set_config('qorpera_test.oa_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/offer-a/rows.csv', pg_temp.offer_rows('')))::text,
 	false) \g /dev/null
-select set_config('qorpera_test.ob_rows', jsonb_build_array(pg_temp.w('tables/offer-b/rows.csv', pg_temp.offer_rows('')))::text,
+select set_config('qorpera_test.ob_rows', jsonb_build_array(pg_temp.w('QorperaOS/tables/offer-b/rows.csv', pg_temp.offer_rows('')))::text,
 	false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.' || name)::jsonb)
 from unnest(array['oa_rows','ob_rows']) name \g /dev/null

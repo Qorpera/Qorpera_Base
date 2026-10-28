@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseCompanyStateFile, type RoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { osRelative, parseCompanyStateFile, type RoutineFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -34,10 +34,10 @@ interface Stored {
 }
 
 /** The todos folder whose index the fake answers (`qorpera_folder_agent_todos`). */
-const TODOS = "agents/nora/todos";
+const TODOS = "QorperaOS/agents/nora/todos";
 /** The routines folder whose index the fake answers (`qorpera_folder_agent_routines`). A write or delete of a routine
  * file is delegation. */
-const ROUTINES = "agents/nora/routines";
+const ROUTINES = "QorperaOS/agents/nora/routines";
 const isRoutine = (path: string) =>
 	path.startsWith(`${ROUTINES}/`) && /^[^/]+\.md$/.test(path.slice(ROUTINES.length + 1));
 
@@ -89,7 +89,7 @@ export async function folderWriterFixture(
 	const bytesBySha = new Map<string, Uint8Array>();
 	const files = new Map<string, Stored>();
 	const rowIds = new Map<string, string>();
-	const folders = new Set<string>(["agents", "agents/nora", ...(seed.folders ?? [])]);
+	const folders = new Set<string>(["QorperaOS", "QorperaOS/agents", "QorperaOS/agents/nora", ...(seed.folders ?? [])]);
 	// A folder keeps its version until it is deleted.
 	const folderVersions = new Map<string, string>();
 	const folderVersion = (path: string) => {
@@ -107,11 +107,13 @@ export async function folderWriterFixture(
 	const cancels: Record<string, unknown>[] = [];
 	const archives: Record<string, unknown>[] = [];
 	// The interface change notes asked for (I10), and the commits with no note yet that saved something under
-	// interfaces/ or tables/ (a table's rows aside), which SQL notes.
+	// QorperaOS/interfaces/ or QorperaOS/tables/ (a table's rows aside), which SQL notes.
 	const notes: Record<string, unknown>[] = [];
 	let unnoted = 0;
-	const noted = (path: string) =>
-		/^(?:interfaces|tables)\//.test(path.toLowerCase()) && !/^tables\/[^/]+\/rows\.csv$/.test(path.toLowerCase());
+	const noted = (path: string) => {
+		const below = osRelative(path.toLowerCase()) ?? "";
+		return /^(?:interfaces|tables)\//.test(below) && !/^tables\/[^/]+\/rows\.csv$/.test(below);
+	};
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
 	// Whether the requester's login pays, as the last login preparation found it.

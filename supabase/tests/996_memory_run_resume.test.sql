@@ -40,8 +40,8 @@ begin
 	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished,
 		line_sha256, fixed_sha256, block_path, block_key, block_path_version, commit_id)
 	select v_run.environment_id, v_run.id, j, 'company_read', 'resume-call-' || j, false, j = 2, j in (0, 2),
-		repeat('a', 64), repeat('b', 64), 'agents/alice/runs/' || v_run.id || '/log/00000000.jsonl',
-		'agents/alice/runs/' || v_run.id || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid()
+		repeat('a', 64), repeat('b', 64), 'QorperaOS/agents/alice/runs/' || v_run.id || '/log/00000000.jsonl',
+		'qorperaos/agents/alice/runs/' || v_run.id || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid()
 	from generate_series(0, 2) j;
 	perform pg_temp.rc_expire((v_binding ->> 'jobId')::uuid);
 	perform set_config('qorpera_test.resume_next', pg_temp.base_start(v_run.id)::text, true);

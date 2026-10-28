@@ -45,11 +45,11 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'routine-files-0001', jsonb_build_array(
-		pg_temp.routine('agents/otto/routines/report.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e2', 'Report',
+		pg_temp.routine('QorperaOS/agents/otto/routines/report.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e2', 'Report',
 			pg_temp.every(60))),
-		pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e1', 'Inbox',
+		pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e1', 'Inbox',
 			pg_temp.every(30))),
-		pg_temp.routine('agents/nora/routines/weekly.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e3', 'Weekly',
+		pg_temp.routine('QorperaOS/agents/nora/routines/weekly.md', pg_temp.rparse('89900000-0000-4000-8000-0000000000e3', 'Weekly',
 			pg_temp.every(120)))));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
@@ -58,7 +58,7 @@ do $$
 declare v jsonb := pg_temp.folders();
 begin
 	perform pg_temp.same(pg_temp.routines(v),
-		'e1:a1:agents/nora/routines/inbox.md,e3:a1:agents/nora/routines/weekly.md,e2:a2:agents/otto/routines/report.md',
+		'e1:a1:QorperaOS/agents/nora/routines/inbox.md,e3:a1:QorperaOS/agents/nora/routines/weekly.md,e2:a2:QorperaOS/agents/otto/routines/report.md',
 		'every routine''s file, with its agent');
 	perform pg_temp.same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'agents,groups,routines,schema',
 		'the answer''s keys');
@@ -70,22 +70,22 @@ end $$;
 select pg_temp.as_service();
 do $$ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-files-0002', jsonb_build_array(
-		jsonb_build_object('op', 'delete', 'path', 'agents/nora/routines/weekly.md',
-			'expectedVersion', pg_temp.version('agents/nora/routines/weekly.md')))), 1, 'saved');
+		jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/nora/routines/weekly.md',
+			'expectedVersion', pg_temp.version('QorperaOS/agents/nora/routines/weekly.md')))), 1, 'saved');
 	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy,
 		created_by_user_id)
-	values ('70700000-0000-4000-8000-000000000020', 'agents/otto', 'subtree', 'member_private',
+	values ('70700000-0000-4000-8000-000000000020', 'QorperaOS/agents/otto', 'subtree', 'member_private',
 		'70700000-0000-4000-8000-000000000001', 'normal', '70700000-0000-4000-8000-000000000001');
 end $$;
 select pg_temp.as_user('02');
 do $$ begin
-	perform pg_temp.same(pg_temp.routines(pg_temp.folders()), 'e1:a1:agents/nora/routines/inbox.md',
+	perform pg_temp.same(pg_temp.routines(pg_temp.folders()), 'e1:a1:QorperaOS/agents/nora/routines/inbox.md',
 		'a deleted routine and an unreadable one are left out');
 end $$;
 select pg_temp.as_user('01');
 do $$ begin
 	perform pg_temp.same(pg_temp.routines(pg_temp.folders()),
-		'e1:a1:agents/nora/routines/inbox.md,e2:a2:agents/otto/routines/report.md', 'the private folder''s owner reads it');
+		'e1:a1:QorperaOS/agents/nora/routines/inbox.md,e2:a2:QorperaOS/agents/otto/routines/report.md', 'the private folder''s owner reads it');
 end $$;
 
 -- 3. A non-member reads nothing ---------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Company sidebar sections on folder-v2 (ported from snapshot-v1 in the legacy sweep): sections and placement are the
--- company's agents/sections.md, which members and agents' runs save (the member RPC's section and move actions refuse;
+-- company's QorperaOS/agents/sections.md, which members and agents' runs save (the member RPC's section and move actions refuse;
 -- the agent organises the sidebar by saving the file); the member read shows them in file order. Pins and hidden agents
 -- stay each member's own. An archived agent leaves every list but keeps its place.
 select pg_temp.base_claims('service_role');
@@ -38,14 +38,14 @@ begin
 	end;
 	raise exception 'expected % for %', p_code, p_request;
 end $$;
--- agents/sections.md with these sections, each a name and its agents in order.
+-- QorperaOS/agents/sections.md with these sections, each a name and its agents in order.
 create function pg_temp.sb_sections(p_sections jsonb) returns jsonb language sql as $$
-	select pg_temp.base_write('agents/sections.md', 'sections', 'sections ' || p_sections::text, jsonb_build_object('kind', 'sections',
+	select pg_temp.base_write('QorperaOS/agents/sections.md', 'sections', 'sections ' || p_sections::text, jsonb_build_object('kind', 'sections',
 		'sections', coalesce((select jsonb_agg(jsonb_build_object('name', section ->> 'name', 'line', 3 + 10 * (ordinal - 1)::integer,
 			'members', coalesce((select jsonb_agg(jsonb_build_object('id', member #>> '{}', 'line', 4 + 10 * (ordinal - 1)::integer + n::integer)
 				order by n) from jsonb_array_elements(section -> 'agents') with ordinality m(member, n)), '[]'::jsonb)) order by ordinal)
 			from jsonb_array_elements(p_sections) with ordinality s(section, ordinal)), '[]'::jsonb)),
-		pg_temp.base_version('agents/sections.md'))
+		pg_temp.base_version('QorperaOS/agents/sections.md'))
 $$;
 -- A section's agents in a member's read, in the order the client draws them.
 create function pg_temp.sb_in(p_state jsonb, p_section text) returns text[] language sql as $$
@@ -85,7 +85,7 @@ begin
 	v_state := pg_temp.sb_read(v_owner);
 	perform pg_temp.base_assert(v_state #>> '{sections,1,name}' = 'Operations'
 		and pg_temp.sb_in(v_state, pg_temp.sb_section(v_state, 'Operations')) = array[v_alice], 'A contributor saves the sections');
-	v_version := pg_temp.base_version('agents/sections.md');
+	v_version := pg_temp.base_version('QorperaOS/agents/sections.md');
 	-- The viewer holds the file as its own upload would, then commits it.
 	v_units := jsonb_build_array(pg_temp.sb_sections('[{"name":"Viewers","agents":[]}]'));
 	perform pg_temp.base_seal(jsonb_build_object('kind', 'member', 'userId', v_viewer), (select manifest_text
@@ -94,11 +94,11 @@ begin
 	v_result := public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', jsonb_build_object('kind', 'member', 'userId', v_viewer),
 		'sb-sections-viewer', v_units);
 	perform pg_temp.base_assert(v_result #>> '{units,0,outcome}' = 'denied'
-		and pg_temp.base_version('agents/sections.md') = v_version, 'A viewer cannot change the sections: ' || v_result::text);
+		and pg_temp.base_version('QorperaOS/agents/sections.md') = v_version, 'A viewer cannot change the sections: ' || v_result::text);
 	-- The member RPC's section and move actions are file edits on folder-v2: they refuse, and so for a viewer.
 	foreach v_action in array array['create_section', 'rename_section', 'delete_section', 'move_agent', 'move_room'] loop
 		perform pg_temp.sb_refused(v_owner, jsonb_build_object('action', v_action), '55000',
-			'This company keeps its sections in agents/sections.md; edit that file');
+			'This company keeps its sections in QorperaOS/agents/sections.md; edit that file');
 	end loop;
 	perform pg_temp.sb_refused(v_viewer, '{"action":"rename_section"}', '42501');
 	-- Pins are the member's own and never reach another member.
@@ -118,7 +118,7 @@ begin
 		'P0002');
 end $$;
 
--- 2. An agent moves a coworker into a section by saving agents/sections.md from its run, with no member step. Rows of
+-- 2. An agent moves a coworker into a section by saving QorperaOS/agents/sections.md from its run, with no member step. Rows of
 -- agents that kept their place are not rewritten, and members see what the agent changed.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_result jsonb; v_state jsonb;
@@ -142,7 +142,7 @@ begin
 		'An unmoved row is not rewritten');
 end $$;
 
--- 3. Only members call the member RPCs (an agent saves agents/sections.md, section 2).
+-- 3. Only members call the member RPCs (an agent saves QorperaOS/agents/sections.md, section 2).
 do $$
 begin
 	perform pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_read_company_sidebar(uuid)', 'execute')
@@ -158,11 +158,11 @@ select pg_temp.base_error($q$select public.qorpera_manage_company_sidebar('92400
 do $$
 declare v_state jsonb;
 begin
-	perform pg_temp.base_commit(pg_temp.base_owner(), 'sb-archive-bob', jsonb_build_array(pg_temp.base_write('agents/bob/agent.md', 'agent',
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'sb-archive-bob', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/bob/agent.md', 'agent',
 		E'---\nid: 92400000-0000-4000-8000-000000000031\nname: Bob\nrole: Research\nkind: agent\nstatus: archived\n---\nRead and change the company folder.\n',
 		jsonb_build_object('kind', 'agent', 'id', '92400000-0000-4000-8000-000000000031', 'name', 'Bob', 'role', 'Research', 'agentKind', 'agent',
 			'status', 'archived', 'colour', null, 'figure', null, 'model', null, 'effort', null, 'instructions', 'Read and change the company folder.'),
-		pg_temp.base_version('agents/bob/agent.md'))));
+		pg_temp.base_version('QorperaOS/agents/bob/agent.md'))));
 	perform pg_temp.base_assert((select employment_status from public.qorpera_profile_staff where staff_agent_id = '92400000-0000-4000-8000-000000000031')
 		= 'archived', 'Bob is archived');
 	v_state := pg_temp.sb_read('92400000-0000-4000-8000-000000000003');

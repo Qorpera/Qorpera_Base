@@ -2,6 +2,7 @@ import {
 	COMPANY_STATE_FILE_MAX_BYTES,
 	type CompanyStateEffort,
 	canonicalCompanyStateInstant,
+	osPath,
 	parseCompanyStateFile,
 	type RoutineDay,
 	type RoutineFile,
@@ -29,10 +30,11 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 /*
  * `manage_routine` as a thin writer of a folder-v2 agent's routine files (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
- * §2 "routine", §5 "Plan (W4c)"; RUNTIME-COMPANY-FOLDER-C2.md §4): `agents/<handle>/routines/<routineKey>.md`, whose
- * name is the routine's key. The folder core's commit decides each save and keeps the routine index with the files.
- * A routine change is delegation (later runs read its instructions as their request), so every save carries the
- * automatic review's approval of this call, recorded for exactly its change set (C2 R1).
+ * §2 "routine", §5 "Plan (W4c)"; RUNTIME-COMPANY-FOLDER-C2.md §4):
+ * `QorperaOS/agents/<handle>/routines/<routineKey>.md`, whose name is the routine's key. The folder core's commit
+ * decides each save and keeps the routine index with the files. A routine change is delegation (later runs read its
+ * instructions as their request), so every save carries the automatic review's approval of this call, recorded for
+ * exactly its change set (C2 R1).
  *
  * An upsert's file is checked with the arguments, before the review (`check`). Every other refusal, and every answer
  * that changes nothing, comes before the receipt: a begun receipt that ends in an error holds the run's other
@@ -258,7 +260,7 @@ export class CloudFolderRoutines {
 		this.#folder = options.folder;
 		this.#operations = options.operations;
 		this.#identity = options.identity;
-		this.#routines = `agents/${options.handle}/routines`;
+		this.#routines = osPath(`agents/${options.handle}/routines`);
 		this.#ownRoutineId = options.ownRoutineId;
 	}
 

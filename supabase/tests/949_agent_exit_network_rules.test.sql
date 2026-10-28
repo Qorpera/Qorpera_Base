@@ -102,22 +102,22 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.version(p_key text, p_env uuid default '94900000-0000-4000-8000-000000000020') returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = p_env and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = p_env and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '94900000-0000-4000-8000-000000000020'
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
-		jsonb_build_object('kind','vision','name',p_name), pg_temp.version('vision/vision.md'))
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+		jsonb_build_object('kind','vision','name',p_name), pg_temp.version('QorperaOS/vision/vision.md'))
 $$;
 create function pg_temp.member(p_user text) returns jsonb language sql as $$
 	select jsonb_build_object('kind','member','userId','94900000-0000-4000-8000-00000000000' || p_user)
@@ -147,9 +147,9 @@ $$;
 create function pg_temp.rules_text(p_parse jsonb) returns text language sql as $$
 	select format(E'mode = %s\nblock = %s\nallow = %s\n', p_parse -> 'mode', p_parse -> 'block', p_parse -> 'allow')
 $$;
-create function pg_temp.network(p_parse jsonb, p_path text default 'rules/network.toml', p_kind text default 'network-rules')
+create function pg_temp.network(p_parse jsonb, p_path text default 'QorperaOS/rules/network.toml', p_kind text default 'network-rules')
 returns jsonb language sql as $$
-	select pg_temp.write(p_path, p_kind, pg_temp.rules_text(p_parse), p_parse, pg_temp.version('rules/network.toml'))
+	select pg_temp.write(p_path, p_kind, pg_temp.rules_text(p_parse), p_parse, pg_temp.version('QorperaOS/rules/network.toml'))
 $$;
 create function pg_temp.row(p_env uuid default '94900000-0000-4000-8000-000000000020') returns public.qorpera_company_network_rules language sql as $$
 	select * from public.qorpera_company_network_rules where environment_id = p_env
@@ -163,19 +163,20 @@ $$;
 do $$
 declare r jsonb; i integer; t jsonb; x public.qorpera_company_network_rules; p jsonb;
 begin
-	if public.qorpera_structured_path_kind('rules/network.toml') is distinct from 'network-rules'
-		or public.qorpera_structured_path_kind('rules/network.md') is distinct from 'rule'
-		or public.qorpera_structured_path_kind('rules/other.toml') is not null
-		or public.qorpera_structured_path_kind('rules/sub/network.toml') is not null
+	if public.qorpera_structured_path_kind('qorperaos/rules/network.toml') is distinct from 'network-rules'
+		or public.qorpera_structured_path_kind('qorperaos/rules/network.md') is distinct from 'rule'
+		or public.qorpera_structured_path_kind('qorperaos/rules/other.toml') is not null
+		or public.qorpera_structured_path_kind('qorperaos/rules/sub/network.toml') is not null
+		or public.qorpera_structured_path_kind('rules/network.toml') is not null
 		or public.qorpera_structured_path_kind('network.toml') is not null then
-		raise exception 'Only rules/network.toml is the network rules'; end if;
+		raise exception 'Only QorperaOS/rules/network.toml is the network rules'; end if;
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Exit'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Exit'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '94900000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','rules')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	p := pg_temp.rules('only-listed', '["casino.example","*.torrents.example"]', '["github.com","*.npmjs.org","pypi.org"]');
 	-- A save locks nothing before the paths: the row's one key is the folder's clock, which the commit holds.
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('94900000-0000-4000-8000-000000000020',
@@ -186,7 +187,7 @@ begin
 	if x.profile_id is distinct from '94900000-0000-4000-8000-000000000010' or x.mode is distinct from 'only-listed'
 		or x.block is distinct from array['casino.example','*.torrents.example']
 		or x.allow is distinct from array['github.com','*.npmjs.org','pypi.org']
-		or x.folder_path_version is distinct from pg_temp.version('rules/network.toml')
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/network.toml')
 		or x.commit_id is distinct from pg_temp.commit_id('exit-0001') then
 		raise exception 'The file is the company''s rules, in its order: %', to_jsonb(x); end if;
 	if (select structured from public.qorpera_folder_path_versions where commit_id = x.commit_id and version = x.folder_path_version)
@@ -261,14 +262,14 @@ begin
 		pg_temp.rules('open', '[]', '[443]')))), 'allow') then raise exception 'A list holds texts'; end if;
 	-- The path is written in lowercase; a parse of another kind, or a writer's problems, are not the rules.
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0011', jsonb_build_array(pg_temp.network(
-		pg_temp.rules('open', '[]', '[]'), 'rules/Network.toml')))) then raise exception 'The path is in lowercase'; end if;
+		pg_temp.rules('open', '[]', '[]'), 'QorperaOS/rules/Network.toml')))) then raise exception 'The path is in lowercase'; end if;
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0012', jsonb_build_array(pg_temp.network(
 		jsonb_build_object('kind','rule','id','94900000-0000-4000-8000-0000000000f1','outcome','ask-first','text','open'),
-		'rules/network.toml', 'rule')))) then raise exception 'The file is not a review rule'; end if;
+		'QorperaOS/rules/network.toml', 'rule')))) then raise exception 'The file is not a review rule'; end if;
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0013', jsonb_build_array(pg_temp.network(
 		jsonb_build_object('kind','rule','mode','open','block','[]'::jsonb,'allow','[]'::jsonb))))) then
 		raise exception 'The parse is of the file''s kind'; end if;
-	r := pg_temp.write('rules/network.toml', 'network-rules', E'mode = "shut"\n', null, pg_temp.version('rules/network.toml'));
+	r := pg_temp.write('QorperaOS/rules/network.toml', 'network-rules', E'mode = "shut"\n', null, pg_temp.version('QorperaOS/rules/network.toml'));
 	r := jsonb_set(r, '{structured,0}', (r -> 'structured' -> 0) - 'parse' || jsonb_build_object('problems', jsonb_build_array(
 		jsonb_build_object('line',1,'key','mode','code','bad_value','message','mode must be one of: open, only-listed.'))));
 	r := pg_temp.commit(pg_temp.owner(), 'shape-0014', jsonb_build_array(r));
@@ -291,7 +292,7 @@ begin
 		pg_temp.rules('open', '["ads.example"]', '["github.com"]')))), 1, 'saved');
 	x := pg_temp.row();
 	if x.mode is distinct from 'open' or x.block is distinct from array['ads.example'] or x.allow is distinct from array['github.com']
-		or x.folder_path_version is distinct from pg_temp.version('rules/network.toml') or x.commit_id is distinct from pg_temp.commit_id('edit-0001') then
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/network.toml') or x.commit_id is distinct from pg_temp.commit_id('edit-0001') then
 		raise exception 'An edit reaches the rules: %', to_jsonb(x); end if;
 	select count(*) into n from public.qorpera_company_network_rules where profile_id = '94900000-0000-4000-8000-000000000010';
 	if n <> 1 then raise exception 'One row per environment'; end if;
@@ -301,14 +302,14 @@ begin
 		raise exception 'The nodes read the company''s rules, and none for a company without the file'; end if;
 	v := x.folder_path_version;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml')))), 1, 'saved');
+		'path','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/network.toml')))), 1, 'saved');
 	if pg_temp.row() is not null or exists (select 1 from public.qorpera_agent_exit_network_rules(array['94900000-0000-4000-8000-000000000010']::uuid[])) then
 		raise exception 'Deleting the file opens the company'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0001', jsonb_build_array(pg_temp.network(
 		pg_temp.rules('only-listed', '["z.example","a.example","m.example"]', '[]')))), 1, 'saved');
 	x := pg_temp.row();
 	if x.mode is distinct from 'only-listed' or x.block is distinct from array['z.example','a.example','m.example'] or x.allow is distinct from '{}'::text[]
-		or x.folder_path_version is distinct from pg_temp.version('rules/network.toml') or x.folder_path_version = v then
+		or x.folder_path_version is distinct from pg_temp.version('QorperaOS/rules/network.toml') or x.folder_path_version = v then
 		raise exception 'A restore writes the rules again: %', to_jsonb(x); end if;
 end $$;
 
@@ -320,7 +321,7 @@ begin
 	r := pg_temp.commit(pg_temp.member('2'), 'member-0001', jsonb_build_array(pg_temp.network(pg_temp.rules('open', '[]', '[]'))));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
 	r := pg_temp.commit(pg_temp.member('2'), 'member-0002', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml'))));
+		'path','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/network.toml'))));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
 	if to_jsonb(pg_temp.row()) is distinct from to_jsonb(x) then raise exception 'A contributor leaves the rules alone'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member('3'), 'admin-0001', jsonb_build_array(pg_temp.network(
@@ -328,7 +329,7 @@ begin
 	if (pg_temp.row()).allow is distinct from array['github.com'] or (pg_temp.row()).commit_id is distinct from pg_temp.commit_id('admin-0001') then
 		raise exception 'An admin writes the rules'; end if;
 	-- Agents read the file and never write it (rules/ is the company_rules scope).
-	v_rules := public.qorpera_folder_path_resource('94900000-0000-4000-8000-000000000020', 'rules/network.toml');
+	v_rules := public.qorpera_folder_path_resource('94900000-0000-4000-8000-000000000020', 'QorperaOS/rules/network.toml');
 	if v_rules.scope is distinct from 'company_rules'
 		or not public.qorpera_folder_principal_allowed('94900000-0000-4000-8000-000000000010', v_rules, 'staff_agent', '94900000-0000-4000-8000-0000000000c0', 'read')
 		or public.qorpera_folder_principal_allowed('94900000-0000-4000-8000-000000000010', v_rules, 'staff_agent', '94900000-0000-4000-8000-0000000000c0', 'write')
@@ -343,52 +344,53 @@ declare r jsonb; x public.qorpera_company_network_rules := pg_temp.row();
 begin
 	-- Away, or onto its own path (which the core takes as a rename): refused as a rule, not as an internal error.
 	r := pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(
-		jsonb_build_object('op','move','from','rules/network.toml','to','rules/old.toml','expectedVersion',pg_temp.version('rules/network.toml')),
-		jsonb_build_object('op','move','from','rules/network.toml','to','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml')),
-		jsonb_build_object('op','copy','from','rules/network.toml','to','rules/copy.toml'),
-		jsonb_build_object('op','delete','path','rules','expectedVersion',pg_temp.version('rules'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','rules','to','old-rules','expectedVersion',pg_temp.version('rules'),'asOfSeq',pg_temp.seq())));
+		jsonb_build_object('op','move','from','QorperaOS/rules/network.toml','to','QorperaOS/rules/old.toml','expectedVersion',pg_temp.version('QorperaOS/rules/network.toml')),
+		jsonb_build_object('op','move','from','QorperaOS/rules/network.toml','to','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/network.toml')),
+		jsonb_build_object('op','copy','from','QorperaOS/rules/network.toml','to','QorperaOS/rules/copy.toml'),
+		jsonb_build_object('op','delete','path','QorperaOS/rules','expectedVersion',pg_temp.version('QorperaOS/rules'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','QorperaOS/rules','to','QorperaOS/old-rules','expectedVersion',pg_temp.version('QorperaOS/rules'),
+			'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
 	perform pg_temp.expect(r, 3, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 4, 'refused', 'seeded'); perform pg_temp.expect(r, 5, 'refused', 'seeded');
 	if r -> 'units' -> 1 -> 'problems' is distinct from jsonb_build_array(jsonb_build_object('code','value',
-		'message','rules/network.toml does not move; edit it where it is')) then
+		'message','QorperaOS/rules/network.toml does not move; edit it where it is')) then
 		raise exception 'A move of the file onto itself is refused by the rule: %', r; end if;
 	if (pg_temp.row()).folder_path_version is distinct from x.folder_path_version or (pg_temp.row()).commit_id is distinct from x.commit_id
-		or pg_temp.version('rules/network.toml') is distinct from x.folder_path_version then
+		or pg_temp.version('QorperaOS/rules/network.toml') is distinct from x.folder_path_version then
 		raise exception 'The refused moves left the file and its row as they were'; end if;
 	-- Nor does another file move or copy onto the path.
 	r := pg_temp.commit(pg_temp.owner(), 'move-0002', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml')),
-		jsonb_build_object('op','write','path','rules/draft.toml','file',pg_temp.stage(E'mode = "open"\n'))));
+		'path','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/network.toml')),
+		jsonb_build_object('op','write','path','QorperaOS/rules/draft.toml','file',pg_temp.stage(E'mode = "open"\n'))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'move-0003', jsonb_build_array(
-		jsonb_build_object('op','move','from','rules/draft.toml','to','rules/network.toml','expectedVersion',pg_temp.version('rules/draft.toml')),
-		jsonb_build_object('op','copy','from','rules/draft.toml','to','rules/network.toml')));
+		jsonb_build_object('op','move','from','QorperaOS/rules/draft.toml','to','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/draft.toml')),
+		jsonb_build_object('op','copy','from','QorperaOS/rules/draft.toml','to','QorperaOS/rules/network.toml')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change'); perform pg_temp.expect(r, 2, 'refused', 'structured_copy');
-	if pg_temp.row() is not null or pg_temp.version('rules/network.toml') is not null then raise exception 'Nothing reached the path'; end if;
+	if pg_temp.row() is not null or pg_temp.version('QorperaOS/rules/network.toml') is not null then raise exception 'Nothing reached the path'; end if;
 	-- Nor does a folder take its name: made there, or moved or copied there.
 	r := pg_temp.commit(pg_temp.owner(), 'move-0004', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','rules/network.toml'),
-		jsonb_build_object('op','new_folder','path','Rules/Network.TOML','contents','[]'::jsonb),
-		jsonb_build_object('op','mkdir','path','rules/drafts')));
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules/network.toml'),
+		jsonb_build_object('op','new_folder','path','QorperaOS/Rules/Network.TOML','contents','[]'::jsonb),
+		jsonb_build_object('op','mkdir','path','QorperaOS/rules/drafts')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid'); perform pg_temp.expect(r, 2, 'refused', 'structured_invalid');
 	perform pg_temp.expect(r, 3, 'saved');
 	if r -> 'units' -> 0 -> 'problems' is distinct from jsonb_build_array(jsonb_build_object('code','name',
-		'message','rules/network.toml is the name of the network rules file, not a folder')) then
+		'message','QorperaOS/rules/network.toml is the name of the network rules file, not a folder')) then
 		raise exception 'A folder at the path is refused by its name: %', r; end if;
 	r := pg_temp.commit(pg_temp.owner(), 'move-0005', jsonb_build_array(
-		jsonb_build_object('op','move','from','rules/drafts','to','rules/network.toml','expectedVersion',pg_temp.version('rules/drafts'),
+		jsonb_build_object('op','move','from','QorperaOS/rules/drafts','to','QorperaOS/rules/network.toml','expectedVersion',pg_temp.version('QorperaOS/rules/drafts'),
 			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','copy','from','rules/drafts','to','rules/network.toml')));
+		jsonb_build_object('op','copy','from','QorperaOS/rules/drafts','to','QorperaOS/rules/network.toml')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid'); perform pg_temp.expect(r, 2, 'refused', 'structured_invalid');
-	if pg_temp.version('rules/network.toml') is not null then raise exception 'No folder reached the path'; end if;
+	if pg_temp.version('QorperaOS/rules/network.toml') is not null then raise exception 'No folder reached the path'; end if;
 	-- Another folder in rules/ still moves, with a file of that name in it.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0006', jsonb_build_array(jsonb_build_object('op','write',
-		'path','rules/drafts/network.toml','file',pg_temp.stage(E'mode = "open"\n')))), 1, 'saved');
+		'path','QorperaOS/rules/drafts/network.toml','file',pg_temp.stage(E'mode = "open"\n')))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0007', jsonb_build_array(jsonb_build_object('op','move',
-		'from','rules/drafts','to','rules/old-drafts','expectedVersion',pg_temp.version('rules/drafts'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
-	if pg_temp.version('rules/old-drafts/network.toml') is null or pg_temp.row() is not null then
+		'from','QorperaOS/rules/drafts','to','QorperaOS/rules/old-drafts','expectedVersion',pg_temp.version('QorperaOS/rules/drafts'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	if pg_temp.version('QorperaOS/rules/old-drafts/network.toml') is null or pg_temp.row() is not null then
 		raise exception 'A folder with a network.toml in it moves as any folder'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0008', jsonb_build_array(pg_temp.network(
 		pg_temp.rules(x.mode, to_jsonb(x.block), to_jsonb(x.allow))))), 1, 'saved');
@@ -408,7 +410,7 @@ begin
 		raise exception 'verify passed a network rules row off its file' using errcode = 'QTF02';
 	exception when sqlstate 'XX000' then null;
 	end;
-	update public.qorpera_company_network_rules set folder_path_version = pg_temp.version('rules/network.toml')
+	update public.qorpera_company_network_rules set folder_path_version = pg_temp.version('QorperaOS/rules/network.toml')
 	where environment_id = '94900000-0000-4000-8000-000000000020';
 	perform public.qorpera_folder_structured_verify('94900000-0000-4000-8000-000000000020', c);
 end $$;
@@ -417,7 +419,7 @@ end $$;
 
 do $$
 declare
-	v_want jsonb := jsonb_build_object('company_id','94900000-0000-4000-8000-000000000010','version',pg_temp.version('rules/network.toml'),
+	v_want jsonb := jsonb_build_object('company_id','94900000-0000-4000-8000-000000000010','version',pg_temp.version('QorperaOS/rules/network.toml'),
 		'mode','only-listed','block',to_jsonb((pg_temp.row()).block),'allow',to_jsonb((pg_temp.row()).allow));
 	v_got jsonb; v_functions text[]; v_role text;
 begin
@@ -489,22 +491,24 @@ begin
 	perform public.qorpera_folder_enable('94900000-0000-4000-8000-000000000022');
 	v_parse := pg_temp.rules('open', '["other.example"]', '[]');
 	v_text := pg_temp.rules_text(v_parse);
-	-- A new rules/ folder with the file in it is a save too.
+	-- A new QorperaOS/rules/ folder with the file in it is a save too.
+	perform pg_temp.expect(pg_temp.commit_in('94900000-0000-4000-8000-000000000022', pg_temp.owner(), 'other-root',
+		'[{"op":"mkdir","path":"QorperaOS"}]'), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit_in('94900000-0000-4000-8000-000000000022', pg_temp.owner(), 'other-0001', jsonb_build_array(
-		jsonb_build_object('op','new_folder','path','rules','contents',jsonb_build_array(
+		jsonb_build_object('op','new_folder','path','QorperaOS/rules','contents',jsonb_build_array(
 			jsonb_build_object('path','network.toml','kind','file','file',pg_temp.stage(v_text))),
-			'structured',jsonb_build_array(pg_temp.entry('rules/network.toml','network-rules',v_text,v_parse))))), 1, 'saved');
+			'structured',jsonb_build_array(pg_temp.entry('QorperaOS/rules/network.toml','network-rules',v_text,v_parse))))), 1, 'saved');
 	if (pg_temp.row('94900000-0000-4000-8000-000000000022')).folder_path_version
-		is distinct from pg_temp.version('rules/network.toml', '94900000-0000-4000-8000-000000000022')
+		is distinct from pg_temp.version('QorperaOS/rules/network.toml', '94900000-0000-4000-8000-000000000022')
 		or (pg_temp.row('94900000-0000-4000-8000-000000000022')).profile_id is distinct from '94900000-0000-4000-8000-000000000010' then
 		raise exception 'Each environment has its row'; end if;
 	if (select y.version from public.qorpera_agent_exit_network_rules(array['94900000-0000-4000-8000-000000000010']::uuid[]) y)
-		is distinct from pg_temp.version('rules/network.toml', '94900000-0000-4000-8000-000000000022') then
+		is distinct from pg_temp.version('QorperaOS/rules/network.toml', '94900000-0000-4000-8000-000000000022') then
 		raise exception 'The nodes read the latest save'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'latest-0001', jsonb_build_array(pg_temp.network(
 		pg_temp.rules('only-listed', '["z.example"]', '["pypi.org"]')))), 1, 'saved');
 	if (select array_agg(y.version) from public.qorpera_agent_exit_network_rules(array['94900000-0000-4000-8000-000000000010']::uuid[]) y)
-		is distinct from array[pg_temp.version('rules/network.toml')] then
+		is distinct from array[pg_temp.version('QorperaOS/rules/network.toml')] then
 		raise exception 'One row a company, from its latest save'; end if;
 end $$;
 

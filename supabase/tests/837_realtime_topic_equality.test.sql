@@ -48,7 +48,7 @@ insert into public.qorpera_company_rooms (id, profile_id, environment_id, room_k
 select room.id, '98370000-0000-4000-8000-000000000010', '98370000-0000-4000-8000-000000000020', 'chat-' || room.id, room.name,
 	room.name || ' planning', 'active', room.session_id, 1, 'organization/rooms/' || room.id || '.json',
 	'98370000-0000-4000-8000-00000000000a', '98370000-0000-4000-8000-000000000020',
-	'agents/groups/' || room.room_key || '/group.md', room.path_version, '98370000-0000-4000-8000-000000000070'
+	'QorperaOS/agents/groups/' || room.room_key || '/group.md', room.path_version, '98370000-0000-4000-8000-000000000070'
 from (values
 	('98370000-0000-4000-8000-000000000060'::uuid, '98370000-0000-4000-8000-000000000050'::uuid, 'launch', 'Launch',
 		'98370000-0000-4000-8000-000000000062'::uuid),

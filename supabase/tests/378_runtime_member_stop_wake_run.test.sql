@@ -59,7 +59,7 @@ $$;
 
 -- Bob's routine, saved by the owner in his folder; the scheduler queues its slot into Bob's thread, and the materializer
 -- makes it a queued wake run, made for the member who saved the routine.
-select pg_temp.base_commit(pg_temp.base_owner(), 'ms-routine-0001', jsonb_build_array(pg_temp.base_write('agents/bob/routines/tick.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'ms-routine-0001', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md',
 	'routine', E'---\n' || pg_temp.ms_routine_parse('37800000-0000-4000-8000-0000000000e1')::text || E'\n---\n',
 	pg_temp.ms_routine_parse('37800000-0000-4000-8000-0000000000e1')))) \g /dev/null
 do $$
@@ -81,10 +81,10 @@ begin
 	perform set_config('qorpera_test.ms_thread', pg_temp.ms_session('92400000-0000-4000-8000-000000000031')::text, true);
 end $$;
 -- A group chat with Bob and Carol, saved by the owner (as 777's chats are): another conversation with the same agent.
-select pg_temp.base_commit(pg_temp.base_owner(), 'ms-chat-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
-	jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/launch', 'contents', jsonb_build_array(jsonb_build_object('path', 'group.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'ms-chat-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
+	jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/launch', 'contents', jsonb_build_array(jsonb_build_object('path', 'group.md',
 		'kind', 'file', 'file', pg_temp.base_stage(E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the launch.\n'))),
-	'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/launch/group.md', 'kind', 'group',
+	'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/groups/launch/group.md', 'kind', 'group',
 		'text', E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the launch.\n',
 		'parse', jsonb_build_object('kind', 'group', 'id', '37800000-0000-4000-8000-0000000000c1', 'name', 'Launch', 'subtitle', null,
 			'agents', jsonb_build_array('92400000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000032'), 'people', jsonb_build_array('92400000-0000-4000-8000-000000000001'),

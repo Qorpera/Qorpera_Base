@@ -46,7 +46,7 @@ select '96250000-0000-4000-8000-000000000050',
 	'Launch', '96250000-0000-4000-8000-00000000000a', 'company',
 	jsonb_build_object('roomId', '96250000-0000-4000-8000-000000000060');
 
--- The room is a folder-v2 group chat, as the folder index writes one for agents/groups/launch/group.md (its path,
+-- The room is a folder-v2 group chat, as the folder index writes one for QorperaOS/agents/groups/launch/group.md (its path,
 -- that path's version and the commit that wrote it; no snapshot source).
 insert into public.qorpera_company_rooms (id, profile_id, environment_id, room_key, name, purpose, status, session_id,
 	version, source_path, created_by_user_id, folder_environment_id, folder_path, folder_path_version, folder_commit_id)
@@ -55,7 +55,7 @@ select '96250000-0000-4000-8000-000000000060',
 	(current_setting('qorpera_test.draft_company')::jsonb ->> 'environment_id')::uuid,
 	'chat-96250000-0000-4000-8000-000000000060', 'Launch', 'Launch planning', 'active', '96250000-0000-4000-8000-000000000050', 1,
 	'organization/rooms/96250000-0000-4000-8000-000000000060.json', '96250000-0000-4000-8000-00000000000a',
-	(current_setting('qorpera_test.draft_company')::jsonb ->> 'environment_id')::uuid, 'agents/groups/launch/group.md',
+	(current_setting('qorpera_test.draft_company')::jsonb ->> 'environment_id')::uuid, 'QorperaOS/agents/groups/launch/group.md',
 	'96250000-0000-4000-8000-000000000061', '96250000-0000-4000-8000-000000000062';
 
 insert into public.qorpera_company_room_members (room_id, principal_kind, principal_id, status, source_path_version)

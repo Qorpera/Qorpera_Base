@@ -8,7 +8,8 @@ create function pg_temp.w1_entry(p_path text, p_kind text, p_text text, p_parse 
 	select jsonb_build_object('path', p_path, 'kind', p_kind, 'text', p_text, 'parse', p_parse, 'parserVersion', 1)
 $$;
 create function pg_temp.w1_version(p_path text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_path
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_path)
 $$;
 create function pg_temp.w1_write(p_path text, p_kind text, p_text text, p_parse jsonb) returns jsonb language sql as $$
 	select jsonb_build_object('op','write','path',p_path,'file',pg_temp.stage(p_text),
@@ -17,11 +18,11 @@ create function pg_temp.w1_write(p_path text, p_kind text, p_text text, p_parse 
 			else '{}'::jsonb end
 $$;
 create function pg_temp.w1_hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: %s\nstatus: active\n---\nSell.\n', p_id, p_name, p_kind))),
 			jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.w1_entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.w1_entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: %s\nstatus: active\n---\nSell.\n', p_id, p_name, p_kind),
 			jsonb_build_object('kind','agent','id',p_id,'name',p_name,'role','Sales','agentKind',p_kind,'status','active',
 				'colour',null,'figure',null,'model',null,'effort',null,'instructions','Sell.'))))
@@ -45,23 +46,24 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'w1-seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.w1_write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.w1_write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.w1_hire('co-founder', '63400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')));
-	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.member(1), 'w1-hire-0001', jsonb_build_array(
 		pg_temp.w1_hire('ada', '63400000-0000-4000-8000-0000000000e1', 'Ada'),
 		pg_temp.w1_hire('ben', '63400000-0000-4000-8000-0000000000e2', 'Ben')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	-- One commit each, so the todos are made in this order.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-0001', jsonb_build_array(
-		pg_temp.w1_todo('agents/ada/todos/call-the-bank.md', 'Call the bank', 'open', repeat('x', 250)))), 1, 'saved');
+		pg_temp.w1_todo('QorperaOS/agents/ada/todos/call-the-bank.md', 'Call the bank', 'open', repeat('x', 250)))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-0002', jsonb_build_array(
-		pg_temp.w1_todo('agents/ada/todos/send-the-offer.md', 'Send the offer', 'blocked', 'Waiting for prices.'))), 1, 'saved');
+		pg_temp.w1_todo('QorperaOS/agents/ada/todos/send-the-offer.md', 'Send the offer', 'blocked', 'Waiting for prices.'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-0003', jsonb_build_array(
-		pg_temp.w1_todo('agents/ada/todos/book-the-room.md', 'Book the room', 'done'))), 1, 'saved');
+		pg_temp.w1_todo('QorperaOS/agents/ada/todos/book-the-room.md', 'Book the room', 'done'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-0004', jsonb_build_array(
-		pg_temp.w1_todo('agents/ben/todos/ben-only.md', 'Ben''s work'))), 1, 'saved');
+		pg_temp.w1_todo('QorperaOS/agents/ben/todos/ben-only.md', 'Ben''s work'))), 1, 'saved');
 	perform set_config('qorpera_test.ada', pg_temp.run('63400000-0000-4000-8000-0000000000e1', 'human',
 		'63400000-0000-4000-8000-000000000001')::text, false);
 end $$;
@@ -75,8 +77,8 @@ begin
 	if r ->> 'schema' <> 'qorpera.folder-agent-todos/v1' or (r ->> 'moreTodos')::int <> 0 or r -> 'nextCursor' <> 'null'::jsonb
 		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(r -> 'todos') t) is distinct from '["send-the-offer","call-the-bank"]'
 		or r -> 'todos' -> 0 ->> 'state' <> 'blocked' or r -> 'todos' -> 0 ->> 'title' <> 'Send the offer'
-		or r -> 'todos' -> 0 ->> 'path' <> 'agents/ada/todos/send-the-offer.md'
-		or (r -> 'todos' -> 0 ->> 'version')::uuid is distinct from pg_temp.w1_version('agents/ada/todos/send-the-offer.md')
+		or r -> 'todos' -> 0 ->> 'path' <> 'QorperaOS/agents/ada/todos/send-the-offer.md'
+		or (r -> 'todos' -> 0 ->> 'version')::uuid is distinct from pg_temp.w1_version('QorperaOS/agents/ada/todos/send-the-offer.md')
 		or r -> 'todos' -> 0 ->> 'detail' <> 'Waiting for prices.' or r -> 'todos' -> 0 ? 'detailTruncated'
 		or char_length(r -> 'todos' -> 1 ->> 'detail') <> 200 or (r -> 'todos' -> 1 ->> 'detailTruncated')::boolean is not true
 		or not (r -> 'todos' -> 1 ? 'cursor') or not (r -> 'todos' -> 1 ? 'updatedAt') then
@@ -99,7 +101,7 @@ declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; r jsonb; s jsonb; v_units jsonb := '[]'; i integer;
 begin
 	for i in 1..33 loop
-		v_units := v_units || jsonb_build_array(pg_temp.w1_todo(format('agents/ada/todos/item-%s.md', i), format('Item %s', i)));
+		v_units := v_units || jsonb_build_array(pg_temp.w1_todo(format('QorperaOS/agents/ada/todos/item-%s.md', i), format('Item %s', i)));
 	end loop;
 	r := pg_temp.commit(pg_temp.member(1), 'w1-todo-many', v_units);
 	for i in 1..33 loop perform pg_temp.expect(r, i, 'saved'); end loop;
@@ -118,15 +120,15 @@ begin
 		raise exception 'A search by key'; end if;
 	-- Deleting a file retires its row (a tombstone key): it is listed no more, closed or not.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-delete', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.w1_version('agents/ada/todos/call-the-bank.md')))), 1, 'saved');
+		'path','QorperaOS/agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.w1_version('QorperaOS/agents/ada/todos/call-the-bank.md')))), 1, 'saved');
 	-- (A search reaches it on any page: its tombstone key starts with its old name.)
-	if (select todo_key from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/call-the-bank.md')
+	if (select todo_key from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md')
 			not like 'call-the-bank.%'
 		or jsonb_array_length(pg_temp.w1_list(ada, '{"includeClosed":true,"search":"call-the-bank"}') -> 'todos') <> 0 then
 		raise exception 'A deleted todo is not listed'; end if;
 	-- A retired row is no cursor either.
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, jsonb_build_object('cursor',
-		(select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/call-the-bank.md'))), '22023');
+		(select id from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md'))), '22023');
 end $$;
 
 -- 4. Who may list ---------------------------------------------------------------------------------------------------------
@@ -161,7 +163,7 @@ begin
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, '{"todoKey":"x"}'), '22023');
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, '{"state":"later"}'), '22023');
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, jsonb_build_object('cursor',
-		(select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ben/todos/ben-only.md'))), '22023');
+		(select id from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ben/todos/ben-only.md'))), '22023');
 	-- A paused company's run reads nothing, as for any folder read.
 	perform pg_temp.fx($f$insert into public.qorpera_company_execution_pauses(profile_id, reason, paused_by_user_id)
 		values ('63400000-0000-4000-8000-000000000010', 'test', '63400000-0000-4000-8000-000000000001')$f$);
@@ -170,10 +172,10 @@ begin
 	-- One todo file narrowed to another agent: the folder core hides it from this run, and so does the page, its count
 	-- and its cursor.
 	v_res := public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(1),
-		'agents/ada/todos/send-the-offer.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
+		'QorperaOS/agents/ada/todos/send-the-offer.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant('63400000-0000-4000-8000-000000000020', pg_temp.member(1), v_res, 'staff_agent',
 		'63400000-0000-4000-8000-0000000000e2', array['read']);
-	if (public.qorpera_folder_read('63400000-0000-4000-8000-000000000020', ada, 'agents/ada/todos/send-the-offer.md')
+	if (public.qorpera_folder_read('63400000-0000-4000-8000-000000000020', ada, 'QorperaOS/agents/ada/todos/send-the-offer.md')
 			->> 'found')::boolean then
 		raise exception 'The core hides the narrowed file'; end if;
 	if jsonb_array_length(pg_temp.w1_list(ada, '{"search":"offer"}') -> 'todos') <> 0
@@ -182,9 +184,9 @@ begin
 		or jsonb_array_length(pg_temp.w1_list(ada, '{"state":"done"}') -> 'todos') <> 1 then
 		raise exception 'A todo the run may not read is not listed'; end if;
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, jsonb_build_object('cursor',
-		(select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/send-the-offer.md'))), '22023');
+		(select id from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ada/todos/send-the-offer.md'))), '22023');
 	-- Its todos folder narrowed to another agent: the agent no longer reads it.
-	v_res := public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(1), 'agents/ada/todos',
+	v_res := public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(1), 'QorperaOS/agents/ada/todos',
 		'subtree', 'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant('63400000-0000-4000-8000-000000000020', pg_temp.member(1), v_res, 'staff_agent',
 		'63400000-0000-4000-8000-0000000000e2', array['read']);

@@ -39,7 +39,7 @@ declare m jsonb := pg_temp.member(2); n jsonb := pg_temp.member(4); v_sales uuid
 	c_m constant text := '63400000-0000-4000-8000-000000000002'; c_n constant text := '63400000-0000-4000-8000-000000000004';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 begin
-	perform pg_temp.expect(pg_temp.save_rows(m, 'i9b-made-0001', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(m, 'i9b-made-0001', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_m,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	v_sales := (pg_temp.i9b_live('["Sales"]')).id;
 	if v_sales is null or (pg_temp.i9b_live('["Sales"]')).user_id is distinct from c_m::uuid
@@ -47,16 +47,16 @@ begin
 		or (pg_temp.i9b_live('["Sales"]')).environment_id is distinct from '63400000-0000-4000-8000-000000000020'
 		or (select count(*) from public.qorpera_interface_supervisions) is distinct from 1 then
 		raise exception 'A take is a consent: %', (select jsonb_agg(to_jsonb(s)) from public.qorpera_interface_supervisions s); end if;
-	perform pg_temp.expect(pg_temp.save_rows(m, 'i9b-made-0002', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(m, 'i9b-made-0002', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_m,c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if (select count(*) from public.qorpera_interface_supervisions) is distinct from 1 or (pg_temp.i9b_live('["Sales"]')).id is distinct from v_sales then
 		raise exception 'A save that keeps the cell made another consent'; end if;
 
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-made-0003', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-made-0003', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_m,c_a1,'yes'], array['Ops','',c_n,c_a2,'no']])), 1, 'saved');
 	v_ops := (pg_temp.i9b_live('["Ops"]')).id;
 	if (pg_temp.i9b_live('["Ops"]')).user_id is distinct from c_n::uuid then raise exception 'The other member''s take'; end if;
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-made-0004', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-made-0004', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_m,c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if pg_temp.i9b_state(v_ops) is distinct from 'released' or pg_temp.i9b_state(v_sales) is distinct from 'live' then
 		raise exception 'Released: %, %', pg_temp.i9b_state(v_ops), pg_temp.i9b_state(v_sales); end if;
@@ -76,32 +76,32 @@ declare o jsonb := pg_temp.member(1); r jsonb; v_sales uuid := (pg_temp.i9b_live
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
 	h jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a2', '63400000-0000-4000-8000-000000000001');
 begin
-	perform pg_temp.expect(pg_temp.commit(o, 'i9b-self-0001', jsonb_build_array(pg_temp.p16_folder(o, 'tables/claims',
+	perform pg_temp.expect(pg_temp.commit(o, 'i9b-self-0001', jsonb_build_array(pg_temp.p16_folder(o, 'QorperaOS/tables/claims',
 		jsonb_build_object('table.toml', pg_temp.claims('45100000-0000-4000-8000-000000000001'),
 			'rows.csv', pg_temp.claim_rows(array[array['t1','',''], array['t2','','']]))))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0002', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2','','']])), 1, 'saved');
-	r := pg_temp.save_rows(g -> 'actor', 'i9b-self-0003', 'tables/claims/rows.csv',
+	r := pg_temp.save_rows(g -> 'actor', 'i9b-self-0003', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_m,''], array['t2',c_n,'']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) is distinct from 'nobody assigns anybody: you take an empty owner or release your own' then
 		raise exception 'An agent assigns another member: %', r; end if;
-	r := pg_temp.save_rows(h -> 'actor', 'i9b-self-0004', 'tables/claims/rows.csv',
+	r := pg_temp.save_rows(h -> 'actor', 'i9b-self-0004', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1','',''], array['t2','','']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) is distinct from 'nobody assigns anybody: only the member named changes owner' then
 		raise exception 'An agent with no supervisor: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0005', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0005', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1','',c_n], array['t2','','']])), 1, 'saved');
 
-	r := pg_temp.save_rows(g -> 'actor', 'i9b-self-0006', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	r := pg_temp.save_rows(g -> 'actor', 'i9b-self-0006', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales',c_m,c_m,c_a1,'yes'], array['Ops','','',c_a2,'no']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) is distinct from 'an agent never changes an area''s owner, supervisor or agents' then
 		raise exception 'An agent changes its area''s people: %', r; end if;
-	perform pg_temp.refused(pg_temp.save_rows(g -> 'actor', 'i9b-self-0007', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.refused(pg_temp.save_rows(g -> 'actor', 'i9b-self-0007', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','','',c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'structured_rule', 'claim');
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0008', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'i9b-self-0008', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_m,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if pg_temp.i9b_state(v_sales) is distinct from 'live' or (select count(*) from public.qorpera_interface_supervisions) is distinct from 2 then
 		raise exception 'An agent''s save changed the consents'; end if;
@@ -117,7 +117,7 @@ begin
 		'63400000-0000-4000-8000-000000000020', jsonb_build_object('table', '86400000-0000-4000-8000-000000000012',
 			'key', '["Sales"]'::jsonb, 'column', 'supervisor', 'was', c_m, 'to', c_n)));
 	if r ->> 'ok' is distinct from 'true' or r -> 'offer' ->> 'state' is distinct from 'open' then raise exception 'An area''s supervisor offered: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-offer-0001', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-offer-0001', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_n,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if (select o.state from public.qorpera_interface_offers o where o.id = (r -> 'offer' ->> 'id')::uuid) is distinct from 'accepted'
 		or pg_temp.i9b_state(v_sales) is distinct from 'released' or (pg_temp.i9b_live('["Sales"]')).user_id is distinct from c_n::uuid then
@@ -134,29 +134,29 @@ declare n jsonb := pg_temp.member(4); o jsonb := pg_temp.member(1); v_old uuid :
 	c_n constant text := '63400000-0000-4000-8000-000000000004';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 begin
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0001', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0001', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales EU','',c_n,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	v_new := (pg_temp.i9b_live('["Sales EU"]')).id;
 	if pg_temp.i9b_state(v_old) is distinct from 'gone' or v_new is null or pg_temp.i9b_told(v_old) is distinct from '{}' then
 		raise exception 'Renamed: %, %, %', pg_temp.i9b_state(v_old), v_new, pg_temp.i9b_told(v_old); end if;
 	perform pg_temp.expect(pg_temp.commit(o, 'i9b-gone-0002', jsonb_build_array(
-		pg_temp.p16_write(o, 'tables/areas/table.toml', v_areas || '{"name":"Our areas"}'))), 1, 'saved');
+		pg_temp.p16_write(o, 'QorperaOS/tables/areas/table.toml', v_areas || '{"name":"Our areas"}'))), 1, 'saved');
 	if pg_temp.i9b_state(v_new) is distinct from 'live' then raise exception 'A new name ended a consent'; end if;
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0003', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0003', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if pg_temp.i9b_state(v_new) is distinct from 'gone' or pg_temp.i9b_told(v_new) is distinct from array[1,5] then
 		raise exception 'Deleted: %, %', pg_temp.i9b_state(v_new), pg_temp.i9b_told(v_new); end if;
 
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0004', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0004', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_n,c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	v_new := (pg_temp.i9b_live('["Sales"]')).id;
 	perform pg_temp.expect(pg_temp.commit(o, 'i9b-gone-0005', jsonb_build_array(
-		pg_temp.p16_write(o, 'tables/areas/table.toml', v_areas || '{"key":["area","shared"]}'))), 1, 'saved');
+		pg_temp.p16_write(o, 'QorperaOS/tables/areas/table.toml', v_areas || '{"key":["area","shared"]}'))), 1, 'saved');
 	if v_new is null or pg_temp.i9b_state(v_new) is distinct from 'gone' or pg_temp.i9b_told(v_new) is distinct from array[4,5] then
 		raise exception 'A new key: %, %, %', v_new, pg_temp.i9b_state(v_new), pg_temp.i9b_told(v_new); end if;
 	perform pg_temp.expect(pg_temp.commit(o, 'i9b-gone-0006', jsonb_build_array(
-		pg_temp.p16_write(o, 'tables/areas/table.toml', v_areas))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0007', 'tables/areas/rows.csv', pg_temp.i9b_areas(array[
+		pg_temp.p16_write(o, 'QorperaOS/tables/areas/table.toml', v_areas))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save_rows(n, 'i9b-gone-0007', 'QorperaOS/tables/areas/rows.csv', pg_temp.i9b_areas(array[
 		array['Sales','',c_n,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 	if exists (select 1 from public.qorpera_interface_supervisions s where s.state = 'live') then
 		raise exception 'A save that keeps a cell made a consent'; end if;
@@ -167,7 +167,7 @@ do $$
 declare r jsonb; c_n constant text := '63400000-0000-4000-8000-000000000004';
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000004');
 begin
-	r := pg_temp.save_rows(g -> 'actor', 'i9b-none-0001', 'tables/claims/rows.csv',
+	r := pg_temp.save_rows(g -> 'actor', 'i9b-none-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.claim_rows(array[array['t1',c_n,c_n], array['t2','','']]));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
 	if pg_temp.problem(r, 1) is distinct from 'nobody assigns anybody: only the member named changes owner' then

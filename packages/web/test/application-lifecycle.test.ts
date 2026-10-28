@@ -985,7 +985,7 @@ describe("account and route ownership", () => {
 		const opened = reads();
 		expect(opened).toBeGreaterThan(0);
 		expect(hints).toHaveLength(1);
-		const rows = "tables/areas/rows.csv";
+		const rows = "QorperaOS/tables/areas/rows.csv";
 		fake.put(rows, fake.text(rows)!);
 		hints[0]!(fake.seq);
 		await vi.advanceTimersByTimeAsync(1000);
@@ -1254,7 +1254,7 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		updated_at: userA.created_at,
 	};
 	/** The routine's file: still active, since the platform paused it in the index only (no model account paid). */
-	const routinePath = "agents/nora/routines/morning-brief.md";
+	const routinePath = "QorperaOS/agents/nora/routines/morning-brief.md";
 	const routineBytes = new TextEncoder().encode(
 		writeRoutineFile({
 			id: id(161),
@@ -1309,7 +1309,7 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 			if (method === "qorpera_member_company_state_folders")
 				return {
 					schema: "qorpera.member-company-state-folders/v1",
-					agents: [{ staffAgentId: staff.id, file: "agents/nora/agent.md" }],
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
 					groups: [],
 					routines: [{ routineId: id(61), staffAgentId: staff.id, file: routinePath }],
 				};

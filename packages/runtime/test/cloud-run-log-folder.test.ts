@@ -62,7 +62,8 @@ function fixture(group = false) {
 		continues: null,
 		narrow: false,
 	};
-	let root = `${group ? "agents/groups/research/memory" : "agents/scout/memory/thread"}/runs/${runId}`;
+	// The place names the run's folder as the database spells it: QorperaOS/agents/...
+	let root = `${group ? "QorperaOS/agents/groups/research/memory" : "QorperaOS/agents/scout/memory/thread"}/runs/${runId}`;
 	let gone = false;
 	let generation = 0;
 	let seq = 0;
@@ -124,7 +125,7 @@ function fixture(group = false) {
 		const firsts = [...files.keys()]
 			.filter((path) => path.startsWith(`${root}/log/`))
 			.map((path) => Number(path.slice(-14, -6)));
-		const ancestors = (group ? [4, 5] : [3, 4, 5]).map((length) => root.split("/").slice(0, length).join("/"));
+		const ancestors = (group ? [5, 6] : [4, 5, 6]).map((length) => root.split("/").slice(0, length).join("/"));
 		return {
 			path: root,
 			exists,
@@ -409,7 +410,8 @@ describe("run log persistence through the ordinary folder client", () => {
 			{ path: `projects/runs/${f.runId}` },
 			{ path: `${f.root}/extra` },
 			{ missing: ["projects"] },
-			{ missing: ["agents/scout/memory/thread", "agents/scout/memory"] },
+			{ missing: ["QorperaOS/agents/scout/memory/thread", "QorperaOS/agents/scout/memory"] },
+			{ path: `agents/scout/memory/thread/runs/${f.runId}` },
 			{ generation: -1 },
 			{ last: 0 },
 			{ origin: { ...f.origin, step: 0 } },

@@ -41,16 +41,16 @@ create function pg_temp.marked(p_id uuid, p_kind text default 'agent') returns b
 $$;
 -- An agent.md saved with a status, over the version read (the agent's name is its handle).
 create function pg_temp.agent(p_handle text, p_id uuid, p_status text) returns jsonb language sql as $$
-	select pg_temp.write('agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, p_handle, 'agent', p_status),
-		pg_temp.agent_parse(p_id, p_handle, 'agent', p_status), pg_temp.version('agents/' || p_handle || '/agent.md'))
+	select pg_temp.write('QorperaOS/agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, p_handle, 'agent', p_status),
+		pg_temp.agent_parse(p_id, p_handle, 'agent', p_status), pg_temp.version('QorperaOS/agents/' || p_handle || '/agent.md'))
 $$;
 -- A hire saved with a status (pg_temp.hire's folder, its agent.md as given).
 create function pg_temp.hire_as(p_handle text, p_id uuid, p_status text) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_handle, 'agent', p_status))),
 			jsonb_build_object('path','routines','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_handle, 'agent', p_status), pg_temp.agent_parse(p_id, p_handle, 'agent', p_status))))
 $$;
 -- The agent's grants on the company's shared root, and the roots it should have one on.
@@ -132,11 +132,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Routines'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Routines'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70700000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	if pg_temp.roots() < 1 then raise exception 'Fixture: the company has no shared root'; end if;
 	-- The fixture ran the queue: the Co-Founder converged, with its default grant on each shared root.
 	if (select count(*) from pg_temp.root_grants('70700000-0000-4000-8000-0000000000c0')) <> pg_temp.roots()
@@ -333,9 +334,9 @@ do $$
 declare a11 constant uuid := '87700000-0000-4000-8000-0000000000b1'; v jsonb;
 begin
 	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'hire-agent-b1', jsonb_build_array(pg_temp.hire_as('kai', a11, 'active'))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-b1-0001', jsonb_build_array(pg_temp.write('agents/kai/agent.md', 'agent',
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-b1-0001', jsonb_build_array(pg_temp.write('QorperaOS/agents/kai/agent.md', 'agent',
 		pg_temp.agent_text(a11, 'Kai Berg', 'agent', 'active'), pg_temp.agent_parse(a11, 'Kai Berg', 'agent', 'active'),
-		pg_temp.version('agents/kai/agent.md')))), 1, 'saved');
+		pg_temp.version('QorperaOS/agents/kai/agent.md')))), 1, 'saved');
 	if pg_temp.marked(a11) <> 1 then raise exception 'A rename marks nothing'; end if;
 	v := pg_temp.step();
 	if v ->> 'result' is distinct from 'done' or pg_temp.step() is not null or (pg_temp.kickoff(a11)).id is null
@@ -351,10 +352,10 @@ do $$
 declare a1 constant uuid := '87700000-0000-4000-8000-0000000000a1';
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routines-a1', jsonb_build_array(
-		pg_temp.routine('agents/ada/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())),
-		pg_temp.routine('agents/ada/routines/digest.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every(),
+		pg_temp.routine('QorperaOS/agents/ada/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())),
+		pg_temp.routine('QorperaOS/agents/ada/routines/digest.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every(),
 			'{"status":"paused"}')),
-		pg_temp.routine('agents/ada/routines/report.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f3', 'Report', pg_temp.every())))),
+		pg_temp.routine('QorperaOS/agents/ada/routines/report.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f3', 'Report', pg_temp.every())))),
 		1, 'saved');
 	perform pg_temp.fx($q$update public.qorpera_cloud_routines set status = 'expired', expired_while_active = true
 		where id = '87700000-0000-4000-8000-0000000000f3'$q$);
@@ -420,8 +421,8 @@ declare a1 constant uuid := '87700000-0000-4000-8000-0000000000a1'; f1 constant 
 begin
 	-- A new routine, and the agent's own pause set back to active in its file.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routines-a1-2', jsonb_build_array(
-		pg_temp.routine('agents/ada/routines/weekly.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f4', 'Weekly', pg_temp.every())),
-		pg_temp.routine('agents/ada/routines/digest.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every())))),
+		pg_temp.routine('QorperaOS/agents/ada/routines/weekly.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f4', 'Weekly', pg_temp.every())),
+		pg_temp.routine('QorperaOS/agents/ada/routines/digest.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f2', 'Digest', pg_temp.every())))),
 		1, 'saved');
 	for x in select * from public.qorpera_cloud_routines where id in ('87700000-0000-4000-8000-0000000000f4', '87700000-0000-4000-8000-0000000000f2') loop
 		if x.status is distinct from 'paused' or x.pause_reason is distinct from 'agent_archived' then
@@ -429,11 +430,11 @@ begin
 	end loop;
 	-- Bo's routine moved under Ada: paused, and its schedule position not active.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-bo', jsonb_build_array(
-		pg_temp.routine('agents/bo/routines/calls.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f5', 'Calls', pg_temp.every())))),
+		pg_temp.routine('QorperaOS/agents/bo/routines/calls.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f5', 'Calls', pg_temp.every())))),
 		1, 'saved');
 	if (pg_temp.rt('87700000-0000-4000-8000-0000000000f5')).status is distinct from 'active' then raise exception 'Fixture: Bo''s routine'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-to-ada', jsonb_build_array(
-		pg_temp.move('agents/bo/routines/calls.md', 'agents/ada/routines/calls.md'))), 1, 'saved');
+		pg_temp.move('QorperaOS/agents/bo/routines/calls.md', 'QorperaOS/agents/ada/routines/calls.md'))), 1, 'saved');
 	x := pg_temp.rt('87700000-0000-4000-8000-0000000000f5');
 	if x.owner_staff_agent_id is distinct from a1 or x.status is distinct from 'paused' or x.pause_reason is distinct from 'agent_archived' then
 		raise exception 'A routine moved under an archived agent: %', to_jsonb(x); end if;
@@ -536,7 +537,7 @@ begin
 		raise exception 'A reactivation keeps the routines paused and makes no second first run: %', v; end if;
 	-- The owner's paid save of the unchanged file resumes it.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'resume-f1', jsonb_build_array(
-		pg_temp.routine('agents/ada/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())))),
+		pg_temp.routine('QorperaOS/agents/ada/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())))),
 		1, 'saved');
 	if (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).status is distinct from 'active'
 		or (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).pause_reason is not null then
@@ -546,12 +547,12 @@ begin
 	if (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).pause_reason is distinct from 'agent_archived' then
 		raise exception 'Archived again: paused'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'handover-f1', jsonb_build_array(
-		pg_temp.move('agents/ada/routines/inbox.md', 'agents/bo/routines/inbox.md'))), 1, 'saved');
+		pg_temp.move('QorperaOS/agents/ada/routines/inbox.md', 'QorperaOS/agents/bo/routines/inbox.md'))), 1, 'saved');
 	if (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).owner_staff_agent_id is distinct from '87700000-0000-4000-8000-0000000000a2'
 		or (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).status is distinct from 'paused' then
 		raise exception 'A handover keeps the pause'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'resume-f1-bo', jsonb_build_array(
-		pg_temp.routine('agents/bo/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())))),
+		pg_temp.routine('QorperaOS/agents/bo/routines/inbox.md', pg_temp.rparse('87700000-0000-4000-8000-0000000000f1', 'Inbox', pg_temp.every())))),
 		1, 'saved');
 	if (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).status is distinct from 'active' then
 		raise exception 'A paid save resumes it under its active agent'; end if;
@@ -562,7 +563,7 @@ end $$;
 do $$
 declare a4 constant uuid := '87700000-0000-4000-8000-0000000000a4'; v jsonb; v_input uuid := (pg_temp.first_run(a4)).input_id;
 begin
-	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'retire-a4', jsonb_build_array(pg_temp.del('agents/di'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'retire-a4', jsonb_build_array(pg_temp.del('QorperaOS/agents/di'))), 1, 'saved');
 	if pg_temp.marked(a4) <> 1 or (pg_temp.staff(a4)).folder_retired_at is null then raise exception 'A retire marks the agent'; end if;
 	v := pg_temp.step();
 	if v ->> 'result' is distinct from 'done' or pg_temp.connectors(a4) <> 0
@@ -592,8 +593,8 @@ begin
 		raise exception 'The step copies the name: %', v; end if;
 	-- Every vision write marks the company (a comparison with the copied name could miss a rename back while a copy is in
 	-- flight, 878 K); one that keeps the name converges to nothing.
-	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-0002', jsonb_build_array(pg_temp.write('vision/vision.md', 'vision',
-		E'# Nordlys Kaffe\n\nCoffee.\n', '{"kind":"vision","name":"Nordlys Kaffe"}', pg_temp.version('vision/vision.md')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-0002', jsonb_build_array(pg_temp.write('QorperaOS/vision/vision.md', 'vision',
+		E'# Nordlys Kaffe\n\nCoffee.\n', '{"kind":"vision","name":"Nordlys Kaffe"}', pg_temp.version('QorperaOS/vision/vision.md')))), 1, 'saved');
 	if pg_temp.marked('70700000-0000-4000-8000-000000000010', 'company') <> 1 then raise exception 'A vision write marks the company'; end if;
 	v := pg_temp.step();
 	if v ->> 'result' is distinct from 'done'

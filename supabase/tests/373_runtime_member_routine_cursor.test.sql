@@ -8,7 +8,7 @@
 -- on after its next slot passed restarts the cursor in place. Nothing runs at once and nothing is caught up. The
 -- position is millisecond-precise: the orchestrator reads it into a JavaScript Date and sends it back as the expected
 -- position, which the enqueue compares exactly. A run's save (a reviewed change set) follows the same rule. Saves are the
--- owner's commits of Bob's routine files (agents/bob/routines/<name>.md), on the owner's paying login; "ran" is a slot
+-- owner's commits of Bob's routine files (QorperaOS/agents/bob/routines/<name>.md), on the owner's paying login; "ran" is a slot
 -- the scheduler offered that the folder materializer made a run.
 --
 -- Not ported, because a routine file cannot express them: an interval on a wall-clock trigger (the file's weekly timing
@@ -32,9 +32,9 @@ create function pg_temp.rc_parse(p_name text, p_title text, p_trigger jsonb, p_e
 		'quiet', null, 'effort', 'medium', 'reply', 'optional', 'conclusion', null, 'instructions', 'Write the brief.') || p_extra
 $$;
 create function pg_temp.rc_unit(p_name text, p_title text, p_trigger jsonb, p_extra jsonb default '{}') returns jsonb language sql as $$
-	select pg_temp.base_write('agents/bob/routines/' || p_name || '.md', 'routine',
+	select pg_temp.base_write('QorperaOS/agents/bob/routines/' || p_name || '.md', 'routine',
 		E'---\n' || pg_temp.rc_parse(p_name, p_title, p_trigger, p_extra)::text || E'\n---\n',
-		pg_temp.rc_parse(p_name, p_title, p_trigger, p_extra), pg_temp.base_version('agents/bob/routines/' || p_name || '.md'))
+		pg_temp.rc_parse(p_name, p_title, p_trigger, p_extra), pg_temp.base_version('QorperaOS/agents/bob/routines/' || p_name || '.md'))
 $$;
 -- The owner saves Bob's routine file.
 create function pg_temp.rc_save(p_name text, p_title text, p_trigger jsonb, p_extra jsonb default '{}') returns jsonb language sql as $$

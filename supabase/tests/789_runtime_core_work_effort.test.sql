@@ -62,19 +62,19 @@ create function pg_temp.ce_agent_parse(p_id uuid, p_name text, p_effort text) re
 		'instructions', 'Read and change the company folder.')
 $$;
 create function pg_temp.ce_hire(p_handle text, p_id uuid, p_name text, p_effort text) returns jsonb language sql as $$
-	select jsonb_build_object('op', 'new_folder', 'path', 'agents/' || p_handle,
+	select jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path', 'agent.md', 'kind', 'file',
 				'file', pg_temp.base_stage(pg_temp.ce_agent_text(p_id, p_name, p_effort))),
 			jsonb_build_object('path', 'memory', 'kind', 'folder'), jsonb_build_object('path', 'routines', 'kind', 'folder'),
 			jsonb_build_object('path', 'todos', 'kind', 'folder')),
-		'structured', jsonb_build_array(jsonb_build_object('path', 'agents/' || p_handle || '/agent.md', 'kind', 'agent',
+		'structured', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/' || p_handle || '/agent.md', 'kind', 'agent',
 			'text', pg_temp.ce_agent_text(p_id, p_name, p_effort), 'parserVersion', 1,
 			'parse', pg_temp.ce_agent_parse(p_id, p_name, p_effort))))
 $$;
 create function pg_temp.ce_effort_edit(p_handle text, p_id uuid, p_name text, p_effort text) returns jsonb language sql as $$
-	select pg_temp.base_write('agents/' || p_handle || '/agent.md', 'agent', pg_temp.ce_agent_text(p_id, p_name, p_effort),
-		pg_temp.ce_agent_parse(p_id, p_name, p_effort), pg_temp.base_version('agents/' || p_handle || '/agent.md'))
+	select pg_temp.base_write('QorperaOS/agents/' || p_handle || '/agent.md', 'agent', pg_temp.ce_agent_text(p_id, p_name, p_effort),
+		pg_temp.ce_agent_parse(p_id, p_name, p_effort), pg_temp.base_version('QorperaOS/agents/' || p_handle || '/agent.md'))
 $$;
 -- A member's choice of effort for an agent's thread, in its Model menu.
 create function pg_temp.ce_choose(p_staff uuid, p_effort text) returns void language sql as $$
@@ -263,7 +263,7 @@ rollback to ce_coworker_agent;
 savepoint ce_routine;
 select pg_temp.base_commit(pg_temp.base_owner(), 'core-effort-routine', jsonb_build_array(
 	pg_temp.ce_effort_edit('carol', '92400000-0000-4000-8000-000000000032', 'Carol', 'high'),
-	pg_temp.ce_routine('agents/carol/routines/tick.md', '92400000-0000-4000-8000-0000000000e9', 'low'))) \g /dev/null
+	pg_temp.ce_routine('QorperaOS/agents/carol/routines/tick.md', '92400000-0000-4000-8000-0000000000e9', 'low'))) \g /dev/null
 do $$
 declare v_wake uuid := pg_temp.ce_slot('92400000-0000-4000-8000-0000000000e9', 'core-effort-tick');
 	v_pass jsonb := pg_temp.base_materialize(); v_run public.qorpera_execution_runs := pg_temp.ce_run(pg_temp.ce_wake_run(v_wake));

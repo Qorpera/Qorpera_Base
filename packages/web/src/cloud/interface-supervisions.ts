@@ -5,8 +5,8 @@ import { array, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid 
 
 /* Supervision consents (Interfaces step I9b; migration 20260928549360_interface_supervision,
  * supabase/CLIENT-CONTRACT.md "Supervision consent"). A member supervises an area's agents by consent: the platform
- * makes one when their own save puts them in a row of `tables/areas`' `supervisor` cell, and keeps it as its own
- * record. A cell that names a member with no live consent waits for theirs. */
+ * makes one when their own save puts them in a row of `QorperaOS/tables/areas`' `supervisor` cell, and keeps it as its
+ * own record. A cell that names a member with no live consent waits for theirs. */
 
 export const INTERFACE_SUPERVISION_STATES = ["live", "withdrawn", "released", "gone", "left"] as const;
 export type InterfaceSupervisionState = (typeof INTERFACE_SUPERVISION_STATES)[number];
@@ -15,7 +15,7 @@ export interface MemberInterfaceSupervision {
 	readonly id: string;
 	/** The areas table's id. */
 	readonly table: string;
-	/** Its folder now (`tables/areas`). */
+	/** Its folder now (`QorperaOS/tables/areas`). */
 	readonly folder: string | null;
 	/** The row's typed key, as the client's table parse gives it; null once the consent ended. */
 	readonly key: readonly TableValue[] | null;

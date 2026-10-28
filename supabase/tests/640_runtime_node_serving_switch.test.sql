@@ -16,7 +16,7 @@
 -- posts in Bob's thread, turned into runs by the folder materializer. The coding workers' todo is a real todo file in
 -- Alice's folder, written by the owner's folder commit; the workers, their machine allocations, the coding executors
 -- and the coding sessions are fixture rows, and the coding claims go through the real qorpera_claim_coding_session.
-select pg_temp.base_commit(pg_temp.base_owner(), 'serving-todo', jsonb_build_array(pg_temp.base_write('agents/alice/todos/serving.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'serving-todo', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/alice/todos/serving.md',
 	'todo', E'---\nid: 64000000-0000-4000-8000-0000000000d1\ntitle: Empty a node\nstatus: open\n---\n\n',
 	'{"kind":"todo","id":"64000000-0000-4000-8000-0000000000d1","title":"Empty a node","status":"open","requestedBy":null,"detail":""}'))) \g /dev/null
 select pg_temp.base_claims('service_role');

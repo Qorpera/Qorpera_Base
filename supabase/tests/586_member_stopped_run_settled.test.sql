@@ -76,7 +76,7 @@ create function pg_temp.ss_row(p_run text, p_kind text, p_status text, p_activit
 $$;
 
 -- Bob's routine, saved by the owner in his folder: the scheduler queues its slot into his thread, and its run is working.
-select pg_temp.base_commit(pg_temp.base_owner(), 'ss-routine-0001', jsonb_build_array(pg_temp.base_write('agents/bob/routines/tick.md',
+select pg_temp.base_commit(pg_temp.base_owner(), 'ss-routine-0001', jsonb_build_array(pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md',
 	'routine', E'---\n' || pg_temp.ss_routine_parse('58600000-0000-4000-8000-0000000000e1')::text || E'\n---\n',
 	pg_temp.ss_routine_parse('58600000-0000-4000-8000-0000000000e1')))) \g /dev/null
 do $$

@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { osRelative } from "@qorpera/cloud-client/company-state-files";
 import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
@@ -793,7 +794,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(audience.sessionId !== null && policy.initial !== "optional") ||
 			(task !== null &&
 				(typeof task.path !== "string" ||
-					!task.path.startsWith("human-tasks/") ||
+					!osRelative(task.path)?.startsWith("human-tasks/") ||
 					Buffer.byteLength(task.path) > 4096 ||
 					typeof task.title !== "string" ||
 					Buffer.byteLength(task.title) > 4096 ||

@@ -71,8 +71,13 @@ create function pg_temp.block_result(p_key text, p_text text) returns text langu
 	from (select public.qorpera_memory_run_block_parse(p_key, p_text) as r) x
 $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
+		and key_text = public.qorpera_folder_key(p_key)
 		and kind is distinct from 'claim'
+$$;
+-- A path as the folder stores it: a memory key under the QorperaOS/ folder's spelling (20260930534000).
+create function pg_temp.shown(p_key text) returns text language sql immutable as $$
+	select 'QorperaOS' || substr(p_key, char_length('qorperaos') + 1)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'
@@ -123,7 +128,7 @@ do $$
 declare
 	r constant uuid := '95100000-0000-4000-8000-000000000001'; c constant uuid := '95100000-0000-4000-8000-000000000002';
 	p constant uuid := '95100000-0000-4000-8000-000000000003'; k constant uuid := '95100000-0000-4000-8000-000000000004';
-	t0 constant text := 'agents/nora/memory/thread/runs/95100000-0000-4000-8000-000000000001/t0/00000000.jsonl';
+	t0 constant text := 'qorperaos/agents/nora/memory/thread/runs/95100000-0000-4000-8000-000000000001/t0/00000000.jsonl';
 	x jsonb; v text;
 begin
 	-- run.toml: its lines in order, the optional ones only when they apply.
@@ -241,19 +246,19 @@ begin
 
 	-- The kinds, the folder of a log and what a memory commit may do under a tree root.
 	perform pg_temp.same(to_jsonb(array[
-		public.qorpera_structured_path_kind('agents/nora/memory/thread/runs/' || r || '/run.toml'),
-		public.qorpera_structured_path_kind('agents/nora/memory/thread/runs/' || r || '/log/00000000.jsonl'),
+		public.qorpera_structured_path_kind('qorperaos/agents/nora/memory/thread/runs/' || r || '/run.toml'),
+		public.qorpera_structured_path_kind('qorperaos/agents/nora/memory/thread/runs/' || r || '/log/00000000.jsonl'),
 		public.qorpera_structured_path_kind(t0),
-		public.qorpera_structured_path_kind('agents/groups/launch/memory/runs/' || r || '/run.toml'),
-		public.qorpera_structured_path_kind('agents/groups/launch/memory/runs/' || r || '/log/00000003.jsonl'),
-		public.qorpera_structured_path_kind('agents/groups/launch/memory/runs/' || r || '/t2/00000000.jsonl'),
-		coalesce(public.qorpera_structured_path_kind('agents/nora/memory/runs/' || r || '/run.toml'), '-'),
-		coalesce(public.qorpera_structured_path_kind('agents/nora/memory/thread/runs/' || r || '/log/0.jsonl'), '-'),
+		public.qorpera_structured_path_kind('qorperaos/agents/groups/launch/memory/runs/' || r || '/run.toml'),
+		public.qorpera_structured_path_kind('qorperaos/agents/groups/launch/memory/runs/' || r || '/log/00000003.jsonl'),
+		public.qorpera_structured_path_kind('qorperaos/agents/groups/launch/memory/runs/' || r || '/t2/00000000.jsonl'),
+		coalesce(public.qorpera_structured_path_kind('qorperaos/agents/nora/memory/runs/' || r || '/run.toml'), '-'),
+		coalesce(public.qorpera_structured_path_kind('qorperaos/agents/nora/memory/thread/runs/' || r || '/log/0.jsonl'), '-'),
 		coalesce(public.qorpera_memory_run_folder_key(t0), '-'),
-		coalesce(public.qorpera_memory_run_folder_key('agents/nora/memory/thread/runs'), '-'),
-		coalesce(public.qorpera_memory_run_folder_key('agents/nora/memory/thread/runs/x'), '-')]),
+		coalesce(public.qorpera_memory_run_folder_key('qorperaos/agents/nora/memory/thread/runs'), '-'),
+		coalesce(public.qorpera_memory_run_folder_key('qorperaos/agents/nora/memory/thread/runs/x'), '-')]),
 		to_jsonb(array['memory-run', 'memory-steps', 'memory-run-block', 'memory-run', 'memory-steps', 'memory-run-block', '-', '-',
-			'agents/nora/memory/thread/runs/' || r, '-', '-']), 'kinds and log folders');
+			'qorperaos/agents/nora/memory/thread/runs/' || r, '-', '-']), 'kinds and log folders');
 	perform pg_temp.same(to_jsonb(array[
 		public.qorpera_memory_tree_path_allowed('runs', 'folder', 'mkdir'), public.qorpera_memory_tree_path_allowed('runs', 'folder', 'delete'),
 		public.qorpera_memory_tree_path_allowed('runs/' || r, 'folder', 'new_folder'),
@@ -280,18 +285,19 @@ declare
 begin
 	-- The company chose the beta in 970's setup, so its runs are recorded in it and keep logs (20260930508000).
 	-- A run in its agent's thread: the thread's tree, and the folders on the way that are not there yet. Otto's tree is.
+	-- The paths are handed out as the folder spells them, under QorperaOS/ (20260930534000).
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path',
-		'agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('agents/nora/memory/thread',
-		'agents/nora/memory/thread/runs'), 'last', null, 'generation', 0, 'gone', false, 'origin', jsonb_build_object(
+		'QorperaOS/agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('QorperaOS/agents/nora/memory/thread',
+		'QorperaOS/agents/nora/memory/thread/runs'), 'last', null, 'generation', 0, 'gone', false, 'origin', jsonb_build_object(
 		'conversation', pg_temp.thread('nora'), 'parent', null, 'step', null, 'continues', null, 'narrow', false)),
 		'nora''s place');
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, pg_temp.run_id('otto')) -> 'missing',
-		'["agents/otto/memory/thread/runs"]', 'otto''s place');
+		'["QorperaOS/agents/otto/memory/thread/runs"]', 'otto''s place');
 	-- A room run: the group chat's tree.
 	x := public.qorpera_memory_run_log_place(env, room);
 	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'missing', x -> 'origin' -> 'conversation'), jsonb_build_array(
-		'agents/groups/launch/memory/runs/' || room, jsonb_build_array('agents/groups/launch/memory',
-		'agents/groups/launch/memory/runs'), pg_temp.chat('launch')), 'the room run''s place');
+		'QorperaOS/agents/groups/launch/memory/runs/' || room, jsonb_build_array('QorperaOS/agents/groups/launch/memory',
+		'QorperaOS/agents/groups/launch/memory/runs'), pg_temp.chat('launch')), 'the room run''s place');
 	-- A worker's completion continues the run that started the worker, in its conversation.
 	wc := pg_temp.run(pg_temp.id('otto'), 'agent', '63400000-0000-4000-8000-000000000002', 'worker-completion', pg_temp.actor('otto'),
 		extensions.gen_random_uuid());
@@ -334,12 +340,12 @@ $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	a constant jsonb := pg_temp.actor('nora'); log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
+	a constant jsonb := pg_temp.actor('nora'); log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
 	conv constant uuid := pg_temp.thread('nora'); r jsonb; l public.qorpera_memory_run_logs;
 begin
 	-- The folders on the way, as the run (each unit stands alone).
-	r := pg_temp.logc('nora', 'w1b:toml:mk', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/nora/memory/thread'),
-		jsonb_build_object('op','mkdir','path','agents/nora/memory/thread/runs')), log);
+	r := pg_temp.logc('nora', 'w1b:toml:mk', jsonb_build_array(jsonb_build_object('op','mkdir','path','qorperaos/agents/nora/memory/thread'),
+		jsonb_build_object('op','mkdir','path','qorperaos/agents/nora/memory/thread/runs')), log);
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora) -> 'missing', '[]', 'the folders on the way are there');
 	-- A run.toml that is not one, names another run, or names an origin that is not the run's; a parse the platform did not make.
@@ -371,10 +377,10 @@ begin
 	select * into l from public.qorpera_memory_run_logs where environment_id = env and run_id = nora;
 	perform pg_temp.same(jsonb_build_array(l.session_id, l.parent_run_id, l.parent_step, l.continues_run_id, l.narrow, l.run_path,
 		l.run_key, l.toml_path_version, l.commit_id, l.step_count, l.narrow_from, l.retired_at), jsonb_build_array(conv, null, null,
-		null, false, log, log, pg_temp.version(log || '/run.toml'), r ->> 'commitId', 2, null, null), 'nora''s log');
+		null, false, pg_temp.shown(log), log, pg_temp.version(log || '/run.toml'), r ->> 'commitId', 2, null, null), 'nora''s log');
 	perform pg_temp.same(to_jsonb(array[(select log_created_at is not null from public.qorpera_memory_run_generations
 		where environment_id = env and run_id = nora)]), '[true]', 'the log is made');
-	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path', log, 'exists', true,
+	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path', pg_temp.shown(log), 'exists', true,
 		'missing', '[]'::jsonb, 'last', 0, 'generation', 0, 'gone', false), 'nora''s place, made');
 
 	-- run.toml does not change.
@@ -386,12 +392,12 @@ end $$;
 -- 4. Log blocks: nora's log holds step 0 (finished) and step 1 (pending, naming contracts/b.md) in log/00000000.jsonl ----
 do $$
 declare
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
 	b0 constant text := log || '/log/00000000.jsonl'; s0 constant text := pg_temp.step(0, '{"path":"contracts/a.md"}');
-	otto constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); r jsonb;
+	otto constant text := 'qorperaos/agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); r jsonb;
 begin
 	-- No log yet: a block waits for its run.toml (a log folder made without one stays empty).
-	r := pg_temp.logc('otto', 'w1b:block:otto', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/otto/memory/thread/runs'),
+	r := pg_temp.logc('otto', 'w1b:block:otto', jsonb_build_array(jsonb_build_object('op','mkdir','path','qorperaos/agents/otto/memory/thread/runs'),
 		jsonb_build_object('op','mkdir','path',otto), jsonb_build_object('op','mkdir','path',otto || '/log'),
 		pg_temp.rfile(otto || '/log/00000000.jsonl', pg_temp.block(array[pg_temp.step(0)]), pg_temp.actor('otto'))), otto);
 	perform pg_temp.refused(r, 4, 'structured_rule', 'write this log''s run.toml first');
@@ -474,12 +480,12 @@ create function pg_temp.log_with_blocks(p_path text, p_toml text, p_actor jsonb,
 $$;
 do $$
 declare
-	room constant uuid := pg_temp.run_id('room'); log constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	room constant uuid := pg_temp.run_id('room'); log constant text := 'qorperaos/agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
 	toml constant text := pg_temp.rtoml(pg_temp.run_id('room'), pg_temp.chat('launch')); a constant jsonb := pg_temp.actor('room');
 	r jsonb;
 begin
-	r := pg_temp.logc('room', 'w1b:room:mk', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/groups/launch/memory'),
-		jsonb_build_object('op','mkdir','path','agents/groups/launch/memory/runs')), log);
+	r := pg_temp.logc('room', 'w1b:room:mk', jsonb_build_array(jsonb_build_object('op','mkdir','path','qorperaos/agents/groups/launch/memory'),
+		jsonb_build_object('op','mkdir','path','qorperaos/agents/groups/launch/memory/runs')), log);
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	-- Two blocks that hold the same step.
 	r := pg_temp.logc('room', 'w1b:room:1', jsonb_build_array(pg_temp.log_with_blocks(log, toml, a, array[
@@ -499,8 +505,8 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
-	otto constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); t0 constant text := log || '/t0/00000000.jsonl';
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	otto constant text := 'qorperaos/agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); t0 constant text := log || '/t0/00000000.jsonl';
 	gen constant jsonb := jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 0)));
 	r jsonb;
 begin
@@ -540,8 +546,8 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
-	t0 constant text := log || '/t0/00000000.jsonl'; ottos constant text := 'agents/otto/memory/thread/runs/';
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	t0 constant text := log || '/t0/00000000.jsonl'; ottos constant text := 'qorperaos/agents/otto/memory/thread/runs/';
 	gen constant jsonb := jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 0)));
 	r jsonb;
 begin
@@ -564,7 +570,7 @@ begin
 		'expectedVersion',pg_temp.version(t0))), log, gen);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'only the platform deletes a run log''s files');
 	r := pg_temp.logc('nora', 'w1b:whose:6', jsonb_build_array(jsonb_build_object('op','mkdir','path',
-		'agents/nora/memory/thread/runs/' || extensions.gen_random_uuid())), log);
+		'qorperaos/agents/nora/memory/thread/runs/' || extensions.gen_random_uuid())), log);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s change writes only its own log folder');
 	r := pg_temp.logc('nora', 'w1b:whose:7', jsonb_build_array(jsonb_build_object('op','mkdir','path',ottos || pg_temp.run_id('otto')
 		|| '/t1')), log);
@@ -580,7 +586,7 @@ begin
 	r := pg_temp.logc('nora', 'w1b:whose:10', jsonb_build_array(jsonb_build_object('op','mkdir','path',ottos || nora)), ottos || nora);
 	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_moved');
 	r := pg_temp.logc('otto', 'w1b:whose:11', jsonb_build_array(jsonb_build_object('op','mkdir','path',
-		'agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'))), 'agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'));
+		'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'))), 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'));
 	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_moved');
 end $$;
 
@@ -588,7 +594,7 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); s jsonb; l public.qorpera_memory_run_logs;
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); s jsonb; l public.qorpera_memory_run_logs;
 begin
 	-- Steps 0 to 3 are plain and finished, 4 narrow and finished, 5 narrow and pending: needles only for a plain step.
 	perform pg_temp.same((select jsonb_agg(jsonb_build_array(s.j, s.tool, s.call_id, s.needles, s.narrow, s.erased, s.finished,
@@ -617,9 +623,9 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
 	me constant jsonb := jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('nora'));
-	room constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	room constant text := 'qorperaos/agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
 	nf constant jsonb := jsonb_build_object('contents', jsonb_build_array(jsonb_build_object('path','run.toml'),
 		jsonb_build_object('path','log')));
 begin
@@ -633,11 +639,11 @@ begin
 		public.qorpera_memory_run_log_admits(env, 'k', me, 'write', log || '/log/00000006.jsonl', '{}'),
 		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', log || '/t1', '{}'),
 		public.qorpera_memory_run_log_admits(env, 'k', me, 'new_folder', log, nf),
-		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory/thread/runs', '{}'),
-		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory', '{}'),
-		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora', '{}'),
-		public.qorpera_memory_run_log_admits(env, 'k', me, 'write', 'agents/nora/memory/thread/tree.toml', '{}'),
-		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory/thread/runs/' || gen_random_uuid(), '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'qorperaos/agents/nora/memory/thread/runs', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'qorperaos/agents/nora/memory', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'qorperaos/agents/nora', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'write', 'qorperaos/agents/nora/memory/thread/tree.toml', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'qorperaos/agents/nora/memory/thread/runs/' || gen_random_uuid(), '{}'),
 		public.qorpera_memory_run_log_admits(env, 'k', me, 'delete', log || '/log/00000005.jsonl', '{}'),
 		public.qorpera_memory_run_log_admits(env, 'k', me, 'move', log || '/log/00000005.jsonl', '{}')]),
 		'[true, true, true, true, true, false, false, false, false, false]', 'what the run writes');
@@ -660,9 +666,9 @@ begin
 		jsonb_build_object('runLog', jsonb_build_object('run', pg_temp.run_id('room'), 'path', room)))::text, true);
 	perform pg_temp.same(to_jsonb(array[
 		public.qorpera_memory_run_log_admits(env, 'k', jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('room')), 'mkdir',
-			'agents/groups/launch/memory', '{}'),
+			'qorperaos/agents/groups/launch/memory', '{}'),
 		public.qorpera_memory_run_log_admits(env, 'k', jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('room')), 'mkdir',
-			'agents/groups/launch', '{}')]), '[true, false]', 'a room run''s log');
+			'qorperaos/agents/groups/launch', '{}')]), '[true, false]', 'a room run''s log');
 	-- A memory commit inside another one is refused.
 	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L)', env, '{"kind":"platform"}',
 		'w1b:nested', '[]'), '55000', 'A memory request is already set in this transaction');
@@ -719,8 +725,8 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
-	room constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room'); b6 constant text := log || '/log/00000006.jsonl';
+	log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	room constant text := 'qorperaos/agents/groups/launch/memory/runs/' || pg_temp.run_id('room'); b6 constant text := log || '/log/00000006.jsonl';
 	sg constant bigint := (select s.memory_generation from public.qorpera_shared_sessions s where s.id = pg_temp.thread('nora'));
 	r jsonb;
 begin
@@ -754,7 +760,7 @@ begin
 	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', env, 'operationKey', 'w1b:someone-else',
 		'preconditions', '{}'::jsonb)::text, true);
 	r := pg_temp.commit('{"kind":"platform"}', 'w1b:decide:6', jsonb_build_array(jsonb_build_object('op','mkdir',
-		'path','agents/groups/launch/w1b-decide')));
+		'path','qorperaos/agents/groups/launch/w1b-decide')));
 	perform set_config('qorpera.folder_memory', '', true);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'the memory request does not belong to this change');
 end $$;
@@ -763,24 +769,26 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; room constant uuid := pg_temp.run_id('room');
-	was constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
-	log constant text := 'agents/groups/launch-team/memory/runs/' || pg_temp.run_id('room'); a constant jsonb := pg_temp.actor('room');
+	was constant text := 'qorperaos/agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	log constant text := 'qorperaos/agents/groups/launch-team/memory/runs/' || pg_temp.run_id('room'); a constant jsonb := pg_temp.actor('room');
 	l public.qorpera_memory_run_logs; x jsonb; r jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1b:move:1', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/groups/launch','to','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch'),
+		'from','qorperaos/agents/groups/launch','to','qorperaos/agents/groups/launch-team','expectedVersion',pg_temp.version('qorperaos/agents/groups/launch'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	select * into l from public.qorpera_memory_run_logs where environment_id = env and run_id = room;
 	perform pg_temp.same(jsonb_build_array(l.run_path, l.run_key, l.toml_path_version = pg_temp.version(log || '/run.toml')),
-		jsonb_build_array(log, public.qorpera_folder_key(log), true), 'the room log follows the rename');
+		jsonb_build_array(pg_temp.shown(log), public.qorpera_folder_key(log), true), 'the room log follows the rename');
 	perform pg_temp.same((select jsonb_agg(jsonb_build_array(s.j, s.block_path, s.block_path_version = pg_temp.version(s.block_key))
 		order by s.j) from public.qorpera_memory_run_steps s where s.environment_id = env and s.run_id = room), jsonb_build_array(
-		jsonb_build_array(0, log || '/log/00000000.jsonl', true), jsonb_build_array(1, log || '/log/00000001.jsonl', true),
-		jsonb_build_array(2, log || '/log/00000001.jsonl', true), jsonb_build_array(3, log || '/log/00000003.jsonl', true)),
+		jsonb_build_array(0, pg_temp.shown(log) || '/log/00000000.jsonl', true),
+		jsonb_build_array(1, pg_temp.shown(log) || '/log/00000001.jsonl', true),
+		jsonb_build_array(2, pg_temp.shown(log) || '/log/00000001.jsonl', true),
+		jsonb_build_array(3, pg_temp.shown(log) || '/log/00000003.jsonl', true)),
 		'the room log''s steps follow it');
 	x := public.qorpera_memory_run_log_place(env, room);
 	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'exists', x -> 'missing', x -> 'last'),
-		jsonb_build_array(log, true, '[]'::jsonb, 3), 'the room log''s place follows it');
+		jsonb_build_array(pg_temp.shown(log), true, '[]'::jsonb, 3), 'the room log''s place follows it');
 
 	-- The old folder is gone (the core refuses a write there as parent_missing); a batch naming the new one is saved.
 	r := pg_temp.logc('room', 'w1b:move:2', jsonb_build_array(pg_temp.rfile(was || '/log/00000004.jsonl',
@@ -802,7 +810,7 @@ $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
-	room constant uuid := pg_temp.run_id('room'); log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
+	room constant uuid := pg_temp.run_id('room'); log constant text := 'qorperaos/agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
 	a constant jsonb := pg_temp.actor('nora'); nlog constant jsonb := jsonb_build_object('run', pg_temp.run_id('nora'), 'path', log);
 	other constant uuid := extensions.gen_random_uuid(); r jsonb;
 begin
@@ -827,20 +835,20 @@ begin
 	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_gone');
 	-- A request for the log of a run the company does not have is not a memory request.
 	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L, %L)', env, '{"kind":"platform"}',
-		'w1b:delete:5', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/nora/memory/thread/runs/' || other)),
-		jsonb_build_object('runLog', jsonb_build_object('run', other, 'path', 'agents/nora/memory/thread/runs/' || other))),
+		'w1b:delete:5', jsonb_build_array(jsonb_build_object('op','mkdir','path','qorperaos/agents/nora/memory/thread/runs/' || other)),
+		jsonb_build_object('runLog', jsonb_build_object('run', other, 'path', 'qorperaos/agents/nora/memory/thread/runs/' || other))),
 		'22023', 'Memory request is invalid');
 
 	-- A deleted group folder retires the logs in it.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1b:delete:6', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))),
+		'path','qorperaos/agents/groups/launch-team','expectedVersion',pg_temp.version('qorperaos/agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))),
 		1, 'saved');
 	perform pg_temp.same((select jsonb_build_array(l.retired_at is not null, (select count(*) from public.qorpera_memory_run_steps s
 		where s.environment_id = env and s.run_id = room)) from public.qorpera_memory_run_logs l
 		where l.environment_id = env and l.run_id = room), '[true, 0]', 'a deleted group''s log retires');
 
 	-- An erase deletes the retired log rows under its roots, and only those.
-	r := public.qorpera_folder_erase(env, pg_temp.member(1), '["agents/groups/launch-team", "agents/groups/launch"]', 'w1b:erase:1');
+	r := public.qorpera_folder_erase(env, pg_temp.member(1), '["qorperaos/agents/groups/launch-team", "qorperaos/agents/groups/launch"]', 'w1b:erase:1');
 	perform pg_temp.same((select jsonb_agg(l.run_id order by l.run_id) from public.qorpera_memory_run_logs l
 		where l.environment_id = env and l.run_id in (nora, room)), jsonb_build_array(nora), 'an erase takes the room''s log row');
 	r := public.qorpera_folder_erase(env, pg_temp.member(1), jsonb_build_array(log), 'w1b:erase:2');
@@ -852,7 +860,7 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; otto constant uuid := pg_temp.run_id('otto');
-	log constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); a constant jsonb := pg_temp.actor('otto');
+	log constant text := 'qorperaos/agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); a constant jsonb := pg_temp.actor('otto');
 	ojob constant uuid := (pg_temp.actor('otto') ->> 'jobId')::uuid; b0 constant text := log || '/log/00000000.jsonl'; r jsonb;
 	-- Step 0 pending and plain, naming contracts/a.md; its narrow form has the same arguments and names nothing.
 	n0 constant text := jsonb_set(pg_temp.nstep(0)::jsonb, '{args_hash}', pg_temp.step(0)::jsonb -> 'args_hash')::text;

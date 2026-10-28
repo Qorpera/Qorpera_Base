@@ -13,7 +13,7 @@ begin
 	perform public.qorpera_configure_coding_executor('92400000-0000-4000-8000-000000000020', 'exec-536', true, array['codex']);
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
-	perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'nd-dispatch', 'agents/alice/todos/fix-login/session-a',
+	perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'nd-dispatch', 'QorperaOS/agents/alice/todos/fix-login/session-a',
 		pg_temp.c3_brief('53600000-0000-4000-8000-0000000000b1')) -> 'units' -> 0 ->> 'outcome' = 'saved', 'the dispatch');
 	-- The owner's two machines on exec-536, each pinned to its binding text as the first run authority pins it.
 	set local session_replication_role = replica;

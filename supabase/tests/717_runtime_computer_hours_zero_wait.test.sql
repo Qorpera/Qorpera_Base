@@ -74,7 +74,7 @@ from (
 
 -- The owner gives Carol a routine (a routine file, paid by the owner's login); the scheduler has not fired it yet.
 select pg_temp.base_commit(pg_temp.base_owner(), 'zero-routine', jsonb_build_array(pg_temp.base_write(
-	'agents/carol/routines/tick.md', 'routine',
+	'QorperaOS/agents/carol/routines/tick.md', 'routine',
 	E'---\n' || '{"kind":"routine","id":"71700000-0000-4000-8000-0000000000e1","title":"Tick","status":"active","trigger":{"when":"every","minutes":60,"starts":null},"timezone":null,"ends":null,"runs":null,"quiet":null,"effort":"medium","reply":"optional","conclusion":null,"instructions":"Look at the numbers."}' || E'\n---\n',
 	'{"kind":"routine","id":"71700000-0000-4000-8000-0000000000e1","title":"Tick","status":"active","trigger":{"when":"every","minutes":60,"starts":null},"timezone":null,"ends":null,"runs":null,"quiet":null,"effort":"medium","reply":"optional","conclusion":null,"instructions":"Look at the numbers."}'))) \g /dev/null
 select pg_temp.base_assert(routine.status = 'active' and version.staff_agent_id = '92400000-0000-4000-8000-000000000032'

@@ -523,8 +523,8 @@ describe("calling a skill from the composer", () => {
 });
 
 describe("reading the skill list", () => {
-	const LEDGER = "agents/ledger";
-	/** A company folder where the fixture agent is agents/ledger, with skills of its own and the company's. */
+	const LEDGER = "QorperaOS/agents/ledger";
+	/** A company folder where the fixture agent is QorperaOS/agents/ledger, with skills of its own and the company's. */
 	function company(tree: Record<string, string> = {}) {
 		const fake = folderFake();
 		fake.put(
@@ -559,17 +559,17 @@ describe("reading the skill list", () => {
 		const fake = company({
 			[`${LEDGER}/skills/triage/SKILL.md`]:
 				"---\nname: triage\ndescription: >-\n  Sort new\n  tickets.\n---\n\nSteps.\n",
-			"skills/customer-refund/SKILL.md":
+			"QorperaOS/skills/customer-refund/SKILL.md":
 				'---\nname: customer-refund\ndescription: "Refund a customer."\n---\n\nSteps.\n',
-			"skills/weekly-note.md": "---\ndescription: A flat skill file.\n---\nSteps.\n",
+			"QorperaOS/skills/weekly-note.md": "---\ndescription: A flat skill file.\n---\nSteps.\n",
 			// A folder and a flat file of one name: the folder is the skill.
-			"skills/both/SKILL.md": "---\ndescription: From the folder.\n---\n",
-			"skills/both.md": "---\ndescription: From the flat file.\n---\n",
-			"skills/broken/SKILL.md": "not text",
+			"QorperaOS/skills/both/SKILL.md": "---\ndescription: From the folder.\n---\n",
+			"QorperaOS/skills/both.md": "---\ndescription: From the flat file.\n---\n",
+			"QorperaOS/skills/broken/SKILL.md": "not text",
 			// A folder without its SKILL.md, and names that are not skill names, are not skills.
-			"skills/empty/notes.txt": "not a skill",
-			"skills/README.md": "Not a skill name.",
-			"skills/Upper/SKILL.md": "---\ndescription: Not a skill name.\n---\n",
+			"QorperaOS/skills/empty/notes.txt": "not a skill",
+			"QorperaOS/skills/README.md": "Not a skill name.",
+			"QorperaOS/skills/Upper/SKILL.md": "---\ndescription: Not a skill name.\n---\n",
 		});
 		expect(await loadSkillSuggestions(fake.folder, staff.id, signal())).toEqual([
 			{ name: "triage", description: "Sort new tickets.", scope: "agent" },
@@ -579,26 +579,26 @@ describe("reading the skill list", () => {
 			{ name: "weekly-note", description: "A flat skill file.", scope: "company" },
 		]);
 		expect(fake.folder.list).toHaveBeenCalledWith(`${LEDGER}/skills`, null, 100, expect.any(AbortSignal));
-		expect(fake.folder.list).toHaveBeenCalledWith("skills", null, 100, expect.any(AbortSignal));
+		expect(fake.folder.list).toHaveBeenCalledWith("QorperaOS/skills", null, 100, expect.any(AbortSignal));
 		// A group chat, or a thread without an agent, offers only the company's.
 		fake.folder.list.mockClear();
 		const companyOnly = await loadSkillSuggestions(fake.folder, null, signal());
 		expect(companyOnly.map((skill) => skill.name)).toEqual(["both", "broken", "customer-refund", "weekly-note"]);
 		expect(companyOnly.every((skill) => skill.scope === "company")).toBe(true);
-		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("skills", null, 100, expect.any(AbortSignal));
+		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("QorperaOS/skills", null, 100, expect.any(AbortSignal));
 	});
 
 	it("offers only the company's skills for an agent without a folder this member reads", async () => {
-		const fake = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		const fake = company({ "QorperaOS/skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
 		expect(await loadSkillSuggestions(fake.folder, id(99), signal())).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
-		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("skills", null, 100, expect.any(AbortSignal));
+		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("QorperaOS/skills", null, 100, expect.any(AbortSignal));
 	});
 
 	it("offers the company's skills when the agent's folder is closed, and fails on any other failed listing", async () => {
 		const closed = company({
-			"skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n",
+			"QorperaOS/skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n",
 			[`${LEDGER}/skills/triage/SKILL.md`]: "---\ndescription: Sort.\n---\n",
 		});
 		// The core lists a folder closed to the member empty.
@@ -608,7 +608,7 @@ describe("reading the skill list", () => {
 		]);
 		expect(closed.folder.list).toHaveBeenCalledWith(`${LEDGER}/skills`, null, 100, expect.any(AbortSignal));
 		// A refused listing of the agent's folder offers the company's skills too.
-		const refused = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		const refused = company({ "QorperaOS/skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
 		refused.fail(
 			`${LEDGER}/skills`,
 			new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403),
@@ -618,13 +618,13 @@ describe("reading the skill list", () => {
 		]);
 		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
 		const down = company();
-		down.fail("skills");
+		down.fail("QorperaOS/skills");
 		await expect(loadSkillSuggestions(down.folder, staff.id, signal())).rejects.toBeInstanceOf(
 			CloudMemberFolderError,
 		);
 		// Neither is a refused listing of the company's library "no skills".
 		const denied = company();
-		denied.fail("skills", new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403));
+		denied.fail("QorperaOS/skills", new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403));
 		await expect(loadSkillSuggestions(denied.folder, null, signal())).rejects.toBeInstanceOf(
 			CloudMemberFolderAccessDenied,
 		);
@@ -636,14 +636,15 @@ describe("reading the skill list", () => {
 
 	it("lists every page of a library, and reads the descriptions of the first sixty", async () => {
 		const tree: Record<string, string> = {};
+		const library = "QorperaOS/skills";
 		for (let index = 0; index <= 100; index++)
-			tree[`skills/s-${String(index).padStart(3, "0")}/SKILL.md`] = `---\ndescription: Skill ${index}.\n---\n`;
+			tree[`${library}/s-${String(index).padStart(3, "0")}/SKILL.md`] = `---\ndescription: Skill ${index}.\n---\n`;
 		const fake = company(tree);
 		const skills = await loadSkillSuggestions(fake.folder, null, signal());
 		expect(skills).toHaveLength(101);
 		expect(fake.folder.list.mock.calls.map(([parent, after]) => [parent, after])).toEqual([
-			["skills", null],
-			["skills", "skills/s-099"],
+			["QorperaOS/skills", null],
+			["QorperaOS/skills", "QorperaOS/skills/s-099"],
 		]);
 		expect(skills[0]).toEqual({ name: "s-000", description: "Skill 0.", scope: "company" });
 		expect(skills[59]?.description).toBe("Skill 59.");
@@ -654,7 +655,7 @@ describe("reading the skill list", () => {
 	});
 
 	it("stops when the reader's company closes, and never offers a partial list", async () => {
-		const fake = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		const fake = company({ "QorperaOS/skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
 		const stop = new AbortController();
 		const read = fake.folder.read.getMockImplementation()!;
 		fake.folder.read.mockImplementation(async (...args) => {

@@ -21,7 +21,7 @@ begin
 end $$;
 create function pg_temp.versions_at(p_key text) returns bigint language sql as $$
 	select count(*) from public.qorpera_folder_path_versions where environment_id = '63400000-0000-4000-8000-000000000020'
-		and public.qorpera_folder_erasure_covers(p_key, public.qorpera_folder_key(path))
+		and public.qorpera_folder_erasure_covers(public.qorpera_folder_key(p_key), public.qorpera_folder_key(path))
 $$;
 create function pg_temp.is(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
@@ -44,17 +44,17 @@ do $$
 declare r jsonb; v public.qorpera_folder_erasures%rowtype;
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-scratch-1', jsonb_build_array(
-		pg_temp.table_folder('tables/scratch', '88600000-0000-4000-8000-000000000021'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-scratch-2', jsonb_build_array(pg_temp.p16_delete('tables/scratch'))));
+		pg_temp.table_folder('QorperaOS/tables/scratch', '88600000-0000-4000-8000-000000000021'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-scratch-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/scratch'))));
 	if not exists (select 1 from public.qorpera_folder_table_index where id = '88600000-0000-4000-8000-000000000021'
 			and retired_at is not null) then raise exception 'Fixture: the deleted table''s row is retired'; end if;
-	r := pg_temp.erase(array['tables/scratch'], 'p18c-erase-scratch');
+	r := pg_temp.erase(array['QorperaOS/tables/scratch'], 'p18c-erase-scratch');
 	if exists (select 1 from public.qorpera_folder_table_index where id = '88600000-0000-4000-8000-000000000021') then
 		raise exception 'The retired row goes with the request'; end if;
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '1', 'the reply counts it');
 	v := pg_temp.drain((r ->> 'erasureId')::uuid);
 	if v.state not in ('done', 'waiting') then raise exception 'Drained: %', to_jsonb(v); end if;
-	perform pg_temp.is(pg_temp.versions_at('tables/scratch')::text, '0', 'its history goes');
+	perform pg_temp.is(pg_temp.versions_at('QorperaOS/tables/scratch')::text, '0', 'its history goes');
 end $$;
 
 -- 2. Live rows are never touched -----------------------------------------------------------------------------------------
@@ -63,35 +63,36 @@ do $$
 declare r jsonb; v_live uuid;
 begin
 	-- Revived at another path, then deleted there: the row is retired again, its key inside the root's raw range
-	-- (tables/moved-again sorts before tables/moved0), but under another folder: only the path filter keeps it.
+	-- (qorperaos/tables/moved-again sorts before qorperaos/tables/moved0), but under another folder: only the path filter
+	-- keeps it.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-1', jsonb_build_array(
-		pg_temp.table_folder('tables/moved', '88600000-0000-4000-8000-000000000022'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-2', jsonb_build_array(pg_temp.p16_delete('tables/moved'))));
+		pg_temp.table_folder('QorperaOS/tables/moved', '88600000-0000-4000-8000-000000000022'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/moved'))));
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-3', jsonb_build_array(
-		pg_temp.table_folder('tables/moved-again', '88600000-0000-4000-8000-000000000022'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-4', jsonb_build_array(pg_temp.p16_delete('tables/moved-again'))));
-	r := pg_temp.erase(array['tables/moved'], 'p18c-erase-moved');
+		pg_temp.table_folder('QorperaOS/tables/moved-again', '88600000-0000-4000-8000-000000000022'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-moved-4', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/moved-again'))));
+	r := pg_temp.erase(array['QorperaOS/tables/moved'], 'p18c-erase-moved');
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '0', 'a table revived elsewhere is no row of the root');
 	if not exists (select 1 from public.qorpera_folder_table_index where id = '88600000-0000-4000-8000-000000000022'
-			and folder_key = 'tables/moved-again' and retired_at is not null) then
+			and folder_key = 'qorperaos/tables/moved-again' and retired_at is not null) then
 		raise exception 'The row of the other folder stays'; end if;
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
-	perform pg_temp.is(pg_temp.versions_at('tables/moved')::text, '0', 'the old path''s history goes');
-	if pg_temp.versions_at('tables/moved-again') = 0 then raise exception 'The new path''s history stays'; end if;
+	perform pg_temp.is(pg_temp.versions_at('QorperaOS/tables/moved')::text, '0', 'the old path''s history goes');
+	if pg_temp.versions_at('QorperaOS/tables/moved-again') = 0 then raise exception 'The new path''s history stays'; end if;
 
 	-- A later life at the same path, with another id: the earlier table's row goes, the live one stays with its files.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-live-1', jsonb_build_array(
-		pg_temp.table_folder('tables/live', '88600000-0000-4000-8000-000000000023'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-live-2', jsonb_build_array(pg_temp.p16_delete('tables/live'))));
+		pg_temp.table_folder('QorperaOS/tables/live', '88600000-0000-4000-8000-000000000023'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-live-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/live'))));
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-live-3', jsonb_build_array(
-		pg_temp.table_folder('tables/live', '88600000-0000-4000-8000-000000000024'))));
-	v_live := pg_temp.p16_version('tables/live/table.toml');
-	r := pg_temp.erase(array['tables/live'], 'p18c-erase-live');
+		pg_temp.table_folder('QorperaOS/tables/live', '88600000-0000-4000-8000-000000000024'))));
+	v_live := pg_temp.p16_version('QorperaOS/tables/live/table.toml');
+	r := pg_temp.erase(array['QorperaOS/tables/live'], 'p18c-erase-live');
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '1', 'the earlier life''s row');
 	if exists (select 1 from public.qorpera_folder_table_index where id = '88600000-0000-4000-8000-000000000023') then
 		raise exception 'The earlier life''s row goes'; end if;
-	if (pg_temp.trow('tables/live')).id is distinct from '88600000-0000-4000-8000-000000000024'
-		or (pg_temp.trow('tables/live')).definition_version is distinct from v_live then
+	if (pg_temp.trow('QorperaOS/tables/live')).id is distinct from '88600000-0000-4000-8000-000000000024'
+		or (pg_temp.trow('QorperaOS/tables/live')).definition_version is distinct from v_live then
 		raise exception 'The live table keeps its row'; end if;
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
 	if not exists (select 1 from public.qorpera_folder_path_versions where version = v_live) then
@@ -100,30 +101,30 @@ begin
 	-- Revived at the same path with the same id: the row is live again, so the request leaves it; the earlier life's
 	-- versions still go.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-same-1', jsonb_build_array(
-		pg_temp.table_folder('tables/same', '88600000-0000-4000-8000-000000000025'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-same-2', jsonb_build_array(pg_temp.p16_delete('tables/same'))));
+		pg_temp.table_folder('QorperaOS/tables/same', '88600000-0000-4000-8000-000000000025'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-same-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/same'))));
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-same-3', jsonb_build_array(
-		pg_temp.table_folder('tables/same', '88600000-0000-4000-8000-000000000025'))));
-	v_live := pg_temp.p16_version('tables/same/table.toml');
-	r := pg_temp.erase(array['tables/same'], 'p18c-erase-same');
+		pg_temp.table_folder('QorperaOS/tables/same', '88600000-0000-4000-8000-000000000025'))));
+	v_live := pg_temp.p16_version('QorperaOS/tables/same/table.toml');
+	r := pg_temp.erase(array['QorperaOS/tables/same'], 'p18c-erase-same');
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '0', 'a revived row is live');
-	if (pg_temp.trow('tables/same')).id is distinct from '88600000-0000-4000-8000-000000000025' then
+	if (pg_temp.trow('QorperaOS/tables/same')).id is distinct from '88600000-0000-4000-8000-000000000025' then
 		raise exception 'The revived row stays'; end if;
 	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '6', 'the earlier life: the folder, its two files and the delete''s three rows');
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
-	if (pg_temp.trow('tables/same')).definition_version is distinct from v_live
+	if (pg_temp.trow('QorperaOS/tables/same')).definition_version is distinct from v_live
 		or not exists (select 1 from public.qorpera_folder_path_versions where version = v_live) then
 		raise exception 'The revived table keeps its row and its current files'; end if;
 
 	-- A delete and a re-create in one change set: the earlier table's row goes, the new one stays.
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-split-1', jsonb_build_array(
-		pg_temp.table_folder('tables/split', '88600000-0000-4000-8000-000000000026'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-split-2', jsonb_build_array(pg_temp.p16_delete('tables/split'),
-		pg_temp.table_folder('tables/split', '88600000-0000-4000-8000-000000000027'))));
-	r := pg_temp.erase(array['tables/split'], 'p18c-erase-split');
+		pg_temp.table_folder('QorperaOS/tables/split', '88600000-0000-4000-8000-000000000026'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-split-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/split'),
+		pg_temp.table_folder('QorperaOS/tables/split', '88600000-0000-4000-8000-000000000027'))));
+	r := pg_temp.erase(array['QorperaOS/tables/split'], 'p18c-erase-split');
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '1', 'the table before the re-create');
 	if exists (select 1 from public.qorpera_folder_table_index where id = '88600000-0000-4000-8000-000000000026')
-		or (pg_temp.trow('tables/split')).id is distinct from '88600000-0000-4000-8000-000000000027' then
+		or (pg_temp.trow('QorperaOS/tables/split')).id is distinct from '88600000-0000-4000-8000-000000000027' then
 		raise exception 'Split at the re-create''s unit'; end if;
 end $$;
 
@@ -133,19 +134,19 @@ do $$
 declare r jsonb; v_detail text;
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-ren-1', jsonb_build_array(
-		pg_temp.table_folder('tables/r1', '88600000-0000-4000-8000-000000000028'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-ren-2', jsonb_build_array(pg_temp.p16_move('tables/r1', 'tables/r2'))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-ren-3', jsonb_build_array(pg_temp.p16_delete('tables/r2'))));
+		pg_temp.table_folder('QorperaOS/tables/r1', '88600000-0000-4000-8000-000000000028'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-ren-2', jsonb_build_array(pg_temp.p16_move('QorperaOS/tables/r1', 'QorperaOS/tables/r2'))));
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-ren-3', jsonb_build_array(pg_temp.p16_delete('QorperaOS/tables/r2'))));
 	begin
-		perform pg_temp.erase(array['tables/r2'], 'p18c-erase-ren-1');
+		perform pg_temp.erase(array['QorperaOS/tables/r2'], 'p18c-erase-ren-1');
 		raise exception 'Expected the refusal';
 	exception when sqlstate '22023' then get stacked diagnostics v_detail = pg_exception_detail;
 	end;
-	if v_detail::jsonb -> 'add' <> '["tables/r1"]'::jsonb then raise exception 'Name the old path: %', v_detail; end if;
-	r := pg_temp.erase(array['tables/r2', 'tables/r1'], 'p18c-erase-ren-2');
+	if v_detail::jsonb -> 'add' <> '["QorperaOS/tables/r1"]'::jsonb then raise exception 'Name the old path: %', v_detail; end if;
+	r := pg_temp.erase(array['QorperaOS/tables/r2', 'QorperaOS/tables/r1'], 'p18c-erase-ren-2');
 	perform pg_temp.is(r -> 'erased' ->> 'tables', '1', 'the renamed table''s row');
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
-	if pg_temp.versions_at('tables/r1') + pg_temp.versions_at('tables/r2') <> 0 then raise exception 'Its whole history goes'; end if;
+	if pg_temp.versions_at('QorperaOS/tables/r1') + pg_temp.versions_at('QorperaOS/tables/r2') <> 0 then raise exception 'Its whole history goes'; end if;
 end $$;
 
 -- 4. An interface folder has no index: it is erased like any path --------------------------------------------------------
@@ -154,12 +155,12 @@ do $$
 declare r jsonb;
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-iface-1', jsonb_build_array(
-		pg_temp.p16_folder(pg_temp.member(1), 'interfaces/scratch', jsonb_build_object('interface.toml',
+		pg_temp.p16_folder(pg_temp.member(1), 'QorperaOS/interfaces/scratch', jsonb_build_object('interface.toml',
 			pg_temp.iface('88600000-0000-4000-8000-000000000031', 'Scratch', false))))));
-	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-iface-2', jsonb_build_array(pg_temp.p16_delete('interfaces/scratch'))));
-	r := pg_temp.erase(array['interfaces/scratch'], 'p18c-erase-iface');
+	perform pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'p18c-iface-2', jsonb_build_array(pg_temp.p16_delete('QorperaOS/interfaces/scratch'))));
+	r := pg_temp.erase(array['QorperaOS/interfaces/scratch'], 'p18c-erase-iface');
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
-	perform pg_temp.is(pg_temp.versions_at('interfaces/scratch')::text, '0', 'an interface''s history goes');
+	perform pg_temp.is(pg_temp.versions_at('QorperaOS/interfaces/scratch')::text, '0', 'an interface''s history goes');
 end $$;
 
 -- 5. The lock text: the table rows are rank 5's last, after the contact rows, before the grants' resources ---------------

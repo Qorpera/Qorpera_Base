@@ -241,15 +241,15 @@ create function pg_temp.group_parse(p_id uuid, p_name text, p_agents uuid[], p_p
 		'people', to_jsonb(p_people), 'purpose', 'Plan.')
 $$;
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/' || p_handle,
+	select jsonb_build_object('op', 'new_folder', 'path', 'QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file',
 			'file', pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 create function pg_temp.edit_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', pg_temp.group_text(p_id, p_name, p_agents, p_people),
-		pg_temp.group_parse(p_id, p_name, p_agents, p_people), pg_temp.version('agents/groups/' || p_handle || '/group.md'))
+	select pg_temp.write('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group', pg_temp.group_text(p_id, p_name, p_agents, p_people),
+		pg_temp.group_parse(p_id, p_name, p_agents, p_people), pg_temp.version('QorperaOS/agents/groups/' || p_handle || '/group.md'))
 $$;
 -- A save's statement, built before a race starts (staging a file takes the company row), after the owner takes
 -- possession of its files in this session (648's pg_temp.possess), committed before the race too.
@@ -293,7 +293,7 @@ end $$;
 select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'member-actions-hire-0001',
 	jsonb_build_array(pg_temp.hire('bo', '66100000-0000-4000-8000-0000000000b0', 'Bo'))), 1, 'saved') \g /dev/null
 select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'member-actions-groups-0001',
-	jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
+	jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/groups'),
 		pg_temp.new_group('g1', '66100000-0000-4000-8000-0000000000e1', 'G1',
 			array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
 			array['64800000-0000-4000-8000-000000000001']::uuid[]),

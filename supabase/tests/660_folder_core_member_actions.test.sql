@@ -149,7 +149,7 @@ begin
 end $$;
 
 -- 6. A member's own review rule on folder-v2 saves and changes (the member's row, not the company row); a company rule
--- stays in rules/.
+-- stays in QorperaOS/rules/.
 do $$
 declare v jsonb; v_rule uuid := extensions.gen_random_uuid();
 begin
@@ -161,7 +161,7 @@ begin
 		raise exception 'A member''s own rule on folder-v2: %', v; end if;
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
 	perform pg_temp.raises_like(format('select public.qorpera_save_review_rule(%L, %L, %L, %L, %L)', '63400000-0000-4000-8000-000000000010',
-		extensions.gen_random_uuid(), 'company', 'Deleting files', 'ask_first'), '55000', '%rules/%');
+		extensions.gen_random_uuid(), 'company', 'Deleting files', 'ask_first'), '55000', '%QorperaOS/rules/%');
 	perform pg_temp.path_claims('service_role');
 end $$;
 

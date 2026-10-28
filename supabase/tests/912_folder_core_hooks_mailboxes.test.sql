@@ -102,7 +102,7 @@ begin
 	select * into v_row from public.qorpera_event_hooks where id = v_hook;
 	c := pg_temp.claim();
 	if c ->> 'subjectKind' <> 'hook' or (c ->> 'secretId')::uuid <> v_hook or c ->> 'operationKey' <> 'hook-file:' || v_hook || ':1'
-		or c ->> 'present' <> 'true' or c ->> 'path' <> 'connections/hook-stripe-payments.md' or c -> 'current' <> 'null'::jsonb
+		or c ->> 'present' <> 'true' or c ->> 'path' <> 'QorperaOS/connections/hook-stripe-payments.md' or c -> 'current' <> 'null'::jsonb
 		or c ->> 'body' <> 'Payments from Stripe wake the Analyst.'
 		or c -> 'settings' <> jsonb_build_object('id', v_hook, 'name', 'stripe-payments', 'proof', 'address', 'status', 'active',
 			'maxBodyBytes', 65536, 'perMinute', 60, 'createdBy', '70400000-0000-4000-8000-000000000001',
@@ -113,13 +113,13 @@ begin
 	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', c ->> 'path', 'hook', c -> 'settings',
 		c ->> 'body'), 1, 'saved');
 	if (pg_temp.hook_row(v_hook)).kind is distinct from 'hook'
-		or (pg_temp.hook_row(v_hook)).folder_key <> 'connections/hook-stripe-payments.md' then
+		or (pg_temp.hook_row(v_hook)).folder_key <> 'qorperaos/connections/hook-stripe-payments.md' then
 		raise exception 'The hook''s file is indexed: %', to_jsonb(pg_temp.hook_row(v_hook)); end if;
 	if not (public.qorpera_finish_connection_file('85200000-0000-4000-8000-00000000000a', v_hook, 1, null, 'hook')
 		->> 'finished')::boolean then raise exception 'The hook''s claim finishes by kind'; end if;
 	-- The mailbox's claim: its address, its own prefix.
 	c := pg_temp.claim();
-	if c ->> 'subjectKind' <> 'mailbox' or c ->> 'path' <> 'connections/mailbox-support.md'
+	if c ->> 'subjectKind' <> 'mailbox' or c ->> 'path' <> 'QorperaOS/connections/mailbox-support.md'
 		or c -> 'settings' ->> 'address' <> 'support@inbox.example.test' or c ->> 'operationKey' not like 'mailbox-file:%'
 		or (c -> 'settings') ? 'proof' then
 		raise exception 'The mailbox''s claim: %', c; end if;
@@ -135,7 +135,7 @@ end $$;
 do $$
 declare
 	v_hook uuid := current_setting('qorpera_test.hook')::uuid; v_settings jsonb; r jsonb;
-	v_path text := 'connections/hook-stripe-payments.md';
+	v_path text := 'QorperaOS/connections/hook-stripe-payments.md';
 begin
 	perform pg_temp.as_service();
 	v_settings := (public.qorpera_folder_hook_file_state('hook', v_hook, '70400000-0000-4000-8000-000000000020')) -> 'settings';
@@ -146,12 +146,12 @@ begin
 		'Payments.', pg_temp.version(v_path));
 	if not pg_temp.refused(r) then raise exception 'A member pauses a hook in its file: %', r; end if;
 	-- No second file for a hook, and no file for a hook of another company or kind, or one that does not exist.
-	r := pg_temp.hook_write(pg_temp.platform(), 'e1-second-1', 'connections/hook-again.md', 'hook', v_settings, '');
+	r := pg_temp.hook_write(pg_temp.platform(), 'e1-second-1', 'QorperaOS/connections/hook-again.md', 'hook', v_settings, '');
 	if not pg_temp.refused(r) then raise exception 'A hook has one file: %', r; end if;
-	r := pg_temp.hook_write(pg_temp.platform(), 'e1-unknown-1', 'connections/hook-ghost.md', 'hook',
+	r := pg_temp.hook_write(pg_temp.platform(), 'e1-unknown-1', 'QorperaOS/connections/hook-ghost.md', 'hook',
 		v_settings || '{"id":"91200000-0000-4000-8000-0000000000f1"}', '');
 	if not pg_temp.refused(r) then raise exception 'A file names a hook of this company: %', r; end if;
-	r := pg_temp.hook_write(pg_temp.platform(), 'e1-kind-1', 'connections/mailbox-stripe.md', 'mailbox',
+	r := pg_temp.hook_write(pg_temp.platform(), 'e1-kind-1', 'QorperaOS/connections/mailbox-stripe.md', 'mailbox',
 		jsonb_build_object('id', v_hook, 'address', 'stripe@inbox.example.test', 'status', 'active',
 			'createdBy', v_settings ->> 'createdBy', 'createdAt', v_settings ->> 'createdAt'), '');
 	if not pg_temp.refused(r) then raise exception 'A hook is no mailbox: %', r; end if;
@@ -168,11 +168,11 @@ begin
 	if not pg_temp.refused(r) then raise exception 'The platform removes a live hook''s file: %', r; end if;
 	-- A rename within the prefix follows the file; anything else is a kind change.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'e1-move-1', jsonb_build_array(jsonb_build_object('op', 'move',
-		'from', v_path, 'to', 'connections/hook-stripe.md', 'expectedVersion', pg_temp.version(v_path)))), 1, 'saved');
-	if (pg_temp.hook_row(v_hook)).folder_key <> 'connections/hook-stripe.md' then
+		'from', v_path, 'to', 'QorperaOS/connections/hook-stripe.md', 'expectedVersion', pg_temp.version(v_path)))), 1, 'saved');
+	if (pg_temp.hook_row(v_hook)).folder_key <> 'qorperaos/connections/hook-stripe.md' then
 		raise exception 'A moved hook file is repointed: %', to_jsonb(pg_temp.hook_row(v_hook)); end if;
 	r := pg_temp.commit(pg_temp.owner(), 'e1-move-2', jsonb_build_array(jsonb_build_object('op', 'move',
-		'from', 'connections/hook-stripe.md', 'to', 'connections/stripe.md', 'expectedVersion', pg_temp.version('connections/hook-stripe.md'))));
+		'from', 'QorperaOS/connections/hook-stripe.md', 'to', 'QorperaOS/connections/stripe.md', 'expectedVersion', pg_temp.version('QorperaOS/connections/hook-stripe.md'))));
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'kind_change' then
 		raise exception 'A hook''s file stays a hook''s file: %', r; end if;
 	-- A vault account's file never takes a hook's or a mailbox's prefix.
@@ -186,7 +186,7 @@ begin
 	values ('91200000-0000-4000-8000-0000000000e1','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020',
 		'hook-x.example.com', '{hook-x.example.com}', 'ops@nordlys.test', 'pending', '70400000-0000-4000-8000-000000000001');
 	if public.qorpera_folder_connection_file_state('91200000-0000-4000-8000-0000000000e1') ->> 'path'
-		<> 'connections/connection-hook-x-example-com.md' then
+		<> 'QorperaOS/connections/connection-hook-x-example-com.md' then
 		raise exception 'A vault file took a hook''s prefix: %',
 			public.qorpera_folder_connection_file_state('91200000-0000-4000-8000-0000000000e1'); end if;
 	delete from public.qorpera_folder_connection_file_marks where subject_kind = 'vault';
@@ -195,7 +195,7 @@ end $$;
 -- 4. Pausing and removing ------------------------------------------------------------------------------------------------
 
 do $$
-declare v_hook uuid := current_setting('qorpera_test.hook')::uuid; c jsonb; v_path text := 'connections/hook-stripe.md';
+declare v_hook uuid := current_setting('qorpera_test.hook')::uuid; c jsonb; v_path text := 'QorperaOS/connections/hook-stripe.md';
 begin
 	perform pg_temp.as_member();
 	if pg_temp.code(format('select public.qorpera_set_event_hook_status(%L, %L)', v_hook, 'paused')) <> '42501' then
@@ -246,9 +246,9 @@ begin
 	if pg_temp.hook_marks('mailbox', v_box) <> 1 then raise exception 'A new mail domain marks the mailbox''s file'; end if;
 	c := pg_temp.claim();
 	if c ->> 'subjectKind' <> 'mailbox' or c -> 'settings' ->> 'address' <> 'support@mail.example.test'
-		or c -> 'current' ->> 'path' <> 'connections/mailbox-support.md' then
+		or c -> 'current' ->> 'path' <> 'QorperaOS/connections/mailbox-support.md' then
 		raise exception 'The mailbox''s claim after a new domain: %', c; end if;
-	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', 'connections/mailbox-support.md', 'mailbox',
+	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', 'QorperaOS/connections/mailbox-support.md', 'mailbox',
 		c -> 'settings', 'Customer support.', (c -> 'current' ->> 'version')::uuid), 1, 'saved');
 end $$;
 

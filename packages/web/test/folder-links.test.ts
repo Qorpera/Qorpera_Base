@@ -6,7 +6,7 @@ import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 describe("a folder link's path", () => {
 	it.each([
 		["folder:designs/sales-dashboard.html", "designs/sales-dashboard.html"],
-		["folder:vision/vision.md", "vision/vision.md"],
+		["folder:QorperaOS/vision/vision.md", "QorperaOS/vision/vision.md"],
 		["folder:notes", "notes"],
 		["folder:designs/sales%20dashboard.html", "designs/sales dashboard.html"],
 		["folder:code/app/src/main.ts", "code/app/src/main.ts"],

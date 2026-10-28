@@ -25,7 +25,7 @@
  * rest of the agent's folder. There is no per-member memory; what an agent
  * learns about a member is a fact in its own notebook. The tools only ever
  * address the executing agent's own notebook. The agent's folder is
- * cloudAgentFolder's: agents/<handle>. */
+ * cloudAgentFolder's: QorperaOS/agents/<handle>. */
 import { createHash } from "node:crypto";
 import {
 	type CloudAgentFolderPlace,

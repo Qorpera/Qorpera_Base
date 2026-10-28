@@ -106,7 +106,7 @@ end $$;
 -- The Co-Founder's thread keeps its tree under its notebook.
 do $$
 begin
-	if public.qorpera_room_image_root(current_setting('qorpera_test.cf_thread')::uuid) is distinct from 'agents/co-founder/memory/thread' then
+	if public.qorpera_room_image_root(current_setting('qorpera_test.cf_thread')::uuid) is distinct from 'qorperaos/agents/co-founder/memory/thread' then
 		raise exception 'Fixture: the Co-Founder''s thread root is %',
 			public.qorpera_room_image_root(current_setting('qorpera_test.cf_thread')::uuid); end if;
 end $$;

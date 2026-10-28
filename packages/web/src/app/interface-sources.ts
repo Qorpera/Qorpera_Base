@@ -7,6 +7,7 @@ import {
 	type CompanyStatePath,
 	companyPathKey,
 	companyStatePath,
+	osPath,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import { INTERFACE_SOURCE_COLUMNS, type TableRow } from "@qorpera/cloud-client/interfaces";
@@ -24,7 +25,7 @@ import { routineNextRun } from "./routine-next-run.ts";
  * `groups` sources read the folder too, not the store: their rows are what the files say, as every other folder
  * source's are. A file that doesn't parse is left out and listed as its source's problem; one that is too large or
  * isn't text is left out, as I7 leaves out such a file. The `interfaces` source, the folder's pages, is not read: the
- * folder's interfaces/ is never shown (Interfaces C6a). */
+ * folder's QorperaOS/interfaces/ is never shown (Interfaces C6a). Every folder they read is under QorperaOS/. */
 
 /** The sources read from the company folder's own files. */
 const FOLDER_SOURCES: ReadonlySet<string> = new Set([
@@ -134,8 +135,9 @@ interface Walk {
 }
 
 /** The folders `names` list and the files they read, as far as what has been listed shows: an agent's folder is
- * listed once `agents/` lists it, and its `todos/` once the agent's folder lists that. A file is read for its kind,
- * by its path (`companyStatePath`), so a hook's or a mailbox's file under `connections/` is never read. */
+ * listed once `QorperaOS/agents/` lists it, and its `todos/` once the agent's folder lists that. A file is read for its
+ * kind, by its path (`companyStatePath`), so a hook's or a mailbox's file under `QorperaOS/connections/` is never
+ * read. */
 function walk(names: ReadonlySet<string>, view: FolderView): Walk {
 	const folders = new Map<string, string>();
 	const takes = new Map<string, { entry: CloudMemberFolderEntry; kind: Kind }>();
@@ -156,10 +158,10 @@ function walk(names: ReadonlySet<string>, view: FolderView): Walk {
 		const key = companyPathKey(`${folder}/${name}`);
 		return entries.find((entry) => entry.kind === "folder" && companyPathKey(entry.path) === key)?.path;
 	};
-	if (names.has("vision")) take(list("vision", ["vision"]), "vision");
+	if (names.has("vision")) take(list(osPath("vision"), ["vision"]), "vision");
 	const owners = ["agents", "todos", "routines"].filter((name) => names.has(name));
 	if (owners.length > 0) {
-		const top = list("agents", owners);
+		const top = list(osPath("agents"), owners);
 		if (names.has("agents")) take(top, "sections");
 		for (const folder of top) {
 			if (folder.kind !== "folder" || companyStatePath(`${folder.path}/agent.md`)?.kind !== "agent") continue;
@@ -175,14 +177,14 @@ function walk(names: ReadonlySet<string>, view: FolderView): Walk {
 		}
 	}
 	if (names.has("groups"))
-		for (const folder of list("agents/groups", ["groups"]))
+		for (const folder of list(osPath("agents/groups"), ["groups"]))
 			if (folder.kind === "folder" && companyStatePath(`${folder.path}/group.md`)?.kind === "group")
 				take(list(folder.path, ["groups"]), "group");
-	if (names.has("connections")) take(list("connections", ["connections"]), "connection");
+	if (names.has("connections")) take(list(osPath("connections"), ["connections"]), "connection");
 	// A human task names its contact by id: its rows show the contact's name.
 	if (names.has("contacts") || names.has("human_tasks"))
-		take(list("contacts", ["contacts", "human_tasks"]), "contact");
-	if (names.has("human_tasks")) take(list("human-tasks", ["human_tasks"]), "human-task");
+		take(list(osPath("contacts"), ["contacts", "human_tasks"]), "contact");
+	if (names.has("human_tasks")) take(list(osPath("human-tasks"), ["human_tasks"]), "human-task");
 	return { folders: [...folders.values()], takes: [...takes.values()], unlisted };
 }
 
@@ -245,7 +247,7 @@ export function folderSourceState(names: ReadonlySet<string>, view: FolderView):
 			source: { path: entry.path, file: parsed.file, text: read.text, updatedAt: entry.updatedAt, agent: null },
 		});
 	}
-	/** The agent whose folder holds a todo or a routine: `agents/<handle>/todos/<t>.md`. */
+	/** The agent whose folder holds a todo or a routine: `QorperaOS/agents/<handle>/todos/<t>.md`. */
 	const ownerOf = (path: string) => owners.get(companyPathKey(parentOf(parentOf(path)))) ?? null;
 	const state = new Map<string, FolderSource>();
 	// A human task's rows name its contact, so `human_tasks` reads `contacts` too.

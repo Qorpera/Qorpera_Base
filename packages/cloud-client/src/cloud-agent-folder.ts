@@ -1,10 +1,12 @@
-/** An agent's folder in the company folder (contract 5.6): `agents/<agent-name>/`, holding its
+/** An agent's folder in the company folder (contract 5.6): `QorperaOS/agents/<agent-name>/`, holding its
  * `agent.md`, memory, skills, routines and todos. Every caller that needs an agent's folder asks
  * here (the runtime's memory and skill tools), so they agree on it.
  *
  * Every company is a folder-v2 company (the storage core's, workstream F2): it keeps an agent's
- * folder at `agents/<handle>/`, beside its `agent.md`, and a rename moves the folder with the agent.
+ * folder at `QorperaOS/agents/<handle>/`, beside its `agent.md`, and a rename moves the folder with the agent.
  * The run's context gives the handle. Browser-safe. */
+import { osPath, osRelative } from "./company-state-shared.ts";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A folder name the company folder accepts (lowercase words joined by single hyphens, at most 64
  * characters); `groups` holds the group chats. */
@@ -17,11 +19,12 @@ export function cloudAgentFolder(companyId: string, staffAgentId: string, place:
 	if (!UUID.test(companyId) || !UUID.test(staffAgentId)) throw new Error("Invalid agent folder owner");
 	if (place.core !== "folder-v2" || !HANDLE.test(place.handle) || place.handle === "groups")
 		throw new Error("Invalid agent folder name");
-	return `agents/${place.handle}`;
+	return osPath(`agents/${place.handle}`);
 }
 
 /** Whether a path is an agent's folder as cloudAgentFolder gives it. */
 export function isCloudAgentFolder(path: string): boolean {
-	const name = path.startsWith("agents/") ? path.slice("agents/".length) : "";
+	const below = osRelative(path) ?? "";
+	const name = below.startsWith("agents/") ? below.slice("agents/".length) : "";
 	return HANDLE.test(name) && name !== "groups";
 }

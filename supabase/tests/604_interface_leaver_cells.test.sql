@@ -25,8 +25,9 @@ $$;
 -- A stored cell, as the rows type it (null when empty).
 create function pg_temp.c6d_cell(p_folder text, p_key text, p_column text) returns text language sql as $$
 	select r.value -> 'values' ->> p_column from jsonb_array_elements(public.qorpera_interface_rows(
-		public.qorpera_interface_stored('63400000-0000-4000-8000-000000000020', p_folder || '/table.toml'),
-		public.qorpera_interface_stored('63400000-0000-4000-8000-000000000020', p_folder || '/rows.csv')) -> 'rows') r
+		public.qorpera_interface_stored('63400000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_folder || '/table.toml')),
+		public.qorpera_interface_stored('63400000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_folder || '/rows.csv')))
+		-> 'rows') r
 	where r.value -> 'key' = jsonb_build_array(p_key)
 $$;
 -- A member's consents' states, and who an area's live consent is.
@@ -60,14 +61,14 @@ end $$;
 do $$
 declare o jsonb := pg_temp.member(1); c_m constant text := pg_temp.c6d_id(2);
 begin
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-setup-0001', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-setup-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_areas(2, 2)), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(o, 'c6d-setup-0002', jsonb_build_array(pg_temp.p16_folder(o, 'tables/claims',
+	perform pg_temp.expect(pg_temp.commit(o, 'c6d-setup-0002', jsonb_build_array(pg_temp.p16_folder(o, 'QorperaOS/tables/claims',
 		jsonb_build_object('table.toml', pg_temp.claims('60400000-0000-4000-8000-000000000001'),
 			'rows.csv', pg_temp.c6d_claims(array[0,0,0,0]))))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-setup-0003', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-setup-0003', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,0,0,2])), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-setup-0004', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-setup-0004', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,0,4,2])), 1, 'saved');
 	if pg_temp.c6d_live('Ops') is distinct from c_m then raise exception 'Ops has no consent of member 2''s'; end if;
 
@@ -77,8 +78,8 @@ begin
 	perform pg_temp.path_claims('service_role');
 	if exists (select 1 from public.qorpera_profile_members where profile_id = '63400000-0000-4000-8000-000000000010'
 		and user_id = c_m::uuid) then raise exception 'Member 2 is still a member'; end if;
-	if pg_temp.c6d_cell('tables/areas', 'Sales', 'owner') is distinct from c_m or pg_temp.c6d_cell('tables/areas', 'Ops', 'supervisor') is distinct from c_m
-		or pg_temp.c6d_cell('tables/claims', 't1', 'owner') is distinct from c_m or pg_temp.c6d_cell('tables/claims', 't4', 'owner') is distinct from c_m then
+	if pg_temp.c6d_cell('QorperaOS/tables/areas', 'Sales', 'owner') is distinct from c_m or pg_temp.c6d_cell('QorperaOS/tables/areas', 'Ops', 'supervisor') is distinct from c_m
+		or pg_temp.c6d_cell('QorperaOS/tables/claims', 't1', 'owner') is distinct from c_m or pg_temp.c6d_cell('QorperaOS/tables/claims', 't4', 'owner') is distinct from c_m then
 		raise exception 'Leaving changed a cell: %', public.qorpera_interface_area_rows('63400000-0000-4000-8000-000000000020'); end if;
 	if pg_temp.c6d_consents(2) is distinct from 'left' or pg_temp.c6d_live('Ops') is not null then
 		raise exception 'Member 2''s consent: %', pg_temp.c6d_consents(2); end if;
@@ -87,9 +88,9 @@ end $$;
 -- 2. Member 4 takes the leaver's Sales owner, as an empty cell.
 do $$
 begin
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-take-0001', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-take-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_areas(4, 2)), 1, 'saved');
-	if pg_temp.c6d_cell('tables/areas', 'Sales', 'owner') is distinct from pg_temp.c6d_id(4) then raise exception 'Member 4''s take'; end if;
+	if pg_temp.c6d_cell('QorperaOS/tables/areas', 'Sales', 'owner') is distinct from pg_temp.c6d_id(4) then raise exception 'Member 4''s take'; end if;
 end $$;
 
 -- 3. Member 4 offers the leaver's Ops supervisor to member 5, who accepts it by their save: the offer is accepted, and
@@ -101,7 +102,7 @@ begin
 		or r -> 'offer' ->> 'from' is distinct from pg_temp.c6d_id(4) or r -> 'offer' ->> 'was' is distinct from pg_temp.c6d_id(2)
 		or r -> 'offer' ->> 'to' is distinct from pg_temp.c6d_id(5) then
 		raise exception 'An offer of a leaver''s cell: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(5), 'c6d-offer-0001', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(5), 'c6d-offer-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_areas(4, 5)), 1, 'saved');
 	if (select o.state from public.qorpera_interface_offers o where o.id = (r -> 'offer' ->> 'id')::uuid) is distinct from 'accepted' then
 		raise exception 'The offer after member 5''s save: %', (select to_jsonb(o) from public.qorpera_interface_offers o
@@ -113,20 +114,20 @@ end $$;
 -- 4. Nobody clears a leaver's cell (release is the holder's own), and nobody puts another member in it.
 do $$
 begin
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-clear-0001', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-clear-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[0,0,4,2])), 'nobody assigns anybody: you take an empty owner or release your own');
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-clear-0002', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-clear-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[5,0,4,2])), 'nobody assigns anybody: you take an empty owner or release your own');
-	if pg_temp.c6d_cell('tables/claims', 't1', 'owner') is distinct from pg_temp.c6d_id(2) then raise exception 'A refused save changed t1'; end if;
+	if pg_temp.c6d_cell('QorperaOS/tables/claims', 't1', 'owner') is distinct from pg_temp.c6d_id(2) then raise exception 'A refused save changed t1'; end if;
 end $$;
 
 -- 5. A current member's cell stays theirs: member 5 neither takes member 4's Sales owner nor offers it.
 do $$
 declare r jsonb;
 begin
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-held-0001', 'tables/areas/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-held-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_areas(5, 5)), 'nobody assigns anybody: you take an empty owner or release your own');
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-held-0002', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-held-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,0,5,2])), 'nobody assigns anybody: you take an empty owner or release your own');
 	r := pg_temp.c6d_offer(5, '86400000-0000-4000-8000-000000000012', 'Sales', 'owner', 4, 1);
 	if r ->> 'ok' is distinct from 'false' or r ->> 'reason' is distinct from 'not_yours' then
@@ -138,11 +139,11 @@ end $$;
 do $$
 declare g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a2', '63400000-0000-4000-8000-000000000001');
 begin
-	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'c6d-agent-0001', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'c6d-agent-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,5,4,2])), 1, 'saved');
-	perform pg_temp.c6d_refused(pg_temp.save_rows(g -> 'actor', 'c6d-agent-0002', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(g -> 'actor', 'c6d-agent-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[5,5,4,2])), 'nobody assigns anybody: you take an empty owner or release your own');
-	if pg_temp.c6d_cell('tables/claims', 't1', 'owner') is distinct from pg_temp.c6d_id(2) then raise exception 'The agent changed t1'; end if;
+	if pg_temp.c6d_cell('QorperaOS/tables/claims', 't1', 'owner') is distinct from pg_temp.c6d_id(2) then raise exception 'The agent changed t1'; end if;
 end $$;
 
 -- 7. Companies stay apart. Member 4 joins 647's other company and leaves it: their t3 stays closed to member 5. Member
@@ -153,9 +154,9 @@ begin
 		('64700000-0000-4000-8000-000000000011', pg_temp.c6d_id(4)::uuid, 'authority-other@example.test', 'Other', 'contributor'),
 		('64700000-0000-4000-8000-000000000011', pg_temp.c6d_id(2)::uuid, 'authority-member@example.test', 'Member', 'contributor');
 	delete from public.qorpera_profile_members where profile_id = '64700000-0000-4000-8000-000000000011' and user_id = pg_temp.c6d_id(4)::uuid;
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-apart-0001', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-apart-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,5,5,2])), 'nobody assigns anybody: you take an empty owner or release your own');
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(1), 'c6d-apart-0002', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(1), 'c6d-apart-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[2,5,4,1])), 1, 'saved');
 end $$;
 
@@ -165,12 +166,12 @@ insert into public.qorpera_profile_members(profile_id, user_id, email, display_n
 do $$
 declare r jsonb;
 begin
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-back-0001', 'tables/claims/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(4), 'c6d-back-0001', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[4,5,4,1])), 'nobody assigns anybody: you take an empty owner or release your own');
 	r := pg_temp.c6d_offer(4, '60400000-0000-4000-8000-000000000001', 't1', 'owner', 2, 5);
 	if r ->> 'ok' is distinct from 'false' or r ->> 'reason' is distinct from 'not_yours' then
 		raise exception 'An offer of a rejoined member''s cell: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-back-0002', 'tables/claims/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(2), 'c6d-back-0002', 'QorperaOS/tables/claims/rows.csv',
 		pg_temp.c6d_claims(array[0,5,4,1])), 1, 'saved');
 end $$;
 
@@ -188,16 +189,16 @@ do $$
 declare c_b constant text := '63400000-0000-4000-8000-0000000000a2'; c_m constant text := pg_temp.c6d_id(4);
 	r jsonb; v_offer uuid;
 begin
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0001', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0001', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_desk(4, 0, c_b, '')), 1, 'saved');
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0002', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0002', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_desk(4, 4, c_b, '')), 1, 'saved');
 	if pg_temp.c6d_live('Desk') is distinct from c_m then raise exception 'Desk has no consent of member 4''s'; end if;
-	r := pg_temp.save_rows(pg_temp.member(1), 'c6d-walk-0003', 'tables/areas/rows.csv', pg_temp.c6d_desk(4, 4, '', c_b));
+	r := pg_temp.save_rows(pg_temp.member(1), 'c6d-walk-0003', 'QorperaOS/tables/areas/rows.csv', pg_temp.c6d_desk(4, 4, '', c_b));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'areas');
 	if pg_temp.problem(r, 1) is distinct from 'only the area''s supervisor adds its agents; offer the agent to them' then
 		raise exception 'Member 1 adding an agent to Desk: %', r; end if;
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0004', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'c6d-walk-0004', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_desk(4, 4, '', c_b)), 1, 'saved');
 	perform pg_temp.path_claims('authenticated', pg_temp.c6d_id(1)::uuid);
 	r := public.qorpera_offer_interface_agent('63400000-0000-4000-8000-000000000020', jsonb_build_object(
@@ -216,14 +217,14 @@ begin
 	if (select o.state from public.qorpera_interface_offers o where o.id = v_offer) is distinct from 'lapsed' then
 		raise exception 'The offer after member 4 left: %', (select to_jsonb(o) from public.qorpera_interface_offers o
 			where o.id = v_offer); end if;
-	if pg_temp.c6d_cell('tables/areas', 'Desk', 'owner') is distinct from c_m
-		or pg_temp.c6d_cell('tables/areas', 'Desk', 'supervisor') is distinct from c_m
-		or pg_temp.c6d_cell('tables/areas', 'Desk', 'agents')::jsonb is distinct from jsonb_build_array(c_b) then
+	if pg_temp.c6d_cell('QorperaOS/tables/areas', 'Desk', 'owner') is distinct from c_m
+		or pg_temp.c6d_cell('QorperaOS/tables/areas', 'Desk', 'supervisor') is distinct from c_m
+		or pg_temp.c6d_cell('QorperaOS/tables/areas', 'Desk', 'agents')::jsonb is distinct from jsonb_build_array(c_b) then
 		raise exception 'Leaving changed Desk: %', public.qorpera_interface_area_rows('63400000-0000-4000-8000-000000000020'); end if;
 
-	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(1), 'c6d-walk-0005', 'tables/areas/rows.csv',
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(1), 'c6d-walk-0005', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_desk(1, 1, '', c_b)), 1, 'saved');
 	if pg_temp.c6d_live('Desk') is distinct from pg_temp.c6d_id(1) then raise exception 'Member 1''s take of Desk''s supervisor'; end if;
-	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-walk-0006', 'tables/areas/rows.csv',
+	perform pg_temp.c6d_refused(pg_temp.save_rows(pg_temp.member(5), 'c6d-walk-0006', 'QorperaOS/tables/areas/rows.csv',
 		pg_temp.c6d_desk(5, 1, '', c_b)), 'nobody assigns anybody: you take an empty owner or release your own');
 end $$;

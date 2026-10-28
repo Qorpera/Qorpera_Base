@@ -2,6 +2,7 @@ import {
 	COMPANY_STATE_RESERVED_AGENT_NAMES,
 	type CompanyStateSetting,
 	companyStatePath,
+	osPath,
 	setCompanyStateSettings,
 	writeAgentFile,
 } from "@qorpera/cloud-client/company-state-files";
@@ -34,8 +35,8 @@ export interface WebCompanyAgentCreation extends WebCompanyAgentDraft {
 	createdAt: string;
 }
 
-/** An agent is a folder of the company, `agents/<handle>`, described by its `agent.md` (folder core C4, P34a-2;
- * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5). Creating, changing or deleting one is a member's
+/** An agent is a folder of the company, `QorperaOS/agents/<handle>`, described by its `agent.md` (folder core C4,
+ * P34a-2; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5). Creating, changing or deleting one is a member's
  * change to the folder; the commit's hook keeps the roster, and the browser never writes the roster itself. */
 export interface WebCompanyAgents {
 	create(draft: WebCompanyAgentCreation, signal: AbortSignal): Promise<string>;
@@ -80,7 +81,7 @@ function agentText(draft: WebCompanyAgentCreation, native?: NativeShade): string
  * colour. */
 export function prepareWebCompanyAgentCreation<T extends WebCompanyAgentDraft>(draft: T): T & WebCompanyAgentCreation {
 	const creation = { ...draft, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-	const parsed = parseStateFile("agents/agent/agent.md", agentText(creation));
+	const parsed = parseStateFile(osPath("agents/agent/agent.md"), agentText(creation));
 	if (!parsed.ok) throw new Error(withProblems("The agent cannot be saved as the company's files.", parsed.problems));
 	return creation;
 }
@@ -135,7 +136,7 @@ export function createWebCompanyAgents(
 			await createStateFolder(
 				folder,
 				{
-					parent: "agents",
+					parent: osPath("agents"),
 					name: draft.displayName,
 					fallback: "agent",
 					reserved: COMPANY_STATE_RESERVED_AGENT_NAMES,

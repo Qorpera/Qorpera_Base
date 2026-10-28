@@ -1856,7 +1856,7 @@ describe("human task wakes (H2c)", () => {
 					commitId,
 					dueAt: reason === "overdue" ? "2100-01-01T00:00:00.000000Z" : null,
 					task: {
-						path: "human-tasks/sign-the-lease.md",
+						path: "QorperaOS/human-tasks/sign-the-lease.md",
 						title: "Sign the lease",
 						status: ["done", "declined", "accepted", "returned", "cancelled"].includes(reason) ? reason : "open",
 						due: "2100-01-01T00:00:00.000000Z",
@@ -1912,10 +1912,20 @@ describe("human task wakes (H2c)", () => {
 			(wake) => ({ ...wake, payload: { ...wake.payload, dueAt: "2100-01-01T00:00:00.000000Z" } }),
 		],
 		[
-			"a task outside human-tasks/",
+			"a task outside QorperaOS/human-tasks/",
 			(wake) => ({
 				...wake,
 				payload: { ...wake.payload, task: { ...(wake.payload.task as object), path: "docs/x.md" } },
+			}),
+		],
+		[
+			"a task in a human-tasks/ folder at the top",
+			(wake) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					task: { ...(wake.payload.task as object), path: "human-tasks/sign-the-lease.md" },
+				},
 			}),
 		],
 		[

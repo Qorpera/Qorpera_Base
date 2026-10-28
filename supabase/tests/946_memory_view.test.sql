@@ -59,7 +59,7 @@ begin
 		'lastSequence', null), 'Otto''s view');
 	perform pg_temp.same(pg_temp.view('otto') -> 'tree', public.qorpera_memory_tree_read(env, pg_temp.thread('otto')), 'Otto''s tree');
 	perform pg_temp.same(jsonb_build_array(pg_temp.view('otto') #> '{tree,root}', jsonb_array_length(pg_temp.view('otto') #> '{tree,lines}')),
-		'["agents/otto/memory/thread", 1]', 'Otto''s tree has its line');
+		'["QorperaOS/agents/otto/memory/thread", 1]', 'Otto''s tree has its line');
 end $$;
 
 -- 2. T: the included events before the inputs that woke the run; with none of them in the transcript, those up to the

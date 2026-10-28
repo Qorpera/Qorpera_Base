@@ -89,18 +89,18 @@ returns jsonb language sql as $$
 $$;
 -- A new agent folder with its agent.md, as one unit.
 create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text default 'agent') returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/' || p_handle,
 		'contents', jsonb_build_array(
 			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_name, p_kind))),
 			jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
-		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
 create function pg_temp.vision(p_name text) returns jsonb language sql as $$
-	select pg_temp.write('vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
+	select pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# ' || p_name || E'\n\n## What we build\n',
 		jsonb_build_object('kind','vision','name',p_name),
 		(select version from public.qorpera_folder_entries where environment_id = '70200000-0000-4000-8000-000000000020'
-			and key_text = 'vision/vision.md'))
+			and key_text = 'qorperaos/vision/vision.md'))
 $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 begin
@@ -119,7 +119,7 @@ begin
 	return v;
 end $$;
 create function pg_temp.version(p_key text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '70200000-0000-4000-8000-000000000020' and key_text = p_key
+	select version from public.qorpera_folder_entries where environment_id = '70200000-0000-4000-8000-000000000020' and key_text = public.qorpera_folder_key(p_key)
 $$;
 create function pg_temp.seq() returns bigint language sql as $$
 	select last_seq from public.qorpera_folder_clocks where environment_id = '70200000-0000-4000-8000-000000000020'
@@ -142,19 +142,19 @@ returns jsonb language sql as $$
 $$;
 -- A new group chat folder with its group.md, as one unit.
 create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
-	select jsonb_build_object('op','new_folder','path','agents/groups/' || p_handle,
+	select jsonb_build_object('op','new_folder','path','QorperaOS/agents/groups/' || p_handle,
 		'contents', jsonb_build_array(jsonb_build_object('path','group.md','kind','file',
 			'file',pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
-		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+		'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group',
 			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
 $$;
 -- An edit of a group.md, with its parse given.
 create function pg_temp.edit_group(p_handle text, p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
-		pg_temp.version('agents/groups/' || p_handle || '/group.md'))
+	select pg_temp.write('QorperaOS/agents/groups/' || p_handle || '/group.md', 'group', 'group ' || p_parse::text, p_parse,
+		pg_temp.version('QorperaOS/agents/groups/' || p_handle || '/group.md'))
 $$;
 create function pg_temp.sections(p_parse jsonb) returns jsonb language sql as $$
-	select pg_temp.write('agents/sections.md', 'sections', 'sections ' || p_parse::text, p_parse, pg_temp.version('agents/sections.md'))
+	select pg_temp.write('QorperaOS/agents/sections.md', 'sections', 'sections ' || p_parse::text, p_parse, pg_temp.version('QorperaOS/agents/sections.md'))
 $$;
 create function pg_temp.room(p_id uuid) returns public.qorpera_company_rooms language sql as $$
 	select * from public.qorpera_company_rooms where id = p_id
@@ -173,12 +173,12 @@ do $$
 declare r jsonb; i integer;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Groups'),
-		jsonb_build_object('op','mkdir','path','agents'),
-		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		jsonb_build_object('op','mkdir','path','QorperaOS'), jsonb_build_object('op','mkdir','path','QorperaOS/vision'), pg_temp.vision('Nordlys Groups'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+		pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
 		pg_temp.hire('co-founder', '70200000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-		jsonb_build_object('op','mkdir','path','agents/groups')));
-	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/groups')));
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(
 		pg_temp.hire('nora', '70200000-0000-4000-8000-0000000000a1', 'Nora'), pg_temp.hire('otto', '70200000-0000-4000-8000-0000000000a2', 'Otto'), pg_temp.hire('vera', '70200000-0000-4000-8000-0000000000a3', 'Vera')));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
@@ -193,7 +193,7 @@ begin
 		pg_temp.new_group('launch', '70200000-0000-4000-8000-0000000000b1', 'Launch', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000001']::uuid[])));
 	perform pg_temp.expect(r, 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.folder_path is distinct from 'agents/groups/launch/group.md' or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch/group.md')
+	if g.folder_path is distinct from 'QorperaOS/agents/groups/launch/group.md' or g.folder_path_version is distinct from pg_temp.version('QorperaOS/agents/groups/launch/group.md')
 		or g.room_key is distinct from 'chat-70200000-0000-4000-8000-0000000000b1' or g.name is distinct from 'Launch' or g.subtitle is not null or g.purpose is distinct from 'Plan the launch.'
 		or g.status is distinct from 'active' or g.version is distinct from 1 or g.bound_staff_agent_id is not null or g.source_snapshot_id is not null
 		or g.created_by_user_id is distinct from '70200000-0000-4000-8000-000000000001' then
@@ -205,7 +205,7 @@ begin
 	if pg_temp.members('70200000-0000-4000-8000-0000000000b1') is distinct from 'member:01,staff_agent:a1,staff_agent:a2' then
 		raise exception 'Members follow the lists: %', pg_temp.members('70200000-0000-4000-8000-0000000000b1'); end if;
 	if public.qorpera_folder_structured_review_class('70200000-0000-4000-8000-000000000020', pg_temp.owner(), pg_temp.new_group('other', '70200000-0000-4000-8000-0000000000b2', 'Other',
-		array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null), 'agents/groups/other', null) is distinct from 'delegation' then
+		array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null), 'QorperaOS/agents/groups/other', null) is distinct from 'delegation' then
 		raise exception 'A new group.md is delegation for an in-house run'; end if;
 end $$;
 
@@ -218,7 +218,7 @@ begin
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], ''))));
 	perform pg_temp.expect(r, 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.name is distinct from 'Launch team' or g.subtitle is distinct from '' or g.version is distinct from 2 or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch/group.md') then
+	if g.name is distinct from 'Launch team' or g.subtitle is distinct from '' or g.version is distinct from 2 or g.folder_path_version is distinct from pg_temp.version('QorperaOS/agents/groups/launch/group.md') then
 		raise exception 'An edit reaches the room: %', to_jsonb(g); end if;
 	if (select title from public.qorpera_shared_sessions where id = g.session_id) is distinct from 'Launch team' then
 		raise exception 'The conversation takes the new name'; end if;
@@ -259,9 +259,9 @@ begin
 	if pg_temp.rule(r, 1) is distinct from 'structured_invalid' then raise exception 'One agent is not a group chat: %', r; end if;
 	-- group.md never goes alone, and the folder never leaves agents/groups/.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-rule-07', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/groups/launch/group.md','expectedVersion',pg_temp.version('agents/groups/launch/group.md')))), 1, 'refused', 'lone_structured_file');
+		'path','QorperaOS/agents/groups/launch/group.md','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch/group.md')))), 1, 'refused', 'lone_structured_file');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-rule-08', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/groups/launch','to','launch','expectedVersion',pg_temp.version('agents/groups/launch'),'asOfSeq',pg_temp.seq()))),
+		'from','QorperaOS/agents/groups/launch','to','launch','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch'),'asOfSeq',pg_temp.seq()))),
 		1, 'refused', 'kind_change');
 end $$;
 
@@ -271,12 +271,12 @@ do $$
 declare run jsonb := jsonb_build_object('kind','staff_agent','staffAgentId','70200000-0000-4000-8000-0000000000a1','requesterUserId','70200000-0000-4000-8000-000000000002');
 	base jsonb := pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], '');
 begin
-	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'agents/groups/launch/group.md',
+	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'qorperaos/agents/groups/launch/group.md',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002','70200000-0000-4000-8000-000000000001']::uuid[], '')) is null then
 		raise exception 'A run cannot add another member'; end if;
-	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'agents/groups/launch/group.md', base) is not null then
+	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'qorperaos/agents/groups/launch/group.md', base) is not null then
 		raise exception 'A run keeps the members already listed'; end if;
-	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'agents/groups/new/group.md',
+	if public.qorpera_company_state_group_rules('70200000-0000-4000-8000-000000000020', '70200000-0000-4000-8000-000000000010', run, 'qorperaos/agents/groups/new/group.md',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b2', 'New', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[])) is not null then
 		raise exception 'A run adds the member it works for'; end if;
 end $$;
@@ -288,25 +288,25 @@ declare r jsonb; g public.qorpera_company_rooms; t jsonb;
 begin
 	-- Moving a chat's folder takes the company row and its room, as deleting does.
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020',
-		pg_temp.owner(), jsonb_build_array(jsonb_build_object('op','move','from','agents/groups/launch','to','agents/groups/launch-team'))) x;
+		pg_temp.owner(), jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/agents/groups/launch','to','QorperaOS/agents/groups/launch-team'))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', '70200000-0000-4000-8000-0000000000b1', 'mode', 'nokeyupdate'))
 		or not t @> '[{"rank":0,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
 		raise exception 'Moving a chat locks the company row and its room: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-move-01', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/groups/launch','to','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch'),
+		'from','QorperaOS/agents/groups/launch','to','QorperaOS/agents/groups/launch-team','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.folder_path is distinct from 'agents/groups/launch-team/group.md' or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch-team/group.md')
+	if g.folder_path is distinct from 'QorperaOS/agents/groups/launch-team/group.md' or g.folder_path_version is distinct from pg_temp.version('QorperaOS/agents/groups/launch-team/group.md')
 		or g.status is distinct from 'active' then
 		raise exception 'A chat follows its folder: %', to_jsonb(g); end if;
 	-- Deleting the folder closes the chat and its conversation; its lock target is the room.
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
-		jsonb_build_object('op','delete','path','agents/groups/launch-team'))) x;
+		jsonb_build_object('op','delete','path','QorperaOS/agents/groups/launch-team'))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', '70200000-0000-4000-8000-0000000000b1', 'mode', 'nokeyupdate'))
 		or not t @> '[{"rank":0,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
 		raise exception 'Deleting a chat locks the company row and its room: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-delete-01', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+		'path','QorperaOS/agents/groups/launch-team','expectedVersion',pg_temp.version('QorperaOS/agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
 	if g.status is distinct from 'archived' or g.folder_retired_at is null
 		or (select status from public.qorpera_shared_sessions where id = g.session_id) is distinct from 'closed' then
@@ -363,7 +363,7 @@ begin
 	if pg_temp.rule(r, 1) is distinct from 'structured_invalid' then raise exception 'Section names are unique ignoring case: %', r; end if;
 	-- An id already listed never blocks a save when its agent is gone: it keeps its place, which the sidebar hides.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'sections-0006', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','agents/vera','expectedVersion',pg_temp.version('agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+		'path','QorperaOS/agents/vera','expectedVersion',pg_temp.version('QorperaOS/agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'sections-0007', jsonb_build_array(pg_temp.sections(jsonb_build_object('kind','sections','sections',
 		jsonb_build_array(jsonb_build_object('name','Ops','line',3,'members',jsonb_build_array(jsonb_build_object('id','70200000-0000-4000-8000-0000000000a3','line',4),
 			jsonb_build_object('id','70200000-0000-4000-8000-0000000000a1','line',5))))))));
@@ -441,8 +441,8 @@ begin
 		1, 'saved');
 	select id into ops from public.qorpera_company_sidebar_sections where profile_id = '70200000-0000-4000-8000-000000000010' and lower(name) = 'ops';
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0003', jsonb_build_array(
-		jsonb_build_object('op','delete','path','agents/groups/crew','expectedVersion',pg_temp.version('agents/groups/crew'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','delete','path','agents/otto','expectedVersion',pg_temp.version('agents/otto'),'asOfSeq',pg_temp.seq()))), 2, 'saved');
+		jsonb_build_object('op','delete','path','QorperaOS/agents/groups/crew','expectedVersion',pg_temp.version('QorperaOS/agents/groups/crew'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/otto','expectedVersion',pg_temp.version('QorperaOS/agents/otto'),'asOfSeq',pg_temp.seq()))), 2, 'saved');
 	-- sections.md saved again while they are away: their places stay (the sidebar hides them).
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0004', jsonb_build_array(pg_temp.sections(jsonb_build_object(
 		'kind','sections','sections',jsonb_build_array(jsonb_build_object('name','Ops','line',3,'members',jsonb_build_array(
@@ -455,9 +455,9 @@ begin
 	-- members stay as written.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0005', jsonb_build_array(
 		pg_temp.hire('otto', '70200000-0000-4000-8000-0000000000a2', 'Otto'))), 1, 'saved');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0006', jsonb_build_array(pg_temp.write('agents/otto/agent.md', 'agent',
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0006', jsonb_build_array(pg_temp.write('QorperaOS/agents/otto/agent.md', 'agent',
 		pg_temp.agent_text('70200000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'), pg_temp.agent_parse('70200000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'),
-		pg_temp.version('agents/otto/agent.md')))), 1, 'saved');
+		pg_temp.version('QorperaOS/agents/otto/agent.md')))), 1, 'saved');
 	delete from public.qorpera_profile_members where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000002';
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0007', jsonb_build_array(
 		pg_temp.new_group('crew', '70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[]))), 1, 'saved');

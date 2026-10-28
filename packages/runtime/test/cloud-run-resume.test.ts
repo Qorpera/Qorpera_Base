@@ -67,7 +67,7 @@ function fixture() {
 		nativeHarness: "codex-cli",
 		model: "model",
 	};
-	const root = `agents/researcher/memory/thread/runs/${binding.runId}`;
+	const root = `qorperaos/agents/researcher/memory/thread/runs/${binding.runId}`;
 	const place: { -readonly [K in keyof CloudRunLogPlace]: CloudRunLogPlace[K] } = {
 		path: root,
 		exists: true,

@@ -6,17 +6,17 @@ import type {
 	CloudMemberFolderUnit,
 	CloudMemberFolderUnitResult,
 } from "@qorpera/cloud-client/cloud-member-folder";
-import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { array, boundedInteger, CloudShapeError, oneOf, record, uuid } from "./parse.ts";
 
 /*
  * An agent's change to the company's pages and tables, and its Undo (Interfaces I10; deploy/first-node/
  * RUNTIME-INTERFACES.md §7 and §9 decision 2). A change that needs no review is saved at once, whatever tool or machine
  * carried it, and the runtime notes it in the agent's conversation: a session_info event naming the commit and each
- * path version it made under interfaces/ and tables/ (a table's rows are its data, never in a note), with the version
- * before it. Undo is the member's own change set, through the member commit route (C4), based on those versions: a
- * path the commit made is deleted, a file it rewrote gets its earlier text back. When anything the commit made changed
- * since, nothing is undone; the member sees why.
+ * path version it made under QorperaOS/interfaces/ and QorperaOS/tables/ (a table's rows are its data, never in a
+ * note), with the version before it. Undo is the member's own change set, through the member commit route (C4), based
+ * on those versions: a path the commit made is deleted, a file it rewrote gets its earlier text back. When anything the
+ * commit made changed since, nothing is undone; the member sees why.
  */
 
 export const INTERFACE_CHANGE_SCHEMA = "qorpera.interface-change/v1";
@@ -59,11 +59,12 @@ const KINDS = ["file", "folder"] as const;
 const MAX_UNITS = 16;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_TEXT_BYTES = 512 * 1024;
-/** A path under interfaces/ or tables/, by its key: the folder's paths are one path in any case. */
+/** A path under QorperaOS/interfaces/ or QorperaOS/tables/, by its key below QorperaOS/: the folder's paths are one
+ * path in any case. */
 const UNDER = /^(?:interfaces|tables)\/[^/]+(?:\/[^/]+)*$/;
 
-/** A note's body as an interface change, or null when it is not a well-formed one: every path is under interfaces/ or
- * tables/, since a note names nothing else. */
+/** A note's body as an interface change, or null when it is not a well-formed one: every path is under
+ * QorperaOS/interfaces/ or QorperaOS/tables/, since a note names nothing else. */
 export function parseInterfaceChange(value: unknown): InterfaceChange | null {
 	try {
 		const body = record(value, "interface change");
@@ -76,7 +77,7 @@ export function parseInterfaceChange(value: unknown): InterfaceChange | null {
 			if (
 				typeof path !== "string" ||
 				path.length > 1024 ||
-				!UNDER.test(companyPathKey(path)) ||
+				!UNDER.test(osRelative(companyPathKey(path)) ?? "") ||
 				path.split("/").some((part) => part === "." || part === "..")
 			)
 				throw new CloudShapeError("interface change path");
@@ -111,7 +112,7 @@ export interface InterfaceChangeSubject {
 }
 
 /** What a change touched, for its line: the interfaces and tables in the note's order, and whether it changed
- * `interfaces/order.md`. A path in an interface's or a table's folder counts as that one's. */
+ * `QorperaOS/interfaces/order.md`. A path in an interface's or a table's folder counts as that one's. */
 export function interfaceChangeSubjects(change: InterfaceChange): {
 	subjects: InterfaceChangeSubject[];
 	order: boolean;
@@ -119,8 +120,11 @@ export function interfaceChangeSubjects(change: InterfaceChange): {
 	const subjects = new Map<string, { -readonly [K in keyof InterfaceChangeSubject]: InterfaceChangeSubject[K] }>();
 	let order = false;
 	for (const { path, op } of change.changes) {
-		const [top, folder, ...rest] = companyPathKey(path).split("/");
-		const name = path.split("/")[1];
+		// Below QorperaOS/, as the note spells it.
+		const below = osRelative(path);
+		if (below === null) continue;
+		const [top, folder, ...rest] = companyPathKey(below).split("/");
+		const name = below.split("/")[1];
 		if (!name || !folder) continue;
 		if (top === "interfaces" && folder === "order.md" && !rest.length) {
 			order = true;

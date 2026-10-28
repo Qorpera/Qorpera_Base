@@ -29,15 +29,15 @@ const VERSION = "8e3f4051-6666-4666-8666-666666666666";
 const hireUnit = {
 	unit: 1,
 	op: "new_folder",
-	path: "agents/mira",
+	path: "QorperaOS/agents/mira",
 	items: 2,
 	contains: [
-		{ path: "agents/mira/agent.md", kind: "file" },
-		{ path: "agents/mira/notes.md", kind: "file" },
+		{ path: "QorperaOS/agents/mira/agent.md", kind: "file" },
+		{ path: "QorperaOS/agents/mira/notes.md", kind: "file" },
 	],
 	structured: [
 		{
-			path: "agents/mira/agent.md",
+			path: "QorperaOS/agents/mira/agent.md",
 			kind: "agent",
 			parse: {
 				kind: "agent",
@@ -194,7 +194,7 @@ it("shows each waiting proposal in the context as its changes, with the paths, a
 				proposalId: HIRE,
 				savedAt: "2026-10-05T10:00:00+00:00",
 				savedFrom: "a computer",
-				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "agents/mira" }],
+				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "QorperaOS/agents/mira" }],
 			},
 			{
 				proposalId: MIXED,
@@ -341,13 +341,13 @@ it("gives the review every change in full, where the card counts the rest and cu
 		changes: [
 			{
 				op: "new_folder",
-				path: "agents/mira",
+				path: "QorperaOS/agents/mira",
 				items: 2,
 				contains: [
-					{ path: "agents/mira/agent.md", kind: "file" },
-					{ path: "agents/mira/notes.md", kind: "file" },
+					{ path: "QorperaOS/agents/mira/agent.md", kind: "file" },
+					{ path: "QorperaOS/agents/mira/notes.md", kind: "file" },
 				],
-				files: [{ path: "agents/mira/agent.md", kind: "agent", parse: agentParse }],
+				files: [{ path: "QorperaOS/agents/mira/agent.md", kind: "agent", parse: agentParse }],
 			},
 			...deletes.map(({ op, path }) => ({ op, path })),
 		],
@@ -357,7 +357,10 @@ it("gives the review every change in full, where the card counts the rest and cu
 it("gives the review each link a parked new folder holds with its target, and a link's own change at its path", async () => {
 	// A view makes links (LK1): one in a new folder is listed with its target; a link's own unit, as a write's, with
 	// its path.
-	const contains = [...hireUnit.contains, { path: "agents/mira/latest", kind: "symlink", target: "notes.md" }];
+	const contains = [
+		...hireUnit.contains,
+		{ path: "QorperaOS/agents/mira/latest", kind: "symlink", target: "notes.md" },
+	];
 	const units = [
 		{ ...hireUnit, items: 3, contains },
 		{ unit: 2, op: "symlink", path: "docs/latest" },
@@ -370,7 +373,7 @@ it("gives the review each link a parked new folder holds with its target, and a 
 		savedFrom: "computer_desktop",
 		createsAgent: true,
 		changes: [
-			{ op: "new_folder", path: "agents/mira", items: 3, contains, files: hireUnit.structured },
+			{ op: "new_folder", path: "QorperaOS/agents/mira", items: 3, contains, files: hireUnit.structured },
 			{ op: "symlink", path: "docs/latest" },
 		],
 	});
@@ -378,7 +381,8 @@ it("gives the review each link a parked new folder holds with its target, and a 
 
 it("records the review of the proposal's units before its receipt, then applies it under that receipt", async () => {
 	const f = await fixture({
-		apply: () => committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "saved", version: VERSION }]),
+		apply: () =>
+			committed([{ unit: 1, op: "new_folder", path: "QorperaOS/agents/mira", outcome: "saved", version: VERSION }]),
 	});
 	const execute = vi.spyOn(CloudNativeToolOperations.prototype, "execute");
 	const result = parse(await f.apply.execute(f.apply.parseArguments({ proposalId: HIRE }), f.context));
@@ -473,18 +477,22 @@ it("says which changes were not applied and why", async () => {
 	expect(result.next).toContain("The changes in notSaved were not applied");
 	const g = await fixture({
 		apply: () =>
-			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "conflict", reason: "exists" }]),
+			committed([
+				{ unit: 1, op: "new_folder", path: "QorperaOS/agents/mira", outcome: "conflict", reason: "exists" },
+			]),
 	});
 	const { answer: none, observed: stale } = await observed(g, HIRE);
 	expect(stale).toEqual(["denied", "stale_version"]);
-	expect(none).toMatchObject({ outcome: "not_applied", saved: 0, notSaved: [{ path: "agents/mira" }] });
+	expect(none).toMatchObject({ outcome: "not_applied", saved: 0, notSaved: [{ path: "QorperaOS/agents/mira" }] });
 	expect(none.hired).toBeUndefined();
 	// The commit is still the receipt's: nothing was saved, and the receipt says so.
 	expect(g.operationControl.completeFolderToolOperation.mock.calls[0]?.[1]).toMatchObject({ folderCommitId: COMMIT });
 	// Decided while the apply waited for it: every change refused for review, and nothing to redo.
 	const h = await fixture({
 		apply: () =>
-			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "denied", reason: "review_required" }]),
+			committed([
+				{ unit: 1, op: "new_folder", path: "QorperaOS/agents/mira", outcome: "denied", reason: "review_required" },
+			]),
 	});
 	const { answer: decided, observed: gone } = await observed(h, HIRE);
 	expect(gone).toEqual(["denied", "invalid_arguments"]);
@@ -576,7 +584,7 @@ it("ends refused, not unconfirmed, when a member discarded the proposal after it
 it("notes an applied change of the company's pages or tables in the run's conversation (I10)", async () => {
 	const TABLE = "5b0c2d3e-8888-4888-8888-888888888888";
 	// What a computer parked for review: a draft moved into a table's folder (in any case, the same path).
-	const move = { unit: 1, op: "move", path: "docs/leads.toml", to: "Tables/leads/table.toml" };
+	const move = { unit: 1, op: "move", path: "docs/leads.toml", to: "QorperaOS/Tables/leads/table.toml" };
 	const tableFixture = () => {
 		// The recorder replays a call's own review; once the proposal is applied, it is open to no other call.
 		let applied = false;
@@ -615,7 +623,8 @@ it("notes an applied change of the company's pages or tables in the run's conver
 	expect(f.notes).toEqual([asked(f), asked(f)]);
 	// A proposal with no page or table in it asks for no note.
 	const g = await fixture({
-		apply: () => committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "saved", version: VERSION }]),
+		apply: () =>
+			committed([{ unit: 1, op: "new_folder", path: "QorperaOS/agents/mira", outcome: "saved", version: VERSION }]),
 	});
 	await g.apply.execute(g.apply.parseArguments({ proposalId: HIRE }), g.context);
 	expect(applies(g)).toHaveLength(1);

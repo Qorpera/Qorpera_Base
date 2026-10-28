@@ -186,7 +186,7 @@ export interface CloudCompanyFolderRunActor {
 }
 
 /** The authority an entry was read under, as a receipt for a release (C1B §C1b-2 3). The grant is null only on
- * `rules/`, which every agent reads by its scope. */
+ * `QorperaOS/rules/`, which every agent reads by its scope. */
 export interface CloudCompanyFolderAuthority {
 	readonly resourceId: string;
 	readonly resourceRevision: number;
@@ -474,7 +474,7 @@ export interface CloudCompanyFolderProposalUnapplied {
 }
 
 /** A worker tool's request, which the folder core's hook checks against exactly the units it names (F2-5b §3): the
- * worker's folder `agents/<agent>/todos/<todo>/<worker>`, and the action's own fields as the files hold them. */
+ * worker's folder `QorperaOS/agents/<agent>/todos/<todo>/<worker>`, and the action's own fields as the files hold them. */
 export type CloudCompanyFolderWorkerRequest =
 	| {
 			readonly action: "dispatch";
@@ -1709,7 +1709,7 @@ export class CloudCompanyFolderClient {
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
 	}
 
-	/** Notes the run's changes under interfaces/ and tables/ in its conversation (I10,
+	/** Notes the run's changes under QorperaOS/interfaces/ and QorperaOS/tables/ in its conversation (I10,
 	 * `qorpera_folder_note_interface_changes`, a run effect): each of the run's commits there that has no note gets one,
 	 * which the web draws with Undo, whatever tool or machine saved it. Answers how many it made: 0 when the run has no
 	 * open conversation, or every such commit has its note. */

@@ -16,7 +16,7 @@ begin
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	for i in 1 .. 4 loop
-		perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'c3d-dispatch-' || i, 'agents/alice/todos/fix-login/session-' || i,
+		perform pg_temp.base_assert(pg_temp.c3_dispatch(v_alice, 'c3d-dispatch-' || i, 'QorperaOS/agents/alice/todos/fix-login/session-' || i,
 			pg_temp.c3_brief(('98200000-0000-4000-8000-0000000000b' || i)::uuid, p_title => v_titles[i]))
 			-> 'units' -> 0 ->> 'outcome' = 'saved', 'dispatch ' || i);
 	end loop;
@@ -109,7 +109,7 @@ end $$;
 
 -- 1. Session 1's report marks it due; a decision waits; the claim and finish take only the gateway, with valid input ----
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-1'; w public.qorpera_runtime_workers%rowtype;
+declare v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1'; w public.qorpera_runtime_workers%rowtype;
 	d public.qorpera_coding_results_files%rowtype; v_result jsonb;
 begin
 	perform pg_temp.cr_turn('98200000-0000-4000-8000-0000000000b1', 'succeeded', 'The login page accepts a pasted code.', null,
@@ -148,7 +148,7 @@ end $$;
 
 -- 2. The claims of session 1: only its current generation's key writes, only as the turn reported; then the decision ----
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_path text := 'agents/alice/todos/fix-login/session-1/results.md';
+declare v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1'; v_path text := 'QorperaOS/agents/alice/todos/fix-login/session-1/results.md';
 	v_writes text := 'the platform writes a coding session''s results as its turn reported them';
 	v_restore text := 'only manage_worker and report_work write a worker''s files';
 	w public.qorpera_runtime_workers%rowtype := pg_temp.c3_worker('98200000-0000-4000-8000-0000000000b1');
@@ -195,7 +195,7 @@ begin
 		v_parse || '{"decision":"accepted"}'), v_writes);
 	v_claim := pg_temp.cr_again(v_claim);
 	perform pg_temp.cr_refused(pg_temp.cr_write('{"kind":"platform"}', v_claim ->> 'operationKey', v_path,
-		v_parse || '{"files":["agents/alice/todos/fix-login/session-1/brief.md"]}'), v_writes);
+		v_parse || '{"files":["QorperaOS/agents/alice/todos/fix-login/session-1/brief.md"]}'), v_writes);
 	v_claim := pg_temp.cr_again(v_claim);
 	-- The key is the platform's: a member under it writes nothing, and keeps the key from the platform's change.
 	perform pg_temp.cr_refused(pg_temp.cr_write(pg_temp.base_owner(), v_claim ->> 'operationKey', v_path,
@@ -251,7 +251,7 @@ begin
 	v_claim := pg_temp.cr_claim();
 	perform pg_temp.base_assert(v_claim ->> 'codingWorkerId' = '98200000-0000-4000-8000-0000000000b2' and v_claim ->> 'outcome' = 'blocked'
 		and v_claim ->> 'needs' = 'Which sign-in provider should the page offer?' and v_claim -> 'options' = '["Google","GitHub"]'
-		and v_claim -> 'pullRequest' = 'null'::jsonb and v_claim ->> 'path' = 'agents/alice/todos/fix-login/session-2/results.md'
+		and v_claim -> 'pullRequest' = 'null'::jsonb and v_claim ->> 'path' = 'QorperaOS/agents/alice/todos/fix-login/session-2/results.md'
 		and (v_claim ->> 'generation')::bigint = 1, 'the blocked claim: ' || coalesce(v_claim::text, 'none'));
 	v_parse := pg_temp.cr_parse(v_claim);
 	perform pg_temp.base_assert(v_parse ->> 'needs' = E'Which sign-in provider should the page offer?\n\nOptions:\n- Google\n- GitHub'
@@ -324,7 +324,7 @@ end $$;
 -- 5. Session 4's file: a problem; then the owner's answer and a new turn take the row over, so the earlier claim's key
 --    writes nothing and the new claim's does --------------------------------------------------------------------------
 do $$
-declare v_path text := 'agents/alice/todos/fix-login/session-4/results.md'; v_claim jsonb; v_stale jsonb; v_result jsonb;
+declare v_path text := 'QorperaOS/agents/alice/todos/fix-login/session-4/results.md'; v_claim jsonb; v_stale jsonb; v_result jsonb;
 	w public.qorpera_runtime_workers%rowtype; d public.qorpera_coding_results_files%rowtype;
 begin
 	v_claim := pg_temp.cr_claim();

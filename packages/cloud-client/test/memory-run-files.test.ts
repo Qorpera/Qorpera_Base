@@ -5,8 +5,8 @@ import { parseMemoryRunToml, parseMemoryTreeToml } from "../src/memory-run-files
 const RUN = "00000000-0000-0000-0000-000000000000";
 const CONVERSATION = "ffffffff-ffff-ffff-ffff-ffffffffffff";
 const HASH = "a".repeat(64);
-const ROOT = `agents/research/memory/thread/runs/${RUN}`;
-const GROUP_ROOT = `agents/groups/research-team/memory/runs/${RUN}`;
+const ROOT = `QorperaOS/agents/research/memory/thread/runs/${RUN}`;
+const GROUP_ROOT = `QorperaOS/agents/groups/research-team/memory/runs/${RUN}`;
 const TOML = `format = 1\nrun = "${RUN}"\nconversation = "${CONVERSATION}"\n`;
 const LOG = `${ROOT}/log/00000000.jsonl`;
 const TREE = `${ROOT}/t0/00000000.jsonl`;
@@ -75,6 +75,8 @@ describe("memory run paths and canonical origins", () => {
 			expect(companyStatePathProblems(`${root}/run.toml`)).toEqual([]);
 		}
 		expect(companyStatePath(`${GROUP_ROOT}/run.toml`)).toMatchObject({ agent: null, group: "research-team" });
+		// The database gives run logs' roots as keys: the root's spelling is its own, only the part below it is checked.
+		accepts(`${ROOT.replace("QorperaOS/", "qorperaos/")}/run.toml`, TOML, "memory-run");
 	});
 
 	it("uses the path key for classification and refuses noncanonical spelling and names", () => {
@@ -97,7 +99,10 @@ describe("memory run paths and canonical origins", () => {
 		for (const path of [
 			ROOT.replace("/thread", ""),
 			ROOT.replace(RUN, "not-a-run"),
-			ROOT.replace("agents/", "projects/"),
+			ROOT.replace("QorperaOS/agents/", "projects/"),
+			// Run logs are under QorperaOS/ only.
+			ROOT.replace("QorperaOS/", ""),
+			ROOT.replace("QorperaOS/", "QorperaOSx/"),
 		])
 			expect(companyStatePath(`${path}/run.toml`)).toBeNull();
 	});
@@ -324,8 +329,8 @@ describe("memory run summary blocks", () => {
 });
 
 describe("conversation summary trees", () => {
-	const THREAD = "agents/research/memory/thread";
-	const GROUP = "agents/groups/research-team/memory";
+	const THREAD = "QorperaOS/agents/research/memory/thread";
+	const GROUP = "QorperaOS/agents/groups/research-team/memory";
 	const TREE_TOML = `format = 1\nconversation = "${CONVERSATION}"\nnode_bytes = 512\n`;
 	const BLOCK = `${THREAD}/t0/00000000.jsonl`;
 	const leaf = (changes: Record<string, unknown> = {}) => tree({ seq: 1, hash: HASH, ...changes });
@@ -357,11 +362,13 @@ describe("conversation summary trees", () => {
 			`${THREAD}/t00/00000000.jsonl`,
 			`${THREAD}/t0/0.jsonl`,
 			`${THREAD}/t0/00000000.jsonl/extra`,
-			"agents/research/memory/tree.toml",
-			"agents/groups/research-team/memory/thread/tree.toml",
-			"agents/groups/memory/thread/tree.toml",
-			"agents/sections.md/memory/thread/tree.toml",
+			"QorperaOS/agents/research/memory/tree.toml",
+			"QorperaOS/agents/groups/research-team/memory/thread/tree.toml",
+			"QorperaOS/agents/groups/memory/thread/tree.toml",
+			"QorperaOS/agents/sections.md/memory/thread/tree.toml",
 			"projects/research/memory/thread/tree.toml",
+			"agents/research/memory/thread/tree.toml",
+			"agents/groups/research-team/memory/tree.toml",
 		])
 			expect(companyStatePath(path)).toBeNull();
 	});
