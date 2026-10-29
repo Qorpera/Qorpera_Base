@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { type JsonValue, parseUuid } from "@qorpera/contracts";
 import {
+	CLOUD_RUN_ROW_WRITE_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	type CloudNativeToolRun,
@@ -302,23 +303,29 @@ export class CloudNativeToolOperations {
 				const idempotencyKey = createHash("sha256")
 					.update(JSON.stringify([OPERATION_SCHEMA, this.#run.identity.runId, key]))
 					.digest("hex");
+				// The begin waits for the run's row: a lost or late answer is asked again once its copy has ended, with the
+				// same receipt, which a copy that did begin answers by its key (item 7, 29 Oct 2026).
 				const begun = record(
-					await cloudToolRequest(
-						(requestSignal) =>
-							this.#control.beginToolOperation(
-								this.#run.binding,
-								{
-									receiptId,
-									logicalOperationKey: key,
-									operationKind: "cloud_tool",
-									inputSha256: digest,
-									downstreamIdempotencyKey: idempotencyKey,
-									requiresCompanyRevision: operation.requiresCompanyRevision,
-								},
-								requestSignal,
-							),
-						signal,
-					),
+					(
+						await this.#run.retry(
+							(requestSignal) =>
+								this.#control.beginToolOperation(
+									this.#run.binding,
+									{
+										receiptId,
+										logicalOperationKey: key,
+										operationKind: "cloud_tool",
+										inputSha256: digest,
+										downstreamIdempotencyKey: idempotencyKey,
+										requiresCompanyRevision: operation.requiresCompanyRevision,
+									},
+									requestSignal,
+								),
+							signal,
+							CLOUD_RUN_ROW_WRITE_MS,
+							CLOUD_RUN_ROW_WRITE_MS,
+						)
+					).value,
 				);
 				if (
 					begun.run_id !== this.#run.identity.runId ||
@@ -429,22 +436,28 @@ export class CloudNativeToolOperations {
 				const folderCommitId =
 					output.folderCommitId === undefined ? undefined : parseUuid(output.folderCommitId, "Folder commit id");
 				await this.#run.assertActive(signal);
+				// The completion waits for the run's row as the begin does: asked again with the same result, which a copy
+				// that did complete answers again (item 7).
 				const completed = record(
-					await cloudToolRequest(
-						(requestSignal) =>
-							folderCommitId !== undefined && this.#control.completeFolderToolOperation
-								? this.#control.completeFolderToolOperation(
-										this.#run.binding,
-										{ receiptId, inputSha256: digest, result: storedResult, folderCommitId },
-										requestSignal,
-									)
-								: this.#control.completeToolOperation(
-										this.#run.binding,
-										{ receiptId, inputSha256: digest, result: storedResult },
-										requestSignal,
-									),
-						signal,
-					),
+					(
+						await this.#run.retry(
+							(requestSignal) =>
+								folderCommitId !== undefined && this.#control.completeFolderToolOperation
+									? this.#control.completeFolderToolOperation(
+											this.#run.binding,
+											{ receiptId, inputSha256: digest, result: storedResult, folderCommitId },
+											requestSignal,
+										)
+									: this.#control.completeToolOperation(
+											this.#run.binding,
+											{ receiptId, inputSha256: digest, result: storedResult },
+											requestSignal,
+										),
+							signal,
+							CLOUD_RUN_ROW_WRITE_MS,
+							CLOUD_RUN_ROW_WRITE_MS,
+						)
+					).value,
 				);
 				// A folder-v2 completion also names its commit (null for a receipt that needed none).
 				const keys = Object.keys(completed).sort().join();

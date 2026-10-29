@@ -219,6 +219,10 @@ export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
 export const CLOUD_RUN_ROW_READ_MS = 20_000;
 /** The same through the long entry point (its 25 s statement bound): the one call before each model request. */
 export const CLOUD_RUN_ROW_LONG_READ_MS = 37_000;
+/** A tool call's receipt begin and completion take the run's row too, through the standard entry point: each waits as
+ * long, and is asked again as such a read is. Both are safe to repeat: the begin by its key with the same receipt, the
+ * completion with the same result (item 7, 29 Oct 2026). */
+export const CLOUD_RUN_ROW_WRITE_MS = CLOUD_RUN_ROW_READ_MS;
 /** The first attempt of the one call before each model request (qorpera_fence_native_context). A lost or late answer
  * is asked again for as long as the run's authority holds, with no budget of its own (5 Oct 2026), each attempt cut at
  * its deadline giving the next twice as long (6 Oct 2026). Its first attempt waits as long as the database may run it

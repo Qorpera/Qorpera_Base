@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import {
+	CloudControlRpcEnded,
+	CloudControlRpcRefused,
+	cloudControlEnded,
+	cloudControlRetryable,
+} from "@qorpera/runtime/cloud-control-errors";
 import { SupabaseNativeProviderControlPlane } from "@qorpera/runtime/cloud-native-provider-service";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, expect, it, vi } from "vitest";
@@ -154,6 +160,72 @@ it("completes a folder writer's receipt with its commit through the folder core'
 		p_result: { saved: true },
 		p_folder_commit_id: folderCommitId,
 	});
+});
+
+it("tells a receipt call's lost answer whose statement ended apart from one that says nothing of it (item 7)", async () => {
+	const { binding } = nativeToolAuthorityFixture();
+	const page = "<html><body>502 Bad Gateway</body></html>";
+	const postgrest = (code: string) => ({ code, message: "x", details: null, hint: null });
+	const answer = (status: number, body: unknown, folder: boolean) => {
+		const control = new SupabaseNativeProviderControlPlane(
+			"https://cloud.example.test",
+			"SYNTHETIC_SERVICE_KEY",
+			vi.fn<typeof fetch>(async () =>
+				typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
+			),
+		);
+		return (
+			folder
+				? control.completeFolderToolOperation(
+						binding,
+						{ receiptId: randomUUID(), inputSha256: "c".repeat(64), result: {}, folderCommitId: randomUUID() },
+						new AbortController().signal,
+					)
+				: control.beginToolOperation(
+						binding,
+						{
+							receiptId: randomUUID(),
+							logicalOperationKey: "write_document:item-1",
+							operationKind: "cloud_tool",
+							inputSha256: "c".repeat(64),
+							downstreamIdempotencyKey: "logical-attempt",
+							requiresCompanyRevision: true,
+						},
+						new AbortController().signal,
+					)
+		).catch((error: unknown) => error);
+	};
+	for (const folder of [false, true]) {
+		// The database gave up the lock wait or the statement, or PostgREST never began it (its pool wait): ended.
+		for (const [status, body] of [
+			[500, postgrest("55P03")],
+			[500, postgrest("57014")],
+			[504, postgrest("PGRST003")],
+		] as const) {
+			const error = await answer(status, body, folder);
+			expect(error).toBeInstanceOf(CloudControlRpcEnded);
+			expect(error).toMatchObject({ category: "transport_unavailable" });
+			expect(cloudControlRetryable(error)).toBe(true);
+			expect(cloudControlEnded(error)).toBe(true);
+		}
+		// A lost connection, PostgREST's other connection errors, a proxy's page or a cut body: nothing said it ended.
+		for (const [status, body] of [
+			[503, postgrest("08006")],
+			[503, postgrest("PGRST000")],
+			[502, page],
+			[500, { code: "55P03", message: "x" }],
+		] as const) {
+			const error = await answer(status, body, folder);
+			expect(error).not.toBeInstanceOf(CloudControlRpcEnded);
+			expect(error).toMatchObject({ category: "transport_unavailable" });
+			expect(cloudControlRetryable(error)).toBe(true);
+			expect(cloudControlEnded(error)).toBe(false);
+		}
+		// A refusal stays a refusal, never asked again.
+		const refused = await answer(500, postgrest("55000"), folder);
+		expect(refused).toBeInstanceOf(CloudControlRpcRefused);
+		expect(cloudControlRetryable(refused)).toBe(false);
+	}
 });
 
 it.each([403, 500, 503])("does not read or echo a stalled %s error body", async (status) => {
