@@ -16,7 +16,8 @@ where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uu
 
 -- 1. The two reads carry lock_timeout 3s beside their other settings (the fence keeps its statement_timeout of 25 s),
 --    and their grants are as before: the context read check is the owner's only, the fence the platform service
---    caller's. The run check itself and the entry points keep theirs, so the writers still wait the entry point's 8 s.
+--    caller's. The run check itself and the entry points keep theirs, so the tool steps still wait the entry point's 8 s
+--    (a receipt's begin and finish wait 3 s, 20260930541000, test 468).
 do $$
 declare v_config text[]; v_expected text[]; v_fn regprocedure; v_wrong text[] := '{}';
 begin

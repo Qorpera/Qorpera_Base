@@ -19,7 +19,9 @@ import {
 } from "./cloud-agent-mouth.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import {
+	CloudControlRpcEnded,
 	CloudControlRpcRefused,
+	cloudControlEndedCode,
 	cloudControlErrorBody,
 	cloudControlRefusalCode,
 	cloudControlTransientCode,
@@ -712,6 +714,10 @@ export class SupabaseNativeProviderControlPlane
 							error.message,
 							`Native control-plane RPC failed (${response.status})`,
 						);
+					// A lost answer whose statement ended (a lock or statement timeout) or never began (PostgREST's pool
+					// wait): a call that takes the run's row may be asked again without waiting out the copy (item 7).
+					if (error && cloudControlTransientCode(error.code) && cloudControlEndedCode(error.code))
+						throw new CloudControlRpcEnded(`Native control-plane RPC failed (${response.status})`);
 					if (
 						(error && cloudControlTransientCode(error.code)) ||
 						(!error && (response.status >= 500 || response.status === 408 || response.status === 429))
