@@ -985,11 +985,7 @@ it.each(["begin", "completion"] as const)("never asks a refused receipt %s again
 	const refusal = new CloudControlRpcRefused("55000", "PRIVATE_REFUSAL");
 	if (step === "begin") f.control.beginToolOperation.mockRejectedValueOnce(refusal);
 	else f.control.completeToolOperation.mockRejectedValueOnce(refusal);
-	// A refused begin started nothing, so it is the call's refusal (30 Oct 2026); a refused completion follows the effect.
-	const executed = f.execute();
-	if (step === "begin") await expect(executed).rejects.toBeInstanceOf(CloudToolRefusal);
-	else await expect(executed).rejects.toThrow("outcome unconfirmed");
-	await expect(executed).rejects.not.toThrow("PRIVATE_REFUSAL");
+	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
 	expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
 	expect(f.perform).toHaveBeenCalledTimes(step === "begin" ? 0 : 1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(step === "begin" ? 0 : 1);
@@ -1037,63 +1033,46 @@ function callFinishes(rows: readonly CloudRuntimeObservation[]) {
 		.map((row) => [row.status, row.errorCategory, row.receiptId]);
 }
 
-it("answers a call whose only receipt begin the database refused as refused: nothing began (30 Oct 2026)", async () => {
-	const f = await fixture();
-	const observed = observe(f.binding.assignmentId);
-	// On production a call's begin was refused this way while an earlier call's receipt in the run was still executing.
-	f.control.beginToolOperation.mockRejectedValueOnce(
-		new CloudControlRpcRefused("55000", "run has an unresolved operation"),
-	);
-	const via = viaBoundary(f, { observability: observed.observability });
-	try {
-		const refused = await via.invoke("call_refused");
-		expect(refused.success).toBe(false);
-		expect(refused.text).toContain(
-			"REFUSED: An earlier change in this run has an unconfirmed outcome, so this run cannot start another change; this call started nothing",
-		);
-		expect(refused.text).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
-		expect(refused.text).not.toContain("unresolved operation");
-		// The same key answers the same refusal, without asking the database again.
-		const repeat = await via.invoke("call_repeat");
-		expect(repeat.text).toContain("REFUSED: An earlier change in this run has an unconfirmed outcome");
-		expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
-		expect(f.perform).not.toHaveBeenCalled();
-		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
-		expect(f.ledger.size).toBe(0);
-	} finally {
-		via.boundary.close();
-	}
-	await observed.observability.close();
-	// The operation's finish stands: denied with the refusal's category, and no receipt.
-	expect(callFinishes(observed.rows)).toEqual([
-		["denied", "authority_unavailable", null],
-		["denied", "authority_unavailable", null],
-	]);
-});
-
+// The folder core raises these two only after it looked the key up in the run and found no receipt (20260928279540).
 it.each([
-	["42501", "authority_unavailable"],
-	["55000", "authority_unavailable"],
-	["22023", "invalid_arguments"],
-] as const)("answers another refusal (%s) of a call's only begin in fixed words", async (code, category) => {
-	const f = await fixture();
-	const observed = observe(f.binding.assignmentId);
-	f.control.beginToolOperation.mockRejectedValueOnce(new CloudControlRpcRefused(code, "PRIVATE_REFUSAL"));
-	const via = viaBoundary(f, { observability: observed.observability });
-	try {
-		const refused = await via.invoke("call_refused");
-		expect(refused.success).toBe(false);
-		expect(refused.text).toContain("REFUSED: The database refused to start this call, so this call started nothing");
-		expect(refused.text).not.toContain("PRIVATE_REFUSAL");
-		expect(refused.text).not.toContain(f.control.beginToolOperation.mock.calls[0][1].receiptId);
-		expect(f.perform).not.toHaveBeenCalled();
-		expect(f.ledger.size).toBe(0);
-	} finally {
-		via.boundary.close();
-	}
-	await observed.observability.close();
-	expect(callFinishes(observed.rows)).toEqual([["denied", category, null]]);
-});
+	// On production a call's begin was refused this way while an earlier call's receipt in the run was still executing.
+	[
+		"run has an unresolved operation",
+		"An earlier change in this run has an unconfirmed outcome, so this run cannot start another change; this call started nothing",
+	],
+	["run operation budget is exhausted", "The database refused to start this call, so this call started nothing"],
+])(
+	"answers a call whose only receipt begin was refused (%s) as refused: nothing began (30 Oct 2026)",
+	async (detail, reason) => {
+		const f = await fixture();
+		const observed = observe(f.binding.assignmentId);
+		f.control.beginToolOperation.mockRejectedValueOnce(new CloudControlRpcRefused("55000", detail));
+		const via = viaBoundary(f, { observability: observed.observability });
+		try {
+			const refused = await via.invoke("call_refused");
+			expect(refused.success).toBe(false);
+			expect(refused.text).toContain(`REFUSED: ${reason}`);
+			expect(refused.text).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
+			expect(refused.text).not.toContain(detail);
+			expect(refused.text).not.toContain(f.control.beginToolOperation.mock.calls[0][1].receiptId);
+			// The same key answers the same refusal, without asking the database again.
+			const repeat = await via.invoke("call_repeat");
+			expect(repeat.text).toContain(`REFUSED: ${reason}`);
+			expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
+			expect(f.perform).not.toHaveBeenCalled();
+			expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+			expect(f.ledger.size).toBe(0);
+		} finally {
+			via.boundary.close();
+		}
+		await observed.observability.close();
+		// The operation's finish stands: denied with the refusal's category, and no receipt.
+		expect(callFinishes(observed.rows)).toEqual([
+			["denied", "authority_unavailable", null],
+			["denied", "authority_unavailable", null],
+		]);
+	},
+);
 
 it.each<{ failure: string; performed: number; arrange: (f: Fixture, call: AbortController) => void }>([
 	{
@@ -1109,6 +1088,20 @@ it.each<{ failure: string; performed: number; arrange: (f: Fixture, call: AbortC
 			});
 		},
 	},
+	// The run check, the wake's work gate and the argument checks refuse before the key lookup, so they say nothing of a
+	// receipt under the key; so may any other refusal.
+	...[
+		["42501", "PRIVATE_REFUSAL"],
+		["22023", "PRIVATE_REFUSAL"],
+		["55000", "PRIVATE_REFUSAL"],
+		["55000", "Run resume is not recorded"],
+	].map(([code, detail]) => ({
+		failure: `a refusal of its begin (${code}, ${detail})`,
+		performed: 0,
+		arrange: (f: Fixture) => {
+			f.control.beginToolOperation.mockRejectedValueOnce(new CloudControlRpcRefused(code, detail));
+		},
+	})),
 	{
 		failure: "an abort while its begin was refused",
 		performed: 0,
@@ -1169,14 +1162,14 @@ it("leaves a call unconfirmed when its begin asked again is refused: the copy be
 		const f = await fixture();
 		const begin = f.control.beginToolOperation.getMockImplementation();
 		if (!begin) throw new Error("Missing test implementation");
-		// The first copy began the receipt and its answer was lost. The database checks the run and the wake's gate
-		// before it looks up the key, so a refusal of the copy asked again says nothing of the first.
+		// The first copy's answer was lost and the copy asked again was refused. That copy may take the run's lock before
+		// the first one does, so its refusal says nothing of the first, which may begin after it (here it did).
 		f.control.beginToolOperation
 			.mockImplementationOnce(async (...args) => {
 				await begin(...args);
 				throw new CloudRuntimeDiagnosticError("transport_unavailable");
 			})
-			.mockRejectedValueOnce(new CloudControlRpcRefused("42501", "PRIVATE_REFUSAL"));
+			.mockRejectedValueOnce(new CloudControlRpcRefused("55000", "run has an unresolved operation"));
 		const via = viaBoundary(f);
 		try {
 			const invoked = via.invoke("call_retried");
@@ -1185,7 +1178,6 @@ it("leaves a call unconfirmed when its begin asked again is refused: the copy be
 			expect(result.success).toBe(false);
 			expect(result.text).toContain("TOOL_OUTCOME_UNCONFIRMED");
 			expect(result.text).not.toContain("REFUSED");
-			expect(result.text).not.toContain("PRIVATE_REFUSAL");
 			expect(f.control.beginToolOperation).toHaveBeenCalledTimes(2);
 			expect(f.perform).not.toHaveBeenCalled();
 			expect([...f.ledger.values()].map((receipt) => receipt.state)).toEqual(["executing"]);
@@ -1196,6 +1188,42 @@ it("leaves a call unconfirmed when its begin asked again is refused: the copy be
 		clock.restore();
 	}
 });
+
+it.each(["completed", "outcome_unknown"] as const)(
+	"leaves a resumed call unconfirmed when the begin is refused before its key lookup (%s receipt, 30 Oct 2026)",
+	async (state) => {
+		const f = await fixture();
+		if (state === "outcome_unknown") {
+			f.perform.mockRejectedValueOnce(new Error("PRIVATE_EFFECT_UNKNOWN"));
+			await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+			// The resume (W5) settles the cut-off attempt's executing receipt as outcome_unknown.
+			[...f.ledger.values()][0].state = "outcome_unknown";
+		} else await f.execute();
+		const receipt = [...f.ledger.values()][0];
+		expect(receipt.state).toBe(state);
+		const observed = observe(f.binding.assignmentId);
+		// A fresh executor has sent nothing under the key, and its one begin is refused before the database looks the
+		// key up: here by the wake's work gate, after the earlier attempt sent its final reply.
+		f.control.beginToolOperation.mockRejectedValueOnce(
+			new CloudControlRpcRefused("55000", "Wake public output is already final"),
+		);
+		const via = viaBoundary(f, { observability: observed.observability });
+		try {
+			const result = await via.invoke("call_resumed");
+			expect(result.success).toBe(false);
+			expect(result.text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+			expect(result.text).not.toContain("REFUSED");
+			expect(result.text).not.toContain("Wake public output");
+			expect(f.control.beginToolOperation).toHaveBeenCalledTimes(2);
+			expect(f.perform).toHaveBeenCalledOnce();
+			expect(receipt.state).toBe(state);
+		} finally {
+			via.boundary.close();
+		}
+		await observed.observability.close();
+		expect(callFinishes(observed.rows).map(([status]) => status)).toEqual(["unconfirmed"]);
+	},
+);
 
 it("does not link a locally proposed receipt when the canonical begin response is lost", async () => {
 	const f = await fixture();

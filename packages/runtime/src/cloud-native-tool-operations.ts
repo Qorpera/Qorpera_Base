@@ -32,20 +32,30 @@ class RefusedBeforeReceipt extends Error {
 	}
 }
 
-/** The database's refusal of the call's receipt begin, the only copy of it sent: that transaction rolled back whole and
- * nothing before it in the call began, so the call started nothing (30 Oct 2026). */
+/** The database's refusal of the call's receipt begin, the only copy of it sent, after it found no receipt under the
+ * call's key: that transaction rolled back whole and nothing before it in the call began, so the call started nothing
+ * (30 Oct 2026). */
 class RefusedBegin extends Error {
 	readonly refused: CloudControlRpcRefused;
-	constructor(refused: CloudControlRpcRefused) {
+	readonly reason: string;
+	constructor(refused: CloudControlRpcRefused, reason: string) {
 		super("Cloud tool receipt begin refused");
 		this.refused = refused;
+		this.reason = reason;
 	}
 }
 
-/** A refused begin's words for the model: fixed, since the database's own may name an id, a key or a supplied value. */
-const BEGIN_REFUSED_UNRESOLVED =
-	"An earlier change in this run has an unconfirmed outcome, so this run cannot start another change; this call started nothing";
-const BEGIN_REFUSED = "The database refused to start this call, so this call started nothing";
+/** The begin's refusals (55000) that the folder core raises only after it looked the call's key up in the run, under
+ * the run's lock, and found no receipt (20260928279540), each with its words for the model: fixed, since the database's
+ * own may name an id, a key or a supplied value. Any other refusal may come before that lookup, as the run check and
+ * the wake's work gate do, so it says nothing of a receipt an earlier process began under the key. */
+const BEGIN_REFUSED_AFTER_LOOKUP: ReadonlyMap<string, string> = new Map([
+	[
+		"run has an unresolved operation",
+		"An earlier change in this run has an unconfirmed outcome, so this run cannot start another change; this call started nothing",
+	],
+	["run operation budget is exhausted", "The database refused to start this call, so this call started nothing"],
+]);
 
 /** The kernel's answer for a key whose receipt a resume settled as outcome_unknown (W5), kept apart from any error the
  * effect could throw. */
@@ -321,7 +331,8 @@ export class CloudNativeToolOperations {
 					.digest("hex");
 				// The begin waits for the run's row: a lost or late answer is asked again once its copy has ended, with the
 				// same receipt, which a copy that did begin answers by its key (item 7, 29 Oct 2026). A refusal proves
-				// only its own copy changed nothing, so only a refusal of the one copy sent is the call's (30 Oct 2026).
+				// only its own copy changed nothing, and a copy asked again may be refused before the first one runs, so
+				// only a refusal of the one copy sent, after its key lookup, is the call's (30 Oct 2026).
 				let sent = 0;
 				const begun = record(
 					(
@@ -347,7 +358,11 @@ export class CloudNativeToolOperations {
 								CLOUD_RUN_ROW_WRITE_MS,
 							)
 							.catch((error: unknown) => {
-								throw error instanceof CloudControlRpcRefused && sent === 1 ? new RefusedBegin(error) : error;
+								if (error instanceof CloudControlRpcRefused && error.code === "55000" && sent === 1) {
+									const reason = BEGIN_REFUSED_AFTER_LOOKUP.get(error.detail);
+									if (reason !== undefined) throw new RefusedBegin(error, reason);
+								}
+								throw error;
 							})
 					).value,
 				);
@@ -551,15 +566,11 @@ export class CloudNativeToolOperations {
 				options.observation?.finish("denied", { errorCategory: "authority_unavailable" });
 				throw error.refusal;
 			}
-			// The database refused the only begin sent, before any receipt: the call started nothing either, so the model
-			// is told so in fixed words, never as an unknown outcome it would check or repeat.
+			// The database refused the only begin sent, finding no receipt under the key: the call started nothing either,
+			// so the model is told so in fixed words, never as an unknown outcome it would check or repeat.
 			if (error instanceof RefusedBegin && receipt.id === null && !signal.aborted) {
 				options.observation?.finish("denied", { errorCategory: error.refused.category });
-				throw new CloudToolRefusal(
-					error.refused.code === "55000" && error.refused.detail === "run has an unresolved operation"
-						? BEGIN_REFUSED_UNRESOLVED
-						: BEGIN_REFUSED,
-				);
+				throw new CloudToolRefusal(error.reason);
 			}
 			// Settled by the kernel without an effect, on this call's own receipt: nothing happened either.
 			if (
