@@ -93,6 +93,8 @@ export interface FailedRun {
 	activity: HostedStaffExecutionActivity;
 	/** Its details, once read. */
 	recovery?: HostedRunRecovery;
+	/** A failure from before the agent's newer work: listed apart, the agent's state no longer reads it. */
+	earlier?: true;
 }
 
 const isFailedRun = (row: HostedStaffExecutionActivity) =>
@@ -1348,13 +1350,22 @@ export class CompanyController {
 		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
 	}
 
-	/** The agent's newest run as the server reports it, settled or not. */
+	/** The agent's newest run as the server reports it, settled or not. A failure from before the agent's newer work
+	 * (20260930542000) is not the agent's run any more: it is listed apart. */
 	#newestActivity(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
 		return this.store
 			.get()
-			.activity.filter((item) => item.staffAgentId === staffAgentId)
+			.activity.filter((item) => item.staffAgentId === staffAgentId && !item.superseded)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+	}
+
+	/** The agent's failure from before its newer work, if the server lists one (20260930542000). */
+	#earlierFailure(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+		if (!staffAgentId) return undefined;
+		return this.store
+			.get()
+			.activity.find((item) => item.staffAgentId === staffAgentId && item.superseded && isFailedRun(item));
 	}
 
 	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
@@ -1375,9 +1386,11 @@ export class CompanyController {
 	 * agent's work from the member's side of the screen. needs_attention is either
 	 * a decision (a run's Company File proposal is open) or a run that did not
 	 * finish. The server reports one run per agent and ranks an undismissed failure
-	 * above newer work, so "failed" stands until the member dismisses it. A run a
-	 * member stopped (every cancelled job is one) is never "failed": the server
-	 * lists it only while its proposal waits, below all of the agent's work. */
+	 * above the run the agent works on, so "failed" stands until the member dismisses
+	 * it, or until the agent has newer work: a failure from before that is listed
+	 * apart (20260930542000) and never sets the state. A run a member stopped (every
+	 * cancelled job is one) is never "failed": the server lists it only while its
+	 * proposal waits, below all of the agent's work. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
@@ -1399,9 +1412,17 @@ export class CompanyController {
 			: undefined;
 	}
 
+	/** The agent's failure to show: the one that is its state, or else the one from before its newer work. */
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
-		const row = this.activityFor(staffAgentId);
-		if (!row || !isFailedRun(row)) return undefined;
+		const current = this.activityFor(staffAgentId);
+		if (current && isFailedRun(current)) return this.#failedRun(current);
+		const earlier = this.#earlierFailure(staffAgentId);
+		if (!earlier || this.store.get().acknowledgedRuns?.[earlier.runId]) return undefined;
+		const failed = this.#failedRun(earlier);
+		return failed && { ...failed, earlier: true };
+	}
+
+	#failedRun(row: HostedStaffExecutionActivity): FailedRun | undefined {
 		const recovery = this.store.get().recoveries[row.runId];
 		// A stopped run's line only ever asks for its decision, so it waits for the details that name it.
 		if (row.jobStatus === "cancelled" && !recovery?.proposalId) return undefined;
@@ -1508,8 +1529,10 @@ export class CompanyController {
 	#dismissFailureFor(sessionId: string): void {
 		const state = this.store.get();
 		const session = state.sessions.find((item) => item.sessionId === sessionId);
-		const row = this.#newestActivity(session?.staffAgentId);
-		const recovery = row && isFailedRun(row) ? state.recoveries[row.runId] : undefined;
+		const current = this.#newestActivity(session?.staffAgentId);
+		// The last failure is the agent's earlier one once it has newer work (20260930542000).
+		const row = current && isFailedRun(current) ? current : this.#earlierFailure(session?.staffAgentId);
+		const recovery = row ? state.recoveries[row.runId] : undefined;
 		// Only a failure whose details are known and that left no decision behind; a
 		// run with an open proposal is the member's to decide, not to dismiss by sending.
 		// A stop reads as settled already, but a cloud before 20260926192436 still ranks

@@ -1196,4 +1196,90 @@ describe("agent execution state", () => {
 		expect(company.agentState(staff.id)).toBe("idle");
 		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});
+
+	// Stale failure card, 29 October 2026: a failure from before the agent's newer run (20260930542000).
+	it("takes the agent's state from its newer work and shows the earlier failure apart", async () => {
+		const { api, company } = controller();
+		company.store.set({ team });
+		const earlier = { ...row("failed", "needs_attention"), superseded: true as const };
+		const newer = { ...row("leased", "working"), runId: id(72) };
+		const details = recovery({ lastError: "Provider failed" });
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(details);
+		vi.mocked(api.listStaffActivity).mockResolvedValue([earlier, newer]);
+		await company.refreshActivity();
+		await settle();
+		// Listed first and as new as the newer run: neither makes the failure the agent's state.
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(company.activityFor(staff.id)?.runId).toBe(id(72));
+		// Its details are read, and it keeps its card, as the earlier failure, with Try again as before.
+		expect(read).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: earlier, recovery: details, earlier: true });
+		expect(company.canRetryFailedRun(company.failedRunFor(staff.id)!)).toBe(true);
+		// A queued newer run is the agent's work as well.
+		vi.mocked(api.listStaffActivity).mockResolvedValue([
+			earlier,
+			{ ...newer, jobStatus: "queued", activity: "waiting" },
+		]);
+		await company.refreshActivity();
+		expect(company.agentState(staff.id)).toBe("working");
+		// Done, it leaves no failed state behind.
+		vi.mocked(api.listStaffActivity).mockResolvedValue([earlier]);
+		await company.refreshActivity();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.activityFor(staff.id)).toBeUndefined();
+		expect(company.failedRunFor(staff.id)?.earlier).toBe(true);
+		// Dismissed, it is gone for this member before the cloud's next read.
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
+		await company.dismissFailedRun(id(70), { refresh: false });
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
+		expect(company.agentState(staff.id)).toBe("idle");
+	});
+
+	it("still lets a failure that is the agent's state outrank its newer work, and shows that one", () => {
+		const { company } = controller();
+		const current = { ...row("failed", "needs_attention"), runId: id(72) };
+		const earlier = { ...row("failed", "needs_attention"), superseded: true as const };
+		company.store.set({ activity: [earlier, current] });
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: current });
+		// Once the current one is dismissed, the earlier one is shown, without making the agent failed.
+		company.store.set({ acknowledgedRuns: { [id(72)]: true } });
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: earlier, earlier: true });
+		// An open proposal is still a decision first.
+		company.store.set({
+			acknowledgedRuns: {},
+			recoveries: { [id(72)]: recovery({ runId: id(72), proposalId: id(71) }) },
+		});
+		expect(company.agentState(staff.id)).toBe("decision");
+		expect(company.failedRunFor(staff.id)?.activity.runId).toBe(id(72));
+		// The same failure without the key, from a cloud before 20260930542000, is the agent's state.
+		company.store.set({ activity: [row("failed", "needs_attention")], recoveries: {} });
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: row("failed", "needs_attention") });
+	});
+
+	it("dismisses the agent's earlier failure when the member sends a new message", async () => {
+		const { api, controller, write } = company();
+		controller.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
+		const newer = { ...row("leased", "working"), runId: id(72) };
+		vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery());
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
+		vi.mocked(api.listStaffActivity).mockResolvedValue([
+			newer,
+			{ ...row("failed", "needs_attention"), superseded: true },
+		]);
+		await controller.refreshActivity();
+		await settle();
+		expect(controller.agentState(staff.id)).toBe("working");
+		vi.mocked(api.listStaffActivity).mockResolvedValue([newer]);
+		expect(await controller.sendPrompt(session.sessionId, "Once more, please.")).toBe(true);
+		await settle();
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(controller.agentState(staff.id)).toBe("working");
+		expect(controller.failedRunFor(staff.id)).toBeUndefined();
+	});
 });
