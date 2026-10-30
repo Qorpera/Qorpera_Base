@@ -3277,11 +3277,16 @@ export class ConversationView {
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
 		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
+		// A failure from before the agent's newer work says so: what the agent does now shows above it.
 		const title = proposalId
 			? t("{name} stopped with changes to review", { name: agentName })
 			: review
-				? t("A review did not finish")
-				: t("{name} did not finish this run", { name: agentName });
+				? failed?.earlier
+					? t("An earlier review did not finish")
+					: t("A review did not finish")
+				: failed?.earlier
+					? t("An earlier run of {name} did not finish", { name: agentName })
+					: t("{name} did not finish this run", { name: agentName });
 		const recovery = failed?.recovery;
 		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (Sign in with ChatGPT).
 		// Anyone else reads that the account paying for the work reached its limit.

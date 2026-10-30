@@ -141,6 +141,66 @@ describe("shared agent activity", () => {
 			expect(parseStaffExecutionActivity([{ ...row, phase }])[0]?.phase).toBeUndefined();
 	});
 
+	it("shows the agent's newer run as Working, with its earlier failure apart (stale failure card, 29 Oct)", async () => {
+		const f = setup();
+		// Listed first and as new as the newer run: neither the order nor the time makes it the agent's state.
+		const earlier: HostedStaffExecutionActivity = {
+			runId: id(91),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn",
+			jobStatus: "failed",
+			activity: "needs_attention",
+			superseded: true,
+			updatedAt: timestamp,
+		};
+		const show = async (activity: HostedStaffExecutionActivity[]) => {
+			f.company.store.set({ activity });
+			f.view.update();
+			await settle();
+			f.draw();
+		};
+		const title = () => f.view.el.querySelector(".run-failure-title")?.textContent;
+		await show([earlier, working]);
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.view.el.querySelector(".thread-activity")?.getAttribute("aria-label")).toBe(
+			`${staff.displayName} is working`,
+		);
+		expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe("Working");
+		expect(title()).toBe(`An earlier run of ${staff.displayName} did not finish`);
+		// The newer run is done: no failure comes back, and the earlier one keeps its own card.
+		await show([earlier]);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(f.view.el.querySelector(".thread-activity")).toBeNull();
+		expect(f.rail.querySelector(".rail-row-status")).toBeNull();
+		expect(title()).toBe(`An earlier run of ${staff.displayName} did not finish`);
+		// A cloud before 20260930542000 sends no key: its one row is the agent's state, as before.
+		const { superseded: _, ...current } = earlier;
+		await show([current]);
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		expect(title()).toBe(`${staff.displayName} did not finish this run`);
+	});
+
+	it("reads superseded only on a failure", () => {
+		const row = {
+			run_id: id(91),
+			staff_agent_id: staff.id,
+			source_kind: "session_turn",
+			job_status: "failed",
+			activity: "needs_attention",
+			updated_at: timestamp,
+		};
+		expect(parseStaffExecutionActivity([{ ...row, superseded: true }])[0]?.superseded).toBe(true);
+		for (const superseded of [undefined, null, false])
+			expect(parseStaffExecutionActivity([{ ...row, superseded }])[0]).not.toHaveProperty("superseded");
+		for (const entry of [
+			{ ...row, job_status: "leased", activity: "working", superseded: true },
+			{ ...row, activity: "waiting", job_status: "queued", superseded: true },
+			{ ...row, superseded: "true" },
+			{ ...row, superseded: 1 },
+		])
+			expect(() => parseStaffExecutionActivity([entry])).toThrow("superseded activity that is not a failure");
+	});
+
 	it("waves only a live state; Needs you and roles stay still", () => {
 		expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Needs you");
 		expect(stateLine(AGENT_LOOK.idle, "Marketing Lead")).toBe("Marketing Lead");

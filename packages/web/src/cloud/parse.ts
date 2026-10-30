@@ -409,24 +409,43 @@ function noStallMinutes(minutes: unknown): Record<string, never> {
 	return {};
 }
 
+/** Only a failure is listed apart from the agent's newer work (20260930542000). */
+function supersededFailure(row: HostedStaffExecutionActivity, superseded: unknown): HostedStaffExecutionActivity {
+	if (superseded === undefined || superseded === null || superseded === false) return row;
+	if (
+		superseded !== true ||
+		row.activity !== "needs_attention" ||
+		(row.jobStatus !== "failed" && row.jobStatus !== "cancelled")
+	)
+		throw new CloudShapeError("superseded activity that is not a failure");
+	return { ...row, superseded: true };
+}
+
 export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity[] {
 	return array(value, "staff execution activity").map((entry) => {
 		const activity = record(entry, "staff execution activity");
-		return {
-			runId: uuid(activity.run_id, "activity run id"),
-			staffAgentId: uuid(activity.staff_agent_id, "activity staff id"),
-			sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
-			jobStatus: oneOf(activity.job_status, ["queued", "leased", "completed", "failed", "cancelled"], "job status"),
-			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
-			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
-			...(activity.no_progress_since === undefined || activity.no_progress_since === null
-				? noStallMinutes(activity.no_progress_minutes)
-				: {
-						noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
-						noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),
-					}),
-			updatedAt: timestamp(activity.updated_at, "activity time"),
-		};
+		return supersededFailure(
+			{
+				runId: uuid(activity.run_id, "activity run id"),
+				staffAgentId: uuid(activity.staff_agent_id, "activity staff id"),
+				sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
+				jobStatus: oneOf(
+					activity.job_status,
+					["queued", "leased", "completed", "failed", "cancelled"],
+					"job status",
+				),
+				activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
+				...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
+				...(activity.no_progress_since === undefined || activity.no_progress_since === null
+					? noStallMinutes(activity.no_progress_minutes)
+					: {
+							noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
+							noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),
+						}),
+				updatedAt: timestamp(activity.updated_at, "activity time"),
+			},
+			activity.superseded,
+		);
 	});
 }
 

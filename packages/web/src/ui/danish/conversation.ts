@@ -169,6 +169,8 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} stopped with changes to review": "{name} stoppede med ændringer, du skal gennemgå",
 	"A review did not finish": "En gennemgang blev ikke færdig",
 	"{name} did not finish this run": "{name} blev ikke færdig med denne kørsel",
+	"An earlier review did not finish": "En tidligere gennemgang blev ikke færdig",
+	"An earlier run of {name} did not finish": "{name} blev ikke færdig med en tidligere kørsel",
 	"Its changes wait for your decision.": "Ændringerne venter på din beslutning.",
 	Review: "Gennemgå",
 	"Trying again…": "Prøver igen…",
