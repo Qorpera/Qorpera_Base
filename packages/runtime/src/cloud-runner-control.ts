@@ -736,6 +736,26 @@ export class DisposableCloudRunner {
 		return job;
 	}
 
+	/** Swaps a staged completion the cloud refused for good for a staged failure, in one persisted step: from then on,
+	 * a restart sends that failure, never the refused completion again. */
+	async replaceStagedCompletionWithFailure(jobId: string, error: string, retryable: boolean): Promise<void> {
+		const message = error.trim();
+		if (!message || message.length > 1000) throw new Error("Runner job failure is invalid");
+		const active = this.#leases.get(jobId);
+		if (!active) throw new Error("Runner job lease is unavailable");
+		const completion = active.pendingCompletion;
+		if (!completion) throw new Error("Runner job has no staged completion");
+		active.pendingCompletion = undefined;
+		active.pendingFailure = { error: message, retryable };
+		try {
+			await this.#persist();
+		} catch (error) {
+			active.pendingCompletion = completion;
+			active.pendingFailure = undefined;
+			throw error;
+		}
+	}
+
 	leasedJobs(): CloudRunnerJob[] {
 		return [...this.#leases.values()]
 			.map((lease) => structuredClone(lease.job))

@@ -116,6 +116,18 @@ export function cloudRunnerJobFailureBeforeStartIsRetryable(error: unknown): boo
 	return error instanceof Error && RETRYABLE_BEFORE_START.test(error.message);
 }
 
+/** The failure a run gets when the cloud refuses its completion for good (423: the run left unsettled work, such as a
+ * save whose receipt is still executing). The completion is never sent again: the job fails at once, not retried, so
+ * the cloud ends it as the lease sweep would minutes later (an executing receipt turns ambiguous, nothing is marked
+ * completed), and the run no longer shows as lost contact (30 October 2026). It names no id, and the web reads its
+ * code. Any other refusal, and a lost or late answer, is handled as before. */
+export const RUN_COMPLETION_REFUSED_FAILURE =
+	"Runner completion was refused: the run left unsettled work, such as an open operation receipt [code=RUN_COMPLETION_REFUSED]";
+
+function completionRefused(error: unknown): boolean {
+	return cloudRunnerControlRequestStatus(error) === 423;
+}
+
 export class EphemeralCloudRunnerWorker {
 	readonly #options: EphemeralCloudRunnerWorkerOptions;
 	readonly #idlePollMs: number;
@@ -193,9 +205,18 @@ export class EphemeralCloudRunnerWorker {
 						),
 					};
 				} catch (error) {
-					if (![401, 403, 409].includes(cloudRunnerControlRequestStatus(error) ?? 0)) throw error;
-					await this.#options.runner.discardJobAuthority(job.jobId);
-					job = undefined;
+					if (completionRefused(error)) {
+						// The staged failure that takes its place is sent next.
+						await this.#options.runner.replaceStagedCompletionWithFailure(
+							job.jobId,
+							RUN_COMPLETION_REFUSED_FAILURE,
+							false,
+						);
+					} else {
+						if (![401, 403, 409].includes(cloudRunnerControlRequestStatus(error) ?? 0)) throw error;
+						await this.#options.runner.discardJobAuthority(job.jobId);
+						job = undefined;
+					}
 				}
 			}
 		}
@@ -487,14 +508,29 @@ export class EphemeralCloudRunnerWorker {
 			await stopMaintenance();
 			if (maintenanceError) throw maintenanceError;
 			if (signal.aborted) throw workerStopped();
-			return {
-				status: "completed",
-				job: await withCloudDeadline(
-					() => this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
+			try {
+				return {
+					status: "completed",
+					job: await withCloudDeadline(
+						() => this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
+						Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+						executionAbort.signal,
+					),
+				};
+			} catch (error) {
+				if (!completionRefused(error)) throw error;
+				await this.#options.runner.replaceStagedCompletionWithFailure(
+					job.jobId,
+					RUN_COMPLETION_REFUSED_FAILURE,
+					false,
+				);
+				const failed = await withCloudDeadline(
+					() => this.#options.runner.fail(job.jobId, RUN_COMPLETION_REFUSED_FAILURE, false),
 					Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
 					executionAbort.signal,
-				),
-			};
+				);
+				return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
+			}
 		} finally {
 			if (leaseTimer) clearTimeout(leaseTimer);
 			await stopMaintenance();
