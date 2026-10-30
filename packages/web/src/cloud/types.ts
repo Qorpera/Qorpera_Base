@@ -230,6 +230,9 @@ export interface HostedStaffExecutionActivity {
 	 * 20260930002600). The run goes on; nothing stops it. The cloud sets both or neither. */
 	noProgressSince?: string;
 	noProgressMinutes?: number;
+	/** A failure from before the agent's newer work (migration 20260930542000): listed apart from the agent's current
+	 * row, never its state. Only a failure is. */
+	superseded?: true;
 	updatedAt: string;
 }
 
