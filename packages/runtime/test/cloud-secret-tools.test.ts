@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CloudNativeToolBoundary,
+	CloudToolArgumentRefusal,
+	type CloudToolResult,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -10,9 +14,11 @@ import {
 import type { BeginCloudRunnerOperationInput } from "@qorpera/runtime/cloud-runner-broker";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	type CloudConnectorInputSchema,
 	type CloudSecretOperationClient,
 	cloudSecretTools,
 	describeCloudSecretTools,
+	validateCloudConnectorInput,
 } from "@qorpera/runtime/cloud-secret-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -193,15 +199,16 @@ it("exposes only a typed operation while keeping the credential and grant out of
 it("validates business arguments, reserves one receipt and calls the separate broker", async () => {
 	const fixture = await setup();
 	const tool = fixture.tools[0];
+	const title = "input.title must be a string of 1 to 256 characters matching ^[A-Za-z][A-Za-z0-9 _-]{0,255}$";
 	expect(() => tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "", priority: 2 } })).toThrow(
-		"Connector string input is invalid",
+		title,
 	);
 	expect(() =>
 		tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "1 invalid title", priority: 2 } }),
-	).toThrow("Connector string input is invalid");
+	).toThrow(title);
 	expect(() =>
 		tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "Login is broken", extra: true } }),
-	).toThrow("extra fields");
+	).toThrow("input has no field extra; its fields are priority, title");
 	const output = await tool.execute(
 		{ idempotencyKey: "issue-login", input: { title: "Login is broken", priority: 2 } },
 		{
@@ -220,6 +227,135 @@ it("validates business arguments, reserves one receipt and calls the separate br
 	expect(
 		fixture.pathControl.call.mock.calls.filter(([method]) => method === "qorpera_assert_native_connector_operation"),
 	).toHaveLength(3);
+});
+
+it("refuses each malformed connector call with the rule it broke and none of its values", async () => {
+	const fixture = await setup();
+	const observed = observedBoundary(fixture);
+	const call = 'The call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
+	const key =
+		"idempotencyKey must be 1 to 128 letters, digits or . _ : -, starting with a letter or digit (^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$)";
+	const fields = "its fields are priority, title";
+	const title = "input.title must be a string of 1 to 256 characters matching ^[A-Za-z][A-Za-z0-9 _-]{0,255}$";
+	const priority = "input.priority must be a whole number from 0 to 4";
+	const issue = { idempotencyKey: "issue-login" };
+	const cases: [string, unknown, string][] = [
+		["list", ["PRIVATE_VALUE"], call],
+		["text", "PRIVATE_VALUE", call],
+		["flat", { title: "PRIVATE_VALUE", priority: 2 }, `${call}; priority, title go inside input`],
+		["beside", { ...issue, input: {}, title: "PRIVATE_VALUE" }, `${call}; title goes inside input`],
+		["named_key", { ...issue, input: { title: "Ok" }, note: "PRIVATE_VALUE" }, `${call}, without note`],
+		["unnamed_key", { ...issue, input: { title: "Ok" }, "PRIVATE KEY": 1 }, `${call}, without other fields`],
+		["no_key", { input: { title: "PRIVATE_VALUE" } }, `${call}; idempotencyKey is missing`],
+		[
+			"no_input",
+			{ idempotencyKey: "PRIVATE-VALUE" },
+			`${call}; input is missing (it holds the tool's fields, or is {} for none)`,
+		],
+		["bad_key", { idempotencyKey: "PRIVATE VALUE", input: { title: "Ok" } }, key],
+		["number_key", { idempotencyKey: 4242, input: { title: "Ok" } }, key],
+		["text_input", { ...issue, input: "PRIVATE_VALUE" }, "input must be an object"],
+		[
+			"named_field",
+			{ ...issue, input: { title: "Ok", labels: ["PRIVATE_VALUE"] } },
+			`input has no field labels; ${fields}`,
+		],
+		[
+			"unnamed_field",
+			{ ...issue, input: { title: "Ok", "PRIVATE KEY": 1 } },
+			`input has a field the tool does not take; ${fields}`,
+		],
+		["required", { ...issue, input: { priority: 2 } }, "input is missing the required field title"],
+		["pattern", { ...issue, input: { title: "1 PRIVATE_VALUE" } }, title],
+		["length", { ...issue, input: { title: "" } }, title],
+		["string_type", { ...issue, input: { title: ["PRIVATE_VALUE"] } }, title],
+		["range", { ...issue, input: { title: "Ok", priority: 9 } }, priority],
+		["fraction", { ...issue, input: { title: "Ok", priority: 2.5 } }, priority],
+		["number_type", { ...issue, input: { title: "Ok", priority: "PRIVATE_VALUE" } }, priority],
+	];
+	try {
+		for (const [callId, args, reason] of cases) {
+			const reply = await observed.boundary.invoke(`call_${callId}`, "qorpera", "linear_issue_create", args);
+			expect(reply.success, callId).toBe(false);
+			expect(reply.contentItems[0].text, callId).not.toContain("PRIVATE");
+			const envelope = JSON.parse(reply.contentItems[0].text) as CloudToolResult;
+			expect([envelope.status, envelope.content.text], callId).toEqual(["denied", `INVALID_ARGUMENTS: ${reason}`]);
+		}
+		// Arguments over the boundary's bound are never read, so their refusal stays bare.
+		const oversized = await observed.boundary.invoke("call_oversized", "qorpera", "linear_issue_create", {
+			...issue,
+			input: { title: `A${"PRIVATE".repeat(10_000)}` },
+		});
+		expect(JSON.parse(oversized.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS" },
+		});
+		expect(fixture.operationControl.beginToolOperation).not.toHaveBeenCalled();
+		expect(fixture.broker.execute).not.toHaveBeenCalled();
+		expect(fixture.pathControl.call.mock.calls.map(([method]) => method)).not.toContain(
+			"qorpera_assert_native_connector_operation",
+		);
+		// A well-formed call after them is untouched: one receipt, one broker call with its own arguments.
+		const valid = await observed.invoke("call_valid");
+		expect(valid.success).toBe(true);
+		expect(JSON.parse(valid.contentItems[0].text)).toMatchObject({ status: "ok" });
+		expect(fixture.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
+		expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
+		await observed.observability.close();
+		const finished = observed.rows.filter((row) => row.operation === "connector" && row.phase === "finish");
+		expect(finished.map((row) => [row.status, row.errorCategory])).toEqual([
+			...[...cases, "oversized"].map(() => ["denied", "invalid_arguments"]),
+			["succeeded", null],
+		]);
+		expect(JSON.stringify(observed.rows)).not.toContain("PRIVATE");
+	} finally {
+		observed.boundary.close();
+	}
+});
+
+it("words a nested or listed rule from the schema alone and keeps each reason within 1 KiB", () => {
+	const schema: CloudConnectorInputSchema = {
+		type: "object",
+		properties: {
+			labels: { type: "array", items: { type: "string", minLength: 1, maxLength: 50 }, maxItems: 10 },
+			filter: {
+				type: "object",
+				properties: { state: { type: "string", enum: ["open", "closed"] } },
+				required: ["state"],
+				additionalProperties: false,
+			},
+			kind: { type: "string", enum: ["x".repeat(600)] },
+			none: { type: "object", properties: {}, additionalProperties: false },
+		},
+		additionalProperties: false,
+	};
+	const wide: CloudConnectorInputSchema = {
+		type: "object",
+		properties: Object.fromEntries(
+			Array.from({ length: 20 }, (_, index) => [`field_${index}_${"x".repeat(50)}`, { type: "boolean" as const }]),
+		),
+		additionalProperties: false,
+	};
+	const refusal = (value: JsonValue, against = schema) => {
+		try {
+			validateCloudConnectorInput(value, against);
+		} catch (error) {
+			expect(error).toBeInstanceOf(CloudToolArgumentRefusal);
+			return (error as Error).message;
+		}
+		throw new Error("The input was accepted");
+	};
+	expect(refusal({ labels: ["bug", ""] })).toBe("each item of input.labels must be a string of 1 to 50 characters");
+	expect(refusal({ labels: "PRIVATE" })).toBe(
+		"input.labels must be a list of at most 10 items, each a string of 1 to 50 characters",
+	);
+	expect(refusal({ filter: { state: "PRIVATE" } })).toBe(
+		'input.filter.state must be a string, one of "open", "closed"',
+	);
+	expect(refusal({ filter: {} })).toBe("input.filter is missing the required field state");
+	expect(refusal({ kind: "PRIVATE" })).toBe("input.kind must be a string, one of the values the tool's schema lists");
+	expect(refusal({ none: { PRIVATE: 1 } })).toBe("input.none must be {}: it has no fields");
+	expect(refusal({ other: true }, wide)).toBe("input has a field the tool does not take");
 });
 
 it("rechecks a revoked grant before effect and leaves the broker untouched", async () => {
