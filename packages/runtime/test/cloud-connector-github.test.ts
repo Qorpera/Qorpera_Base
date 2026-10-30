@@ -158,8 +158,12 @@ it("refuses wrong destinations, credential names, token shapes and off-schema ar
 	await expect(get.execute(input(args, { credentials: { access_token: "short" } }))).rejects.toThrow(
 		"credential shape",
 	);
-	await expect(get.execute(input({ ...args, extra: true }))).rejects.toThrow("extra fields");
-	await expect(get.execute(input({ owner: "../../etc", repository: "x", number: 1 }))).rejects.toThrow("invalid");
+	await expect(get.execute(input({ ...args, extra: true }))).rejects.toThrow(
+		"input has no field extra; its fields are owner, repository, number, comment_limit",
+	);
+	await expect(get.execute(input({ owner: "../../etc", repository: "x", number: 1 }))).rejects.toThrow(
+		"input.owner must be a string of 1 to 39 characters matching ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$",
+	);
 	await expect(
 		adapter("read_file", fetchImplementation).execute(
 			input({ owner: "acme", repository: "roadmap", path: "a/../b" }),

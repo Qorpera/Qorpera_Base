@@ -3,7 +3,7 @@ import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { CLOUD_PAIRED_REQUEST_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool, CloudToolContent } from "./cloud-native-tool-boundary.ts";
-import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import { CloudToolArgumentRefusal, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperation, CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import type { CloudSecretOperationRequest } from "./cloud-secret-broker.ts";
 
@@ -11,6 +11,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** A supplied key a refusal may name: a plain identifier, never free text. */
+const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+/** The one shape of a connector call, as its refusals show it. */
+const INVOCATION = 'The call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
 
 export type CloudConnectorInputSchema = {
 	type: "object";
@@ -307,7 +311,73 @@ export function parseCloudConnectorInputSchema(value: unknown): CloudConnectorIn
 	return schema;
 }
 
-function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, depth = 0): void {
+/**
+ * Refuses a connector call's arguments with a reason the model can correct from. The reason is built only from the
+ * refusal's own words, the catalog schema (field names, bounds, patterns, listed values) and supplied keys that pass
+ * `FIELD_NAME`, never from a supplied value. One over the boundary's 1 KiB gives way to `short`.
+ */
+function refuse(reason: string, short: string): never {
+	throw new CloudToolArgumentRefusal(Buffer.byteLength(reason) <= 1024 ? reason : short);
+}
+
+/** A field's name in a refusal: `input.labels[]` is each item of `input.labels`. */
+function field(path: string): string {
+	return path.endsWith("[]") ? `each item of ${path.slice(0, -2)}` : path;
+}
+
+function count(minimum: number | undefined, maximum: number | undefined, unit: string): string {
+	// A lower bound of 0 bounds nothing.
+	const least = minimum || undefined;
+	const units = (bound: number) => `${bound} ${unit}${bound === 1 ? "" : "s"}`;
+	if (least !== undefined && maximum !== undefined)
+		return least === maximum ? ` of exactly ${units(maximum)}` : ` of ${least} to ${units(maximum)}`;
+	if (maximum !== undefined) return ` of at most ${units(maximum)}`;
+	return least === undefined ? "" : ` of at least ${units(least)}`;
+}
+
+function range(minimum: number | undefined, maximum: number | undefined): string {
+	if (minimum !== undefined && maximum !== undefined) return ` from ${minimum} to ${maximum}`;
+	if (minimum !== undefined) return ` of at least ${minimum}`;
+	return maximum === undefined ? "" : ` of at most ${maximum}`;
+}
+
+/** A schema's listed values, when they are short printable text; otherwise a pointer to the schema. */
+function listed(values: readonly (string | number)[] | undefined): string {
+	if (!values) return "";
+	const shown = values.map((value) => JSON.stringify(value)).join(", ");
+	return shown.length <= 512 && /^[\x20-\x7e]*$/.test(shown)
+		? `, one of ${shown}`
+		: ", one of the values the tool's schema lists";
+}
+
+/** What a schema node takes, in words: its type with the catalog's own bounds, pattern and listed values. */
+function takes(schema: CloudConnectorSchemaNode): string {
+	switch (schema.type) {
+		case "string": {
+			const pattern = schema.pattern === undefined ? "" : ` matching ${schema.pattern}`;
+			return `a string${count(schema.minLength, schema.maxLength, "character")}${pattern}${listed(schema.enum)}`;
+		}
+		case "number":
+		case "integer": {
+			const kind = schema.type === "integer" ? "a whole number" : "a number";
+			return `${kind}${range(schema.minimum, schema.maximum)}${listed(schema.enum)}`;
+		}
+		case "boolean":
+			return "true or false";
+		case "null":
+			return "null";
+		case "array":
+			return `a list${count(schema.minItems, schema.maxItems, "item")}, each ${takes(schema.items)}`;
+		case "object":
+			return "an object";
+	}
+}
+
+function refuseValue(path: string, schema: CloudConnectorSchemaNode): never {
+	refuse(`${field(path)} must be ${takes(schema)}`, `${field(path)} does not fit the tool's schema`);
+}
+
+function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, path = "input", depth = 0): void {
 	if (depth > 6) throw new Error("Connector input is too deep");
 	if (schema.type === "string") {
 		if (
@@ -317,7 +387,7 @@ function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, depth
 			(schema.enum !== undefined && !schema.enum.includes(value)) ||
 			(schema.pattern !== undefined && !matchesStringPattern(value, schema.pattern))
 		)
-			throw new Error("Connector string input is invalid");
+			refuseValue(path, schema);
 		return;
 	}
 	if (schema.type === "number" || schema.type === "integer") {
@@ -329,15 +399,15 @@ function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, depth
 			(schema.maximum !== undefined && value > schema.maximum) ||
 			(schema.enum !== undefined && !schema.enum.includes(value))
 		)
-			throw new Error("Connector numeric input is invalid");
+			refuseValue(path, schema);
 		return;
 	}
 	if (schema.type === "boolean") {
-		if (typeof value !== "boolean") throw new Error("Connector boolean input is invalid");
+		if (typeof value !== "boolean") refuseValue(path, schema);
 		return;
 	}
 	if (schema.type === "null") {
-		if (value !== null) throw new Error("Connector null input is invalid");
+		if (value !== null) refuseValue(path, schema);
 		return;
 	}
 	if (schema.type === "array") {
@@ -346,18 +416,31 @@ function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, depth
 			(schema.minItems !== undefined && value.length < schema.minItems) ||
 			(schema.maxItems !== undefined && value.length > schema.maxItems)
 		)
-			throw new Error("Connector array input is invalid");
-		for (const child of value) validateValue(child, schema.items, depth + 1);
+			refuseValue(path, schema);
+		for (const child of value) validateValue(child, schema.items, `${path}[]`, depth + 1);
 		return;
 	}
 	if (schema.type !== "object") throw new Error("Connector schema type is unsupported");
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error("Connector object input is invalid");
-	const keys = Object.keys(value);
-	if (keys.some((name) => !Object.hasOwn(schema.properties, name)))
-		throw new Error("Connector input has extra fields");
-	if (schema.required?.some((name) => !Object.hasOwn(value, name))) throw new Error("Connector input is incomplete");
-	for (const [name, child] of Object.entries(value)) validateValue(child, schema.properties[name], depth + 1);
+	if (!value || typeof value !== "object" || Array.isArray(value)) refuseValue(path, schema);
+	const names = Object.keys(schema.properties);
+	const extra = Object.keys(value).find((name) => !Object.hasOwn(schema.properties, name));
+	if (extra !== undefined) {
+		const named = FIELD_NAME.test(extra) ? `no field ${extra}` : "a field the tool does not take";
+		refuse(
+			names.length
+				? `${field(path)} has ${named}; its fields are ${names.join(", ")}`
+				: `${field(path)} must be {}: it has no fields`,
+			`${field(path)} has a field the tool does not take`,
+		);
+	}
+	const missing = schema.required?.filter((name) => !Object.hasOwn(value, name)) ?? [];
+	if (missing.length)
+		refuse(
+			`${field(path)} is missing the required ${missing.length === 1 ? "field" : "fields"} ${missing.join(", ")}`,
+			`${field(path)} is missing a required field`,
+		);
+	for (const [name, child] of Object.entries(value))
+		validateValue(child, schema.properties[name], `${path}.${name}`, depth + 1);
 }
 
 /** Re-validates business arguments against a closed connector schema. The
@@ -459,13 +542,36 @@ export async function describeCloudSecretTools(
 }
 
 function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolDescriptor) {
-	const input = record(value, "Connector invocation");
 	if (
-		Object.keys(input).sort().join() !== "idempotencyKey,input" ||
-		typeof input.idempotencyKey !== "string" ||
-		!OPERATION_KEY.test(input.idempotencyKey)
-	)
-		throw new Error("Connector invocation is invalid");
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.getPrototypeOf(value) !== Object.prototype
+	) {
+		throw new CloudToolArgumentRefusal(INVOCATION);
+	}
+	const input = value as Record<string, unknown>;
+	const extra = Object.keys(input).filter((key) => key !== "idempotencyKey" && key !== "input");
+	if (extra.length) {
+		// The tool's own fields sent beside input, not in it, are named in the schema's order: they are its names.
+		const misplaced = Object.keys(descriptor.inputSchema.properties).filter((name) => extra.includes(name));
+		refuse(
+			misplaced.length
+				? `${INVOCATION}; ${misplaced.join(", ")} ${misplaced.length === 1 ? "goes" : "go"} inside input`
+				: `${INVOCATION}, without ${FIELD_NAME.test(extra[0] as string) ? extra[0] : "other fields"}`,
+			INVOCATION,
+		);
+	}
+	if (!Object.hasOwn(input, "idempotencyKey"))
+		throw new CloudToolArgumentRefusal(`${INVOCATION}; idempotencyKey is missing`);
+	if (!Object.hasOwn(input, "input"))
+		throw new CloudToolArgumentRefusal(
+			`${INVOCATION}; input is missing (it holds the tool's fields, or is {} for none)`,
+		);
+	if (typeof input.idempotencyKey !== "string" || !OPERATION_KEY.test(input.idempotencyKey))
+		throw new CloudToolArgumentRefusal(
+			`idempotencyKey must be 1 to 128 letters, digits or . _ : -, starting with a letter or digit (${OPERATION_KEY.source})`,
+		);
 	cloudToolJsonText(input.input, 64 * 1024);
 	validateValue(input.input as JsonValue, descriptor.inputSchema);
 	return { idempotencyKey: input.idempotencyKey, input: structuredClone(input.input) as JsonValue };
