@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
 	parseRunnerBearer,
 	parseRunnerControlRequest,
+	runnerControlRejectionLog,
 	runnerControlRpcName,
 	runnerControlRpcStatus,
 	runnerStartRpcStatus,
@@ -162,5 +163,31 @@ describe("runner control boundary", () => {
 		}
 		// Only the start action treats a missing function as "use the separate calls".
 		assert.equal(runnerControlRpcStatus({ code: "PGRST202" }), 503);
+	});
+
+	it("logs a rejection as its function's name and SQLSTATE, never the error's words or an id", () => {
+		// The refusal of 30 October: the database's message names the run's work, its details an id.
+		const refused = {
+			code: "55000",
+			message: "Governed execution has unresolved or ungoverned work",
+			details: `job ${jobId} lease ${token}`,
+			hint: `runner ${runnerId}`,
+		};
+		const line = runnerControlRejectionLog("complete", refused);
+		assert.equal(line, "runner-control rejected rpc=qorpera_complete_runner_job_v6 sqlstate=55000");
+		for (const secret of [refused.message, jobId, runnerId, token, "Governed"]) assert.ok(!line.includes(secret));
+		assert.equal(
+			runnerControlRejectionLog("start", { code: "PGRST202" }),
+			"runner-control rejected rpc=qorpera_start_runner_assignment sqlstate=PGRST202",
+		);
+		// A code of any other shape is never echoed, and a missing one is said.
+		assert.equal(
+			runnerControlRejectionLog("fail", { code: `bad ${token}` }),
+			"runner-control rejected rpc=qorpera_fail_runner_job sqlstate=other",
+		);
+		assert.equal(
+			runnerControlRejectionLog("renew", {}),
+			"runner-control rejected rpc=qorpera_renew_runner_job sqlstate=none",
+		);
 	});
 });

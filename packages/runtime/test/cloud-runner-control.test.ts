@@ -237,6 +237,55 @@ describe("disposable cloud runner", () => {
 		});
 	});
 
+	it("swaps a refused staged completion for a staged failure in one saved step, and sends only that failure", async () => {
+		const pairing = createCloudRunnerPairingSecret();
+		const store = new MemoryAuthorityStore();
+		const actions: string[] = [];
+		const transport: CloudRunnerControlTransport = {
+			request: vi.fn(async (_token, body) => {
+				actions.push(body.action);
+				if (body.action === "activate") return runnerRecord();
+				if (body.action === "accept") return jobRecord("leased");
+				if (body.action === "complete") throw new CloudRunnerControlRequestError(423);
+				if (body.action === "fail") {
+					return {
+						...jobRecord("leased"),
+						status: "failed",
+						lease_expires_at: null,
+						finished_at: "2026-08-16T12:03:00.000Z",
+					};
+				}
+				throw new Error("unexpected runner action");
+			}),
+		};
+		let runner = await DisposableCloudRunner.open(transport, runnerId, store, pairing.activationToken);
+		await runner.activate("linux-x64", "0.1.0");
+		await runner.acceptAssignment({ assignmentId, jobId, capability: assignmentCapability });
+		await expect(runner.replaceStagedCompletionWithFailure(jobId, "Completion refused", false)).rejects.toThrow(
+			"no staged completion",
+		);
+		await expect(runner.complete(jobId, { outcome: "ok" })).rejects.toThrow("Runner control request failed (423)");
+		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "ok" });
+
+		// A save that fails leaves the staged completion as it was.
+		vi.spyOn(store, "save").mockRejectedValueOnce(new Error("disk full"));
+		await expect(runner.replaceStagedCompletionWithFailure(jobId, "Completion refused", false)).rejects.toThrow(
+			"disk full",
+		);
+		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "ok" });
+		expect(runner.stagedFailure(jobId)).toBeUndefined();
+
+		await runner.replaceStagedCompletionWithFailure(jobId, "Completion refused", false);
+		runner = await DisposableCloudRunner.open(transport, runnerId, store);
+		expect(runner.pendingCompletion(jobId)).toBeUndefined();
+		expect(runner.stagedFailure(jobId)).toEqual({ error: "Completion refused", retryable: false });
+		// The refused completion is never staged over it again.
+		await expect(runner.stageCompletion(jobId, { outcome: "ok" })).rejects.toThrow("already has a staged failure");
+		await expect(runner.fail(jobId, "Completion refused", false)).resolves.toMatchObject({ jobId, status: "failed" });
+		expect(actions).toEqual(["activate", "accept", "complete", "fail"]);
+		expect(runner.leasedJobs()).toEqual([]);
+	});
+
 	it("recovers heartbeat authority after the previous-token grace period", async () => {
 		const pairing = createCloudRunnerPairingSecret();
 		const attempts: Array<{ token: string; body: CloudRunnerControlRequest }> = [];

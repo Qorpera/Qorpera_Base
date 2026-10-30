@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { codingFailureReason, runFailureInterrupted, runFailureReason } from "../src/ui/run-failure.ts";
 
+// The runner's own failure when the cloud refuses a run's completion for good (runtime cloud-runner-worker.ts).
+const COMPLETION_REFUSED =
+	"Runner completion was refused: the run left unsettled work, such as an open operation receipt [code=RUN_COMPLETION_REFUSED]";
+
 describe("why a run stopped, in the member's words", () => {
 	it.each([
 		[
@@ -46,6 +50,18 @@ describe("why a run stopped, in the member's words", () => {
 			"Runner lease expired before durable completion [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]",
 			"failed",
 			/^Qorpera lost contact with this run\./,
+		],
+		// The run ended, but its completion was refused because a save was left unsettled (30 October): a person checks
+		// that save first, and the run never reads as lost contact.
+		[
+			COMPLETION_REFUSED,
+			"failed",
+			/^The run ended, but one of its saves did not finish\. A person must check it before the run can be tried again\.$/,
+		],
+		[
+			`${COMPLETION_REFUSED}; durable attempt output requires review`,
+			"failed",
+			/^The run ended, but one of its saves did not finish\./,
 		],
 		// A step cancelled from Qorpera's side was not refused (WB-001, 28 October: the database stopped answering).
 		[
@@ -114,6 +130,8 @@ describe("why a run stopped, in the member's words", () => {
 describe("whether a stopped run is worth trying again as it is", () => {
 	it.each([
 		["Runner lease expired before durable completion; durable attempt output requires review", "failed", true],
+		// It keeps the Try again it had when it read as lost contact; its reason says a person checks the save first.
+		[`${COMPLETION_REFUSED}; durable attempt output requires review`, "failed", true],
 		[
 			"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)",
 			"failed",
@@ -176,6 +194,10 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		[
 			`${DID_NOT_FINISH}Runner lease expired before durable completion; durable attempt output requires review`,
 			/^Qorpera lost contact with this session\./,
+		],
+		[
+			`${DID_NOT_FINISH}${COMPLETION_REFUSED}; durable attempt output requires review`,
+			/^One of the session's saves did not finish, and a person must check it first\./,
 		],
 		[
 			`${DID_NOT_FINISH}Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)`,

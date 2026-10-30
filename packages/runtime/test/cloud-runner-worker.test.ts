@@ -16,7 +16,11 @@ import {
 } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
 import type { CloudRunnerExecutionResult } from "@qorpera/runtime/cloud-runner-sandbox";
-import { type CloudRunnerCompanyExecutor, EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
+import {
+	type CloudRunnerCompanyExecutor,
+	EphemeralCloudRunnerWorker,
+	RUN_COMPLETION_REFUSED_FAILURE,
+} from "@qorpera/runtime/cloud-runner-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
@@ -94,6 +98,7 @@ class RunnerService implements CloudRunnerControlTransport {
 	status: "queued" | "leased" | "completed" | "failed" = "queued";
 	failCompletionOnce = false;
 	completionErrorStatus?: number;
+	failureErrorStatus?: number;
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.requests.push(structuredClone(body));
@@ -121,6 +126,11 @@ class RunnerService implements CloudRunnerControlTransport {
 			return jobRecord("completed", body.result);
 		}
 		if (body.action !== "fail") throw new Error("unexpected runner action");
+		if (this.failureErrorStatus !== undefined) {
+			const status = this.failureErrorStatus;
+			this.failureErrorStatus = undefined;
+			throw new CloudRunnerControlRequestError(status);
+		}
 		this.status = body.retryable ? "queued" : "failed";
 		return jobRecord(this.status);
 	}
@@ -417,7 +427,70 @@ describe("ephemeral cloud runner worker", () => {
 		expect(executeJob).toHaveBeenCalledOnce();
 	});
 
-	it("retains a staged completion while a model request is unresolved", async () => {
+	// The cloud refuses a completion for good (423) when the run left unsettled work, such as a save whose receipt is
+	// still executing. The run fails at once with a fixed reason, instead of going silent until the lease sweep fails
+	// it as lost contact minutes later (30 October 2026).
+	it("fails a run at once when the cloud refuses its completion for good", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.completionErrorStatus = 423;
+		const executeJob = vi.fn(async () => successfulExecution({ outcome: "unsettled" }));
+
+		const result = await worker(runner, executeJob).runNext(assignment);
+
+		expect(result).toMatchObject({ status: "failed", job: { jobId, status: "failed" } });
+		expect(service.requests.map((request) => request.action)).toEqual(["activate", "start", "complete", "fail"]);
+		expect(service.requests.at(-1)).toEqual({
+			action: "fail",
+			runnerId,
+			jobId,
+			leaseToken: assignment.capability,
+			error: RUN_COMPLETION_REFUSED_FAILURE,
+			retryable: false,
+		});
+		expect(runner.leasedJobs()).toEqual([]);
+		// The cloud ends the native lease with the failed job.
+		expect(lane.release).not.toHaveBeenCalled();
+		expect(executeJob).toHaveBeenCalledOnce();
+	});
+
+	it("keeps a completion staged, and fails nothing, when the cloud did not refuse it for good", async () => {
+		for (const status of [503, 409]) {
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			service.completionErrorStatus = status;
+			const executeJob = vi.fn(async () => successfulExecution({ outcome: "staged" }));
+
+			await expect(worker(runner, executeJob).runNext(assignment)).rejects.toThrow(
+				`Runner control request failed (${status})`,
+			);
+			expect(service.requests.some((request) => request.action === "fail")).toBe(false);
+			expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "staged" });
+			expect(runner.stagedFailure(jobId)).toBeUndefined();
+		}
+	});
+
+	it("sends the staged failure, never the refused completion, after the failure's answer was lost", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.completionErrorStatus = 423;
+		service.failureErrorStatus = 503;
+		const executeJob = vi.fn(async () => successfulExecution({ outcome: "unsettled" }));
+		const ephemeralWorker = worker(runner, executeJob);
+		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("Runner control request failed (503)");
+		expect(runner.pendingCompletion(jobId)).toBeUndefined();
+		expect(runner.stagedFailure(jobId)).toEqual({ error: RUN_COMPLETION_REFUSED_FAILURE, retryable: false });
+
+		await expect(ephemeralWorker.runNext(undefined)).resolves.toMatchObject({ status: "failed" });
+		expect(service.requests.filter((request) => request.action === "complete")).toHaveLength(1);
+		const failures = service.requests.filter((request) => request.action === "fail");
+		expect(failures).toHaveLength(2);
+		expect(failures[0]).toEqual(failures[1]);
+		expect(runner.leasedJobs()).toEqual([]);
+		expect(executeJob).toHaveBeenCalledOnce();
+	});
+
+	it("fails a replayed completion the cloud refuses for good, without rerunning the company run", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
@@ -426,9 +499,18 @@ describe("ephemeral cloud runner worker", () => {
 		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		service.completionErrorStatus = 423;
 
-		await expect(ephemeralWorker.runNext(undefined)).rejects.toThrow("Runner control request failed (423)");
-		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "waiting" });
-		expect(runner.leasedJobs()).toHaveLength(1);
+		await expect(ephemeralWorker.runNext(undefined)).resolves.toMatchObject({
+			status: "failed",
+			job: { status: "failed" },
+		});
+		expect(service.requests.filter((request) => request.action === "complete")).toHaveLength(2);
+		expect(service.requests.at(-1)).toMatchObject({
+			action: "fail",
+			error: RUN_COMPLETION_REFUSED_FAILURE,
+			retryable: false,
+		});
+		expect(runner.pendingCompletion(jobId)).toBeUndefined();
+		expect(runner.leasedJobs()).toEqual([]);
 		expect(executeJob).toHaveBeenCalledOnce();
 	});
 

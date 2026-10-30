@@ -10,6 +10,7 @@ export type RunFailureKind =
 	| "usage_limit"
 	| "credential"
 	| "dispatch"
+	| "completion_refused"
 	| "lost"
 	| "step_timeout"
 	| "timeout"
@@ -29,6 +30,10 @@ export function classifyRunFailure(
 	// a spent budget, which a full context window shares. When the cloud says (true or false), it decides;
 	// only an older cloud, which says nothing, leaves it to the error text below.
 	if (usageLimit === true) return "usage_limit";
+	// The run ended, but the cloud refused its completion because work was left unsettled, such as a save whose outcome
+	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
+	// contact minutes later.
+	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
 	// It names Qorpera's own machinery, not a member's account, so its words never decide the class: the step stays
 	// "bridge", as it was before the code. Only its category can: a step that ran out of time
@@ -68,6 +73,11 @@ const REASONS: Record<RunFailureKind, string> = {
 	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
+	// Try again is refused while a save is unsettled, so the member reads that a person checks it first, never that a
+	// retry would do.
+	completion_refused: phrase(
+		"The run ended, but one of its saves did not finish. A person must check it before the run can be tried again.",
+	),
 	lost: phrase("Qorpera lost contact with this run. The problem is on Qorpera's side."),
 	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
@@ -125,6 +135,9 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 		"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.",
 	),
 	dispatch: phrase("No computer could be started for the session. The workspace is kept; a follow-up tries again."),
+	completion_refused: phrase(
+		"One of the session's saves did not finish, and a person must check it first. The workspace is kept; a follow-up continues it after that.",
+	),
 	lost: phrase("Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again."),
 	step_timeout: phrase(
 		"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.",
@@ -165,7 +178,10 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
  * it, a step got no answer in time, it was stopped for time, cancelled, or never
  * got a computer. Those are worth trying again as they are.
  * A reached usage limit, a disconnected account or a company out of computer hours
- * need someone to act first, so their card offers Dismiss only and says what to do. */
+ * need someone to act first, so their card offers Dismiss only and says what to do.
+ * A refused completion keeps the Try again it had when it read as lost contact: the
+ * card still hides it while the run's save is unsettled (canRetryFailedRun), and
+ * its reason says a person checks that save first. */
 export function runFailureInterrupted(
 	lastError: string | undefined,
 	jobStatus: "failed" | "cancelled",
@@ -173,7 +189,12 @@ export function runFailureInterrupted(
 ): boolean {
 	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
 	return (
-		kind === "lost" || kind === "step_timeout" || kind === "timeout" || kind === "dispatch" || kind === "cancelled"
+		kind === "lost" ||
+		kind === "completion_refused" ||
+		kind === "step_timeout" ||
+		kind === "timeout" ||
+		kind === "dispatch" ||
+		kind === "cancelled"
 	);
 }
 

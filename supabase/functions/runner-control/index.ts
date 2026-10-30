@@ -2,6 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
+	runnerControlRejectionLog,
 	runnerControlRpcName,
 	runnerControlRpcStatus,
 	runnerStartRpcStatus,
@@ -125,6 +126,7 @@ Deno.serve(async (request) => {
 	}
 	const { data, error } = await client.rpc(runnerControlRpcName(action.action), args);
 	if (error) {
+		console.warn(runnerControlRejectionLog(action.action, error));
 		const status = action.action === "start" ? runnerStartRpcStatus(error) : runnerControlRpcStatus(error);
 		return jsonResponse({ error: "Runner request was rejected" }, status);
 	}

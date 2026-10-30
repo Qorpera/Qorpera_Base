@@ -84,6 +84,18 @@ export function runnerStartRpcStatus(error: { code?: string }): number {
 	return error.code === "PGRST202" ? 501 : runnerControlRpcStatus(error);
 }
 
+/** The one line a rejected call logs: the function's name and its SQLSTATE (or PostgREST code), so a refused
+ * completion is seen where it happens (30 October 2026). Never the error's message, details or hint, which can name
+ * the run's work, and never an argument or token. A code of any other shape is logged as "other". */
+export function runnerControlRejectionLog(action: RunnerControlRequest["action"], error: { code?: string }): string {
+	const code = error.code
+		? /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(error.code)
+			? error.code
+			: "other"
+		: "none";
+	return `runner-control rejected rpc=${runnerControlRpcName(action)} sqlstate=${code}`;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
