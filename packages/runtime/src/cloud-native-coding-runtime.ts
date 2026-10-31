@@ -667,6 +667,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						throw new Error("CODING_NATIVE_BINDING_CHANGED");
 					return (await authorize(checked)).authority;
 				},
+				// The coding authorize takes the run's budget row: its checks wait out a lost copy (R2, 31 Oct 2026).
+				runRowMs: CLOUD_RUN_ROW_READ_MS,
 				beginToolOperation: (value, input, checked) => this.#control.beginToolOperation(value, input, checked),
 				completeToolOperation: (value, input, checked) =>
 					this.#control.completeToolOperation(value, input, checked),
