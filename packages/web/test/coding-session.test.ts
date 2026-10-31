@@ -21,6 +21,7 @@ import {
 	codingSessionLine,
 	codingSessionStandby,
 	codingSessionStatus,
+	codingTurnStartedAt,
 	fmtDuration,
 	harnessBadge,
 	harnessMark,
@@ -72,9 +73,28 @@ function event(
 	return { id: idNumber, sequence: 1, kind, actor, body, at: timestamp };
 }
 
+/** An event of a given turn, at a given time. */
+function turnEvent(
+	idNumber: number,
+	sequence: number,
+	kind: CodingSessionEvent["kind"],
+	body: CodingSessionEvent["body"],
+	at: string,
+	actor: CodingSessionEvent["actor"] = "executor",
+): CodingSessionEvent {
+	return { ...event(idNumber, kind, body, actor), sequence, at };
+}
+
 const owner: CodingSessionNames = { agent: "Mark", owner: "you", ownerIsViewer: true };
 const other: CodingSessionNames = { agent: "Mark", owner: "Jonas", ownerIsViewer: false };
 const NOW = Date.parse("2026-09-22T10:04:00Z");
+/** The report of 31 Oct: a session started 22 h 11 min before NOW is on a follow-up's turn. */
+const RESUMED: Partial<CodingSession> = {
+	sequence: 2,
+	startedAt: "2026-09-21T11:53:00Z",
+	lastStep: "Workspace ready",
+	filesChanged: 0,
+};
 
 describe("the captions the kernel state produces", () => {
 	it("is one plain sentence around the harness, in English and in Danish", () => {
@@ -178,6 +198,53 @@ describe("the captions the kernel state produces", () => {
 		expect(fmtDuration(30_000)).toBe("less than a minute");
 		expect(fmtDuration(65 * 60_000)).toBe("1 h 5 min");
 		expect(shortBranch(`qorpera/coding/${WORKER}`)).toBe("qorpera/coding/1111…");
+	});
+
+	it("times a later turn from its own first claim, never from the session's start", () => {
+		const resumed = codingSession(RESUMED);
+		const events = [
+			turnEvent(1, 1, "phase", { phase: "preparing", owner: "executor" }, "2026-09-21T11:53:00Z"),
+			turnEvent(2, 1, "phase", { phase: "running" }, "2026-09-21T11:53:20Z"),
+			turnEvent(3, 2, "input", { text: "Also check the footer" }, "2026-09-22T10:03:02.824Z", "member"),
+			turnEvent(4, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:03:03Z"),
+			turnEvent(5, 2, "phase", { phase: "running" }, "2026-09-22T10:03:10Z"),
+		];
+		// The turn was claimed 57 s ago: it says so, not 22 h.
+		expect(codingTurnStartedAt(resumed, events)).toBe("2026-09-22T10:03:03Z");
+		expect(codingSessionStatus(resumed, owner, NOW, events)).toEqual({
+			text: "Working · less than a minute · Workspace ready",
+			tone: "working",
+		});
+		// Without the stream (the pill reads only the listing) a later turn shows no time, never the session's age.
+		expect(codingTurnStartedAt(resumed)).toBeUndefined();
+		expect(codingSessionStatus(resumed, owner, NOW)).toEqual({ text: "Working · Workspace ready", tone: "working" });
+		// An earlier turn's claim never dates this one: until this turn's claim is read, no time either.
+		expect(codingSessionStatus(resumed, owner, NOW, events.slice(0, 3)).text).toBe("Working · Workspace ready");
+		// A turn claimed again (deferred, then taken) counts from its first claim, as startedAt does for the first.
+		const reclaimed = [
+			...events.slice(0, 3),
+			turnEvent(4, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:02:30Z"),
+			turnEvent(5, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:03:30Z"),
+			turnEvent(6, 2, "phase", { phase: "running" }, "2026-09-22T10:03:40Z"),
+		];
+		expect(codingSessionStatus(resumed, owner, NOW, reclaimed).text).toBe("Working · 1 min · Workspace ready");
+		// The first turn keeps its own time, from startedAt, with the stream or without it.
+		const first = "Working · 4 min · running vitest in packages/web · 3 files changed";
+		expect(codingSessionStatus(codingSession(), owner, NOW, events.slice(0, 2)).text).toBe(first);
+		expect(codingSessionStatus(codingSession(), owner, NOW).text).toBe(first);
+		// Preparing and waiting for an answer count from updatedAt, as before, on any turn.
+		for (const sequence of [1, 2]) {
+			const turn = { ...RESUMED, sequence };
+			expect(codingSessionStatus(codingSession({ ...turn, phase: "preparing" }), owner, NOW, events).text).toBe(
+				"Preparing the workspace · 1 min",
+			);
+			expect(codingSessionStatus(codingSession({ ...turn, phase: "awaiting_input" }), other, NOW, events).text).toBe(
+				"Needs Jonas · paused 1 min",
+			);
+			expect(codingSessionStatus(codingSession({ ...turn, phase: "awaiting_input" }), owner, NOW).text).toBe(
+				"Needs you · your answer is recorded in this thread",
+			);
+		}
 	});
 
 	it("knows when the owner may type: while the session asks, or once it settled", () => {
@@ -1036,6 +1103,30 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-row-step:last-child")?.textContent).toBe("Step 230");
 	});
 
+	it("times a later turn's footer from that turn's first claim, never from a later one or the session's start", async () => {
+		// The follow-up's turn was claimed 90 s ago, deferred, and claimed again 30 s ago.
+		const events = [
+			turnEvent(1, 1, "phase", { phase: "preparing", owner: "executor" }, "2026-09-21T11:53:00Z"),
+			turnEvent(2, 1, "phase", { phase: "running" }, "2026-09-21T11:53:20Z"),
+			turnEvent(3, 2, "input", { text: "Also check the footer" }, "2026-09-22T10:02:29Z", "member"),
+			turnEvent(4, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:02:30Z"),
+			turnEvent(5, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:03:30Z"),
+			turnEvent(6, 2, "phase", { phase: "running" }, "2026-09-22T10:03:40Z"),
+		];
+		// Three events a page: the first read stops before the turn's claim, and the footer shows no time until the
+		// next page brings it. The stream is read from its start, so a later claim never comes before the first.
+		const { element, read } = mount(codingSession(RESUMED), { events, page: 3 });
+		const status = () => element.el.querySelector(".coding-status-text")?.textContent;
+		await settle();
+		expect(status()).toBe("Working · Workspace ready");
+		for (let i = 0; i < 3; i++) {
+			await vi.advanceTimersByTimeAsync(0);
+			await settle();
+		}
+		expect(read.mock.calls.map((call) => call[1])).toEqual([0, 3, 6]);
+		expect(status()).toBe("Working · 1 min · Workspace ready");
+	});
+
 	it("folds only when it hides a few steps, and keeps its edge as new steps arrive", async () => {
 		const few = mount(codingSession(), {
 			events: Array.from({ length: 12 }, (_, index) => event(index + 1, "step", { text: `Step ${index + 1}` })),
@@ -1431,6 +1522,26 @@ describe("the sessions' pill above the composer", () => {
 		expect(pill.el.querySelector(".coding-pill-label")?.textContent).toBe("7 coding agents");
 		// The summary stays outside the scrolling lines.
 		expect(pill.el.querySelector(".coding-pill-rows .coding-pill-summary")).toBeNull();
+	});
+
+	it("leaves a later turn's time out, rather than show the session's age; a first turn keeps its own", () => {
+		stubFigureMotion();
+		const pill = new CodingPill(vi.fn());
+		document.body.append(pill.el);
+		// The listing has no turn start, only the session's.
+		pill.update(
+			[codingSession(RESUMED)],
+			() => staff,
+			() => owner,
+		);
+		const note = () => pill.el.querySelector(".coding-pill-note")?.textContent;
+		expect(note()).toBe("Working · Workspace ready");
+		pill.update(
+			[codingSession()],
+			() => staff,
+			() => owner,
+		);
+		expect(note()).toBe("Working · 4 min · running vitest in packages/web · 3 files changed");
 	});
 
 	it("asks only the session's owner: another member's question reads as theirs, quietly, with Open", () => {

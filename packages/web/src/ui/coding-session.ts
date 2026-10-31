@@ -103,12 +103,29 @@ export function codingSessionStandby(
 /** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
 const HOURS_STEP = "Waiting for computer hours";
 
+/** When the session's current turn started: its first claim, as `startedAt` is for the first turn (a deferred
+ * turn claimed again keeps its first). A later turn's start is only in the event stream, as its first `preparing`,
+ * so `events` must be the stream as read from its start (the session's thread reads it so); without the event,
+ * nothing, never the session's age. */
+export function codingTurnStartedAt(
+	session: Pick<CodingSession, "sequence" | "startedAt">,
+	events: readonly CodingSessionEvent[] = [],
+): string | undefined {
+	if (session.sequence <= 1) return session.startedAt;
+	return events.find(
+		(event) =>
+			event.sequence === session.sequence && event.kind === "phase" && text(event.body, "phase") === "preparing",
+	)?.at;
+}
+
 /** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
- * stands by on its machine, runs something there, or sleeps. */
+ * stands by on its machine, runs something there, or sleeps. `events` dates a later turn (codingTurnStartedAt);
+ * the listing has none, so there a later turn shows no time. */
 export function codingSessionStatus(
 	session: CodingSession,
 	names: CodingSessionNames,
 	now = Date.now(),
+	events: readonly CodingSessionEvent[] = [],
 ): { text: string; tone: CodingSessionTone } {
 	if (session.archivedAt) return { text: t("Archived · files kept"), tone: "idle" };
 	const since = (iso: string | undefined) => (iso ? fmtDuration(now - Date.parse(iso)) : undefined);
@@ -133,7 +150,9 @@ export function codingSessionStatus(
 			};
 		case "running":
 			return {
-				text: [t("Working"), since(session.startedAt), session.lastStep, files].filter(Boolean).join(" · "),
+				text: [t("Working"), since(codingTurnStartedAt(session, events)), session.lastStep, files]
+					.filter(Boolean)
+					.join(" · "),
 				tone: "working",
 			};
 		case "awaiting_input": {
@@ -588,7 +607,7 @@ export class CodingSessionElement {
 		if (this.disposed) return;
 		const session = this.#session;
 		const names = this.#options.names(session);
-		const status = codingSessionStatus(session, names);
+		const status = codingSessionStatus(session, names, Date.now(), this.#events);
 		this.el.dataset.phase = session.phase;
 		this.el.dataset.tone = status.tone;
 		const active = document.activeElement;
