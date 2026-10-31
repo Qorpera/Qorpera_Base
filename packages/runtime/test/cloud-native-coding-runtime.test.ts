@@ -1035,6 +1035,35 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 	});
 
+	it("drops a late answer: the turn reads the attempt that answered in time", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		const original = f.call.getMockImplementation()!;
+		const sent: [string, number][] = [];
+		f.call.mockImplementation(async (method, args, signal) => {
+			sent.push([method, clock.now]);
+			const value = (await original(method, args, signal)) as Record<string, unknown>;
+			if (method !== authorize || sent.length > 1) return value;
+			// The first authority ignores its cut and answers at 25 s that the turn was already submitted: read, it would
+			// end the turn.
+			await new Promise((resolve) => setTimeout(resolve, 25_000));
+			return { ...value, coding: { ...(value.coding as Record<string, unknown>), submission: { kind: "finish" } } };
+		});
+		vi.mocked(runCloudNativeRunToolSession).mockRejectedValue(new Error("stop after composing"));
+		const outcome = expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"stop after composing",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		await clock.tick(26_000);
+		await outcome;
+		expect(sent).toEqual([
+			[authorize, 0],
+			[authorize, 20_250],
+			[read, 20_250],
+		]);
+		expect(runCloudNativeRunToolSession).toHaveBeenCalledTimes(1);
+	});
+
 	it("goes on through the coding control's lost answers: its first reads, and its run's authority check", async () => {
 		const clock = fakeClock();
 		const f = fixture();
