@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
+import { HttpCloudCodingControl } from "../src/cloud-coding-control.ts";
+import { CloudControlRpcEnded } from "../src/cloud-control-errors.ts";
 import {
 	type CloudCodingNativeControl,
 	CloudNativeCodingRuntime,
@@ -14,7 +17,11 @@ import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { type CloudToolContext, cloudToolJsonText } from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
+import {
+	CloudRuntimeDiagnosticError,
+	CloudRuntimeObservability,
+	type CloudRuntimeObservation,
+} from "../src/cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -885,5 +892,239 @@ describe("the coding composition of a native turn", () => {
 		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
 			/^CODING_TURN_ENDED_WITHOUT_SUBMISSION$/,
 		);
+	});
+});
+
+describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+	const authorize = "qorpera_authorize_coding_turn";
+	const read = "qorpera_read_coding_turn_context";
+
+	/** Fake timers and performance.now move together, in small steps, so a timer set late in a step still fires in the next. */
+	function fakeClock() {
+		vi.useFakeTimers();
+		const clock = {
+			now: 0,
+			async tick(ms: number) {
+				for (let passed = 0; passed < ms; passed += 50) {
+					clock.now += 50;
+					await vi.advanceTimersByTimeAsync(50);
+				}
+			},
+		};
+		vi.spyOn(performance, "now").mockImplementation(() => clock.now);
+		return clock;
+	}
+	/** The fixture's control, failing the first answers of each method as `lost` says, and noting when each call is sent. */
+	function losing(f: ReturnType<typeof fixture>, now: () => number, lost: Partial<Record<string, (() => unknown)[]>>) {
+		const original = f.call.getMockImplementation()!;
+		const sent: [string, number][] = [];
+		f.call.mockImplementation(async (method, args, signal) => {
+			sent.push([method, now()]);
+			const fail = lost[method]?.shift();
+			return fail ? fail() : original(method, args, signal);
+		});
+		return sent;
+	}
+
+	it("asks the turn's authority and context again while their answers are lost, and waits out a copy the database may still run", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		const sent = losing(f, () => clock.now, {
+			// PostgREST's statement timeout: the copy ended, so it is asked again after the first pause.
+			[authorize]: [() => Promise.reject(new CloudControlRpcEnded(`Coding control ${authorize} unconfirmed (500)`))],
+			// No answer at all: the copy may still take the run's row, so it is asked again 20 s after it was sent.
+			[read]: [
+				() =>
+					Promise.reject(
+						new CloudRuntimeDiagnosticError("transport_unavailable", `Coding control ${read} unconfirmed`),
+					),
+			],
+		});
+		vi.mocked(runCloudNativeRunToolSession).mockRejectedValue(new Error("stop after composing"));
+		const outcome = expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"stop after composing",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		await clock.tick(21_000);
+		await outcome;
+		expect(sent).toEqual([
+			[authorize, 0],
+			[authorize, 250],
+			[read, 250],
+			[read, 20_250],
+		]);
+		expect(runCloudNativeRunToolSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("gives up a read whose answers stay lost at its 30 s budget, and starts no session", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		// Every answer is lost: the call hangs and ignores its signal.
+		const sent: [string, number][] = [];
+		f.call.mockImplementation(async (method) => {
+			sent.push([method, clock.now]);
+			return new Promise<never>(() => undefined);
+		});
+		let settled = false;
+		const execution = f.runtime.execute(f.request, "/private", f.context.signal, f.turn).finally(() => {
+			settled = true;
+		});
+		const outcome = expect(execution).rejects.toMatchObject({ category: "timeout" });
+		await vi.advanceTimersByTimeAsync(0);
+		// The first attempt waits as long as the database may run it (20 s); the second gets what is left of the budget.
+		await clock.tick(29_900);
+		expect(settled).toBe(false);
+		await clock.tick(200);
+		expect(settled).toBe(true);
+		await outcome;
+		await expect(execution).rejects.toBeInstanceOf(CloudRuntimeDiagnosticError);
+		expect(sent).toEqual([
+			[authorize, 0],
+			[authorize, 20_250],
+		]);
+		// Nothing more is asked after the budget, and no session started.
+		await clock.tick(60_000);
+		expect(f.call).toHaveBeenCalledTimes(2);
+		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
+
+	it("asks a refused or unreadable read once", async () => {
+		const cases: [Partial<Record<string, (() => unknown)[]>>, string, number][] = [
+			[
+				{ [authorize]: [() => Promise.reject(new Error(`Coding control ${authorize} unconfirmed (403)`))] },
+				"(403)",
+				1,
+			],
+			[{ [read]: [() => Promise.reject(new Error(`Coding control ${read} unconfirmed (500)`))] }, "(500)", 2],
+			[{ [authorize]: [() => Promise.resolve({ unexpected: true })] }, "CODING_TURN_AUTHORITY_DIFFERS", 1],
+			[{ [read]: [() => Promise.resolve({ unexpected: true })] }, "CODING_TURN_CONTEXT_INVALID", 2],
+		];
+		for (const [lost, message, calls] of cases) {
+			const f = fixture();
+			losing(f, () => 0, lost);
+			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(message);
+			expect(f.call).toHaveBeenCalledTimes(calls);
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+		}
+	});
+
+	it("stops asking when the turn is stopped during the pause", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		losing(f, () => clock.now, {
+			[authorize]: [
+				() =>
+					Promise.reject(
+						new CloudRuntimeDiagnosticError("transport_unavailable", `Coding control ${authorize} unconfirmed`),
+					),
+			],
+		});
+		const stop = new AbortController();
+		const reason = new Error("turn stopped");
+		const outcome = expect(f.runtime.execute(f.request, "/private", stop.signal, f.turn)).rejects.toBe(reason);
+		await vi.advanceTimersByTimeAsync(0);
+		await clock.tick(5_000);
+		expect(f.call).toHaveBeenCalledTimes(1);
+		stop.abort(reason);
+		await outcome;
+		await clock.tick(30_000);
+		expect(f.call).toHaveBeenCalledTimes(1);
+		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
+
+	it("drops a late answer: the turn reads the attempt that answered in time", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		const original = f.call.getMockImplementation()!;
+		const sent: [string, number][] = [];
+		f.call.mockImplementation(async (method, args, signal) => {
+			sent.push([method, clock.now]);
+			const value = (await original(method, args, signal)) as Record<string, unknown>;
+			if (method !== authorize || sent.length > 1) return value;
+			// The first authority ignores its cut and answers at 25 s that the turn was already submitted: read, it would
+			// end the turn.
+			await new Promise((resolve) => setTimeout(resolve, 25_000));
+			return { ...value, coding: { ...(value.coding as Record<string, unknown>), submission: { kind: "finish" } } };
+		});
+		vi.mocked(runCloudNativeRunToolSession).mockRejectedValue(new Error("stop after composing"));
+		const outcome = expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"stop after composing",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		await clock.tick(26_000);
+		await outcome;
+		expect(sent).toEqual([
+			[authorize, 0],
+			[authorize, 20_250],
+			[read, 20_250],
+		]);
+		expect(runCloudNativeRunToolSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("goes on through the coding control's lost answers: its first reads, and its run's authority check", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		const original = f.call.getMockImplementation()!;
+		const answers: Partial<Record<string, Response[]>> = {
+			[authorize]: [
+				new Response(JSON.stringify({ code: "57014", details: null, hint: null, message: "canceling statement" }), {
+					status: 500,
+				}),
+			],
+			[read]: [new Response(null, { status: 503 })],
+		};
+		const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+			const method = String(url).slice(String(url).lastIndexOf("/") + 1) as Parameters<
+				CloudCodingNativeControl["call"]
+			>[0];
+			const answer = answers[method]?.shift();
+			if (answer) return answer;
+			const value = await original(method, JSON.parse(String(init?.body)), init?.signal as AbortSignal);
+			return new Response(JSON.stringify(value), { status: 200 });
+		});
+		const http = new HttpCloudCodingControl({
+			supabaseUrl: "https://db.example.test/",
+			serviceRoleKey: "private",
+			fetch,
+		});
+		f.call.mockImplementation((method, args, signal) => http.call(method, args, signal));
+		let aborted: boolean | undefined;
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+			try {
+				// PostgREST's pool wait (PGRST003) on the run's next authority check: the run asks again and holds.
+				answers[authorize]?.push(
+					new Response(JSON.stringify({ code: "PGRST003", details: null, hint: null, message: "timed out" }), {
+						status: 504,
+					}),
+				);
+				await run.assertActive(options.signal);
+				aborted = run.signal.aborted;
+			} finally {
+				run.close();
+			}
+			throw new Error("session checked");
+		});
+		let settled = false;
+		const execution = f.runtime.execute(f.request, "/private", f.context.signal, f.turn).finally(() => {
+			settled = true;
+		});
+		const outcome = expect(execution).rejects.toThrow("session checked");
+		for (let second = 0; second < 60 && !settled; second += 1) await clock.tick(1_000);
+		await outcome;
+		expect(aborted).toBe(false);
+		// Authority twice, context twice, the run's opening read, and its check twice.
+		expect(fetch.mock.calls.map(([url]) => String(url).slice(String(url).lastIndexOf("/") + 1))).toEqual([
+			authorize,
+			authorize,
+			read,
+			read,
+			authorize,
+			authorize,
+			authorize,
+		]);
 	});
 });
