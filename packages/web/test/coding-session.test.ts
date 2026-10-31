@@ -1104,26 +1104,28 @@ describe("the element in the thread", () => {
 	});
 
 	it("times a later turn's footer from that turn's first claim, never from a later one or the session's start", async () => {
-		// The follow-up's turn was claimed 90 s ago, deferred, and claimed again 30 s ago.
+		// The first turn's 200 events fill a page; the follow-up's turn was claimed 90 s ago, deferred, and claimed
+		// again 30 s ago.
 		const events = [
 			turnEvent(1, 1, "phase", { phase: "preparing", owner: "executor" }, "2026-09-21T11:53:00Z"),
 			turnEvent(2, 1, "phase", { phase: "running" }, "2026-09-21T11:53:20Z"),
-			turnEvent(3, 2, "input", { text: "Also check the footer" }, "2026-09-22T10:02:29Z", "member"),
-			turnEvent(4, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:02:30Z"),
-			turnEvent(5, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:03:30Z"),
-			turnEvent(6, 2, "phase", { phase: "running" }, "2026-09-22T10:03:40Z"),
+			...Array.from({ length: 197 }, (_, index) =>
+				turnEvent(index + 3, 1, "step", { text: `Step ${index + 1}` }, "2026-09-21T12:00:00Z", "harness"),
+			),
+			turnEvent(200, 2, "input", { text: "Also check the footer" }, "2026-09-22T10:02:29Z", "member"),
+			turnEvent(201, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:02:30Z"),
+			turnEvent(202, 2, "phase", { phase: "preparing", owner: "executor" }, "2026-09-22T10:03:30Z"),
+			turnEvent(203, 2, "phase", { phase: "running" }, "2026-09-22T10:03:40Z"),
 		];
-		// Three events a page: the first read stops before the turn's claim, and the footer shows no time until the
-		// next page brings it. The stream is read from its start, so a later claim never comes before the first.
-		const { element, read } = mount(codingSession(RESUMED), { events, page: 3 });
+		// The first page stops before the turn's claim: the footer shows no time until the next page, read at once,
+		// brings it. The stream is read from its start, so a later claim never comes before the first.
+		const { element, read } = mount(codingSession(RESUMED), { events, page: 200 });
 		const status = () => element.el.querySelector(".coding-status-text")?.textContent;
 		await settle();
 		expect(status()).toBe("Working · Workspace ready");
-		for (let i = 0; i < 3; i++) {
-			await vi.advanceTimersByTimeAsync(0);
-			await settle();
-		}
-		expect(read.mock.calls.map((call) => call[1])).toEqual([0, 3, 6]);
+		await vi.advanceTimersByTimeAsync(0);
+		await settle();
+		expect(read.mock.calls.map((call) => call[1])).toEqual([0, 200]);
 		expect(status()).toBe("Working · 1 min · Workspace ready");
 	});
 
