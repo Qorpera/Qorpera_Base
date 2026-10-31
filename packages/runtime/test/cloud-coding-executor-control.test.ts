@@ -216,6 +216,79 @@ describe("dedicated coding executor control", () => {
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
 	});
+	it("tells a turn's renewal and describe refused as the lease's end, and a slow database's failures apart (R2)", async () => {
+		const body = (code: string, message: string, change: Record<string, unknown> = {}) =>
+			JSON.stringify({ code, details: null, hint: null, message, ...change });
+		const lapsed = body("42501", "Coding session lease unavailable");
+		const cancelled = body("55000", "Coding session was cancelled");
+		const seconds = body("22023", "Coding lease invalid");
+		const heartbeat = "qorpera_heartbeat_coding_session";
+		const describe = "qorpera_describe_coding_turn";
+		const refused = "CODING_CONTROL_REFUSED";
+		const unconfirmed = "CODING_CONTROL_UNCONFIRMED";
+		const cut = () =>
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode(lapsed.slice(0, 20)));
+					controller.error(new Error("connection reset"));
+				},
+			});
+		const cases: [
+			method: string,
+			status: number,
+			body: string | (() => ReadableStream<Uint8Array>),
+			expected: string,
+		][] = [
+			// The SQLSTATEs the two raise on purpose, each with PostgREST's status for it.
+			[heartbeat, 403, lapsed, refused],
+			[heartbeat, 401, lapsed, refused],
+			[heartbeat, 500, cancelled, refused],
+			[heartbeat, 400, seconds, refused],
+			[describe, 403, lapsed, refused],
+			[describe, 500, cancelled, refused],
+			// A slow database: asked again within the lease.
+			[heartbeat, 500, body("57014", "canceling statement due to statement timeout"), unconfirmed],
+			[describe, 500, body("57014", "canceling statement due to statement timeout"), unconfirmed],
+			[heartbeat, 500, body("55P03", "could not obtain lock on row"), "CODING_CONTROL_BUSY"],
+			[heartbeat, 504, body("PGRST003", "Timed out acquiring connection from connection pool."), unconfirmed],
+			[heartbeat, 502, "<html><body>Bad gateway</body></html>", unconfirmed],
+			[heartbeat, 503, cancelled, unconfirmed],
+			[heartbeat, 403, lapsed.slice(0, 30), unconfirmed],
+			[heartbeat, 403, cut, unconfirmed],
+			// A refusal's SQLSTATE with another's status, or another shape, is no refusal.
+			[heartbeat, 403, seconds, unconfirmed],
+			[heartbeat, 400, lapsed, unconfirmed],
+			[describe, 403, body("P0001", "Coding session lease unavailable"), unconfirmed],
+			[describe, 403, body("42501", "Coding session lease unavailable", { extra: 1 }), unconfirmed],
+			// Every other call's stays as it was.
+			["qorpera_claim_coding_session", 403, lapsed, unconfirmed],
+			["qorpera_record_coding_progress", 403, lapsed, unconfirmed],
+			["qorpera_complete_coding_turn", 500, cancelled, unconfirmed],
+			["qorpera_begin_coding_turn", 400, seconds, unconfirmed],
+		];
+		for (const [method, status, text, expected] of cases) {
+			const fetcher = vi.fn<typeof fetch>(
+				async () =>
+					new Response(typeof text === "string" ? text : text(), {
+						status,
+						headers: { "content-type": "application/json" },
+					}),
+			);
+			const control = new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			});
+			const failure = await control.call(method, {}, new AbortController().signal).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			expect([method, status, (failure as Error).message]).toEqual([method, status, expected]);
+			if (expected === refused) expect(failure).toMatchObject({ detail: null, reason: null });
+			else expect(failure).not.toBeInstanceOf(CodingControlRefused);
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		}
+	});
 	it("carries a snapshot build's longest log both ways (5h-2)", async () => {
 		const build = {
 			buildId: "52500000-0000-4000-8000-0000000000b1",

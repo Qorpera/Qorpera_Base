@@ -12,6 +12,17 @@ const SHA40 = /^[0-9a-f]{40}$/;
  * plus stopping the session's commands in the guest and unplugging its
  * folders. The executor unit's TimeoutStopSec must stay well above it. */
 export const CLEANUP_STOP_BUDGET_MS = 45_000;
+/** A slow database is not a lost lease (R2, 31 Oct 2026). A renewal or a describe whose answer was lost or late is
+ * asked again after these pauses (then every 8 s); a refusal is the kernel's answer and is never asked again. */
+export const CODING_RETRY_PAUSES_MS = [2000, 4000, 8000] as const;
+/** A renewal's attempts and pauses end this long before the lease's end as the turn counts it: the earlier of the
+ * deadline the last renewal (or the claim) confirmed, on the database's clock, and the lease's length after it was
+ * sent, on this node's. The turn gives its lease up while the kernel still holds it for it, however the clocks drift. */
+export const CODING_LEASE_MARGIN_MS = 5000;
+/** A claim's and a renewal's lease. */
+const LEASE_SECONDS = 60;
+/** How long one describe of the turn may stay lost or late, from its first attempt. */
+export const CODING_DESCRIBE_BUDGET_MS = 30_000;
 export const CODING_EXECUTOR_RPCS = [
 	"qorpera_claim_coding_session",
 	"qorpera_heartbeat_coding_session",
@@ -53,7 +64,8 @@ export class CodingControlBusy extends Error {
  * back whole: an answer, unlike an unconfirmed call. A control rejects with this only for the folder view open and
  * close, and a test machine's take-in of reads: a test machine's boot acts on the open's (F3 6d) and the take-in's
  * (6d-3b), a coding session's attach fails with its view's (F3 5g-4), and the code host's open (5e-3b) fails on it as
- * on any other error. */
+ * on any other error. It also rejects a turn's renewal and describe with it (42501, 55000 or 22023): the lease is gone,
+ * and neither is asked again (R2). */
 export class CodingControlRefused extends Error {
 	/** The refusal's `qorpera.*` detail, when it gave one. */
 	readonly detail: string | null;
@@ -374,6 +386,23 @@ function turnEnded(turn: CodingTurnState): boolean {
 	return ["failed", "cancelled", "refused", "expired", "skipped"].includes(turn.occurrenceStatus ?? "");
 }
 
+/** A control call's answer, or its signal's reason once that aborts: a control that ignores its signal cannot hold the
+ * turn past the attempt's end, and an answer after that is dropped. */
+function answerBefore<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		if (signal.aborted) {
+			abort();
+			return;
+		}
+		signal.addEventListener("abort", abort, { once: true });
+		Promise.resolve()
+			.then(call)
+			.then(resolve, reject)
+			.finally(() => signal.removeEventListener("abort", abort));
+	});
+}
+
 export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "recovery-required";
 
 /** Claims coding session turns and runs each to its end, many at once: every
@@ -424,14 +453,15 @@ export class CloudCodingExecutor {
 	async claim(
 		signal: AbortSignal,
 	): Promise<{ state: "idle" } | { state: "claimed"; turn: Promise<CodingTurnOutcome> }> {
+		const sent = Date.now();
 		const value = await this.#control.call(
 			"qorpera_claim_coding_session",
-			{ p_owner: this.#owner, p_lease_seconds: 60 },
+			{ p_owner: this.#owner, p_lease_seconds: LEASE_SECONDS },
 			AbortSignal.any([signal, AbortSignal.timeout(10000)]),
 		);
 		if (value === null) return { state: "idle" };
 		const claim = parseCodingSessionClaim(value);
-		const turn = this.#turn(claim, signal);
+		const turn = this.#turn(claim, sent, signal);
 		this.#turns.add(turn);
 		void turn.finally(() => this.#turns.delete(turn)).catch(() => undefined);
 		return { state: "claimed", turn };
@@ -452,7 +482,8 @@ export class CloudCodingExecutor {
 		const claimed = await this.claim(signal);
 		return claimed.state === "idle" ? "idle" : claimed.turn;
 	}
-	async #turn(claim: CodingSessionClaim, signal: AbortSignal): Promise<CodingTurnOutcome> {
+	/** `claimSent` is when the claim was sent, on this node's clock. */
+	async #turn(claim: CodingSessionClaim, claimSent: number, signal: AbortSignal): Promise<CodingTurnOutcome> {
 		const stop = new AbortController();
 		const heartbeatStop = new AbortController();
 		const active = AbortSignal.any([signal, stop.signal]);
@@ -472,25 +503,74 @@ export class CloudCodingExecutor {
 			const claimed = claim;
 			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
 			arm(claim.leaseUntil);
+			// The lease's renewals, one at a time with the same token: the next waits for the last to settle. An answer
+			// lost or late is asked again, every attempt and pause ending by the margin before the lease's end as the
+			// turn counts it; there the turn gives the lease up. A refusal gives it up at once (R2, 31 Oct 2026). The
+			// watchdog keeps the database's deadline.
 			heartbeat = (async () => {
 				const checked = AbortSignal.any([active, heartbeatStop.signal]);
+				const leaseEnd = (deadline: string, sent: number) =>
+					Math.min(Date.parse(deadline), sent + LEASE_SECONDS * 1000);
+				let held = leaseEnd(claim.leaseUntil, claimSent);
 				try {
-					while (!checked.aborted) {
-						await setTimeout(15000, undefined, { signal: checked });
-						const until = await call(
-							"qorpera_heartbeat_coding_session",
-							{ ...args, p_lease_seconds: 60 },
-							checked,
-						);
+					for (let failures = 0; !checked.aborted; ) {
+						const by = held - CODING_LEASE_MARGIN_MS;
+						const pause = failures ? CODING_RETRY_PAUSES_MS[Math.min(failures, 3) - 1] : 15000;
+						await setTimeout(Math.max(0, Math.min(pause, by - Date.now())), undefined, { signal: checked });
+						const sent = Date.now();
+						const left = by - sent;
+						if (left < 1) throw new Error("Coding lease renewal ran out of time");
+						const attempt = AbortSignal.any([checked, AbortSignal.timeout(Math.min(10000, left))]);
+						let until: unknown;
+						try {
+							until = await answerBefore(
+								() =>
+									this.#control.call(
+										"qorpera_heartbeat_coding_session",
+										{ ...args, p_lease_seconds: LEASE_SECONDS },
+										attempt,
+									),
+								attempt,
+							);
+						} catch (error) {
+							if (checked.aborted || error instanceof CodingControlRefused) throw error;
+							failures++;
+							continue;
+						}
+						// An answer after the turn gave its lease up renews nothing.
+						if (checked.aborted) return;
 						if (typeof until !== "string") throw new Error("Coding heartbeat unconfirmed");
 						arm(until);
+						held = leaseEnd(until, sent);
 						claimed.leaseUntil = until;
+						failures = 0;
 					}
 				} catch {
 					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
 				}
 			})();
-			const describe = async () => parseCodingTurnState(await call("qorpera_describe_coding_turn", args), claimed);
+			// The turn as the kernel sees it, asked again while its answer is lost or late, within its own budget; the
+			// turn's end cancels it. A refusal, or an answer that is not the turn, is not asked again (R2).
+			const describe = async () => {
+				const by = Date.now() + CODING_DESCRIBE_BUDGET_MS;
+				for (let failures = 0; ; failures++) {
+					const attemptMs = Math.max(1, Math.min(10000, by - Date.now()));
+					let value: unknown;
+					try {
+						value = await call(
+							"qorpera_describe_coding_turn",
+							args,
+							AbortSignal.any([active, AbortSignal.timeout(attemptMs)]),
+						);
+					} catch (error) {
+						const pause = CODING_RETRY_PAUSES_MS[Math.min(failures, 2)];
+						if (active.aborted || error instanceof CodingControlRefused || Date.now() + pause >= by) throw error;
+						await setTimeout(pause, undefined, { signal: active });
+						continue;
+					}
+					return parseCodingTurnState(value, claimed);
+				}
+			};
 			const progress = (extra: Record<string, unknown>) =>
 				call("qorpera_record_coding_progress", { ...args, ...extra });
 			const complete = async (
@@ -600,6 +680,7 @@ export class CloudCodingExecutor {
 			}
 			if (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence)
 				throw new Error("Coding turn admission unconfirmed");
+			// One describe at a time: the next poll's pause starts once the last describe, retries and all, settled.
 			for (;;) {
 				await setTimeout(this.#turnPollMs, undefined, { signal: active });
 				turn = await describe();
