@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import {
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	CLOUD_RUN_ROW_LONG_READ_MS,
 	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
@@ -473,22 +474,23 @@ it("asks a read of the run's row again at once when the database answered that t
 });
 
 /** A held run opened at the clock's time whose reader takes the run's row (`runRowMs`) or not. Its checks after the
- * opening one fail as `fail(call)` says (from 1); `starts` has the times they began, from the opening. */
+ * opening one answer as `answer(call)` says (from 1): after `at` ms, failing with `error` when it has one, or never
+ * ("hang"); `starts` has the times they began, from the opening. */
 async function checkedRun(
 	clock: { now: number },
 	runRowMs: number | undefined,
-	fail: (call: number) => { at: number; error: unknown } | "hang" | undefined,
+	answer: (call: number) => { at: number; error?: unknown } | "hang" | undefined,
 ) {
 	const { run, reader, authority } = await admit(120_000, runRowMs);
 	const opened = clock.now;
 	const starts: number[] = [];
 	reader.describeToolAuthority.mockImplementation(async () => {
 		starts.push(clock.now - opened);
-		const failure = fail(starts.length);
-		if (failure === "hang") return new Promise<never>(() => undefined);
-		if (!failure) return structuredClone(authority);
-		await after(failure.at, undefined);
-		throw failure.error;
+		const planned = answer(starts.length);
+		if (planned === "hang") return new Promise<never>(() => undefined);
+		if (planned) await after(planned.at, undefined);
+		if (planned?.error !== undefined) throw planned.error;
+		return structuredClone(authority);
 	});
 	return { run, starts };
 }
@@ -496,15 +498,15 @@ async function checkedRun(
 it("waits out a lost copy of the run's own check when its reader takes the run's row (R2, 31 Oct 2026)", async () => {
 	const clock = fakeClock();
 	// The refresh at 10 s loses its answer after 1 s (a reset connection, a proxy's 502: nothing says its statement
-	// ended), or is cut at its 5 s: the copy may still wait for the row, so the check is asked again 20 s after it was
-	// sent, not after the pause.
-	for (const failure of [
-		{ at: 1_000, error: new CloudRuntimeDiagnosticError("transport_unavailable") },
-		"hang" as const,
+	// ended): the copy may still wait for the row, so the check is asked again 20 s after it was sent, not after the
+	// pause. One that never answers is cut only after those 20 s, its attempt's length, and asked again after the pause.
+	for (const { planned, next } of [
+		{ planned: { at: 1_000, error: new CloudRuntimeDiagnosticError("transport_unavailable") }, next: 30_000 },
+		{ planned: "hang" as const, next: 30_250 },
 	]) {
-		const checked = await checkedRun(clock, CLOUD_RUN_ROW_READ_MS, (call) => (call === 1 ? failure : undefined));
+		const checked = await checkedRun(clock, CLOUD_RUN_ROW_READ_MS, (call) => (call === 1 ? planned : undefined));
 		await clock.tick(35_000);
-		expect(checked.starts.slice(0, 2)).toEqual([10_000, CLOUD_RUN_ROW_READ_MS + 10_000]);
+		expect(checked.starts.slice(0, 2)).toEqual([10_000, next]);
 		expect(checked.run.signal.aborted).toBe(false);
 		checked.run.close();
 	}
@@ -550,6 +552,73 @@ it("closes a run whose reader takes the run's row at once on a refusal, and at i
 	await clock.tick(1_500);
 	expect(away.run.signal.aborted).toBe(true);
 	expect(away.starts).toEqual([10_000, 30_000, 50_000, 70_000, 90_000, 110_000]);
+});
+
+it("gives each of the run's own checks as long as the database may run it when its reader takes the run's row (R2)", async () => {
+	const clock = fakeClock();
+	// The opening read answers after 12 s, within the 20 s the database may run it: it lands. Cut at 5 s and waited out
+	// to 20 s, the opening's 30 s would end before another attempt answered.
+	const fixture = nativeToolAuthorityFixture();
+	const reader = {
+		describeToolAuthority: vi.fn(() => after(12_000, structuredClone(fixture.authority))),
+		runRowMs: CLOUD_RUN_ROW_READ_MS,
+	};
+	const opened = CloudNativeToolRun.open(fixture.binding, reader, new AbortController().signal, 120_000);
+	await clock.tick(12_000);
+	runs.push(await opened);
+	expect(reader.describeToolAuthority).toHaveBeenCalledOnce();
+	// The refresh at 10 s answers after 12 s: it lands at 22 s, and the next goes out 10 s later. Cut at 5 s, it would be
+	// asked again at 30 s and 50 s and land only at 62 s, with every tool step's check queued behind it.
+	const slow = await checkedRun(clock, CLOUD_RUN_ROW_READ_MS, (call) => (call === 1 ? { at: 12_000 } : undefined));
+	await clock.tick(33_000);
+	expect(slow.starts.slice(0, 2)).toEqual([10_000, 32_000]);
+	expect(slow.run.signal.aborted).toBe(false);
+	slow.run.close();
+	// A check sent with another read of the run (its 10 s) waits as long too.
+	const paired = await checkedRun(clock, CLOUD_RUN_ROW_READ_MS, (call) => (call === 1 ? { at: 15_000 } : undefined));
+	const from = clock.now;
+	let landed: number | undefined;
+	const check = paired.run.assertActive(paired.run.signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS).then(() => {
+		landed = clock.now - from;
+	});
+	await clock.tick(21_000);
+	await check;
+	// Within a clock step; cut at 10 s, it would be waited out and land only at 20 s.
+	expect(landed).toBeGreaterThanOrEqual(15_000);
+	expect(landed).toBeLessThanOrEqual(15_050);
+	expect(paired.starts.filter((at) => at < 15_000)).toHaveLength(1);
+});
+
+it("gives up an opening at once when waiting out its reader's lost copy would pass the 30 s window (R2)", async () => {
+	const clock = fakeClock();
+	// Each read of the row loses its answer after 1 s. The copy sent at 0 is waited out to 20 s; waiting out the one sent
+	// at 20 s would pass the window (30 s), which nothing extends before the first authority: the opening fails at 21 s,
+	// not after sleeping to 40 s.
+	const fixture = nativeToolAuthorityFixture();
+	const starts: number[] = [];
+	const reader = {
+		describeToolAuthority: vi.fn(async () => {
+			starts.push(clock.now);
+			await after(1_000, undefined);
+			throw new CloudRuntimeDiagnosticError("transport_unavailable");
+		}),
+		runRowMs: CLOUD_RUN_ROW_READ_MS,
+	};
+	let failed: number | undefined;
+	const opened = CloudNativeToolRun.open(fixture.binding, reader, new AbortController().signal).catch(
+		(error: unknown) => {
+			failed = clock.now;
+			throw error;
+		},
+	);
+	const rejected = expect(opened).rejects.toThrow("Cloud tool authority unavailable");
+	await clock.tick(41_000);
+	await rejected;
+	// From the first read.
+	const first = starts[0] ?? Number.NaN;
+	expect(starts.map((at) => at - first)).toEqual([0, 20_000]);
+	expect((failed ?? Number.NaN) - first).toBe(21_000);
+	expect(vi.getTimerCount()).toBe(0);
 });
 
 it.each([0, 1.5, Number.NaN, 300_001])(

@@ -196,7 +196,7 @@ describe("the coding composition of a native turn", () => {
 		expect(activeRun?.signal.aborted).toBe(true);
 		expect(f.control.describeToolAuthority).not.toHaveBeenCalled();
 	});
-	it("has the run's own checks wait out a lost copy of the coding authorize, which takes the run's row (R2, 31 Oct 2026)", async () => {
+	it("gives the run's own checks of the coding authorize, which takes the run's row, that row's 20 s (R2, 31 Oct 2026)", async () => {
 		vi.useFakeTimers();
 		let now = 0;
 		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -207,7 +207,8 @@ describe("the coding composition of a native turn", () => {
 				expect(options.controlPlane.runRowMs).toBe(CLOUD_RUN_ROW_READ_MS);
 				// Held as the session holds it (NATIVE_AUTHORITY_LEASE_SECONDS).
 				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal, 120_000);
-				// The refresh at 10 s is cut at its 5 s; its copy may still wait for the row until 30 s.
+				// The refresh at 10 s never answers: it waits 20 s, as long as the database may run it, before it is cut
+				// and asked again after the pause (a reader without the wait cuts it at 5 s and asks again at 15.25 s).
 				const original = f.call.getMockImplementation()!;
 				f.call.mockImplementation((method, args, signal) => {
 					if (method !== "qorpera_authorize_coding_turn") return original(method, args, signal);
@@ -225,7 +226,7 @@ describe("the coding composition of a native turn", () => {
 			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
 				"native session stopped",
 			);
-			expect(sent).toEqual([10_000, 30_000]);
+			expect(sent).toEqual([10_000, 30_250]);
 		} finally {
 			clock.mockRestore();
 		}
