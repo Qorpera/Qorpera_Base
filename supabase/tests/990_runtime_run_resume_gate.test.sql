@@ -1,7 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Context tree W5a-2 (20260930270000): the resume gate reads the run's log, and no attempt of a run starts while a step
 -- erase is open on its log. Test 924's run of Alice's resumes from its log only when it has a live one, no erase is open
--- on it and it is not narrow. Its first attempt's lease runs out before it starts, and the job is queued again. While an
+-- on it and it is not narrow; with no log, only in Agent notebooks mode, from its receipts (20260930539000, 466). Its
+-- first attempt's lease runs out before it starts, and the job is queued again. While an
 -- erase is open (its first commit made by hand here, as the erase makes it), the claim leaves the job alone, and the
 -- runner's accept and start refuse it (55006); with two erases one after the other, the run goes on only after both. An
 -- erase does not open while an attempt holds the job, and a replayed accept is answered as before. The races are 994;
@@ -74,12 +75,20 @@ begin
 end
 $$;
 
--- 2. The gate: a run with no log does not resume; with a live log it does, but not while an erase is open on it, not
---    when the log is narrow (wholly, from a step on, or by its machine) and not once the log is retired.
+-- 2. The gate: a run with no log resumes only in Agent notebooks mode (from its receipts); with a live log it does, but
+--    not while an erase is open on it, not when the log is narrow (wholly, from a step on, or by its machine) and not
+--    once the log is retired.
+savepoint rg_tree;
+set local session_replication_role = replica;
+update public.qorpera_execution_runs set memory_mode = 'tree' where id = (pg_temp.rg_run()).id;
+set local session_replication_role = origin;
+select pg_temp.base_assert(public.qorpera_run_resumes_from_log((pg_temp.rg_run()).id) is false,
+	'a tree run with no log does not resume') \g /dev/null
+rollback to savepoint rg_tree;
 do $$
 declare v_run public.qorpera_execution_runs := pg_temp.rg_run(); v_erase uuid;
 begin
-	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run.id) is false, 'a run with no log does not resume');
+	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run.id), 'a notebook run with no log resumes from its receipts');
 	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(extensions.gen_random_uuid()) is false, 'no run does not resume');
 	perform pg_temp.rg_log();
 	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run.id), 'a run with a live log resumes');

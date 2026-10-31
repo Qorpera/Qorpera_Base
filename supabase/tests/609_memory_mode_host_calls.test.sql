@@ -4,7 +4,8 @@
 -- until it is put in one:
 -- (a) gated by the run's recorded mode: the C5 marker in its own body, or a call to a gated function;
 -- (b) nothing to gate (687 §3): the compaction record only counts compactor calls (a notebook run makes none), the step
---     hashes and the narrow step serve a log a run already writes, and a resume needs a live log;
+--     hashes and the narrow step serve a log a run already writes, and a resume needs a live log or reads a notebook
+--     run's own receipts (20260930539000);
 -- (c) the known exception, not gated: the worker parent's view. The worker commit checks and keeps a dispatch's view
 --     reference with the ungated check, and the worker parent run hands it to the worker's run, in either mode. Dormant
 --     until W4b; add the run-mode gate before wiring.
@@ -23,8 +24,8 @@ declare
 		['qorpera_folder_structured_decide', 'qorpera_memory_run_log_paths('],
 		['qorpera_memory_run_log_paths', 'qorpera_memory_run_tree_problem(']];
 	v_gated_below text[] := array['qorpera_memory_view_of', 'qorpera_memory_run_log_paths', 'qorpera_memory_run_tree_problem'];
-	v_nothing text[] := array['qorpera_memory_compaction_record', 'qorpera_memory_run_resume', 'qorpera_memory_run_resume_record',
-		'qorpera_memory_step_hashes', 'qorpera_memory_step_narrow'];
+	v_nothing text[] := array['qorpera_memory_compaction_record', 'qorpera_memory_run_resume', 'qorpera_memory_run_resume_receipts',
+		'qorpera_memory_run_resume_record', 'qorpera_memory_step_hashes', 'qorpera_memory_step_narrow'];
 	v_exception text[] := array['qorpera_folder_worker_commit', 'qorpera_folder_worker_parent_run'];
 	v_name text; i integer;
 begin

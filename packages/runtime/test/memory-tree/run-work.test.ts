@@ -8,6 +8,7 @@ import {
 import {
 	CLOUD_RUN_WORK_SCHEMA,
 	type CloudRunWorkStep,
+	cloudRunResumeComposer,
 	cloudRunWorkComposer,
 	cloudRunWorkMessage,
 	RUN_WORK_MEDIA_BYTES,
@@ -560,6 +561,69 @@ describe("the run's own work (§5.7)", () => {
 		const [one, two] = await Promise.all([first, second]);
 		expect(two.input).toEqual(one.input);
 		expect(run.folds).toHaveLength(1);
+	});
+});
+
+describe("a resumed run that keeps no log (Agent notebooks, 20260930539000)", () => {
+	const lines = ["resumed: <what the run's receipts say>", 'completed: {"logicalOperationKey":"company_write:a"}'];
+	const message = cloudRunWorkMessage(lines);
+	const signal = new AbortController().signal;
+	function request(
+		items: CloudNativeContextItem[],
+		purpose: CloudNativeContextRequest["purpose"] = "turn",
+	): CloudNativeContextRequest {
+		return {
+			schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+			requestId: "request_1",
+			threadId: "thread_1",
+			turnId: purpose === "prewarm" ? null : "turn_1",
+			purpose,
+			model: "gpt-5.5",
+			items,
+		};
+	}
+
+	it("keeps every item and puts the same work message just before the run's own work in every request", async () => {
+		const compose = cloudRunResumeComposer(lines);
+		const items = [
+			item("message", { role: "developer", bytes: 6_000 }),
+			item("message", { role: "user", bytes: 900 }),
+		];
+		let composed = await compose(request(items), signal);
+		check(items, composed.input);
+		expect(composed).toEqual({ input: [{ keep: 0 }, { keep: 1 }, { work: message }] });
+		// Far past the run's view, nothing is folded or left out.
+		items.push(item("reasoning"));
+		for (let call = 0; call < 12; call++)
+			items.push(
+				item("function_call", { callId: `call_${call}` }),
+				item("function_call_output", { callId: `call_${call}`, bytes: 9_000 }),
+			);
+		items.push(item("message", { role: "user", bytes: 400 }), item("message", { role: "assistant", bytes: 300 }));
+		composed = await compose(request(items), signal);
+		check(items, composed.input);
+		expect(composed.input).toEqual([
+			{ keep: 0 },
+			{ keep: 1 },
+			{ work: message },
+			...items.slice(2).map((_, k) => ({ keep: k + 2 })),
+		]);
+		// An assistant message is the run's work too.
+		const answered = [item("message", { role: "user" }), item("message", { role: "assistant" })];
+		composed = await compose(request(answered), signal);
+		check(answered, composed.input);
+		expect(composed.input).toEqual([{ keep: 0 }, { work: message }, { keep: 1 }]);
+	});
+
+	it("sends a prewarm as it is", async () => {
+		const items = [item("message", { role: "user" }), item("reasoning")];
+		const composed = await cloudRunResumeComposer(lines)(request(items, "prewarm"), signal);
+		expect(composed.input).toEqual([{ keep: 0 }, { keep: 1 }]);
+	});
+
+	it("refuses a work message over Codex's bound before any request", () => {
+		// Escaped, each `<` is six bytes.
+		expect(() => cloudRunResumeComposer(["<".repeat(45_000)])).toThrow("Run work exceeds its bound");
 	});
 });
 

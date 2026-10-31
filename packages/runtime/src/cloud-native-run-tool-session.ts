@@ -13,6 +13,8 @@ import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+	CLOUD_RUN_ROW_LONG_READ_MS,
+	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -148,17 +150,18 @@ export async function runCloudNativeRunToolSession(options: {
 		const assertActive = async (signal: AbortSignal): Promise<void> => {
 			const observation = options.observability?.start("context_authority");
 			try {
-				// Two independent reads, both required: the run's admission and its context read set.
-				// Both lock the run's job row, so each gets the pair's budget, not one read's, down to the transport.
-				// Each is asked again while its answer is lost or late, until the run's authority would lapse; a
-				// refusal stops the run.
-				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
-				const context = run.retry(
-					(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS),
+				// Two reads, both required, one after the other (R1, 28 Oct 2026): the run's admission, then its context
+				// read set. The context read takes the run's budget row (the run mutex), and each attempt waits as long
+				// as the database may run it, so a cut one has ended before the next is sent; the admission reads plain
+				// (20260930487000). Each is asked again while its answer is lost or late, until the run's authority
+				// would lapse; a refusal stops the run.
+				await run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
+				await run.retry(
+					(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_RUN_ROW_READ_MS),
 					signal,
-					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+					CLOUD_RUN_ROW_READ_MS,
+					CLOUD_RUN_ROW_READ_MS,
 				);
-				await Promise.all([admission, context]);
 				observation?.finish("succeeded");
 			} catch (error) {
 				observation?.finish("denied", {
@@ -188,6 +191,7 @@ export async function runCloudNativeRunToolSession(options: {
 						(requestSignal) => fence(frame, outputs, requestSignal),
 						signal,
 						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+						CLOUD_RUN_ROW_LONG_READ_MS,
 					))
 				) {
 					observation?.finish("failed", { errorCategory: "unavailable_tool" });

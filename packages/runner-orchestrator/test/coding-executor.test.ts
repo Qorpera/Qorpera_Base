@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
+	CODING_DESCRIBE_BUDGET_MS,
+	CODING_LEASE_MARGIN_MS,
+	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
+	CodingControlRefused,
 	type CodingExecutorControl,
 	type CodingExecutorHost,
 	CodingMachineUnavailable,
@@ -454,14 +458,17 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).toHaveBeenCalled();
 	});
 
-	it("a lost heartbeat aborts the turn and ends it", async () => {
+	it("a refused heartbeat aborts the turn at once and ends it", async () => {
 		const w = world();
 		let admitted = false;
+		let heartbeats = 0;
 		const control: CodingExecutorControl = {
 			call: (method, args, signal) => {
 				if (method === "qorpera_begin_coding_turn") admitted = true;
-				if (method === "qorpera_heartbeat_coding_session" && admitted)
-					return Promise.reject(new Error("lease gone"));
+				if (method === "qorpera_heartbeat_coding_session" && admitted) {
+					heartbeats++;
+					return Promise.reject(new CodingControlRefused(null));
+				}
 				return w.control.call(method, args, signal);
 			},
 		};
@@ -470,6 +477,8 @@ describe("the coding executor over a session turn", () => {
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
 		expect(await run).toBe("recovery-required");
+		// The lease is gone: it is not asked again.
+		expect(heartbeats).toBe(1);
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).toHaveBeenCalled();
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
@@ -599,7 +608,7 @@ describe("the coding executor over a session turn", () => {
 			call: (method, args, signal) => {
 				if (method === "qorpera_heartbeat_coding_session") {
 					lost = Date.now();
-					return Promise.reject(new Error("Coding session lease unavailable"));
+					return Promise.reject(new CodingControlRefused(null));
 				}
 				if (method !== "qorpera_begin_coding_turn") return w.control.call(method, args, signal);
 				begins.push(Date.now());
@@ -862,5 +871,351 @@ describe("the coding executor over a session turn", () => {
 		);
 		expect(turn.jobStatus).toBe("leased");
 		expect(() => parseCodingTurnState({ schema: "other" }, claim)).toThrow("Invalid coding turn state");
+	});
+});
+
+// A slow database (R2, 31 Oct 2026): the S05 coding attempt of 30 Oct ended "lease lost" on one renewal that took
+// longer than its 10 s.
+describe("the lease and the turn's reads through a slow database", () => {
+	// An attempt's own bound runs on the fake clock, as the executor's pauses do.
+	beforeEach(() => {
+		vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+			const bound = new AbortController();
+			globalThis.setTimeout(
+				() => bound.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+				ms,
+			);
+			return bound.signal;
+		});
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	/** `at` is `ms` from the start, within the fake clock's slack. */
+	const near = (at: number | undefined, ms: number) => {
+		expect(Math.abs((at ?? Number.NaN) - ms)).toBeLessThan(500);
+	};
+	/** Each of `ats` is its `ms`, as `near` has it. */
+	const timeline = (ats: readonly (number | undefined)[], mss: readonly number[]) => {
+		for (const [i, ms] of mss.entries()) near(ats[i], ms);
+	};
+	/** A call that never answers: it rejects, as the real control does, once its signal aborts. */
+	const hang = (signal: AbortSignal) =>
+		new Promise<never>((_, reject) => {
+			if (signal.aborted) reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			signal.addEventListener("abort", () => reject(new Error("CODING_CONTROL_UNCONFIRMED")), { once: true });
+		});
+	/** An answer `ms` from now, whatever the call's signal says. */
+	const later = <T>(ms: number, answer: () => T) =>
+		new Promise<T>((resolve) => globalThis.setTimeout(() => resolve(answer()), ms));
+	const renewed = () => new Date(Date.now() + 60000).toISOString();
+	const unconfirmed = () => Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+
+	/** The world's control, each call answered by `answer` (the nth call of its method, from 0; `pass` asks the world),
+	 * and the harness's turn ended with a question at the first describe after admission from `endAt` on. Times are
+	 * kept from the start. */
+	function slow(
+		w: ReturnType<typeof world>,
+		answer: (call: {
+			method: string;
+			n: number;
+			signal: AbortSignal;
+			pass: () => Promise<unknown>;
+		}) => Promise<unknown>,
+		endAt = Number.POSITIVE_INFINITY,
+	) {
+		const start = Date.now();
+		const inner = withHook(w.control, (method) => {
+			if (method !== "qorpera_describe_coding_turn" || w.world.phase !== "running" || w.world.jobStatus) return;
+			if (Date.now() - start < endAt) return;
+			w.world.jobStatus = "completed";
+			w.world.submission = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "ask",
+				state: "submitted",
+				summary: "Composer fixed.",
+				question: "Keep 250 ms?",
+				options: [],
+				operationKey: "poll",
+			};
+		});
+		const calls: { method: string; at: number; args: Record<string, unknown> }[] = [];
+		let ended: number | undefined;
+		vi.mocked(w.host.endTurn).mockImplementation(() => {
+			ended = Date.now() - start;
+		});
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				const n = calls.filter((c) => c.method === method).length;
+				calls.push({ method, at: Date.now() - start, args });
+				return answer({ method, n, signal, pass: () => inner.call(method, args, signal) });
+			},
+		};
+		return {
+			control,
+			start,
+			calls,
+			at: (method: string) => calls.filter((c) => c.method === method).map((c) => c.at),
+			ended: () => ended,
+		};
+	}
+	const HEARTBEAT = "qorpera_heartbeat_coding_session";
+	const DESCRIBE = "qorpera_describe_coding_turn";
+
+	function run(w: ReturnType<typeof world>, control: CodingExecutorControl, turnPollMs = 1000) {
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs, report });
+		const reported = () => report.mock.calls.map(([stage, error]) => [stage, (error as Error).message]);
+		return { outcome: executor.runOnce(new AbortController().signal), reported };
+	}
+
+	it("asks a renewal whose answer was lost or late again after a short pause, and the turn goes on under the lease it renewed", async () => {
+		const w = world();
+		let last: string | undefined;
+		const s = slow(
+			w,
+			({ method, n, signal, pass }) => {
+				if (method !== HEARTBEAT) return pass();
+				if (n === 0) return unconfirmed();
+				// Cut by its own 10 s bound.
+				if (n === 1) return hang(signal);
+				if (n === 2) return Promise.reject(new CodingControlBusy());
+				last = renewed();
+				return Promise.resolve(last);
+			},
+			65000,
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(70000);
+		// Past the claim's 60 s: the renewal re-armed the watchdog.
+		expect(await r.outcome).toBe("blocked");
+		expect(r.reported()).toEqual([]);
+		// 15 s, then 2 s after the lost answer, 4 s after the attempt its bound cut, 8 s after the busy one; then 15 s.
+		const renewals = s.at(HEARTBEAT);
+		expect(renewals).toHaveLength(5);
+		timeline(renewals, [15000, 17000, 31000, 39000, 54000]);
+		// The same worker, token and lease every time; the turn holds the lease the last renewal confirmed.
+		for (const c of s.calls.filter((c) => c.method === HEARTBEAT))
+			expect(c.args).toEqual({
+				p_worker_id: w.world.claim.workerId,
+				p_lease_token: w.world.claim.leaseToken,
+				p_lease_seconds: 60,
+			});
+		expect(vi.mocked(w.host.endTurn).mock.calls[0]![0].leaseUntil).toBe(last);
+	});
+
+	it("gives the lease up by the margin before its end when no renewal is answered, every attempt inside it", async () => {
+		const w = world();
+		const cuts: number[] = [];
+		const s = slow(w, ({ method, n, signal, pass }) => {
+			if (method !== HEARTBEAT) return pass();
+			if (n === 0) return unconfirmed();
+			signal.addEventListener("abort", () => cuts.push(Date.now() - s.start), { once: true });
+			return hang(signal);
+		});
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(60000);
+		expect(await r.outcome).toBe("recovery-required");
+		// The lease's end less the margin, before the watchdog's deadline: the turn gave it up while it still held it.
+		near(s.ended(), 60000 - CODING_LEASE_MARGIN_MS);
+		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
+		// 15 s; 2 s after the lost answer; 4 s and 8 s after each attempt its 10 s bound cut, the last bound clamped to 6 s.
+		const renewals = s.at(HEARTBEAT);
+		expect(renewals).toHaveLength(4);
+		timeline(renewals, [15000, 17000, 31000, 49000]);
+		timeline(cuts, [27000, 41000, 55000]);
+		expect(s.calls.every((c) => c.at <= 55000 + 500)).toBe(true);
+		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+	});
+
+	it("gives the lease up at once when a renewal is refused, however many were lost before it", async () => {
+		const w = world();
+		const s = slow(w, ({ method, n, pass }) =>
+			method !== HEARTBEAT ? pass() : n === 0 ? unconfirmed() : Promise.reject(new CodingControlRefused(null)),
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
+		const renewals = s.at(HEARTBEAT);
+		expect(renewals).toHaveLength(2);
+		near(renewals[1], 17000);
+		near(s.ended(), 17000);
+	});
+
+	it("drops a renewal's late answer: it moves no lease, and nothing runs after the turn gave the lease up", async () => {
+		const w = world();
+		const first = w.world.claim.leaseUntil;
+		const answered: number[] = [];
+		// A control that ignores its signal and answers 15 s later, each time with a renewed lease.
+		const s = slow(w, ({ method, pass }) =>
+			method !== HEARTBEAT
+				? pass()
+				: later(15000, () => {
+						answered.push(Date.now() - s.start);
+						return renewed();
+					}),
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(80000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
+		near(s.ended(), 55000);
+		// Each attempt was cut by its bound before it answered; the last answered after the turn had ended.
+		timeline(s.at(HEARTBEAT), [15000, 27000, 41000]);
+		timeline(answered, [30000, 42000, 56000]);
+		expect(s.at(HEARTBEAT)).toHaveLength(3);
+		expect(vi.mocked(w.host.endTurn).mock.calls[0]![0].leaseUntil).toBe(first);
+		expect(s.calls.every((c) => c.at <= 55000 + 500)).toBe(true);
+	});
+
+	it("renews one at a time: a slow renewal holds the next one back, which starts 15 s after it settled", async () => {
+		const w = world();
+		let inFlight = 0;
+		let most = 0;
+		const settled: number[] = [];
+		const s = slow(
+			w,
+			({ method, pass }) => {
+				if (method !== HEARTBEAT) return pass();
+				most = Math.max(most, ++inFlight);
+				return later(9000, () => {
+					inFlight--;
+					settled.push(Date.now() - s.start);
+					return renewed();
+				});
+			},
+			100000,
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(105000);
+		expect(await r.outcome).toBe("blocked");
+		expect(most).toBe(1);
+		const renewals = s.at(HEARTBEAT);
+		expect(renewals).toHaveLength(4);
+		timeline(renewals, [15000, 39000, 63000, 87000]);
+		for (let i = 1; i < renewals.length; i++) near(renewals[i]! - settled[i - 1]!, 15000);
+	});
+
+	it("counts the lease down on this node's clock too: a database clock 10 s ahead never stretches the retries", async () => {
+		const w = world();
+		// The database's clock runs 10 s ahead of this node's: its 60 s leases end 70 s from now here.
+		w.world.claim.leaseUntil = new Date(Date.now() + 70000).toISOString();
+		const s = slow(w, ({ method, n, pass }) =>
+			method !== HEARTBEAT
+				? pass()
+				: n === 0
+					? Promise.resolve(new Date(Date.now() + 70000).toISOString())
+					: unconfirmed(),
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(90000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
+		// 60 s after the renewal was sent, less the margin; not the database's 70 s, and not its watchdog.
+		near(s.ended(), 15000 + 60000 - CODING_LEASE_MARGIN_MS);
+		const renewals = s.at(HEARTBEAT);
+		timeline(renewals, [15000, 30000, 32000, 36000, 44000, 52000, 60000, 68000]);
+		expect(renewals).toHaveLength(8);
+	});
+
+	it("asks a describe whose answer was lost or late again within its own budget, and the turn goes on", async () => {
+		const w = world();
+		const s = slow(
+			w,
+			({ method, n, signal, pass }) =>
+				method !== DESCRIBE || n > 1 ? pass() : n === 0 ? unconfirmed() : hang(signal),
+			20000,
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(25000);
+		expect(await r.outcome).toBe("blocked");
+		expect(r.reported()).toEqual([]);
+		// 2 s after the lost answer, then 4 s after the attempt its 10 s bound cut.
+		timeline(s.at(DESCRIBE), [0, CODING_RETRY_PAUSES_MS[0], 12000 + CODING_RETRY_PAUSES_MS[1]]);
+		expect(w.host.prepareWorkspace).toHaveBeenCalledTimes(1);
+	});
+
+	it("never asks a refused describe again", async () => {
+		const w = world();
+		const s = slow(w, ({ method, pass }) =>
+			method === DESCRIBE && w.world.phase === "running" ? Promise.reject(new CodingControlRefused(null)) : pass(),
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_REFUSED"]]);
+		// The one before the workspace, and the refused one.
+		expect(s.at(DESCRIBE)).toHaveLength(2);
+		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+	});
+
+	it("ends the turn when a describe stays lost past its budget", async () => {
+		const w = world();
+		const s = slow(w, ({ method, pass }) =>
+			method === DESCRIBE && w.world.phase === "running" ? unconfirmed() : pass(),
+		);
+		const r = run(w, s.control);
+		await vi.advanceTimersByTimeAsync(40000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_UNCONFIRMED"]]);
+		const [, first, ...rest] = s.at(DESCRIBE);
+		// 2, 4, 8 and 8 s apart; the next pause would end past the budget.
+		timeline(
+			rest.map((at) => at - first!),
+			[2000, 6000, 14000, 22000],
+		);
+		expect(rest).toHaveLength(4);
+		near(s.ended()! - first!, 22000);
+		expect(s.ended()! - first!).toBeLessThan(CODING_DESCRIBE_BUDGET_MS);
+	});
+
+	it("a lost lease cancels a describe's retries at once", async () => {
+		const w = world();
+		const s = slow(w, ({ method, pass }) =>
+			method === HEARTBEAT
+				? Promise.reject(new CodingControlRefused(null))
+				: method === DESCRIBE && w.world.phase === "running"
+					? unconfirmed()
+					: pass(),
+		);
+		const r = run(w, s.control, 2000);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(await r.outcome).toBe("recovery-required");
+		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
+		near(s.ended(), 15000);
+		// The describe's pause from 8 s to 16 s was cut at the refusal; nothing was asked after it.
+		timeline(s.at(DESCRIBE).slice(1), [2000, 4000, 8000]);
+		expect(s.at(DESCRIBE)).toHaveLength(4);
+	});
+
+	it("polls one describe at a time: a describe still asking holds the next poll back", async () => {
+		const w = world();
+		let inFlight = 0;
+		let most = 0;
+		const settled: number[] = [];
+		const s = slow(
+			w,
+			({ method, n, signal, pass }) => {
+				if (method !== DESCRIBE || n === 0) return pass();
+				most = Math.max(most, ++inFlight);
+				// The first poll's describe is cut by its bound, and asked again; that answer takes 3 s.
+				const answer = n === 1 ? hang(signal) : n === 2 ? later(3000, () => undefined).then(pass) : pass();
+				return answer.finally(() => {
+					inFlight--;
+					settled.push(Date.now() - s.start);
+				});
+			},
+			25000,
+		);
+		const r = run(w, s.control, 2000);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(await r.outcome).toBe("blocked");
+		expect(most).toBe(1);
+		const [, ...polls] = s.at(DESCRIBE);
+		timeline(polls, [2000, 14000, 19000, 21000, 23000, 25000]);
+		// The next poll waits its 2 s from the moment the describe and its retries settled.
+		near(polls[2]! - settled[1]!, 2000);
 	});
 });

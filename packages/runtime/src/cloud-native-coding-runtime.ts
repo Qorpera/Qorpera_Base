@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
 	type CloudCodingCommandScope,
 	type CloudCodingPullRequest,
@@ -9,10 +10,17 @@ import {
 } from "@qorpera/contracts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
+import {
+	cloudControlBackoffMs,
+	cloudControlEnded,
+	cloudControlPause,
+	cloudControlRetryable,
+} from "./cloud-control-errors.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
+	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -90,6 +98,38 @@ const NEW_DISK =
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
 	return value as Record<string, unknown>;
+}
+
+/** How long a turn's two first reads (its authority, then its context) are each asked again, from their first attempt. */
+export const CLOUD_CODING_TURN_READ_BUDGET_MS = 30_000;
+
+/**
+ * One of a turn's two first reads, asked again while its answer is lost or late (cloudControlRetryable), pausing 250 ms
+ * doubling to 2 s, within CLOUD_CODING_TURN_READ_BUDGET_MS of its first attempt: every attempt and every pause ends by
+ * then. Both reads take the run's budget row, so an attempt waits as long as the database may run it
+ * (CLOUD_RUN_ROW_READ_MS), and a copy whose answer was lost or late is asked again only once that long has passed since
+ * it was sent, unless its answer said it ended (cloudControlEnded, R1). A refusal, an answer that does not parse, a
+ * cancellation or any other failure is thrown at once (R2, 31 Oct 2026: a coding turn outlasts one slow database call).
+ */
+async function codingTurnRead<T>(read: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+	const by = performance.now() + CLOUD_CODING_TURN_READ_BUDGET_MS;
+	let last: unknown;
+	for (let attempt = 0; ; attempt += 1) {
+		const sent = performance.now();
+		const attemptMs = Math.min(CLOUD_RUN_ROW_READ_MS, Math.floor(by - sent));
+		if (attemptMs < 1) throw last;
+		try {
+			return await cloudToolRequest(read, signal, attemptMs);
+		} catch (error) {
+			last = error;
+			const wait = Math.max(
+				cloudControlBackoffMs(attempt),
+				cloudControlEnded(error) ? 0 : Math.ceil(sent + CLOUD_RUN_ROW_READ_MS - performance.now()),
+			);
+			if (signal.aborted || !cloudControlRetryable(error) || performance.now() + wait >= by) throw error;
+			await cloudControlPause(wait, signal);
+		}
+	}
 }
 
 /** The turn context as qorpera_read_coding_turn_context returns it: what
@@ -426,13 +466,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			});
 			return { authority: native, identity: native.identity, coding, repository, scope };
 		};
-		const initial = await cloudToolRequest(authorize, signal);
+		const initial = await codingTurnRead(authorize, signal);
 		if (initial.coding.submission !== null && initial.coding.submission !== undefined)
 			throw new Error("CODING_TURN_ALREADY_SUBMITTED");
 		const scope = initial.scope;
 		// The session's own record of its turns, read once: earlier turns never change.
 		const turn = parseCloudCodingTurnContext(
-			await cloudToolRequest(
+			await codingTurnRead(
 				(checked) => this.#control.call("qorpera_read_coding_turn_context", { p_binding: binding }, checked),
 				signal,
 			),
@@ -627,6 +667,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						throw new Error("CODING_NATIVE_BINDING_CHANGED");
 					return (await authorize(checked)).authority;
 				},
+				// The coding authorize takes the run's budget row: its checks wait out a lost copy (R2, 31 Oct 2026).
+				runRowMs: CLOUD_RUN_ROW_READ_MS,
 				beginToolOperation: (value, input, checked) => this.#control.beginToolOperation(value, input, checked),
 				completeToolOperation: (value, input, checked) =>
 					this.#control.completeToolOperation(value, input, checked),

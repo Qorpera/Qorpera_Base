@@ -1,6 +1,11 @@
 import { performance } from "node:perf_hooks";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
+import {
+	cloudControlBackoffMs,
+	cloudControlEnded,
+	cloudControlPause,
+	cloudControlRetryable,
+} from "./cloud-control-errors.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
@@ -67,6 +72,14 @@ export interface CloudNativeToolAuthority {
 
 export interface CloudNativeToolAuthorityReader {
 	describeToolAuthority(binding: CloudNativeToolBinding, signal: AbortSignal): Promise<unknown>;
+	/**
+	 * Set when `describeToolAuthority` takes the run's budget row (the run mutex), as the coding turn's authorize does:
+	 * the longest the database may run it after it was sent (CLOUD_RUN_ROW_READ_MS). The run's own checks give each
+	 * attempt at least that long, so a slow answer lands, and pass it to `retry`, so a copy whose answer was lost or late
+	 * is waited out before the check is asked again. A reader without it (the native host's describe, which reads the run
+	 * without the mutex: 20260930487000) is asked again as before (R2, 31 Oct 2026).
+	 */
+	readonly runRowMs?: number;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -205,10 +218,24 @@ export function parseCloudNativeToolAuthority(
 
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * The longest the database may still run a read of the run's budget row (the run mutex) through the native host's
+ * standard entry point after it was sent: PostgREST's wait for a connection (10 s, its hosted setting), the entry
+ * point's 8 s statement bound, and 2 s for the round trip. A read of the row is not sent again sooner unless the
+ * database answered that the copy ended (R1, 28 Oct 2026: one run's reads queued 11 to 14 deep on its row).
+ */
+export const CLOUD_RUN_ROW_READ_MS = 20_000;
+/** The same through the long entry point (its 25 s statement bound): the one call before each model request. */
+export const CLOUD_RUN_ROW_LONG_READ_MS = 37_000;
+/** A tool call's receipt begin and completion take the run's row too, through the standard entry point: each waits as
+ * long, and is asked again as such a read is. Both are safe to repeat: the begin by its key with the same receipt, the
+ * completion with the same result (item 7, 29 Oct 2026). */
+export const CLOUD_RUN_ROW_WRITE_MS = CLOUD_RUN_ROW_READ_MS;
 /** The first attempt of the one call before each model request (qorpera_fence_native_context). A lost or late answer
  * is asked again for as long as the run's authority holds, with no budget of its own (5 Oct 2026), each attempt cut at
- * its deadline giving the next twice as long (6 Oct 2026). */
-export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 10_000;
+ * its deadline giving the next twice as long (6 Oct 2026). Its first attempt waits as long as the database may run it
+ * (R1). */
+export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = CLOUD_RUN_ROW_LONG_READ_MS;
 
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
@@ -251,6 +278,7 @@ export class CloudNativeToolRun {
 	readonly signal: AbortSignal;
 	readonly #reader: CloudNativeToolAuthorityReader;
 	readonly #holdMs: number | undefined;
+	readonly #runRowMs: number | undefined;
 	readonly #stop = new AbortController();
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
@@ -266,10 +294,12 @@ export class CloudNativeToolRun {
 		reader: CloudNativeToolAuthorityReader,
 		signal: AbortSignal,
 		holdMs: number | undefined,
+		runRowMs: number | undefined,
 	) {
 		this.binding = parseCloudNativeToolBinding(binding);
 		this.#reader = reader;
 		this.#holdMs = holdMs;
+		this.#runRowMs = runRowMs;
 		this.signal = AbortSignal.any([signal, this.#stop.signal]);
 		this.signal.addEventListener(
 			"abort",
@@ -296,7 +326,13 @@ export class CloudNativeToolRun {
 	): Promise<CloudNativeToolRun> {
 		if (holdMs !== undefined && (!Number.isSafeInteger(holdMs) || holdMs < CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS))
 			throw new Error("Cloud tool authority hold is invalid");
-		const run = new CloudNativeToolRun(binding, reader, signal, holdMs);
+		const runRowMs = reader.runRowMs;
+		if (
+			runRowMs !== undefined &&
+			(!Number.isSafeInteger(runRowMs) || runRowMs < 1 || runRowMs > CLOUD_TOOL_REQUEST_MAX_MS)
+		)
+			throw new Error("Cloud tool authority reader is invalid");
+		const run = new CloudNativeToolRun(binding, reader, signal, holdMs, runRowMs);
 		try {
 			await run.assertActive(signal);
 			return run;
@@ -313,15 +349,18 @@ export class CloudNativeToolRun {
 
 	/**
 	 * Rechecks from the cloud after queuing and again before releasing tool data.
-	 * `timeoutMs` widens the read's deadline when a caller sends it together with
-	 * another read of the same run, which the database serialises on the job row.
-	 * A read whose answer is lost or late is asked again (see `retry`); a refusal closes the run at once.
+	 * `timeoutMs` widens the read's deadline for a caller that sends another read of the same run with it.
+	 * A read whose answer is lost or late is asked again (see `retry`). When the reader takes the run's row (its
+	 * `runRowMs`), each attempt waits at least that long and its copy is waited out first; a refusal closes the run at once.
 	 */
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
+		const runRowMs = this.#runRowMs;
 		await this.#check(
 			(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
 			signal,
-			timeoutMs,
+			// As long as the database may run it, as the turn check's attempts: a slow answer lands, not cut and asked again.
+			runRowMs === undefined ? timeoutMs : Math.max(timeoutMs ?? REQUEST_TIMEOUT_MS, runRowMs),
+			runRowMs,
 		);
 	}
 
@@ -336,18 +375,20 @@ export class CloudNativeToolRun {
 	 * authority holds, while the background refresh keeps renewing it. So a slow database never ends the run here; lost
 	 * authority, a refusal or a cancellation do (5 Oct 2026). The database still cuts each attempt at its own statement
 	 * budget (25 s for the fence, through `qorpera_native_host_call_long`, migration 20260930109500), and that is asked
-	 * again like a lost answer: a fence that needs longer in the database never lands.
+	 * again like a lost answer: a fence that needs longer in the database never lands. `runRowMs` is for a read that
+	 * takes the run's budget row (see `retry`).
 	 */
 	async assertActiveWith(
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs?: number,
+		runRowMs?: number,
 	): Promise<boolean> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		try {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
-			const { value, started } = await this.retry(read, combined, timeoutMs);
+			const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
 			if (value === undefined) return false;
 			this.#apply(value, started, combined);
 			return true;
@@ -370,11 +411,19 @@ export class CloudNativeToolRun {
 	 * the database statement (a connection pool wait), or a statement shorter than the database's own budget (25 s for
 	 * the fence, 8 s for the native host's other reads). A statement the database cancels at that budget is not a cut
 	 * here: it is asked again at the same length.
+	 *
+	 * A read that takes the run's budget row (the run mutex) passes `runRowMs`, the longest the database may run it
+	 * after it was sent (CLOUD_RUN_ROW_READ_MS): a copy whose answer was lost or late is asked again only once that
+	 * long has passed since it was sent, so no two copies wait for the row at once, unless the database answered that
+	 * the copy ended (a lock or statement timeout, or PostgREST's pool wait: cloudControlEnded). What is asked again,
+	 * and for how long, stays as above (R1, 28 Oct 2026). The run's own checks pass their reader's `runRowMs` (R2).
+	 * Before the first authority nothing extends the window, so a wait that would reach its end gives up at once (R2).
 	 */
 	async retry<T>(
 		read: (signal: AbortSignal) => Promise<T>,
 		signal: AbortSignal,
 		timeoutMs?: number,
+		runRowMs?: number,
 	): Promise<{ value: T; started: number }> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		const begun = performance.now();
@@ -394,7 +443,15 @@ export class CloudNativeToolRun {
 					attemptLimitMs = Math.min(CLOUD_TOOL_REQUEST_MAX_MS, attemptLimitMs * 2);
 				const pause = cloudControlBackoffMs(attempt);
 				if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit()) throw error;
-				await cloudControlPause(pause, combined);
+				// A read of the run's row waits out the copy it replaces, unless the database answered that it ended (R1).
+				// The limit is read again after the wait: a refresh that lands meanwhile extends it.
+				const copyMs =
+					runRowMs === undefined || cloudControlEnded(error)
+						? 0
+						: Math.ceil(started + runRowMs - performance.now());
+				const waitMs = Math.max(pause, copyMs);
+				if (!this.#identity && performance.now() + waitMs >= limit()) throw error;
+				await cloudControlPause(waitMs, combined);
 			}
 		}
 	}
@@ -403,13 +460,14 @@ export class CloudNativeToolRun {
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs: number | undefined,
+		runRowMs: number | undefined,
 	): Promise<void> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			// The attempt that answered dates the authority it read.
-			const { value, started } = await this.retry(read, combined, timeoutMs);
+			const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
 			this.#apply(value, started, combined);
 		});
 		this.#checking = check.catch(() => {

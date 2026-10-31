@@ -7,7 +7,12 @@ import {
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
-import { CloudControlRpcRefused, cloudControlRetryable } from "@qorpera/runtime/cloud-control-errors";
+import {
+	CloudControlRpcEnded,
+	CloudControlRpcRefused,
+	cloudControlEnded,
+	cloudControlRetryable,
+} from "@qorpera/runtime/cloud-control-errors";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -560,6 +565,49 @@ describe("the folder core's entry points (core C3)", () => {
 			expect(error).toMatchObject({ category });
 			expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
 		}
+	});
+
+	it("tells a lost answer whose statement ended apart from one that says nothing of it (R1, 28 Oct 2026)", async () => {
+		const page = "<html><body>504 Gateway Time-out</body></html>";
+		const answer = (status: number, body: unknown) =>
+			fixture(
+				vi.fn<typeof fetch>(async () =>
+					typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
+				),
+			)
+				.call("qorpera_assert_company_path_reads", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+		const postgrest = (code: string) => ({ code, message: "x", details: null, hint: null });
+		// The database gave up the lock wait or the statement, or PostgREST never began it (its pool wait): ended.
+		for (const [status, body] of [
+			[500, postgrest("55P03")],
+			[500, postgrest("57014")],
+			[504, postgrest("PGRST003")],
+		] as const) {
+			const error = await answer(status, body);
+			expect(error).toBeInstanceOf(CloudControlRpcEnded);
+			expect(error).toMatchObject({ category: "transport_unavailable" });
+			expect(cloudControlRetryable(error)).toBe(true);
+			expect(cloudControlEnded(error)).toBe(true);
+		}
+		// A lost connection, PostgREST's other connection errors, a proxy's page or a cut body: nothing said it ended.
+		for (const [status, body] of [
+			[503, postgrest("08006")],
+			[503, postgrest("PGRST000")],
+			[503, postgrest("PGRST001")],
+			[502, page],
+			[500, { code: "55P03", message: "x" }],
+		] as const) {
+			const error = await answer(status, body);
+			expect(error).not.toBeInstanceOf(CloudControlRpcEnded);
+			expect(error).toMatchObject({ category: "transport_unavailable" });
+			expect(cloudControlRetryable(error)).toBe(true);
+			expect(cloudControlEnded(error)).toBe(false);
+		}
+		// A refusal stays a refusal, never asked again.
+		const refused = await answer(500, postgrest("55000"));
+		expect(refused).toBeInstanceOf(CloudControlRpcRefused);
+		expect(cloudControlRetryable(refused)).toBe(false);
 	});
 
 	it("gives a listing page and a change set's outcomes room, and nothing else", async () => {

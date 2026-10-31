@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
-import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { CLOUD_RUN_ROW_WRITE_MS, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
@@ -50,6 +51,33 @@ function observe(assignmentId: string) {
 	const observability = new CloudRuntimeObservability({ assignmentId, publish });
 	observations.push(observability);
 	return { rows, publish, observability };
+}
+
+/** Fake timers and performance.now move together, in steps of 50 ms (as in the authority test). Set before `fixture`,
+ * so the run's refresh keeps its authority on the same clock. */
+function fakeClock() {
+	vi.useFakeTimers();
+	const now = vi.spyOn(performance, "now");
+	const clock = {
+		now: 0,
+		async tick(ms: number) {
+			for (let passed = 0; passed < ms; passed += 50) {
+				clock.now += 50;
+				await vi.advanceTimersByTimeAsync(50);
+			}
+		},
+		restore() {
+			now.mockRestore();
+			vi.useRealTimers();
+		},
+	};
+	now.mockImplementation(() => clock.now);
+	return clock;
+}
+
+/** Ends `ms` from now on the fake clock. */
+function after(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fixture() {
@@ -147,6 +175,16 @@ async function fixture() {
 			...patch,
 		});
 	return { ...authority, reader, run, abort, control, operations, ledger, operation, authorize, perform, execute };
+}
+
+/** Sends the call before the fake clock first moves: it reaches its receipt's begin within microtasks. */
+async function send(f: Awaited<ReturnType<typeof fixture>>) {
+	const executed = f.execute();
+	executed.catch(() => undefined);
+	for (let turn = 0; turn < 1_000 && f.control.beginToolOperation.mock.calls.length === 0; turn += 1)
+		await Promise.resolve();
+	expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
+	return { executed };
 }
 
 it("binds the exact plan and cloud principals to one durable attempt", async () => {
@@ -850,9 +888,16 @@ it("names a timeout in the run's own recheck before the receipt, although the ru
 it("tells a timeout at the receipt apart: the permission check before it succeeded", async () => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
-	f.control.beginToolOperation.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	// A timeout at the receipt is asked again (item 7, 29 Oct 2026): one that lasts until the call's own deadline is the
+	// call's answer.
+	const call = new AbortController();
+	f.control.beginToolOperation.mockImplementationOnce(async () => {
+		call.abort(new DOMException("The tool call's deadline passed", "TimeoutError"));
+		throw new CloudRuntimeDiagnosticError("timeout");
+	});
 	const span = observed.observability.start("connector");
-	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	await expect(f.execute({ observation: span, signal: call.signal })).rejects.toThrow("outcome unconfirmed");
+	expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
 	expect(span.result).toMatchObject({ status: "unconfirmed", receiptId: null, errorCategory: "timeout" });
 	await observed.observability.close();
 	expect(
@@ -860,6 +905,90 @@ it("tells a timeout at the receipt apart: the permission check before it succeed
 			.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
 			.map((row) => [row.operation, row.status, row.errorCategory]),
 	).toEqual([["context_authority", "succeeded", null]]);
+});
+
+it("asks a receipt's begin and completion again with the same receipt once the copy has ended (item 7, 29 Oct 2026)", async () => {
+	const clock = fakeClock();
+	try {
+		const f = await fixture();
+		const begin = f.control.beginToolOperation.getMockImplementation();
+		const complete = f.control.completeToolOperation.getMockImplementation();
+		if (!begin || !complete) throw new Error("Missing test implementation");
+		const begins: number[] = [];
+		const completes: number[] = [];
+		// The database gave up the begin's wait for the run's row at its 3 s (55P03), so nothing began: asked again after
+		// the pause.
+		f.control.beginToolOperation.mockImplementation(async (...args) => {
+			begins.push(clock.now);
+			if (begins.length > 1) return begin(...args);
+			await after(3_000);
+			throw new CloudControlRpcEnded();
+		});
+		// The completion committed, but its answer was lost after 1 s and nothing says its statement ended: asked again
+		// only once the copy may have ended, and answered completed again, as the database answers a repeat with the
+		// same result.
+		f.control.completeToolOperation.mockImplementation(async (binding, input, signal) => {
+			completes.push(clock.now);
+			if (completes.length > 1)
+				return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			await complete(binding, input, signal);
+			await after(1_000);
+			throw new CloudRuntimeDiagnosticError("transport_unavailable");
+		});
+		const { executed } = await send(f);
+		await clock.tick(25_000);
+		await expect(executed).resolves.toEqual({ kind: "json", value: { changed: true } });
+		expect(begins).toEqual([0, 3_250]);
+		expect(completes).toEqual([3_250, 3_250 + CLOUD_RUN_ROW_WRITE_MS]);
+		const [first, again] = f.control.beginToolOperation.mock.calls.map((call) => call[1]);
+		expect(again).toEqual(first);
+		const [done, repeat] = f.control.completeToolOperation.mock.calls.map((call) => call[1]);
+		expect(repeat).toEqual(done);
+		expect(f.perform).toHaveBeenCalledOnce();
+		expect([...f.ledger.values()].map((receipt) => receipt.state)).toEqual(["completed"]);
+	} finally {
+		clock.restore();
+	}
+});
+
+it("gives a receipt's begin as long as a read of the run's row, and asks a copy cut there again (item 7)", async () => {
+	const clock = fakeClock();
+	try {
+		const f = await fixture();
+		const begin = f.control.beginToolOperation.getMockImplementation();
+		if (!begin) throw new Error("Missing test implementation");
+		const begins: number[] = [];
+		const cut: AbortSignal[] = [];
+		f.control.beginToolOperation.mockImplementation(async (binding, input, signal) => {
+			begins.push(clock.now);
+			if (begins.length > 1) return begin(binding, input, signal);
+			cut.push(signal);
+			return new Promise<never>(() => undefined);
+		});
+		const { executed } = await send(f);
+		// Not cut at a plain request's 5 s: the database may hold the begin that long (PostgREST's pool wait, then the
+		// native host's 8 s statement).
+		await clock.tick(CLOUD_RUN_ROW_WRITE_MS - 50);
+		expect(cut[0].aborted).toBe(false);
+		await clock.tick(1_000);
+		await expect(executed).resolves.toEqual({ kind: "json", value: { changed: true } });
+		expect(cut[0].aborted).toBe(true);
+		expect(begins).toEqual([0, CLOUD_RUN_ROW_WRITE_MS + 250]);
+		expect(f.perform).toHaveBeenCalledOnce();
+	} finally {
+		clock.restore();
+	}
+});
+
+it.each(["begin", "completion"] as const)("never asks a refused receipt %s again (item 7)", async (step) => {
+	const f = await fixture();
+	const refusal = new CloudControlRpcRefused("55000", "PRIVATE_REFUSAL");
+	if (step === "begin") f.control.beginToolOperation.mockRejectedValueOnce(refusal);
+	else f.control.completeToolOperation.mockRejectedValueOnce(refusal);
+	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+	expect(f.control.beginToolOperation).toHaveBeenCalledOnce();
+	expect(f.perform).toHaveBeenCalledTimes(step === "begin" ? 0 : 1);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(step === "begin" ? 0 : 1);
 });
 
 it("does not link a locally proposed receipt when the canonical begin response is lost", async () => {

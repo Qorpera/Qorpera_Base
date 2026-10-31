@@ -443,8 +443,26 @@ describe("a coding machine's journaled lifecycle", () => {
 	});
 	it("one concurrent claimant dispatches create", async () => {
 		const f = await fixture();
-		await Promise.all([f.reconcile(), f.reconcile(), f.reconcile()]);
+		// The three overlap for certain: the winner's create stays in LXD until the other two are done, so neither reads
+		// it accepted (a claimant that does settles the create and starts the machine, as it should).
+		let othersDone!: () => void;
+		const others = new Promise<void>((resolve) => {
+			othersDone = resolve;
+		});
+		const submit = f.client.submitInstanceOperation.getMockImplementation()!;
+		f.client.submitInstanceOperation.mockImplementationOnce(async (...args) => {
+			await others;
+			return submit(...args);
+		});
+		let done = 0;
+		const claimants = [f.reconcile(), f.reconcile(), f.reconcile()].map((claimant) =>
+			claimant.finally(() => {
+				if (++done === 2) othersDone();
+			}),
+		);
+		await Promise.all(claimants);
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create"]);
 	});
 	it("does not start while known create is pending or unobservable", async () => {
 		const f = await fixture();

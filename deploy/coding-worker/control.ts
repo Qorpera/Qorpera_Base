@@ -18,6 +18,15 @@ const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, .
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
+/** A turn's lease renewal and describe (R2, 31 Oct 2026): the kernel's refusal says the lease is gone, and the executor
+ * never asks it again. They are the SQLSTATEs the two raise on purpose, with the status PostgREST answers each with:
+ * 42501 for a lapsed lease, another token or a turn no longer running, 55000 for a cancelled session, 22023 for invalid
+ * seconds. Any other failure stays unconfirmed, and the executor asks it again within the lease. */
+const LEASED = new Set<string>(["qorpera_heartbeat_coding_session", "qorpera_describe_coding_turn"]);
+const LEASE_REFUSALS: ReadonlyMap<string, readonly number[]> = new Map([
+	["42501", [401, 403]], ["55000", [500]], ["22023", [400]],
+]);
+
 /** The core's refusals of a folder view, in their own words: SQL raised one of these, with 42501 or 22023. The
  * executor fails a coding session's attach with them (F3 5g-4), or, for a machine SQL marked to restart for the
  * folder (5g-5), restarts it first; a test machine's command receipts say why its boot has no /company (F3 6e-2a).
@@ -78,12 +87,14 @@ export class CodingExecutorHttpControl {
 			if (response.status !== 200) {
 				const refusable = REFUSABLE.has(method) && (response.status === 401 || response.status === 403);
 				const kept = refusals !== undefined && [400, 401, 403].includes(response.status);
+				const leased = LEASED.has(method) && [400, 401, 403].includes(response.status);
 				// An error body that stalls is not worth waiting for: it stays unconfirmed.
-				if (response.status === 500 || refusable || kept) {
+				if (response.status === 500 || refusable || kept || leased) {
 					const error = postgrestError(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
 					const reason = kept && error && ["42501", "22023"].includes(error.code) && refusals?.has(error.message) ? error.message : null;
+					const leaseGone = LEASED.has(method) && error !== undefined && LEASE_REFUSALS.get(error.code)?.includes(response.status) === true;
 					if (response.status === 500 && error?.code === "55P03") failure = new CodingControlBusy();
-					else if (error && ((refusable && error.code === "42501") || reason !== null))
+					else if (error && ((refusable && error.code === "42501") || reason !== null || leaseGone))
 						failure = new CodingControlRefused(error.details !== null && DETAIL.test(error.details) ? error.details : null, reason);
 				} else await response.body?.cancel().catch(() => undefined);
 				throw new Error("unconfirmed");

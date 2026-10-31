@@ -39,8 +39,8 @@ create function pg_temp.fl_viewed(p_request text) returns boolean language sql a
 $$;
 
 -- 1. The fence is listed with the long budget and keeps its binding scope. It sets statement_timeout 25s for itself (a
---    direct call gets the same budget; test 792 holds every listed call to that) and no lock_timeout, so the entry
---    point's 8 s holds for its lock waits.
+--    direct call gets the same budget; test 792 holds every listed call to that) and lock_timeout 3s (20260930540000,
+--    test 467), so it waits at most 3 s for a lock, not the entry point's 8 s.
 do $$
 declare v_row public.qorpera_native_host_calls%rowtype; v_config text[];
 begin
@@ -49,8 +49,8 @@ begin
 		raise exception 'the fence is listed as % %', v_row.scope, v_row.budget; end if;
 	select p.proconfig into v_config from pg_catalog.pg_proc as p
 	where p.oid = 'public.qorpera_fence_native_context(uuid,jsonb,text[],jsonb)'::regprocedure;
-	if not coalesce(v_config @> array['statement_timeout=25s'], false)
-		or exists (select 1 from unnest(v_config) as setting where setting like 'lock_timeout=%') then
+	if not coalesce(v_config @> array['statement_timeout=25s', 'lock_timeout=3s'], false)
+		or (select count(*) from unnest(v_config) as setting where setting like 'lock_timeout=%') <> 1 then
 		raise exception 'the fence sets %', v_config; end if;
 end $$;
 
