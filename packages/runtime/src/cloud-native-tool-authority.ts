@@ -72,6 +72,14 @@ export interface CloudNativeToolAuthority {
 
 export interface CloudNativeToolAuthorityReader {
 	describeToolAuthority(binding: CloudNativeToolBinding, signal: AbortSignal): Promise<unknown>;
+	/**
+	 * Set when `describeToolAuthority` takes the run's budget row (the run mutex), as the coding turn's authorize does:
+	 * the longest the database may run it after it was sent (CLOUD_RUN_ROW_READ_MS). The run's own checks pass it to
+	 * `retry`, so a copy whose answer was lost or late is waited out before the check is asked again. A reader without it
+	 * (the native host's describe, which reads the run without the mutex: 20260930487000) is asked again as before (R2,
+	 * 31 Oct 2026).
+	 */
+	readonly runRowMs?: number;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -270,6 +278,7 @@ export class CloudNativeToolRun {
 	readonly signal: AbortSignal;
 	readonly #reader: CloudNativeToolAuthorityReader;
 	readonly #holdMs: number | undefined;
+	readonly #runRowMs: number | undefined;
 	readonly #stop = new AbortController();
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
@@ -285,10 +294,12 @@ export class CloudNativeToolRun {
 		reader: CloudNativeToolAuthorityReader,
 		signal: AbortSignal,
 		holdMs: number | undefined,
+		runRowMs: number | undefined,
 	) {
 		this.binding = parseCloudNativeToolBinding(binding);
 		this.#reader = reader;
 		this.#holdMs = holdMs;
+		this.#runRowMs = runRowMs;
 		this.signal = AbortSignal.any([signal, this.#stop.signal]);
 		this.signal.addEventListener(
 			"abort",
@@ -315,7 +326,13 @@ export class CloudNativeToolRun {
 	): Promise<CloudNativeToolRun> {
 		if (holdMs !== undefined && (!Number.isSafeInteger(holdMs) || holdMs < CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS))
 			throw new Error("Cloud tool authority hold is invalid");
-		const run = new CloudNativeToolRun(binding, reader, signal, holdMs);
+		const runRowMs = reader.runRowMs;
+		if (
+			runRowMs !== undefined &&
+			(!Number.isSafeInteger(runRowMs) || runRowMs < 1 || runRowMs > CLOUD_TOOL_REQUEST_MAX_MS)
+		)
+			throw new Error("Cloud tool authority reader is invalid");
+		const run = new CloudNativeToolRun(binding, reader, signal, holdMs, runRowMs);
 		try {
 			await run.assertActive(signal);
 			return run;
@@ -333,13 +350,15 @@ export class CloudNativeToolRun {
 	/**
 	 * Rechecks from the cloud after queuing and again before releasing tool data.
 	 * `timeoutMs` widens the read's deadline for a caller that sends another read of the same run with it.
-	 * A read whose answer is lost or late is asked again (see `retry`); a refusal closes the run at once.
+	 * A read whose answer is lost or late is asked again (see `retry`), after its copy is waited out when the reader
+	 * takes the run's row (its `runRowMs`); a refusal closes the run at once.
 	 */
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
 		await this.#check(
 			(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
 			signal,
 			timeoutMs,
+			this.#runRowMs,
 		);
 	}
 
@@ -395,7 +414,7 @@ export class CloudNativeToolRun {
 	 * after it was sent (CLOUD_RUN_ROW_READ_MS): a copy whose answer was lost or late is asked again only once that
 	 * long has passed since it was sent, so no two copies wait for the row at once, unless the database answered that
 	 * the copy ended (a lock or statement timeout, or PostgREST's pool wait: cloudControlEnded). What is asked again,
-	 * and for how long, stays as above (R1, 28 Oct 2026).
+	 * and for how long, stays as above (R1, 28 Oct 2026). The run's own checks pass their reader's `runRowMs` (R2).
 	 */
 	async retry<T>(
 		read: (signal: AbortSignal) => Promise<T>,
@@ -436,13 +455,14 @@ export class CloudNativeToolRun {
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs: number | undefined,
+		runRowMs: number | undefined,
 	): Promise<void> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			// The attempt that answered dates the authority it read.
-			const { value, started } = await this.retry(read, combined, timeoutMs);
+			const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
 			this.#apply(value, started, combined);
 		});
 		this.#checking = check.catch(() => {

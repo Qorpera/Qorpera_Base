@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
 import {
@@ -10,7 +11,7 @@ import {
 } from "../src/cloud-native-coding-runtime.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
-import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
+import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { type CloudToolContext, cloudToolJsonText } from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
@@ -194,6 +195,40 @@ describe("the coding composition of a native turn", () => {
 		await outcome;
 		expect(activeRun?.signal.aborted).toBe(true);
 		expect(f.control.describeToolAuthority).not.toHaveBeenCalled();
+	});
+	it("has the run's own checks wait out a lost copy of the coding authorize, which takes the run's row (R2, 31 Oct 2026)", async () => {
+		vi.useFakeTimers();
+		let now = 0;
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		try {
+			const f = fixture();
+			const sent: number[] = [];
+			vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+				expect(options.controlPlane.runRowMs).toBe(CLOUD_RUN_ROW_READ_MS);
+				// Held as the session holds it (NATIVE_AUTHORITY_LEASE_SECONDS).
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal, 120_000);
+				// The refresh at 10 s is cut at its 5 s; its copy may still wait for the row until 30 s.
+				const original = f.call.getMockImplementation()!;
+				f.call.mockImplementation((method, args, signal) => {
+					if (method !== "qorpera_authorize_coding_turn") return original(method, args, signal);
+					sent.push(now);
+					return sent.length === 1 ? new Promise<never>(() => undefined) : original(method, args, signal);
+				});
+				for (let step = 0; step < 800 && sent.length < 2; step += 1) {
+					now += 50;
+					await vi.advanceTimersByTimeAsync(50);
+				}
+				expect(run.signal.aborted).toBe(false);
+				run.close();
+				throw new Error("native session stopped");
+			});
+			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+				"native session stopped",
+			);
+			expect(sent).toEqual([10_000, 30_000]);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 	it("uses the three command tools and two ways to end the turn, a durable submission and no human delivery", async () => {
 		const f = fixture();
