@@ -79,6 +79,8 @@ export interface CodingSession {
 	/** The question the session is waiting on, while it waits. */
 	needs?: string;
 	summary?: string;
+	/** When the session's first turn was first claimed; later turns keep it (ui/coding-session.ts
+	 * codingTurnStartedAt dates the current turn). */
 	startedAt?: string;
 	finishedAt?: string;
 	updatedAt: string;
@@ -98,9 +100,9 @@ export interface CodingSession {
 	runningCommands: number;
 	/** Its machine is asleep: programs stopped, files kept, the next message wakes it. */
 	machineAsleep: boolean;
-	/** When this client asked for this copy (performance clock). The cloud moves `updatedAt` only when the
-	 * session's phase or turn changes, so of two copies with the same `updatedAt` the one asked for later knows
-	 * more (standing by, asleep, archived). */
+	/** When this client asked for this copy (performance clock). The cloud moves `updatedAt` with the turn's own
+	 * changes (its phase, its steps, the executor's heartbeat while it runs), not when the session stands by,
+	 * sleeps or is archived, so of two copies with the same `updatedAt` the one asked for later knows more. */
 	askedAt?: number;
 }
 
