@@ -11,12 +11,17 @@
 -- 'declined', an approval another call used still answers 'used', and the replay of an allow, a deny or an ask with no
 -- card answers as before, with no write. Authority, the request's shape and its values (P40's apply_proposal check
 -- among them) are checked as before, ahead of the fence.
--- A run that does not resume from its receipts (one with a log, one in Agent tree mode) works as before. Once the
--- attempt records its resume it works again; an approval the first attempt used is then reviewed afresh (the fence
--- bounds the unrecorded attempt only; it does not make an approval exactly-once across attempts). Each case reports
+-- A run that does not resume from its receipts (one with a log, one in Agent tree mode) works as before; a coding
+-- session's turn does not resume from them either. Once the attempt records its resume it works again; an approval the
+-- first attempt used is then reviewed afresh (the fence bounds the unrecorded attempt only; it does not make an
+-- approval exactly-once across attempts). A third attempt, started after the next one recorded its resume, is fenced
+-- the same way until it records its own: the fence reads each attempt's resume, not the run's. Each case reports
 -- 'ok' (with begin's state, or record's decision and card) or its SQLSTATE and message, then the tables whose row
 -- counts changed, then the tables whose content changed with the same count. Every case is noted; the test fails at
 -- its end with each case that did not match, or if a case did not run.
+-- Left out: qorpera_await_action_review, which uses an approval with no fence (20260926130000:540-543), is inferred
+-- unreachable: the runtime awaits only after begin answers 'pending' or record returns a card
+-- (cloud-action-review.ts:1190-1191, :1280), and both are fenced here.
 --
 -- The expected messages, from the function source (file:line):
 -- - 55000 'Run resume is not recorded': the fence, 20260930546000 (as 20260930539000:165 and 20260930545000 raise).
@@ -293,6 +298,31 @@ begin
 end
 $$;
 
+-- 3d. The other 'used' is gone: 20260930489000:74-83 removed 20260926130000:312-318 (an approval another run used
+--     within 30 s of the answer that woke the agent, within the hour), and its guard (:88-91) keeps it out, so case 30
+--     is the only 'used'. With approval 3 made so, the unrecorded attempt's begin asks for a new review and is refused
+--     there, with nothing changed. Undone.
+do $$
+declare v_next jsonb := pg_temp.a3_binding('a3_next'); v text[] := '{}';
+begin
+	begin
+		perform set_config('session_replication_role', 'replica', true);
+		update public.qorpera_action_reviews set consumed_run_id = extensions.gen_random_uuid(), woken_at = consumed_at
+		where id = pg_temp.a3_review('a3-u3');
+		perform set_config('session_replication_role', 'origin', true);
+		perform pg_temp.base_assert((select woken_at is not null and consumed_run_id is distinct from pg_temp.rr_run()
+			and consumed_at < woken_at + interval '30 seconds' and clock_timestamp() < woken_at + interval '1 hour'
+			from public.qorpera_action_reviews where id = pg_temp.a3_review('a3-u3')),
+			'approval 3 is one 20260926130000:312 answered ''used'' for');
+		v := v || array['30b unrecorded: approval 3 used by another run as its answer woke the agent',
+			pg_temp.a3_begin(v_next, '3'), pg_temp.a3_refused()];
+		raise exception using errcode = 'A3001';
+	exception when sqlstate 'A3001' then null;
+	end;
+	perform pg_temp.a3_cases(v);
+end
+$$;
+
 -- 4. Authority is checked as before, ahead of the fence: the cut-off attempt is refused by the run check, and only the
 --    service role begins or records. The functions keep their settings and grants.
 do $$
@@ -367,6 +397,30 @@ begin
 end
 $$;
 
+-- 5b. A coding session's turn (its worker's dispatch wake of the coding species, 20260930539000:66-67) does not resume
+--     from its receipts: with the run's wake made one (as 466), the fence's first test is false, and cases 50-59 show a
+--     run for which it is false working as before. Its begin and record are not driven: on this run, woken by a room
+--     post, the run check's wake check (20260928249000:775, through :838-841) refuses that wake before the fence, and a
+--     real coding turn needs a coding worker's dispatch (928's path). Undone.
+do $$
+declare v text[] := '{}';
+begin
+	v := v || array['59w the run resumes from its receipts', public.qorpera_run_resumes_from_receipts(pg_temp.rr_run())::text,
+		'true'];
+	begin
+		perform set_config('session_replication_role', 'replica', true);
+		update public.qorpera_wake_occurrences set source_kind = 'worker-dispatch', payload = payload || '{"species":"coding"}'
+		where run_id = pg_temp.rr_run();
+		perform set_config('session_replication_role', 'origin', true);
+		v := v || array['59b a coding session''s turn does not resume from its receipts',
+			public.qorpera_run_resumes_from_receipts(pg_temp.rr_run())::text, 'false'];
+		raise exception using errcode = 'A3001';
+	exception when sqlstate 'A3001' then null;
+	end;
+	perform pg_temp.a3_cases(v);
+end
+$$;
+
 -- 6. Once it records what it was told (the unknown step, no steps read, as 466 §8), the attempt works as before: it
 --    uses approval 1, replays card 1, holds on card 4 and raises a new card. Action 3, whose approval the first
 --    attempt used, is reviewed afresh: the fence bounds the unrecorded attempt, not what a recorded one repeats.
@@ -385,13 +439,73 @@ begin
 end
 $$;
 
+-- 7. A newer attempt (as 508 §6): the next attempt, its resume recorded, is cut off, and a third starts. The next
+--    attempt is stale and refused by the run check. The third is fenced as the next attempt was before it recorded:
+--    begin is refused for approval 1, action 3 (its approval used), action 4 (its card waits) and action 5, and record
+--    for a new ask or allow and for the replays of cards 1 and 4. The denial and the allow's replay answer as before.
+do $$
+begin
+	perform pg_temp.rr_expire((pg_temp.a3_binding('a3_next') ->> 'jobId')::uuid);
+	perform pg_temp.base_assert((select status = 'queued' and attempt_count = 2 from public.qorpera_runner_jobs
+		where id = (pg_temp.a3_binding('a3_next') ->> 'jobId')::uuid) and pg_temp.rr_events(pg_temp.rr_run(), 'run_cut_off') = 2,
+		'a second cut-off resumes');
+end
+$$;
+do $$
+declare v_third jsonb := pg_temp.base_start(pg_temp.rr_run());
+begin
+	perform pg_temp.base_assert(pg_temp.rr_begin(v_third) ->> 'leaseId' = v_third ->> 'leaseId', 'the third attempt starts');
+	perform pg_temp.base_assert(public.qorpera_memory_run_resume(v_third) ->> 'why' = 'restart'
+		and exists (select 1 from public.qorpera_memory_run_resumes where run_id = pg_temp.rr_run()
+			and assignment_id = (pg_temp.a3_binding('a3_next') ->> 'assignmentId')::uuid)
+		and not exists (select 1 from public.qorpera_memory_run_resumes where run_id = pg_temp.rr_run()
+			and assignment_id = (v_third ->> 'assignmentId')::uuid),
+		'the third attempt is a resume it has not recorded, after the next attempt recorded its own');
+	perform set_config('qorpera_test.a3_third', v_third::text, true);
+end
+$$;
+do $$
+declare v_stale jsonb := pg_temp.a3_binding('a3_next'); v_third jsonb := pg_temp.a3_binding('a3_third');
+begin
+	perform pg_temp.a3_cases(array[
+		'65 the stale attempt''s begin', pg_temp.a3_begin(v_stale, '5'), '42501 Run is unavailable|none|none',
+		'66 the stale attempt''s record', pg_temp.a3_record(v_stale, 'a3-stale', 'e', 'ask'), '42501 Run is unavailable|none|none',
+		'67 unrecorded third: approval 1', pg_temp.a3_begin(v_third, '1'), pg_temp.a3_refused(),
+		'68 unrecorded third: card 1''s replay', pg_temp.a3_record(v_third, 'a3-u1', '1', 'ask'), pg_temp.a3_refused(),
+		'69 unrecorded third: action 3, its approval used', pg_temp.a3_begin(v_third, '3'), pg_temp.a3_refused(),
+		'70 unrecorded third: action 4, its card waiting', pg_temp.a3_begin(v_third, '4'), pg_temp.a3_refused(),
+		'71 unrecorded third: card 4''s replay', pg_temp.a3_record(v_third, 'a3-u4', '4', 'ask'), pg_temp.a3_refused(),
+		'72 unrecorded third: action 5, never reviewed', pg_temp.a3_begin(v_third, '5'), pg_temp.a3_refused(),
+		'73 unrecorded third: a new ask', pg_temp.a3_record(v_third, 'a3-w1', '5', 'ask'), pg_temp.a3_refused(),
+		'74 unrecorded third: a new allow', pg_temp.a3_record(v_third, 'a3-w2', '9', 'allow'), pg_temp.a3_refused(),
+		'75 unrecorded third: action 6 is declined', pg_temp.a3_begin(v_third, '6'), 'ok:declined|none|none',
+		'76 unrecorded third: the allow''s replay', pg_temp.a3_record(v_third, 'a3-k3', '7', 'allow'), 'ok:allow:false|none|none']);
+end
+$$;
+
+-- 8. Once the third attempt records what it was told (as §6), it works as the recorded next attempt did: it uses
+--    approval 1, replays card 1, raises a new card and holds on card 4.
+do $$
+declare v_third jsonb := pg_temp.a3_binding('a3_third'); v text[] := '{}';
+begin
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.rr_record(v_third, jsonb_build_object('stepsRead', 0, 'unknownCalls', jsonb_build_array(
+		jsonb_build_object('call', null, 'step', null, 'receiptId', current_setting('qorpera_test.rr_b')))));
+	v := v || array['77 recorded third: approval 1', pg_temp.a3_begin(v_third, '1'), pg_temp.a3_consumed()];
+	v := v || array['78 recorded third: card 1''s replay', pg_temp.a3_record(v_third, 'a3-u1', '1', 'ask'), 'ok:ask:true|none|none'];
+	v := v || array['79 recorded third: a new ask', pg_temp.a3_record(v_third, 'a3-w1', '5', 'ask'), pg_temp.a3_carded()];
+	v := v || array['80 recorded third: action 4', pg_temp.a3_begin(v_third, '4'), 'ok:pending|none|none'];
+	perform pg_temp.a3_cases(v);
+end
+$$;
+
 -- Every case, at once: each one ran, once, and matched.
 do $$
 declare v_cases text[] := array_remove(string_to_array(current_setting('qorpera_test.a3_cases'), E'\n'), '');
 begin
-	perform pg_temp.base_assert(current_setting('qorpera_test.a3_failed') = '' and cardinality(v_cases) = 66
-		and (select count(distinct c) from unnest(v_cases) c) = 66,
-		format('%s cases ran (%s distinct) of 66; failed:%s', cardinality(v_cases),
+	perform pg_temp.base_assert(current_setting('qorpera_test.a3_failed') = '' and cardinality(v_cases) = 85
+		and (select count(distinct c) from unnest(v_cases) c) = 85,
+		format('%s cases ran (%s distinct) of 85; failed:%s', cardinality(v_cases),
 			(select count(distinct c) from unnest(v_cases) c), current_setting('qorpera_test.a3_failed')));
 end
 $$;

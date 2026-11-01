@@ -11,6 +11,8 @@
 -- again. Each case reports 'ok' (with the receipt's status) or its SQLSTATE and message, then the tables whose row
 -- counts changed, then the tables whose content changed with the same count. Every case is noted; the test fails at its
 -- end with each case that did not match, or if a case did not run. Nothing is sent: the outbox's sender is not run.
+-- No case outside folder-v2: every company is folder-v2 now, so the attachment loop outside it (20260928429984:369-388),
+-- the limits (54000) and the 42501 check that nothing goes out as if from Qorpera are not driven here.
 --
 -- The expected messages, from the function source (file:line):
 -- - 55000 'Run resume is not recorded': the fence, 20260930546000 (as 20260930539000:165 and 20260930545000 raise).
