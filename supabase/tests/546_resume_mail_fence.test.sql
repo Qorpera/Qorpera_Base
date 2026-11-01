@@ -18,10 +18,11 @@
 -- - 42501 'Run is unavailable': the run check's lease (job, runner, assignment), qorpera_folder_run_resolve,
 --   20260928249000:824.
 -- - 42501 'native tool host authority is required': the run check, qorpera_folder_native_actor, 20260928279470:172.
--- - 22023 'Mail request is invalid', 0A000 'Sending company mail is switched off', 42501 'No mailbox of this company
---   has that address; list_hooks shows them', 0A000 'The mailbox is paused; a member resumes it', 42501 'Email to your
---   own company''s mailboxes is refused; reach coworkers with send_coworker_message' and 42501 'The email this answers
---   is not one the company received': qorpera_send_agent_mail, 20260928309740:184-224.
+-- - qorpera_send_agent_mail's request and mailbox refusals, 20260928309740: 22023 'Mail request is invalid' (:167,
+--   :190, :202), 0A000 'Sending company mail is switched off' (:205), 42501 'No mailbox of this company has that
+--   address; list_hooks shows them' (:210, :217), 0A000 'The mailbox is paused; a member resumes it' (:220), 42501
+--   'Email to your own company''s mailboxes is refused; reach coworkers with send_coworker_message' (:225) and 42501
+--   'The email this answers is not one the company received' (:234).
 -- - 0A000 'Attaching files from this company''s folder is not built yet': 20260928429984:368.
 -- The replay with no write: 20260928309740:168-171. The writes: the outbox row (20260928309740:315, as
 -- 20260928439980:437 patches it) and its thread (qorpera_mail_thread_note, 20260928439980:217).

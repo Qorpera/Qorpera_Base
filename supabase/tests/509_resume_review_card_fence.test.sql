@@ -31,8 +31,10 @@
 -- The answers with no write: begin's 'declined' (20260926130000:301), 'pending' (:309) and 'review' (:322), and 'used'
 -- (20260930489000's check of the card that woke the run); record's replay (20260926130000:375).
 -- The writes: begin's 'approved' marks the approval used (20260930489000's check of the card that woke the run, and
--- 20260926130000:304); record adds its review (20260926130000:447) and, for a card, the card's event
--- (20260926130000:471), the event's company operation (20260816015000:356) and the session's time.
+-- 20260926130000:304); record adds its review (20260926130000:447) and, for a card, the card's event and the session's
+-- time (this run is folder-v2: qorpera_folder_append_transcript_event, 20260928279560:446, inserts the event at :117
+-- and sets the time at :121) and the event's company operation (the after-insert trigger on qorpera_session_events,
+-- 20260816015000:356, and its function at :205).
 
 -- Every public table's row count and content (an md5 over its rows' md5s), by name.
 create function pg_temp.a3_rows() returns jsonb language plpgsql as $$
