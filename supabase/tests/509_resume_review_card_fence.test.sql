@@ -31,10 +31,11 @@
 -- The answers with no write: begin's 'declined' (20260926130000:301), 'pending' (:309) and 'review' (:322), and 'used'
 -- (20260930489000's check of the card that woke the run); record's replay (20260926130000:375).
 -- The writes: begin's 'approved' marks the approval used (20260930489000's check of the card that woke the run, and
--- 20260926130000:304); record adds its review (20260926130000:447) and, for a card, the card's event and the session's
--- time (this run is folder-v2: qorpera_folder_append_transcript_event, 20260928279560:446, inserts the event at :117
--- and sets the time at :121) and the event's company operation (the after-insert trigger on qorpera_session_events,
--- 20260816015000:356, and its function at :205).
+-- 20260926130000:304); record adds its review (20260926130000:447) and, for a card, the run budget's transcript
+-- counters, the card's event and the session's time (this run is folder-v2: qorpera_folder_append_transcript_event,
+-- 20260928279560:446, adds to the counters at 20260928279560:103-106, inserts the event at :117 and sets the time at
+-- :121) and the event's company operation (the after-insert trigger on qorpera_session_events, 20260816015000:356, and
+-- its function at :205).
 
 -- Every public table's row count and content (an md5 over its rows' md5s), by name.
 create function pg_temp.a3_rows() returns jsonb language plpgsql as $$
@@ -130,8 +131,8 @@ create function pg_temp.a3_grants(p_function regprocedure) returns text language
 		has_function_privilege('service_role', p.oid, 'EXECUTE'))
 	from pg_proc as p where p.oid = p_function
 $$;
--- What a call that goes through writes. A card's in-place changes (the session's time, the operation clock) are not
--- compared ('*').
+-- What a call that goes through writes. A card's in-place changes (the run budget's transcript counters,
+-- 20260928279560:103-106; the session's time; the operation clock) are not compared ('*').
 create function pg_temp.a3_carded() returns text language sql as $$
 	select 'ok:ask:true|qorpera_action_reviews+1,qorpera_company_operations+1,qorpera_session_events+1|*'
 $$;
