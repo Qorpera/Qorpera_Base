@@ -54,7 +54,9 @@
 -- 20260928429982, 20260928429984, 20260928439980 and 20260930521000), and each anchor must occur once. The catalog
 -- check refuses unless exactly these three public functions changed, only in their bodies, each by its replacements,
 -- and no public function came or went.
--- Deploy order: either. It reads only what G1 b added.
+-- Deploy order: either. The checks' only new reads are qorpera_run_resumes_from_receipts, which G1 b (20260930539000)
+-- added, and qorpera_memory_run_resumes and qorpera_memory_run_resume_of, which W5b-2 (20260928559130) added. Both
+-- are earlier migrations.
 -- Every inserted text names this migration (20260930546000), for the deploy guard.
 
 do $$
