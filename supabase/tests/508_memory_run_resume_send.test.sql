@@ -232,7 +232,8 @@ $$;
 
 -- 4. Authority is checked as before: the cut-off attempt is refused by the run check, before the fence, and only the
 --    service role sends, raises a card or adds a rule. The wake's work gate too: after the next attempt's final (sent
---    in Agent tree mode, where nothing fences it), its rule in notebooks mode is refused as before, ahead of the fence.
+--    in Agent tree mode, where nothing fences it), its rule in notebooks mode is refused as before (and since
+--    20260930547000 the run no longer resumes from its receipts, so no fence holds it).
 do $$
 declare v_old jsonb := pg_temp.f9_binding('base_binding'); v_next jsonb := pg_temp.f9_binding('f9_next');
 begin
@@ -261,9 +262,10 @@ begin
 		perform set_config('session_replication_role', 'replica', true);
 		update public.qorpera_execution_runs set memory_mode = v_mode where id = pg_temp.rr_run();
 		perform set_config('session_replication_role', 'origin', true);
-		perform pg_temp.base_assert(public.qorpera_run_resumes_from_receipts(pg_temp.rr_run())
+		-- 20260930547000 (#1390 F1): a run that has sent its final no longer resumes from its receipts.
+		perform pg_temp.base_assert(public.qorpera_run_resumes_from_receipts(pg_temp.rr_run()) is false
 			and not exists (select 1 from public.qorpera_memory_run_resumes where run_id = pg_temp.rr_run()),
-			'back in notebooks mode, unrecorded');
+			'back in notebooks mode, unrecorded, after its final');
 		v := v || array['29 then its rule, in notebooks mode', pg_temp.f9_rule(v_next, 'f9-wake-rule', 'Signing a lease'),
 			'55000 Wake public output is already final|none|none'];
 		raise exception using errcode = 'F9001';
