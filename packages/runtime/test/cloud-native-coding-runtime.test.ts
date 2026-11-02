@@ -1162,4 +1162,68 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			authorize,
 		]);
 	});
+
+	it("goes on through answers cut off after their headers: its first reads, and its run's authority read (release PR #1390 review F2)", async () => {
+		const clock = fakeClock();
+		const f = fixture();
+		const original = f.call.getMockImplementation()!;
+		// Good headers, then the connection is lost mid-body (undici's error for it).
+		const cut = () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"schema":'));
+					},
+					pull(controller) {
+						controller.error(new TypeError("terminated"));
+					},
+				}),
+				{ status: 200 },
+			);
+		const answers: Partial<Record<string, Response[]>> = { [authorize]: [cut()], [read]: [cut()] };
+		const sent: [string, number][] = [];
+		const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+			const method = String(url).slice(String(url).lastIndexOf("/") + 1) as Parameters<
+				CloudCodingNativeControl["call"]
+			>[0];
+			sent.push([method, clock.now]);
+			const answer = answers[method]?.shift();
+			if (answer) return answer;
+			const value = await original(method, JSON.parse(String(init?.body)), init?.signal as AbortSignal);
+			return new Response(JSON.stringify(value), { status: 200 });
+		});
+		const http = new HttpCloudCodingControl({
+			supabaseUrl: "https://db.example.test/",
+			serviceRoleKey: "private",
+			fetch,
+		});
+		f.call.mockImplementation((method, args, signal) => http.call(method, args, signal));
+		let aborted: boolean | undefined;
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			// The run's own first read of its authority is cut off too.
+			answers[authorize]?.push(cut());
+			const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+			aborted = run.signal.aborted;
+			run.close();
+			throw new Error("session opened");
+		});
+		let settled = false;
+		const execution = f.runtime.execute(f.request, "/private", f.context.signal, f.turn).finally(() => {
+			settled = true;
+		});
+		const outcome = expect(execution).rejects.toThrow("session opened");
+		await vi.advanceTimersByTimeAsync(0);
+		for (let second = 0; second < 120 && !settled; second += 1) await clock.tick(1_000);
+		await outcome;
+		expect(aborted).toBe(false);
+		// Each asked again once its cut copy is waited out: nothing said that copy's statement ended.
+		expect(sent).toEqual([
+			[authorize, 0],
+			[authorize, 20_000],
+			[read, 20_000],
+			[read, 40_000],
+			[authorize, 40_000],
+			[authorize, 60_000],
+		]);
+	});
 });

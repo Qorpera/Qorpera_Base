@@ -20,9 +20,10 @@ const CODING_READS: ReadonlySet<string> = new Set([
  * operation receipts stay with the provider control plane.
  *
  * A read's lost or late answer is told apart, so its caller may ask it again (control calls, 4 Oct 2026; R2, 31 Oct
- * 2026): no answer at all, a 5xx, 408 or 429 with no PostgREST error, or a transient SQLSTATE (a lock or statement
- * timeout, PostgREST's pool wait: CloudControlRpcEnded). A refusal and anything else fail as before, and so does every
- * failure of a write (begin, context view, submit). The control itself sends each call once. */
+ * 2026): no answer at all or one cut off after its headers, a 5xx, 408 or 429 with no PostgREST error, or a transient
+ * SQLSTATE (a lock or statement timeout, PostgREST's pool wait: CloudControlRpcEnded). A refusal and anything else fail
+ * as before, and so does every failure of a write (begin, context view, submit). The control itself sends each call
+ * once. */
 export class HttpCloudCodingControl implements Pick<CloudCodingNativeControl, "call"> {
 	readonly #origin: string;
 	readonly #serviceKey: string;
@@ -90,8 +91,40 @@ export class HttpCloudCodingControl implements Pick<CloudCodingNativeControl, "c
 				throw new CloudRuntimeDiagnosticError("transport_unavailable", failed);
 			throw new Error(failed);
 		}
-		return JSON.parse(
-			new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 256 * 1024, checked)),
-		) as unknown;
+		// A read's answer cut off after its headers (a lost connection, or this control's own 30 s cut) is as lost as no
+		// answer at all (release PR #1390 review F2, 2 Nov 2026). The caller's cancellation, a body over its limit or not
+		// JSON, and a write's failure are thrown as they came.
+		const answer = read ? watchedForCut(response) : { response, cut: false };
+		const bytes = await readBoundedCloudResponse(answer.response, 256 * 1024, checked).catch((error: unknown) => {
+			if (!read || signal.aborted || !(answer.cut || checked.aborted)) throw error;
+			throw new CloudRuntimeDiagnosticError("transport_unavailable", `Coding control ${method} unconfirmed`);
+		});
+		return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
 	}
+}
+
+/** `response` with its body passed on as it comes, noting (`cut`) whether the body's own stream failed before it ended:
+ * the connection was lost after the headers. */
+function watchedForCut(response: Response): { response: Response; cut: boolean } {
+	const reader = response.body?.getReader();
+	const watched = { response, cut: false };
+	if (!reader) return watched;
+	watched.response = new Response(
+		new ReadableStream<Uint8Array>(
+			{
+				pull: async (controller) => {
+					const next = await reader.read().catch((error: unknown) => {
+						watched.cut = true;
+						throw error;
+					});
+					if (next.done) controller.close();
+					else controller.enqueue(next.value);
+				},
+				cancel: (reason) => reader.cancel(reason),
+			},
+			{ highWaterMark: 0 },
+		),
+		{ headers: response.headers },
+	);
+	return watched;
 }
