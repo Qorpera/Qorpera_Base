@@ -102,6 +102,110 @@ it("tells a read with no answer at all apart, and throws the caller's own cancel
 	}
 });
 
+/** A 200 whose headers came and whose body sends its first bytes, then does `next` when asked for more. */
+function cutAnswer(next: (controller: ReadableStreamDefaultController<Uint8Array>) => void | Promise<void>): Response {
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('{"ok":'));
+			},
+			pull: next,
+		}),
+		{ status: 200 },
+	);
+}
+const hang = () => new Promise<void>(() => undefined);
+
+it("tells a read whose answer is cut off after its headers apart, as one with no answer (release PR #1390 review F2)", async () => {
+	for (const method of READS) {
+		// A connection lost mid-body (undici's error for it), and the control's own 30 s cut while the body comes.
+		const thirty = new AbortController();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(thirty.signal);
+		try {
+			for (const answer of [
+				() => cutAnswer((controller) => controller.error(new TypeError("terminated"))),
+				() =>
+					cutAnswer(() => {
+						thirty.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+						return hang();
+					}),
+			]) {
+				const fetch = vi.fn<typeof globalThis.fetch>(async () => answer());
+				const error = await failure(control(fetch).call(method, { p_binding: {} }, new AbortController().signal));
+				expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
+				expect((error as CloudRuntimeDiagnosticError).category).toBe("transport_unavailable");
+				expect((error as Error).message).toBe(`Coding control ${method} unconfirmed`);
+				expect(cloudControlRetryable(error)).toBe(true);
+				// Nothing says the statement ended: its caller waits out the copy.
+				expect(cloudControlEnded(error)).toBe(false);
+				expect(fetch).toHaveBeenCalledTimes(1);
+			}
+		} finally {
+			timeout.mockRestore();
+		}
+		// The caller's own cancellation while the body comes is thrown as it came.
+		const caller = new AbortController();
+		const reason = new Error("turn stopped");
+		await expect(
+			control(async () =>
+				cutAnswer(() => {
+					caller.abort(reason);
+					return hang();
+				}),
+			).call(method, { p_binding: {} }, caller.signal),
+		).rejects.toBe(reason);
+		// A body in pieces is still read whole.
+		const pieces = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const piece of ['{"ok"', ":", "true}"]) controller.enqueue(new TextEncoder().encode(piece));
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		await expect(
+			control(async () => pieces).call(method, { p_binding: {} }, new AbortController().signal),
+		).resolves.toEqual({ ok: true });
+	}
+});
+
+it("keeps a read's whole answer that is not JSON, or over its limit, a plain failure that is not asked again", async () => {
+	const big = 256 * 1024 + 1;
+	const bad: [string, () => Response][] = [
+		["not JSON", () => new Response("<html>ok</html>", { status: 200 })],
+		["not UTF-8", () => new Response(new Uint8Array([0x22, 0xff, 0x22]), { status: 200 })],
+		[
+			"declared over the limit",
+			() => new Response("{}", { status: 200, headers: { "content-length": String(big) } }),
+		],
+		[
+			"streamed over the limit",
+			() =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new Uint8Array(big - 1).fill(0x20));
+							controller.enqueue(new Uint8Array(1).fill(0x20));
+							controller.close();
+						},
+					}),
+					{ status: 200 },
+				),
+		],
+	];
+	for (const method of READS) {
+		for (const [label, answer] of bad) {
+			const fetch = vi.fn<typeof globalThis.fetch>(async () => answer());
+			const error = await failure(control(fetch).call(method, { p_binding: {} }, new AbortController().signal));
+			expect(error, label).toBeInstanceOf(Error);
+			expect(error, label).not.toBeInstanceOf(CloudRuntimeDiagnosticError);
+			expect(cloudControlRetryable(error), label).toBe(false);
+			expect(fetch, label).toHaveBeenCalledTimes(1);
+		}
+	}
+});
+
 it("keeps every refusal of a read a plain failure that is not asked again", async () => {
 	const refused: [string, () => Response][] = [
 		["lease or authority refused", () => postgrest(403, "42501")],
