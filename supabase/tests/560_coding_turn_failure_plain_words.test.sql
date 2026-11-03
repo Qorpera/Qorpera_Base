@@ -108,6 +108,21 @@ begin
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(coalesce(v_rows, '[]'::jsonb)) as entry
 		where entry ->> 'run_id' = v_run::text or (entry ->> 'staff_agent_id' = v_agent::text
 			and entry ->> 'job_status' in ('failed', 'cancelled'))), 'not the agent''s failure: ' || coalesce(v_rows::text, 'none'));
+	-- Unless it left an operation of unknown outcome: only the run's recovery card lets a person settle that.
+	set local session_replication_role = replica;
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, completed_at)
+	select '56000000-0000-4000-8000-0000000000c1', run.id, run.job_id, job.client_lease_id, 'test-560', 'folder_write',
+		repeat('a', 64), repeat('b', 64), 'ambiguous', statement_timestamp()
+	from public.qorpera_execution_runs as run join public.qorpera_runner_jobs as job on job.id = run.job_id where run.id = v_run;
+	set local session_replication_role = origin;
+	v_rows := pg_temp.pw_activity();
+	perform pg_temp.base_assert(exists (select 1 from jsonb_array_elements(coalesce(v_rows, '[]'::jsonb)) as entry
+		where entry ->> 'run_id' = v_run::text and entry ->> 'job_status' = 'failed'),
+		'a run with an unsettled operation stays listed: ' || coalesce(v_rows::text, 'none'));
+	set local session_replication_role = replica;
+	delete from public.qorpera_run_operation_receipts where id = '56000000-0000-4000-8000-0000000000c1';
+	set local session_replication_role = origin;
 end $$;
 
 -- 2. A dropped connection without a signal: that class's words, with the bridge's code as the reason ---------------------
@@ -133,29 +148,50 @@ begin
 		'the worker''s result: ' || w.result::text);
 	perform pg_temp.base_assert(pg_temp.pw_event() ->> 'code' = 'NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE',
 		'the failed event: ' || pg_temp.pw_event()::text);
-	-- An outage signal of an attempt that paused and went on says nothing of how the run ended (549300's rule). The
-	-- signal is turn 1's, moved to this run's attempt.
+	-- An outage signal says nothing of how the run ended when an earlier attempt recorded it, or when its attempt paused
+	-- and went on (549300's rule). The signal is turn 1's, moved to this run.
 	set local session_replication_role = replica;
 	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id, sponsor_version,
 		provider_connection_id, provider_connection_version, provider, signal_kind, source, resets_at, assignment_id)
-	select first.profile_id, (v_turn ->> 'runId')::uuid, run.job_id, run.sponsor_binding_id, run.sponsor_version,
-		first.provider_connection_id, first.provider_connection_version, first.provider, 'provider_outage', first.source, null,
+	select first.profile_id, run.id, run.job_id, run.sponsor_binding_id, run.sponsor_version, first.provider_connection_id,
+		first.provider_connection_version, first.provider, 'provider_outage', first.source, null,
 		'56000000-0000-4000-8000-0000000000a1'
 	from public.qorpera_provider_connection_usage_signals as first
 	join public.qorpera_execution_runs as run on run.id = (v_turn ->> 'runId')::uuid
 	where first.signal_kind = 'provider_outage' and first.run_id <> run.id;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, 'The coding turn did not finish: ' || v_error) ->> 'reason'
+		= 'NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE', 'an earlier attempt''s signal');
+	-- The job's last attempt's own signal, paused and gone on: still nothing.
+	set local session_replication_role = replica;
+	update public.qorpera_provider_connection_usage_signals as signal set assignment_id = job.client_lease_id
+	from public.qorpera_runner_jobs as job
+	where signal.run_id = (v_turn ->> 'runId')::uuid and job.id = signal.job_id;
 	insert into public.qorpera_execution_run_events(run_id, event_type, payload)
-	values ((v_turn ->> 'runId')::uuid, 'run_paused', jsonb_build_object('schema', 'qorpera.run-resume/v1',
-		'assignmentId', '56000000-0000-4000-8000-0000000000a1', 'reason', 'provider outage'));
+	select (v_turn ->> 'runId')::uuid, 'run_paused', jsonb_build_object('schema', 'qorpera.run-resume/v1',
+		'assignmentId', job.client_lease_id, 'reason', 'provider outage')
+	from public.qorpera_runner_jobs as job where job.id = (v_turn ->> 'jobId')::uuid;
 	set local session_replication_role = origin;
 	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, 'The coding turn did not finish: ' || v_error) ->> 'reason'
 		= 'NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE', 'a paused attempt''s signal');
-	-- Without that pause the same signal decides.
+	-- Without that pause the last attempt's signal decides.
 	set local session_replication_role = replica;
 	delete from public.qorpera_execution_run_events where run_id = (v_turn ->> 'runId')::uuid and event_type = 'run_paused';
 	set local session_replication_role = origin;
 	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, 'The coding turn did not finish: ' || v_error) ->> 'reason'
-		= 'provider_outage', 'the run''s own signal');
+		= 'provider_outage', 'the last attempt''s signal');
+	-- A run's error without a code keeps the executor's summary (the web still reads it there), with what the rows say.
+	set local session_replication_role = replica;
+	delete from public.qorpera_provider_connection_usage_signals where run_id = (v_turn ->> 'runId')::uuid;
+	update public.qorpera_runner_jobs set last_error = 'Runner lease expired before durable completion'
+	where id = (v_turn ->> 'jobId')::uuid;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w,
+			'The coding turn did not finish: Runner lease expired before durable completion')
+		= jsonb_build_object('reason', 'turn_failed', 'summary',
+			'The coding turn did not finish: Runner lease expired before durable completion'),
+		'an error without a code: ' || public.qorpera_coding_turn_failure(w,
+			'The coding turn did not finish: Runner lease expired before durable completion')::text);
 end $$;
 
 -- 3. Every new or patched body names this migration; the grants stay ---------------------------------------------------

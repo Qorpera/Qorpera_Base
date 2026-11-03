@@ -12,21 +12,22 @@
 --   "An earlier run of Co-Founder did not finish", next to the coding session's own card for the same failure.
 --
 -- Now:
--- * qorpera_coding_turn_failure(worker, summary): a turn whose own run ended failed with a provider_outage signal for
---   the version it pays with, from an attempt that was not paused or cut off afterwards (549300's rule for usage
---   limits), reports reason provider_outage and fixed words: ChatGPT was overloaded or had a server error; usually
---   brief; the login is fine. Any other failure the executor reported with its run's error ("The coding turn did not
---   finish: ..." or a summary carrying a [code=...]) reports fixed words for the code's class instead of that text, and
---   keeps the code as its reason (the worker's result, the turn's outcome, the failed event's `code`, the view). Every
---   such summary ends by saying the files are kept and a follow-up continues from them. A login's words (551000) that
---   carry the turn's own report carry these words, not the executor's. Summaries the executor writes in plain words
---   (no submission, stopped, a refused save or push, a workspace that could not be prepared) stay as they are.
+-- * qorpera_coding_turn_failure(worker, summary): a turn whose run's last attempt failed with a provider_outage signal
+--   for the version it pays with, and was not paused or cut off afterwards (549300's rule for usage limits), reports
+--   reason provider_outage and fixed words: ChatGPT was overloaded or had a server error; usually brief; the login is
+--   fine. Any other failure the executor reported with its run's error and a code ("The coding turn did not finish:
+--   ... [code=...]") reports fixed words for the code's class instead of that text, and keeps the code as its reason
+--   (the worker's result, the turn's outcome, the failed event's `code`, the view). Every such summary ends by saying
+--   the files are kept and a follow-up continues from them. A login's words (551000) that carry the turn's own report
+--   carry these words, not the executor's. Summaries the executor writes in plain words (no submission, stopped, a
+--   refused save or push, a workspace that could not be prepared) and a run's error without a code stay as they are.
 -- * qorpera_list_staff_execution_activity: a failed wake run that is a coding session's turn (its occurrence is a turn
---   row's) is no longer listed as its agent's failure. The coding session's card says why the turn failed; nothing
---   else of the activity changes (a running coding turn still reads as its agent working, and a coding run still
---   supersedes the agent's older failures, 20260930542000).
+--   row's) is no longer listed as its agent's failure, unless it left an operation of unknown outcome (an executing or
+--   ambiguous receipt, or the runner's RUN_COMPLETION_REFUSED), which only the run's recovery card lets a person
+--   settle. The coding session's card says why the turn failed. Nothing else of the activity changes (a running coding
+--   turn still reads as its agent working, and a coding run still supersedes the agent's older failures, 542000).
 --
--- Locks: none added; both read without locks as before. Test 560 (553 §1 and §6 now expect the words).
+-- Locks: none added; both read without locks as before. Test 560 (553 §1 now expects the words).
 set local lock_timeout = '3s';
 
 -- A second run stops here, and so does a body that is not 551000's.
@@ -74,21 +75,24 @@ begin
 			when v_job.status = 'completed' then 'ended_without_submission'
 			when v_job.status = 'cancelled' then 'stopped'
 			else 'turn_failed' end);
-	-- 20260930560000: the executor's report of its run's error names machinery (the bridge, its HTTP status, the code),
-	-- so the agent reads the code's class in plain words instead; its other reports are plain already.
+	-- 20260930560000: the executor's report of its run's error with a code names machinery (the bridge, its HTTP status,
+	-- the code), so the agent reads the code's class in plain words instead. Its other reports, and a run's error
+	-- without a code (which the web still reads from the summary), stay as they are.
 	-- Its run failed with the model provider's outage (Codex's serverOverloaded or internalServerError, or a 5xx answer:
-	-- nativeRuntimeUsageSignal), recorded for the version the run pays with by an attempt that was not paused or cut off
-	-- afterwards (549300's rule for usage limits): the provider's, usually brief, and the login is fine.
+	-- nativeRuntimeUsageSignal), recorded for the version the run pays with by the job's last attempt (its
+	-- client_lease_id; an earlier attempt's outage says nothing of how a retried run ended), which was not paused or cut
+	-- off afterwards (549300's rule for usage limits): the provider's, usually brief, and the login is fine.
 	v_outage := v_job.status = 'failed' and exists (select 1 from public.qorpera_provider_connection_usage_signals as recorded
 		where recorded.run_id = v_run.id and recorded.sponsor_version = v_run.sponsor_version
-			and recorded.signal_kind = 'provider_outage'
+			and recorded.signal_kind = 'provider_outage' and recorded.assignment_id = v_job.client_lease_id
 			and not exists (select 1 from public.qorpera_execution_run_events as resumed
 				where resumed.run_id = v_run.id and resumed.event_type in ('run_paused', 'run_cut_off')
 					and resumed.payload ->> 'assignmentId' = recorded.assignment_id::text));
 	if v_outage then
 		v_report := 'ChatGPT was overloaded or had a server error while Codex worked, so the coding turn stopped. This is '
 			|| 'usually brief, and the login that pays for it is fine.' || v_kept;
-	elsif v_job.id is not null and (p_summary like 'The coding turn did not finish:%' or p_summary ~ '\[code=') then
+	elsif v_job.id is not null and v_code ~ '^[A-Z0-9_]{1,42}(:[A-Z0-9_]{1,42})?$'
+		and (p_summary like 'The coding turn did not finish:%' or p_summary ~ '\[code=') then
 		v_report := case
 			when v_job.status = 'failed' and v_code = 'NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED' then
 				'ChatGPT refused or could not answer Codex''s request, so the coding turn stopped. The member whose login '
@@ -167,6 +171,11 @@ select pg_temp.coding_turn_failure_20260930560000_patch('public.qorpera_list_sta
 					) and not exists ($a1$,
 	$r1$						where occurrence.run_id = run.id and occurrence.status in ('failed', 'requires_review')
 							-- 20260930560000: a coding session's turn fails on the session's own card, not as its agent's.
-							and not exists (select 1 from public.qorpera_coding_session_turns as coding
-								where coding.occurrence_id = occurrence.id)
+							-- One with an operation of unknown outcome stays listed: only the run's recovery card lets a
+							-- person settle it.
+							and not (exists (select 1 from public.qorpera_coding_session_turns as coding
+									where coding.occurrence_id = occurrence.id)
+								and not exists (select 1 from public.qorpera_run_operation_receipts as receipt
+									where receipt.run_id = run.id and receipt.status in ('executing', 'ambiguous'))
+								and position('[code=RUN_COMPLETION_REFUSED]' in coalesce(job.last_error, '')) = 0)
 					) and not exists ($r1$);
