@@ -915,15 +915,10 @@ it("waits for the run's admission and context bind as long as the database may r
 	});
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	for (const method of slow)
-		expect(f.pathCall.mock.calls.filter(([called]) => called === method), method).toHaveLength(1);
-});
-
-it("names that budget to the path control for the run's admission and context bind", async () => {
-	// The path control would otherwise cut each at 3 s.
-	const f = await fixture("company-runtime");
-	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-	for (const method of ["qorpera_begin_native_company_execution_v3", "qorpera_bind_native_company_context"])
-		expect(f.pathCall.mock.calls.find(([called]) => called === method)?.[3], method).toBe(CLOUD_RUN_ROW_READ_MS);
+		expect(
+			f.pathCall.mock.calls.filter(([called]) => called === method),
+			method,
+		).toHaveLength(1);
 });
 
 it("runs a standard-tier run without Fast", async () => {
@@ -2441,6 +2436,10 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 	expect(budgets("qorpera_assert_company_path_reads")).toContain(20_000);
 	// So does the read of the receipts a resumed attempt in Agent notebooks starts from, which every run asks for.
 	expect(budgets("qorpera_memory_run_resume_receipts")).toEqual([20_000]);
+	// And the run's admission and its context bind, each sent once (3 Nov 2026: a run failed its admission at the old
+	// stop while the database answered every caller in 3 to 6.6 s).
+	expect(budgets("qorpera_begin_native_company_execution_v3")).toEqual([CLOUD_RUN_ROW_READ_MS]);
+	expect(budgets("qorpera_bind_native_company_context")).toEqual([CLOUD_RUN_ROW_READ_MS]);
 	// Every other call keeps the transport's own stop; the fence's attempt is still the run's retry's.
 	const budgeted: readonly CloudCompanyPathRpc[] = [
 		"qorpera_describe_company_run_context",
@@ -2449,6 +2448,8 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 		"qorpera_assert_company_path_reads",
 		"qorpera_fence_native_context",
 		"qorpera_memory_run_resume_receipts",
+		"qorpera_begin_native_company_execution_v3",
+		"qorpera_bind_native_company_context",
 	];
 	const others = f.pathCall.mock.calls.filter(([method]) => !budgeted.includes(method));
 	expect(others.length).toBeGreaterThan(0);
