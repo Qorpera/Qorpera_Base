@@ -150,8 +150,10 @@ interface Fixture {
 	masterKey: string;
 	runtime: LxdNativeCompanyRuntimeConfig;
 	reservation: { state: string; reason?: string };
-	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, or an HTTP error. */
-	release: "released" | "unconfirmed" | "error";
+	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, the host call's refusal (42501,
+	 * which PostgREST answers 401 to the publishable key), another 4xx (the function missing while the schema cache
+	 * reloads), or no answer from the database (an edge 525, as in an outage). */
+	release: "released" | "unconfirmed" | "refused" | "missing" | "outage";
 	identityState: SharedExecutionIdentityState;
 	/** Whether the identity's login is kept by the vault (Stateless Compute step 1). */
 	loginInVault: boolean;
@@ -327,7 +329,10 @@ async function fixture(
 				});
 			}
 			if (name === "qorpera_release_runtime_machine") {
-				if (state.release === "error") return new Response("no allocation", { status: 404 });
+				if (state.release === "refused")
+					return Response.json({ code: "42501", message: "execution host call is refused" }, { status: 401 });
+				if (state.release === "missing") return Response.json({ code: "PGRST202" }, { status: 404 });
+				if (state.release === "outage") return new Response("<html>origin unreachable</html>", { status: 525 });
 				if (state.release === "unconfirmed") return Response.json({ state: "refused" });
 				return Response.json({
 					state: "released",
@@ -857,59 +862,78 @@ describe("shared execution provider backend", () => {
 		expect(f.provisioned).toBe(1);
 	});
 
-	it("retires a sandbox stuck in 'reserving' after ten minutes and still releases a reservation whose reply was lost", async () => {
-		const f = await fixture();
-		const path = join(f.stateRoot, "journals", `${runId}.json`);
-		await mkdir(join(f.stateRoot, "journals"), { recursive: true });
-		await writeFile(
-			path,
-			JSON.stringify({
-				schema: "qorpera.shared-execution-journal/v1",
-				acquisitionId: runId,
-				runId,
-				attempt: 1,
-				workSha256: "a".repeat(64),
-				jobType: "agent_turn",
-				profileId: companyId,
-				computeIdentityId,
-				slot: 2,
-				hostPort: 20004,
-				inboxPort: 20005,
-				instanceSha256: "b".repeat(64),
-				runner: {
-					runnerId,
-					workerClass: "managed_sandbox",
-					providerAdapter: "native26-test",
-					capabilities: ["agent_turn"],
-					templateKey: "qorpera-member-linux",
-					templateVersion: "v1",
-					policySha256: "f".repeat(64),
+	it.each([
+		// The host call refuses the release (42501): the host may release only its own run's allocation, so none was made.
+		["refused", "refused", 1],
+		// Any other answer (3 Nov 2026) leaves the reservation owed, which may have committed: a 4xx that is not the
+		// host call's refusal, or a database that does not answer.
+		["missing", "missing", 2],
+		["unanswered", "outage", 2],
+	] as const)(
+		"retires a sandbox stuck in 'reserving' after ten minutes and releases a reservation whose reply was lost (release %s)",
+		async (_label, release, calls) => {
+			const f = await fixture();
+			const path = join(f.stateRoot, "journals", `${runId}.json`);
+			await mkdir(join(f.stateRoot, "journals"), { recursive: true });
+			await writeFile(
+				path,
+				JSON.stringify({
+					schema: "qorpera.shared-execution-journal/v1",
+					acquisitionId: runId,
+					runId,
+					attempt: 1,
+					workSha256: "a".repeat(64),
+					jobType: "agent_turn",
+					profileId: companyId,
 					computeIdentityId,
-				},
-				physicalState: "reserving",
-				credentials: {
-					activationSha256: "c".repeat(64),
-					assignmentSha256: "d".repeat(64),
-					nativeBridgeSha256: "e".repeat(64),
-				},
-				capacityRequested: true,
-				createdAt: new Date(f.clock.now).toISOString(),
-				updatedAt: new Date(f.clock.now).toISOString(),
-			}),
-		);
-		await f.backend.reconcile();
-		expect(await journal(f)).toMatchObject({ physicalState: "reserving" });
-		f.clock.now += 11 * 60_000;
-		f.release = "error";
-		await f.backend.reconcile();
-		expect(await journal(f)).toMatchObject({
-			physicalState: "stopped",
-			stopReason: "delivery_failed",
-			capacityReleased: true,
-		});
-		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
-		expect(await liveJournalNames(f)).toEqual([]);
-	});
+					slot: 2,
+					hostPort: 20004,
+					inboxPort: 20005,
+					instanceSha256: "b".repeat(64),
+					runner: {
+						runnerId,
+						workerClass: "managed_sandbox",
+						providerAdapter: "native26-test",
+						capabilities: ["agent_turn"],
+						templateKey: "qorpera-member-linux",
+						templateVersion: "v1",
+						policySha256: "f".repeat(64),
+						computeIdentityId,
+					},
+					physicalState: "reserving",
+					credentials: {
+						activationSha256: "c".repeat(64),
+						assignmentSha256: "d".repeat(64),
+						nativeBridgeSha256: "e".repeat(64),
+					},
+					capacityRequested: true,
+					createdAt: new Date(f.clock.now).toISOString(),
+					updatedAt: new Date(f.clock.now).toISOString(),
+				}),
+			);
+			await f.backend.reconcile();
+			expect(await journal(f)).toMatchObject({ physicalState: "reserving" });
+			f.clock.now += 11 * 60_000;
+			f.release = release;
+			if (release !== "refused") {
+				// Not archived as released: the sandbox stays retiring, and the next pass asks again.
+				await expect(f.backend.reconcile()).rejects.toThrow(
+					`Runner provisioning failed (${release === "missing" ? 404 : 525})`,
+				);
+				expect(await journal(f)).toMatchObject({ physicalState: "stopping", retireAttempts: 1 });
+				expect(await journal(f)).not.toHaveProperty("capacityReleased");
+				f.release = "released";
+			}
+			await f.backend.reconcile();
+			expect(await journal(f)).toMatchObject({
+				physicalState: "stopped",
+				stopReason: "delivery_failed",
+				capacityReleased: true,
+			});
+			expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(calls);
+			expect(await liveJournalNames(f)).toEqual([]);
+		},
+	);
 
 	it("retires a sandbox whose runner still waits two minutes after its job ended", async () => {
 		// 29 Sep 2026 (company deletion): an unknown assign or delivery keeps the runner up for a
