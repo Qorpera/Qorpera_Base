@@ -22,6 +22,11 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
 }
 
+/** The waits before reading the accounts again after a read failed: 2 s, 5 s, 10 s, 30 s, then every minute. Coming
+ * back to the window or online reads at once. (3 Nov 2026: the composer stayed locked on "Model accounts are
+ * unavailable" until the page was reloaded.) */
+export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
+
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
 	readonly connectionId: string;
@@ -56,6 +61,8 @@ export class SessionExecutionView {
 	#usageHydratedAt: number | undefined;
 	#usageRequest: AbortController | undefined;
 	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Account reads that failed in a row; the next read waits by ACCOUNT_RETRY_DELAYS_MS. */
+	#failures = 0;
 
 	constructor(
 		company: CompanyController,
@@ -72,6 +79,15 @@ export class SessionExecutionView {
 		else signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal, once: true });
 		window.addEventListener("online", () => void this.refresh(), { signal: this.#lifetime.signal });
 		window.addEventListener("focus", () => void this.refresh(), { signal: this.#lifetime.signal });
+		// A tab the browser froze in the background runs no timer: its first moment back reads the accounts.
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (document.visibilityState === "visible") void this.refresh();
+			},
+			{ signal: this.#lifetime.signal },
+		);
+		window.addEventListener("pageshow", () => void this.refresh(), { signal: this.#lifetime.signal });
 	}
 
 	get canSend(): boolean {
@@ -156,7 +172,8 @@ export class SessionExecutionView {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#error = undefined;
+		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
+		if (!this.#failures) this.#error = undefined;
 		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
@@ -180,10 +197,14 @@ export class SessionExecutionView {
 		]);
 		if (signal.aborted) return;
 		this.#serverConnectionId = serverConnectionId;
-		if (connections.status === "fulfilled") this.#observed = connections.value;
-		else {
+		if (connections.status === "fulfilled") {
+			this.#observed = connections.value;
+			if (this.#failures) this.#error = undefined;
+			this.#failures = 0;
+		} else {
 			this.#observed = undefined;
-			this.#error = t("Model accounts are unavailable. Refresh to try again.");
+			this.#failures++;
+			this.#error = t("Model accounts are unavailable. Trying again…");
 		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
@@ -195,7 +216,11 @@ export class SessionExecutionView {
 		this.#choose();
 		this.#render();
 		this.#changed();
-		this.#scheduleRefresh();
+		this.#scheduleRefresh(
+			this.#failures
+				? ACCOUNT_RETRY_DELAYS_MS[Math.min(this.#failures, ACCOUNT_RETRY_DELAYS_MS.length) - 1]
+				: undefined,
+		);
 		void this.#hydrateUsage();
 	}
 

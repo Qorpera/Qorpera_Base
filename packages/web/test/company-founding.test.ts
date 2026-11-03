@@ -826,13 +826,31 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		hub.dispose();
 	});
 
-	it("names a table after its idea", () => {
-		expect(companyNameFromIdea("A webshop with ceramics.")).toBe("Webshop with ceramics");
-		expect(companyNameFromIdea("en café med takeaway\nog mere")).toBe("Café med takeaway");
+	it("names a table after its idea's first sentence, in its own words and with no full stop", () => {
+		expect(companyNameFromIdea("A webshop with ceramics.")).toBe("A webshop with ceramics");
+		expect(companyNameFromIdea("en café med takeaway\nog mere")).toBe("En café med takeaway");
 		expect(companyNameFromIdea("   ")).toBe("New company");
+		expect(companyNameFromIdea(" . ")).toBe("New company");
 		const long = companyNameFromIdea("Handmade ceramics from Bornholm, sold to cafés in Copenhagen every week");
 		expect(long.length).toBeLessThanOrEqual(48);
 		expect(long).toBe("Handmade ceramics from Bornholm, sold to cafés");
+		// 3 Nov 2026: the table was named "Danish webshop that sells silicone wristbands." (the cut kept the stop
+		// before the next sentence, and the leading "A" was dropped).
+		expect(
+			companyNameFromIdea("A Danish webshop that sells silicone wristbands. We ship to all of Scandinavia."),
+		).toBe("A Danish webshop that sells silicone wristbands");
+		expect(companyNameFromIdea("A Danish webshop that sells silicone wristbands. A Danish webshop")).toBe(
+			"A Danish webshop that sells silicone wristbands",
+		);
+		// A stop that ends no sentence stays; a cut never ends on a comma.
+		expect(companyNameFromIdea("A shop for e.g. ceramics and glass!")).toBe("A shop for e.g. ceramics and glass");
+		expect(companyNameFromIdea("Coffee, tea, cakes, bread, sandwiches, soups, salads, juice and more")).toBe(
+			"Coffee, tea, cakes, bread, sandwiches, soups",
+		);
+		// A word that ends exactly at the limit stays whole.
+		expect(companyNameFromIdea(`${"a".repeat(30)} ${"b".repeat(17)} more words`)).toBe(
+			`${"A".repeat(1)}${"a".repeat(29)} ${"b".repeat(17)}`,
+		);
 	});
 
 	it("reads qorpera.com's idea from the link, and never puts it back in the address", () => {
@@ -850,16 +868,16 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
 		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
 			if (name === "qorpera_open_company_founding")
-				return wire({ companyName: "Webshop with ceramics", vision: "" });
+				return wire({ companyName: "A webshop with ceramics", vision: "" });
 			if (name === "qorpera_update_company_founding")
-				return wire({ companyName: "Webshop with ceramics", vision: "A webshop with ceramics.", revision: 5 });
+				return wire({ companyName: "A webshop with ceramics", vision: "A webshop with ceramics.", revision: 5 });
 			throw new Error(`Unexpected RPC ${name}`);
 		});
 		const hub = new HubController(api, me);
-		await hub.startFromIdea("A webshop with ceramics.", "start");
+		expect(await hub.startFromIdea("A webshop with ceramics.", "start")).toBe(true);
 		expect(cloud.rpc).toHaveBeenCalledWith(
 			"qorpera_open_company_founding",
-			expect.objectContaining({ p_company_name: "Webshop with ceramics" }),
+			expect.objectContaining({ p_company_name: "A webshop with ceramics" }),
 		);
 		expect(cloud.rpc).toHaveBeenCalledWith(
 			"qorpera_update_company_founding",
@@ -1317,7 +1335,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 	it("starts the company from the box with the arrow, and fills an empty box from a kind of company", async () => {
 		const { api } = fixture();
 		const hub = new HubController(api, me);
-		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue();
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		// An empty box does not start anything.
@@ -1333,6 +1351,109 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			.find((item) => item.textContent?.includes("Invite friends"))!
 			.click();
 		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends");
+		hub.dispose();
+	});
+	it("empties the box once the table is open, and keeps the idea when it could not open", async () => {
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		box.value = "A Danish webshop that sells silicone wristbands.";
+		box.dispatchEvent(new Event("input"));
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		await settle();
+		expect(start).toHaveBeenLastCalledWith("A Danish webshop that sells silicone wristbands.", "start");
+		expect(box.value).toBe("A Danish webshop that sells silicone wristbands.");
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		await settle();
+		// 3 Nov 2026: the second company's idea was typed after the first one's, still in the kept box.
+		expect(box.value).toBe("");
+		hub.dispose();
+	});
+
+	it("writes example ideas only into the placeholder, and stops for good once the founder is in the box", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		// Motion allowed: the examples write themselves out.
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		try {
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+			vi.advanceTimersByTime(600 + 70 * 4);
+			expect(box.placeholder).toBe("A web");
+			expect(box.value).toBe("");
+			box.dispatchEvent(new KeyboardEvent("keydown", { key: "A", bubbles: true }));
+			box.value = "A Danish webshop";
+			box.dispatchEvent(new Event("input"));
+			expect(box.placeholder).toBe("A webshop with ceramics");
+			// Emptied and left, the box still writes nothing more.
+			box.value = "";
+			box.dispatchEvent(new Event("input"));
+			box.dispatchEvent(new Event("blur"));
+			vi.advanceTimersByTime(10_000);
+			expect(box.placeholder).toBe("A webshop with ceramics");
+			expect(box.value).toBe("");
+		} finally {
+			vi.useRealTimers();
+			hub.dispose();
+		}
+	});
+
+	it("keeps focus and the caret in the box when it moves from the hub to New company and into a new language", () => {
+		const { api } = fixture();
+		const hub = new HubController(api, me);
+		try {
+			renderNewCompany(hub, container, { userId: me, name: "Anna" }, { welcome: true });
+			const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+			box.focus();
+			box.value = "A Danish webshop";
+			box.dispatchEvent(new Event("input"));
+			box.setSelectionRange(2, 2);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			expect(container.querySelector(".hub-new")).not.toBeNull();
+			expect(document.activeElement).toBe(box);
+			expect([box.selectionStart, box.selectionEnd]).toEqual([2, 2]);
+			setLanguagePreference("da");
+			relabelNewCompany(hub);
+			renderNewCompany(hub, container, { userId: me, name: "Anna" });
+			const drawn = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+			expect(drawn).not.toBe(box);
+			expect(drawn.value).toBe("A Danish webshop");
+			expect(document.activeElement).toBe(drawn);
+			expect([drawn.selectionStart, drawn.selectionEnd]).toEqual([2, 2]);
+		} finally {
+			setLanguagePreference("system");
+			hub.dispose();
+		}
+	});
+
+	it("hands the box back with focus when an opening fails", async () => {
+		const { api } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		const hub = new HubController(api, me);
+		hub.store.subscribe(() => renderNewCompany(hub, container, { userId: me, name: "Anna" }));
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		box.focus();
+		box.value = "A bakery";
+		box.dispatchEvent(new Event("input"));
+		const opening = deferred<never>();
+		vi.spyOn(CompanyFoundingApi.prototype, "open").mockReturnValue(opening.promise);
+		box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		await settle();
+		expect(box.disabled).toBe(true);
+		// A browser takes focus from a box as it is disabled (jsdom keeps it there).
+		box.disabled = false;
+		box.blur();
+		box.disabled = true;
+		expect(document.activeElement).toBe(document.body);
+		opening.reject(new Error("Failed to fetch"));
+		await settle();
+		expect(box.disabled).toBe(false);
+		expect(document.activeElement).toBe(box);
+		expect(box.value).toBe("A bakery");
 		hub.dispose();
 	});
 });

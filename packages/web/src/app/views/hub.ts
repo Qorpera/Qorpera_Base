@@ -215,19 +215,21 @@ export class HubController {
 		}
 	}
 
-	/** The new-company box: the table opens with a name taken from the idea, which the founders can change there. */
-	startFromIdea(idea: string, intent: CreationIntent): Promise<void> {
+	/** The new-company box: the table opens with a name taken from the idea, which the founders can change there.
+	 * True once the table is open. */
+	startFromIdea(idea: string, intent: CreationIntent): Promise<boolean> {
 		const vision = idea.trim();
 		return this.createCompany(companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
 	}
 
-	async createCompany(name: string, options: CreationOptions = {}): Promise<void> {
-		if (this.#disposed || this.store.get().creating) return;
+	/** True once the table is open. */
+	async createCompany(name: string, options: CreationOptions = {}): Promise<boolean> {
+		if (this.#disposed || this.store.get().creating) return false;
 		const trimmed = name.trim();
-		if (!trimmed) return;
+		if (!trimmed) return false;
 		if (this.#creation && this.#creation.name !== trimmed) {
 			this.store.set({ error: t("Resume the pending company creation before starting another.") });
-			return;
+			return false;
 		}
 		const route = location.hash;
 		const wanted: CreationOptions = {
@@ -240,18 +242,18 @@ export class HubController {
 		try {
 			available = await this.#api.companyFoundingAvailable();
 		} catch (error) {
-			if (this.#disposed) return;
+			if (this.#disposed) return false;
 			available = false;
 			if (!(error instanceof CloudRpcError && error.missing)) {
 				this.store.set({ creating: undefined, error: describeError(error) });
-				return;
+				return false;
 			}
 		}
-		if (this.#disposed) return;
+		if (this.#disposed) return false;
 		this.store.set({ foundingAvailable: available });
 		if (!available) {
 			this.store.set({ creating: undefined, error: t("Creating a company is paused. Try again later.") });
-			return;
+			return false;
 		}
 		const clientCreationId = this.#creation?.clientCreationId ?? crypto.randomUUID();
 		this.#creation = { ...this.#creation, ...wanted, name: trimmed, clientCreationId };
@@ -262,14 +264,14 @@ export class HubController {
 			/* Keep the in-memory operation when storage is unavailable. */
 		}
 		this.store.set({ creating: this.#creation });
-		await this.#openTable(this.#creation, route);
+		return this.#openTable(this.#creation, route);
 	}
 
 	/** The table is the company being founded: open it with the idea, then the founders go on there. */
-	async #openTable(creation: Creation, route: string): Promise<void> {
+	async #openTable(creation: Creation, route: string): Promise<boolean> {
 		try {
 			const table = await this.#founding.open(creation.clientCreationId, creation.name);
-			if (this.#disposed) return;
+			if (this.#disposed) return false;
 			let pending: string | undefined;
 			if (creation.vision && !table.vision) {
 				try {
@@ -292,8 +294,10 @@ export class HubController {
 				...(pending ? { vision: pending } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
+			return true;
 		} catch (error) {
 			this.store.set({ creating: undefined, creationRetry: this.#creation, error: lobbyError(error) });
+			return false;
 		}
 	}
 }

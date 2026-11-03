@@ -106,15 +106,34 @@ export class WebCompanyFiles {
 		this.current();
 		return createWebMessageErases(this.#options);
 	}
-	/** The folder's hint (folder core C4, P30): `onHint(seq)` when it changed. Closes with this company's signal. */
-	folderHints(onHint: (seq: number) => void): CloudMemberFolderHints {
+	/** The folder's hint (folder core C4, P30): `onHint(seq)` when it changed. Closes with this company's signal.
+	 * Its private channel joins once Realtime holds the member's token. The client sets that only after its first
+	 * answer, so a channel joined at once went out with the publishable key, was refused ("Unauthorized") and joined
+	 * only on the 10 s retry (3 Nov 2026). */
+	folderHints(onHint: (seq: number) => void): { close(): Promise<void> } {
 		this.current();
-		return new CloudMemberFolderHints({
-			environmentId: this.#options.environmentId,
-			client: this.#realtime(),
-			signal: this.signal,
-			onHint,
-		});
+		const client = this.#realtime();
+		let hints: CloudMemberFolderHints | undefined;
+		let closed = false;
+		const joined = withCloudDeadline(() => client.realtime.setAuth(), 5000, this.signal)
+			// Without a token the join is refused as before, and the hints' own retry joins again.
+			.catch(() => undefined)
+			.then(() => {
+				if (closed || this.signal.aborted) return;
+				hints = new CloudMemberFolderHints({
+					environmentId: this.#options.environmentId,
+					client,
+					signal: this.signal,
+					onHint,
+				});
+			});
+		return {
+			close: async () => {
+				closed = true;
+				await joined;
+				await hints?.close();
+			},
+		};
 	}
 	#realtime() {
 		return createClient(this.#options.supabaseUrl, this.#options.publishableKey, {

@@ -104,6 +104,10 @@ label > input, label > select { font-weight: 400; }
 .notice-warn { border-color: color-mix(in srgb, var(--warning) 55%, transparent); background: var(--warning-soft); }
 .notice-danger { border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: var(--danger-soft); }
 .notice-accent { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+/* A new build is served (app/new-version.ts): one line at the foot of the window, above the page. */
+.app-version-notice { position: fixed; z-index: 650; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px); }
+.app-version-notice[hidden] { display: none; }
+.app-version-notice .notice { display: flex; align-items: center; gap: 12px; margin: 0; background: var(--bg); box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06); }
 .spinner { display: flex; align-items: center; gap: 10px; color: var(--text-muted); padding: 16px 0; }
 .spinner-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }

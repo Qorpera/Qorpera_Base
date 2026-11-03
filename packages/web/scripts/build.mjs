@@ -43,7 +43,10 @@ for (const page of deployment.notFoundPages) {
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-const { app: options, theme: themeOptions } = bundleOptions({ root, outdir: dist, serve, define: deployment.define });
+// The build knows the commit it is made from, so an open tab can tell when web-deployment.json names a newer one
+// (src/app/new-version.ts).
+const define = { ...deployment.define, __QORPERA_WEB_SOURCE_COMMIT__: JSON.stringify(provenance.sourceCommit) };
+const { app: options, theme: themeOptions } = bundleOptions({ root, outdir: dist, serve, define });
 
 if (serve) {
 	await (await esbuild.context(themeOptions)).watch();

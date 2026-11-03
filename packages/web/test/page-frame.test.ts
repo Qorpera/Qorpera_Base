@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { framePage, PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
+import { framePage, PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
 
 // Read from the package root, where the tests run.
 const headers = readFileSync(resolve("public/_headers"), "utf8");
@@ -145,6 +145,53 @@ describe("an HTML page's frame", () => {
 		});
 		expect(framePage('<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>')).toBeNull();
 		expect(parses).toBe(2);
+	});
+
+	it("hears Escape pressed in its own frames' pages as Escape pressed on the frame, and nothing else", () => {
+		const stop = new AbortController();
+		const frames = new PageFrames(stop.signal);
+		const one = frames.frame("<p>One</p>", "Page: one.html", "files-page-frame");
+		const stranger = document.createElement("iframe");
+		document.body.append(one, stranger);
+		const keys: string[] = [];
+		document.body.addEventListener("keydown", (event) => {
+			keys.push(`${(event.target as HTMLElement).className || "stranger"} ${event.key} ${event.cancelable}`);
+		});
+		ready(stranger.contentWindow, { type: PAGE_ESCAPE });
+		ready(null, { type: PAGE_ESCAPE });
+		ready(one.contentWindow, PAGE_ESCAPE);
+		expect(keys).toEqual([]);
+		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		expect(keys).toEqual(["files-page-frame Escape true"]);
+		// The frame's page is not handed over again for it.
+		const toOne = vi.spyOn(one.contentWindow!, "postMessage");
+		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		expect(toOne).not.toHaveBeenCalled();
+		// A view that ended hears nothing.
+		stop.abort();
+		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		expect(keys).toHaveLength(2);
+	});
+
+	it("passes Escape on from the page once it is written, unless the page took it or an IME is composing", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// Taken before the page runs, so the page can't change them.
+		for (const taken of [
+			"const listen = EventTarget.prototype.addEventListener;",
+			'const keyOf = getter(KeyboardEvent.prototype, "key");',
+			'const composing = getter(KeyboardEvent.prototype, "isComposing");',
+			'const prevented = getter(Event.prototype, "defaultPrevented");',
+		]) {
+			expect(script, taken).toContain(taken);
+			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
+		}
+		// Listened for after the page is written: opening the document drops the window's listeners.
+		const listened = script.indexOf("apply(listen, window, [");
+		expect(listened).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
+		expect(script.slice(listened)).toContain(
+			'if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, []) || apply(prevented, pressed, []))',
+		);
+		expect(script.slice(listened)).toContain(`app.postMessage({ type: "${PAGE_ESCAPE}" }, "*");`);
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {

@@ -925,6 +925,63 @@ describe("settings session lifecycle", () => {
 			dialog.close = close;
 		}
 	});
+	it("closes a page shown across the window on Escape pressed inside it, then Settings, and the composer has focus", async () => {
+		const dialog = HTMLDialogElement.prototype;
+		const { showModal, close } = dialog;
+		dialog.showModal = function () {
+			this.open = true;
+		};
+		dialog.close = function () {
+			this.open = false;
+		};
+		try {
+			linkedFolder();
+			const f = await setup();
+			await draw();
+			const composer = f.root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+			expect(composer).not.toBeNull();
+			linksInMessage(f.root).dashboard.click();
+			await draw();
+			await draw();
+			const expand = f.root.querySelector<HTMLButtonElement>(
+				'.files-preview-head [aria-label="Show dashboard.html large"]',
+			)!;
+			expand.focus();
+			expand.click();
+			const large = document.querySelector<HTMLDialogElement>("dialog.page-preview-dialog")!;
+			const frame = large.querySelector<HTMLIFrameElement>("iframe.page-preview-frame")!;
+			frame.focus();
+			// 3 Nov 2026: with focus in the page, Escape went to the page and the preview stayed. The frame document
+			// passes it on (public/page-preview/index.html); only a frame of this view is heard.
+			const escapeFrom = (source: Window | null) => {
+				const event = new MessageEvent("message", { data: { type: "qorpera-page-escape" } });
+				Object.defineProperty(event, "source", { value: source });
+				window.dispatchEvent(event);
+			};
+			escapeFrom(document.createElement("iframe").contentWindow);
+			escapeFrom(null);
+			expect(document.querySelector("dialog.page-preview-dialog")).not.toBeNull();
+			escapeFrom(frame.contentWindow);
+			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
+			expect(document.activeElement).toBe(expand);
+			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
+			// Escape again closes the file, then Settings, opened from the conversation's link: typing goes on in the
+			// composer.
+			const press = () =>
+				(document.activeElement ?? document.body).dispatchEvent(
+					new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+				);
+			press();
+			expect(f.root.querySelector(".files-preview-head")?.closest("[hidden]")).not.toBeNull();
+			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
+			press();
+			expect(f.root.querySelector(".settings-dialog")).toBeNull();
+			expect(document.activeElement).toBe(composer);
+		} finally {
+			dialog.showModal = showModal;
+			dialog.close = close;
+		}
+	});
 	it("keeps Tab inside the available Settings controls while a storage folder read is pending", async () => {
 		const folder = storageFixture();
 		const f = await setup();

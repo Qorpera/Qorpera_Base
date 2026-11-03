@@ -317,6 +317,50 @@ describe("room startup usage refresh", () => {
 });
 
 describe("conversation execution account", () => {
+	it("reads the accounts again by itself after a failed read, sooner first, and at once when the tab comes back", async () => {
+		vi.useFakeTimers();
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(true, withUsage([80, 40]), select);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		// 3 Nov 2026: one failed read locked the composer until the page was reloaded.
+		f.listConnections.mockRejectedValue(new Error("Failed to fetch"));
+		refresh();
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain("Model accounts are unavailable. Trying again…");
+		expect(f.view.el.textContent).not.toContain("Refresh to try again");
+		const reads = () => f.listConnections.mock.calls.length;
+		let before = reads();
+		await vi.advanceTimersByTimeAsync(1_999);
+		expect(reads()).toBe(before);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(reads()).toBe(before + 1);
+		// Still failing: the next wait is longer (5 s), and the line stays up while it reads again.
+		expect(f.view.el.textContent).toContain("Model accounts are unavailable. Trying again…");
+		before = reads();
+		await vi.advanceTimersByTimeAsync(4_999);
+		expect(reads()).toBe(before);
+		f.listConnections.mockResolvedValue(withUsage([80, 40]));
+		await vi.advanceTimersByTimeAsync(1);
+		expect(reads()).toBe(before + 1);
+		expect(f.view.el.textContent).not.toContain("Model accounts are unavailable");
+		expect(f.send().disabled).toBe(false);
+		// A success starts the waits over; a tab coming back reads at once.
+		f.listConnections.mockRejectedValue(new Error("Failed to fetch"));
+		refresh();
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		f.listConnections.mockResolvedValue(withUsage([80, 40]));
+		before = reads();
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(reads()).toBe(before + 1);
+		expect(f.send().disabled).toBe(false);
+	});
+
 	it("does not select Claude even when its reported allowance exceeds Codex", async () => {
 		const observed = withUsage([20, 100]);
 		observed.connections[1]!.provider = "anthropic";
