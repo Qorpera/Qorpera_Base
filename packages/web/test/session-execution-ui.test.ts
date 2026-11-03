@@ -161,7 +161,7 @@ function type(view: ConversationView, text: string): void {
 function buttonNamed(view: ConversationView, label: string): HTMLButtonElement | undefined {
 	return [...view.el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label);
 }
-const CONNECT_HINT = "Connect a model account in Settings → My connections to send messages.";
+const CONNECT_HINT = "Connect a model account in Settings → AI subscriptions to send messages.";
 
 describe("room startup usage refresh", () => {
 	it("selects a known eligible account and sends while the optional usage probe remains pending", async () => {
@@ -708,7 +708,7 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.view.el.textContent).toContain(
-			"This conversation's model account can't be used right now. Check it in Settings → My connections.",
+			"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
 		);
 		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
 		// An account the member disconnected leaves the conversation waiting for the member's own pick.

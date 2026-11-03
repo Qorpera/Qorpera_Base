@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Plan & usage, Friends, Company, My connections, Company connections. */
+/** Settings: General, Plan & usage, Friends, Company, AI subscriptions, Company connections. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -271,15 +271,15 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company execution (app/views/company-execution.ts)
 
-	// My connections and Company connections (app/views/settings.ts)
-	"My connections": "Mine forbindelser",
+	// AI subscriptions and Company connections (app/views/settings.ts)
+	"AI subscriptions": "AI-abonnementer",
 	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
 	"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.":
 		"Virksomhedens egne konti, webhooks og postkasser. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
-	// My connections: model accounts (app/views/settings-connections.ts)
+	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
 	"Opening ChatGPT…": "Åbner ChatGPT…",
 	"Finishing your ChatGPT sign-in…": "Afslutter dit ChatGPT-login…",
@@ -323,6 +323,17 @@ export const SETTINGS: Record<string, string> = {
 	"Sign out everywhere": "Log ud overalt",
 	"Signing out everywhere…": "Logger ud overalt…",
 	"You could not be signed out everywhere. Try again.": "Du kunne ikke logges ud overalt. Prøv igen.",
+	"A ChatGPT subscription you add here is used in all your companies.":
+		"Et ChatGPT-abonnement, du tilføjer her, bruges i alle dine virksomheder.",
+	"Add ChatGPT subscription": "Tilføj ChatGPT-abonnement",
+	"This subscription was added to {company} only. Open that company to see it.":
+		"Abonnementet blev kun tilføjet til {company}. Åbn den virksomhed for at se det.",
+	// AI subscriptions with no company open (app/views/settings-ai-subscriptions.ts)
+	"Create or join a company first. Then you can add a ChatGPT subscription here.":
+		"Opret eller bliv medlem af en virksomhed først. Så kan du tilføje et ChatGPT-abonnement her.",
+	"Your AI subscriptions could not be read.": "Dine AI-abonnementer kunne ikke hentes.",
+	"Your companies can't share an AI subscription yet. Open a company to add one there.":
+		"Dine virksomheder kan ikke dele et AI-abonnement endnu. Åbn en virksomhed for at tilføje et der.",
 	"Usage limit reached · resets in {time}": "Forbrugsgrænsen er nået · nulstilles om {time}",
 	"Usage unavailable": "Forbrug ikke tilgængeligt",
 	"{percent}% left": "{percent}% tilbage",

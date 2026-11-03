@@ -13,7 +13,7 @@ import { phrase, t } from "../../ui/preferences.ts";
 
 /**
  * Settings → environment variables for coding (F3 step 5j): values a coding session gets as environment variables,
- * such as a token that installs private packages. The tab decides who owns a new one: My connections adds the
+ * such as a token that installs private packages. The tab decides who owns a new one: AI subscriptions adds the
  * member's own, which reach that member's coding sessions in every repository and leave with them; Company
  * connections adds the company's, which reach a coding session only in a repository an owner or admin gave it to,
  * win there over a member's of the same name, and stay when someone leaves. Each card says what changes for coding
@@ -202,7 +202,7 @@ export class CodingEnvironmentView {
 		}
 	}
 
-	/** This view's own variables: the member's on My connections, the company's on Company connections. */
+	/** This view's own variables: the member's on AI subscriptions, the company's on Company connections. */
 	#own(): CodingEnvironmentVariable[] {
 		return (this.#variables ?? []).filter((variable) => variable.ownerKind === this.#owner);
 	}

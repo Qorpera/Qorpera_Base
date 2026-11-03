@@ -239,7 +239,7 @@ function options(value: JsonValue): string[] {
 		: [];
 }
 
-/* The makers' own marks: OpenAI's for Codex (the ChatGPT mark, as on the My connections
+/* The makers' own marks: OpenAI's for Codex (the ChatGPT mark, as on the AI subscriptions
  * card) and the Claude spark for Claude Code. Drawn in currentColor; the stylesheet
  * gives the Claude spark its own orange. */
 const HARNESS_MARKS: Record<CodingHarness, { viewBox: string; path: string }> = {

@@ -262,8 +262,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
 	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
 		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
-	"This conversation's model account can't be used right now. Check it in Settings → My connections.":
-		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → Mine forbindelser.",
+	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
+		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
 	"Or continue with another of your logins.": "Eller fortsæt med et andet af dine logins.",
 	"Use {account}": "Brug {account}",
