@@ -3,8 +3,8 @@
 -- November 2026). 924's owner (…001) pays with login A, on which Alice's run is leased; they connect login B the same
 -- way. A reports a weekly window, B a 30-day one (the founder's workspace plan). Checked: the room on one scale (a share
 -- of a week that resets soon against a share of 30 days); a login that completed a run this week comes first while it
--- has 20% left in each window; a login whose provider refused its last three runs comes last, six hours later it is
--- chosen as before, and another kind of ending breaks the run of refusals; the three first choices (a new conversation,
+-- has 20% left in each window; a login whose provider refused its last three runs comes last, six hours after the newest
+-- refusal it is chosen as before (refusals spread over a day count), and another kind of ending breaks the streak; the three first choices (a new conversation,
 -- new work, a new coding session) follow that order; the member's connection list reports each login's recent turns;
 -- the payer functions keep their earlier bodies' markers; and the grants.
 
@@ -204,12 +204,27 @@ where status = 'failed' and last_error like '%[code=NATIVE_CODEX_TURN_COMPLETION
 select pg_temp.base_assert(not public.qorpera_native_account_turns_refused(pg_temp.lr('a')), 'refusals older than six hours');
 select pg_temp.lr_expect('a', 'six hours after its refusals the login is chosen as before');
 
--- 5. Another kind of ending breaks the run of refusals: the newest of them now failed on Qorpera's side.
+-- 5. The streak counts from its newest refusal, and another kind of ending breaks it: the newest of them now failed on
+--    Qorpera's side.
 update public.qorpera_runner_jobs set finished_at = clock_timestamp()
 where status = 'failed' and last_error like '%[code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]%'
 	and run_id in (select lease.run_id from public.qorpera_native_provider_connection_leases as lease
 		where lease.provider_connection_id = pg_temp.lr('a'));
 select pg_temp.base_assert(public.qorpera_native_account_turns_refused(pg_temp.lr('a')), 'the refusals are recent again');
+-- Only the newest refusal must be in the last six hours: refusals spread over a day count (the founder's workspace plan
+-- was refused at 04:18 on 2 November and at 04:02 and 15:47 on 3 November). Alice's completed run is older still.
+update public.qorpera_runner_jobs set finished_at = clock_timestamp() - interval '30 hours'
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
+update public.qorpera_runner_jobs as job set finished_at = clock_timestamp() - spread.age
+from (select refused.id, (array[interval '20 hours', interval '10 hours', interval '0 hours'])[
+		row_number() over (order by refused.id)] as age
+	from public.qorpera_runner_jobs as refused
+	join public.qorpera_native_provider_connection_leases as lease on lease.job_id = refused.id
+	where lease.provider_connection_id = pg_temp.lr('a') and refused.status = 'failed') as spread
+where job.id = spread.id;
+select pg_temp.base_assert(public.qorpera_native_account_turns_refused(pg_temp.lr('a')),
+	'three refusals over a day, the newest just now');
+select pg_temp.lr_expect('b', 'a login refused three times in a day comes last');
 update public.qorpera_runner_jobs
 set last_error = 'Native provider bridge request failed (503) [code=NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE]'
 where id = (select job.id from public.qorpera_runner_jobs as job

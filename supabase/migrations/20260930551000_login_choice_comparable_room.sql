@@ -10,11 +10,12 @@
 -- every recent turn was refused kept winning.
 --
 -- Now a first choice orders the logins by qorpera_native_account_rank, an array that sorts best first:
--- 1. A login whose provider refused its last three finished runs, all in the last six hours, comes after every other
---    one (qorpera_native_account_turns_refused). The refusal is the turn's own provider failure
---    ([code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]); any other ending breaks the run of refusals, and six hours
---    after the last refusal the login is chosen as before. It is never switched off: it stays the member's to pick,
---    and the only choice when it is the only login.
+-- 1. A login whose provider refused its last three finished runs (of the last two days), the newest of them in the last
+--    six hours, comes after every other one (qorpera_native_account_turns_refused). The refusal is the turn's own
+--    provider failure ([code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]); a completed run or another kind of failure
+--    ends the streak (a cancelled run counts for neither), and six hours after the last refusal the login is chosen as
+--    before. It is never switched off: it stays the member's to pick, and the only choice when it is the only login.
+--    (The founder's workspace plan was refused at 04:18 on 2 November and at 04:02 and 15:47 on 3 November.)
 -- 2. A login at its usage limit (no room) comes next, as `remaining = 0` came first before.
 -- 3. A login that completed a run in the last seven days and has at least 20% left in each window (or unknown usage)
 --    comes before one that did not (qorpera_native_account_turn_completed): a login that is known to work.
@@ -42,7 +43,7 @@ create index if not exists qorpera_native_provider_connection_leases_connection_
 -- The connection and, for an account login's link, the same login's links in the member's other companies.
 create function public.qorpera_native_account_login_connections(p_connection_id uuid)
 returns table(connection_id uuid)
-language sql stable security definer set search_path = '' as $$
+language sql stable security definer rows 2 set search_path = '' as $$
 	select p_connection_id
 	union
 	select sibling.connection_id from public.qorpera_account_login_sibling_connections(p_connection_id) as sibling
@@ -50,15 +51,17 @@ $$;
 revoke all on function public.qorpera_native_account_login_connections(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The provider refused the login's last three finished runs, all in the last six hours.
+-- The provider refused the login's last three finished runs of the last two days, the newest in the last six hours.
 create function public.qorpera_native_account_turns_refused(p_connection_id uuid)
 returns boolean
 language sql stable security definer set search_path = '' as $$
 	-- 20260930551000
 	select count(*) = 3 and bool_and(recent.refused)
+		and max(recent.finished_at) > statement_timestamp() - interval '6 hours'
 	from (
-		select job.status = 'failed' and job.finished_at > statement_timestamp() - interval '6 hours'
-				and strpos(coalesce(job.last_error, ''), '[code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]') > 0 as refused
+		select job.status = 'failed'
+				and strpos(coalesce(job.last_error, ''), '[code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]') > 0 as refused,
+			job.finished_at
 		from public.qorpera_native_account_login_connections(p_connection_id) as login
 		join public.qorpera_native_provider_connection_leases as lease on lease.provider_connection_id = login.connection_id
 			and lease.created_at > statement_timestamp() - interval '2 days'

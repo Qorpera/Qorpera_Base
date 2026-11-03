@@ -206,7 +206,7 @@ they answer 42501 "native host call is refused".
   for any other login, 42501 when the conversation cannot be read. A new
   conversation's first choice (and new work's, and a new coding session's) orders
   the logins best first (20260930551000): a login whose provider refused its last
-  three runs in six hours last, then one at its limit, then one that completed a
+  three runs, the newest in six hours, last, then one at its limit, then one that completed a
   run this week with at least 20% left first, then the most room on one scale
   (each window's room divided by the share of the window still to run), unknown
   usage last. `qorpera_list_member_native_execution_connections` reports each

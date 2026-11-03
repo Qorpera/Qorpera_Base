@@ -44,7 +44,7 @@ export interface WebNativeProviderLogin {
  * 20260929970000): the login's kind (absent for a node login), whether its member turned
  * on work while away for this version, and when the member's first-routine card was shown;
  * and (migration 20260930551000) its recent turns: whether the provider refused its last three
- * runs (in six hours) and whether it completed a run this week, which order a first choice. */
+ * runs (the newest in six hours) and whether it completed a run this week, which order a first choice. */
 export type WebMemberConnection = NativeMemberConnection & {
 	loginKind?: "codex" | "chatgpt_plan";
 	allowAutonomous?: boolean;
