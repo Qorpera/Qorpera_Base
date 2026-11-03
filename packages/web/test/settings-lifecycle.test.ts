@@ -483,7 +483,9 @@ describe("settings session lifecycle", () => {
 		expect(selectedTab(view.el)).toBe(opened);
 		expect(view.el.querySelector<HTMLElement>("#settings-content")!.hidden).toBe(false);
 		expect(view.el.querySelector<HTMLElement>("#settings-storage-content")!.hidden).toBe(true);
-		expect(view.el.querySelector("#settings-content")!.textContent).not.toContain("Open a company to see");
+		const text = view.el.querySelector(".settings-dialog")!.textContent;
+		expect(text).not.toContain("Open a company to see these settings.");
+		expect(text).not.toContain("Open a company to see its storage.");
 	});
 	it("lists the member's AI subscriptions with no company open, read through the first company that shares them", async () => {
 		history.replaceState(null, "", "/#/");

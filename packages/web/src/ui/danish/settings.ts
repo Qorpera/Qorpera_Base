@@ -327,7 +327,7 @@ export const SETTINGS: Record<string, string> = {
 		"Et ChatGPT-abonnement, du tilføjer her, bruges i alle dine virksomheder.",
 	"Add ChatGPT subscription": "Tilføj ChatGPT-abonnement",
 	"This subscription was added to {company} only. Open that company to see it.":
-		"Abonnementet blev kun tilføjet til {company}. Åbn den virksomhed for at se det.",
+		"Abonnementet blev kun tilføjet til {company}. Åbn virksomheden for at se det.",
 	// AI subscriptions with no company open (app/views/settings-ai-subscriptions.ts)
 	"Create or join a company first. Then you can add a ChatGPT subscription here.":
 		"Opret eller bliv medlem af en virksomhed først. Så kan du tilføje et ChatGPT-abonnement her.",

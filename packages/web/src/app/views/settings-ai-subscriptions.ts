@@ -63,16 +63,20 @@ export class AccountSubscriptionsView {
 		let failed = false;
 		for (const profile of companies) {
 			const company = this.#open(profile);
-			let enabled: boolean;
+			let usable: boolean;
 			try {
-				enabled = (await company.client.listAccountLogins?.(signal))?.enabled === true;
+				usable = (await company.client.listAccountLogins?.(signal))?.enabled === true;
+				// A sign-in begins only for an active identity of the member (a new one is made where there is none).
+				// One who left the company once keeps a retired identity there, and no account login is linked there.
+				const identity = usable ? (await company.client.listConnections(signal)).computeIdentity : undefined;
+				if (identity && identity.status !== "active") usable = false;
 			} catch {
 				if (signal.aborted) return;
 				failed = true;
 				continue;
 			}
 			if (signal.aborted) return;
-			if (!enabled) continue;
+			if (!usable) continue;
 			this.#connections = new ConnectionsView(
 				company.client,
 				signal,

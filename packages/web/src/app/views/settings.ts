@@ -823,8 +823,8 @@ export class SettingsView {
 					signal(),
 					{ access: { canManage } },
 				);
-				// Where a company variable is given decides where a member's own of that name is used, so My
-				// connections reads its list again after each change here (opened later, it reads one anyway).
+				// Where a company variable is given decides where a member's own of that name is used, so AI
+				// subscriptions reads its list again after each change here (opened later, it reads one anyway).
 				this.#companyEnvironment = new CodingEnvironmentView(
 					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
 					signal(),

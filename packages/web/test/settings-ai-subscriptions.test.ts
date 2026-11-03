@@ -88,6 +88,7 @@ function company(enabled: boolean, logins: WebAccountLogin[] = [login], connecti
 		revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
 		createMemberSponsor: vi.fn(async () => ({ bindingId: id(84), version: 1 })),
 		signOutEverywhere: vi.fn(async () => undefined),
+		refreshAccountMetadata: vi.fn(async () => undefined),
 	};
 	const begin = vi.fn(async (input: WebNativeProviderLoginInput) => ({
 		loginId: input.clientLoginId,
@@ -163,6 +164,40 @@ describe("AI subscriptions with no company open", () => {
 		expect(b.client.createMemberSponsor).not.toHaveBeenCalled();
 	});
 
+	it("passes over a company where the member's identity was retired (they left it once)", async () => {
+		const a = company(true, [login], {
+			...observed(),
+			computeIdentity: { ...observed().computeIdentity!, status: "retired" },
+		});
+		const b = company(true);
+		await setup(
+			new Map([
+				[profileA, a],
+				[profileB, b],
+			]),
+		);
+		expect(cards().map((card) => card.dataset.loginId)).toEqual([id(90)]);
+		expect(b.client.listConnections).toHaveBeenCalled();
+		add().click();
+		await settle();
+		expect(a.begin).not.toHaveBeenCalled();
+		expect(b.begin).toHaveBeenCalledOnce();
+	});
+
+	it("neither enables nor refreshes anything that is not an account login", async () => {
+		// An account login's link without a sponsor, and Company B's own live login.
+		const unsponsored = { ...linked, sponsorBindingId: undefined, sponsorVersion: undefined };
+		const b = company(true, [login], observed(unsponsored, companyLogin));
+		await setup(new Map([[profileB, b]]));
+		expect(cards()).toHaveLength(1);
+		expect(b.client.createMemberSponsor).not.toHaveBeenCalled();
+		view!.dispose();
+		const c = company(true, [{ ...login, connectionIds: [] }], observed(companyLogin));
+		await setup(new Map([[profileB, c]]));
+		expect(c.client.listConnections).toHaveBeenCalled();
+		expect(c.client.refreshAccountMetadata).not.toHaveBeenCalled();
+	});
+
 	it("shows a login Company B does not use, without usage", async () => {
 		const b = company(true, [{ ...login, connectionIds: [] }], observed());
 		await setup(new Map([[profileB, b]]));
@@ -191,7 +226,21 @@ describe("AI subscriptions with no company open", () => {
 		await settle();
 		expect(view!.el.querySelector(".connection-attempt")).toBeNull();
 		expect(cards().map((card) => card.dataset.loginId)).toEqual([id(90)]);
-		expect(view!.el.querySelector('[role="status"]')?.textContent ?? "").not.toContain("only");
+		expect([...view!.el.querySelectorAll('[role="status"]')].map((item) => item.textContent)).toEqual([]);
+	});
+
+	it("says so when a sign-in ends without finishing", async () => {
+		vi.useFakeTimers();
+		const b = company(true, [], observed());
+		await setup(new Map([[profileB, b]]));
+		add().click();
+		await settle();
+		expect(view!.el.querySelector(".connection-attempt")).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(view!.el.querySelector(".connection-attempt")).toBeNull();
+		expect(view!.el.textContent).toContain("The ChatGPT sign-in did not finish. Try again.");
+		expect(add().disabled).toBe(false);
 	});
 
 	it("says so when a sign-in was kept for its company only", async () => {
@@ -266,10 +315,16 @@ describe("AI subscriptions with no company open", () => {
 	});
 
 	it("stops reading when Settings close", async () => {
+		vi.useFakeTimers();
 		const b = company(true);
 		const { lifetime } = await setup(new Map([[profileB, b]]));
+		const reads = b.client.listConnections.mock.calls.length;
+		expect(reads).toBeGreaterThan(0);
 		lifetime.abort();
 		expect(view!.el.isConnected).toBe(false);
+		window.dispatchEvent(new Event("focus"));
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(b.client.listConnections.mock.calls.length).toBe(reads);
 	});
 
 	it("speaks Danish", async () => {

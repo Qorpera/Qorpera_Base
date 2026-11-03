@@ -182,12 +182,10 @@ export class ConnectionsView {
 	#accountLogins = new Map<string, WebAccountLogin>();
 	/** All of the member's account logins, also those this company does not use. */
 	#logins: readonly WebAccountLogin[] = [];
-	/** Whether a ChatGPT sign-in here is an account sign-in, used in all the member's companies. */
-	#shared = false;
 	/** Settings with no company open: only the member's account logins, signed in through `companyName`. */
 	readonly #accountWide: { companyName: string } | undefined;
-	/** A sign-in begun with no company open that the cloud kept for its company only. */
-	#companyOnly: string | undefined;
+	/** With no company open: how the last ChatGPT sign-in ended when it was not an account login. */
+	#outcome: string | undefined;
 	#loading = true;
 	#adding = false;
 	#working: string | undefined;
@@ -244,7 +242,7 @@ export class ConnectionsView {
 			if (
 				!document.hidden &&
 				this.el.isConnected &&
-				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#connections?.connections.some(live))
+				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#shown().some(live))
 			)
 				void this.#refreshUsage();
 		};
@@ -373,7 +371,7 @@ export class ConnectionsView {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
-			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
+			if (this.#lifetime.signal.aborted || !this.#shown().some(live)) return;
 			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 		} catch {
@@ -420,7 +418,6 @@ export class ConnectionsView {
 						account.logins.flatMap((login) => login.connectionIds.map((id) => [id, login] as const)),
 					);
 					this.#logins = account.logins;
-					this.#shared = account.enabled;
 					accountRead = true;
 				} catch {
 					// The cards read as this company's own logins until the next read.
@@ -438,15 +435,18 @@ export class ConnectionsView {
 				);
 				if (attempt.login && (finished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
-					// With no company open only account logins are listed: say where a company login went.
-					if (
+					// With no company open only account logins are listed: say where a company login went, and that a
+					// sign-in ended without one.
+					if (this.#accountWide && provider === "openai" && !finished)
+						this.#outcome = t("The ChatGPT sign-in did not finish. Try again.");
+					else if (
 						this.#accountWide &&
 						provider === "openai" &&
 						finished &&
 						accountRead &&
 						!this.#accountLogins.has(finished.connectionId)
 					)
-						this.#companyOnly = t("This subscription was added to {company} only. Open that company to see it.", {
+						this.#outcome = t("This subscription was added to {company} only. Open that company to see it.", {
 							company: this.#accountWide.companyName,
 						});
 				}
@@ -460,15 +460,15 @@ export class ConnectionsView {
 			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
-	/** Connecting an account is the member's choice to use it for their messages. */
+	/** Connecting an account is the member's choice to use it for their messages. With no company open nothing is
+	 * enabled: an account login comes with its own sponsor in each company, and the company's own logins are not this
+	 * page's. */
 	async #enable(): Promise<void> {
 		const connections = this.#connections;
-		if (!connections || connections.computeIdentity?.status !== "active") return;
+		if (this.#accountWide || !connections || connections.computeIdentity?.status !== "active") return;
 		for (const connection of connections.connections) {
 			const key = `${connection.connectionId}:${connection.connectionVersion}`;
 			if (
-				// With no company open, nothing of the sign-in company's own is changed.
-				(this.#accountWide && !this.#accountLogins.has(connection.connectionId)) ||
 				connection.sponsorBindingId ||
 				!live(connection) ||
 				connection.policy.implementationStatus !== "supported" ||
@@ -508,7 +508,7 @@ export class ConnectionsView {
 			return;
 		const attempt: Attempt = { starting: true };
 		this.#adding = false;
-		this.#companyOnly = undefined;
+		this.#outcome = undefined;
 		attempts.set(provider, attempt);
 		signIns.changed();
 		this.el.querySelector<HTMLElement>(`[data-focus-key="status:${provider}"]`)?.focus();
@@ -711,7 +711,7 @@ export class ConnectionsView {
 			{ disabled: Boolean(this.#working) || !this.#client.signOutEverywhere },
 		);
 		everywhere.dataset.focusKey = `everywhere:${login.loginId}`;
-		const usable = connection ? live(connection) : login.status === "active";
+		const usable = login.status === "active" && (!connection || live(connection));
 		return h(
 			"article",
 			{ class: "connection-card", dataset: { loginId: login.loginId } },
@@ -727,6 +727,13 @@ export class ConnectionsView {
 			h("div", { class: "connection-actions" }, everywhere),
 			connection ? this.#usage(connection) : h("div", { class: "connection-usage muted" }, t("Usage unavailable")),
 		);
+	}
+	/** The connections whose usage this page shows: with no company open, only the account logins' links. */
+	#shown(): readonly WebMemberConnection[] {
+		const connections = this.#connections?.connections ?? [];
+		return this.#accountWide
+			? connections.filter((connection) => this.#accountLogins.has(connection.connectionId))
+			: connections;
 	}
 	#usage(connection: NativeMemberConnection): HTMLElement {
 		const usage = connection.providerAccountUsage;
@@ -863,7 +870,7 @@ export class ConnectionsView {
 	}
 	#draw(): void {
 		clearTimeout(this.#usageClock);
-		if (this.#connections?.connections.some(live))
+		if (this.#shown().some(live))
 			this.#usageClock = setTimeout(() => {
 				if (document.hidden) this.#draw();
 				else void this.#refreshUsage();
@@ -933,7 +940,7 @@ export class ConnectionsView {
 				"section",
 				{ class: "settings-group" },
 				h("div", { class: "connection-section-heading" }, h("h2", null, t("Model accounts")), refresh),
-				this.#shared
+				accountWide
 					? h(
 							"p",
 							{ class: "connection-note muted" },
@@ -941,7 +948,7 @@ export class ConnectionsView {
 						)
 					: null,
 				this.#usageError ? h("p", { class: "muted", role: "status" }, this.#usageError) : null,
-				this.#companyOnly ? h("p", { class: "muted", role: "status" }, this.#companyOnly) : null,
+				this.#outcome ? h("p", { class: "muted", role: "status" }, this.#outcome) : null,
 				this.#error
 					? h(
 							"p",

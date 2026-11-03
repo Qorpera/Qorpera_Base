@@ -1562,16 +1562,11 @@ describe("account model logins", () => {
 		expect(view.el.textContent).toContain("member@example.com");
 	});
 
-	it("says a ChatGPT subscription added in this company is used in all the member's companies, only when it is", async () => {
+	it("keeps the company page as it was: no account-wide note, and Add account with its picker", async () => {
 		await setupAccount();
-		const note = () => view.el.querySelector(".connection-note")?.textContent;
-		expect(note()).toBe("A ChatGPT subscription you add here is used in all your companies.");
-		view.dispose();
-		// A company with a vault of its own keeps company logins.
-		await setupAccount(vi.fn(async () => ({ enabled: false, logins: [account] })));
-		expect(note()).toBeUndefined();
-		// Inside a company the Add account picker stays as it was.
+		expect(view.el.querySelector(".connection-note")).toBeNull();
 		expect(view.el.querySelector(".connection-add")?.textContent).toBe("Add account");
+		expect(view.el.querySelector(".connection-provider-picker")).not.toBeNull();
 	});
 
 	it("shows the account login's card in Danish", async () => {
