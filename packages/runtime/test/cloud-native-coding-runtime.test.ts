@@ -269,7 +269,7 @@ describe("the coding composition of a native turn", () => {
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",
 					"In the VM the selected repository and branch are writable: edit files, install, build, test and commit there through coding_run_command.",
-					"Never stop, ask or hand in because of that read-only notice; only an actual refused command is a blocker, and then name the command and its error.",
+					"Never stop, ask or hand in because of that read-only notice; only a command the VM actually refuses shows the repository is not writable, and then name that command and its error.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
 				await options.beginExecution(
