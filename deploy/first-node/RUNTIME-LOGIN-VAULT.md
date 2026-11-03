@@ -679,10 +679,12 @@ member's Codex login is kept once by the shared vault and used in every company 
   member's compute identity (made when missing), a pointer capsule `model-login/<login id>`, a connection whose version 1
   works while the member is away (the web client's own default for Codex), and a member sponsor binding. The link row
   (`qorpera_model_login_links`) ties the capsule to the login and goes with the company's rows. Links are made when an
-  account sign-in completes, when a member joins a company (trigger on `qorpera_profile_members`) and when the vault
-  registers a company (trigger on `qorpera_cloud_secret_broker_authorities`); a failed link never blocks those. A
-  company where a capsule for the login exists already, in any state, is left alone: Disconnect there means "stop using
-  it here" and sticks until the member signs in again. So the founding table, conversations, routines and every run
+  account sign-in completes, when a member joins a company (trigger on `qorpera_profile_members`) and when a company
+  starts taking sign-ins in the vault (trigger on `qorpera_model_login_sign_in_companies`, the registration's last
+  step), and only in a company that takes sign-ins in the vault; a failed link never blocks those. A company where a
+  capsule for the login exists already, in any state, is left alone: Disconnect there means "stop using it here" and
+  sticks until the member signs in again. Linking key-share locks the login row, so Sign out everywhere (which locks it
+  for update) never misses a link made at the same moment. So the founding table, conversations, routines and every run
   check stay company-local and unchanged.
 - **Sign-in.** A Codex sign-in a member begins for their own identity in a company the vault serves is an account
   sign-in (`qorpera_native_provider_login_sessions.model_login_scope`, decided when it begins). The v2 read adds
@@ -702,12 +704,13 @@ member's Codex login is kept once by the shared vault and used in every company 
   neither save nor release one. The vault's one account pass per upkeep cycle (`qorpera_take_idle_account_model_login_renewal`,
   then the accounts and the switch-off) renews only a login still used by some company.
 - **Usage.** A usage-limit signal on any company's link connection blocks new work on every link of the same login
-  (`qorpera_native_account_usage_limit_reset`), and the freshest usage read counts for all
-  (`qorpera_native_account_remaining`); both keep their old answers for a connection that is no link (the old bodies
+  (`qorpera_native_account_usage_limit_reset`), and the tightest fresh reading (5 minutes) of any of its companies
+  counts for all (`qorpera_native_account_remaining`); both keep their old answers for a connection that is no link (the old bodies
   are kept as `..._company`). The account refresh reads an account login's usage through its link.
 - **Switch-off.** `qorpera_switch_off_replaced_by_account_logins` moves a member's pins from their older logins of the
   same ChatGPT account in each linked company (a node login, a company vault login, an older account login) to the link
-  and then switches the old one off as Disconnect does, in companies that take sign-ins in the vault.
+  and then switches the old one off as Disconnect does, in companies that take sign-ins in the vault, and only while
+  account logins are switched on.
 - **Sign out everywhere.** `qorpera_sign_out_account_model_login` (the member only) revokes every company's link as
   Disconnect does and ends the login. Settings shows a linked card as "Used in all your companies" with "Stop using
   here" and "Sign out everywhere".
@@ -721,7 +724,7 @@ member's Codex login is kept once by the shared vault and used in every company 
   No runtime bundle, guest image, host or web route change is needed for runs; the web client's Settings change rides
   the next web deploy. 3. The switch, once both vault copies run this build:
   `update public.qorpera_account_model_login_settings set enabled = true;` (database owner). Off again: the same with
-  `false` (account logins are then neither handed out nor linked; renewals go on).
+  `false` (account logins are then neither handed out, linked nor used to switch off older logins; renewals go on).
 
 ## Failure cases
 

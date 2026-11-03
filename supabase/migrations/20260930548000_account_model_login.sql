@@ -17,10 +17,11 @@
 --   qorpera_complete_account_model_login_sign_in, which links it into every company of the member that the same vault
 --   serves. A company completion of an account sign-in is refused, and the v2 read names the scope, so a vault build
 --   without this change refuses such a sign-in instead of sealing it as a company login.
--- * Links are made when a sign-in completes, when a member joins a company, and when the shared vault registers a
---   company. A company whose link capsule the member disconnected keeps it disconnected ("stop using it here"): a
---   capsule for that login is never made there again. Codex logins work while the member is away by default
---   (founder decision 2026-09-20), as the web client's own default consent does today.
+-- * Links are made when a sign-in completes, when a member joins a company, and when a company starts taking sign-ins
+--   in the shared vault (the vault registers it), and only in a company that takes sign-ins in the vault. A company
+--   whose link capsule the member disconnected keeps it disconnected ("stop using it here"): a capsule for that login is
+--   never made there again. Codex logins work while the member is away by default (founder decision 2026-09-20), as
+--   the web client's own default consent does today.
 -- * Runs: qorpera_issue_model_login resolves a run's capsule through its link when no company login holds it. The
 --   link, the login, the run's identity, capsule and connection, and the run's payer must all be the same member, the
 --   run's company must be the link's and the broker's, and that company must be served by the login's shared vault.
@@ -28,7 +29,7 @@
 --   refresh chain (OpenAI rotates refresh tokens). Account commits, releases and the idle pass are the shared vault's
 --   own calls (its principal), never a company broker's.
 -- * Usage: a usage-limit signal on any company's link connection blocks new work on every link of the same login, and
---   the freshest usage read in any company counts for all.
+--   the tightest fresh usage reading (5 minutes) of any of its companies counts for all.
 -- * Switch-off: the vault's pass retires the member's older logins of the same ChatGPT account in each company the
 --   account login is linked into (node logins, company vault logins, an older account login) after moving their pins.
 -- * Sign out everywhere: the member ends the account login; every company's link is revoked as Disconnect does.
@@ -156,7 +157,8 @@ create trigger qorpera_model_login_session_scope
 	before insert or update on public.qorpera_native_provider_login_sessions
 	for each row execute function public.qorpera_model_login_session_scope();
 
--- An account sign-in never completes as a company login (a vault build without this change, or a node).
+-- An account sign-in never completes as a company vault login (a vault build without this change). A node completion
+-- makes no vault login: a sign-in whose company went back to node sign-ins meanwhile ends as a node login, as on master.
 create function public.qorpera_model_login_company_sign_in_guard()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
@@ -179,10 +181,13 @@ create trigger qorpera_model_login_company_sign_in_guard
 
 -- Makes the company rows that point at the member's account logins of the company's shared vault: the member's
 -- compute identity (when they have none yet), the pointer capsule, the link, the connection and its consented version,
--- and a member sponsor binding. A company where a capsule for the login exists already, in any state, is left as it is
--- (linked already, or the member stopped using the login there). A retired identity (the member left once) is not
--- revived. p_client_connection_id names the connection (the sign-in's own, so the web sees its sign-in finish);
--- p_login_id limits the pass to one login. Returns how many links it made. Internal: no API role may call it.
+-- and a member sponsor binding. Only in a company that takes sign-ins in the vault (an operator who switched it back to
+-- node sign-ins gets no new links there). A company where a capsule for the login exists already, in any state, is
+-- left as it is (linked already, or the member stopped using the login there). A retired identity (the member left
+-- once) is not revived. Each login row is key-share locked while it is linked, so Sign out everywhere (which locks it
+-- for update) either waits and then revokes the new link, or comes first and the login is no longer active here.
+-- p_client_connection_id names the connection (the sign-in's own, so the web sees its sign-in finish); p_login_id
+-- limits the pass to one login. Returns how many links it made. Internal: no API role may call it.
 create function public.qorpera_link_member_model_logins(
 	p_profile_id uuid,
 	p_user_id uuid,
@@ -205,8 +210,9 @@ begin
 		return 0;
 	end if;
 	v_principal := public.qorpera_company_account_vault(p_profile_id);
-	if v_principal is null or not exists (select 1 from public.qorpera_profile_members as member
-		where member.profile_id = p_profile_id and member.user_id = p_user_id) then
+	if v_principal is null or public.qorpera_model_login_sign_in_url(p_profile_id) is null
+		or not exists (select 1 from public.qorpera_profile_members as member
+			where member.profile_id = p_profile_id and member.user_id = p_user_id) then
 		return 0;
 	end if;
 	select policy.* into v_policy from public.qorpera_provider_execution_policies as policy
@@ -224,6 +230,7 @@ begin
 				where capsule.profile_id = p_profile_id
 					and capsule.encrypted_capsule_reference = 'model-login/' || login.id::text)
 		order by login.created_at, login.id
+		for key share of login
 	loop
 		select identity.* into v_identity from public.qorpera_member_compute_identities as identity
 		where identity.profile_id = p_profile_id and identity.ownership_kind = 'member'
@@ -310,6 +317,7 @@ begin
 	for v_company in
 		select member.profile_id from public.qorpera_profile_members as member
 		where member.user_id = p_user_id and public.qorpera_company_account_vault(member.profile_id) is not null
+			and public.qorpera_model_login_sign_in_url(member.profile_id) is not null
 		order by member.profile_id
 	loop
 		begin
@@ -345,15 +353,17 @@ create trigger qorpera_profile_members_link_model_logins
 	after insert on public.qorpera_profile_members
 	for each row execute function public.qorpera_link_model_logins_on_member();
 
--- A company the shared vault registers (created a moment ago, its founders already members) gets its members' account
--- logins; a failed link never blocks the registration.
+-- A company that starts taking sign-ins in the vault (the shared vault registers a company created a moment ago, its
+-- founders already members, and switches it to vault sign-in last; or an operator switches one back) gets its members'
+-- account logins; a failed link never blocks the switch.
 create function public.qorpera_link_model_logins_on_registration()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_member uuid;
 begin
-	if new.principal_id is not null and new.status = 'active' and public.qorpera_account_model_logins_enabled() then
+	if public.qorpera_account_model_logins_enabled()
+		and public.qorpera_company_account_vault(new.profile_id) is not null then
 		for v_member in
 			select member.user_id from public.qorpera_profile_members as member where member.profile_id = new.profile_id
 			order by member.user_id
@@ -370,8 +380,8 @@ end
 $$;
 revoke all on function public.qorpera_link_model_logins_on_registration()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-create trigger qorpera_cloud_secret_broker_authorities_link_model_logins
-	after insert on public.qorpera_cloud_secret_broker_authorities
+create trigger qorpera_model_login_sign_in_companies_link_model_logins
+	after insert on public.qorpera_model_login_sign_in_companies
 	for each row execute function public.qorpera_link_model_logins_on_registration();
 
 -- 4. Sign-in ------------------------------------------------------------------------------------------------------------
@@ -1143,7 +1153,8 @@ revoke all on function public.qorpera_switch_off_login_pair(uuid, uuid, uuid, uu
 -- account login is linked into): in each company that takes sign-ins in the vault, the member's older active Codex
 -- connection whose current login is of the same ChatGPT account (a node login whose recorded account matches, a
 -- company vault login, or another account login of the member) has its pins moved to the link connection and is then
--- switched off as Disconnect does. At most four old connections per pass.
+-- switched off as Disconnect does. At most four old connections per pass. Only while account logins are on: switched
+-- off, a link pays for nothing, so no member's working login is moved onto one.
 create function public.qorpera_switch_off_replaced_by_account_logins(
 	p_principal_id uuid,
 	p_capability_sha256 text
@@ -1175,7 +1186,8 @@ begin
 			where version.connection_id = old_connection.id order by version.version desc limit 1
 		) as old_version on true
 		join public.qorpera_native_credential_capsules as old_capsule on old_capsule.id = old_version.credential_capsule_id
-		where login.principal_id = v_principal.id and login.owner_user_id is not null and login.status = 'active'
+		where public.qorpera_account_model_logins_enabled()
+			and login.principal_id = v_principal.id and login.owner_user_id is not null and login.status = 'active'
 			and login.account_identity is not null
 			and public.qorpera_company_account_vault(link.profile_id) = v_principal.id
 			and exists (select 1 from public.qorpera_model_login_sign_in_companies as company
@@ -1315,7 +1327,8 @@ revoke all on function public.qorpera_account_login_sibling_connections(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- The usage limit and the room left are the login's, not one company's: a usage-limit signal on any company's link
--- connection of the same account login counts for all of them, and so does the freshest usage read. The company
+-- connection of the same account login counts for all of them, and the room left is the tightest of their fresh
+-- readings (an unknown or stale reading counts for nothing). The company
 -- bodies (20260920016000 and 20260919005000) are kept as they are under new names; for a connection that is no link
 -- the answers are theirs.
 alter function public.qorpera_native_account_usage_limit_reset(uuid)

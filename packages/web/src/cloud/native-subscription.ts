@@ -897,25 +897,12 @@ export function createWebNativeSubscription(
 			);
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
-		listAccountLogins: async (signal) => {
-			signal?.throwIfAborted();
-			let value: unknown;
-			try {
-				value = await cloud.rpc("qorpera_list_account_model_logins", { p_profile_id: profileId });
-			} catch (error) {
-				// A deployment without account logins has no such function: there are none.
-				if (error instanceof CloudRpcError && error.missing) return { enabled: false, logins: [] };
-				throw error;
-			}
-			signal?.throwIfAborted();
-			current();
-			return parseAccountLogins(value);
-		},
+		// Account logins are the member's own: read and ended through the member's own calls, like the connections.
+		listAccountLogins: async (signal) =>
+			parseAccountLogins(await rpc("qorpera_list_account_model_logins", { p_profile_id: profileId }, signal)),
 		signOutEverywhere: async (loginId, signal) => {
 			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid account login.");
-			signal?.throwIfAborted();
-			current();
-			const value = (await cloud.rpc("qorpera_sign_out_account_model_login", { p_login_id: loginId })) as {
+			const value = (await rpc("qorpera_sign_out_account_model_login", { p_login_id: loginId }, signal)) as {
 				loginId?: unknown;
 				status?: unknown;
 			} | null;

@@ -291,7 +291,8 @@ reset session authorization;
 rollback to savepoint al_other_payer;
 
 -- 5. Joining C links the owner's account login there: the identity, capsule, link, a connection that works while the
--- owner is away and a member binding, so C's founding table counts it. The vault registering D links D too.
+-- owner is away and a member binding, so C's founding table counts it. D, registered by the vault, is linked once it
+-- takes sign-ins in the vault.
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
 values ('68500000-0000-4000-8000-000000000012', '92400000-0000-4000-8000-000000000001', 'base-owner@example.test',
 	'Owner', 'owner');
@@ -299,6 +300,13 @@ insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, servi
 	principal_id)
 values ('68500000-0000-4000-8000-000000000043', '68500000-0000-4000-8000-000000000013', 'https://vault.qorpera.test',
 	'vault-root-1', repeat('f', 64), '68500000-0000-4000-8000-000000000050');
+-- Registered, D is not linked until it takes sign-ins in the vault (the registration's last step).
+do $$
+begin
+	if exists (select 1 from public.qorpera_model_login_links where profile_id = '68500000-0000-4000-8000-000000000013') then
+		raise exception 'D was linked before it takes sign-ins in the vault'; end if;
+end $$;
+insert into public.qorpera_model_login_sign_in_companies(profile_id) values ('68500000-0000-4000-8000-000000000013');
 do $$
 declare v_company uuid; v_account record;
 begin
@@ -338,6 +346,14 @@ begin
 	update public.qorpera_model_logins set account_identity = repeat('9', 64)
 	where id = '68500000-0000-4000-8000-000000000100';
 end $$;
+savepoint al_switch_off_off;
+update public.qorpera_account_model_login_settings set enabled = false;
+set local session authorization qorpera_secret_broker;
+select pg_temp.al_expect(pg_temp.al_try($q$select public.qorpera_switch_off_replaced_by_account_logins(
+	'68500000-0000-4000-8000-000000000050', repeat('a', 64))::text$q$), 'ok', 'the switch-off pass runs switched off');
+reset session authorization;
+select pg_temp.al_expect(pg_temp.al_last() ->> 'switchedOff', '0', 'switched off, no working login is moved onto a link');
+rollback to savepoint al_switch_off_off;
 set local session authorization qorpera_secret_broker;
 select pg_temp.al_expect(pg_temp.al_try($q$select public.qorpera_switch_off_replaced_by_account_logins(
 	'68500000-0000-4000-8000-000000000050', repeat('a', 64))::text$q$), 'ok', 'the switch-off pass runs');
