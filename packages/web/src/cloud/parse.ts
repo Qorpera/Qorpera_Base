@@ -485,6 +485,9 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		...(typeof run.requested_by_user_id === "string" && UUID_PATTERN.test(run.requested_by_user_id)
 			? { requestedByUserId: run.requested_by_user_id.toLowerCase() }
 			: {}),
+		...(typeof run.sponsor_binding_id === "string" && UUID_PATTERN.test(run.sponsor_binding_id)
+			? { sponsorBindingId: run.sponsor_binding_id.toLowerCase() }
+			: {}),
 		unsettledOperations: operations.filter(
 			(operation) => operation.status === "executing" || operation.status === "ambiguous",
 		).length,

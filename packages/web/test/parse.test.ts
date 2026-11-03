@@ -69,6 +69,21 @@ describe("parsers", () => {
 				operations: [],
 			}),
 		).not.toHaveProperty("requestedByUserId");
+		// The login (sponsor binding) that paid for the run, which the run's own row names; absent or odd reads as absent.
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", sponsor_binding_id: E.toUpperCase() },
+				job: { status: "failed" },
+				operations: [],
+			}).sponsorBindingId,
+		).toBe(E);
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", sponsor_binding_id: 7 },
+				job: { status: "failed" },
+				operations: [],
+			}),
+		).not.toHaveProperty("sponsorBindingId");
 	});
 
 	it("accepts only a resolution of the run and action that were asked for", () => {

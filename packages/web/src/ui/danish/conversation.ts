@@ -181,6 +181,18 @@ export const CONVERSATION: Record<string, string> = {
 	"The workspace is kept; a follow-up continues it.": "Arbejdsområdet er gemt; en opfølgning fortsætter sessionen.",
 	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.":
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen nulstilles ({time}).",
+	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
+		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"The run lost its connection while it was working. This is usually brief.":
+		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
+	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
+		"Kørslen kunne ikke hente det login, der betaler for den. Tjek loginnet under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.":
+		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Det medlem, hvis login betaler for den, kan tjekke loginnet under Indstillinger → AI-abonnementer.",
+	"The run could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions.":
+		"Kørslen kunne ikke hente det login, der betaler for den. Det medlem, der ejer loginnet, kan tjekke det under Indstillinger → AI-abonnementer.",
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",

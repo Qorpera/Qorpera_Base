@@ -250,6 +250,16 @@ export const AGENTS: Record<string, string> = {
 		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
+	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.":
+		"Sessionen mistede forbindelsen, mens den arbejdede. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Sessionen kunne ikke hente det login, der betaler for den. Tjek loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"ChatGPT refused or could not answer the session's request. The member whose login pays for it can check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Det medlem, hvis login betaler for den, kan tjekke loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Sessionen kunne ikke hente det login, der betaler for den. Det medlem, der ejer loginnet, kan tjekke det under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.":
 		"Modelkontoen skal forbindes igen. Arbejdsområdet er gemt; en opfølgning fortsætter den, når kontoen er forbundet.",
 	"No computer could be started for the session. The workspace is kept; a follow-up tries again.":

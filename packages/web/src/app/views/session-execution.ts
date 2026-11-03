@@ -7,6 +7,7 @@ import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import type { RunPayer } from "../../ui/run-failure.ts";
 import type { CompanyController } from "../company.ts";
 
 /** Unknown windows sort after measured allowance. Expired windows no longer
@@ -376,6 +377,26 @@ export class SessionExecutionView {
 		} catch {
 			// Sending stays off until the member has a usable account and authority.
 		}
+	}
+
+	/** What this member's own logins tell of the login behind a sponsor binding (a failed run's payer): whether it is
+	 * one of theirs, and when its usage limit resets, from the provider's own usage reading: the latest reset still
+	 * ahead of its full windows, as the agent reads it (qorpera_worker_usage_limit_text, 20260930549300). Nothing for
+	 * another member's login, which this member's list does not hold, or before the list is read; and never the cloud's
+	 * estimate for a limit with no known reset (usageLimitResetAt may be the signal's time plus six hours). */
+	payer(sponsorBindingId: string | undefined, now = Date.now()): RunPayer {
+		let own = false;
+		let resetsAt: string | undefined;
+		for (const connection of this.#observed?.connections ?? []) {
+			if (!sponsorBindingId || connection.sponsorBindingId !== sponsorBindingId) continue;
+			own = true;
+			for (const window of connection.providerAccountUsage?.windows ?? []) {
+				const at = Date.parse(window.resetAt ?? "");
+				if (window.usedPercent >= 100 && at > now && (resetsAt === undefined || at > Date.parse(resetsAt)))
+					resetsAt = window.resetAt;
+			}
+		}
+		return own ? { own, ...(resetsAt ? { resetsAt } : {}) } : {};
 	}
 
 	/** The member still has this login: listed, and not disconnected (revoked). */
