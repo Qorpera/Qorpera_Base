@@ -22,6 +22,15 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
 }
 
+/** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
+export interface SessionLogin {
+	readonly connectionId: string;
+	/** The account's email, else "Model account N". */
+	readonly account: string;
+	/** The login the conversation is bound to now. */
+	readonly current: boolean;
+}
+
 /** A conversation keeps its own account, also at its usage limit: sending waits until it
  * resets, and only the member moves a conversation to another account (founder decision
  * 2026-10-04, migration 20260930059000). New conversations choose the member's account with
@@ -155,12 +164,13 @@ export class SessionExecutionView {
 		this.#serverSelection = Boolean(
 			this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
 		);
-		this.#serverConnectionId = undefined;
+		// The cloud's last answer stands until this read lands, so the composer's Login page keeps its
+		// tick through a read; sending, the choice and the reasons wait for #busy to clear anyway.
+		let serverConnectionId: string | undefined;
 		const readConnections = async (): Promise<NativeExecutionConnections> => {
 			if (this.#serverSelection) {
-				const connectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
+				serverConnectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 				signal.throwIfAborted();
-				this.#serverConnectionId = connectionId;
 			}
 			return this.#native.listConnections(signal);
 		};
@@ -169,6 +179,7 @@ export class SessionExecutionView {
 			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
 		]);
 		if (signal.aborted) return;
+		this.#serverConnectionId = serverConnectionId;
 		if (connections.status === "fulfilled") this.#observed = connections.value;
 		else {
 			this.#observed = undefined;
@@ -359,6 +370,67 @@ export class SessionExecutionView {
 		return kept !== undefined && !this.#keeps(kept.connectionId);
 	}
 
+	/** The member's own logins that can pay for this conversation now, in the order and with the names
+	 * "Choose a login to continue" gives them, the conversation's own marked: what the composer's Login
+	 * page lists. None where the member's pick would not reach the cloud: where the cloud chooses, also
+	 * after a read made while a message was on its way, which has no answer from the cloud to move. */
+	get logins(): readonly SessionLogin[] {
+		const observed = this.#observed;
+		if (
+			!observed ||
+			(this.#native.selectSessionAccount && (!this.#serverSelection || !this.#native.chooseSessionAccount))
+		)
+			return [];
+		const available = this.#available();
+		const own = this.#own();
+		return available.map((connectionId) => ({
+			connectionId,
+			account: this.#account(observed, connectionId, available),
+			current: connectionId === own,
+		}));
+	}
+
+	/** No login is picked while a message is on its way, an uncertain retry waits (it keeps its original
+	 * login), a pick or a read is outstanding, or the member can't write here. */
+	get locked(): boolean {
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		return this.#busy || conversation.sending || Boolean(conversation.retrySend) || !this.#canWrite();
+	}
+
+	/** Why the last read or pick failed, as the line above the composer says it. */
+	get error(): string | undefined {
+		return this.#error;
+	}
+
+	/** The member's pick from the composer's Login page: one of the logins listed there, never while locked. */
+	async pick(connectionId: string): Promise<void> {
+		if (this.locked || !this.logins.some((login) => login.connectionId === connectionId)) return;
+		await this.#pick(connectionId);
+	}
+
+	/** The conversation's own login: the cloud's choice where the cloud chooses, else the one it keeps. */
+	#own(): string | undefined {
+		return this.#serverSelection
+			? this.#serverConnectionId
+			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+	}
+
+	/** A login's name: its account's email, else its number among the logins that can pay. */
+	#account(observed: NativeExecutionConnections, connectionId: string, available: readonly string[]): string {
+		return (
+			observed.connections.find((candidate) => candidate.connectionId === connectionId)?.providerAccountEmail ??
+			t("Model account {number}", { number: available.indexOf(connectionId) + 1 })
+		);
+	}
+
+	#canWrite(): boolean {
+		const company = this.#company.store.get();
+		return (
+			company.team?.capabilities.write === true &&
+			company.sessions.find((s) => s.sessionId === this.#sessionId)?.status === "open"
+		);
+	}
+
 	/** The member's own pick of a login for this conversation: their permission to pay with it. */
 	async #pick(connectionId: string): Promise<void> {
 		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return;
@@ -395,12 +467,9 @@ export class SessionExecutionView {
 
 	#render(): void {
 		const conversation = this.#company.conversation(this.#sessionId).get();
-		const company = this.#company.store.get();
-		const canWrite =
-			company.team?.capabilities.write === true &&
-			company.sessions.find((s) => s.sessionId === this.#sessionId)?.status === "open";
+		const canWrite = this.#canWrite();
 		const selected = conversation.retrySend?.executionSponsor ?? conversation.executionSponsor;
-		const locked = this.#busy || conversation.sending || Boolean(conversation.retrySend) || !canWrite;
+		const locked = this.locked;
 		const key = JSON.stringify([
 			this.#room,
 			this.#observed,
@@ -470,23 +539,20 @@ export class SessionExecutionView {
 			"div",
 			{ class: "session-execution-choice" },
 			h("p", { class: "muted" }, t("Choose a login to continue.")),
-			...available.map((connectionId, index) => {
-				const connection = observed.connections.find((candidate) => candidate.connectionId === connectionId);
-				const account = connection?.providerAccountEmail ?? t("Model account {number}", { number: index + 1 });
-				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
-					small: true,
-					disabled,
-				});
-			}),
+			...available.map((connectionId) =>
+				button(
+					t("Use {account}", { account: this.#account(observed, connectionId, available) }),
+					() => void this.#pick(connectionId),
+					{ small: true, disabled },
+				),
+			),
 		);
 	}
 
 	/** The conversation's own login can't pay now (its usage limit, or disabled): the member may move the
 	 * conversation to another of their logins that can. Only their click moves it; nothing moves on its own. */
 	#otherLogins(observed: NativeExecutionConnections, disabled: boolean): HTMLElement | null {
-		const own = this.#serverSelection
-			? this.#serverConnectionId
-			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		const own = this.#own();
 		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
 		if (!own || !observed.connections.some((connection) => connection.connectionId === own)) return null;
 		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
@@ -497,17 +563,14 @@ export class SessionExecutionView {
 			"div",
 			{ class: "session-execution-choice" },
 			h("p", { class: "muted" }, t("Or continue with another of your logins.")),
-			...others.map((connectionId) => {
-				// Numbered as "Choose a login to continue" numbers them.
-				const account =
-					observed.connections.find((candidate) => candidate.connectionId === connectionId)
-						?.providerAccountEmail ??
-					t("Model account {number}", { number: available.indexOf(connectionId) + 1 });
-				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
-					small: true,
-					disabled,
-				});
-			}),
+			// Numbered as "Choose a login to continue" numbers them.
+			...others.map((connectionId) =>
+				button(
+					t("Use {account}", { account: this.#account(observed, connectionId, available) }),
+					() => void this.#pick(connectionId),
+					{ small: true, disabled },
+				),
+			),
 		);
 	}
 
@@ -515,9 +578,7 @@ export class SessionExecutionView {
 	 * conversation waits for it and never moves to another account on its own. */
 	#unavailableReason(observed: NativeExecutionConnections): string {
 		const now = Date.now();
-		const own = this.#serverSelection
-			? this.#serverConnectionId
-			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
 		if (own && atLimit.some((connection) => connection.connectionId === own))
 			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
