@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -622,6 +622,33 @@ async function recordRefusal(root: string, commandId: string, code: string): Pro
  * admitted log budget and one overflow marker, and flushes each bounded write.
  * A refusal before the command starts exits CODING_GUEST_REFUSED_EXIT_CODE with
  * its fixed code in the log, so the read receipt shows it as failed. */
+/** The identity a commit takes when nobody set one: without it `git commit` fails ("Author identity unknown"), as
+ * Codex's first commit in a coding session did (3 November 2026). Written once into the home's own git config
+ * ($XDG_CONFIG_HOME/git/config), which ~/.gitconfig and the repository's config both override, so an identity an agent
+ * or member set always wins. Best effort: a home it cannot write leaves git as it was. */
+export const CODING_GIT_IDENTITY = Object.freeze({ name: "Qorpera coding agent", email: "coding-agent@noreply.qorpera.com" });
+
+export async function ensureCodingGitIdentity(homePath: string): Promise<void> {
+	const files = [join(homePath, ".gitconfig"), join(homePath, ".config", "git", "config")];
+	try {
+		for (const file of files) {
+			const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") return "";
+				throw error;
+			});
+			if (/^\s*email\s*=/im.test(text)) return;
+		}
+		await mkdir(dirname(files[1]), { recursive: true, mode: 0o700 });
+		await appendFile(
+			files[1],
+			`[user]\n\tname = ${CODING_GIT_IDENTITY.name}\n\temail = ${CODING_GIT_IDENTITY.email}\n`,
+			{ mode: 0o600 },
+		);
+	} catch {
+		// git then says what it needs, as before.
+	}
+}
+
 export async function executeCodingGuestCommand(
 	workerId: string,
 	commandId: string,
@@ -638,6 +665,7 @@ export async function executeCodingGuestCommand(
 	}
 	const { guest, request, handle } = prepared;
 	try {
+		await ensureCodingGitIdentity(guest.homePath);
 		const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", request.command], {
 			cwd: guest.workspacePath,
 			env: {
