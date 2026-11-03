@@ -725,6 +725,9 @@ member's Codex login is kept once by the shared vault and used in every company 
   the next web deploy. 3. The switch, once both vault copies run this build:
   `update public.qorpera_account_model_login_settings set enabled = true;` (database owner). Off again: the same with
   `false` (account logins are then neither handed out, linked nor used to switch off older logins; renewals go on).
+  Older logins the pass already switched off while it was on stay off: their members' pins sit on links that cannot
+  pay until the switch is back on or they sign in again in that company (a company login then, since the switch is
+  off).
 
 ## Failure cases
 

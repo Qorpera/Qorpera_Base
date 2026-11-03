@@ -292,7 +292,22 @@ rollback to savepoint al_other_payer;
 
 -- 5. Joining C links the owner's account login there: the identity, capsule, link, a connection that works while the
 -- owner is away and a member binding, so C's founding table counts it. D, registered by the vault, is linked once it
--- takes sign-ins in the vault.
+-- takes sign-ins in the vault. First, switched back to node sign-ins (in a savepoint), C gets no link from the join
+-- or a link call.
+savepoint al_node_sign_in;
+delete from public.qorpera_model_login_sign_in_companies where profile_id = '68500000-0000-4000-8000-000000000012';
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values ('68500000-0000-4000-8000-000000000012', '92400000-0000-4000-8000-000000000001', 'base-owner@example.test',
+	'Owner', 'owner');
+do $$
+begin
+	if public.qorpera_link_member_model_logins('68500000-0000-4000-8000-000000000012',
+			'92400000-0000-4000-8000-000000000001') <> 0
+		or public.qorpera_link_member_model_logins_everywhere('92400000-0000-4000-8000-000000000001') <> 1
+		or exists (select 1 from public.qorpera_model_login_links where profile_id = '68500000-0000-4000-8000-000000000012') then
+		raise exception 'a company on node sign-ins was linked'; end if;
+end $$;
+rollback to savepoint al_node_sign_in;
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
 values ('68500000-0000-4000-8000-000000000012', '92400000-0000-4000-8000-000000000001', 'base-owner@example.test',
 	'Owner', 'owner');
@@ -303,7 +318,9 @@ values ('68500000-0000-4000-8000-000000000043', '68500000-0000-4000-8000-0000000
 -- Registered, D is not linked until it takes sign-ins in the vault (the registration's last step).
 do $$
 begin
-	if exists (select 1 from public.qorpera_model_login_links where profile_id = '68500000-0000-4000-8000-000000000013') then
+	if public.qorpera_link_member_model_logins('68500000-0000-4000-8000-000000000013',
+			'92400000-0000-4000-8000-000000000001') <> 0
+		or exists (select 1 from public.qorpera_model_login_links where profile_id = '68500000-0000-4000-8000-000000000013') then
 		raise exception 'D was linked before it takes sign-ins in the vault'; end if;
 end $$;
 insert into public.qorpera_model_login_sign_in_companies(profile_id) values ('68500000-0000-4000-8000-000000000013');

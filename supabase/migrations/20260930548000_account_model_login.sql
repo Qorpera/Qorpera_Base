@@ -355,7 +355,9 @@ create trigger qorpera_profile_members_link_model_logins
 
 -- A company that starts taking sign-ins in the vault (the shared vault registers a company created a moment ago, its
 -- founders already members, and switches it to vault sign-in last; or an operator switches one back) gets its members'
--- account logins; a failed link never blocks the switch.
+-- account logins; a failed link never blocks the switch. A member whose link fails here (for example a lock wait behind
+-- their own Sign out everywhere at that moment) is linked at their next account sign-in, or by signing in in this
+-- company.
 create function public.qorpera_link_model_logins_on_registration()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
@@ -1683,6 +1685,8 @@ declare
 	v_login public.qorpera_model_logins%rowtype;
 	v_connections uuid[];
 begin
+	-- FOR UPDATE, not FOR NO KEY UPDATE: a concurrent link (qorpera_link_member_model_logins, FOR KEY SHARE) must wait
+	-- for this sign-out and then see the login revoked, or this sign-out must wait for it and revoke its new link.
 	select login.* into v_login from public.qorpera_model_logins as login
 	where login.id = p_login_id and login.owner_user_id = v_user
 	for update;
