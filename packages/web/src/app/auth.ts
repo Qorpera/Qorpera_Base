@@ -1,5 +1,5 @@
 import type { Session, User } from "@supabase/supabase-js";
-import type { Cloud, SessionRejection } from "../cloud/client.ts";
+import { type Cloud, forgetStoredSession, type SessionRejection } from "../cloud/client.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
@@ -117,10 +117,15 @@ export class AuthController {
 
 	async #signOutRejected(session: Session): Promise<void> {
 		try {
+			// A refresh may have replaced the refused token while this waited for Auth's lock: that session stays.
+			const { data } = await this.#cloud.supabase.auth.getSession();
+			if (data.session && data.session.access_token !== session.access_token) return;
 			// Local only: the cloud already refuses this session, so there is nothing to revoke there.
-			await this.#cloud.supabase.auth.signOut({ scope: "local" });
+			const { error } = await this.#cloud.supabase.auth.signOut({ scope: "local" });
+			// Auth keeps a session it could not load (a refresh that failed on the network): forget it here.
+			if (error) forgetStoredSession();
 		} catch {
-			// The session is cleared from this page below either way.
+			forgetStoredSession();
 		} finally {
 			this.#signingOut = false;
 		}

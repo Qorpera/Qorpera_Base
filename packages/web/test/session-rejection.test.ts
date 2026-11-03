@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
+
+import { AuthError } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { type Cloud, CloudRpcError, createCloud, sessionRejection } from "../src/cloud/client.ts";
+import { startComputerCheckout } from "../src/cloud/computer-billing.ts";
 import { fixture, settle, userA } from "./fixtures.ts";
 
 /* After the database move (new Auth signing keys) a browser kept its old session: the
@@ -181,6 +184,16 @@ describe("a refused session signs the member out", () => {
 		expect(requests.filter((request) => request.startsWith("POST /auth/v1/logout"))).toHaveLength(1);
 	});
 
+	it("signs out when a direct function call outside the SDK is refused", async () => {
+		const { cloud, auth, requests } = await start(async (url) =>
+			url.pathname.startsWith("/functions/v1/") ? refusal(401, { msg: "Invalid JWT" }) : Response.json([]),
+		);
+		await expect(startComputerCheckout(cloud, "plan-basic")).rejects.toThrow();
+		await vi.waitFor(() => expect(auth.store.get().session).toBeNull());
+		expect(auth.store.get().message).toBe("You were signed out. Sign in again.");
+		expect(requests.filter((request) => request.startsWith("POST /auth/v1/logout"))).toHaveLength(1);
+	});
+
 	it("signs out when Auth refuses the session's token", async () => {
 		const { cloud, auth } = await start(async (url) =>
 			url.pathname === "/auth/v1/user"
@@ -221,6 +234,7 @@ describe("a refused session signs the member out", () => {
 describe("only the token this browser holds now counts", () => {
 	afterEach(() => {
 		for (const controller of controllers.splice(0)) controller.dispose();
+		localStorage.clear();
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 	});
@@ -255,5 +269,56 @@ describe("only the token this browser holds now counts", () => {
 		expect(signOut).toHaveBeenCalledTimes(1);
 		expect(signOut).toHaveBeenCalledWith({ scope: "local" });
 		expect(auth.store.get()).toMatchObject({ session: null, message: "You were signed out. Sign in again." });
+	});
+
+	async function controller(signOut: ReturnType<typeof vi.fn>) {
+		const f = fixture();
+		let reject!: (rejection: { accessToken?: string; refreshToken?: string }) => void;
+		Object.assign(f.cloud, {
+			onSessionRejected: (listener: typeof reject) => {
+				reject = listener;
+				return () => {};
+			},
+		});
+		Object.assign(f.cloud.supabase.auth, { signOut });
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ external: {} })),
+		);
+		const auth = new AuthController(f.cloud);
+		controllers.push(auth);
+		await auth.start();
+		return { f, auth, reject: (rejection: { accessToken?: string; refreshToken?: string }) => reject(rejection) };
+	}
+
+	it("forgets the stored session when Auth's sign-out could not remove it", async () => {
+		localStorage.setItem(storageKey, JSON.stringify({ access_token: "fixture-token" }));
+		const signOut = vi.fn(async () => ({ error: new AuthError("Session could not be loaded") }));
+		const { auth, reject } = await controller(signOut);
+		reject({ accessToken: "fixture-token" });
+		await settle();
+		expect(signOut).toHaveBeenCalledTimes(1);
+		expect(localStorage.getItem(storageKey)).toBeNull();
+		expect(auth.store.get()).toMatchObject({ session: null, message: "You were signed out. Sign in again." });
+	});
+
+	it("keeps a session a refresh put in place while the sign-out waited", async () => {
+		const signOut = vi.fn(async () => ({ error: null }));
+		const { f, auth, reject } = await controller(signOut);
+		const refreshed = { ...auth.store.get().session!, access_token: "refreshed-token" };
+		vi.mocked(f.cloud.supabase.auth.getSession).mockResolvedValue({ data: { session: refreshed }, error: null });
+		reject({ accessToken: "fixture-token" });
+		await settle();
+		expect(signOut).not.toHaveBeenCalled();
+		expect(auth.store.get().session?.access_token).toBe("fixture-token");
+		expect(auth.store.get().message).toBeUndefined();
+		// A later refusal of the token it holds then signs out as usual.
+		vi.mocked(f.cloud.supabase.auth.getSession).mockResolvedValue({
+			data: { session: auth.store.get().session! },
+			error: null,
+		});
+		reject({ accessToken: "fixture-token" });
+		await settle();
+		expect(signOut).toHaveBeenCalledTimes(1);
 	});
 });

@@ -52,6 +52,9 @@ export interface Cloud {
 	rpc(name: string, args?: Record<string, unknown>): Promise<unknown>;
 	/** Tells the listener each time the cloud refuses the session token it was sent. */
 	onSessionRejected?(listener: (rejection: SessionRejection) => void): () => void;
+	/** The web's own requests outside the SDK (direct PostgREST and function calls) report their answer here, with the
+	 * session token they sent, so a refused session is noticed there too. */
+	noticeResponse?(url: string, accessToken: string, response: Response): void;
 }
 
 /** The words PostgREST, Auth and the functions gateway use when the token itself fails:
@@ -127,21 +130,35 @@ export async function sessionRejection(
 	return refusesToken(text.slice(0, 4096)) ? { accessToken } : undefined;
 }
 
+/** Where this browser keeps the member's session (Auth's storage key). */
+export const AUTH_STORAGE_KEY = "qorpera-web-auth/v1";
+
+/** Removes the stored session when Auth's own sign-out could not (it keeps a session it failed to load). */
+export function forgetStoredSession(): void {
+	try {
+		globalThis.localStorage?.removeItem(AUTH_STORAGE_KEY);
+	} catch {
+		// Storage that cannot be written holds nothing to forget.
+	}
+}
+
 export function createCloud(config: CloudConfig): Cloud {
 	const rejectionListeners = new Set<(rejection: SessionRejection) => void>();
 	// Every SDK request (Auth, PostgREST, functions, storage) passes here, so a session the
 	// cloud no longer accepts is noticed wherever it is first refused. The global fetch is
 	// looked up per call, as the SDK does without a custom fetch.
+	const notice = (input: string | URL | Request, init: RequestInit | undefined, response: Response): void => {
+		if ((response.status !== 401 && response.status !== 403) || rejectionListeners.size === 0) return;
+		void sessionRejection(config.projectUrl, input, init, response.clone()).then(
+			(rejection) => {
+				if (rejection) for (const listener of [...rejectionListeners]) listener(rejection);
+			},
+			() => {},
+		);
+	};
 	const observedFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const response = await globalThis.fetch(input, init);
-		if ((response.status === 401 || response.status === 403) && rejectionListeners.size > 0) {
-			void sessionRejection(config.projectUrl, input, init, response.clone()).then(
-				(rejection) => {
-					if (rejection) for (const listener of [...rejectionListeners]) listener(rejection);
-				},
-				() => {},
-			);
-		}
+		notice(input, init, response);
 		return response;
 	};
 	const supabase = createClient(config.projectUrl, config.publishableKey, {
@@ -159,7 +176,7 @@ export function createCloud(config: CloudConfig): Cloud {
 			persistSession: true,
 			autoRefreshToken: true,
 			detectSessionInUrl: true,
-			storageKey: "qorpera-web-auth/v1",
+			storageKey: AUTH_STORAGE_KEY,
 		},
 		realtime: { params: { eventsPerSecond: 10 } },
 	});
@@ -176,6 +193,9 @@ export function createCloud(config: CloudConfig): Cloud {
 			return () => {
 				rejectionListeners.delete(listener);
 			};
+		},
+		noticeResponse(url, accessToken, response) {
+			notice(url, { headers: { authorization: `Bearer ${accessToken}` } }, response);
 		},
 	};
 }
