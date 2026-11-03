@@ -66,7 +66,7 @@ set local session_replication_role = origin;
 -- 1. A coding turn stopped at the login's usage limit --------------------------------------------------------------------
 do $$
 declare v_claim jsonb; v_begin jsonb; v_pass jsonb; v_turn jsonb; v_token uuid; v_week timestamptz; v_words text;
-	v_signal public.qorpera_provider_connection_usage_signals; v_written jsonb; v_event jsonb;
+	v_coding text; v_signal public.qorpera_provider_connection_usage_signals; v_written jsonb; v_event jsonb;
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 	v_bridge constant text := 'The coding turn did not finish: Native provider bridge request failed (422) '
 		|| '[code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]';
@@ -95,24 +95,29 @@ begin
 	perform pg_temp.base_assert(v_words ~ ' It resets on [0-9]{1,2} [A-Z][a-z]+ 20[0-9]{2} at [0-2][0-9]:[0-5][0-9] UTC\. ',
 		'the reset reads plainly: ' || v_words);
 	perform pg_temp.ul_fail(v_turn, 'Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]');
-	-- The executor completes the turn failed with the bridge's code; the agent reads the plain words instead.
+	-- The executor completes the turn failed with the bridge's code; the agent reads the plain words instead. A coding
+	-- session's words name its own card as the place to choose another login, and its reason is usage_limit
+	-- (20260930551000).
+	v_coding := replace(v_words, '(in the conversation''s Login menu)', '(on the coding session''s card in the conversation)');
+	perform pg_temp.base_assert(v_coding <> v_words, 'the coding words name the session''s card');
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_complete_coding_turn('92800000-0000-4000-8000-0000000000b1', v_token, 'failed', v_bridge);
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1'); s := pg_temp.c3_session(w.id);
 	perform pg_temp.base_assert(w.state = 'failed' and s.phase = 'failed' and w.result ->> 'outcome' = 'failed'
-		and w.result ->> 'summary' = v_words and w.result ->> 'runId' = v_turn ->> 'runId', 'the worker''s result: ' || w.result::text);
+		and w.result ->> 'summary' = v_coding and w.result ->> 'reason' = 'usage_limit'
+		and w.result ->> 'runId' = v_turn ->> 'runId', 'the worker''s result: ' || w.result::text);
 	perform pg_temp.base_assert(position('BUDGET_EXHAUSTED' in w.result::text) = 0 and position('bridge' in w.result::text) = 0,
 		'no provider code reaches the agent: ' || w.result::text);
 	perform pg_temp.base_assert((select e.body ->> 'summary' from public.qorpera_runtime_worker_events e
-		where e.worker_id = w.id and e.sequence = w.sequence and e.kind = 'reported') = v_words, 'the reported event');
+		where e.worker_id = w.id and e.sequence = w.sequence and e.kind = 'reported') = v_coding, 'the reported event');
 	select e.body into v_event from public.qorpera_coding_session_events e where e.worker_id = w.id and e.kind = 'failed'
 	order by e.id desc limit 1;
-	perform pg_temp.base_assert(v_event ->> 'summary' = v_words and (v_event ->> 'usageLimit')::boolean,
-		'the failed event: ' || coalesce(v_event::text, 'none'));
+	perform pg_temp.base_assert(v_event ->> 'summary' = v_coding and (v_event ->> 'usageLimit')::boolean
+		and v_event ->> 'code' = 'usage_limit', 'the failed event: ' || coalesce(v_event::text, 'none'));
 	-- results.md is written from the same words (C3d).
 	v_written := public.qorpera_claim_coding_results_file('92800000-0000-4000-8000-0000000000f1', 60);
 	perform pg_temp.base_assert(v_written ->> 'codingWorkerId' = w.id::text and v_written ->> 'outcome' = 'failed'
-		and v_written ->> 'summary' = v_words, 'the results claim: ' || coalesce(v_written::text, 'none'));
+		and v_written ->> 'summary' = v_coding, 'the results claim: ' || coalesce(v_written::text, 'none'));
 	perform set_config('qorpera_test.ul_occurrence', v_begin ->> 'occurrenceId', false);
 	perform set_config('qorpera_test.ul_week', v_week::text, false);
 end $$;

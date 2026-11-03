@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CodingSession,
 	type CodingSessionEvent,
+	type CodingSessionLogins,
 	type CodingSessionRead,
 	codingSessionGoing,
 	codingSessionTakesInput,
 	compareCodingSessions,
 	parseCodingSession,
+	parseCodingSessionLogins,
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "../src/cloud/coding-session.ts";
@@ -17,6 +19,7 @@ import {
 	CodingPill,
 	CodingSessionElement,
 	type CodingSessionNames,
+	codingLoginReason,
 	codingSessionActivity,
 	codingSessionLine,
 	codingSessionStandby,
@@ -326,6 +329,44 @@ describe("the kernel's shapes", () => {
 		expect(() => parseCodingSession({ ...wire, harness: "cursor" })).toThrow();
 	});
 
+	it("reads whether the session's login can pay, the last turn's reason and the owner's logins", () => {
+		// 20260930551000: the view names the login's state and the last turn's reason; an older cloud names neither.
+		expect(parseCodingSession(wire)).not.toHaveProperty("loginState");
+		expect(parseCodingSession(wire)).not.toHaveProperty("reason");
+		expect(parseCodingSession({ ...wire, loginState: "removed", reason: "login_removed" })).toMatchObject({
+			loginState: "removed",
+			reason: "login_removed",
+		});
+		expect(parseCodingSession({ ...wire, loginState: "gone", reason: null })).not.toHaveProperty("loginState");
+		const logins = parseCodingSessionLogins({
+			schema: "qorpera.coding-session-logins/v1",
+			workerId: WORKER,
+			current: { connectionId: id(31), state: "removed" },
+			logins: [
+				{ connectionId: id(32), email: "b@example.com", current: false },
+				{ connectionId: id(33), email: null, current: false },
+			],
+		});
+		expect(logins).toEqual({
+			current: { connectionId: id(31), state: "removed" },
+			logins: [
+				{ connectionId: id(32), email: "b@example.com", current: false },
+				{ connectionId: id(33), current: false },
+			],
+		});
+		expect(parseCodingSessionLogins({ schema: "qorpera.coding-session-logins/v1", current: {}, logins: [] })).toEqual(
+			{ current: {}, logins: [] },
+		);
+		expect(() => parseCodingSessionLogins({ schema: "qorpera.other/v1", current: {}, logins: [] })).toThrow();
+		expect(() =>
+			parseCodingSessionLogins({
+				schema: "qorpera.coding-session-logins/v1",
+				current: {},
+				logins: [{ connectionId: "nope" }],
+			}),
+		).toThrow();
+	});
+
 	it("reads where the session is between turns, and any number of turns", () => {
 		// A cloud that does not keep sessions standing by yet says nothing about it.
 		expect(parseCodingSession(wire)).toMatchObject({
@@ -389,6 +430,8 @@ describe("the element in the thread", () => {
 			askAgent?: (text: string) => void;
 			/** How many events one read returns at most, as the cloud's page does. */
 			page?: number;
+			/** The owner's logins as the cloud lists them; without, the api has no login calls. */
+			logins?: CodingSessionLogins;
 		} = {},
 	) {
 		const events = options.events ?? [];
@@ -403,16 +446,18 @@ describe("the element in the thread", () => {
 		const answer = vi.fn(async (_workerId: string, _text: string, _clientRequestId: string): Promise<void> => {});
 		const delegate = vi.fn(async (_workerId: string, _clientRequestId: string): Promise<void> => {});
 		const archive = vi.fn(async (_workerId: string, _clientRequestId: string): Promise<void> => {});
+		const logins = vi.fn(async (_workerId: string): Promise<CodingSessionLogins> => options.logins!);
+		const chooseLogin = vi.fn(async (_workerId: string, _connectionId: string): Promise<void> => {});
 		const names = options.viewer === "other" ? other : owner;
 		const element = new CodingSessionElement(session, {
 			names: () => names,
 			viewerOwns: () => options.viewer !== "other",
-			api: { read, answer, delegate, archive },
+			api: { read, answer, delegate, archive, ...(options.logins ? { logins, chooseLogin } : {}) },
 			signal: disposeAll.signal,
 			askAgent: options.askAgent,
 		});
 		document.body.append(element.el);
-		return { element, read, answer, delegate, archive, state };
+		return { element, read, answer, delegate, archive, logins, chooseLogin, state };
 	}
 	const settle = async () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -1039,6 +1084,113 @@ describe("the element in the thread", () => {
 			);
 			element.dispose?.();
 		}
+	});
+
+	it("says a turn whose login was removed, offers the owner's other logins and moves the session only on a click", async () => {
+		// 3 November 2026: the founder signed out the session's login and its next turn read only "did not finish".
+		const failed = event(
+			1,
+			"failed",
+			{
+				summary: "This coding session's login was removed (signed out), so its turn could not run.",
+				code: "login_removed",
+			},
+			"executor",
+		);
+		const logins: CodingSessionLogins = {
+			current: { connectionId: id(31), state: "removed" },
+			logins: [{ connectionId: id(32), email: "b@example.com", current: false }],
+		};
+		const removed = codingSession({
+			phase: "failed",
+			workerState: "failed",
+			loginState: "removed",
+			reason: "login_removed",
+		});
+		// Another member reads why and who can act, and is offered nothing.
+		const seen = mount(removed, { events: [failed], viewer: "other", logins });
+		await settle();
+		expect([...seen.element.el.querySelectorAll(".coding-note")].map((note) => note.textContent)).toEqual([
+			"This session's login was removed, so its turn could not run. Only Jonas can choose another login for it.",
+		]);
+		expect(seen.element.el.querySelector(".coding-logins")).toBeNull();
+		expect(seen.logins).not.toHaveBeenCalled();
+		seen.element.dispose?.();
+		// The owner is told what to do, and offered their other login.
+		const { element, chooseLogin, logins: listed, state, read } = mount(removed, { events: [failed], logins });
+		await settle();
+		expect([...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent)).toEqual([
+			"This session's login was removed, so its turn could not run. Choose another of your logins for it, then send a message to continue.",
+		]);
+		expect(listed).toHaveBeenCalledWith(WORKER);
+		expect(element.el.querySelector(".coding-logins p")?.textContent).toBe(
+			"Continue this session with another of your logins:",
+		);
+		expect(chooseLogin).not.toHaveBeenCalled();
+		// The click moves it; the session read again pays with it, and the offer goes.
+		state.session = { ...removed, loginState: "ready", updatedAt: "2026-09-22T10:05:00Z" };
+		state.events = [failed, event(2, "step", { loginChosen: true, text: "Moved to another login" }, "member")];
+		const reads = read.mock.calls.length;
+		button(element.el, "Use b@example.com").click();
+		await settle();
+		expect(chooseLogin).toHaveBeenCalledWith(WORKER, id(32));
+		expect(read.mock.calls.length).toBeGreaterThan(reads);
+		expect(element.el.querySelector(".coding-logins")).toBeNull();
+		expect([...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent)).toContain(
+			"You moved the session to another login",
+		);
+	});
+
+	it("offers the owner's other logins after a usage limit until the session moves, and says when none can pay", async () => {
+		const limited = codingSession({
+			phase: "failed",
+			workerState: "failed",
+			loginState: "ready",
+			reason: "usage_limit",
+		});
+		const failed = event(
+			1,
+			"failed",
+			{ summary: "The login paying for this work reached its usage limit.", usageLimit: true, code: "usage_limit" },
+			"executor",
+		);
+		const { element } = mount(limited, {
+			events: [failed],
+			logins: {
+				current: { connectionId: id(31), state: "ready" },
+				logins: [{ connectionId: id(31), current: true }],
+			},
+		});
+		await settle();
+		expect(element.el.querySelector(".coding-logins p")?.textContent).toBe(
+			"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.",
+		);
+		expect(element.el.querySelectorAll(".coding-logins button")).toHaveLength(0);
+		element.dispose?.();
+		// Moved since the limit: nothing is offered; a session that is working is offered nothing either.
+		for (const [session, events] of [
+			[limited, [failed, event(2, "step", { loginChosen: true }, "member")]],
+			[codingSession({ phase: "running", loginState: "removed" }), []],
+		] as const) {
+			const mounted = mount(session, { events: [...events], logins: { current: {}, logins: [] } });
+			await settle();
+			expect(mounted.element.el.querySelector(".coding-logins")).toBeNull();
+			expect(mounted.logins).not.toHaveBeenCalled();
+			mounted.element.dispose?.();
+		}
+		// The words for each login code; any other code is not a login's.
+		expect(codingLoginReason("login_disabled", owner)).toBe(
+			"This session's login was turned off by an owner or admin, so its turn could not run. Choose another of your logins for it, then send a message to continue.",
+		);
+		expect(codingLoginReason("login_needs_sign_in", other)).toBe(
+			"This session's login needs a new sign-in, so its turn could not run. Only Jonas can choose another login for it.",
+		);
+		expect(codingLoginReason("login_not_allowed_away", owner)).toMatch(/^This session's login no longer allows work/);
+		expect(codingLoginReason("login_unavailable", owner)).toMatch(
+			/^This session's login can't pay for work right now/,
+		);
+		expect(codingLoginReason("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED", owner)).toBeUndefined();
+		expect(codingLoginReason(undefined, owner)).toBeUndefined();
 	});
 
 	it("says a turn that ended without saving its work in plain words, never with the runner's text", async () => {

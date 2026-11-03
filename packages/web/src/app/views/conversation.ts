@@ -3254,6 +3254,9 @@ export class ConversationView {
 					company.delegateCodingSession(sessionId, workerId, clientRequestId),
 				archive: (workerId: string, clientRequestId: string) =>
 					company.archiveCodingSession(sessionId, workerId, clientRequestId),
+				logins: (workerId: string) => company.listCodingSessionLogins(workerId),
+				chooseLogin: (workerId: string, connectionId: string) =>
+					company.chooseCodingSessionLogin(sessionId, workerId, connectionId),
 			},
 			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
 			askAgent: this.#actions.sendMessage

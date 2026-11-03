@@ -229,6 +229,25 @@ export const AGENTS: Record<string, string> = {
 	"The machine stopped": "Maskinen stoppede",
 	"The machine restarted": "Maskinen genstartede",
 	"The machine got a new disk": "Maskinen fik en ny disk",
+	// A coding session's login (20260930551000): why a turn could not run, the move and the offer of other logins.
+	"This session's login was removed, so its turn could not run.":
+		"Sessionens login blev fjernet, så dens tur kunne ikke køre.",
+	"This session's login was turned off by an owner or admin, so its turn could not run.":
+		"Sessionens login blev slået fra af en ejer eller administrator, så dens tur kunne ikke køre.",
+	"This session's login needs a new sign-in, so its turn could not run.":
+		"Sessionens login skal logges ind igen, så dens tur kunne ikke køre.",
+	"This session's login no longer allows work while its member is away, so its turn could not run.":
+		"Sessionens login tillader ikke længere arbejde, mens medlemmet er væk, så dens tur kunne ikke køre.",
+	"This session's login can't pay for work right now, so its turn could not run.":
+		"Sessionens login kan ikke betale for arbejde lige nu, så dens tur kunne ikke køre.",
+	"Choose another of your logins for it, then send a message to continue.":
+		"Vælg et andet af dine logins til den, og send så en besked for at fortsætte.",
+	"Only {owner} can choose another login for it.": "Kun {owner} kan vælge et andet login til den.",
+	"You moved the session to another login": "Du flyttede sessionen til et andet login",
+	"{owner} moved the session to another login": "{owner} flyttede sessionen til et andet login",
+	"Continue this session with another of your logins:": "Fortsæt sessionen med et andet af dine logins:",
+	"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.":
+		"Ingen af dine andre logins kan betale for sessionen. Log ind med et andet under Indstillinger, AI-abonnementer.",
 	"1 command stopped": "1 kommando stoppet",
 	"{count} commands stopped": "{count} kommandoer stoppet",
 	"Coding session": "Kodesession",

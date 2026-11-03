@@ -1,7 +1,12 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import { type CodingSession, type CodingSessionRead, compareCodingSessions } from "../cloud/coding-session.ts";
+import {
+	type CodingSession,
+	type CodingSessionLogins,
+	type CodingSessionRead,
+	compareCodingSessions,
+} from "../cloud/coding-session.ts";
 import {
 	rewriteStateFile,
 	WebCompanyFolderRejectedError,
@@ -1956,6 +1961,16 @@ export class CompanyController {
 
 	async archiveCodingSession(sessionId: string, workerId: string, clientRequestId: string): Promise<void> {
 		this.#mergeCodingSession(sessionId, await this.#api.archiveCodingSession(workerId, clientRequestId));
+	}
+
+	/** The session's owner: its login and the other logins of theirs that can pay for it (20260930551000). */
+	listCodingSessionLogins(workerId: string): Promise<CodingSessionLogins> {
+		return this.#api.listCodingSessionLogins(workerId);
+	}
+
+	/** The session's owner moves it to another of their logins, by hand. */
+	async chooseCodingSessionLogin(sessionId: string, workerId: string, connectionId: string): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.chooseCodingSessionLogin(workerId, connectionId));
 	}
 
 	#mergeCodingSession(sessionId: string, session: CodingSession): void {
