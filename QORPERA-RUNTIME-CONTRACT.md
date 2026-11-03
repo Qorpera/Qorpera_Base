@@ -2456,6 +2456,20 @@ follows a run:
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
+> **Amended 2026-11-03 (migration 20260930559000).** "The most room left" above
+> is now an order of the member's logins, best first, for every first choice (a
+> new conversation, new work, a new coding session after its consent and plan
+> keys): a login whose provider refused its last three finished runs, the newest
+> within six hours, comes last (never switched off; a completed run or another
+> kind of failure ends the streak); then a login at its usage limit; then one
+> that completed a run in the last seven days with at least 20% left in each
+> window first; then the most room on one scale, each window's remaining share
+> divided by the share of the window still to run (5% to all of it), unknown
+> usage last. A share of a 30-day window and a share of a week are not the same
+> amount: on 3 November a ChatGPT workspace plan with 97% of its month left won
+> every first choice over a weekly login at 50%, and refused every Codex turn.
+> Kept logins and which logins may pay are unchanged.
+
 Routines follow the same rule (migration 20260930095000):
 
 - A routine keeps a payer that serves its saver (their own login, or a company

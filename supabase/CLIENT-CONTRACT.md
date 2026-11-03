@@ -203,7 +203,15 @@ they answer 42501 "native host call is refused".
   the member's own pick ("Choose a login to continue"). Choose saves the member's
   pick, one of their own logins that could pay now whatever its usage, and
   returns its connection id; 22023 "This login cannot pay for your conversation"
-  for any other login, 42501 when the conversation cannot be read.
+  for any other login, 42501 when the conversation cannot be read. A new
+  conversation's first choice (and new work's, and a new coding session's) orders
+  the logins best first (20260930559000): a login whose provider refused its last
+  three runs, the newest in six hours, last, then one at its limit, then one that completed a
+  run this week with at least 20% left first, then the most room on one scale
+  (each window's room divided by the share of the window still to run), unknown
+  usage last. `qorpera_list_member_native_execution_connections` reports each
+  login's `recent_turns` (`{refused, completed}`), so a client orders its own list
+  the same way.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
