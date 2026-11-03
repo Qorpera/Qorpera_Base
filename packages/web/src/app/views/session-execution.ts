@@ -457,7 +457,7 @@ export class SessionExecutionView {
 								"div",
 								null,
 								h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
-								this.#otherLogins(this.#observed, !canWrite),
+								this.#otherLogins(this.#observed, locked),
 							)
 					: null,
 		);
@@ -487,17 +487,21 @@ export class SessionExecutionView {
 		const own = this.#serverSelection
 			? this.#serverConnectionId
 			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
-		if (!own) return null;
-		const others = this.#available().filter((connectionId) => connectionId !== own);
+		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
+		if (!own || !observed.connections.some((connection) => connection.connectionId === own)) return null;
+		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
+		const available = this.#available();
+		const others = available.filter((connectionId) => connectionId !== own);
 		if (!others.length) return null;
 		return h(
 			"div",
 			{ class: "session-execution-choice" },
 			h("p", { class: "muted" }, t("Or continue with another of your logins.")),
 			...others.map((connectionId) => {
-				const index = observed.connections.findIndex((candidate) => candidate.connectionId === connectionId);
+				// Numbered as "Choose a login to continue" numbers them.
 				const account =
-					observed.connections[index]?.providerAccountEmail ?? t("Model account {number}", { number: index + 1 });
+					observed.connections.find((candidate) => candidate.connectionId === connectionId)?.providerAccountEmail ??
+					t("Model account {number}", { number: available.indexOf(connectionId) + 1 });
 				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
 					small: true,
 					disabled,

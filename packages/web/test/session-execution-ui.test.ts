@@ -740,12 +740,28 @@ describe("conversation execution account", () => {
 		expect(f.send().disabled).toBe(true);
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
 		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
-		expect(buttonNamed(f.view, "Use Model account 1")).toBeUndefined();
-		buttonNamed(f.view, "Use Model account 2")!.click();
+		expect(buttonNamed(f.view, "Use Model account 2")).toBeUndefined();
+		buttonNamed(f.view, "Use Model account 1")!.click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
 		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+	});
+
+	it("offers the member's other login when the conversation's own login is disabled", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		const disabled = withUsage([30, 40]);
+		disabled.connections[0]!.connectionStatus = "disabled";
+		f.listConnections.mockResolvedValue(disabled);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain("This conversation's model account can't be used right now.");
+		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		buttonNamed(f.view, "Use Model account 1")!.click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 	});
 
 	it("offers no other login when the member has none that can pay", async () => {
@@ -771,7 +787,7 @@ describe("conversation execution account", () => {
 		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
 		expect(choose).not.toHaveBeenCalled();
 		select.mockResolvedValue(id(91));
-		buttonNamed(f.view, "Use Model account 2")!.click();
+		buttonNamed(f.view, "Use Model account 1")!.click();
 		await settle();
 		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
