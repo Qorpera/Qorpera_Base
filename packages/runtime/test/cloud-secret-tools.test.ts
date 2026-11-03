@@ -241,19 +241,24 @@ it("refuses each malformed connector call with the rule it broke and none of its
 	const title = "input.title must be a string of 1 to 256 characters matching ^[A-Za-z][A-Za-z0-9 _-]{0,255}$";
 	const priority = "input.priority must be a whole number from 0 to 4";
 	const issue = { idempotencyKey: "issue-login" };
+	const writeKey =
+		"idempotencyKey is required for this write: a new key for each new write, the same key when retrying the same write";
 	const cases: [string, unknown, string][] = [
 		["list", ["PRIVATE_VALUE"], call],
 		["text", "PRIVATE_VALUE", call],
-		// The tool's fields on their own are a call (below); here they still break the schema's rules.
-		["flat_pattern", { title: "1 PRIVATE_VALUE", priority: 2 }, title],
-		["flat_field", { title: "Ok", labels: ["PRIVATE_VALUE"] }, `input has no field labels; ${fields}`],
+		// The tool's fields on their own beside a key are a call (below); here they still break the schema's rules.
+		["flat_pattern", { ...issue, title: "1 PRIVATE_VALUE", priority: 2 }, title],
+		["flat_field", { ...issue, title: "Ok", labels: ["PRIVATE_VALUE"] }, `input has no field labels; ${fields}`],
+		// A write always needs the model's own key, in either shape (review F1: a key made from its fields answered a
+		// later identical write from the first one's receipt).
+		["flat_no_key", { title: "PRIVATE_VALUE", priority: 2 }, writeKey],
+		["no_key", { input: { title: "PRIVATE_VALUE" } }, writeKey],
 		["flat_required", { idempotencyKey: "PRIVATE-VALUE" }, "input is missing the required field title"],
 		["flat_bad_key", { idempotencyKey: "PRIVATE VALUE", title: "Ok" }, key],
 		["beside", { ...issue, input: {}, title: "PRIVATE_VALUE" }, `${envelope}; title goes inside input`],
 		["beside_no_key", { input: {}, priority: 2 }, `${envelope}; priority goes inside input`],
 		["named_key", { ...issue, input: { title: "Ok" }, note: "PRIVATE_VALUE" }, `${envelope}, without note`],
 		["unnamed_key", { ...issue, input: { title: "Ok" }, "PRIVATE KEY": 1 }, `${envelope}, without other fields`],
-		["no_key_pattern", { input: { title: "1 PRIVATE_VALUE" } }, title],
 		["bad_key", { idempotencyKey: "PRIVATE VALUE", input: { title: "Ok" } }, key],
 		["number_key", { idempotencyKey: 4242, input: { title: "Ok" } }, key],
 		["text_input", { ...issue, input: "PRIVATE_VALUE" }, "input must be an object"],
@@ -388,37 +393,55 @@ async function keyedFixture(descriptor: Record<string, unknown>) {
 	return { operationControl, broker, tools, boundary, invoke };
 }
 
-it("takes a write's fields on their own or in input without a key: the identical write in a run is one effect", async () => {
+it("takes a write's fields on their own beside its key, and runs each write that has a new key", async () => {
 	const fixture = await setup();
 	const keyed = await keyedFixture(fixture.descriptor);
 	try {
-		// The schema still shows the envelope, so the key is in sight for a retry.
-		expect(keyed.tools[0].inputSchema).toMatchObject({ required: ["idempotencyKey", "input"] });
+		// The schema shows the envelope with its required key, and says what the key is for.
+		expect(keyed.tools[0].inputSchema).toMatchObject({
+			required: ["idempotencyKey", "input"],
+			properties: {
+				idempotencyKey: {
+					description: expect.stringContaining("a new key for each new write, the same key when retrying"),
+				},
+			},
+		});
 		const login = { title: "Login is broken", priority: 2 };
-		const first = await keyed.invoke("call_flat", login);
+		const first = await keyed.invoke("call_flat", { idempotencyKey: "issue-1", ...login });
 		expect(first.text).toContain('"Login is broken"');
-		expect(keyed.broker.execute).toHaveBeenCalledTimes(1);
 		expect(keyed.broker.execute.mock.calls[0][0].arguments).toEqual(login);
-		// The same write again, on its own or in input without a key, is the same effect: answered, not repeated.
-		expect((await keyed.invoke("call_flat_again", { priority: 2, title: "Login is broken" })).text).toBe(first.text);
-		expect((await keyed.invoke("call_input", { input: login })).text).toBe(first.text);
+		// The same key again, flat or in input, is the retry of that write: answered from it, not repeated.
+		expect((await keyed.invoke("call_retry", { idempotencyKey: "issue-1", input: login })).text).toBe(first.text);
 		expect(keyed.broker.execute).toHaveBeenCalledTimes(1);
-		expect(keyed.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
-		expect(vi.mocked(keyed.operationControl.beginToolOperation).mock.calls[0][1].logicalOperationKey).toMatch(
-			new RegExp(`^linear_issue_create:${fixture.descriptor.grantId}:write-[0-9a-f]{48}$`),
-		);
-		// Another write is another effect, and a key the model sends is its own, beside the fields or with input.
-		await keyed.invoke("call_other", { title: "Login is slow" });
-		await keyed.invoke("call_keyed", { idempotencyKey: "issue-login", title: "Login is broken", priority: 2 });
-		await keyed.invoke("call_keyed_input", { idempotencyKey: "issue-login", input: login });
+		// A, then B, then A again under three keys: three writes, the last one too (undoing a change runs).
+		await keyed.invoke("call_b", { idempotencyKey: "issue-2", title: "Login is slow" });
+		await keyed.invoke("call_a_again", { idempotencyKey: "issue-3", ...login });
 		expect(keyed.broker.execute).toHaveBeenCalledTimes(3);
+		expect(keyed.broker.execute.mock.calls.map(([request]) => request.arguments)).toEqual([
+			login,
+			{ title: "Login is slow" },
+			login,
+		]);
 		expect(
 			vi.mocked(keyed.operationControl.beginToolOperation).mock.calls.map(([, input]) => input.logicalOperationKey),
-		).toEqual([
-			expect.stringMatching(/:write-[0-9a-f]{48}$/),
-			expect.stringMatching(/:write-[0-9a-f]{48}$/),
-			`linear_issue_create:${fixture.descriptor.grantId}:issue-login`,
-		]);
+		).toEqual(
+			["issue-1", "issue-2", "issue-3"].map((key) => `linear_issue_create:${fixture.descriptor.grantId}:${key}`),
+		);
+		// Without a key a write does not run, in either shape, and says why.
+		for (const [callId, args] of [
+			["call_flat_no_key", login],
+			["call_input_no_key", { input: login }],
+		] as const) {
+			const refused = await keyed.boundary.invoke(callId, "qorpera", "linear_issue_create", args);
+			expect(JSON.parse(refused.contentItems[0].text), callId).toMatchObject({
+				status: "denied",
+				content: {
+					text: "INVALID_ARGUMENTS: idempotencyKey is required for this write: a new key for each new write, the same key when retrying the same write",
+				},
+			});
+		}
+		expect(keyed.broker.execute).toHaveBeenCalledTimes(3);
+		expect(keyed.operationControl.beginToolOperation).toHaveBeenCalledTimes(3);
 	} finally {
 		keyed.boundary.close();
 	}

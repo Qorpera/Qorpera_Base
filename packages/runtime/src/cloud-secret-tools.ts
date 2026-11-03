@@ -17,10 +17,14 @@ const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 /** The shapes of a connector call, as its refusals show them. A call may send the tool's fields on their own (the
  * natural shape: on 30 October 2026 a Co-Founder run's first github_list_repositories call was refused for it), or
- * inside `input`, each with an optional `idempotencyKey`. */
+ * inside `input`, either with an `idempotencyKey`: optional for a read, required for a write. */
 const INVOCATION = 'Send the tool\'s fields on their own, or as {"idempotencyKey": "<key>", "input": {...}}';
 /** The envelope shape, once a call sent `input`. */
 const ENVELOPE = 'With input, the call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
+/** A write's key rule. The ledger keeps one receipt per key in a run, so a key the platform derived from a write's
+ * fields would answer a later identical write (undoing a change, a second reminder) from the first one's receipt. */
+const WRITE_KEY =
+	"idempotencyKey is required for this write: a new key for each new write, the same key when retrying the same write";
 
 export type CloudConnectorInputSchema = {
 	type: "object";
@@ -548,12 +552,16 @@ export async function describeCloudSecretTools(
 }
 
 interface ConnectorInvocation {
-	/** The model's own key, when it sent one: absent, the call's key is derived (`invocationKey`). */
+	/** The model's own key. Always present for a write; absent, a read's key is its call's (`readKey`). */
 	idempotencyKey?: string;
 	input: JsonValue;
 }
 
-function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolDescriptor): ConnectorInvocation {
+function parseInvocation(
+	value: JsonValue,
+	descriptor: CloudNativeConnectorToolDescriptor,
+	reads: boolean,
+): ConnectorInvocation {
 	if (
 		!value ||
 		typeof value !== "object" ||
@@ -593,6 +601,7 @@ function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolD
 		throw new CloudToolArgumentRefusal(
 			`idempotencyKey must be 1 to 128 letters, digits or . _ : -, starting with a letter or digit (${OPERATION_KEY.source})`,
 		);
+	if (!reads && !Object.hasOwn(call, "idempotencyKey")) throw new CloudToolArgumentRefusal(WRITE_KEY);
 	cloudToolJsonText(input, 64 * 1024);
 	validateValue(input as JsonValue, descriptor.inputSchema);
 	return {
@@ -602,13 +611,14 @@ function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolD
 }
 
 /**
- * The call's key when the model sent none. A read is its own call: the same read later in the run asks the provider
- * again (a list after a create shows the new item). A write is keyed by its fields: the identical write again in this
- * run is the same effect, replayed or refused by its receipt, never a second one; a different write is a new one.
+ * A read's key when the model sent none: the read is its own call, so the same read later in the run asks the
+ * provider again (a list after a create shows the new item). A write always carries the model's key.
  */
-function invocationKey(reads: boolean, input: JsonValue, callId: string): string {
-	const keyed = reads ? cloudToolJsonText([callId, input]) : cloudToolJsonText(input);
-	return `${reads ? "read" : "write"}-${createHash("sha256").update(keyed).digest("hex").slice(0, 48)}`;
+function readKey(input: JsonValue, callId: string): string {
+	return `read-${createHash("sha256")
+		.update(cloudToolJsonText([callId, input]))
+		.digest("hex")
+		.slice(0, 48)}`;
 }
 
 export function cloudSecretTools(options: {
@@ -619,8 +629,8 @@ export function cloudSecretTools(options: {
 	broker: CloudSecretOperationClient;
 }): CloudNativeTool[] {
 	return options.descriptors.map((descriptor) => {
-		// A read of this build's catalog shows the model its own fields; a write shows the envelope, so its key is in
-		// sight for a retry. Either takes both shapes (parseInvocation).
+		// A read of this build's catalog shows the model its own fields and needs no key; a write shows the envelope with
+		// its required key. Either takes its fields on their own or inside input (parseInvocation).
 		const reads = cloudConnectorOperationReads(descriptor);
 		const target = Object.freeze({
 			grantId: descriptor.grantId,
@@ -668,7 +678,8 @@ export function cloudSecretTools(options: {
 						properties: {
 							idempotencyKey: {
 								type: "string",
-								description: "Stable key for this exact external effect; reuse it for an identical retry.",
+								description:
+									"Required: a new key for each new write, the same key when retrying the same write. The tool's fields may also be sent on their own beside it, without input.",
 								pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
 							},
 							input: structuredClone(descriptor.inputSchema),
@@ -678,14 +689,14 @@ export function cloudSecretTools(options: {
 					},
 			parseArguments(value) {
 				// Always the envelope, so the review, the card and the effect read one shape.
-				const parsed = parseInvocation(value, descriptor);
+				const parsed = parseInvocation(value, descriptor, reads);
 				const envelope: { [key: string]: JsonValue } = { input: parsed.input };
 				if (parsed.idempotencyKey !== undefined) envelope.idempotencyKey = parsed.idempotencyKey;
 				return envelope;
 			},
 			async execute(value, context) {
-				const parsed = parseInvocation(value, descriptor);
-				const key = parsed.idempotencyKey ?? invocationKey(reads, parsed.input, context.callId);
+				const parsed = parseInvocation(value, descriptor, reads);
+				const key = parsed.idempotencyKey ?? readKey(parsed.input, context.callId);
 				return options.operations.execute({
 					operation: {
 						tool: descriptor.toolName,

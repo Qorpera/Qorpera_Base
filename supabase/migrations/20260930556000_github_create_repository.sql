@@ -27,9 +27,12 @@
 -- GitHub refuses, the tool answers that "the GitHub connection needs to be connected again with permission to create
 -- repositories" (or, for an organization, that an owner of it must allow it), never a bare error.
 --
--- Release: the cloud secret broker (vault) needs the release's build, which carries the new adapter; an older broker
--- has none for this operation and refuses the call. On a folder-v2 company each new grant marks the connection's
--- file due (20260928469150), so its listed actions follow.
+-- Release order: this migration and the v194 runtime bundle first, the cloud secret broker (vault) build with the new
+-- adapter last. The forced access check for a public repository is the runtime's (repositoryAccessCheck): this
+-- database records the builtIn the runtime sends and nothing here reads private. A run on an older bundle already
+-- holds the tool once this migration ran, and reviews it without that check; until the vault has the adapter, it
+-- refuses every call of the operation. On a folder-v2 company each new grant marks the connection's file due
+-- (20260928469150), so its listed actions follow.
 begin;
 set local lock_timeout = '3s';
 

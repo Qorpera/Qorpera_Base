@@ -104,15 +104,20 @@ connected account's own login, it is the account itself: the adapter reads `GET 
   issues it to every active agent holding a live `create_issue` grant on a shared company connection, under the same
   issuer (still an owner or admin) and expiry, one `grant_issued` audit row each, never restoring a revoked one. The
   function is kept for the next catalog addition; no API role may call it.
-- **Release.** The migration, the runtime bundle and the secret broker build (the adapter). An older broker has no
-  adapter for the operation and refuses the call.
+- **Release, in this order.** (1) The migration and (2) the v194 runtime bundle active, then (3) the secret broker
+  (vault) build with the adapter, last. The forced access check for a public repository lives only in the runtime
+  (`repositoryAccessCheck`); the database records the `builtIn` the runtime sends, and neither the vault nor the
+  database reads `private`. Once the migration has run, a run on an older bundle already holds the tool and reviews it
+  without that check, so the adapter must not reach the vault until no such run can call it: until then the vault has
+  no adapter for the operation and refuses every call, public or private.
 
 ### Call shape (v194, 3 November 2026)
 
-A connector tool takes the tool's fields on their own or inside `input`, either with an optional `idempotencyKey`
-(`cloud-secret-tools.ts`). A read of the runtime's own catalog shows the model only its fields; a write shows the
-`{idempotencyKey, input}` envelope. Without a key a read is keyed by its call (each call asks the provider), and a
-write by its fields (the identical write again in a run is the same effect, answered by its receipt). On 30 October a
+A connector tool takes the tool's fields on their own or inside `input` (`cloud-secret-tools.ts`). A read of the
+runtime's own catalog shows the model only its fields and needs no key: without one it is keyed by its call, so each
+call asks the provider. A write shows the `{idempotencyKey, input}` envelope and always needs the model's key ("a new
+key for each new write, the same key when retrying the same write"); a key made from the write's fields would answer a
+later identical write in the run (undoing a change, a second reminder) from the first one's receipt. On 30 October a
 Co-Founder run's bare `github_list_repositories` call was refused until it was wrapped in the envelope.
 
 ### OAuth inside the broker (`cloud-connector-oauth.ts`, broker HTTP routes)
