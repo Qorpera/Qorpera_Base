@@ -1714,7 +1714,7 @@ describe("a failed run at its login's usage limit", () => {
 		f.company.store.set({ recoveries: { [run.runId]: recovery } });
 		await settle();
 		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
-		// The same login refused by ChatGPT: the member checks it or picks another, and no reset is said.
+		// This member's own login refused by ChatGPT: they check it or pick another, and no reset is said.
 		f.company.store.set({
 			recoveries: {
 				[run.runId]: {
@@ -1733,5 +1733,21 @@ describe("a failed run at its login's usage limit", () => {
 		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
 			"Dismiss",
 		]);
+		// Another member's login refused: the card is the agent's, so this member reads who can act.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					sponsorBindingId: id(199),
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(reason()).toBe(
+			"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
+		);
 	});
 });

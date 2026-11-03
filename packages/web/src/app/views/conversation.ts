@@ -3339,7 +3339,7 @@ export class ConversationView {
 							recovery.lastError,
 							recovery.jobStatus,
 							recovery.usageLimit,
-							this.#execution?.usageLimitResetFor(recovery.sponsorBindingId),
+							this.#execution?.payer(recovery.sponsorBindingId),
 						)
 					: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;

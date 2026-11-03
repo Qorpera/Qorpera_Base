@@ -47,10 +47,13 @@ export function classifyRunFailure(
 	// Qorpera's side while it ran, e.g. when the run's authority could not be read through a database outage (28
 	// October 2026): it was not refused.
 	const stepCancelled = / \[code=[A-Z0-9_]{1,42}:CANCELLED\]/.test(lastError ?? "");
-	// The category "provider_failed": Codex ended the turn with the model provider's own error (ChatGPT refused the
-	// login's request, as for a workspace plan's login whose Codex turns all failed on 3 November 2026, or could not
-	// answer it), or refused one of the run's requests. The member checks the login paying for the run first.
-	const providerFailed = / \[code=[A-Z0-9_]{1,42}:PROVIDER_FAILED\]/.test(lastError ?? "");
+	// The turn itself failed with the category "provider_failed" (the whole code): Codex ended it with the model
+	// provider's own error, which it reads only once the turn is under way (ChatGPT refused the login's request, as for a
+	// workspace plan's login whose Codex turns all failed on 3 November 2026, or could not answer it). The member checks
+	// the login paying for the run first. The same category at an earlier step (initialize, configuration, skills,
+	// thread or turn start) is the pinned Codex refusing one of the run's requests on the host, which never reached
+	// ChatGPT: Qorpera's side, as before.
+	const providerFailed = / \[code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED\]/.test(lastError ?? "");
 	// The category "transport_unavailable": a connection dropped or could not be made while a step worked (to ChatGPT,
 	// or a cloud call of the run), whichever side it was. It is usually brief, so the run is worth trying again.
 	const connectionLost = / \[code=[A-Z0-9_]{1,42}:TRANSPORT_UNAVAILABLE\]/.test(lastError ?? "");
@@ -89,7 +92,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	usage_limit: phrase(
 		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 	),
-	// The member checks the login or picks another one; the work never moves to another login by itself.
+	// The member whose login paid checks it or picks another one; the work never moves to another login by itself.
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
 	),
@@ -114,6 +117,25 @@ const REASONS: Record<RunFailureKind, string> = {
 	other: phrase("The run stopped because of an internal error."),
 };
 
+/** The same, for a member whose own login did not pay for the run, or when the web cannot tell: the card is the agent's,
+ * so every member reads it, and only the member whose login it is can check it. */
+const REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
+	provider_refused: phrase(
+		"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
+	),
+	login_unavailable: phrase(
+		"The run could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions.",
+	),
+};
+
+/** What the web knows of the login that paid for a failed run (SessionExecutionView.payer): whether it is the reading
+ * member's own, and when its usage limit resets. */
+export interface RunPayer {
+	own?: boolean;
+	/** Said only for a usage limit, and only while it is ahead. */
+	resetsAt?: string;
+}
+
 /** Where OpenAI sends a member to manage their ChatGPT plan's usage (Sign in with ChatGPT UI guidelines). */
 export const MANAGE_USAGE_URL = "https://chatgpt.com/settings/usage";
 
@@ -133,22 +155,22 @@ export function manageUsageLink(): HTMLElement {
 	return link;
 }
 
-/** Why a run stopped, in the member's words. `resetsAt` is when the usage limit of the login that paid for the run
- * resets, when the web knows it (SessionExecutionView.usageLimitResetFor); it is said only for a usage limit, and only
- * while it is ahead. */
+/** Why a run stopped, in the member's words. What it asks of the paying login's member is said to that member only
+ * (`payer.own`); anyone else reads who can act. */
 export function runFailureReason(
 	lastError: string | undefined,
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
-	resetsAt?: string,
+	payer: RunPayer = {},
 ): string {
 	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
+	const resetsAt = payer.resetsAt;
 	if (kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now())
 		return t(
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).",
 			{ time: fmtTime(resetsAt) },
 		);
-	return t(REASONS[kind]);
+	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
 }
 
 // The coding executor's own words for a turn that ended with no coding_finish or
@@ -196,11 +218,21 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
 };
 
+/** The same, for a member who does not own the session, whose owner's login pays for it, or when the web cannot tell. */
+const CODING_REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
+	provider_refused: phrase(
+		"ChatGPT refused or could not answer the session's request. The member whose login pays for it can check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	login_unavailable: phrase(
+		"The session could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+};
+
 /** What the kernel tells about a coding turn that stopped at its login's usage limit (20260929993000). */
 export interface CodingUsageLimit {
 	usageLimit?: boolean;
 	paidByChatgptPlan?: boolean;
-	/** The member reading it owns the session, so the plan is theirs. */
+	/** The member reading it owns the session, so the plan (the login that pays) is theirs. */
 	mine?: boolean;
 }
 
@@ -217,7 +249,8 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 	if (reason === "executor-lease-expired") return t(CODING_REASONS.lost);
 	if (reason === CODING_TURN_ENDED || reason?.includes("[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]"))
 		return t(CODING_REASONS.no_submission);
-	return t(CODING_REASONS[classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed")]);
+	const kind = classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed");
+	return t((limit.mine === true ? undefined : CODING_REASONS_FOR_OTHERS[kind]) ?? CODING_REASONS[kind]);
 }
 
 /** Whether the run was interrupted rather than refused: Qorpera lost contact with

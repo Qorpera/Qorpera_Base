@@ -7,11 +7,16 @@ const COMPLETION_REFUSED =
 	"Runner completion was refused: the run left unsettled work, such as an open operation receipt [code=RUN_COMPLETION_REFUSED]";
 // The runner's report of a refused bridge request, as production stored it (3 November 2026), for a code.
 const BRIDGE = (code: string) => `Native provider bridge request failed (422) [code=${code}]`;
+// To the member whose own login paid for the run, and to anyone else (or when the web cannot tell whose it is).
 const PROVIDER_REFUSED =
 	/^ChatGPT refused or could not answer this run's request\. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation\.$/;
+const PROVIDER_REFUSED_FOR_OTHERS =
+	/^ChatGPT refused or could not answer this run's request\. The member whose login pays for it can check that login in Settings → AI subscriptions\.$/;
 const CONNECTION_LOST = /^The run lost its connection while it was working\. This is usually brief\.$/;
 const LOGIN_UNAVAILABLE =
 	/^The run could not load the login that pays for it\. Check that login in Settings → AI subscriptions, or choose another login for this conversation\.$/;
+const LOGIN_UNAVAILABLE_FOR_OTHERS =
+	/^The run could not load the login that pays for it\. The member whose login it is can check it in Settings → AI subscriptions\.$/;
 const QORPERA_REFUSED = /^The run started, but one of its steps was refused\. The problem is on Qorpera's side\.$/;
 
 describe("why a run stopped, in the member's words", () => {
@@ -90,23 +95,28 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/one of its steps was refused/,
 		],
-		// The model provider's own error, not Qorpera's machinery (3 November 2026: a ChatGPT workspace plan's login whose
-		// every Codex turn failed): the category decides, whatever the step.
-		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
+		// The turn failed with the model provider's own error (3 November 2026: a ChatGPT workspace plan's login whose
+		// every Codex turn failed), told here to a member whose own login did not pay.
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED_FOR_OTHERS],
 		[
 			`${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}; durable attempt output requires review`,
 			"failed",
-			PROVIDER_REFUSED,
+			PROVIDER_REFUSED_FOR_OTHERS,
 		],
-		[BRIDGE("NATIVE_CODEX_TURN_START:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
-		[BRIDGE("NATIVE_CODEX_THREAD_START:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
+		// The same category at an earlier step is the pinned Codex refusing a request on the host, before any model
+		// request: Qorpera's side.
+		[BRIDGE("NATIVE_CODEX_INITIALIZE:PROVIDER_FAILED"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_CONFIGURATION:PROVIDER_FAILED"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_SKILLS:PROVIDER_FAILED"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_THREAD_START:PROVIDER_FAILED"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_TURN_START:PROVIDER_FAILED"), "failed", QORPERA_REFUSED],
 		// A connection that dropped or could not be made, to ChatGPT or a cloud call (31 October 2026, while the database
 		// stopped answering): usually brief.
 		[BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"), "failed", CONNECTION_LOST],
 		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE"), "failed", CONNECTION_LOST],
 		// The run's login could not be downloaded before the model started; a download that got no answer is a timeout.
-		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD"), "failed", LOGIN_UNAVAILABLE],
-		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:UNKNOWN"), "failed", LOGIN_UNAVAILABLE],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD"), "failed", LOGIN_UNAVAILABLE_FOR_OTHERS],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:UNKNOWN"), "failed", LOGIN_UNAVAILABLE_FOR_OTHERS],
 		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT"), "failed", /steps got no answer in time/],
 		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:CANCELLED"), "failed", /^Qorpera lost contact with this run\./],
 		// Qorpera's own machinery stays Qorpera's: the company's context, a coding session's own step, opening or sealing
@@ -176,19 +186,37 @@ describe("why a run stopped, in the member's words", () => {
 	it("says when the limit resets, when the paying login's reset is known and ahead", () => {
 		const budget = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED");
 		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
-		expect(runFailureReason(budget, "failed", true, reset)).toBe(
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset })).toBe(
 			`The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets (${fmtTime(reset)}).`,
 		);
 		// A reset that has passed, or none known: no time.
 		const plain =
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.";
-		expect(runFailureReason(budget, "failed", true, new Date(Date.now() - 60_000).toISOString())).toBe(plain);
+		const past = new Date(Date.now() - 60_000).toISOString();
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: past })).toBe(plain);
+		expect(runFailureReason(budget, "failed", true, { own: true })).toBe(plain);
 		expect(runFailureReason(budget, "failed", true)).toBe(plain);
 		// A reset never makes a usage limit of another failure.
-		expect(runFailureReason(BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", false, reset)).toMatch(
-			PROVIDER_REFUSED,
-		);
-		expect(runFailureReason(budget, "failed", false, reset)).toMatch(QORPERA_REFUSED);
+		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+		expect(runFailureReason(refused, "failed", false, { own: true, resetsAt: reset })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(budget, "failed", false, { own: true, resetsAt: reset })).toMatch(QORPERA_REFUSED);
+	});
+
+	it("asks the member whose own login paid to check it, and tells anyone else who can", () => {
+		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+		const download = BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD");
+		expect(runFailureReason(refused, "failed", false, { own: true })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(download, "failed", false, { own: true })).toMatch(LOGIN_UNAVAILABLE);
+		// Another member's login, or the web cannot tell: no choice that is not theirs to make.
+		for (const payer of [{ own: false }, {}]) {
+			expect(runFailureReason(refused, "failed", false, payer)).toMatch(PROVIDER_REFUSED_FOR_OTHERS);
+			expect(runFailureReason(download, "failed", false, payer)).toMatch(LOGIN_UNAVAILABLE_FOR_OTHERS);
+		}
+		// Words that ask nothing of the login's member read the same to everyone.
+		const lost = BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE");
+		expect(runFailureReason(lost, "failed", false, { own: true })).toBe(runFailureReason(lost, "failed", false));
+		const context = BRIDGE("NATIVE_COMPANY_CONTEXT:UNKNOWN");
+		expect(runFailureReason(context, "failed", false, { own: true })).toMatch(QORPERA_REFUSED);
 	});
 
 	it("never says the work moves to another login by itself", () => {
@@ -297,7 +325,11 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		// As production stored it (3 November 2026): the session's login was refused by ChatGPT.
 		[
 			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}`,
-			/^ChatGPT refused or could not answer the session's request\. Check the login that pays for it in Settings → AI subscriptions\./,
+			/^ChatGPT refused or could not answer the session's request\. The member whose login pays for it can check that login in Settings → AI subscriptions\./,
+		],
+		[
+			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_START:PROVIDER_FAILED")}`,
+			/^Something on Qorpera's side refused one of the session's steps\./,
 		],
 		[
 			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE")}`,
@@ -305,7 +337,7 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		],
 		[
 			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD")}`,
-			/^The session could not load the login that pays for it\. Check that login in Settings → AI subscriptions\./,
+			/^The session could not load the login that pays for it\. The member whose login it is can check it in Settings → AI subscriptions\./,
 		],
 		[`${DID_NOT_FINISH}Execution deadline expired before durable completion`, /^The session took too long/],
 		[
@@ -324,5 +356,27 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		expect(said).toMatch(/ The workspace is kept; a follow-up (continues|starts it again|tries again)/);
 		// Plain words only: no status codes, no codes, no machinery names.
 		expect(said).not.toMatch(/\d{3}|\[|code|runner|provider|bridge|lease|dispatch|native|submission|executor/i);
+	});
+});
+
+describe("a coding session's failed turn, to the member who owns it", () => {
+	const DID_NOT_FINISH = "The coding turn did not finish: ";
+	it("asks the owner, whose login pays, to check it", () => {
+		expect(
+			codingFailureReason(`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}`, {
+				mine: true,
+			}),
+		).toBe(
+			"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+		);
+		expect(codingFailureReason(`${DID_NOT_FINISH}${BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD")}`, { mine: true })).toBe(
+			"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+		);
+		// Anyone else reads who can act.
+		expect(
+			codingFailureReason(`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}`, {
+				mine: false,
+			}),
+		).toMatch(/^ChatGPT refused or could not answer the session's request\. The member whose login pays for it /);
 	});
 });
