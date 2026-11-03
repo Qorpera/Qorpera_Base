@@ -665,6 +665,70 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     arrives as `subscription_sharing_usage_limit_exceeded` in the stream, which Codex 0.155.1 retries
     and then reports as a lost stream): the follow-up is a pinned Codex that names it a usage limit.
 
+## Account logins (founder, 3 November 2026; migration `20260930548000`, built switched off)
+
+"I shouldn't have to sign in my subscription across every single company, but just to my top level account." A
+member's Codex login is kept once by the shared vault and used in every company of the member that the vault serves.
+
+- **Storage.** An account login is a row of `qorpera_model_logins` with `owner_user_id` and `principal_id` (the shared
+  vault) and no company column (no profile, identity, capsule or authority), Codex only (a check). Its versions name
+  the principal instead of a company authority. The envelope is sealed under the member's key: HKDF-SHA256 of the
+  vault's master key, salt `qorpera.member-kek/v1`, info the member's user id (`CloudSecretKeyring.sealMember`), bound
+  to `{member, login}` (both identity fields name the member, the secret is the login). A company key never opens it.
+- **Links.** In each company the member belongs to that the same vault serves, ordinary company rows point at it: the
+  member's compute identity (made when missing), a pointer capsule `model-login/<login id>`, a connection whose version 1
+  works while the member is away (the web client's own default for Codex), and a member sponsor binding. The link row
+  (`qorpera_model_login_links`) ties the capsule to the login and goes with the company's rows. Links are made when an
+  account sign-in completes, when a member joins a company (trigger on `qorpera_profile_members`) and when a company
+  starts taking sign-ins in the vault (trigger on `qorpera_model_login_sign_in_companies`, the registration's last
+  step), and only in a company that takes sign-ins in the vault; a failed link never blocks those. A company where a
+  capsule for the login exists already, in any state, is left alone: Disconnect there means "stop using it here" and
+  sticks until the member signs in again. Linking key-share locks the login row, so Sign out everywhere (which locks it
+  for update) never misses a link made at the same moment. So the founding table, conversations, routines and every run
+  check stay company-local and unchanged.
+- **Sign-in.** A Codex sign-in a member begins for their own identity in a company the vault serves is an account
+  sign-in (`qorpera_native_provider_login_sessions.model_login_scope`, decided when it begins). The v2 read adds
+  `"scope": "account"`, so a vault build without this change refuses it (strict keys), and a company completion of it
+  is refused (trigger). The vault seals it under the member's key and calls
+  `qorpera_complete_account_model_login_sign_in` (the company's authority): the login, version 1, the sign-in
+  company's link with the sign-in's own connection id (the web client sees its sign-in finish), then every other
+  company's.
+- **Runs.** `qorpera_issue_model_login` resolves a capsule that no company login holds through its link. Refused unless
+  the switch is on, the broker's company is the run's and the link's, that company is served by the login's vault, and
+  the link, the login, the run's identity, capsule and connection and the run's payer (`sponsored_by_user_id`) are the
+  same member. The answer adds `scope` and `ownerUserId`; the vault opens it with that member's key and hands the run
+  the same `qorpera.model-login/v1` answer as before (no guest or host change).
+- **Renewal.** One lock on the one login row, whichever company's run or the vault's idle pass takes it: one refresh
+  chain. Account commits and releases are the vault principal's own calls
+  (`qorpera_commit_account_model_login_renewal`, `qorpera_release_account_model_login_renewal`); a company broker can
+  neither save nor release one. The vault's one account pass per upkeep cycle (`qorpera_take_idle_account_model_login_renewal`,
+  then the accounts and the switch-off) renews only a login still used by some company.
+- **Usage.** A usage-limit signal on any company's link connection blocks new work on every link of the same login
+  (`qorpera_native_account_usage_limit_reset`), and the tightest fresh reading (5 minutes) of any of its companies
+  counts for all (`qorpera_native_account_remaining`); both keep their old answers for a connection that is no link (the old bodies
+  are kept as `..._company`). The account refresh reads an account login's usage through its link.
+- **Switch-off.** `qorpera_switch_off_replaced_by_account_logins` moves a member's pins from their older logins of the
+  same ChatGPT account in each linked company (a node login, a company vault login, an older account login) to the link
+  and then switches the old one off as Disconnect does, in companies that take sign-ins in the vault, and only while
+  account logins are switched on.
+- **Sign out everywhere.** `qorpera_sign_out_account_model_login` (the member only) revokes every company's link as
+  Disconnect does and ends the login. Settings shows a linked card as "Used in all your companies" with "Stop using
+  here" and "Sign out everywhere".
+- **Not in this change.** ChatGPT plan logins stay company logins (switched off platform-wide; their rules key on the
+  company capsule). Companies with a vault of their own (created before 29 September 2026) keep company logins. A
+  member's existing company logins keep working until they sign in once at account level; the switch-off then retires
+  them per company. No envelope is re-encrypted.
+- **Rollout.** 1. The migration (it changes nothing while the switch is off). 2. The shared vault's broker build on
+  node 1 and node 2 (`npm run pack:cloud-secret-broker`, restart `qorpera-shared-vault` on both at a moment with no
+  sign-in pending); company brokers and the helper are unchanged (a one-company broker never sees an account login).
+  No runtime bundle, guest image, host or web route change is needed for runs; the web client's Settings change rides
+  the next web deploy. 3. The switch, once both vault copies run this build:
+  `update public.qorpera_account_model_login_settings set enabled = true;` (database owner). Off again: the same with
+  `false` (account logins are then neither handed out, linked nor used to switch off older logins; renewals go on).
+  Older logins the pass already switched off while it was on stay off: their members' pins sit on links that cannot
+  pay until the switch is back on or they sign in again in that company (a company login then, since the switch is
+  off).
+
 ## Failure cases
 
 | Case | Result |

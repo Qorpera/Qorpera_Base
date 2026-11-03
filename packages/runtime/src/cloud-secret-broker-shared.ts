@@ -12,7 +12,11 @@ import { CloudDigitalPostSyncs, logDigitalPostSyncPass } from "./cloud-digital-p
 import { CloudEventVerifications, logEventVerificationPass } from "./cloud-event-verification.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
-import { CloudModelLoginVault, type ModelLoginRenewer } from "./cloud-model-login-vault.ts";
+import {
+	type AccountModelLoginAuthority,
+	CloudModelLoginVault,
+	type ModelLoginRenewer,
+} from "./cloud-model-login-vault.ts";
 import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import {
@@ -37,6 +41,11 @@ import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
  * Enable Banking application, the companies whose bank sync is due are asked for once a minute and synced
  * in turn; with Qorpera's Digital Post certificate, so are the companies whose Digital Post sync is due
  * (RUNTIME-DIGITAL-POST.md).
+ *
+ * It also keeps its members' account model logins (20260930548000): one login per member, used in every company of
+ * the member that it serves. A company's run gets it through that company's vault, which saves or gives back its
+ * renewal with the principal's own calls; one account pass per upkeep cycle renews idle account logins, records their
+ * accounts and switches off the older logins they replaced, whatever the number of companies.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -91,11 +100,50 @@ function servedEntry(value: unknown): { companyId: string; authorityId: string; 
 	return { companyId: company(input.companyId), authorityId: company(input.authorityId), keyId: input.keyId };
 }
 
+type SharedVaultPrincipal = Pick<
+	PostgresCloudSecretBrokerPrincipal,
+	"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
+> &
+	Partial<AccountModelLoginAuthority>;
+
+/** The principal's account login calls, when it has them all. */
+function accountAuthority(principal: SharedVaultPrincipal): AccountModelLoginAuthority | undefined {
+	const {
+		commitAccountModelLoginRenewal,
+		releaseAccountModelLoginRenewal,
+		takeIdleAccountModelLoginRenewal,
+		listAccountModelLoginsWithoutAccount,
+		recordAccountModelLoginAccount,
+		switchOffReplacedByAccountLogins,
+	} = principal;
+	if (
+		!commitAccountModelLoginRenewal ||
+		!releaseAccountModelLoginRenewal ||
+		!takeIdleAccountModelLoginRenewal ||
+		!listAccountModelLoginsWithoutAccount ||
+		!recordAccountModelLoginAccount ||
+		!switchOffReplacedByAccountLogins
+	)
+		return undefined;
+	return {
+		commitAccountModelLoginRenewal: (renewal, signal) =>
+			commitAccountModelLoginRenewal.call(principal, renewal, signal),
+		releaseAccountModelLoginRenewal: (release, signal) =>
+			releaseAccountModelLoginRenewal.call(principal, release, signal),
+		takeIdleAccountModelLoginRenewal: (signal) => takeIdleAccountModelLoginRenewal.call(principal, signal),
+		listAccountModelLoginsWithoutAccount: (signal) => listAccountModelLoginsWithoutAccount.call(principal, signal),
+		recordAccountModelLoginAccount: (account, signal) =>
+			recordAccountModelLoginAccount.call(principal, account, signal),
+		switchOffReplacedByAccountLogins: (signal) => switchOffReplacedByAccountLogins.call(principal, signal),
+	};
+}
+
 export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompanies {
-	readonly #principal: Pick<
-		PostgresCloudSecretBrokerPrincipal,
-		"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
-	>;
+	readonly #principal: SharedVaultPrincipal;
+	/** The principal's account login calls; absent, no account login is served or kept here. */
+	readonly #account: AccountModelLoginAuthority | undefined;
+	/** The one account pass per upkeep cycle (its timer never runs: the shared upkeep loop runs it). */
+	readonly #accountUpkeep: CloudModelLoginUpkeep | undefined;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
 	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
@@ -127,10 +175,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#closed = false;
 
 	constructor(options: {
-		principal: Pick<
-			PostgresCloudSecretBrokerPrincipal,
-			"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
-		>;
+		principal: SharedVaultPrincipal;
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
@@ -157,6 +202,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
+		this.#account = accountAuthority(options.principal);
 		this.#keyring = options.keyring;
 		this.#adapters = options.adapters;
 		this.#helper = options.helper;
@@ -174,6 +220,20 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#bankEveryMs = options.bankEveryMs ?? 60_000;
 		this.#digitalPostEveryMs = options.digitalPostEveryMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
+		const account = this.#account;
+		const helper = this.#helper;
+		if (account && helper) {
+			const vault = new CloudModelLoginVault({ accountAuthority: account, keyring: this.#keyring, renewer: helper });
+			this.#accountUpkeep = new CloudModelLoginUpkeep({
+				vault: {
+					renewIdle: (signal) => vault.renewIdleAccount(signal),
+					recordAccounts: (signal) => vault.recordAccountLogins(signal),
+					switchOffReplacedNodeLogins: (signal) => vault.switchOffReplacedByAccountLogins(signal),
+					// Account logins are Codex logins: nothing is ended at OpenAI.
+					revokeUnused: async () => "none",
+				},
+			});
+		}
 	}
 
 	async resolve(companyId: string, signal: AbortSignal): Promise<CloudSecretBrokerCompanyScope | undefined> {
@@ -287,6 +347,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		const plan = this.#chatGptPlan;
 		const modelLogins = new CloudModelLoginVault({
 			authority,
+			...(this.#account ? { accountAuthority: this.#account } : {}),
 			keyring: this.#keyring,
 			...(helper ? { renewer: helper } : {}),
 			...(plan ? { chatGptPlan: plan } : {}),
@@ -342,8 +403,9 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 	}
 
-	/** Each company's upkeep pass in turn (accounts, switch-off, idle renewals). */
+	/** The account pass, then each company's upkeep pass in turn (accounts, switch-off, idle renewals). */
 	async upkeep(): Promise<void> {
+		if (this.#accountUpkeep && !this.#closed) await this.#accountUpkeep.pass();
 		for (const served of [...this.#served.values()]) {
 			if (this.#closed) return;
 			// A company dropped since the pass began is not worked on.
@@ -481,6 +543,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#closing.abort();
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();
-		await Promise.all([...[...this.#served.values()].map((served) => served.upkeep.close()), ...this.#running]);
+		await Promise.all([
+			...[...this.#served.values()].map((served) => served.upkeep.close()),
+			...(this.#accountUpkeep ? [this.#accountUpkeep.close()] : []),
+			...this.#running,
+		]);
 	}
 }

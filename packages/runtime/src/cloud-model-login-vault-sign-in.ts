@@ -19,6 +19,10 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * A ChatGPT plan sign-in (Sign in with ChatGPT, built switched off) arrives the same way; the database's
  * v2 read names its kind, and the plan flow answers with OpenAI's authorization address instead of a
  * link and code (cloud-chatgpt-plan-sign-in.ts).
+ *
+ * An account sign-in (20260930548000; the v2 read names "scope": "account") is a member's Codex sign-in in a company
+ * the shared vault serves: the vault seals it under the member's own key and completes it as the member's account
+ * login, which the database links into every company of the member that this vault serves.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -81,6 +85,11 @@ export interface ModelLoginSignInAuthority extends ChatGptPlanSignInAuthority {
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** Completes an account sign-in (the shared vault only): the same fields, sealed under the member's key. */
+	completeAccountModelLoginSignIn?(
+		completion: Parameters<ModelLoginSignInAuthority["completeModelLoginSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown>;
 	/** The company this broker serves (its authority's company). */
 	modelLoginBrokerCompany(signal: AbortSignal): Promise<unknown>;
 }
@@ -110,6 +119,8 @@ interface SignInRequest extends Ownership {
 interface SignInDescription extends Ownership {
 	loginId: string;
 	loginKind: "codex" | "chatgpt_plan";
+	/** An account sign-in: the member's own login, kept once for every company of theirs this vault serves. */
+	account: boolean;
 	hostId: string | null;
 	companyId: string;
 	clientConnectionId: string;
@@ -167,7 +178,21 @@ function parseRequest(value: unknown, capability: string): SignInRequest {
 }
 
 function parseDescription(value: unknown): SignInDescription {
-	const input = record(value, DESCRIPTION_KEYS, "Vault sign-in description");
+	const account =
+		Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value as object, "scope");
+	const input = record(
+		value,
+		account ? [...DESCRIPTION_KEYS, "scope"] : DESCRIPTION_KEYS,
+		"Vault sign-in description",
+	);
+	if (
+		account &&
+		(input.scope !== "account" ||
+			input.loginKind !== "codex" ||
+			input.computeIdentityOwnershipKind !== "member" ||
+			input.computeIdentityOwnerUserId === null)
+	)
+		throw new Error("Vault sign-in description is invalid");
 	if (
 		input.schema !== "qorpera.model-login-sign-in/v2" ||
 		(input.loginKind !== "codex" && input.loginKind !== "chatgpt_plan") ||
@@ -183,6 +208,7 @@ function parseDescription(value: unknown): SignInDescription {
 	return {
 		loginId: uuid(input.loginId, "Vault sign-in id"),
 		loginKind: input.loginKind,
+		account,
 		hostId: input.hostId as string | null,
 		companyId: uuid(input.profileId, "Vault sign-in company"),
 		clientConnectionId: uuid(input.clientConnectionId, "Vault sign-in connection id"),
@@ -473,37 +499,49 @@ export class CloudModelLoginSignIns {
 				await finish();
 				throw error;
 			}
-			if (!this.#keys.has(description.keyId)) {
+			// An account sign-in is sealed under its member's key, which only the shared vault's master key derives.
+			const completeAccount = this.#authority.completeAccountModelLoginSignIn?.bind(this.#authority);
+			if (
+				description.account
+					? !completeAccount || description.userId === null || !this.#keys.hasMemberKey(description.keyId)
+					: !this.#keys.has(description.keyId)
+			) {
 				await finish();
 				throw new Error("The vault does not hold the company's key");
 			}
 			const modelLoginId = randomUUID();
-			const envelope = this.#keys.seal(
-				{ [MODEL_LOGIN_FIELD]: codex.text },
-				{
-					companyId: description.companyId,
-					environmentId: description.computeIdentityId,
-					secretId: modelLoginId,
-					version: 1,
-					keyId: description.keyId,
-				},
-			);
+			const fields = { [MODEL_LOGIN_FIELD]: codex.text };
+			const envelope =
+				description.account && description.userId !== null
+					? this.#keys.sealMember(fields, {
+							memberId: description.userId,
+							loginId: modelLoginId,
+							version: 1,
+							keyId: description.keyId,
+						})
+					: this.#keys.seal(fields, {
+							companyId: description.companyId,
+							environmentId: description.computeIdentityId,
+							secretId: modelLoginId,
+							version: 1,
+							keyId: description.keyId,
+						});
 			try {
-				await this.#authority.completeModelLoginSignIn(
-					{
-						loginId: signInId,
-						capabilitySha256,
-						modelLoginId,
-						keyId: description.keyId,
-						encryptedEnvelope: envelope,
-						envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-						accessIssuedAt: codex.accessIssuedAt,
-						accessExpiresAt: codex.accessExpiresAt,
-						providerAccountReference: state.providerAccountReference ?? null,
-						providerAccountEmail: state.providerAccountEmail ?? null,
-					},
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
-				);
+				const completion = {
+					loginId: signInId,
+					capabilitySha256,
+					modelLoginId,
+					keyId: description.keyId,
+					encryptedEnvelope: envelope,
+					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+					accessIssuedAt: codex.accessIssuedAt,
+					accessExpiresAt: codex.accessExpiresAt,
+					providerAccountReference: state.providerAccountReference ?? null,
+					providerAccountEmail: state.providerAccountEmail ?? null,
+				};
+				const signal = AbortSignal.timeout(SAVE_DEADLINE_MS);
+				if (description.account && completeAccount) await completeAccount(completion, signal);
+				else await this.#authority.completeModelLoginSignIn(completion, signal);
 			} catch {
 				// The answer may have been lost after the save: the database decides. Otherwise the
 				// helper keeps the login and the next collection tries again.

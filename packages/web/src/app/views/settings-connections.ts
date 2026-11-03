@@ -8,6 +8,7 @@ import {
 	ChatGptPlanSignInError,
 	PlanSwitchBusyError,
 	planLogin,
+	type WebAccountLogin,
 	type WebExecutionConnections,
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
@@ -27,6 +28,8 @@ type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revoke
 			| "chatGptPlanAvailable"
 			| "beginChatGptPlanSignIn"
 			| "finishChatGptPlanSignIn"
+			| "listAccountLogins"
+			| "signOutEverywhere"
 		>
 	>;
 
@@ -172,6 +175,8 @@ export class ConnectionsView {
 	readonly #offered: ReadonlyArray<(typeof PROVIDERS)[number]>;
 	readonly #enabling = new Set<string>();
 	#connections: WebExecutionConnections | undefined;
+	/** The member's account logins by this company's connection: one sign-in used in all their companies. */
+	#accountLogins = new Map<string, WebAccountLogin>();
 	#loading = true;
 	#adding = false;
 	#working: string | undefined;
@@ -393,6 +398,18 @@ export class ConnectionsView {
 					latest.set(connection.connectionId, connection);
 			}
 			const connections = { ...observed, connections: [...latest.values()] };
+			if (this.#client.listAccountLogins) {
+				try {
+					const account = await this.#client.listAccountLogins(this.#lifetime.signal);
+					if (this.#lifetime.signal.aborted) return;
+					this.#accountLogins = new Map(
+						account.logins.flatMap((login) => login.connectionIds.map((id) => [id, login] as const)),
+					);
+				} catch {
+					// The cards read as this company's own logins until the next read.
+					if (this.#lifetime.signal.aborted) return;
+				}
+			}
 			this.#connections = connections;
 			this.#error = undefined;
 			for (const [provider, attempt] of this.#attempts)
@@ -510,6 +527,26 @@ export class ConnectionsView {
 			this.#draw();
 		}
 	}
+	/** Ends an account login in every company; Disconnect on its card only stops using it here. */
+	async #signOutEverywhere(login: WebAccountLogin): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted || !this.#client.signOutEverywhere) return;
+		this.#working = `everywhere:${login.loginId}`;
+		this.#error = undefined;
+		this.#draw();
+		let failed = false;
+		try {
+			await this.#client.signOutEverywhere(login.loginId, this.#lifetime.signal);
+		} catch {
+			failed = true;
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+		if (failed && !this.#lifetime.signal.aborted && !this.#error) {
+			this.#error = t("You could not be signed out everywhere. Try again.");
+			this.#draw();
+		}
+	}
 	/** The member's own choice for their ChatGPT plan; nothing else turns it on. */
 	async #setAway(connection: WebMemberConnection): Promise<void> {
 		if (this.#working || !this.#client.setWorkWhileAway) return;
@@ -577,12 +614,31 @@ export class ConnectionsView {
 	#account(connection: WebMemberConnection, showAdded: boolean): HTMLElement {
 		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
 		const email = connection.providerAccountEmail;
+		// An account login is used in all the member's companies: Disconnect here only stops using it here.
+		const account = this.#accountLogins.get(connection.connectionId);
 		const signOut = button(
-			this.#working === connection.connectionId ? t("Signing out…") : t("Sign out"),
+			this.#working === connection.connectionId
+				? account
+					? t("Stopping…")
+					: t("Signing out…")
+				: account
+					? t("Stop using here")
+					: t("Sign out"),
 			() => void this.#disconnect(connection),
 			{ disabled: Boolean(this.#working) },
 		);
 		signOut.dataset.focusKey = `signout:${connection.connectionId}`;
+		const everywhere =
+			account && this.#client.signOutEverywhere
+				? button(
+						this.#working === `everywhere:${account.loginId}`
+							? t("Signing out everywhere…")
+							: t("Sign out everywhere"),
+						() => void this.#signOutEverywhere(account),
+						{ disabled: Boolean(this.#working) },
+					)
+				: null;
+		if (everywhere) everywhere.dataset.focusKey = `everywhere:${account?.loginId}`;
 		return h(
 			"article",
 			{ class: "connection-card", dataset: { connectionId: connection.connectionId } },
@@ -602,11 +658,12 @@ export class ConnectionsView {
 							}),
 						)
 					: null,
+				account ? h("small", { class: "connection-scope" }, t("Used in all your companies")) : null,
 				!live(connection)
 					? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
 					: null,
 			),
-			h("div", { class: "connection-actions" }, signOut),
+			h("div", { class: "connection-actions" }, signOut, everywhere),
 			this.#usage(connection),
 			this.#away(connection),
 		);
