@@ -726,6 +726,55 @@ describe("conversation execution account", () => {
 		expect(selector()).toBeNull();
 	});
 
+	it("lets the member move an exhausted conversation to another of their logins, never on its own", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		// The conversation keeps its account and waits; the other login is offered, not taken.
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
+		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		expect(buttonNamed(f.view, "Use Model account 1")).toBeUndefined();
+		buttonNamed(f.view, "Use Model account 2")!.click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.send().disabled).toBe(false);
+		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+	});
+
+	it("offers no other login when the member has none that can pay", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 0]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
+		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+	});
+
+	it("moves an exhausted conversation through the cloud's choice only on the member's click", async () => {
+		vi.useFakeTimers();
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(true, withUsage([80, 40]), select, undefined, choose);
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		expect(choose).not.toHaveBeenCalled();
+		select.mockResolvedValue(id(91));
+		buttonNamed(f.view, "Use Model account 2")!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
 	it("names no account of the conversation once the cloud gives it none", async () => {
 		const select = vi.fn(async (): Promise<string | undefined> => id(90));
 		const f = setup(true, withUsage([80, 40]), select);
