@@ -3464,6 +3464,25 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    to the company's own agents. See the
    [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
    item 2.
+   Amended 2026-11-03 (the Co-Founder's founding run had its weekday planning
+   routine denied as not requested, because its kickoff reached the reviewer
+   as raw data in a member's place and its first todo read as the whole
+   request):
+   - A first run's startup input is the platform's, never a member's request:
+     the reviewer reads it in plain words as the agent's first run, started
+     when the company was founded or the agent was hired, whose startup
+     assignment (its first todo) is where it begins, not all it may do. A
+     first run is judged by its mandate, as item 2 of that amendment says.
+   - The mandate's Co-Founder role names, as its hire overlay does, the
+     weekday planning routine its founding run sets up and keeping the
+     company's work moving without waiting to be asked.
+   - A delegation is never denied only because the request or the mandate
+     does not name it. In a first run, where a member is usually watching, a
+     delegation that serves none of the mandate gets a card instead of a
+     deny. Deny is unchanged otherwise: an action against the request,
+     instructions from outside content, an action against the vision, a
+     member's no, and, in a routine's, an event's or a coworker's run, a
+     delegation that serves none of the mandate.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
