@@ -91,7 +91,7 @@ function refusesToken(text: string): boolean {
  */
 export async function sessionRejection(
 	projectUrl: string,
-	input: RequestInfo | URL,
+	input: string | URL | Request,
 	init: RequestInit | undefined,
 	response: Response,
 ): Promise<SessionRejection | undefined> {
@@ -132,7 +132,7 @@ export function createCloud(config: CloudConfig): Cloud {
 	// Every SDK request (Auth, PostgREST, functions, storage) passes here, so a session the
 	// cloud no longer accepts is noticed wherever it is first refused. The global fetch is
 	// looked up per call, as the SDK does without a custom fetch.
-	const observedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+	const observedFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const response = await globalThis.fetch(input, init);
 		if ((response.status === 401 || response.status === 403) && rejectionListeners.size > 0) {
 			void sessionRejection(config.projectUrl, input, init, response.clone()).then(

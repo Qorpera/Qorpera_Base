@@ -121,7 +121,6 @@ describe("a refused session signs the member out", () => {
 			}),
 		);
 		vi.stubGlobal("BroadcastChannel", undefined);
-		vi.stubGlobal("navigator", { locks: undefined });
 	});
 
 	afterEach(async () => {
@@ -134,7 +133,7 @@ describe("a refused session signs the member out", () => {
 
 	async function start(rest: (url: URL, init?: RequestInit) => Promise<Response>) {
 		const requests: string[] = [];
-		vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
 			const url = new URL(String(input));
 			const method = init?.method ?? "GET";
 			requests.push(`${method} ${url.pathname}${url.search}`);
