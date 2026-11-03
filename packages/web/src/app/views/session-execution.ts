@@ -453,7 +453,12 @@ export class SessionExecutionView {
 				: this.#observed && !this.#error && !this.canSend && !this.#busy
 					? this.#unchosen(this.#available())
 						? this.#choice(this.#observed, !canWrite)
-						: h("p", { class: "muted" }, this.#unavailableReason(this.#observed))
+						: h(
+								"div",
+								null,
+								h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
+								this.#otherLogins(this.#observed, locked),
+							)
 					: null,
 		);
 	}
@@ -468,6 +473,36 @@ export class SessionExecutionView {
 			...available.map((connectionId, index) => {
 				const connection = observed.connections.find((candidate) => candidate.connectionId === connectionId);
 				const account = connection?.providerAccountEmail ?? t("Model account {number}", { number: index + 1 });
+				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
+					small: true,
+					disabled,
+				});
+			}),
+		);
+	}
+
+	/** The conversation's own login can't pay now (its usage limit, or disabled): the member may move the
+	 * conversation to another of their logins that can. Only their click moves it; nothing moves on its own. */
+	#otherLogins(observed: NativeExecutionConnections, disabled: boolean): HTMLElement | null {
+		const own = this.#serverSelection
+			? this.#serverConnectionId
+			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
+		if (!own || !observed.connections.some((connection) => connection.connectionId === own)) return null;
+		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
+		const available = this.#available();
+		const others = available.filter((connectionId) => connectionId !== own);
+		if (!others.length) return null;
+		return h(
+			"div",
+			{ class: "session-execution-choice" },
+			h("p", { class: "muted" }, t("Or continue with another of your logins.")),
+			...others.map((connectionId) => {
+				// Numbered as "Choose a login to continue" numbers them.
+				const account =
+					observed.connections.find((candidate) => candidate.connectionId === connectionId)
+						?.providerAccountEmail ??
+					t("Model account {number}", { number: available.indexOf(connectionId) + 1 });
 				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
 					small: true,
 					disabled,
