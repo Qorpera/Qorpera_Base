@@ -1330,7 +1330,8 @@ machine.
   `Retry-After`) or 503 (mail switched off, or retry).
 - `site-serve` (20260930550000) — the company sites' public host,
   `https://sites.qorpera.com/<slug>/` (the front proxy sends that host, and no
-  other, to `/functions/v1/site-serve/`), not for clients: a visitor's
+  other, to `/functions/v1/site-serve/`, and the function answers 404 unless
+  `X-Forwarded-Host` is exactly that host), not for clients: a visitor's
   password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
   static files under the visitor's session (`/<slug>/~<token>/<path>`), each
   file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.
