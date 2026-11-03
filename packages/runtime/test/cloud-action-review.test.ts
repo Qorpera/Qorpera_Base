@@ -11,8 +11,10 @@ import {
 	cloudActionEffect,
 	cloudActionReviewMandate,
 	cloudActionReviewRequest,
+	cloudConnectorEffects,
 	describeCloudAction,
 	parseCloudActionVerdict,
+	repositoryAccessCheck,
 	siteAccessCheck,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
@@ -524,6 +526,41 @@ describe("what the card shows", () => {
 			title: "Comment on a GitHub issue",
 			target: "acme/shop#42",
 			details: { body: "Fixed in the latest release." },
+		});
+	});
+
+	it("names a new GitHub repository by its owner and name, and says who can see it (3 November 2026)", () => {
+		// The tool's default: private, with a README, in the connected account.
+		expect(
+			describeCloudAction(tool("github_create_repository", "connector"), { input: { name: "wristband-shop" } }),
+		).toEqual({
+			title: "Create a GitHub repository",
+			target: "wristband-shop",
+			details: {
+				account: "The connected GitHub account",
+				visibility: "Private: only people given access can see it",
+				"starts with": "A README",
+			},
+		});
+		expect(
+			describeCloudAction(tool("github_create_repository", "connector"), {
+				idempotencyKey: "k",
+				input: {
+					owner: "acme",
+					name: "wristband-shop",
+					private: false,
+					auto_init: false,
+					description: "Our shop\u202e for wristbands",
+				},
+			}),
+		).toEqual({
+			title: "Create a public GitHub repository",
+			target: "acme/wristband-shop",
+			details: {
+				visibility: "Public: anyone on the internet can see it",
+				description: "Our shop for wristbands",
+				"starts with": "Nothing, an empty repository",
+			},
 		});
 	});
 
@@ -2806,6 +2843,122 @@ describe("company sites (20260930550000)", () => {
 				action: {
 					title: mode === "new" ? "Publish a new password-protected website" : "Update a published website",
 					arguments: '{"slug":"wristband-shop","source":"product/webshop"}',
+				},
+			});
+		}
+	});
+});
+
+describe("GitHub repositories (20260930556000)", () => {
+	const verdict = (decision: "allow" | "ask" | "deny", builtIn = "none") =>
+		parseCloudActionVerdict({
+			decision,
+			ruleIds: [],
+			builtIn,
+			reason: "Requested.",
+			proposedRule: "",
+		});
+	const call = (input: Record<string, JsonValue>, source: CloudNativeTool["source"] = "connector") => ({
+		tool: { name: "github_create_repository", source },
+		parsed: { input },
+	});
+
+	it("reviews a new repository as an outside effect", () => {
+		const effects = cloudConnectorEffects([
+			{ toolName: "github_create_repository", connectorId: "github", operationId: "create_repository" },
+			{ toolName: "github_list_repositories", connectorId: "github", operationId: "list_repositories" },
+		]);
+		expect(cloudActionEffect(tool("github_create_repository", "connector"), { input: { name: "x" } }, effects)).toBe(
+			"external",
+		);
+		expect(cloudActionEffect(tool("github_list_repositories", "connector"), { input: {} }, effects)).toBe("read");
+	});
+
+	it("makes a public repository a built-in access check, whatever the reviewer called it, and leaves a private one", () => {
+		expect(repositoryAccessCheck(call({ name: "shop", private: false }), verdict("allow"))).toEqual({
+			decision: "allow",
+			ruleIds: [],
+			builtIn: "access_change",
+			reason: "Requested.",
+			proposedRule: "create public GitHub repositories for the company",
+		});
+		expect(repositoryAccessCheck(call({ name: "shop", private: false }), verdict("ask")).builtIn).toBe(
+			"access_change",
+		);
+		// Private, the default, and an explicit private one are as the reviewer says.
+		expect(repositoryAccessCheck(call({ name: "shop" }), verdict("allow"))).toEqual(verdict("allow"));
+		expect(repositoryAccessCheck(call({ name: "shop", private: true }), verdict("allow"))).toEqual(verdict("allow"));
+		// A denial stays one; a check the reviewer named stays its own; a runtime tool of the same name is not this one.
+		expect(repositoryAccessCheck(call({ name: "shop", private: false }), verdict("deny", "not_requested"))).toEqual(
+			verdict("deny", "not_requested"),
+		);
+		expect(repositoryAccessCheck(call({ name: "shop", private: false }), verdict("ask", "money")).builtIn).toBe(
+			"money",
+		);
+		expect(repositoryAccessCheck(call({ name: "shop", private: false }, "runtime"), verdict("allow"))).toEqual(
+			verdict("allow"),
+		);
+	});
+
+	it("records a public repository's allow as an access check for the kernel, and a private one as the reviewer said", async () => {
+		for (const visible of [true, false]) {
+			const recorded: Array<Record<string, unknown>> = [];
+			const control: CloudActionReviewControl = {
+				call: async (method, args) => {
+					if (method === "qorpera_begin_action_review")
+						return {
+							state: "review",
+							agent: { name: "Co-Founder" },
+							company: { name: "Acme" },
+							requester: null,
+							rules: [],
+						};
+					if (method === "qorpera_record_action_review") {
+						recorded.push(args.p_review as Record<string, unknown>);
+						return { reviewId: randomUUID(), decision: "allow", card: false, reason: "Fine." };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			};
+			const gateInstance = new CloudActionReviewGate({
+				binding,
+				control,
+				reviewer: {
+					review: async () => ({
+						decision: "allow",
+						ruleIds: [],
+						builtIn: "none",
+						reason: "Fine.",
+						proposedRule: null,
+					}),
+				},
+				request: "Create the wristband-shop repository.",
+				connectorEffects: cloudConnectorEffects([
+					{ toolName: "github_create_repository", connectorId: "github", operationId: "create_repository" },
+				]),
+				holdMs: 0,
+				pollMs: 1,
+			});
+			const argumentsText = JSON.stringify({ name: "wristband-shop", ...(visible ? { private: false } : {}) });
+			await gateInstance.check(
+				{
+					tool: tool("github_create_repository", "connector"),
+					parsed: { input: JSON.parse(argumentsText) as JsonValue },
+					argumentsText,
+					argumentSha256: "c".repeat(64),
+					callId: "call_repository",
+				},
+				new AbortController().signal,
+			);
+			expect(recorded[0]).toMatchObject({
+				tool: "github_create_repository",
+				effect: "external",
+				builtIn: visible ? "access_change" : "none",
+				proposedRule: visible ? "create public GitHub repositories for the company" : null,
+				action: {
+					title: visible ? "Create a public GitHub repository" : "Create a GitHub repository",
+					target: "wristband-shop",
+					arguments: argumentsText,
 				},
 			});
 		}

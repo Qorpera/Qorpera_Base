@@ -277,3 +277,167 @@ it("keeps repository, issue and pull request file lists under the broker's resul
 	expect((pull as { result: { files_omitted: number } }).result.files_omitted).toBeGreaterThan(0);
 	expect(bytes(pull)).toBeLessThanOrEqual(30 * 1024);
 });
+
+it("creates a private repository with a README in the connected account by default (3 November 2026)", async () => {
+	const fetchImplementation = server({
+		"POST /user/repos": (_url, init) => {
+			expect(JSON.parse(String(init?.body))).toEqual({ name: "wristband-shop", private: true, auto_init: true });
+			return Response.json(
+				{
+					full_name: "anna/wristband-shop",
+					private: true,
+					default_branch: "main",
+					html_url: "https://github.com/anna/wristband-shop",
+					clone_url: "https://github.com/anna/wristband-shop.git",
+					created_at: "2026-11-03T10:00:00Z",
+					owner: { login: "anna", node_id: "secret-ish" },
+				},
+				{ status: 201 },
+			);
+		},
+	});
+	const result = await adapter("create_repository", fetchImplementation).execute(input({ name: "wristband-shop" }));
+	expect(result).toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "completed",
+		result: {
+			full_name: "anna/wristband-shop",
+			private: true,
+			default_branch: "main",
+			url: "https://github.com/anna/wristband-shop",
+			clone_url: "https://github.com/anna/wristband-shop.git",
+			created_at: "2026-11-03T10:00:00Z",
+		},
+	});
+	expect(JSON.stringify(result)).not.toContain("secret-ish");
+	// No owner: no lookup of the account, one request.
+	expect(fetchImplementation).toHaveBeenCalledTimes(1);
+});
+
+it("creates it in an organization, or in the account when the owner is the account's own login", async () => {
+	const created = { full_name: "acme/shop", private: false, html_url: "https://github.com/acme/shop" };
+	const fetchImplementation = server({
+		"GET /user": () => Response.json({ login: "Anna" }),
+		"POST /orgs/acme/repos": (_url, init) => {
+			expect(JSON.parse(String(init?.body))).toEqual({
+				name: "shop",
+				private: false,
+				auto_init: false,
+				description: "The wristband shop",
+			});
+			return Response.json(created, { status: 201 });
+		},
+		"POST /user/repos": (_url, init) => {
+			expect(JSON.parse(String(init?.body))).toEqual({ name: "notes", private: true, auto_init: true });
+			return Response.json({ full_name: "Anna/notes", private: true }, { status: 201 });
+		},
+	});
+	const create = adapter("create_repository", fetchImplementation);
+	await expect(
+		create.execute(
+			input({ owner: "acme", name: "shop", private: false, auto_init: false, description: "The wristband shop" }),
+		),
+	).resolves.toMatchObject({ status: "completed", result: { full_name: "acme/shop", private: false } });
+	await expect(create.execute(input({ owner: "anna", name: "notes" }))).resolves.toMatchObject({
+		status: "completed",
+		result: { full_name: "Anna/notes", private: true },
+	});
+	expect(
+		fetchImplementation.mock.calls.map(
+			([target, init]) => `${init?.method ?? "GET"} ${new URL(String(target)).pathname}`,
+		),
+	).toEqual(["GET /user", "POST /orgs/acme/repos", "GET /user", "POST /user/repos"]);
+});
+
+it("answers a refused repository in words the agent can relay, and never repeats GitHub's body", async () => {
+	const refusal =
+		(status: number, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+		() =>
+			new Response(JSON.stringify({ ...body, secret_echo: token }), {
+				status,
+				headers: { "content-type": "application/json", ...headers },
+			});
+	const create = (routes: Parameters<typeof server>[0], args: Record<string, JsonValue>) =>
+		adapter("create_repository", server({ "GET /user": () => Response.json({ login: "anna" }), ...routes })).execute(
+			input(args),
+		);
+	const reconnect = "the GitHub connection needs to be connected again with permission to create repositories";
+	// A token that may not create repositories: a fine-grained token without Administration write answers 403, a token
+	// without the scope 404.
+	for (const [status, message] of [
+		[403, "Resource not accessible by personal access token"],
+		[404, "Not Found"],
+	] as const) {
+		const result = (await create({ "POST /user/repos": refusal(status, { message }) }, { name: "shop" })) as Record<
+			string,
+			JsonValue
+		>;
+		expect(result).toMatchObject({ status: "failed", reason: "forbidden" });
+		expect(result.detail).toBe(`GitHub refused to create the repository: ${reconnect} (GitHub: ${message}).`);
+		expect(JSON.stringify(result)).not.toContain(token);
+	}
+	await expect(
+		create(
+			{ "POST /orgs/acme/repos": refusal(403, { message: "You need admin access" }) },
+			{ owner: "acme", name: "x" },
+		),
+	).resolves.toMatchObject({
+		status: "failed",
+		reason: "forbidden",
+		detail: `GitHub refused a new repository in acme: an owner of that organization must allow it, or ${reconnect}.`,
+	});
+	await expect(
+		create({ "POST /orgs/acme/repos": refusal(404, { message: "Not Found" }) }, { owner: "acme", name: "x" }),
+	).resolves.toMatchObject({
+		status: "failed",
+		reason: "not_found",
+		detail: expect.stringContaining("no organization acme"),
+	});
+	// A taken name says so, from GitHub's first error rather than its summary.
+	await expect(
+		create(
+			{
+				"POST /user/repos": refusal(422, {
+					message: "Repository creation failed.",
+					errors: [
+						{
+							resource: "Repository",
+							code: "custom",
+							field: "name",
+							message: "name already exists on this account",
+						},
+					],
+				}),
+			},
+			{ name: "shop" },
+		),
+	).resolves.toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "failed",
+		reason: "invalid_request",
+		detail: "GitHub: name already exists on this account",
+	});
+	// A rate limit stays a rate limit, not a permission.
+	await expect(
+		create(
+			{ "POST /user/repos": refusal(403, { message: "API rate limit exceeded" }, { "x-ratelimit-remaining": "0" }) },
+			{ name: "shop" },
+		),
+	).resolves.toMatchObject({ status: "failed", reason: "rate_limited" });
+});
+
+it("refuses a repository name outside GitHub's rules before any request", async () => {
+	const fetchImplementation = vi.fn<typeof fetch>();
+	const create = adapter("create_repository", fetchImplementation);
+	await expect(create.execute(input({ name: ".." }))).resolves.toMatchObject({
+		status: "failed",
+		reason: "invalid_request",
+	});
+	await expect(create.execute(input({ name: "acme/shop" }))).rejects.toThrow(
+		"input.name must be a string of 1 to 100 characters matching ^[A-Za-z0-9_.-]{1,100}$",
+	);
+	await expect(create.execute(input({ name: "shop", visibility: "public" }))).rejects.toThrow(
+		"input has no field visibility",
+	);
+	expect(fetchImplementation).not.toHaveBeenCalled();
+});

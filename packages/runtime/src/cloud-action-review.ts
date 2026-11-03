@@ -57,6 +57,7 @@ const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
 	google_drive_update_file: "Change a Google Drive file",
 	github_create_issue: "Open a GitHub issue",
 	github_comment_on_issue: "Comment on a GitHub issue",
+	github_create_repository: "Create a GitHub repository",
 };
 
 const BUILT_INS = ["none", "money", "legal_terms", "delete_outside", "access_change", "not_requested"] as const;
@@ -338,6 +339,30 @@ export function siteAccessCheck(
 		...verdict,
 		builtIn: "access_change",
 		proposedRule: verdict.proposedRule ?? "publish a password-protected website for the company",
+	};
+}
+
+/**
+ * A public GitHub repository shares its contents with everyone on the internet (3 November 2026): a built-in access
+ * check, whatever the reviewer called it, so the kernel asks an owner or admin unless a company Allow rule the reviewer
+ * cited covers it (qorpera_record_action_review). A private one (the tool's default) is reviewed as the reviewer says;
+ * a denial stays one.
+ */
+export function repositoryAccessCheck(
+	call: Pick<CloudActionCall, "tool" | "parsed">,
+	verdict: CloudActionVerdict,
+): CloudActionVerdict {
+	if (
+		call.tool.name !== "github_create_repository" ||
+		call.tool.source !== "connector" ||
+		verdict.builtIn !== "none" ||
+		record(record(call.parsed).input ?? null).private !== false
+	)
+		return verdict;
+	return {
+		...verdict,
+		builtIn: "access_change",
+		proposedRule: verdict.proposedRule ?? "create public GitHub repositories for the company",
 	};
 }
 
@@ -803,6 +828,18 @@ export function describeCloudAction(
 				? input.labels.filter((label): label is string => typeof label === "string").join(", ")
 				: undefined,
 		);
+	} else if (tool.name === "github_create_repository") {
+		const input = record(args.input ?? parsed);
+		const visible = input.private === false;
+		title = visible ? "Create a public GitHub repository" : (CONNECTOR_TITLES[tool.name] ?? title);
+		target = [text(input.owner), text(input.name)].filter(Boolean).join("/") || null;
+		if (!text(input.owner)) add("account", "The connected GitHub account");
+		add(
+			"visibility",
+			visible ? "Public: anyone on the internet can see it" : "Private: only people given access can see it",
+		);
+		add("description", input.description);
+		add("starts with", input.auto_init === false ? "Nothing, an empty repository" : "A README");
 	} else if (tool.source === "connector") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
@@ -1357,7 +1394,7 @@ export class CloudActionReviewGate {
 				text: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 			};
 		}
-		verdict = siteAccessCheck(call, verdict);
+		verdict = repositoryAccessCheck(call, siteAccessCheck(call, verdict));
 		const recorded = object(
 			await this.#control.call(
 				"qorpera_record_action_review",

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { cloudConnectorCatalogRows } from "@qorpera/runtime/cloud-connector-catalog";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CloudNativeToolBoundary,
@@ -232,26 +233,32 @@ it("validates business arguments, reserves one receipt and calls the separate br
 it("refuses each malformed connector call with the rule it broke and none of its values", async () => {
 	const fixture = await setup();
 	const observed = observedBoundary(fixture);
-	const call = 'The call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
+	const call = 'Send the tool\'s fields on their own, or as {"idempotencyKey": "<key>", "input": {...}}';
+	const envelope = 'With input, the call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
 	const key =
 		"idempotencyKey must be 1 to 128 letters, digits or . _ : -, starting with a letter or digit (^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$)";
 	const fields = "its fields are priority, title";
 	const title = "input.title must be a string of 1 to 256 characters matching ^[A-Za-z][A-Za-z0-9 _-]{0,255}$";
 	const priority = "input.priority must be a whole number from 0 to 4";
 	const issue = { idempotencyKey: "issue-login" };
+	const writeKey =
+		"idempotencyKey is required for this write: a new key for each new write, the same key when retrying the same write";
 	const cases: [string, unknown, string][] = [
 		["list", ["PRIVATE_VALUE"], call],
 		["text", "PRIVATE_VALUE", call],
-		["flat", { title: "PRIVATE_VALUE", priority: 2 }, `${call}; priority, title go inside input`],
-		["beside", { ...issue, input: {}, title: "PRIVATE_VALUE" }, `${call}; title goes inside input`],
-		["named_key", { ...issue, input: { title: "Ok" }, note: "PRIVATE_VALUE" }, `${call}, without note`],
-		["unnamed_key", { ...issue, input: { title: "Ok" }, "PRIVATE KEY": 1 }, `${call}, without other fields`],
-		["no_key", { input: { title: "PRIVATE_VALUE" } }, `${call}; idempotencyKey is missing`],
-		[
-			"no_input",
-			{ idempotencyKey: "PRIVATE-VALUE" },
-			`${call}; input is missing (it holds the tool's fields, or is {} for none)`,
-		],
+		// The tool's fields on their own beside a key are a call (below); here they still break the schema's rules.
+		["flat_pattern", { ...issue, title: "1 PRIVATE_VALUE", priority: 2 }, title],
+		["flat_field", { ...issue, title: "Ok", labels: ["PRIVATE_VALUE"] }, `input has no field labels; ${fields}`],
+		// A write always needs the model's own key, in either shape (review F1: a key made from its fields answered a
+		// later identical write from the first one's receipt).
+		["flat_no_key", { title: "PRIVATE_VALUE", priority: 2 }, writeKey],
+		["no_key", { input: { title: "PRIVATE_VALUE" } }, writeKey],
+		["flat_required", { idempotencyKey: "PRIVATE-VALUE" }, "input is missing the required field title"],
+		["flat_bad_key", { idempotencyKey: "PRIVATE VALUE", title: "Ok" }, key],
+		["beside", { ...issue, input: {}, title: "PRIVATE_VALUE" }, `${envelope}; title goes inside input`],
+		["beside_no_key", { input: {}, priority: 2 }, `${envelope}; priority goes inside input`],
+		["named_key", { ...issue, input: { title: "Ok" }, note: "PRIVATE_VALUE" }, `${envelope}, without note`],
+		["unnamed_key", { ...issue, input: { title: "Ok" }, "PRIVATE KEY": 1 }, `${envelope}, without other fields`],
 		["bad_key", { idempotencyKey: "PRIVATE VALUE", input: { title: "Ok" } }, key],
 		["number_key", { idempotencyKey: 4242, input: { title: "Ok" } }, key],
 		["text_input", { ...issue, input: "PRIVATE_VALUE" }, "input must be an object"],
@@ -310,6 +317,187 @@ it("refuses each malformed connector call with the rule it broke and none of its
 		expect(JSON.stringify(observed.rows)).not.toContain("PRIVATE");
 	} finally {
 		observed.boundary.close();
+	}
+});
+
+/** A connector tool over a ledger that keys receipts by their logical operation, as the kernel does, and a broker that
+ * answers with the arguments it got. */
+async function keyedFixture(descriptor: Record<string, unknown>) {
+	const native = nativeToolAuthorityFixture();
+	const pathControl = {
+		call: vi.fn<CloudCompanyPathControl["call"]>(async (method) => {
+			if (method === "qorpera_list_native_connector_tools") return [descriptor] as unknown as JsonValue;
+			if (method === "qorpera_assert_native_connector_operation") return null;
+			throw new Error("Unexpected synthetic connector RPC");
+		}),
+	};
+	const reader = { describeToolAuthority: vi.fn(async () => structuredClone(native.authority)) };
+	const run = await CloudNativeToolRun.open(native.binding, reader, new AbortController().signal);
+	runs.push(run);
+	const receipts = new Map<string, { receiptId: string; result: JsonValue | null }>();
+	const operationControl: CloudNativeToolOperationControlPlane = {
+		beginToolOperation: vi.fn(async (binding, input) => {
+			const prior = receipts.get(input.logicalOperationKey);
+			if (prior?.result)
+				return {
+					run_id: binding.runId,
+					receipt_id: prior.receiptId,
+					state: "completed",
+					result: prior.result,
+					output_snapshot_id: null,
+					proposal_id: null,
+				};
+			receipts.set(input.logicalOperationKey, { receiptId: input.receiptId, result: null });
+			return {
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+			};
+		}),
+		completeToolOperation: vi.fn(async (binding, input) => {
+			for (const receipt of receipts.values())
+				if (receipt.receiptId === input.receiptId) receipt.result = structuredClone(input.result);
+			return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+		}),
+	};
+	const broker = {
+		execute: vi.fn<CloudSecretOperationClient["execute"]>(async (request) => ({
+			kind: "json",
+			value: { arguments: request.arguments },
+		})),
+	};
+	const descriptors = await describeCloudSecretTools(pathControl, native.binding, new AbortController().signal);
+	const tools = cloudSecretTools({
+		descriptors,
+		binding: native.binding,
+		control: pathControl,
+		operations: new CloudNativeToolOperations(run, operationControl),
+		broker,
+	});
+	const boundary = new CloudNativeToolBoundary({
+		companyId: native.authority.identity.companyId,
+		runId: native.binding.runId,
+		identity: native.authority.identity,
+		tools,
+		assertActive: (signal) => run.assertActive(signal),
+		signal: run.signal,
+	});
+	const invoke = async (callId: string, args: JsonValue) => {
+		const reply = await boundary.invoke(callId, "qorpera", descriptor.toolName as string, args);
+		expect(reply.success, callId).toBe(true);
+		return (JSON.parse(reply.contentItems[0].text) as CloudToolResult).content;
+	};
+	return { operationControl, broker, tools, boundary, invoke };
+}
+
+it("takes a write's fields on their own beside its key, and runs each write that has a new key", async () => {
+	const fixture = await setup();
+	const keyed = await keyedFixture(fixture.descriptor);
+	try {
+		// The schema shows the envelope with its required key, and says what the key is for.
+		expect(keyed.tools[0].inputSchema).toMatchObject({
+			required: ["idempotencyKey", "input"],
+			properties: {
+				idempotencyKey: {
+					description: expect.stringContaining("a new key for each new write, the same key when retrying"),
+				},
+			},
+		});
+		const login = { title: "Login is broken", priority: 2 };
+		const first = await keyed.invoke("call_flat", { idempotencyKey: "issue-1", ...login });
+		expect(first.text).toContain('"Login is broken"');
+		expect(keyed.broker.execute.mock.calls[0][0].arguments).toEqual(login);
+		// The same key again, flat or in input, is the retry of that write: answered from it, not repeated.
+		expect((await keyed.invoke("call_retry", { idempotencyKey: "issue-1", input: login })).text).toBe(first.text);
+		expect(keyed.broker.execute).toHaveBeenCalledTimes(1);
+		// A, then B, then A again under three keys: three writes, the last one too (undoing a change runs).
+		await keyed.invoke("call_b", { idempotencyKey: "issue-2", title: "Login is slow" });
+		await keyed.invoke("call_a_again", { idempotencyKey: "issue-3", ...login });
+		expect(keyed.broker.execute).toHaveBeenCalledTimes(3);
+		expect(keyed.broker.execute.mock.calls.map(([request]) => request.arguments)).toEqual([
+			login,
+			{ title: "Login is slow" },
+			login,
+		]);
+		expect(
+			vi.mocked(keyed.operationControl.beginToolOperation).mock.calls.map(([, input]) => input.logicalOperationKey),
+		).toEqual(
+			["issue-1", "issue-2", "issue-3"].map((key) => `linear_issue_create:${fixture.descriptor.grantId}:${key}`),
+		);
+		// Without a key a write does not run, in either shape, and says why.
+		for (const [callId, args] of [
+			["call_flat_no_key", login],
+			["call_input_no_key", { input: login }],
+		] as const) {
+			const refused = await keyed.boundary.invoke(callId, "qorpera", "linear_issue_create", args);
+			expect(JSON.parse(refused.contentItems[0].text), callId).toMatchObject({
+				status: "denied",
+				content: {
+					text: "INVALID_ARGUMENTS: idempotencyKey is required for this write: a new key for each new write, the same key when retrying the same write",
+				},
+			});
+		}
+		expect(keyed.broker.execute).toHaveBeenCalledTimes(3);
+		expect(keyed.operationControl.beginToolOperation).toHaveBeenCalledTimes(3);
+	} finally {
+		keyed.boundary.close();
+	}
+});
+
+it("shows a read its own fields and asks again on each call, in either shape (30 October 2026)", async () => {
+	const row = cloudConnectorCatalogRows().find(
+		(item) => item.connectorId === "github" && item.operationId === "list_repositories",
+	);
+	if (!row) throw new Error("github list_repositories is missing");
+	const grantId = randomUUID();
+	const keyed = await keyedFixture({
+		schema: "qorpera.native-connector-tool/v1",
+		grantId,
+		toolName: row.toolName,
+		description: row.description,
+		inputSchema: row.inputSchema,
+		connectorId: row.connectorId,
+		operationId: row.operationId,
+		operationVersion: row.version,
+		adapterSha256: row.adapterSha256,
+		destinationOrigin: row.destinationOrigin,
+	});
+	try {
+		// The natural schema: the tool's own fields, no key.
+		expect(keyed.tools[0].inputSchema).toMatchObject({
+			type: "object",
+			properties: { limit: { type: "integer" }, query: { type: "string" } },
+			additionalProperties: false,
+		});
+		expect(JSON.stringify(keyed.tools[0].inputSchema)).not.toContain("idempotencyKey");
+		// The call that was refused on 30 October, the one that then worked, and the plain ones: each asks GitHub.
+		await keyed.invoke("call_bare", {});
+		await keyed.invoke("call_bare_again", {});
+		await keyed.invoke("call_limit", { limit: 50 });
+		await keyed.invoke("call_envelope", { idempotencyKey: "list-1", input: { limit: 50 } });
+		await keyed.invoke("call_input", { input: { limit: 50 } });
+		expect(keyed.broker.execute).toHaveBeenCalledTimes(5);
+		expect(keyed.broker.execute.mock.calls.map(([request]) => request.arguments)).toEqual([
+			{},
+			{},
+			{ limit: 50 },
+			{ limit: 50 },
+			{ limit: 50 },
+		]);
+		expect(vi.mocked(keyed.operationControl.beginToolOperation).mock.calls[0][1].logicalOperationKey).toMatch(
+			new RegExp(`^github_list_repositories:${grantId}:read-[0-9a-f]{48}$`),
+		);
+		// A read still refuses what its schema does not take.
+		const refused = await keyed.boundary.invoke("call_bad", "qorpera", row.toolName, { limit: 500 });
+		expect(JSON.parse(refused.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS: input.limit must be a whole number from 1 to 50" },
+		});
+	} finally {
+		keyed.boundary.close();
 	}
 });
 
