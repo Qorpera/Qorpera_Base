@@ -1417,21 +1417,27 @@ describe("the composer's Login page", () => {
 	});
 
 	it("lists the member's logins as the login choice numbers them, the current one ticked, never Claude", async () => {
-		const observed = withUsage([20, 80]);
-		observed.connections[1]!.providerAccountEmail = "jonas@example.com";
-		observed.connections.push({
-			...observed.connections[0]!,
-			connectionId: id(95),
-			clientConnectionId: id(195),
-			sponsorBindingId: id(96),
-			provider: "anthropic",
-			nativeHarness: "claude-code",
-			// More room than either Codex login: still never offered for chat.
-			providerAccountUsage: {
-				observedAt: new Date().toISOString(),
-				windows: [{ id: "primary", label: "5 hours", usedPercent: 0, resetAt: "2099-01-01T00:00:00.000Z" }],
-			},
-		});
+		const codex = withUsage([20, 80]);
+		codex.connections[1]!.providerAccountEmail = "jonas@example.com";
+		const observed: NativeExecutionConnections = {
+			...codex,
+			connections: [
+				...codex.connections,
+				{
+					...codex.connections[0]!,
+					connectionId: id(95),
+					clientConnectionId: id(195),
+					sponsorBindingId: id(96),
+					provider: "anthropic",
+					nativeHarness: "claude-code",
+					// More room than either Codex login: still never offered for chat.
+					providerAccountUsage: {
+						observedAt: new Date().toISOString(),
+						windows: [{ id: "primary", label: "5 hours", usedPercent: 0, resetAt: "2099-01-01T00:00:00.000Z" }],
+					},
+				},
+			],
+		};
 		const f = setup(false, observed);
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
