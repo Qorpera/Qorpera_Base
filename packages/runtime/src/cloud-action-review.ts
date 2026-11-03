@@ -318,10 +318,11 @@ export function cloudActionEffect(
 }
 
 /**
- * A website's first publish shares company work with people outside it (company sites, 20260930550000): a built-in
- * access check, whatever the reviewer called it, so the kernel asks an owner or admin unless a company Allow rule the
- * reviewer cited covers it (qorpera_record_action_review), and the database publishes a new site only on such an
- * approval. A denial stays one; an update of a live site is reviewed as the reviewer says.
+ * A website's first publish, or a live site's publish from another folder, shares company work with people outside it
+ * (company sites, 20260930550000): a built-in access check, whatever the reviewer called it, so the kernel asks an
+ * owner or admin unless a company Allow rule the reviewer cited covers it (qorpera_record_action_review), and the
+ * database publishes it only on such an approval in the same run. A denial stays one; any other update of a live site
+ * is reviewed as the reviewer says.
  */
 export function siteAccessCheck(
 	call: Pick<CloudActionCall, "tool" | "parsed">,
@@ -329,12 +330,21 @@ export function siteAccessCheck(
 ): CloudActionVerdict {
 	if (call.tool.name !== "publish_site" || call.tool.source !== "runtime" || verdict.builtIn !== "none")
 		return verdict;
-	if (record(call.parsed).mode === "update") return verdict;
+	const args = record(call.parsed);
+	// An update from the live site's own folder is reviewed as the reviewer says; one from another folder shares other
+	// work with the site's visitors, as a first publish does.
+	if (args.mode === "update" && !sitePublishMoves(args)) return verdict;
 	return {
 		...verdict,
 		builtIn: "access_change",
-		proposedRule: verdict.proposedRule ?? "publish a new password-protected website for the company",
+		proposedRule: verdict.proposedRule ?? "publish a password-protected website for the company",
 	};
+}
+
+/** A prepared publish of a live site from another folder than its live version's (the database asks for approval the
+ * same way: qorpera_site_publish_begin). */
+function sitePublishMoves(args: Record<string, JsonValue>): boolean {
+	return typeof args.liveSource === "string" && args.source !== args.liveSource;
 }
 
 /** Connector tools carry their catalog effect (read or write) by tool name. */
@@ -622,15 +632,28 @@ export function describeCloudAction(
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
 	} else if (tool.name === "publish_site") {
 		// Its prepared arguments (cloud-site-tools.ts): what the files are, read before the review.
-		title = args.mode === "update" ? "Update a published website" : "Publish a new password-protected website";
+		const moved = args.mode === "update" && sitePublishMoves(args);
+		title =
+			args.mode !== "update"
+				? "Publish a new password-protected website"
+				: moved
+					? "Publish a website from another folder"
+					: "Update a published website";
 		target = text(args.url) || text(args.slug) || null;
 		add("title", args.title);
 		if (typeof args.source === "string") add("from", fileName(args.source));
+		if (moved && typeof args.liveSource === "string") add("until now from", fileName(args.liveSource));
 		if (typeof args.files === "number" && typeof args.bytes === "number")
 			add(
 				"files",
 				`${args.files} ${args.files === 1 ? "file" : "files"}, ${args.bytes < 1024 * 1024 ? `${Math.max(1, Math.ceil(args.bytes / 1024))} KB` : `${(args.bytes / 1024 / 1024).toFixed(1)} MB`}`,
 			);
+		// The first pages by name (the reviewer reads every path).
+		const pages = Array.isArray(args.paths)
+			? args.paths.filter((path): path is string => typeof path === "string" && /\.html?$/i.test(path))
+			: [];
+		if (pages.length)
+			add("pages", `${pages.slice(0, 8).join(", ")}${pages.length > 8 ? ` and ${pages.length - 8} more` : ""}`);
 		add(
 			"effect",
 			args.mode === "update"

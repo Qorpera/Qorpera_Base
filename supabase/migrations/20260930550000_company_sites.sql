@@ -16,17 +16,19 @@
 --      'uploading' and switched in at once ('live'); the version it replaced goes in the same transaction. Files are
 --      bytes in the database (at most 25 MiB and 500 files a site, 10 MiB a file), so a switch, an unpublish and a
 --      company's deletion are one transaction each, with no object store to clean after them.
---    - qorpera_company_site_sessions: a visitor's session after the password, by its token's sha256, for 30 days;
+--    - qorpera_company_site_sessions: a visitor's session after the password, by its token's sha256, for 7 days;
 --      a new password ends them all.
---    - qorpera_site_unlock_failures: wrong passwords by slug and a hash of the visitor's address, for an hour, for the
---      limits (10 per address per 15 minutes, 300 per slug per hour).
+--    - qorpera_site_unlock_failures: wrong passwords by slug and an HMAC of the visitor's network (an IPv4 address, an
+--      IPv6 /64), for an hour, for the limits (10 per network and slug and 30 per network across slugs per 15
+--      minutes, 300 per slug per hour).
 -- 3. The agent's calls, through the native host with the run's binding (qorpera_native_host_calls, scope binding):
 --    qorpera_site_publish_check (read only: new or update, before the automatic review), then
 --    qorpera_site_publish_begin / _put / _finish, and qorpera_site_unpublish. Only a company agent's run (no worker)
---    whose wake allows work. A new site (no live version yet) needs the automatic review's approval of that call: a
---    built-in check (the runtime records publish_site's first publish as an access change, so an owner or admin
---    answers its card, unless a company Allow rule covers it), allowed, for this slug. An update of a live site does
---    not. A resumed attempt that has not recorded its resume publishes and unpublishes nothing (as 20260930546000).
+--    whose wake allows work. A new site (no live version yet), and an update from another source folder than the live
+--    version's, needs the automatic review's approval of that call in this run: a built-in check (the runtime records
+--    such a publish as an access change, so an owner or admin answers its card, unless a company Allow rule covers
+--    it), for this slug, answered Allow in this run or allowed for this very call. Any other update does not. A
+--    resumed attempt that has not recorded its resume publishes and unpublishes nothing (as 20260930546000).
 -- 4. The members' calls (Settings → Sites): any member lists the company's sites; owners and admins read and change a
 --    password and unpublish a site.
 -- 5. The edge function site-serve's calls (service_role only): qorpera_site_serve (a file for a session) and
@@ -59,7 +61,9 @@ create table public.qorpera_site_settings (
 	id boolean primary key default true check (id),
 	enabled boolean not null default false,
 	-- The public origin the links name, with no path.
-	origin text not null default 'https://sites.qorpera.com' check (origin ~ '^https://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$')
+	origin text not null default 'https://sites.qorpera.com' check (origin ~ '^https://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'),
+	-- The key of the visitors' address hashes (an HMAC), so a stored hash never gives the address back.
+	client_key bytea not null default extensions.gen_random_bytes(32) check (octet_length(client_key) = 32)
 );
 insert into public.qorpera_site_settings default values;
 alter table public.qorpera_site_settings enable row level security;
@@ -136,6 +140,8 @@ create table public.qorpera_company_site_files (
 	content bytea check (content is null or octet_length(content) = bytes),
 	primary key (version_id, path)
 );
+-- Out of line and uncompressed, so a byte range (a video's) reads only the chunks it covers.
+alter table public.qorpera_company_site_files alter column content set storage external;
 
 create table public.qorpera_company_site_sessions (
 	token_sha256 text primary key check (token_sha256 ~ '^[0-9a-f]{64}$'),
@@ -155,6 +161,7 @@ create table public.qorpera_site_unlock_failures (
 create index qorpera_site_unlock_failures_slug on public.qorpera_site_unlock_failures(slug, failed_at);
 create index qorpera_site_unlock_failures_client on public.qorpera_site_unlock_failures(slug, client_sha256, failed_at);
 create index qorpera_site_unlock_failures_age on public.qorpera_site_unlock_failures(failed_at);
+create index qorpera_site_unlock_failures_network on public.qorpera_site_unlock_failures(client_sha256, failed_at);
 
 alter table public.qorpera_company_sites enable row level security;
 alter table public.qorpera_company_site_secrets enable row level security;
@@ -321,7 +328,8 @@ begin
 	select site.* into v_site from public.qorpera_company_sites as site where site.slug = p_slug;
 	if found and v_site.profile_id = v_run.profile_id then
 		return jsonb_build_object('schema', 'qorpera.site-publish-check/v1', 'slug', p_slug, 'url', public.qorpera_site_url(p_slug),
-			'mode', case when v_site.current_version_id is null then 'new' else 'update' end, 'siteId', v_site.id);
+			'mode', case when v_site.current_version_id is null then 'new' else 'update' end, 'siteId', v_site.id,
+			'liveSource', case when v_site.current_version_id is not null then v_site.source_path end);
 	end if;
 	if found and not public.qorpera_site_abandoned(v_site) then
 		raise exception 'SITE_NAME_TAKEN: another site already has this name; choose another' using errcode = '55000'; end if;
@@ -329,7 +337,7 @@ begin
 		raise exception 'SITE_LIMIT: the company has 10 sites, as many as it can have; update or unpublish one first'
 			using errcode = '55000'; end if;
 	return jsonb_build_object('schema', 'qorpera.site-publish-check/v1', 'slug', p_slug, 'url', public.qorpera_site_url(p_slug),
-		'mode', 'new', 'siteId', null);
+		'mode', 'new', 'siteId', null, 'liveSource', null);
 end $$;
 
 -- A publish's first step: the site (new: with its password), and a new version with every file named, each file's
@@ -358,11 +366,14 @@ begin
 	if not public.qorpera_site_slug_valid(v_slug) then
 		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, and not a reserved word'
 			using errcode = '22023'; end if;
-	-- The same call again.
+	-- The same call again: its own version, if it still sends the same files.
 	select version.* into v_version from public.qorpera_company_site_versions as version
 	join public.qorpera_company_sites as site on site.id = version.site_id
 	where site.slug = v_slug and site.profile_id = v_run.profile_id and version.run_id = v_run.id and version.call_id = p_call_id;
 	if found then
+		if v_version.manifest_sha256 is distinct from p_request ->> 'manifestSha256' then
+			raise exception 'SITE_SOURCE_CHANGED: the files changed since this call began; call publish_site again'
+				using errcode = '22023'; end if;
 		select site.* into v_site from public.qorpera_company_sites as site where site.id = v_version.site_id;
 		return public.qorpera_site_publish_receipt(v_site, v_version);
 	end if;
@@ -408,18 +419,23 @@ begin
 		v_site := null;
 	end if;
 	v_new := v_site.id is null or v_site.current_version_id is null;
+	-- An update without a title keeps the site's.
+	if v_title is null and not v_new then v_title := v_site.title; end if;
 	if v_site.id is null and (select count(*) from public.qorpera_company_sites as site where site.profile_id = v_run.profile_id) >= 10 then
 		raise exception 'SITE_LIMIT: the company has 10 sites, as many as it can have; update or unpublish one first'
 			using errcode = '55000'; end if;
-	-- A new site goes out only on the automatic review's approval of a built-in check for this agent's call with this
-	-- slug: an owner's or admin's Allow on its card, or a company Allow rule the reviewer cited.
-	if v_new and not exists (select 1 from public.qorpera_action_reviews as review
+	-- A new site, or a live one switched to another source folder, goes out only on the automatic review's approval of a
+	-- built-in check of this agent's publish_site with this slug, in this run: an owner's or admin's Allow on its card,
+	-- which this run used, or the reviewer's allow of this very call under a company Allow rule. An approval never
+	-- carries over to another run.
+	if (v_new or v_site.source_path is distinct from v_source) and not exists (select 1 from public.qorpera_action_reviews as review
 		where review.id = p_review_id and review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
 			and review.tool_name = 'publish_site'
 			and review.built_in in ('money', 'legal_terms', 'delete_outside', 'access_change')
-			and (review.decision = 'allow' or review.answer in ('allow_once', 'always_allow'))
+			and ((review.answer in ('allow_once', 'always_allow') and review.consumed_run_id = v_run.id)
+				or (review.decision = 'allow' and review.run_id = v_run.id and review.call_id = p_call_id))
 			and public.qorpera_site_review_slug(review.action ->> 'arguments') = v_slug) then
-		raise exception 'SITE_APPROVAL_REQUIRED: a new website goes out only after an owner or admin approves it on a card'
+		raise exception 'SITE_APPROVAL_REQUIRED: a new website, or a website from another folder, goes out only after an owner or admin approves it on a card'
 			using errcode = '42501'; end if;
 	perform public.qorpera_site_assert_resume_recorded(v_run.id, p_binding);
 	if v_site.id is null then
@@ -435,9 +451,8 @@ begin
 		select version.* into v_version from public.qorpera_company_site_versions as version where version.id = v_site.current_version_id;
 		return public.qorpera_site_publish_receipt(v_site, v_version, true);
 	end if;
-	-- An upload left unfinished for an hour is dropped.
-	delete from public.qorpera_company_site_versions as version
-	where version.site_id = v_site.id and version.state = 'uploading' and version.created_at < clock_timestamp() - interval '1 hour';
+	-- One open upload a site: this one replaces any other (whose own put or finish then answers SITE_UPLOAD_GONE).
+	delete from public.qorpera_company_site_versions as version where version.site_id = v_site.id and version.state = 'uploading';
 	update public.qorpera_company_sites set updated_at = clock_timestamp() where id = v_site.id;
 	insert into public.qorpera_company_site_versions (site_id, run_id, call_id, staff_agent_id, first_publish, title,
 		source_path, manifest_sha256, file_count, total_bytes)
@@ -530,9 +545,8 @@ begin
 		source_path = v_version.source_path, published_at = v_now, published_by_staff_agent_id = v_version.staff_agent_id,
 		updated_at = v_now
 	where id = v_site.id returning * into v_site;
-	-- The version it replaced, and any upload left unfinished for an hour.
-	delete from public.qorpera_company_site_versions as version where version.site_id = v_site.id and version.id <> v_version.id
-		and (version.state = 'live' or version.created_at < v_now - interval '1 hour');
+	-- The version it replaced.
+	delete from public.qorpera_company_site_versions as version where version.site_id = v_site.id and version.id <> v_version.id;
 	return public.qorpera_site_publish_receipt(v_site, v_version);
 end $$;
 
@@ -595,9 +609,12 @@ returns public.qorpera_company_sites language plpgsql security definer set searc
 -- 20260930550000
 declare v_site public.qorpera_company_sites%rowtype;
 begin
+	-- Who asks first, then the lock: a member who may not cannot hold the site's row.
+	if auth.uid() is null or coalesce(public.qorpera_member_role((select site.profile_id from public.qorpera_company_sites as site
+		where site.id = p_site_id))::text not in ('owner', 'admin'), true) then
+		raise exception 'Only founders and admins see or change a site''s password' using errcode = '42501'; end if;
 	select site.* into v_site from public.qorpera_company_sites as site where site.id = p_site_id for update;
-	if auth.uid() is null or v_site.id is null
-		or coalesce(public.qorpera_member_role(v_site.profile_id)::text not in ('owner', 'admin'), true) then
+	if v_site.id is null or coalesce(public.qorpera_member_role(v_site.profile_id)::text not in ('owner', 'admin'), true) then
 		raise exception 'Only founders and admins see or change a site''s password' using errcode = '42501'; end if;
 	return v_site;
 end $$;
@@ -657,11 +674,14 @@ grant execute on function public.qorpera_list_company_sites(uuid), public.qorper
 -- 5. The edge function's calls -----------------------------------------------------------------------------------------
 
 -- One file of a site for a visitor's session. Every answer that is not the site's (no live site with this slug, no
--- valid session for this token, publishing switched off, the company being deleted) is the same 'locked'.
-create function public.qorpera_site_serve(p_slug text, p_path text, p_token text, p_etag text)
+-- valid session for this token, publishing switched off, the company being deleted) is the same 'locked'. The content
+-- is the bytes from p_offset, at most p_length of them (base64, no newlines): p_length 0 for none (a HEAD, a check),
+-- and none either when p_etag is the file's sha256 (the visitor holds it).
+create function public.qorpera_site_serve(p_slug text, p_path text, p_token text, p_etag text, p_offset integer,
+	p_length integer)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 -- 20260930550000
-declare v_site public.qorpera_company_sites%rowtype; v_path text; v_file public.qorpera_company_site_files%rowtype;
+declare v_site public.qorpera_company_sites%rowtype; v_path text; v_file record; v_offset integer; v_length integer;
 begin
 	if not coalesce((select settings.enabled from public.qorpera_site_settings as settings), false)
 		or not public.qorpera_site_slug_valid(p_slug) or p_token is null or p_token !~ '^[A-Za-z0-9_-]{32}$' then
@@ -675,13 +695,17 @@ begin
 	v_path := coalesce(p_path, '');
 	if v_path = '' or right(v_path, 1) = '/' then v_path := v_path || 'index.html'; end if;
 	if not public.qorpera_site_path_valid(v_path) then return jsonb_build_object('state', 'missing'); end if;
-	select file.* into v_file from public.qorpera_company_site_files as file
+	select file.path, file.content_type, file.bytes, file.sha256 into v_file from public.qorpera_company_site_files as file
 	where file.version_id = v_site.current_version_id and file.path = v_path;
 	if found then
+		v_offset := least(greatest(coalesce(p_offset, 0), 0), v_file.bytes);
+		v_length := least(greatest(coalesce(p_length, 0), 0), v_file.bytes - v_offset);
 		return jsonb_build_object('state', 'file', 'path', v_file.path, 'contentType', v_file.content_type,
-			'bytes', v_file.bytes, 'sha256', v_file.sha256,
-			'content', case when p_etag is not distinct from v_file.sha256 then null
-				else translate(encode(v_file.content, 'base64'), chr(10), '') end);
+			'bytes', v_file.bytes, 'sha256', v_file.sha256, 'offset', v_offset,
+			'content', case when p_etag is not distinct from v_file.sha256 or v_length = 0 then null
+				else (select translate(encode(substring(file.content from v_offset + 1 for v_length), 'base64'), chr(10), '')
+					from public.qorpera_company_site_files as file
+					where file.version_id = v_site.current_version_id and file.path = v_path) end);
 	end if;
 	if exists (select 1 from public.qorpera_company_site_files as file
 		where file.version_id = v_site.current_version_id and file.path = v_path || '/index.html') then
@@ -689,25 +713,45 @@ begin
 	return jsonb_build_object('state', 'missing');
 end $$;
 
--- A visitor's password. Wrong ones are counted by slug and a hash of the visitor's address (never stored as given):
--- 10 per address per 15 minutes, and 300 per slug per hour, after which the slug answers 'limited' to everyone but
--- the sessions already open. Right: a new session for 30 days.
+-- A visitor's network for the limits: an IPv4 address, or an IPv6 address's /64 (one home or phone has a whole /64);
+-- anything else as given. Never stored: only its HMAC under qorpera_site_settings.client_key.
+create function public.qorpera_site_client_network(p_client text) returns text language plpgsql immutable
+set search_path = '' as $$
+-- 20260930550000
+declare v inet;
+begin
+	begin v := btrim(p_client)::inet;
+	exception when others then return left(coalesce(p_client, ''), 128); end;
+	return host(network(set_masklen(v, case when family(v) = 6 then 64 else 32 end)));
+end $$;
+revoke all on function public.qorpera_site_client_network(text) from public, anon, authenticated, service_role;
+
+-- A visitor's password. Wrong ones are counted by an HMAC of the visitor's network (never the address): 10 per network
+-- and slug and 30 per network across slugs per 15 minutes, and 300 per slug per hour, after which the slug answers
+-- 'limited' to everyone but the sessions already open. Right: a new session for 7 days.
 create function public.qorpera_site_unlock(p_slug text, p_password text, p_client text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 -- 20260930550000
 declare
 	v_now timestamptz := clock_timestamp(); v_client text; v_count integer; v_oldest timestamptz;
 	v_site public.qorpera_company_sites%rowtype; v_secret public.qorpera_company_site_secrets%rowtype; v_token text;
+	v_settings public.qorpera_site_settings%rowtype;
 begin
 	if p_slug is null or not public.qorpera_site_slug_valid(p_slug) or p_password is null or char_length(p_password) > 1024 then
 		return jsonb_build_object('state', 'wrong'); end if;
-	v_client := public.qorpera_site_sha256(p_slug || '/' || coalesce(left(p_client, 128), ''));
-	delete from public.qorpera_site_unlock_failures as failure where failure.slug = p_slug and failure.failed_at < v_now - interval '1 hour';
+	select settings.* into v_settings from public.qorpera_site_settings as settings;
+	v_client := encode(extensions.hmac(convert_to(public.qorpera_site_client_network(p_client), 'utf8'), v_settings.client_key,
+		'sha256'), 'hex');
 	delete from public.qorpera_site_unlock_failures as failure where failure.ctid = any (array(
 		select old.ctid from public.qorpera_site_unlock_failures as old where old.failed_at < v_now - interval '1 hour' limit 500));
 	select count(*), min(failure.failed_at) into v_count, v_oldest from public.qorpera_site_unlock_failures as failure
 	where failure.slug = p_slug and failure.client_sha256 = v_client and failure.failed_at > v_now - interval '15 minutes';
-	if v_count >= 10 then
+	if v_count < 10 then
+		select count(*), min(failure.failed_at) into v_count, v_oldest from public.qorpera_site_unlock_failures as failure
+		where failure.client_sha256 = v_client and failure.failed_at > v_now - interval '15 minutes';
+		if v_count < 30 then v_count := 0; end if;
+	end if;
+	if v_count > 0 then
 		return jsonb_build_object('state', 'limited', 'retryAfter',
 			greatest(1, ceil(extract(epoch from v_oldest + interval '15 minutes' - v_now)))::integer); end if;
 	select count(*), min(failure.failed_at) into v_count, v_oldest from public.qorpera_site_unlock_failures as failure
@@ -715,7 +759,7 @@ begin
 	if v_count >= 300 then
 		return jsonb_build_object('state', 'limited', 'retryAfter',
 			greatest(1, ceil(extract(epoch from v_oldest + interval '1 hour' - v_now)))::integer); end if;
-	if coalesce((select settings.enabled from public.qorpera_site_settings as settings), false) then
+	if v_settings.enabled then
 		select site.* into v_site from public.qorpera_company_sites as site
 		where site.slug = p_slug and site.current_version_id is not null and not public.qorpera_company_deleting(site.profile_id);
 		select secret.* into v_secret from public.qorpera_company_site_secrets as secret where secret.site_id = v_site.id;
@@ -731,17 +775,17 @@ begin
 			order by old.created_at desc offset 1999);
 		v_token := public.qorpera_site_new_token();
 		insert into public.qorpera_company_site_sessions (token_sha256, site_id, password_version, expires_at)
-		values (public.qorpera_site_sha256(v_token), v_site.id, v_site.password_version, v_now + interval '30 days');
-		return jsonb_build_object('state', 'open', 'token', v_token, 'maxAge', 2592000);
+		values (public.qorpera_site_sha256(v_token), v_site.id, v_site.password_version, v_now + interval '7 days');
+		return jsonb_build_object('state', 'open', 'token', v_token, 'maxAge', 604800);
 	end if;
 	insert into public.qorpera_site_unlock_failures (slug, client_sha256, failed_at) values (p_slug, v_client, v_now);
 	return jsonb_build_object('state', 'wrong');
 end $$;
 
-revoke all on function public.qorpera_site_serve(text, text, text, text), public.qorpera_site_unlock(text, text, text)
-	from public, anon, authenticated;
-grant execute on function public.qorpera_site_serve(text, text, text, text), public.qorpera_site_unlock(text, text, text)
-	to service_role;
+revoke all on function public.qorpera_site_serve(text, text, text, text, integer, integer),
+	public.qorpera_site_unlock(text, text, text) from public, anon, authenticated;
+grant execute on function public.qorpera_site_serve(text, text, text, text, integer, integer),
+	public.qorpera_site_unlock(text, text, text) to service_role;
 
 -- 6. Observations ------------------------------------------------------------------------------------------------------
 

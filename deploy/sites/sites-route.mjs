@@ -2,8 +2,8 @@
 /* Company sites' public name (rollout step; the feature PR's "Rollout"). Runs on the operator's Mac.
  *
  * Gives https://sites.qorpera.com/ a way in: the self-hosted API's Cloudflare tunnel `qorpera-dbhome` (remotely
- * managed: its routes live in Cloudflare) gets the ingress rule sites.qorpera.com -> http://api-front:8080, before its
- * catch-all, with every other rule kept exactly; and the qorpera.com zone gets a proxied CNAME sites ->
+ * managed: its routes live in Cloudflare) gets the ingress rule sites.qorpera.com -> http://api-front:8080, first
+ * (so no wildcard rule can shadow it), with every other rule kept exactly; and the qorpera.com zone gets a proxied CNAME sites ->
  * <tunnel id>.cfargotunnel.com, so Cloudflare's Universal SSL (qorpera.com and *.qorpera.com) covers it. api-front's
  * `sites` virtual host (envoy-front-sites.yaml) then sends every path to the site-serve function.
  *
@@ -33,7 +33,7 @@ function catchAll(rule) {
 	return Boolean(rule) && typeof rule === "object" && rule.hostname === undefined && rule.path === undefined;
 }
 
-/** The tunnel's configuration with the sites rule before its catch-all, every other key and rule as they were. Throws
+/** The tunnel's configuration with the sites rule first, every other key and rule as they were. Throws
  * when the ingress has no catch-all last, or another rule already holds the name. */
 export function withSitesIngress(config) {
 	if (!config || typeof config !== "object" || !Array.isArray(config.ingress) || !catchAll(config.ingress.at(-1)))
@@ -42,7 +42,8 @@ export function withSitesIngress(config) {
 	if (held.length === 1 && held[0].service === SERVICE && held[0].path === undefined)
 		return { config, changed: false };
 	if (held.length > 0) throw new Error(`Another ingress rule already holds ${HOST}; nothing changed`);
-	const ingress = [...config.ingress.slice(0, -1), { hostname: HOST, service: SERVICE }, config.ingress.at(-1)];
+	// First: a wildcard rule earlier in the list (*.qorpera.com) can never take the name from it.
+	const ingress = [{ hostname: HOST, service: SERVICE }, ...config.ingress];
 	return { config: { ...config, ingress }, changed: true };
 }
 

@@ -8,11 +8,13 @@ import {
 	handleSiteServe,
 	isSitePath,
 	language,
+	MAX_FILE_BYTES,
 	MAX_STORE_ANSWER_BYTES,
 	MAX_UNLOCK_BODY_BYTES,
 	PAGE_SECURITY_POLICY,
 	PostgrestSiteStore,
 	parseServeAnswer,
+	rangeRequest,
 	requestedEtag,
 	type SiteStore,
 	serviceHeaders,
@@ -26,7 +28,7 @@ const HTML = "<!doctype html><title>Shop</title><p>Wristbands</p>";
 
 type Json = Record<string, unknown>;
 interface Calls {
-	serve: [string, string, string | null, string | null][];
+	serve: [string, string, string | null, string | null, number, number][];
 	unlock: [string, string, string][];
 }
 
@@ -46,16 +48,37 @@ function file(text: string, extra: Json = {}): Json {
 	};
 }
 
-function store(serve: unknown = file(HTML), unlock: unknown = { state: "open", token: NEW_TOKEN, maxAge: 2592000 }) {
+/** A file answer as qorpera_site_serve gives it for these bytes: from the offset, at most the length (both clamped to
+ * the file), and no content for the visitor's own digest or none asked for. Any other answer passes as it is. */
+function asTheDatabase(value: unknown, etag: string | null, offset: number, length: number): unknown {
+	const answer = value as Json | null;
+	if (
+		!answer ||
+		answer.state !== "file" ||
+		typeof answer.bytes !== "number" ||
+		!(typeof answer.content === "string" || answer.content === null)
+	)
+		return value;
+	const at = Math.min(Math.max(offset, 0), answer.bytes);
+	const count = Math.min(Math.max(length, 0), answer.bytes - at);
+	const content =
+		answer.content === null || etag === answer.sha256 || count === 0
+			? null
+			: Buffer.from(answer.content, "base64").subarray(at, at + count).toString("base64");
+	return { ...answer, offset: at, content };
+}
+
+function store(serve: unknown = file(HTML), unlock: unknown = { state: "open", token: NEW_TOKEN, maxAge: 604800 }) {
 	const calls: Calls = { serve: [], unlock: [] };
 	const answer = async (value: unknown) => {
 		if (value instanceof Error) throw value;
 		return value;
 	};
 	const siteStore: SiteStore = {
-		serve(slug, path, token, etag) {
-			calls.serve.push([slug, path, token, etag]);
-			return answer(typeof serve === "function" ? (serve as (path: string) => unknown)(path) : serve);
+		serve(slug, path, token, etag, offset, length) {
+			calls.serve.push([slug, path, token, etag, offset, length]);
+			const value = typeof serve === "function" ? (serve as (path: string) => unknown)(path) : serve;
+			return answer(asTheDatabase(value, etag, offset, length));
 		},
 		unlock(slug, password, client) {
 			calls.unlock.push([slug, password, client]);
@@ -182,7 +205,7 @@ describe("site-serve: a session's files", () => {
 		assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(HTML)));
 		assertContent(response, sha(HTML));
 		assert.equal(await response.text(), HTML);
-		assert.deepEqual(calls.serve, [["shop", "", TOKEN, null]]);
+		assert.deepEqual(calls.serve, [["shop", "", TOKEN, null, 0, MAX_FILE_BYTES]]);
 	});
 
 	it("decodes each segment and hands the database the site path, folders with their slash", async () => {
@@ -228,7 +251,7 @@ describe("site-serve: a session's files", () => {
 		assert.equal(response.status, 304);
 		assert.equal(response.headers.get("etag"), `"${hash}"`);
 		assert.equal(await response.text(), "");
-		assert.deepEqual(calls.serve, [["shop", "", TOKEN, hash]]);
+		assert.deepEqual(calls.serve, [["shop", "", TOKEN, hash, 0, MAX_FILE_BYTES]]);
 		// Content left out for another hash than the visitor's is no answer.
 		const other = await serve(
 			request(`/shop/~${TOKEN}/`, { headers: { "if-none-match": `"${"1".repeat(64)}"` } }),
@@ -237,16 +260,25 @@ describe("site-serve: a session's files", () => {
 		assert.equal(other.status, 503);
 	});
 
-	it("serves one byte range, and refuses one past the end", async () => {
+	it("serves one byte range, asking the database for those bytes only, and refuses one past the end", async () => {
 		const text = "0123456789";
-		const siteStore = store(file(text, { path: "v.mp4", contentType: "video/mp4" })).store;
+		const { calls, store: siteStore } = store(file(text, { path: "v.mp4", contentType: "video/mp4" }));
 		const first = await serve(request(`/shop/~${TOKEN}/v.mp4`, { headers: { range: "bytes=2-5" } }), siteStore);
 		assert.equal(first.status, 206);
 		assert.equal(first.headers.get("content-range"), "bytes 2-5/10");
 		assert.equal(first.headers.get("content-length"), "4");
 		assert.equal(await first.text(), "2345");
+		assert.deepEqual(calls.serve.at(-1)?.slice(4), [2, 4]);
 		const suffix = await serve(request(`/shop/~${TOKEN}/v.mp4`, { headers: { range: "bytes=-3" } }), siteStore);
 		assert.equal(await suffix.text(), "789");
+		// The last bytes: the size first, then just them.
+		assert.deepEqual(
+			calls.serve.slice(-2).map((call) => call.slice(4)),
+			[
+				[0, 0],
+				[7, 3],
+			],
+		);
 		const open = await serve(request(`/shop/~${TOKEN}/v.mp4`, { headers: { range: "bytes=8-" } }), siteStore);
 		assert.equal(open.headers.get("content-range"), "bytes 8-9/10");
 		const past = await serve(request(`/shop/~${TOKEN}/v.mp4`, { headers: { range: "bytes=10-12" } }), siteStore);
@@ -260,17 +292,24 @@ describe("site-serve: a session's files", () => {
 			siteStore,
 		);
 		assert.equal(stale.status, 200);
+		assert.deepEqual(rangeRequest("bytes=2-5"), { offset: 2, length: 4 });
+		assert.deepEqual(rangeRequest("bytes=8-"), { offset: 8, length: MAX_FILE_BYTES });
+		assert.deepEqual(rangeRequest("bytes=-3"), { suffix: 3 });
+		assert.equal(rangeRequest("bytes=5-2"), undefined);
 		assert.deepEqual(byteRange("bytes=5-2", 10), undefined);
 		assert.deepEqual(byteRange("bytes=0-99", 10), { start: 0, end: 9 });
 		assert.equal(byteRange("bytes=-0", 10), "unsatisfiable");
 		assert.equal(byteRange("items=0-1", 10), undefined);
 	});
 
-	it("answers HEAD with the headers and no body", async () => {
-		const response = await serve(request(`/shop/~${TOKEN}/`, { method: "HEAD" }));
+	it("answers HEAD with the headers and no body, asking the database for no bytes", async () => {
+		const { calls, store: siteStore } = store();
+		const response = await serve(request(`/shop/~${TOKEN}/`, { method: "HEAD" }), siteStore);
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(HTML)));
+		assertContent(response, sha(HTML));
 		assert.equal(await response.text(), "");
+		assert.deepEqual(calls.serve, [["shop", "", TOKEN, null, 0, 0]]);
 	});
 
 	it("redirects a folder to its slash, says a missing page is not part of the site, and sends an ended session to the password", async () => {
@@ -382,6 +421,10 @@ describe("site-serve: the plain URL", () => {
 		assert.match(html, /<form method="post" action="\/shop\/\.qorpera\/unlock">/);
 		assert.match(html, /<input type="hidden" name="next" value="products\/">/);
 		assert.match(html, /name="robots" content="noindex,nofollow"/);
+		// Its own policy in the page too: a no-referrer meta would make the form's POST say `Origin: null`, which the
+		// unlock refuses (as it refuses a sandboxed site's).
+		assert.match(html, /<meta name="referrer" content="same-origin">/);
+		assert.doesNotMatch(html, /content="no-referrer"/);
 		assert.equal(calls.serve.length, 0);
 		const danish = await serve(request("/shop/", { headers: { "accept-language": "da" } }), siteStore);
 		assert.match(await danish.text(), /<html lang="da">[\s\S]*Privat side/);
@@ -392,7 +435,9 @@ describe("site-serve: the plain URL", () => {
 		const reload = await serve(request("/shop/", { headers: cross }));
 		assert.equal(reload.status, 200);
 		assertPage(reload);
-		assert.match(await reload.text(), /<meta http-equiv="refresh" content="0">/);
+		const reloadHtml = await reload.text();
+		assert.match(reloadHtml, /<meta http-equiv="refresh" content="0">/);
+		assert.match(reloadHtml, /<meta name="referrer" content="no-referrer">/);
 		// The reload is same-origin: the password page, no loop.
 		const again = await serve(request("/shop/", { headers: { ...cross, "sec-fetch-site": "same-origin" } }));
 		assert.equal(again.status, 401);
@@ -410,7 +455,8 @@ describe("site-serve: the plain URL", () => {
 		);
 		assert.equal(response.status, 303);
 		assert.equal(response.headers.get("location"), `/shop/~${TOKEN}/products/item.html?id=7`);
-		assert.deepEqual(calls.serve, [["shop", "products/item.html", TOKEN, null]]);
+		// A check only: no bytes.
+		assert.deepEqual(calls.serve, [["shop", "products/item.html", TOKEN, null, 0, 0]]);
 		for (const answer of [{ state: "missing" }, { state: "directory", path: "products/" }]) {
 			const other = await serve(
 				request("/shop/products", { headers: { cookie: `qorpera_site=${TOKEN}` } }),
@@ -418,6 +464,25 @@ describe("site-serve: the plain URL", () => {
 			);
 			assert.equal(other.status, 303);
 		}
+	});
+
+	it("tries each session cookie the browser sent, at most three, so a wider cookie never hides the site's own", async () => {
+		const { calls, store: siteStore } = store((path: string) => (path === "" ? { state: "locked" } : file(HTML)));
+		const answers: unknown[] = [{ state: "locked" }, file(HTML)];
+		const twoCookies = store(() => answers.shift());
+		const response = await serve(
+			request("/shop/", { headers: { cookie: `qorpera_site=${TOKEN}; qorpera_site=${NEW_TOKEN}` } }),
+			twoCookies.store,
+		);
+		assert.equal(response.status, 303);
+		assert.equal(response.headers.get("location"), `/shop/~${NEW_TOKEN}/`);
+		assert.deepEqual(
+			twoCookies.calls.serve.map((call) => call[2]),
+			[TOKEN, NEW_TOKEN],
+		);
+		const many = Array.from({ length: 5 }, (_, n) => `qorpera_site=${String(n).repeat(32)}`).join("; ");
+		await serve(request("/shop/", { headers: { cookie: many } }), siteStore);
+		assert.equal(calls.serve.length, 3);
 	});
 
 	it("clears an ended session's cookie and asks for the password", async () => {
@@ -454,7 +519,7 @@ describe("site-serve: the password form", () => {
 		assert.equal(response.headers.get("location"), `/shop/~${NEW_TOKEN}/products/item.html`);
 		assert.equal(
 			response.headers.get("set-cookie"),
-			`qorpera_site=${NEW_TOKEN}; Path=/shop/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict`,
+			`qorpera_site=${NEW_TOKEN}; Path=/shop/; Max-Age=604800; HttpOnly; Secure; SameSite=Strict`,
 		);
 		assertPage(response);
 		assert.deepEqual(calls.unlock, [["shop", "k7mq-x2pa-9fhd", "203.0.113.9"]]);
@@ -591,12 +656,28 @@ describe("site-serve: helpers", () => {
 	});
 
 	it("takes a database answer only in its exact shape", () => {
-		assert.equal(parseServeAnswer({ state: "locked" }, null).state, "locked");
-		assert.throws(() => parseServeAnswer({ state: "directory", path: "a" }, null));
-		assert.throws(() => parseServeAnswer({ ...file(HTML), content: "not base64!" }, null));
+		const whole = { length: MAX_FILE_BYTES };
+		assert.equal(parseServeAnswer({ state: "locked" }, null, whole).state, "locked");
+		assert.throws(() => parseServeAnswer({ state: "directory", path: "a" }, null, whole));
+		assert.throws(() => parseServeAnswer({ ...file(HTML), content: "not base64!" }, null, whole));
+		// The offset is the file's, from 0 to its size; no content only when none was asked for, the visitor holds the
+		// file, or the bytes asked for start at its end.
+		assert.throws(() => parseServeAnswer(file(HTML), null, whole));
+		assert.throws(() => parseServeAnswer(file(HTML, { offset: -1 }), null, whole));
+		assert.throws(() => parseServeAnswer(file(HTML, { offset: Buffer.byteLength(HTML) + 1 }), null, whole));
+		assert.throws(() => parseServeAnswer(file(HTML, { offset: 0, content: null }), null, whole));
+		assert.equal(parseServeAnswer(file(HTML, { offset: 0, content: null }), null, { length: 0 }).state, "file");
+		assert.equal(parseServeAnswer(file(HTML, { offset: 0, content: null }), sha(HTML), whole).state, "file");
 		assert.equal(
-			(parseServeAnswer(file(HTML, { contentType: "text/html; charset=latin1" }), null) as { contentType: string })
-				.contentType,
+			parseServeAnswer(file(HTML, { offset: Buffer.byteLength(HTML), content: null }), null, whole).state,
+			"file",
+		);
+		assert.equal(
+			(
+				parseServeAnswer(file(HTML, { offset: 0, contentType: "text/html; charset=latin1" }), null, whole) as {
+					contentType: string;
+				}
+			).contentType,
 			"application/octet-stream",
 		);
 	});
@@ -617,7 +698,7 @@ describe("site-serve: the database through PostgREST", () => {
 	it("calls the two RPCs with the service key, no redirect and a deadline", async () => {
 		const { sent, fake } = fetcher([Response.json({ state: "locked" }), Response.json({ state: "wrong" })]);
 		const siteStore = new PostgrestSiteStore("https://project.example.test/", "sb_secret_0123456789abcdefghij", fake);
-		assert.deepEqual(await siteStore.serve("shop", "a.html", TOKEN, null), { state: "locked" });
+		assert.deepEqual(await siteStore.serve("shop", "a.html", TOKEN, null, 3, 7), { state: "locked" });
 		assert.deepEqual(await siteStore.unlock("shop", "pw", "203.0.113.9"), { state: "wrong" });
 		assert.equal(sent[0]?.url, "https://project.example.test/rest/v1/rpc/qorpera_site_serve");
 		assert.equal(sent[1]?.url, "https://project.example.test/rest/v1/rpc/qorpera_site_unlock");
@@ -626,6 +707,8 @@ describe("site-serve: the database through PostgREST", () => {
 			p_path: "a.html",
 			p_token: TOKEN,
 			p_etag: null,
+			p_offset: 3,
+			p_length: 7,
 		});
 		assert.deepEqual(JSON.parse(String(sent[1]?.init.body)), {
 			p_slug: "shop",

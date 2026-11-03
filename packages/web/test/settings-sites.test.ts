@@ -178,6 +178,9 @@ describe("Settings → Sites", () => {
 		expect(card.textContent).toContain(
 			"Share the link and this password only with the people who should see the site.",
 		);
+		expect(card.textContent).toContain(
+			"A visitor's own link opens the site for 7 days; a new password ends every visit.",
+		);
 		expect(labels(card)).toEqual(["Change password", "Unpublish", "Copy", "Copy", "Hide"]);
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(`site-copy-password:${shop.id}`);
 

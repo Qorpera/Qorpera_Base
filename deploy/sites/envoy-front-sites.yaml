@@ -31,7 +31,7 @@
                         - { match: { path: /functions/v1/main }, direct_response: { status: 404 } }
                         - { match: { prefix: /functions/v1/main/ }, direct_response: { status: 404 } }
                         # Company sites are served only on their own name (the sites host above), never as this origin.
-                        - { match: { prefix: /functions/v1/site-serve }, direct_response: { status: 404 } }
+                        - { match: { prefix: /functions/v1/site-serve, case_sensitive: false }, direct_response: { status: 404 } }
                         - { match: { prefix: /functions/v1/ }, route: { cluster: api_gw, timeout: 0s } }
                         - { match: { prefix: /realtime/v1/ }, route: { cluster: api_gw, timeout: 0s } }
                         # Auth's OAuth server metadata at the root, as the gateway and hosted Supabase serve it.

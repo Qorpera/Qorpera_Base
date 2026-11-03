@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
-import type { JsonValue } from "@qorpera/contracts";
+import { isUuid, type JsonValue, parseRecord } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderFileEntry } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
@@ -45,12 +45,12 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 /** A site path segment, as the database stores it: no hidden file, no '..', no character a link would escape. */
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const SITE_MAX_FILES = 500;
 export const SITE_MAX_BYTES = 25 * 1024 * 1024;
 export const SITE_MAX_FILE_BYTES = 10 * 1024 * 1024;
-/** One upload call's bytes: one file's most. */
-const PUT_BYTES = SITE_MAX_FILE_BYTES;
+/** One upload call's bytes, so a call stays well inside the database's statement budget; a larger file (up to 10
+ * MiB) goes alone. */
+const PUT_BYTES = 4 * 1024 * 1024;
 /** A source folder holds at most this many entries (folders, links and other files included). */
 const MAX_LISTED = 2000;
 /** The platform's own top folders, which never go out as a website. */
@@ -98,7 +98,8 @@ export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION =
 	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, images, fonts, audio, video, PDF), or one .html file, published as the home page. " +
 	"Link the site's files to each other with relative links (about.html, img/logo.png), never links starting with /. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer. Only static files are served: no server code runs. " +
 	"slug is the site's name in its link: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
-	"A site's first publish waits for an owner or admin to approve it on a card. Publishing the same slug again replaces the whole site at once and keeps its password. " +
+	"Each page runs sandboxed on its own: scripts, forms and links work, but it cannot keep data in the browser (localStorage, cookies) or show the site's own pages in an iframe, and a PDF may only download. " +
+	"A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again replaces the whole site at once and keeps its password. " +
 	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it.";
 
 export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
@@ -127,6 +128,8 @@ interface PreparedPublish {
 	readonly kind: "folder" | "file";
 	readonly mode: "new" | "update";
 	readonly url: string;
+	/** The live site's source folder, for an update; null for a new site. */
+	readonly liveSource: string | null;
 	readonly files: number;
 	readonly bytes: number;
 	readonly manifestSha256: string;
@@ -197,11 +200,6 @@ function args(value: JsonValue, tool: string, required: readonly string[], optio
 			`${tool} takes ${required.join(", ")}${optional.length ? ` and optionally ${optional.join(", ")}` : ""}`,
 		);
 	return value as Record<string, JsonValue>;
-}
-
-function record(value: unknown, error: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
-	return value as Record<string, unknown>;
 }
 
 /** The two site tools for a company agent's run (never a worker's). */
@@ -357,13 +355,24 @@ export function cloudSiteTools(options: {
 			}
 			return { slug, source, title };
 		},
+		// Everything the publish sends out, for the reviewer: every path the prepare listed (bounded there), and what it
+		// leaves out.
+		reviewContents(parsed) {
+			const prepared = parsed as unknown as PreparedPublish;
+			return {
+				files: [...prepared.paths],
+				filesNotListed: prepared.pathsOmitted,
+				leftOut: [...prepared.skipped],
+				leftOutNotListed: prepared.skippedOmitted,
+			};
+		},
 		async prepare(value, context) {
 			assertContext(context);
 			const input = value as { slug: string; source: string; title: string | null };
 			const site = await collect(input.source, context.signal);
 			let checked: Record<string, unknown>;
 			try {
-				checked = record(
+				checked = parseRecord(
 					await call("qorpera_site_publish_check", { p_slug: input.slug }, context.signal),
 					"Site check differs",
 				);
@@ -374,7 +383,8 @@ export function cloudSiteTools(options: {
 				checked.schema !== "qorpera.site-publish-check/v1" ||
 				checked.slug !== input.slug ||
 				(checked.mode !== "new" && checked.mode !== "update") ||
-				typeof checked.url !== "string"
+				typeof checked.url !== "string" ||
+				(checked.liveSource !== null && typeof checked.liveSource !== "string")
 			)
 				throw new Error("Site check differs");
 			const paths: string[] = [];
@@ -398,6 +408,7 @@ export function cloudSiteTools(options: {
 				kind: site.kind,
 				mode: checked.mode as "new" | "update",
 				url: checked.url as string,
+				liveSource: (checked.liveSource as string | null) ?? null,
 				files: site.files.length,
 				bytes: site.bytes,
 				manifestSha256: site.manifestSha256,
@@ -419,7 +430,7 @@ export function cloudSiteTools(options: {
 				);
 			let begun: Record<string, unknown>;
 			try {
-				begun = record(
+				begun = parseRecord(
 					await call(
 						"qorpera_site_publish_begin",
 						{
@@ -435,8 +446,7 @@ export function cloudSiteTools(options: {
 									sha256: file.entry.file.fileSha256,
 								})),
 							},
-							p_review_id:
-								context.actionReviewId && UUID.test(context.actionReviewId) ? context.actionReviewId : null,
+							p_review_id: isUuid(context.actionReviewId) ? context.actionReviewId : null,
 						},
 						context.signal,
 						30_000,
@@ -457,7 +467,7 @@ export function cloudSiteTools(options: {
 						let batchBytes = 0;
 						const send = async () => {
 							if (!batch.length) return;
-							const put = record(
+							const put = parseRecord(
 								await call(
 									"qorpera_site_publish_put",
 									{ p_version_id: receipt.versionId, p_files: batch },
@@ -489,7 +499,7 @@ export function cloudSiteTools(options: {
 					}
 					if (missing.length) throw new Error("Site upload did not complete");
 					receipt = checkedReceipt(
-						record(
+						parseRecord(
 							await call(
 								"qorpera_site_publish_finish",
 								{ p_version_id: receipt.versionId },
@@ -560,7 +570,7 @@ export function cloudSiteTools(options: {
 			const { slug } = value as { slug: string };
 			let answer: Record<string, unknown>;
 			try {
-				answer = record(
+				answer = parseRecord(
 					await call("qorpera_site_unpublish", { p_slug: slug }, context.signal),
 					"Site unpublish differs",
 				);
@@ -606,7 +616,7 @@ function checkedReceipt(value: Record<string, unknown>, slug: string): PublishRe
 		value.slug !== slug ||
 		typeof value.siteId !== "string" ||
 		typeof value.versionId !== "string" ||
-		!UUID.test(value.versionId) ||
+		!isUuid(value.versionId) ||
 		typeof value.url !== "string" ||
 		(value.mode !== "new" && value.mode !== "update") ||
 		(value.state !== "live" && value.state !== "uploading") ||

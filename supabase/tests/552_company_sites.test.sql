@@ -18,8 +18,9 @@ create function pg_temp.cs_file(p_path text, p_text text) returns jsonb language
 		'sha256', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'))
 $$;
 -- A publish request for files given as {path: text}, with its manifest as the runtime takes it.
-create function pg_temp.cs_request(p_slug text, p_files jsonb, p_title text default null) returns jsonb language sql immutable as $$
-	select jsonb_strip_nulls(jsonb_build_object('slug', p_slug, 'title', p_title, 'source', 'product/webshop',
+create function pg_temp.cs_request(p_slug text, p_files jsonb, p_title text default null,
+	p_source text default 'product/webshop') returns jsonb language sql immutable as $$
+	select jsonb_strip_nulls(jsonb_build_object('slug', p_slug, 'title', p_title, 'source', p_source,
 		'files', (select jsonb_agg(pg_temp.cs_file(f.key, f.value) order by f.key) from jsonb_each_text(p_files) as f),
 		'manifestSha256', (select encode(extensions.digest(convert_to(string_agg(f.key || chr(9)
 			|| (pg_temp.cs_file(f.key, f.value) ->> 'sha256') || chr(9) || octet_length(convert_to(f.value, 'utf8'))::text,
@@ -30,19 +31,24 @@ create function pg_temp.cs_put_files(p_files jsonb) returns jsonb language sql i
 	select jsonb_agg(jsonb_build_object('path', f.key, 'content', encode(convert_to(f.value, 'utf8'), 'base64')))
 	from jsonb_each_text(p_files) as f
 $$;
--- A recorded review of Alice's publish_site call for a slug, as the kernel keeps it (20260926130000's columns).
+-- A recorded review of Alice's publish_site call for a slug, as the kernel keeps it (20260926130000's columns). An
+-- answered card is used by Alice's run (consumed_run_id), unless p_used is false; a reviewer's allow is of call p_call.
 create function pg_temp.cs_review(p_slug text, p_decision text, p_built_in text, p_answer text default null,
-	p_tool text default 'publish_site', p_staff uuid default '92400000-0000-4000-8000-000000000030') returns uuid
+	p_tool text default 'publish_site', p_staff uuid default '92400000-0000-4000-8000-000000000030',
+	p_used boolean default true, p_call text default null) returns uuid
 language plpgsql as $$
 declare v_id uuid := extensions.gen_random_uuid(); v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
 begin
 	insert into public.qorpera_action_reviews (id, profile_id, run_id, call_id, staff_agent_id, tool_name, effect,
-		argument_sha256, action, decision, built_in, reason, reviewer_model, approver_scope, answer, answered_at)
-	values (v_id, '92400000-0000-4000-8000-000000000010', (v_binding ->> 'runId')::uuid, 'review-' || v_id, p_staff, p_tool,
-		'external', repeat('c', 64), jsonb_build_object('title', 'Publish a new password-protected website', 'target', null,
-			'details', '{}'::jsonb, 'arguments', jsonb_build_object('slug', p_slug, 'source', 'product/webshop')::text),
+		argument_sha256, action, decision, built_in, reason, reviewer_model, approver_scope, answer, answered_at,
+		consumed_at, consumed_run_id)
+	values (v_id, '92400000-0000-4000-8000-000000000010', (v_binding ->> 'runId')::uuid, coalesce(p_call, 'review-' || v_id),
+		p_staff, p_tool, 'external', repeat('c', 64), jsonb_build_object('title', 'Publish a new password-protected website',
+			'target', null, 'details', '{}'::jsonb, 'arguments', jsonb_build_object('slug', p_slug, 'source', 'product/webshop')::text),
 		p_decision, p_built_in, 'Reviewed.', 'gpt-6-luna', case when p_decision = 'ask' then 'owners_admins' end, p_answer,
-		case when p_answer is not null then clock_timestamp() end);
+		case when p_answer is not null then clock_timestamp() end,
+		case when p_answer in ('allow_once', 'always_allow') and p_used then clock_timestamp() end,
+		case when p_answer in ('allow_once', 'always_allow') and p_used then (v_binding ->> 'runId')::uuid end);
 	return v_id;
 end
 $$;
@@ -65,7 +71,7 @@ begin
 	foreach v_signature in array array['public.qorpera_site_publish_check(jsonb,text)',
 		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)', 'public.qorpera_site_publish_put(jsonb,uuid,jsonb)',
 		'public.qorpera_site_publish_finish(jsonb,uuid)', 'public.qorpera_site_unpublish(jsonb,text)',
-		'public.qorpera_site_serve(text,text,text,text)', 'public.qorpera_site_unlock(text,text,text)'] loop
+		'public.qorpera_site_serve(text,text,text,text,integer,integer)', 'public.qorpera_site_unlock(text,text,text)'] loop
 		perform pg_temp.base_assert(not has_function_privilege('anon', v_signature, 'execute')
 			and not has_function_privilege('authenticated', v_signature, 'execute')
 			and has_function_privilege('service_role', v_signature, 'execute'), 'Only the platform calls ' || v_signature);
@@ -115,12 +121,13 @@ begin
 	end loop;
 	v_check := public.qorpera_site_publish_check(v_binding, 'wristband-shop');
 	perform pg_temp.base_assert(v_check = jsonb_build_object('schema', 'qorpera.site-publish-check/v1', 'slug', 'wristband-shop',
-		'url', 'https://sites.qorpera.com/wristband-shop/', 'mode', 'new', 'siteId', null), 'A free slug is a new site: ' || v_check::text);
+		'url', 'https://sites.qorpera.com/wristband-shop/', 'mode', 'new', 'siteId', null, 'liveSource', null),
+		'A free slug is a new site: ' || v_check::text);
 
 	-- No review, a review still waiting, a denied one, one of another slug, tool or agent, or one with no built-in check:
 	-- no site.
 	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files)),
-		'42501', 'SITE_APPROVAL_REQUIRED: a new website goes out only after an owner or admin approves it on a card');
+		'42501', 'SITE_APPROVAL_REQUIRED: a new website, or a website from another folder, goes out only after an owner or admin approves it on a card');
 	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files),
 		pg_temp.cs_review('wristband-shop', 'ask', 'access_change')), '42501');
 	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files),
@@ -134,7 +141,17 @@ begin
 			'92400000-0000-4000-8000-000000000031')), '42501');
 	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files),
 		pg_temp.cs_review('wristband-shop', 'allow', 'none')), '42501');
+	-- An approval never carries over: an answer this run did not use, and a reviewer's allow of another call.
+	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files),
+		pg_temp.cs_review('wristband-shop', 'ask', 'access_change', 'allow_once', p_used => false)), '42501');
+	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'site-1', pg_temp.cs_request('wristband-shop', v_files),
+		pg_temp.cs_review('wristband-shop', 'allow', 'access_change', p_call => 'another-call')), '42501');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_sites), 'No refused begin made a site');
+	-- A reviewer's allow of this very call under a company Allow rule opens a site.
+	perform pg_temp.base_assert(pg_temp.cs_begin('rule-call', pg_temp.cs_request('rule-shop', '{"index.html":"x"}'),
+		pg_temp.cs_review('rule-shop', 'allow', 'access_change', p_call => 'rule-call')) ->> 'mode' = 'new',
+		'An allow of this call under a company rule opens a site');
+	delete from public.qorpera_company_sites where slug = 'rule-shop';
 
 	-- The request's own checks.
 	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L, %L)', 'bad', jsonb_set(pg_temp.cs_request('wristband-shop', v_files),
@@ -210,32 +227,42 @@ $$;
 do $$
 declare v_open jsonb; v_token text; v_file jsonb; v_answer jsonb; i integer;
 begin
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', null, null) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_serve('wristband-shop', '', repeat('A', 32), null) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_serve('no-such-site', '', repeat('A', 32), null) = '{"state":"locked"}'::jsonb,
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', null, null, 0, 10485760) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_serve('wristband-shop', '', repeat('A', 32), null, 0, 10485760) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_serve('no-such-site', '', repeat('A', 32), null, 0, 10485760) = '{"state":"locked"}'::jsonb,
 		'No session, no file; an unknown slug looks the same');
 	perform pg_temp.base_assert(public.qorpera_site_unlock('wristband-shop', 'wrong-password', '192.0.2.1') = '{"state":"wrong"}'::jsonb
 		and public.qorpera_site_unlock('no-such-site', 'wrong-password', '192.0.2.1') = '{"state":"wrong"}'::jsonb,
 		'A wrong password and an unknown slug answer the same');
 	v_open := public.qorpera_site_unlock('wristband-shop', current_setting('qorpera_test.cs_password'), '192.0.2.1');
 	v_token := v_open ->> 'token';
-	perform pg_temp.base_assert(v_open ->> 'state' = 'open' and v_token ~ '^[A-Za-z0-9_-]{32}$' and (v_open ->> 'maxAge')::int = 2592000,
+	perform pg_temp.base_assert(v_open ->> 'state' = 'open' and v_token ~ '^[A-Za-z0-9_-]{32}$' and (v_open ->> 'maxAge')::int = 604800
+		and (select expires_at between clock_timestamp() + interval '6 days 23 hours' and clock_timestamp() + interval '7 days'
+			from public.qorpera_company_site_sessions where token_sha256 = encode(extensions.digest(v_token, 'sha256'), 'hex')),
 		'The password opens a session: ' || v_open::text);
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_site_sessions where token_sha256 = v_token)
 		and not exists (select 1 from public.qorpera_site_unlock_failures where client_sha256 like '%192.0.2.1%'),
 		'Only digests are kept');
-	v_file := public.qorpera_site_serve('wristband-shop', '', v_token, null);
+	v_file := public.qorpera_site_serve('wristband-shop', '', v_token, null, 0, 10485760);
 	perform pg_temp.base_assert(v_file ->> 'state' = 'file' and v_file ->> 'path' = 'index.html'
 		and v_file ->> 'contentType' = 'text/html; charset=utf-8'
 		and convert_from(decode(v_file ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands</h1>', 'The home page: ' || v_file::text);
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'index.html', v_token, v_file ->> 'sha256') -> 'content'
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'index.html', v_token, v_file ->> 'sha256', 0, 10485760) -> 'content'
 		= 'null'::jsonb, 'A matching ETag carries no content');
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'img', v_token, null)
+	-- A byte range carries just its bytes; none asked for (a HEAD, a check) carries none; past the end, none.
+	v_answer := public.qorpera_site_serve('wristband-shop', '', v_token, null, 4, 5);
+	perform pg_temp.base_assert(v_answer ->> 'offset' = '4' and convert_from(decode(v_answer ->> 'content', 'base64'), 'utf8') = 'Wrist'
+		and (v_answer ->> 'bytes')::int = 19, 'A range: ' || v_answer::text);
+	v_answer := public.qorpera_site_serve('wristband-shop', '', v_token, null, 0, 0);
+	perform pg_temp.base_assert(v_answer -> 'content' = 'null'::jsonb and v_answer ->> 'sha256' = v_file ->> 'sha256', 'No bytes');
+	v_answer := public.qorpera_site_serve('wristband-shop', '', v_token, null, 50, 10);
+	perform pg_temp.base_assert(v_answer -> 'content' = 'null'::jsonb and v_answer ->> 'offset' = '19', 'Past the end: ' || v_answer::text);
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'img', v_token, null, 0, 10485760)
 		= '{"state":"missing"}'::jsonb, 'A folder without an index is missing');
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'img/logo.svg', v_token, null) ->> 'contentType'
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', 'img/logo.svg', v_token, null, 0, 10485760) ->> 'contentType'
 		= 'image/svg+xml', 'A file in a folder');
-	foreach v_answer in array array[public.qorpera_site_serve('wristband-shop', '../secret', v_token, null),
-		public.qorpera_site_serve('wristband-shop', 'nothing.html', v_token, null)] loop
+	foreach v_answer in array array[public.qorpera_site_serve('wristband-shop', '../secret', v_token, null, 0, 10485760),
+		public.qorpera_site_serve('wristband-shop', 'nothing.html', v_token, null, 0, 10485760)] loop
 		perform pg_temp.base_assert(v_answer = '{"state":"missing"}'::jsonb, 'A path that is not the site''s: ' || v_answer::text);
 	end loop;
 	perform set_config('qorpera_test.cs_token', v_token, true);
@@ -252,39 +279,68 @@ begin
 	select 'wristband-shop', encode(extensions.digest(n::text, 'sha256'), 'hex') from generate_series(1, 290) as n;
 	perform pg_temp.base_assert(public.qorpera_site_unlock('wristband-shop', current_setting('qorpera_test.cs_password'),
 		'203.0.113.9') ->> 'state' = 'limited', 'The slug is limited');
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', v_token, null) ->> 'state' = 'file',
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', v_token, null, 0, 10485760) ->> 'state' = 'file',
 		'An open session still reads');
+	delete from public.qorpera_site_unlock_failures;
+	-- 30 wrong ones from one network across slugs: that network waits on every slug; an IPv6 /64 is one network.
+	for i in 1..32 loop
+		perform public.qorpera_site_unlock('guess-' || (i % 4), 'guess', '2001:db8:aa:bb::' || to_hex(i));
+	end loop;
+	perform pg_temp.base_assert(public.qorpera_site_unlock('wristband-shop', current_setting('qorpera_test.cs_password'),
+		'2001:db8:aa:bb::99') ->> 'state' = 'limited', 'The /64 is limited on every slug');
+	perform pg_temp.base_assert(public.qorpera_site_unlock('wristband-shop', current_setting('qorpera_test.cs_password'),
+		'2001:db8:aa:cc::1') ->> 'state' = 'open', 'Another /64 is not');
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_site_unlock_failures where client_sha256
+		= encode(extensions.digest('2001:db8:aa:bb::', 'sha256'), 'hex')), 'A network is kept only as its HMAC');
 	delete from public.qorpera_site_unlock_failures;
 end
 $$;
 
 -- 5. An update ---------------------------------------------------------------------------------------------------------
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_begin jsonb; v_finish jsonb;
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_begin jsonb; v_finish jsonb; v_draft jsonb;
 	v_files jsonb := '{"index.html":"<h1>Wristbands 2</h1>","about.html":"<p>About</p>","img/logo.svg":"<svg/>"}';
 begin
 	perform pg_temp.base_assert(public.qorpera_site_publish_check(v_binding, 'wristband-shop') ->> 'mode' = 'update',
 		'The live site is an update');
-	-- The same files: nothing to publish.
+	-- The same files, and no title (an update keeps the site's): nothing to publish.
 	v_begin := pg_temp.cs_begin('site-same', pg_temp.cs_request('wristband-shop',
-		'{"index.html":"<h1>Wristbands</h1>","about.html":"<p>About</p>","img/logo.svg":"<svg/>"}', 'Wristbands'));
+		'{"index.html":"<h1>Wristbands</h1>","about.html":"<p>About</p>","img/logo.svg":"<svg/>"}'));
 	perform pg_temp.base_assert(v_begin ->> 'state' = 'live' and (v_begin ->> 'unchanged')::boolean and v_begin ->> 'mode' = 'update',
 		'Unchanged: ' || v_begin::text);
+	-- One open upload a site: a newer publish replaces an unfinished one.
+	v_draft := pg_temp.cs_begin('site-2a', pg_temp.cs_request('wristband-shop', '{"index.html":"<h1>Draft</h1>"}', 'Wristbands'));
 	-- No approval needed; the files the live version has are copied, only the changed one is missing.
 	v_begin := pg_temp.cs_begin('site-2', pg_temp.cs_request('wristband-shop', v_files, 'Wristbands'));
 	perform pg_temp.base_assert(v_begin ->> 'mode' = 'update' and v_begin -> 'missing' = '["index.html"]'::jsonb,
 		'An update uploads only what changed: ' || v_begin::text);
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_put(%L, %L, %L)', v_binding, v_draft ->> 'versionId',
+		pg_temp.cs_put_files('{"index.html":"<h1>Draft</h1>"}')), '55000', 'SITE_UPLOAD_GONE: this upload is no longer open; publish again');
+	-- The same call with other files is refused.
+	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L)', 'site-2', pg_temp.cs_request('wristband-shop',
+		'{"index.html":"<h1>Else</h1>"}', 'Wristbands')), '22023',
+		'SITE_SOURCE_CHANGED: the files changed since this call began; call publish_site again');
 	-- Until the switch, visitors see the old version.
 	perform pg_temp.base_assert(convert_from(decode(public.qorpera_site_serve('wristband-shop', '',
-		current_setting('qorpera_test.cs_token'), null) ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands</h1>', 'The old version');
+		current_setting('qorpera_test.cs_token'), null, 0, 10485760) ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands</h1>', 'The old version');
 	perform public.qorpera_site_publish_put(v_binding, (v_begin ->> 'versionId')::uuid,
 		pg_temp.cs_put_files('{"index.html":"<h1>Wristbands 2</h1>"}'));
 	v_finish := public.qorpera_site_publish_finish(v_binding, (v_begin ->> 'versionId')::uuid);
 	perform pg_temp.base_assert(v_finish ->> 'mode' = 'update' and v_finish ->> 'state' = 'live', 'Updated: ' || v_finish::text);
 	perform pg_temp.base_assert(convert_from(decode(public.qorpera_site_serve('wristband-shop', '',
-		current_setting('qorpera_test.cs_token'), null) ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands 2</h1>'
+		current_setting('qorpera_test.cs_token'), null, 0, 10485760) ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands 2</h1>'
 		and (select count(*) from public.qorpera_company_site_versions) = 1
-		and (select count(*) from public.qorpera_company_site_files) = 3, 'The new version replaced the old one whole');
+		and (select count(*) from public.qorpera_company_site_files) = 3
+		and (select title from public.qorpera_company_sites where slug = 'wristband-shop') = 'Wristbands',
+		'The new version replaced the old one whole');
+	-- From another folder, the live site is published only on an approval.
+	perform pg_temp.base_assert(public.qorpera_site_publish_check(v_binding, 'wristband-shop') ->> 'liveSource' = 'product/webshop',
+		'The check names the live source');
+	perform pg_temp.base_error(format('select pg_temp.cs_begin(%L, %L)', 'site-3', pg_temp.cs_request('wristband-shop', v_files,
+		null, 'product/other')), '42501');
+	perform pg_temp.base_assert(pg_temp.cs_begin('site-3', pg_temp.cs_request('wristband-shop', v_files, null, 'product/other'),
+		pg_temp.cs_review('wristband-shop', 'ask', 'access_change', 'allow_once')) ->> 'mode' = 'update',
+		'With its approval, from another folder');
 end
 $$;
 
@@ -320,7 +376,7 @@ begin
 	v_password := public.qorpera_set_company_site_password(v_site, 'friends of the wristband');
 	perform pg_temp.base_assert(v_password ->> 'password' = 'friends of the wristband', 'The owner sets a password');
 	perform pg_temp.base_claims('service_role');
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', current_setting('qorpera_test.cs_token'), null)
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', current_setting('qorpera_test.cs_token'), null, 0, 10485760)
 		= '{"state":"locked"}'::jsonb and not exists (select 1 from public.qorpera_company_site_sessions),
 		'A new password ends every session');
 	perform pg_temp.base_assert(public.qorpera_site_unlock('wristband-shop', current_setting('qorpera_test.cs_password'), '192.0.2.5')
@@ -367,8 +423,8 @@ begin
 		and exists (select 1 from public.qorpera_company_sites where slug = 'other-shop'), 'Another company''s site stays');
 	-- Its session never reads Alice's site, and Alice's never reads it.
 	v_token := public.qorpera_site_unlock('other-shop', 'other-company-pw', '192.0.2.9') ->> 'token';
-	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', v_token, null) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_serve('other-shop', '', v_token, null) ->> 'state' = 'file', 'A session is its site''s only');
+	perform pg_temp.base_assert(public.qorpera_site_serve('wristband-shop', '', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_serve('other-shop', '', v_token, null, 0, 10485760) ->> 'state' = 'file', 'A session is its site''s only');
 	-- Each company's members see their own sites only, and never another's password.
 	perform pg_temp.cs_as('92400000-0000-4000-8000-000000000005');
 	v_list := public.qorpera_list_company_sites('55200000-0000-4000-8000-000000000010');
@@ -388,7 +444,7 @@ begin
 
 	-- While the company is being deleted its sites are locked, and its members see none.
 	insert into public.qorpera_company_deletions (profile_id) values ('55200000-0000-4000-8000-000000000010');
-	perform pg_temp.base_assert(public.qorpera_site_serve('other-shop', '', v_token, null) = '{"state":"locked"}'::jsonb
+	perform pg_temp.base_assert(public.qorpera_site_serve('other-shop', '', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_unlock('other-shop', 'other-company-pw', '192.0.2.10') ->> 'state' = 'wrong',
 		'A company being deleted serves nothing');
 	-- Its purge takes the sites, their files, password and sessions.

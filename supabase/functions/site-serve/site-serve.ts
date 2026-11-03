@@ -12,7 +12,7 @@
  * `sandbox` that leaves out allow-same-origin, so each document has an opaque origin and cannot read another site's
  * files, cookies or storage, or the platform's pages. A browser sends no SameSite cookie on requests from such a
  * document (its subresources and its links), so a site's files are served only under a session's path:
- * /<slug>/~<token>/<path>, where the token (32 characters, 30 days, ended by a password change) is the capability.
+ * /<slug>/~<token>/<path>, where the token (32 characters, 7 days, ended by a password change) is the capability.
  * Relative links stay in it; Referrer-Policy no-referrer keeps it out of other sites' logs. The plain URL
  * /<slug>/<path> is the one a founder shares: with the session's cookie (HttpOnly, Secure, SameSite=Strict, Path
  * /<slug>/, set when the password was right) it redirects into the session's path, otherwise it shows the password
@@ -32,6 +32,8 @@ import { createHash } from "node:crypto";
 export const DEFAULT_SITES_ORIGIN = "https://sites.qorpera.com";
 /** The password form's body: a password and a path, far below this. */
 export const MAX_UNLOCK_BODY_BYTES = 4096;
+/** The most bytes of a file one answer carries: a whole file at its largest. */
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 /** The largest answer the database may give: a 10 MiB file in base64 and its fields. */
 export const MAX_STORE_ANSWER_BYTES = 16 * 1024 * 1024;
 export const COOKIE = "qorpera_site";
@@ -55,7 +57,15 @@ export const PAGE_SECURITY_POLICY =
 
 /** The database's two doors, service role only. A thrown error means it could not answer. */
 export interface SiteStore {
-	serve(slug: string, path: string, token: string | null, etag: string | null): Promise<unknown>;
+	/** One file for a session: its bytes from `offset`, at most `length` of them (0 for none: a HEAD, a check). */
+	serve(
+		slug: string,
+		path: string,
+		token: string | null,
+		etag: string | null,
+		offset: number,
+		length: number,
+	): Promise<unknown>;
 	unlock(slug: string, password: string, client: string): Promise<unknown>;
 }
 
@@ -69,7 +79,15 @@ type ServeAnswer =
 	| { state: "locked" }
 	| { state: "missing" }
 	| { state: "directory"; path: string }
-	| { state: "file"; path: string; contentType: string; bytes: number; sha256: string; content: string | null };
+	| {
+			state: "file";
+			path: string;
+			contentType: string;
+			bytes: number;
+			sha256: string;
+			offset: number;
+			content: string | null;
+	  };
 
 type UnlockAnswer =
 	| { state: "open"; token: string; maxAge: number }
@@ -100,7 +118,7 @@ export function isSitePath(path: string): boolean {
 	return segments.every((segment, index) => (index === last && segment === "") || SEGMENT.test(segment));
 }
 
-export function parseServeAnswer(value: unknown, etag: string | null): ServeAnswer {
+export function parseServeAnswer(value: unknown, etag: string | null, options: { length: number }): ServeAnswer {
 	const state = (value as { state?: unknown } | null)?.state;
 	if (state === "locked" || state === "missing") {
 		closed(value, ["state"]);
@@ -112,7 +130,7 @@ export function parseServeAnswer(value: unknown, etag: string | null): ServeAnsw
 		return { state, path: answer.path };
 	}
 	if (state !== "file") invalid();
-	const answer = closed(value, ["state", "path", "contentType", "bytes", "sha256", "content"]);
+	const answer = closed(value, ["state", "path", "contentType", "bytes", "sha256", "offset", "content"]);
 	if (
 		typeof answer.path !== "string" ||
 		answer.path === "" ||
@@ -123,9 +141,16 @@ export function parseServeAnswer(value: unknown, etag: string | null): ServeAnsw
 		(answer.bytes as number) < 0 ||
 		typeof answer.sha256 !== "string" ||
 		!SHA256.test(answer.sha256) ||
+		!Number.isSafeInteger(answer.offset) ||
+		(answer.offset as number) < 0 ||
+		(answer.offset as number) > (answer.bytes as number) ||
 		!(answer.content === null || (typeof answer.content === "string" && BASE64.test(answer.content))) ||
-		// The content is left out only when the visitor already holds exactly this file.
-		(answer.content === null && answer.sha256 !== etag)
+		// The content is left out when the visitor holds exactly this file, when none was asked for, or when the bytes
+		// asked for start at the file's end.
+		(answer.content === null &&
+			answer.sha256 !== etag &&
+			options.length > 0 &&
+			(answer.offset as number) < (answer.bytes as number))
 	)
 		invalid();
 	return {
@@ -135,6 +160,7 @@ export function parseServeAnswer(value: unknown, etag: string | null): ServeAnsw
 		contentType: CONTENT_TYPE.test(answer.contentType) ? answer.contentType : "application/octet-stream",
 		bytes: answer.bytes as number,
 		sha256: answer.sha256,
+		offset: answer.offset as number,
 		content: answer.content as string | null,
 	};
 }
@@ -244,9 +270,12 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 button,a.button{display:inline-block;margin-top:14px;width:100%;font:inherit;font-weight:600;padding:10px 12px;border:0;border-radius:8px;background:var(--accent);color:var(--accent-text);cursor:pointer;text-align:center;text-decoration:none}
 .error{color:var(--error);margin:12px 0 0}footer{margin-top:16px;font-size:.75rem;color:var(--muted)}`;
 
-function page(lang: Language, title: string, body: string, head = ""): string {
+/** A platform page. `referrer` is its own referrer policy, as its header names it: the password page's is same-origin,
+ * so its form's POST carries the sites origin (under no-referrer a browser sends `Origin: null`, which the unlock
+ * refuses, as it refuses every sandboxed site's). */
+function page(lang: Language, title: string, body: string, head = "", referrer = "no-referrer"): string {
 	return `<!doctype html>
-<html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">${head}<title>${escapeHtml(title)}</title><style>${STYLE}</style></head>
+<html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="${referrer}">${head}<title>${escapeHtml(title)}</title><style>${STYLE}</style></head>
 <body><main>${body}</main><footer>${escapeHtml(TEXT[lang].footer)}</footer></body></html>
 `;
 }
@@ -262,6 +291,8 @@ function passwordPage(lang: Language, slug: string, next: string, error?: string
 			`<input id="password" name="password" type="password" required maxlength="128" autocomplete="off" autofocus>` +
 			`${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ""}` +
 			`<button type="submit">${escapeHtml(text.open)}</button></form>`,
+		"",
+		"same-origin",
 	);
 }
 
@@ -384,31 +415,86 @@ export function byteRange(
 	return { start, end };
 }
 
-function fileAnswer(request: Request, file: Extract<ServeAnswer, { state: "file" }>, etag: string | null): Response {
-	const headers = contentHeaders(file);
-	if (file.content === null || etag === file.sha256) return new Response(null, { status: 304, headers });
-	const bytes = new Uint8Array(Buffer.from(file.content, "base64"));
-	// The bytes the database holds for this file, exactly.
-	if (bytes.byteLength !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.sha256) invalid();
+/** The bytes a GET's Range header starts from, before the file's size is known: an offset and how many (at most a whole
+ * file), the last `suffix` bytes, or undefined to serve the whole file. */
+export function rangeRequest(header: string | null): { offset: number; length: number } | { suffix: number } | undefined {
+	const match = /^bytes=(\d*)-(\d*)$/.exec((header ?? "").trim());
+	if (!match || (match[1] === "" && match[2] === "")) return undefined;
+	if (match[1] === "") {
+		const suffix = Number(match[2]);
+		return Number.isSafeInteger(suffix) ? { suffix } : undefined;
+	}
+	const start = Number(match[1]);
+	const end = match[2] === "" ? undefined : Number(match[2]);
+	if (!Number.isSafeInteger(start) || (end !== undefined && (!Number.isSafeInteger(end) || end < start))) return undefined;
+	return { offset: Math.min(start, MAX_FILE_BYTES), length: end === undefined ? MAX_FILE_BYTES : Math.min(end - start + 1, MAX_FILE_BYTES) };
+}
+
+/** One file for a session's request, asking the database for no more bytes than the answer needs: none for a HEAD,
+ * the range's for a GET with one (the last bytes after a first answer names the size), the whole file otherwise. An
+ * If-Range that does not name the file's digest asks again for the whole file. */
+async function readFile(
+	request: Request,
+	store: SiteStore,
+	slug: string,
+	path: string,
+	token: string,
+	etag: string | null,
+): Promise<{ answer: ServeAnswer; range: { start: number; end: number } | "unsatisfiable" | undefined }> {
+	const ask = async (offset: number, length: number) =>
+		parseServeAnswer(await store.serve(slug, path, token, etag, offset, length), etag, { length });
+	if (request.method === "HEAD") return { answer: await ask(0, 0), range: undefined };
+	const header = request.headers.get("range");
+	const wanted = rangeRequest(header);
+	let answer =
+		wanted === undefined
+			? await ask(0, MAX_FILE_BYTES)
+			: "suffix" in wanted
+				? await ask(0, 0)
+				: await ask(wanted.offset, wanted.length);
+	if (answer.state !== "file" || answer.sha256 === etag || wanted === undefined) return { answer, range: undefined };
 	const ifRange = request.headers.get("if-range");
-	const range =
-		ifRange === null || ifRange.replace(/^"(.*)"$/, "$1") === file.sha256
-			? byteRange(request.headers.get("range"), bytes.byteLength)
-			: undefined;
+	if (ifRange !== null && ifRange.replace(/^"(.*)"$/, "$1") !== answer.sha256)
+		return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
+	const range = byteRange(header, answer.bytes);
+	if (range === undefined) return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
+	if (range !== "unsatisfiable" && "suffix" in wanted) answer = await ask(range.start, range.end - range.start + 1);
+	return { answer, range };
+}
+
+function fileAnswer(
+	request: Request,
+	file: Extract<ServeAnswer, { state: "file" }>,
+	etag: string | null,
+	range: { start: number; end: number } | "unsatisfiable" | undefined,
+): Response {
+	const headers = contentHeaders(file);
+	if (etag === file.sha256) return new Response(null, { status: 304, headers });
+	if (request.method === "HEAD")
+		return new Response(null, { status: 200, headers: { ...headers, "content-length": String(file.bytes) } });
 	if (range === "unsatisfiable")
-		return new Response(null, {
-			status: 416,
-			headers: { ...headers, "content-range": `bytes */${bytes.byteLength}` },
+		return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
+	const bytes = new Uint8Array(Buffer.from(file.content ?? "", "base64"));
+	if (range) {
+		// Exactly the range's bytes, from its start.
+		if (file.offset !== range.start || bytes.byteLength !== range.end - range.start + 1) invalid();
+		return new Response(bytes, {
+			status: 206,
+			headers: {
+				...headers,
+				"content-length": String(bytes.byteLength),
+				"content-range": `bytes ${range.start}-${range.end}/${file.bytes}`,
+			},
 		});
-	const part = range ? bytes.subarray(range.start, range.end + 1) : bytes;
-	return new Response(request.method === "HEAD" ? null : part, {
-		status: range ? 206 : 200,
-		headers: {
-			...headers,
-			"content-length": String(part.byteLength),
-			...(range ? { "content-range": `bytes ${range.start}-${range.end}/${bytes.byteLength}` } : {}),
-		},
-	});
+	}
+	// The bytes the database holds for this file, exactly.
+	if (
+		file.offset !== 0 ||
+		bytes.byteLength !== file.bytes ||
+		createHash("sha256").update(bytes).digest("hex") !== file.sha256
+	)
+		invalid();
+	return new Response(bytes, { status: 200, headers: { ...headers, "content-length": String(bytes.byteLength) } });
 }
 
 // --- Requests -------------------------------------------------------------------------------------------------------
@@ -431,15 +517,16 @@ function sitePath(segments: readonly string[]): string | null {
 	return isSitePath(path) ? path : null;
 }
 
-function cookieToken(header: string | null): string | null {
+/** Every session token the visitor's `qorpera_site` cookies hold (at most 3): a cookie of that name set for a wider
+ * path or domain never hides the site's own. */
+function cookieTokens(header: string | null): string[] {
+	const tokens: string[] = [];
 	for (const part of (header ?? "").split(";")) {
 		const [name, ...rest] = part.trim().split("=");
-		if (name === COOKIE) {
-			const value = rest.join("=");
-			return TOKEN.test(value) ? value : null;
-		}
+		const value = rest.join("=");
+		if (name === COOKIE && TOKEN.test(value) && !tokens.includes(value)) tokens.push(value);
 	}
-	return null;
+	return tokens.slice(0, 3);
 }
 
 /** The host the request came in on: the sites host front's x-forwarded-host, else Host. */
@@ -549,8 +636,8 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 		if (method !== "GET" && method !== "HEAD") return notAllowed("GET, HEAD, OPTIONS");
 		const etag = requestedEtag(request.headers.get("if-none-match"));
 		try {
-			const answer = parseServeAnswer(await options.store.serve(slug, path, token, etag), etag);
-			if (answer.state === "file") return fileAnswer(request, answer, etag);
+			const { answer, range } = await readFile(request, options.store, slug, path, token, etag);
+			if (answer.state === "file") return fileAnswer(request, answer, etag, range);
 			if (answer.state === "directory") return redirect(`/${slug}/~${token}/${answer.path}${search}`, 308);
 			if (answer.state === "missing") return notFound(request, lang, TEXT[lang].notPart);
 			// The session ended: the plain URL asks for the password again.
@@ -565,11 +652,14 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 	if (path === null) return notFound(request, lang);
 	if (method !== "GET" && method !== "HEAD") return notAllowed("GET, HEAD");
 	const cookieHeader = request.headers.get("cookie");
-	const token = cookieToken(cookieHeader);
-	if (token) {
+	const tokens = cookieTokens(cookieHeader);
+	if (tokens.length) {
 		try {
-			const answer = parseServeAnswer(await options.store.serve(slug, path, token, null), null);
-			if (answer.state !== "locked") return redirect(`/${slug}/~${token}/${path}${search}`, 303);
+			for (const token of tokens) {
+				// A check only: no bytes.
+				const answer = parseServeAnswer(await options.store.serve(slug, path, token, null, 0, 0), null, { length: 0 });
+				if (answer.state !== "locked") return redirect(`/${slug}/~${token}/${path}${search}`, 303);
+			}
 		} catch (error) {
 			return unavailable(request, lang, error);
 		}
@@ -653,8 +743,22 @@ export class PostgrestSiteStore implements SiteStore {
 		this.#timeoutMs = timeoutMs;
 	}
 
-	serve(slug: string, path: string, token: string | null, etag: string | null): Promise<unknown> {
-		return this.#call("qorpera_site_serve", { p_slug: slug, p_path: path, p_token: token, p_etag: etag });
+	serve(
+		slug: string,
+		path: string,
+		token: string | null,
+		etag: string | null,
+		offset: number,
+		length: number,
+	): Promise<unknown> {
+		return this.#call("qorpera_site_serve", {
+			p_slug: slug,
+			p_path: path,
+			p_token: token,
+			p_etag: etag,
+			p_offset: offset,
+			p_length: length,
+		});
 	}
 
 	unlock(slug: string, password: string, client: string): Promise<unknown> {

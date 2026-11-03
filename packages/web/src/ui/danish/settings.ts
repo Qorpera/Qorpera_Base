@@ -534,8 +534,8 @@ export const SETTINGS: Record<string, string> = {
 	"The password is copied.": "Adgangskoden er kopieret.",
 	"The password could not be copied. Select it and copy it.":
 		"Adgangskoden kunne ikke kopieres. Markér den, og kopiér den.",
-	"Share the link and this password only with the people who should see the site.":
-		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden.",
+	"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.":
+		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden. En besøgendes eget link åbner hjemmesiden i 7 dage; en ny adgangskode afslutter alle besøg.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
 	"Change password": "Skift adgangskode",
 	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",

@@ -71,11 +71,11 @@ async function run(argv, fake, env = { CF_API_TOKEN: TOKEN }) {
 }
 
 describe("sites-route: the ingress", () => {
-	it("adds the sites rule before the catch-all and keeps every other rule and key exactly", () => {
+	it("adds the sites rule first, so no wildcard shadows it, and keeps every other rule and key exactly", () => {
 		const config = { ingress: [API_RULE, CATCH_ALL], "warp-routing": { enabled: false } };
 		const { config: next, changed } = withSitesIngress(config);
 		assert.equal(changed, true);
-		assert.deepEqual(next.ingress, [API_RULE, { hostname: HOST, service: SERVICE }, CATCH_ALL]);
+		assert.deepEqual(next.ingress, [{ hostname: HOST, service: SERVICE }, API_RULE, CATCH_ALL]);
 		assert.deepEqual(next["warp-routing"], { enabled: false });
 		assert.deepEqual(config.ingress, [API_RULE, CATCH_ALL], "the original is not changed");
 		assert.deepEqual(withSitesIngress(next), { config: next, changed: false });
@@ -144,7 +144,7 @@ describe("sites-route: the script", () => {
 		assert.deepEqual(new Set(fake.sent.map((call) => call.method)), new Set(["GET"]));
 		assert.match(
 			output,
-			/ingress after:\n {2}api\.qorpera\.com -> http:\/\/api-front:8080\n {2}sites\.qorpera\.com -> http:\/\/api-front:8080\n {2}\* -> http_status:404/,
+			/ingress after:\n {2}sites\.qorpera\.com -> http:\/\/api-front:8080\n {2}api\.qorpera\.com -> http:\/\/api-front:8080\n {2}\* -> http_status:404/,
 		);
 		assert.match(output, /a proxied CNAME to .* is to be made/);
 		assert.match(output, /dry run: nothing changed/);
@@ -157,7 +157,7 @@ describe("sites-route: the script", () => {
 	it("applies once, then finds nothing to change, and checks", async () => {
 		const fake = cloudflare();
 		assert.equal((await run(["--apply"], fake)).code, 0);
-		assert.deepEqual(fake.state.config.ingress, [API_RULE, { hostname: HOST, service: SERVICE }, CATCH_ALL]);
+		assert.deepEqual(fake.state.config.ingress, [{ hostname: HOST, service: SERVICE }, API_RULE, CATCH_ALL]);
 		assert.deepEqual(fake.state.config["warp-routing"], { enabled: false });
 		assert.equal(fake.state.records.length, 1);
 		assert.equal(fake.state.records[0].proxied, true);

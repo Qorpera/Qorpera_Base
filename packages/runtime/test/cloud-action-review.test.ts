@@ -2487,6 +2487,7 @@ describe("company sites (20260930550000)", () => {
 		kind: "folder",
 		mode,
 		url: "https://sites.qorpera.com/wristband-shop/",
+		liveSource: mode === "update" ? "product/webshop" : null,
 		files: 3,
 		bytes: 2_621_440,
 		manifestSha256: "a".repeat(64),
@@ -2512,6 +2513,7 @@ describe("company sites (20260930550000)", () => {
 				title: "Wristbands",
 				from: "Webshop",
 				files: "3 files, 2.5 MB",
+				pages: "about.html, index.html",
 				effect: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
 			},
 		});
@@ -2521,6 +2523,12 @@ describe("company sites (20260930550000)", () => {
 				files: "1 file, 1 KB",
 				effect: "Replaces the whole site; people with its password see the new version",
 			},
+		});
+		expect(
+			describeCloudAction(tool("publish_site"), { ...prepared("update"), source: "product/webshop-v2" }),
+		).toMatchObject({
+			title: "Publish a website from another folder",
+			details: { from: "Webshop v2", "until now from": "Webshop" },
 		});
 		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({
 			title: "Take a website offline",
@@ -2541,7 +2549,7 @@ describe("company sites (20260930550000)", () => {
 			ruleIds: [],
 			builtIn: "access_change",
 			reason: "Requested.",
-			proposedRule: "publish a new password-protected website for the company",
+			proposedRule: "publish a password-protected website for the company",
 		});
 		expect(siteAccessCheck(call("new"), verdict("ask")).builtIn).toBe("access_change");
 		// A denial stays one; a check the reviewer named stays its own; an update and a connector of the same name
@@ -2549,6 +2557,16 @@ describe("company sites (20260930550000)", () => {
 		expect(siteAccessCheck(call("new"), verdict("deny", "not_requested"))).toEqual(verdict("deny", "not_requested"));
 		expect(siteAccessCheck(call("new"), verdict("ask", "money")).builtIn).toBe("money");
 		expect(siteAccessCheck(call("update"), verdict("allow"))).toEqual(verdict("allow"));
+		// An update from another folder than the live site's is a first publish of that folder.
+		expect(
+			siteAccessCheck(
+				{
+					tool: { name: "publish_site", source: "runtime" },
+					parsed: { ...prepared("update"), source: "product/other" },
+				},
+				verdict("allow"),
+			).builtIn,
+		).toBe("access_change");
 		expect(siteAccessCheck(call("new", "connector"), verdict("allow"))).toEqual(verdict("allow"));
 		// Without a prepared mode (no prepare ran), it is a first publish.
 		expect(

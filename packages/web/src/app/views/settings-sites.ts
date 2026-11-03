@@ -407,7 +407,9 @@ export class SitesView {
 			password = this.#row(
 				h("span", { class: "site-password" }, shown.password),
 				[copy, hide],
-				t("Share the link and this password only with the people who should see the site."),
+				t(
+					"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.",
+				),
 			);
 		}
 		return h(

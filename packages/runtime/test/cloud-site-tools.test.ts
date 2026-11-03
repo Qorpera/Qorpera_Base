@@ -101,6 +101,7 @@ async function fixture(
 				url: URL_OF(args.p_slug as string),
 				mode: options.mode ?? "new",
 				siteId: null,
+				liveSource: options.mode === "update" ? "product/webshop" : null,
 			};
 		if (method === "qorpera_site_publish_begin") {
 			const request = args.p_request as { slug: string; files: { path: string; bytes: number }[] };
@@ -144,6 +145,7 @@ async function fixture(
 		throw new Error(`unexpected ${method}`);
 	});
 	const reviewed: unknown[] = [];
+	const contents: unknown[] = [];
 	const reviewId = randomUUID();
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
@@ -156,15 +158,19 @@ async function fixture(
 			? {}
 			: {
 					review: {
-						check: async (request: { parsed: unknown }) => {
+						check: async (request: {
+							parsed: unknown;
+							tool: { reviewContents?: (parsed: never) => unknown };
+						}) => {
 							reviewed.push(request.parsed);
+							contents.push(request.tool.reviewContents?.(request.parsed as never));
 							return { run: true as const, reviewId };
 						},
 					},
 				}),
 	});
 	const calls = (method: string) => call.mock.calls.filter(([name]) => name === method).map(([, args]) => args);
-	return { binding, boundary, call, calls, folder, reviewed, reviewId };
+	return { binding, boundary, call, calls, folder, reviewed, contents, reviewId };
 }
 
 function outcome(response: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) {
@@ -204,9 +210,17 @@ describe("publish_site", () => {
 			kind: "folder",
 			mode: "new",
 			url: URL_OF("wristband-shop"),
+			liveSource: null,
 			files: 3,
 			paths: ["about.html", "img/logo.png", "index.html"],
 			skipped: [".DS_Store", "notes.md"],
+		});
+		// The reviewer reads every path that goes out, and what is left out.
+		expect(f.contents[0]).toEqual({
+			files: ["about.html", "img/logo.png", "index.html"],
+			filesNotListed: 0,
+			leftOut: [".DS_Store", "notes.md"],
+			leftOutNotListed: 0,
 		});
 		const [check] = f.calls("qorpera_site_publish_check");
 		expect(check).toEqual({ p_binding: f.binding, p_slug: "wristband-shop" });
@@ -269,7 +283,7 @@ describe("publish_site", () => {
 		expect(result.answer.password).toContain("unchanged");
 	});
 
-	it("uploads in batches of at most 10 MiB", async () => {
+	it("uploads in batches of at most 4 MiB, a larger file alone", async () => {
 		const big = (n: number) => new Uint8Array(6 * 1024 * 1024).fill(n);
 		const f = await fixture({
 			"site/index.html": "<p>x</p>",
@@ -283,10 +297,10 @@ describe("publish_site", () => {
 		expect(result.status, result.text).toBe("ok");
 		const puts = f.calls("qorpera_site_publish_put") as Array<{ p_files: { content: string }[] }>;
 		expect(puts.length).toBeGreaterThanOrEqual(3);
-		for (const put of puts)
-			expect(
-				put.p_files.reduce((sum, file) => sum + Buffer.from(file.content, "base64").byteLength, 0),
-			).toBeLessThanOrEqual(10 * 1024 * 1024);
+		for (const put of puts) {
+			const bytes = put.p_files.map((file) => Buffer.from(file.content, "base64").byteLength);
+			expect(bytes.length === 1 || bytes.reduce((sum, n) => sum + n, 0) <= 4 * 1024 * 1024).toBe(true);
+		}
 	});
 
 	it.each([
