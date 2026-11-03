@@ -42,11 +42,14 @@ export interface WebNativeProviderLogin {
 
 /** A member's connection with what the web reads beside the SDK's fields (migration
  * 20260929970000): the login's kind (absent for a node login), whether its member turned
- * on work while away for this version, and when the member's first-routine card was shown. */
+ * on work while away for this version, and when the member's first-routine card was shown;
+ * and (migration 20260930559000) its recent turns: whether the provider refused its last three
+ * runs (the newest in six hours) and whether it completed a run this week, which order a first choice. */
 export type WebMemberConnection = NativeMemberConnection & {
 	loginKind?: "codex" | "chatgpt_plan";
 	allowAutonomous?: boolean;
 	routineOfferShownAt?: string;
+	recentTurns?: { refused: boolean; completed: boolean };
 };
 export interface WebExecutionConnections extends NativeExecutionConnections {
 	connections: readonly WebMemberConnection[];
@@ -62,7 +65,8 @@ export interface WebAccountLogin {
 	connectionIds: readonly string[];
 }
 export interface WebAccountLogins {
-	/** Whether sign-ins here are account sign-ins (the switch is on and the shared vault serves this company). */
+	/** Whether sign-ins here are account sign-ins (the switch is on, the shared vault serves this company and the
+	 * company takes sign-ins in the vault: 20260930554000). */
 	enabled: boolean;
 	logins: readonly WebAccountLogin[];
 }
@@ -194,11 +198,17 @@ function withPlanFields(connection: NativeMemberConnection, answer: unknown): We
 	if (!entry) return connection;
 	const kind = entry.login_kind;
 	const shown = entry.routine_offer_shown_at;
+	const turns = entry.recent_turns;
+	const refused = turns && typeof turns === "object" ? (turns as Record<string, unknown>).refused : undefined;
+	const completed = turns && typeof turns === "object" ? (turns as Record<string, unknown>).completed : undefined;
 	return {
 		...connection,
 		...(kind === "codex" || kind === "chatgpt_plan" ? { loginKind: kind } : {}),
 		...(typeof entry.allow_autonomous === "boolean" ? { allowAutonomous: entry.allow_autonomous } : {}),
 		...(typeof shown === "string" && Number.isFinite(Date.parse(shown)) ? { routineOfferShownAt: shown } : {}),
+		...(typeof refused === "boolean" && typeof completed === "boolean"
+			? { recentTurns: { refused, completed } }
+			: {}),
 	};
 }
 

@@ -603,6 +603,20 @@ select pg_temp.al_expect((select jsonb_build_object('enabled', pg_temp.al_last()
 		'connections', (select jsonb_array_length(login -> 'connectionIds') from jsonb_array_elements(pg_temp.al_last() -> 'logins')
 			as login where login ->> 'loginId' = '68500000-0000-4000-8000-000000000100'))::text),
 	'{"logins": 2, "enabled": true, "connections": 1}', 'Settings reads the account logins');
+-- A company the shared vault serves but that takes node sign-ins (switched back) makes company sign-ins, so the list
+-- does not say enabled there (20260930554000).
+reset role;
+savepoint al_list_node_sign_in;
+delete from public.qorpera_model_login_sign_in_companies where profile_id = '92400000-0000-4000-8000-000000000010';
+set local role authenticated;
+select pg_temp.al_expect(pg_temp.al_try($q$select public.qorpera_list_account_model_logins(
+	'92400000-0000-4000-8000-000000000010')::text$q$), 'ok', 'the owner lists their account logins on node sign-ins');
+select pg_temp.al_expect((select jsonb_build_object('enabled', pg_temp.al_last() -> 'enabled',
+		'logins', jsonb_array_length(pg_temp.al_last() -> 'logins'))::text),
+	'{"logins": 2, "enabled": false}', 'a company on node sign-ins is not enabled for account logins');
+reset role;
+rollback to savepoint al_list_node_sign_in;
+set local role authenticated;
 select pg_temp.al_expect(pg_temp.al_try($q$select public.qorpera_sign_out_account_model_login(
 	'68500000-0000-4000-8000-000000000100')::text$q$), 'ok', 'the owner signs out everywhere');
 reset role;

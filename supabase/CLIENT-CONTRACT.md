@@ -203,7 +203,15 @@ they answer 42501 "native host call is refused".
   the member's own pick ("Choose a login to continue"). Choose saves the member's
   pick, one of their own logins that could pay now whatever its usage, and
   returns its connection id; 22023 "This login cannot pay for your conversation"
-  for any other login, 42501 when the conversation cannot be read.
+  for any other login, 42501 when the conversation cannot be read. A new
+  conversation's first choice (and new work's, and a new coding session's) orders
+  the logins best first (20260930559000): a login whose provider refused its last
+  three runs, the newest in six hours, last, then one at its limit, then one that completed a
+  run this week with at least 20% left first, then the most room on one scale
+  (each window's room divided by the share of the window still to run), unknown
+  usage last. `qorpera_list_member_native_execution_connections` reports each
+  login's `recent_turns` (`{refused, completed}`), so a client orders its own list
+  the same way.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -396,12 +404,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 - `qorpera_request_session_turn_v2`
 
 
-### Coding sessions (4) — Order 9, part 1 (PR #211)
+### Coding sessions (6) — Order 9, part 1 (PR #211)
 
 - `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
 - `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id. A `failed` event of a turn that stopped at its login's usage limit carries `usageLimit: true` and `paidByChatgptPlan` (whether a member's ChatGPT plan paid; 20260928379930): tell it as a usage limit, never as a refusal
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
+- `qorpera_list_coding_session_logins(p_worker_id)` — owner only; `qorpera.coding-session-logins/v1`: `current` (the connection the session pays with and its `state`: `ready`, `removed`, `disabled`, `needs_sign_in`, `not_allowed_away`, `unavailable`) and `logins`, the owner's logins that may pay for it (`connectionId`, `email`, `current`: the session pays with that very version and can). The session view carries the same `loginState` and the last turn's `reason`; a failed turn's `failed` event carries it as `code` (20260930551000)
+- `qorpera_choose_coding_session_login(p_worker_id, p_connection_id)` — owner only; moves the session to one of those logins from its next turn (refused while a turn runs, 55000; a login that cannot pay, 22023); records a `step` event `{loginChosen: true, from, to}`; answers the session view. Nothing moves a session by itself (20260930551000)
 
 ### Execution, sponsors, runners, computers (27)
 
@@ -806,7 +816,8 @@ its own ordinary connection for it, so the connection list, usage and Disconnect
 
 - `qorpera_list_account_model_logins(profile)`: `{schema: "qorpera.account-model-logins/v1", enabled, logins}`, the
   caller's own account logins (members of the company only). `enabled` says whether sign-ins in this company are
-  account sign-ins now. Each login has `loginId`, `loginKind`, `status` (`active` or `needs_sign_in`),
+  account sign-ins now (the switch is on, the shared vault serves the company and the company takes sign-ins in the
+  vault; the last since `20260930554000`). Each login has `loginId`, `loginKind`, `status` (`active` or `needs_sign_in`),
   `providerAccountEmail`, `createdAt`, `companies` (how many companies use it) and `connectionIds` (its connections
   in this company). Label those connections "Used in all your companies"; their Disconnect only stops using the login
   in this company (it is never linked there again until the member signs in again).
@@ -1329,7 +1340,8 @@ machine.
   `Retry-After`) or 503 (mail switched off, or retry).
 - `site-serve` (20260930550000) — the company sites' public host,
   `https://sites.qorpera.com/<slug>/` (the front proxy sends that host, and no
-  other, to `/functions/v1/site-serve/`), not for clients: a visitor's
+  other, to `/functions/v1/site-serve/`, and the function answers 404 unless
+  `X-Forwarded-Host` is exactly that host), not for clients: a visitor's
   password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
   static files under the visitor's session (`/<slug>/~<token>/<path>`), each
   file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.

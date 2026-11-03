@@ -3,6 +3,7 @@ import {
 	cloudConnectorAdapterSha256,
 	cloudConnectorCatalogRows,
 	cloudConnectorOperation,
+	cloudConnectorOperationReads,
 } from "@qorpera/runtime/cloud-connector-catalog";
 import { createGitHubConnectorAdapters } from "@qorpera/runtime/cloud-connector-github";
 import {
@@ -17,7 +18,7 @@ const client = { clientId: "client-id-test", clientSecret: "client-secret-test" 
 it("declares GitHub, Gmail and Google Drive with closed, runtime-parsable operation schemas", () => {
 	expect(CLOUD_CONNECTORS.map((connector) => connector.id)).toEqual(["github", "gmail", "google_drive"]);
 	const rows = cloudConnectorCatalogRows();
-	expect(rows).toHaveLength(20);
+	expect(rows).toHaveLength(21);
 	expect(new Set(rows.map((row) => row.toolName)).size).toBe(rows.length);
 	for (const row of rows) {
 		expect(row.toolName).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
@@ -31,7 +32,44 @@ it("declares GitHub, Gmail and Google Drive with closed, runtime-parsable operat
 			additionalProperties: false,
 		});
 		expect(JSON.stringify(row.inputSchema).length).toBeLessThanOrEqual(16 * 1024);
+		// A call may send its fields on their own or inside input (cloud-secret-tools.ts): no field takes that name.
+		expect(Object.keys(row.inputSchema.properties)).not.toContain("input");
 	}
+});
+
+it("declares GitHub repository creation as a write, private unless the call says false (3 November 2026)", () => {
+	const { operation } = cloudConnectorOperation("github", "create_repository");
+	expect(operation).toMatchObject({ toolName: "github_create_repository", version: 1, effect: "write" });
+	expect(operation.inputSchema.required).toEqual(["name"]);
+	expect(Object.keys(operation.inputSchema.properties).sort()).toEqual([
+		"auto_init",
+		"description",
+		"name",
+		"owner",
+		"private",
+	]);
+	expect(operation.inputSchema.properties.private).toMatchObject({ type: "boolean" });
+	expect(operation.description).toContain("private unless private is false");
+	expect(operation.description).toContain("connected again with permission to create repositories");
+});
+
+it("counts a granted operation as a read only when it is this build's read, at its version and adapter hash", () => {
+	const rows = cloudConnectorCatalogRows();
+	const granted = (connectorId: string, operationId: string) => {
+		const row = rows.find((item) => item.connectorId === connectorId && item.operationId === operationId);
+		if (!row) throw new Error(operationId);
+		return { connectorId, operationId, operationVersion: row.version, adapterSha256: row.adapterSha256 };
+	};
+	expect(cloudConnectorOperationReads(granted("github", "list_repositories"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("gmail", "read_thread"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("github", "create_repository"))).toBe(false);
+	expect(cloudConnectorOperationReads(granted("gmail", "send_message"))).toBe(false);
+	// Another version or hash than this build's, or an operation it does not know, is a write.
+	const list = granted("github", "list_repositories");
+	expect(cloudConnectorOperationReads({ ...list, operationVersion: 2 })).toBe(false);
+	expect(cloudConnectorOperationReads({ ...list, adapterSha256: "a".repeat(64) })).toBe(false);
+	expect(cloudConnectorOperationReads({ ...list, operationId: "list_everything" })).toBe(false);
+	expect(cloudConnectorOperationReads({ ...list, connectorId: "linear" })).toBe(false);
 });
 
 it("pins every compiled adapter to the catalog row it implements", () => {

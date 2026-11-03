@@ -139,6 +139,9 @@ interface LxdProviderJournal {
 	physicalState: LxdProviderPhysicalState;
 	/** Durable proof that the exact VM deletion completed before capacity RPC cleanup. */
 	deletionConfirmed?: true;
+	/** Whether this journal may have asked LXD to create its guest: false from its first write, true from just before
+	 * each create request (3 Nov 2026). A journal an older build wrote has neither and is not known either way. */
+	createRequested?: boolean;
 	/** Written only after the control plane confirms this physical allocation. */
 	capacityRegistered?: true;
 	/** Written only after the control plane confirms the exact release; the release is never sent again. */
@@ -399,6 +402,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		(input.deletionConfirmed !== undefined &&
 			(input.deletionConfirmed !== true ||
 				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
+		(input.createRequested !== undefined && typeof input.createRequested !== "boolean") ||
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
 		(input.recoveryVolumeRetired !== undefined &&
@@ -534,6 +538,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		runner: runnerFromJournal(input.runner),
 		physicalState: physicalState(input.physicalState),
 		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
+		...(typeof input.createRequested === "boolean" ? { createRequested: input.createRequested } : {}),
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
 		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
 		...(input.recoveryVolumeRetired === true ? { recoveryVolumeRetired: true } : {}),
@@ -872,6 +877,11 @@ async function present(path: string): Promise<boolean> {
 /** A reserving journal is advanced only by the orchestrator's acquire; after this long without
  * progress the acquisition is retired instead of being re-tried by every reconcile pass. */
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** A lost journal whose guest may have been asked for (or whose journal does not say) and that LXD has not shown for
+ * this long since the journal last changed has no create still pending: LXD records a guest within moments of taking
+ * its create, and the acquisition that sent it gave the journal up before it was marked lost. Its capacity is then
+ * released (see #guestGoneForGood). */
+const LOST_GUEST_SETTLE_MS = 15 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
@@ -929,6 +939,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
+	/** Acquisitions this process asked LXD to create a guest for: no later write of an older copy of the journal may
+	 * say it never did. */
+	readonly #requestedCreates = new Set<string>();
 	/** Journals of finished runs stay on disk. Once one is stopped or lost, its guest gone and its capacity
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
@@ -1299,6 +1312,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				instanceName: this.#instanceName(acquisitionId),
 				runner,
 				physicalState: "reserving",
+				createRequested: false,
 				lxd: {
 					project: this.#config.project,
 					type: "virtual-machine",
@@ -1410,12 +1424,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: reason });
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
-			if (
-				current.deletionConfirmed ||
-				current.physicalState === "reserving" ||
-				current.physicalState === "registered" ||
-				current.physicalState === "assigned"
-			) {
+			if (current.physicalState === "reserving" || this.#guestGoneForGood(current)) {
 				await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
 				await this.#releaseMachine(current, signal);
 			}
@@ -1579,6 +1588,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 			const admitted = await this.#reserveMachine(current, signal);
 			admitted.throwIfAborted();
+			// Durable before the request leaves: until then a missing guest is proof none will appear (3 Nov 2026).
+			this.#requestedCreates.add(current.acquisitionId);
+			current = { ...current, createRequested: true };
+			await this.#writeJournal(current);
 			try {
 				await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal, admitted);
 			} catch (error) {
@@ -2071,10 +2084,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			// a reservation the ceiling or the chooser refused (16 Sep 2026: refused journals of
 			// terminal runs were re-tried on every pass); a stale one is retired.
 			if (Date.now() - Date.parse(current.updatedAt) < RESERVING_RETIREMENT_MS) return;
-			step.stage = "release";
-			if (current.capacityRegistered || current.nodeCapacity) await this.#releaseMachine(current, signal);
+			// Released whatever the journal knows (3 Nov 2026): a reservation whose answer was lost may have committed
+			// although this journal never recorded it, and the release answers for an allocation that was never made
+			// too. A reserving journal never asked for a guest in any build, so its guest's absence is final. It is
+			// marked lost first: a release the database does not answer is a dead journal, tried on every pass (from
+			// its deletion proof) without failing the pass, and the journal settles only once the release is confirmed.
 			step.stage = "journal";
-			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
+			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle", deletionConfirmed: true });
+			step.stage = "release";
+			await this.#releaseMachine(current, signal);
 			return;
 		}
 		// A run that never starts again needs no identity volume: stopped or lost, or its guest's
@@ -2099,15 +2117,22 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (instance || !["stopping", "stopped", "lost"].includes(current.physicalState))
 			await this.#ensureRecoveryVolume(current, signal);
 		if (!instance) {
-			// A timed-out create/start may still be pending in LXD. Missing is
-			// deletion proof only after a fully registered or retired guest.
-			step.stage = "release";
-			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState))
-				await this.#releaseMachine(current, signal);
+			// The guest is gone or never came: the run never starts again. Its capacity is released once its absence is
+			// final (#guestGoneForGood), and retried on every pass until the release is confirmed (a journal is settled
+			// only then). The journal is marked lost first, so a failed release names a dead journal in the log instead
+			// of failing the pass (29 Oct 2026: two creating journals whose guest was never asked for were marked lost
+			// without a release, and their allocations stayed reserved until an operator released them on 3 Nov).
+			const gone = this.#guestGoneForGood(current);
 			step.stage = "journal";
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
-				await this.#writeJournal({ ...current, physicalState: "lost" });
+				await this.#writeJournal({
+					...current,
+					physicalState: "lost",
+					...(gone ? { deletionConfirmed: true as const } : {}),
+				});
 			}
+			step.stage = "release";
+			if (gone) await this.#releaseMachine(current, signal);
 			return;
 		}
 		step.stage = "authority";
@@ -2395,6 +2420,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await chmod(root, 0o700);
 		const updated: LxdProviderJournal = {
 			...journal,
+			...(this.#requestedCreates.has(journal.acquisitionId) ? { createRequested: true } : {}),
 			...(this.#registeredCapacity.has(journal.acquisitionId) ? { capacityRegistered: true as const } : {}),
 			...(this.#releasedCapacity.has(journal.acquisitionId) ? { capacityReleased: true as const } : {}),
 			...(this.#registeredNodeCapacity.has(journal.acquisitionId)
@@ -2627,6 +2653,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#capacityReleased(current: LxdProviderJournal): boolean {
 		return current.capacityReleased === true || this.#releasedCapacity.has(current.acquisitionId);
+	}
+
+	/** Whether LXD's answer that a journal's guest is missing is final, so that its machine capacity may be released:
+	 * its deletion was confirmed; it was fully registered or retired; the journal says it never asked LXD for a guest
+	 * (the caller holds its lock, so no request is in flight); or it is lost and LXD has not shown its guest for
+	 * LOST_GUEST_SETTLE_MS since, which also covers journals of older builds. Anything else may still have a create
+	 * pending in LXD, and a guest that appears without its allocation would make the node observer refuse the node.
+	 * A missing answer is never assumed: an LXD that does not answer throws before this is asked. */
+	#guestGoneForGood(current: LxdProviderJournal): boolean {
+		return (
+			current.deletionConfirmed === true ||
+			["registered", "assigned", "stopped"].includes(current.physicalState) ||
+			(current.createRequested === false && !this.#requestedCreates.has(current.acquisitionId)) ||
+			(current.physicalState === "lost" && Date.now() - Date.parse(current.updatedAt) >= LOST_GUEST_SETTLE_MS)
+		);
 	}
 
 	/** Stateless Compute step 1: whether the vault, not a node volume, keeps this identity's login.

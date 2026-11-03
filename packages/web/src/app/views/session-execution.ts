@@ -3,23 +3,81 @@ import type {
 	NativeMemberConnection,
 	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
+import type {
+	WebExecutionConnections,
+	WebMemberConnection,
+	WebNativeSubscription,
+} from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import type { RunPayer } from "../../ui/run-failure.ts";
 import type { CompanyController } from "../company.ts";
 
-/** Unknown windows sort after measured allowance. Expired windows no longer
- * establish exhaustion; the provider supplies the next observation. */
-function remainingAllowance(connection: NativeMemberConnection, now: number): number | undefined {
-	if (connection.usageLimitResetAt && Date.parse(connection.usageLimitResetAt) > now) return 0;
+/** The usage windows that count now: "limit" while a usage-limit signal is open, undefined
+ * while the reading is unknown or stale. Expired windows no longer establish exhaustion; the
+ * provider supplies the next observation. */
+function currentWindows(
+	connection: NativeMemberConnection,
+	now: number,
+): NonNullable<NativeMemberConnection["providerAccountUsage"]>["windows"] | "limit" | undefined {
+	if (connection.usageLimitResetAt && Date.parse(connection.usageLimitResetAt) > now) return "limit";
 	const observedAt = Date.parse(connection.providerAccountUsage?.observedAt ?? "");
 	if (!Number.isFinite(observedAt) || observedAt < now - 5 * 60_000 || observedAt > now + 60_000) return undefined;
 	const windows =
 		connection.providerAccountUsage?.windows.filter(
 			(window) => !window.resetAt || Date.parse(window.resetAt) > now,
 		) ?? [];
-	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
+	return windows.length ? windows : undefined;
+}
+
+/** The least room left of the login's windows, in percent. Unknown windows sort after measured allowance. */
+function remainingAllowance(connection: NativeMemberConnection, now: number): number | undefined {
+	const windows = currentWindows(connection, now);
+	if (windows === "limit") return 0;
+	return windows ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
+}
+
+/** The login's room on one scale (migration 20260930559000, qorpera_native_account_paced_room): each
+ * window's remaining percent divided by the share of that window still to run (5% to all of it; all
+ * of it when the reading has no length or reset), the tightest window deciding. 50% left of a week
+ * that resets in a day is 350; 97% left of a 30-day window with 27 days to go is about 108. */
+function pacedRoom(connection: NativeMemberConnection, now: number): number | undefined {
+	const windows = currentWindows(connection, now);
+	if (windows === "limit") return 0;
+	if (!windows) return undefined;
+	return Math.min(
+		...windows.map((window) => {
+			const reset = Date.parse(window.resetAt ?? "");
+			const share =
+				window.windowSeconds && window.windowSeconds > 0 && Number.isFinite(reset)
+					? (reset - now) / (window.windowSeconds * 1000)
+					: 1;
+			return (100 - window.usedPercent) / Math.max(0.05, Math.min(1, share));
+		}),
+	);
+}
+
+/** How a first choice orders a login, best first, as the cloud's qorpera_native_account_rank does
+ * (migration 20260930559000): a login whose provider refused its last three runs last; then one at
+ * its limit; then one that completed a run this week with at least 20% left (or unknown usage) first;
+ * then the most room on one scale, unknown usage after measured room. */
+function loginRank(connection: WebMemberConnection, now: number): readonly number[] {
+	const remaining = remainingAllowance(connection, now);
+	return [
+		connection.recentTurns?.refused === true ? 1 : 0,
+		remaining === 0 ? 1 : 0,
+		(remaining === undefined || remaining >= 20) && connection.recentTurns?.completed === true ? 0 : 1,
+		-(pacedRoom(connection, now) ?? -1),
+	];
+}
+
+function compareRanks(a: readonly number[], b: readonly number[]): number {
+	for (let index = 0; index < a.length; index++) {
+		const difference = (a[index] ?? 0) - (b[index] ?? 0);
+		if (difference) return difference;
+	}
+	return 0;
 }
 
 /** The waits before reading the accounts again after a read failed: 2 s, 5 s, 10 s, 30 s, then every minute. Coming
@@ -38,8 +96,8 @@ export interface SessionLogin {
 
 /** A conversation keeps its own account, also at its usage limit: sending waits until it
  * resets, and only the member moves a conversation to another account (founder decision
- * 2026-10-04, migration 20260930059000). New conversations choose the member's account with
- * the most remaining allowance. */
+ * 2026-10-04, migration 20260930059000). New conversations choose the member's account that
+ * works and has the most room on one scale (loginRank, migration 20260930559000). */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -48,7 +106,7 @@ export class SessionExecutionView {
 	readonly #changed: () => void;
 	readonly #lifetime = new AbortController();
 	#request: AbortController | undefined;
-	#observed: NativeExecutionConnections | undefined;
+	#observed: WebExecutionConnections | undefined;
 	#provenance: readonly SessionTurnProvenance[] = [];
 	#started = false;
 	#busy = false;
@@ -184,7 +242,7 @@ export class SessionExecutionView {
 		// The cloud's last answer stands until this read lands, so the composer's Login page keeps its
 		// tick through a read; sending, the choice and the reasons wait for #busy to clear anyway.
 		let serverConnectionId: string | undefined;
-		const readConnections = async (): Promise<NativeExecutionConnections> => {
+		const readConnections = async (): Promise<WebExecutionConnections> => {
 			if (this.#serverSelection) {
 				serverConnectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 				signal.throwIfAborted();
@@ -329,8 +387,7 @@ export class SessionExecutionView {
 			})
 			.sort(
 				(a, b) =>
-					(remainingAllowance(b, now) ?? -1) - (remainingAllowance(a, now) ?? -1) ||
-					a.connectionId.localeCompare(b.connectionId),
+					compareRanks(loginRank(a, now), loginRank(b, now)) || a.connectionId.localeCompare(b.connectionId),
 			)
 			.map((connection) => connection.connectionId);
 	}
@@ -376,6 +433,26 @@ export class SessionExecutionView {
 		} catch {
 			// Sending stays off until the member has a usable account and authority.
 		}
+	}
+
+	/** What this member's own logins tell of the login behind a sponsor binding (a failed run's payer): whether it is
+	 * one of theirs, and when its usage limit resets, from the provider's own usage reading: the latest reset still
+	 * ahead of its full windows, as the agent reads it (qorpera_worker_usage_limit_text, 20260930549300). Nothing for
+	 * another member's login, which this member's list does not hold, or before the list is read; and never the cloud's
+	 * estimate for a limit with no known reset (usageLimitResetAt may be the signal's time plus six hours). */
+	payer(sponsorBindingId: string | undefined, now = Date.now()): RunPayer {
+		let own = false;
+		let resetsAt: string | undefined;
+		for (const connection of this.#observed?.connections ?? []) {
+			if (!sponsorBindingId || connection.sponsorBindingId !== sponsorBindingId) continue;
+			own = true;
+			for (const window of connection.providerAccountUsage?.windows ?? []) {
+				const at = Date.parse(window.resetAt ?? "");
+				if (window.usedPercent >= 100 && at > now && (resetsAt === undefined || at > Date.parse(resetsAt)))
+					resetsAt = window.resetAt;
+			}
+		}
+		return own ? { own, ...(resetsAt ? { resetsAt } : {}) } : {};
 	}
 
 	/** The member still has this login: listed, and not disconnected (revoked). */

@@ -257,6 +257,9 @@ export interface HostedRunRecovery {
 	paidByChatgptPlan?: boolean;
 	/** The member the run was started for, whose login pays for it. */
 	requestedByUserId?: string;
+	/** The sponsor binding (the login) that paid for the run: the member's own logins name theirs, so the web can tell
+	 * whether it is the reading member's own and when its usage limit resets. */
+	sponsorBindingId?: string;
 	/** Operations still executing or of unknown outcome. The cloud refuses to
 	 * dismiss the run until they settle. */
 	unsettledOperations: number;

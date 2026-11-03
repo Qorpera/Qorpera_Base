@@ -18,6 +18,7 @@ import {
 	type CodingHarness,
 	type CodingSession,
 	type CodingSessionEvent,
+	type CodingSessionLogins,
 	type CodingSessionRead,
 	codingSessionGoing,
 	codingSessionSettled,
@@ -201,6 +202,40 @@ export interface CodingSessionApi {
 	answer(workerId: string, text: string, clientRequestId: string): Promise<void>;
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
 	archive(workerId: string, clientRequestId: string): Promise<void>;
+	/** The owner's logins for the session, and moving it to one by hand (20260930551000). Absent where the cloud has
+	 * neither: then the card only says why a turn could not run. */
+	logins?(workerId: string): Promise<CodingSessionLogins>;
+	chooseLogin?(workerId: string, connectionId: string): Promise<void>;
+}
+
+/** Why a turn could not run, for a failed turn whose code says its login could not pay (20260930551000); undefined
+ * for every other code. The owner is told what to do; another member, who it is that can. */
+export function codingLoginReason(
+	code: string | undefined,
+	names: Pick<CodingSessionNames, "owner" | "ownerIsViewer">,
+): string | undefined {
+	const reason =
+		code === "login_removed"
+			? t("This session's login was removed, so its turn could not run.")
+			: code === "login_disabled"
+				? t("This session's login was turned off by an owner or admin, so its turn could not run.")
+				: code === "login_needs_sign_in"
+					? t("This session's login needs a new sign-in, so its turn could not run.")
+					: code === "login_not_allowed_away"
+						? t("This session's login no longer allows work while its member is away, so its turn could not run.")
+						: code === "login_unavailable"
+							? t("This session's login can't pay for work right now, so its turn could not run.")
+							: undefined;
+	if (!reason) return undefined;
+	return `${reason} ${
+		!names.ownerIsViewer
+			? t("Only {owner} can choose another login for it.", { owner: names.owner })
+			: code === "login_not_allowed_away"
+				? t(
+						"Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.",
+					)
+				: t("Choose another of your logins for it, then send a message to continue.")
+	}`;
 }
 
 /** The session as the body of its own thread (the thread view adds the header): the transcript, and under it
@@ -345,7 +380,9 @@ export class CodingSessionElement {
 	/** Why the stream cannot be read, shown only while nothing is known yet. */
 	#readError: string | undefined;
 	/** Per action, the request id kept for a retry after a refusal. */
-	readonly #requestIds = new Map<"answer" | "delegate" | "archive", string>();
+	readonly #requestIds = new Map<"answer" | "delegate" | "archive" | "login", string>();
+	/** The owner's logins while the card offers them, for the session's state they were read for. */
+	#logins: { key: string; value?: CodingSessionLogins } | undefined;
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#request: AbortController | undefined;
 	#refreshing: Promise<void> | undefined;
@@ -448,7 +485,15 @@ export class CodingSessionElement {
 		else
 			options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", () => this.#onVisibility(), { signal: this.#lifetime.signal });
-		window.addEventListener("focus", () => void this.refresh(), { signal: this.#lifetime.signal });
+		window.addEventListener(
+			"focus",
+			() => {
+				// Back from Settings, say: the owner's logins may have changed, so an offer reads them again.
+				if (this.#logins?.value) this.#logins = undefined;
+				void this.refresh();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		this.#render();
 		void this.refresh();
@@ -575,11 +620,82 @@ export class CodingSessionElement {
 		await this.#act("archive", (requestId) => this.#options.api.archive(this.#session.workerId, requestId));
 	}
 
+	/** The owner moves the session to another of their logins; the offer is read again after it. */
+	async #chooseLogin(connectionId: string): Promise<void> {
+		const choose = this.#options.api.chooseLogin;
+		if (this.#busy || this.disposed || !choose) return;
+		this.#logins = undefined;
+		await this.#act("login", () => choose(this.#session.workerId, connectionId));
+	}
+
+	/** When the owner is offered their other logins: the session takes a message and its login cannot pay, or its
+	 * last turn stopped for its login (its usage limit, or a login code the session's state no longer shows, such as
+	 * a credential admission refused) and it was not moved since. Undefined when nothing is offered; else the state
+	 * the offer is read for. */
+	#loginOfferKey(owns: boolean): string | undefined {
+		const session = this.#session;
+		const api = this.#options.api;
+		if (!owns || !api.logins || !api.chooseLogin || !codingSessionTakesInput(session)) return undefined;
+		const cannotPay = session.loginState !== undefined && session.loginState !== "ready";
+		// Whether it moved since the limit is in the stream: none of it is offered before the stream is read.
+		if (!cannotPay && !this.#caughtUp) return undefined;
+		const failed = lastOf(this.#events, "failed");
+		const moved = this.#events.some(
+			(event) => event.kind === "step" && flag(event.body, "loginChosen") && (!failed || event.id > failed.id),
+		);
+		const forLogin = session.reason === "usage_limit" || session.reason?.startsWith("login_") === true;
+		if (!cannotPay && !(forLogin && !moved)) return undefined;
+		return JSON.stringify([session.workerId, session.sequence, session.loginState, session.reason, moved]);
+	}
+
+	/** The owner's other logins under the composer, each a button that moves the session to it. */
+	#renderLoginOffer(owns: boolean): HTMLElement | null {
+		const key = this.#loginOfferKey(owns);
+		if (!key) return null;
+		const logins = this.#options.api.logins;
+		if (this.#logins?.key !== key && logins) {
+			const asked = { key };
+			this.#logins = asked;
+			void logins(this.#session.workerId).then(
+				(value) => {
+					if (this.#logins !== asked || this.disposed) return;
+					this.#logins = { key, value };
+					this.#footerKey = "";
+					this.#render();
+				},
+				() => undefined,
+			);
+		}
+		const value = this.#logins?.value;
+		if (!value) return null;
+		const others = value.logins.filter((login) => !login.current);
+		return h(
+			"div",
+			{ class: "coding-options coding-logins" },
+			h(
+				"p",
+				{ class: "muted" },
+				others.length
+					? t("Continue this session with one of your logins:")
+					: t(
+							"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.",
+						),
+			),
+			...others.map((login, index) =>
+				button(
+					t("Use {account}", { account: login.email ?? t("Model account {number}", { number: index + 1 }) }),
+					() => void this.#chooseLogin(login.connectionId),
+					{ small: true, disabled: this.#busy },
+				),
+			),
+		);
+	}
+
 	/** One answer, delegation or archive under one request id, kept for a retry of the same action after a
 	 * refusal. The controls stay busy until the session has been read again after it, so a second click cannot
 	 * send it twice. */
 	async #act(
-		action: "answer" | "delegate" | "archive",
+		action: "answer" | "delegate" | "archive" | "login",
 		call: (requestId: string) => Promise<void>,
 		sent?: () => void,
 	): Promise<void> {
@@ -889,6 +1005,12 @@ export class CodingSessionElement {
 					break;
 				}
 				case "failed": {
+					// A turn whose login could not pay (20260930551000): why, and who can choose another login.
+					const login = codingLoginReason(text(event.body, "code"), names);
+					if (login) {
+						note(h("div", { class: "conversation-note coding-note coding-row-error", role: "note" }, login));
+						break;
+					}
 					// A turn the kernel says stopped at a usage limit (20260929993000); the owner's own plan gets
 					// OpenAI's words and "Manage usage".
 					const limit = {
@@ -967,6 +1089,11 @@ export class CodingSessionElement {
 				: t("{owner} archived the session", { owner: names.owner });
 		}
 		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// The owner moved the session to another of their logins (20260930551000).
+		if (event.actor === "member" && body.loginChosen === true)
+			return names.ownerIsViewer
+				? t("You moved the session to another login")
+				: t("{owner} moved the session to another login", { owner: names.owner });
 		// The kernel asked the agent whether a quiet session can be archived.
 		if (event.actor === "kernel" && typeof body.quietDays === "number" && body.quietDays >= 1)
 			return body.quietDays === 1
@@ -1136,7 +1263,19 @@ export class CodingSessionElement {
 		const question = this.#liveQuestion();
 		const choices = question ? options(question.body) : [];
 		// The status text carries whether the session stands by, runs something or sleeps, where it is shown.
-		const key = JSON.stringify([status, owns, harness, takesInput, asking, choices, this.#busy, this.#error, names]);
+		const loginOffer = this.#renderLoginOffer(owns);
+		const key = JSON.stringify([
+			status,
+			owns,
+			harness,
+			takesInput,
+			asking,
+			choices,
+			this.#busy,
+			this.#error,
+			names,
+			loginOffer?.textContent ?? null,
+		]);
 		if (key === this.#footerKey) return;
 		this.#footerKey = key;
 		this.#status.className = `coding-status coding-tone-${status.tone}`;
@@ -1182,6 +1321,7 @@ export class CodingSessionElement {
 						}),
 					)
 				: null,
+			loginOffer,
 			owns && this.#error ? h("div", { class: "coding-row-error", role: "alert" }, this.#error) : null,
 		);
 		this.#extras.hidden = !this.#extras.childElementCount;

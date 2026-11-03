@@ -4,8 +4,9 @@
 # view of the VM, so its enrollment digest stays.
 # Ubuntu 26.04 + rootful Docker Engine + Node 24 (pinned) + Git/build tools/Python/bubblewrap, no self-update (apt
 # units masked, every snap held), user "tester" (docker + sudo) by SSH key only, runner users ci01..ci16, the pinned
-# PostgreSQL image and the Node images the *-linux.mjs suites and runtime office probes use pre-pulled, LXD 6.9 rev
-# 40424 for nested tests, weekly cleanup of stopped containers, dangling images and old build cache.
+# PostgreSQL image, the Node images the *-linux.mjs suites and runtime office probes use and api-front's Envoy image
+# (deploy/sites/envoy-front-sites.test.mjs) pre-pulled, LXD 6.9 rev 40424 for nested tests, weekly cleanup of stopped
+# containers, dangling images and old build cache.
 # Re-running it on a live machine also runs apt-get upgrade, which can restart Docker under running suites.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -14,6 +15,9 @@ PG_IMAGE='docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64
 NODE_TEST_IMAGE='docker.io/library/node:24-bookworm-slim'
 # CI pre-pulls node:22-bookworm-slim for the runtime office probes (--pull=never).
 NODE22_TEST_IMAGE='docker.io/library/node:22-bookworm-slim'
+# api-front's image (the dbhome kit's docker-compose.dbhome-front.yml), for deploy/sites/envoy-front-sites.test.mjs
+# (--pull never; required on a machine whose versions file names it).
+ENVOY_TEST_IMAGE='docker.io/envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4'
 NODE_VERSION=v24.21.0
 NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  # node-v24.21.0-linux-x64.tar.xz, nodejs.org SHASUMS256
 
@@ -98,6 +102,7 @@ log "pre-pull images"
 docker pull -q "$PG_IMAGE"
 docker pull -q "$NODE_TEST_IMAGE"
 docker pull -q "$NODE22_TEST_IMAGE"
+docker pull -q "$ENVOY_TEST_IMAGE"
 docker run --rm hello-world >/dev/null
 
 log "weekly Docker cleanup (stopped containers, unused networks, dangling images, build cache older than a week)"
@@ -174,6 +179,7 @@ log "versions"
 	echo "postgres_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$PG_IMAGE")"
 	echo "node_test_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$NODE_TEST_IMAGE")"
 	echo "node22_test_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$NODE22_TEST_IMAGE")"
+	echo "envoy_test_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$ENVOY_TEST_IMAGE")"
 	echo "bwrap=$(bwrap --version)"
 	echo "runners=$(getent passwd | awk -F: '/^ci[0-9][0-9]:/ {print $1}' | paste -sd, -)"
 	echo "cpus=$(nproc) mem_kib=$(awk '/MemTotal/{print $2}' /proc/meminfo)"

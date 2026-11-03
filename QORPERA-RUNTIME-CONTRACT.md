@@ -2456,6 +2456,34 @@ follows a run:
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
+> **Amended 2026-11-03 (migration 20260930559000).** "The most room left" above
+> is now an order of the member's logins, best first, for every first choice (a
+> new conversation, new work, a new coding session after its consent and plan
+> keys): a login whose provider refused its last three finished runs, the newest
+> within six hours, comes last (never switched off; a completed run or another
+> kind of failure ends the streak); then a login at its usage limit; then one
+> that completed a run in the last seven days with at least 20% left in each
+> window first; then the most room on one scale, each window's remaining share
+> divided by the share of the window still to run (5% to all of it), unknown
+> usage last. A share of a 30-day window and a share of a week are not the same
+> amount: on 3 November a ChatGPT workspace plan with 97% of its month left won
+> every first choice over a weekly login at 50%, and refused every Codex turn.
+> Kept logins and which logins may pay are unchanged.
+
+2026-11-03 amendment: a coding session's owner moves it to another login by
+hand (live company-building test; migration 20260930551000). A coding session
+keeps the login it was dispatched with, as work that follows a run does. When
+that login cannot pay (removed, disabled, needing a new sign-in, no longer
+allowed to work while its member is away) or its last turn stopped at the
+login's usage limit, the failed turn says so in fixed words with a reason code
+(login_removed, login_disabled, login_needs_sign_in, login_not_allowed_away,
+login_unavailable, usage_limit), and every other failed turn reports its own
+failure code. The session's card offers its owner their other logins that may
+pay for it (their own, for its harness, allowed to work while they are away,
+not a ChatGPT plan); a pick moves the session's payer to that login's binding
+from its next turn, never while a turn runs. Nothing moves a session by itself,
+and nobody but its owner moves it.
+
 Routines follow the same rule (migration 20260930095000):
 
 - A routine keeps a payer that serves its saver (their own login, or a company
@@ -3464,6 +3492,31 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    to the company's own agents. See the
    [2026-10-22 amendment](#2026-10-22-amendment-agents-build-the-company-without-waiting),
    item 2.
+   Amended 2026-11-03 (the Co-Founder's founding run had its weekday planning
+   routine denied as not requested, because its kickoff reached the reviewer
+   as raw data in a member's place and its first todo read as the whole
+   request):
+   - A first run's startup input is the platform's, never a member's request:
+     the reviewer reads it in plain words as the agent's first run, started
+     when the company was founded or the agent was hired, whose startup
+     assignment (its first todo) is where it begins, not all it may do. A
+     first run is judged by its mandate, as item 2 of that amendment says.
+   - The mandate's Co-Founder role names, as its hire overlay does, the
+     weekday planning routine its founding run sets up and keeping the
+     company's work moving without waiting to be asked.
+   - Work that carries on from a first run (its workers' reports, a machine
+     event) reads it as work that began in the first run, not as the first
+     run itself. When the request has a member's own words, members started
+     the run, even when it is also a first run.
+   - A delegation is never denied only because the request or the mandate
+     does not name it. In a first run itself, where a member is usually
+     watching, a delegation that serves none of the mandate gets a card
+     instead of a deny. Deny is unchanged otherwise: an action against the
+     request, instructions from outside content (for a delegation too), an
+     action against the vision, a member's no, and, in any other run no
+     member started (a routine, an event, a file change, a coworker's
+     message, or work that carries on from one of these or from a first
+     run), a delegation that serves none of the mandate.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow

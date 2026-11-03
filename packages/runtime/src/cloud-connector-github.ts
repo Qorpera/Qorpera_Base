@@ -3,6 +3,7 @@ import { type ConnectorOperationContext, defineConnectorAdapters } from "./cloud
 import { cloudConnector } from "./cloud-connector-catalog.ts";
 import {
 	ConnectorRequestError,
+	type ConnectorResponse,
 	clipText,
 	connectorRequest,
 	decodeUtf8,
@@ -119,6 +120,45 @@ function issueSummary(item: unknown): JsonValue {
 
 function limit(value: JsonValue | undefined, fallback: number): string {
 	return String(jsonInteger(value) ?? fallback);
+}
+
+/** What the agent can relay when the connection's token may not create repositories: an OAuth token without the
+ * `repo` scope, a fine-grained token without Administration write, a GitHub App without that permission. */
+export const GITHUB_CREATE_REPOSITORY_PERMISSION =
+	"the GitHub connection needs to be connected again with permission to create repositories";
+
+/** GitHub's refusal of a new repository, in words the agent can relay. */
+function repositoryRefusal(response: ConnectorResponse, organization: string | null): ConnectorRequestError {
+	const refusal = providerRefusal(response, "GitHub");
+	if (response.status === 422) {
+		// "Repository creation failed." says less than its first error: "name already exists on this account".
+		let first: string | null = null;
+		try {
+			first =
+				jsonArray(jsonRecord(parseJsonResponse(response)).errors)
+					.map((item) => jsonString(jsonRecord(item).message, 200))
+					.find((message): message is string => Boolean(message)) ?? null;
+		} catch {
+			first = null;
+		}
+		return first ? new ConnectorRequestError("invalid_request", `GitHub: ${first}`) : refusal;
+	}
+	if (refusal.reason !== "forbidden" && refusal.reason !== "not_found") return refusal;
+	// Without an organization the endpoint always exists, so either answer means the token may not create one.
+	if (!organization)
+		return new ConnectorRequestError(
+			"forbidden",
+			`GitHub refused to create the repository: ${GITHUB_CREATE_REPOSITORY_PERMISSION} (${refusal.message}).`,
+		);
+	if (refusal.reason === "not_found")
+		return new ConnectorRequestError(
+			"not_found",
+			`GitHub found no organization ${organization} the connected account can create repositories in. Check the name, or leave owner out to create it in the connected account.`,
+		);
+	return new ConnectorRequestError(
+		"forbidden",
+		`GitHub refused a new repository in ${organization}: an owner of that organization must allow it, or ${GITHUB_CREATE_REPOSITORY_PERMISSION}.`,
+	);
 }
 
 export function createGitHubConnectorAdapters(
@@ -246,6 +286,45 @@ export function createGitHubConnectorAdapters(
 				return {
 					comment_id: jsonInteger(created.id),
 					url: jsonString(created.html_url, 512),
+					created_at: jsonString(created.created_at, 40),
+				};
+			},
+			async create_repository(args, context) {
+				const name = String(args.name);
+				const owner = jsonString(args.owner, 64);
+				if (!REPOSITORY.test(name) || name === "." || name === ".." || (owner !== null && !OWNER.test(owner))) {
+					throw new ConnectorRequestError("invalid_request", "The repository name is not valid.");
+				}
+				// An owner that is the connected account's own login is the account itself, not an organization.
+				let organization: string | null = null;
+				if (owner !== null) {
+					const login = jsonString(jsonRecord(await github(context, "/user")).login, 64);
+					if (login?.toLowerCase() !== owner.toLowerCase()) organization = owner;
+				}
+				const response = await connectorRequest({
+					fetch: context.fetch,
+					origin: context.origin,
+					path: organization ? `/orgs/${encodeURIComponent(organization)}/repos` : "/user/repos",
+					method: "POST",
+					headers: headers(context, { "content-type": "application/json" }),
+					body: JSON.stringify({
+						name,
+						// Private unless the call says false; a public one went through the review's access check.
+						private: args.private !== false,
+						auto_init: args.auto_init !== false,
+						...(typeof args.description === "string" ? { description: args.description } : {}),
+					}),
+					signal: context.signal,
+					keepHeaders: ["x-ratelimit-remaining"],
+				});
+				if (response.status < 200 || response.status >= 300) throw repositoryRefusal(response, organization);
+				const created = jsonRecord(parseJsonResponse(response));
+				return {
+					full_name: jsonString(created.full_name, 200),
+					private: jsonBoolean(created.private),
+					default_branch: jsonString(created.default_branch, 128),
+					url: jsonString(created.html_url, 512),
+					clone_url: jsonString(created.clone_url, 512),
 					created_at: jsonString(created.created_at, 40),
 				};
 			},

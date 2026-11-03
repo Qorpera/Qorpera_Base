@@ -37,6 +37,17 @@ export type CodingSessionEventKind = (typeof CODING_SESSION_EVENT_KINDS)[number]
 export const CODING_SESSION_ACTORS = ["kernel", "harness", "member", "agent", "executor"] as const;
 export type CodingSessionActor = (typeof CODING_SESSION_ACTORS)[number];
 
+/** Whether the login a session pays with can pay for its next turn (20260930551000): `ready`, or why not. */
+export const CODING_LOGIN_STATES = [
+	"ready",
+	"removed",
+	"disabled",
+	"needs_sign_in",
+	"not_allowed_away",
+	"unavailable",
+] as const;
+export type CodingLoginState = (typeof CODING_LOGIN_STATES)[number];
+
 export interface CodingRepository {
 	host: string;
 	owner: string;
@@ -100,6 +111,11 @@ export interface CodingSession {
 	runningCommands: number;
 	/** Its machine is asleep: programs stopped, files kept, the next message wakes it. */
 	machineAsleep: boolean;
+	/** Whether the login the session pays with can pay for its next turn (absent before the cloud says). */
+	loginState?: CodingLoginState;
+	/** The last turn's reason, while its report stands: a failed turn's code (login_removed, usage_limit, the
+	 * provider's code, ...), set by the cloud since 20260930551000. */
+	reason?: string;
 	/** When this client asked for this copy (performance clock). The cloud moves `updatedAt` with the turn's own
 	 * changes (its phase, its steps, the executor's heartbeat while it runs), not when the session stands by,
 	 * sleeps or is archived, so of two copies with the same `updatedAt` the one asked for later knows more. */
@@ -236,6 +252,10 @@ export function parseCodingSession(value: unknown, askedAt = performance.now()):
 	if (finishedAt) session.finishedAt = finishedAt;
 	if (typeof item.sessionId === "string") session.sessionId = uuid(item.sessionId, "Coding session conversation id");
 	if (typeof item.isOwner === "boolean") session.isOwner = item.isOwner;
+	if ((CODING_LOGIN_STATES as readonly unknown[]).includes(item.loginState))
+		session.loginState = item.loginState as CodingLoginState;
+	const reason = optionalString(item.reason, 200);
+	if (reason) session.reason = reason;
 	return session;
 }
 
@@ -264,5 +284,43 @@ export function parseCodingSessionRead(value: unknown, askedAt = performance.now
 		session: parseCodingSession(item.session, askedAt),
 		isOwner: item.isOwner === true,
 		events: array(item.events, "Coding session events").map(parseCodingSessionEvent),
+	};
+}
+
+/** One of the owner's logins that can pay for the session (20260930551000). */
+export interface CodingSessionLogin {
+	connectionId: string;
+	email?: string;
+	current: boolean;
+}
+
+/** qorpera_list_coding_session_logins: the session's login and the owner's logins it may move to. */
+export interface CodingSessionLogins {
+	current: { connectionId?: string; state?: CodingLoginState };
+	logins: CodingSessionLogin[];
+}
+
+export function parseCodingSessionLogins(value: unknown): CodingSessionLogins {
+	const item = record(value, "Coding session logins");
+	if (item.schema !== "qorpera.coding-session-logins/v1") throw new Error("Invalid coding session logins");
+	const current = record(item.current, "Coding session login");
+	return {
+		current: {
+			...(typeof current.connectionId === "string"
+				? { connectionId: uuid(current.connectionId, "Coding session login id") }
+				: {}),
+			...((CODING_LOGIN_STATES as readonly unknown[]).includes(current.state)
+				? { state: current.state as CodingLoginState }
+				: {}),
+		},
+		logins: array(item.logins, "Coding session logins").map((entry) => {
+			const login = record(entry, "Coding session login");
+			const email = optionalString(login.email, 254);
+			return {
+				connectionId: uuid(login.connectionId, "Coding session login id"),
+				...(email ? { email } : {}),
+				current: login.current === true,
+			};
+		}),
 	};
 }

@@ -6,8 +6,9 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import type { WebExecutionConnections, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -916,6 +917,97 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
+	it("ranks by room on one scale, a login known to work first and a refusing login last (20260930559000)", async () => {
+		const day = 86_400_000;
+		// Login 90's weekly window and login 91's 30-day window, used this much, resetting in so many days.
+		const logins = (
+			weekly: readonly [number, number],
+			monthly: readonly [number, number],
+			turns: readonly ({ refused: boolean; completed: boolean } | undefined)[] = [],
+		): WebExecutionConnections => {
+			const observed = withUsage([0, 0]);
+			const now = Date.now();
+			const windows = [
+				{ label: "Weekly", usedPercent: weekly[0], days: weekly[1], windowSeconds: 604_800 },
+				{ label: "Current window", usedPercent: monthly[0], days: monthly[1], windowSeconds: 2_592_000 },
+			];
+			return {
+				...observed,
+				connections: observed.connections.map((connection, index) => ({
+					...connection,
+					providerAccountUsage: {
+						observedAt: new Date(now).toISOString(),
+						windows: [
+							{
+								id: "primary" as const,
+								label: windows[index]!.label,
+								usedPercent: windows[index]!.usedPercent,
+								resetAt: new Date(now + windows[index]!.days * day).toISOString(),
+								windowSeconds: windows[index]!.windowSeconds,
+							},
+						],
+					},
+					...(turns[index] ? { recentTurns: turns[index] } : {}),
+				})),
+			};
+		};
+		// 50% left of a week that resets in a day (350) beats 97% left of 30 days with 27 to go (about 108).
+		const f = setup(true, logins([50, 1], [3, 27]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// With six days to go the week has less room (about 58), so the 30-day login comes first...
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(logins([50, 6], [3, 27]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// ...unless only the weekly login completed a run this week: a login known to work comes first.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[50, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: true },
+					{ refused: false, completed: false },
+				],
+			),
+		);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// A login known to work needs 20% left in each window to come first.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[85, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: true },
+					{ refused: false, completed: false },
+				],
+			),
+		);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// A login whose provider refused its last three runs comes last, however much room it has.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[50, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: false },
+					{ refused: true, completed: true },
+				],
+			),
+		);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
 	it("follows its binding to the member's new connection and honors authoritative usage-limit signals", async () => {
 		const f = setup(true, withUsage([90, 40]));
 		await settle();
@@ -1700,5 +1792,97 @@ describe("the composer's Login page", () => {
 		expect(f.view.el.querySelector<HTMLElement>(".composer-menu")?.hidden).toBe(true);
 		expect(document.activeElement).toBe(f.view.el.querySelector('[aria-label="Chat settings and more"]'));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+});
+
+describe("a failed run at its login's usage limit", () => {
+	const LIMIT =
+		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account.";
+	it("says when the limit resets, from the member's own login that paid for the run", async () => {
+		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
+		const observed = connections();
+		// The first login's weekly window is full until `reset`; its 5-hour window has room. The second login has room.
+		const f = setup(false, {
+			...observed,
+			connections: observed.connections.map((connection, index) => ({
+				...connection,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [
+						{ id: "primary" as const, label: "5 hours", usedPercent: 40, resetAt: later },
+						{ id: "secondary" as const, label: "Week", usedPercent: index === 0 ? 100 : 70, resetAt: reset },
+					],
+				},
+			})),
+		});
+		await settle();
+		const run = {
+			runId: id(170),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const recovery = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]",
+			usageLimit: true,
+			unsettledOperations: 0,
+		};
+		const reason = () => f.view.el.querySelector(".run-failure-reason")?.textContent;
+		// The first login paid (its sponsor binding): its full window's reset.
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(100) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again when the limit resets (${fmtTime(reset)}).`);
+		// The second login has no full window: no time is known.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(101) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		// Another member's login, which this member's list does not hold, or a cloud that names no binding: no time.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(199) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		f.company.store.set({ recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		// This member's own login refused by ChatGPT: they check it or pick another, and no reset is said.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					sponsorBindingId: id(100),
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(reason()).toBe(
+			"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
+		);
+		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
+			"Dismiss",
+		]);
+		// Another member's login refused: the card is the agent's, so this member reads who can act.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					sponsorBindingId: id(199),
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(reason()).toBe(
+			"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
+		);
 	});
 });

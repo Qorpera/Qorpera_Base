@@ -3,11 +3,12 @@
 // Usage: node scripts/test-gmail-draft-catalog.mjs <qorpera-... container>
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { CATALOG_MIGRATION } from "./generate-cloud-connector-catalog.mjs";
 
+// The Gmail draft migration itself: the generator's catalog migration moved on (20260930556000).
+const GMAIL_DRAFT_MIGRATION = "supabase/migrations/20260925125900_gmail_draft_catalog.sql";
 const container = process.argv[2];
 if (!container || !/^qorpera-[a-z0-9-]+$/.test(container)) throw new Error("A disposable qorpera-* database container is required");
-const migration = readFileSync(new URL(`../${CATALOG_MIGRATION}`, import.meta.url), "utf8")
+const migration = readFileSync(new URL(`../${GMAIL_DRAFT_MIGRATION}`, import.meta.url), "utf8")
 	.replace(/^begin;$/m, "").replace(/^commit;$/m, "");
 const fixture = readFileSync(new URL("../supabase/tests/397_cloud_connector_catalog.test.sql", import.meta.url), "utf8");
 const setup = fixture.slice(0, fixture.indexOf("-- The shipped catalog")).replace(/^begin;$/m, "");

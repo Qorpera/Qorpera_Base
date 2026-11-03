@@ -229,6 +229,27 @@ export const AGENTS: Record<string, string> = {
 	"The machine stopped": "Maskinen stoppede",
 	"The machine restarted": "Maskinen genstartede",
 	"The machine got a new disk": "Maskinen fik en ny disk",
+	// A coding session's login (20260930551000): why a turn could not run, the move and the offer of other logins.
+	"This session's login was removed, so its turn could not run.":
+		"Sessionens login blev fjernet, så dens tur kunne ikke køre.",
+	"This session's login was turned off by an owner or admin, so its turn could not run.":
+		"Sessionens login blev slået fra af en ejer eller administrator, så dens tur kunne ikke køre.",
+	"This session's login needs a new sign-in, so its turn could not run.":
+		"Sessionens login skal logges ind igen, så dens tur kunne ikke køre.",
+	"This session's login no longer allows work while its member is away, so its turn could not run.":
+		"Sessionens login tillader ikke længere arbejde, mens medlemmet er væk, så dens tur kunne ikke køre.",
+	"This session's login can't pay for work right now, so its turn could not run.":
+		"Sessionens login kan ikke betale for arbejde lige nu, så dens tur kunne ikke køre.",
+	"Choose another of your logins for it, then send a message to continue.":
+		"Vælg et andet af dine logins til den, og send så en besked for at fortsætte.",
+	"Only {owner} can choose another login for it.": "Kun {owner} kan vælge et andet login til den.",
+	"You moved the session to another login": "Du flyttede sessionen til et andet login",
+	"{owner} moved the session to another login": "{owner} flyttede sessionen til et andet login",
+	"Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.":
+		"Tillad det at arbejde, mens du er væk, igen under Indstillinger, AI-abonnementer, og vælg det så her, eller vælg et andet af dine logins; send derefter en besked for at fortsætte.",
+	"Continue this session with one of your logins:": "Fortsæt sessionen med et af dine logins:",
+	"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.":
+		"Ingen af dine andre logins kan betale for sessionen. Log ind med et andet under Indstillinger, AI-abonnementer.",
 	"1 command stopped": "1 kommando stoppet",
 	"{count} commands stopped": "{count} kommandoer stoppet",
 	"Coding session": "Kodesession",
@@ -250,6 +271,16 @@ export const AGENTS: Record<string, string> = {
 		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
+	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.":
+		"Sessionen mistede forbindelsen, mens den arbejdede. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Sessionen kunne ikke hente det login, der betaler for den. Tjek loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"ChatGPT refused or could not answer the session's request. The member whose login pays for it can check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Det medlem, hvis login betaler for den, kan tjekke loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Sessionen kunne ikke hente det login, der betaler for den. Det medlem, der ejer loginnet, kan tjekke det under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.":
 		"Modelkontoen skal forbindes igen. Arbejdsområdet er gemt; en opfølgning fortsætter den, når kontoen er forbundet.",
 	"No computer could be started for the session. The workspace is kept; a follow-up tries again.":
