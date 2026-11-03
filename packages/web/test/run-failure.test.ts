@@ -9,7 +9,7 @@ const COMPLETION_REFUSED =
 const BRIDGE = (code: string) => `Native provider bridge request failed (422) [code=${code}]`;
 const PROVIDER_REFUSED =
 	/^ChatGPT refused or could not answer this run's request\. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation\.$/;
-const CONNECTION_LOST = /^The run lost its connection while it was working\. This is usually brief, so try again\.$/;
+const CONNECTION_LOST = /^The run lost its connection while it was working\. This is usually brief\.$/;
 const LOGIN_UNAVAILABLE =
 	/^The run could not load the login that pays for it\. Check that login in Settings → AI subscriptions, or choose another login for this conversation\.$/;
 const QORPERA_REFUSED = /^The run started, but one of its steps was refused\. The problem is on Qorpera's side\.$/;

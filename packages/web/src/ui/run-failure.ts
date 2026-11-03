@@ -52,7 +52,7 @@ export function classifyRunFailure(
 	// answer it), or refused one of the run's requests. The member checks the login paying for the run first.
 	const providerFailed = / \[code=[A-Z0-9_]{1,42}:PROVIDER_FAILED\]/.test(lastError ?? "");
 	// The category "transport_unavailable": a connection dropped or could not be made while a step worked (to ChatGPT,
-	// or a cloud call of the run). It is usually brief, so the run is worth trying again.
+	// or a cloud call of the run), whichever side it was. It is usually brief, so the run is worth trying again.
 	const connectionLost = / \[code=[A-Z0-9_]{1,42}:TRANSPORT_UNAVAILABLE\]/.test(lastError ?? "");
 	// The host could not download the run's login before the model started (the whole code, with or without a category
 	// other than a timeout or a cancellation, which read as theirs above): the login vault or its store refused it (a
@@ -93,7 +93,9 @@ const REASONS: Record<RunFailureKind, string> = {
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
 	),
-	connection: phrase("The run lost its connection while it was working. This is usually brief, so try again."),
+	// Try again is offered as for lost contact; the words never ask for it, since the cloud refuses it once work took
+	// effect.
+	connection: phrase("The run lost its connection while it was working. This is usually brief."),
 	login_unavailable: phrase(
 		"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.",
 	),
