@@ -5,6 +5,7 @@ import { GITHUB_API_VERSION } from "./cloud-connector-github.ts";
 import type { GoogleOAuthClient } from "./cloud-connector-google.ts";
 import { connectorRequest } from "./cloud-connector-http.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 
 /**
  * Upstream revoke of connected-account tokens (company delete D6, migration 20260928269500). When a
@@ -355,7 +356,9 @@ export async function logConnectorTokenRevocationPass(
 		const { completed, failed } = await revocations.pass(signal);
 		if (completed > 0 || failed > 0)
 			console.error(`Connector token revocation: ${completed} completed, ${failed} failed (offered again later).`);
-	} catch {
-		console.error("Connector token revocation: a pass stopped on an error; the next pass tries again.");
+	} catch (error) {
+		console.error(
+			`Connector token revocation: a pass stopped on an error (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+		);
 	}
 }

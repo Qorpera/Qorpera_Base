@@ -23,6 +23,7 @@ import {
 import {
 	type NativeRuntimeFailureStage,
 	type NativeRuntimeUsageSignal,
+	nativeCodexErrorToken,
 	nativeRuntimeUsageSignal,
 	tagNativeRuntimeFailure,
 } from "./cloud-native-failure.ts";
@@ -579,6 +580,9 @@ class CodexBoundaryRpc {
 	#failureCategory: CloudRuntimeErrorCategory = "unknown";
 	#providerErrorCategory?: CloudRuntimeErrorCategory;
 	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
+	/** Codex's last terminal error discriminant as a fixed name (nativeCodexErrorToken); a name is kept over `unknown`
+	 * and `null`, which say nothing of the cause. */
+	#providerErrorToken?: string;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	readonly #requestIds = new Set<string>();
 	readonly #lines = new CodexLineReader();
@@ -699,6 +703,15 @@ class CodexBoundaryRpc {
 		return this.chatGptPlan && this.#providerUsageSignal === "rate_limited"
 			? "usage_limit"
 			: this.#providerUsageSignal;
+	}
+	/** The fixed name of Codex's terminal error discriminant, if it reported one; never its text. */
+	get codexError(): string | null {
+		return this.#providerErrorToken ?? null;
+	}
+	#noteProviderErrorToken(info: unknown): void {
+		const token = nativeCodexErrorToken(info);
+		const named = (value: string | undefined) => value !== undefined && value !== "unknown" && value !== "null";
+		if (named(token) || !named(this.#providerErrorToken)) this.#providerErrorToken = token;
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
@@ -1509,6 +1522,7 @@ class CodexBoundaryRpc {
 					this.#providerErrorCategory = category;
 					this.#providerUsageSignal = nativeRuntimeUsageSignal(object(params.error).codexErrorInfo);
 				}
+				if (!params.willRetry) this.#noteProviderErrorToken(object(params.error).codexErrorInfo);
 				return;
 			}
 			if (!this.#turnObservation) return;
@@ -1643,6 +1657,8 @@ class CodexBoundaryRpc {
 						: error?.codexErrorInfo === undefined
 							? this.#providerUsageSignal
 							: nativeRuntimeUsageSignal(error.codexErrorInfo);
+				if (turn.status === "interrupted") this.#providerErrorToken = undefined;
+				else if (error?.codexErrorInfo !== undefined) this.#noteProviderErrorToken(error.codexErrorInfo);
 				this.fail(
 					"Native boundary turn did not complete",
 					turn.status === "interrupted"
@@ -2407,6 +2423,7 @@ export async function runCloudCodexToolSession(options: {
 			stage,
 			rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
 			rpc.usageSignal ?? null,
+			rpc.codexError,
 		);
 	} finally {
 		options.reviewer?.attach(undefined);

@@ -35,6 +35,7 @@ import {
 } from "./cloud-secret-broker-http.ts";
 import { SharedCloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { cloudVaultFailureClass, markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 import { databaseTls } from "./database-ca.ts";
 import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
@@ -331,9 +332,22 @@ export async function runCloudSecretBrokerServiceMain(
 		statement_timeout: 4000,
 		idle_in_transaction_session_timeout: 4000,
 	});
+	// An idle session the pooler or the server ends is an `error` on the pool; without a listener it would end the
+	// vault. The pool drops that client and opens a new one on demand.
+	pool.on("error", (error) => {
+		console.error(
+			`Cloud secret broker: an idle database session ended (class: ${cloudVaultFailureClass(markCloudVaultDatabaseFailure(error))}); the next call opens a new one.`,
+		);
+	});
+	// The vault's one door to its database: a failure leaves it marked with its class, so a request answers 503 `busy`
+	// for a lost session and the background passes log the class (3 November 2026).
 	const databaseClient = {
 		async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[]) {
-			return pool.query<Row>(text, [...values]);
+			try {
+				return await pool.query<Row>(text, [...values]);
+			} catch (error) {
+				throw markCloudVaultDatabaseFailure(error);
+			}
 		},
 	};
 	// G2-6a: a native host's request holds its run's lease before a runtime-token route serves its binding. The holder

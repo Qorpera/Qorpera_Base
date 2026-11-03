@@ -336,7 +336,21 @@ it("names a login download that got no answer a timeout, which the runner tries 
 			"NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT",
 			true,
 		],
-		// The vault's 403: a refused binding, a revoked login, or the broker's own failure.
+		// The vault's 503 `busy`: its database could not serve the call (3 November 2026), so nothing was issued or
+		// refused.
+		[
+			"503 busy",
+			client(
+				async () =>
+					new Response(JSON.stringify({ schema: "qorpera.cloud-secret-error/v1", error: "busy" }), {
+						status: 503,
+						headers: { "retry-after": "5" },
+					}),
+			),
+			"NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT",
+			true,
+		],
+		// The vault's 403: a refused binding, a revoked login, or the broker's other failures.
 		[
 			"403",
 			client(
@@ -348,6 +362,8 @@ it("names a login download that got no answer a timeout, which the runner tries 
 			"NATIVE_CREDENTIAL_DOWNLOAD",
 			false,
 		],
+		// Only 503 says busy: any other failed status is an answer.
+		["500", client(async () => new Response("{}", { status: 500 })), "NATIVE_CREDENTIAL_DOWNLOAD", false],
 		["malformed answer", client(async () => new Response("{}")), "NATIVE_CREDENTIAL_DOWNLOAD", false],
 		[
 			"redirect",

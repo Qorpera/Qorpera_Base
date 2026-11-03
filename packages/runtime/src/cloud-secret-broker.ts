@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import {
+	CloudRequestTimeoutError,
 	readBoundedCloudResponse,
 	supabaseServiceHeaders,
 	withCloudDeadline,
@@ -44,6 +45,7 @@ import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -2510,24 +2512,31 @@ export class PostgresCloudSecretBrokerAuthority
 	}
 }
 
-/** One broker database call: exactly one row with a `result`, within 5 s. */
-function oneCloudSecretRpc(
+/** One broker database call: exactly one row with a `result`, within 5 s. A call that passed its own 5 s (not its
+ * caller's signal) waited on the database: it is marked as the database's failure, as the client's own are. */
+async function oneCloudSecretRpc(
 	database: CloudSecretPostgresClient,
 	text: string,
 	values: readonly unknown[],
 	signal: AbortSignal,
 ): Promise<unknown> {
-	return withCloudDeadline(
-		async () => {
-			const result = await database.query<{ result: unknown }>(text, values);
-			if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
-				throw new Error("Cloud secret authority returned invalid data");
-			}
-			return result.rows[0]?.result;
-		},
-		5000,
-		signal,
-	);
+	try {
+		return await withCloudDeadline(
+			async () => {
+				const result = await database.query<{ result: unknown }>(text, values);
+				if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
+					throw new Error("Cloud secret authority returned invalid data");
+				}
+				return result.rows[0]?.result;
+			},
+			5000,
+			signal,
+		);
+	} catch (error) {
+		throw error instanceof CloudRequestTimeoutError && !signal.aborted
+			? markCloudVaultDatabaseFailure(error, "call deadline")
+			: error;
+	}
 }
 
 const PRINCIPAL_SECRET = /^[A-Za-z0-9_-]{43}$/;
