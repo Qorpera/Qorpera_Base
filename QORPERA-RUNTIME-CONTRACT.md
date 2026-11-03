@@ -3476,13 +3476,19 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    - The mandate's Co-Founder role names, as its hire overlay does, the
      weekday planning routine its founding run sets up and keeping the
      company's work moving without waiting to be asked.
+   - Work that carries on from a first run (its workers' reports, a machine
+     event) reads it as work that began in the first run, not as the first
+     run itself. When the request has a member's own words, members started
+     the run, even when it is also a first run.
    - A delegation is never denied only because the request or the mandate
-     does not name it. In a first run, where a member is usually watching, a
-     delegation that serves none of the mandate gets a card instead of a
-     deny. Deny is unchanged otherwise: an action against the request,
-     instructions from outside content, an action against the vision, a
-     member's no, and, in a routine's, an event's or a coworker's run, a
-     delegation that serves none of the mandate.
+     does not name it. In a first run itself, where a member is usually
+     watching, a delegation that serves none of the mandate gets a card
+     instead of a deny. Deny is unchanged otherwise: an action against the
+     request, instructions from outside content (for a delegation too), an
+     action against the vision, a member's no, and, in any other run no
+     member started (a routine, an event, a file change, a coworker's
+     message, or work that carries on from one of these or from a first
+     run), a delegation that serves none of the mandate.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
