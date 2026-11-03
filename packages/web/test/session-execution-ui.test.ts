@@ -735,6 +735,8 @@ describe("conversation execution account", () => {
 		await settle();
 		// The conversation keeps its account and waits; the other login is offered, not taken.
 		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
 		expect(f.send().disabled).toBe(true);
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
 		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
