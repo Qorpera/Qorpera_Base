@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import { cloudConnectorOperationReads } from "./cloud-connector-catalog.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { CLOUD_PAIRED_REQUEST_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool, CloudToolContent } from "./cloud-native-tool-boundary.ts";
@@ -13,8 +15,12 @@ const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** A supplied key a refusal may name: a plain identifier, never free text. */
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-/** The one shape of a connector call, as its refusals show it. */
-const INVOCATION = 'The call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
+/** The shapes of a connector call, as its refusals show them. A call may send the tool's fields on their own (the
+ * natural shape: on 30 October 2026 a Co-Founder run's first github_list_repositories call was refused for it), or
+ * inside `input`, each with an optional `idempotencyKey`. */
+const INVOCATION = 'Send the tool\'s fields on their own, or as {"idempotencyKey": "<key>", "input": {...}}';
+/** The envelope shape, once a call sent `input`. */
+const ENVELOPE = 'With input, the call must be exactly {"idempotencyKey": "<key>", "input": {...}}';
 
 export type CloudConnectorInputSchema = {
 	type: "object";
@@ -541,7 +547,13 @@ export async function describeCloudSecretTools(
 	return Object.freeze(descriptors);
 }
 
-function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolDescriptor) {
+interface ConnectorInvocation {
+	/** The model's own key, when it sent one: absent, the call's key is derived (`invocationKey`). */
+	idempotencyKey?: string;
+	input: JsonValue;
+}
+
+function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolDescriptor): ConnectorInvocation {
 	if (
 		!value ||
 		typeof value !== "object" ||
@@ -550,31 +562,53 @@ function parseInvocation(value: JsonValue, descriptor: CloudNativeConnectorToolD
 	) {
 		throw new CloudToolArgumentRefusal(INVOCATION);
 	}
-	const input = value as Record<string, unknown>;
-	const extra = Object.keys(input).filter((key) => key !== "idempotencyKey" && key !== "input");
-	if (extra.length) {
-		// The tool's own fields sent beside input, not in it, are named in the schema's order: they are its names.
-		const misplaced = Object.keys(descriptor.inputSchema.properties).filter((name) => extra.includes(name));
-		refuse(
-			misplaced.length
-				? `${INVOCATION}; ${misplaced.join(", ")} ${misplaced.length === 1 ? "goes" : "go"} inside input`
-				: `${INVOCATION}, without ${FIELD_NAME.test(extra[0] as string) ? extra[0] : "other fields"}`,
-			INVOCATION,
-		);
+	const call = value as Record<string, unknown>;
+	let input: unknown;
+	// The envelope, once the call sent input (or for a tool whose own fields name one, which the catalog forbids).
+	if (Object.hasOwn(call, "input") || Object.hasOwn(descriptor.inputSchema.properties, "input")) {
+		const extra = Object.keys(call).filter((key) => key !== "idempotencyKey" && key !== "input");
+		if (extra.length) {
+			// The tool's own fields sent beside input, not in it, are named in the schema's order: they are its names.
+			const misplaced = Object.keys(descriptor.inputSchema.properties).filter((name) => extra.includes(name));
+			refuse(
+				misplaced.length
+					? `${ENVELOPE}; ${misplaced.join(", ")} ${misplaced.length === 1 ? "goes" : "go"} inside input`
+					: `${ENVELOPE}, without ${FIELD_NAME.test(extra[0] as string) ? extra[0] : "other fields"}`,
+				ENVELOPE,
+			);
+		}
+		if (!Object.hasOwn(call, "input"))
+			throw new CloudToolArgumentRefusal(
+				`${ENVELOPE}; input is missing (it holds the tool's fields, or is {} for none)`,
+			);
+		input = call.input;
+	} else {
+		// The natural shape: the tool's fields on their own, with or without a key beside them.
+		input = Object.fromEntries(Object.entries(call).filter(([key]) => key !== "idempotencyKey"));
 	}
-	if (!Object.hasOwn(input, "idempotencyKey"))
-		throw new CloudToolArgumentRefusal(`${INVOCATION}; idempotencyKey is missing`);
-	if (!Object.hasOwn(input, "input"))
-		throw new CloudToolArgumentRefusal(
-			`${INVOCATION}; input is missing (it holds the tool's fields, or is {} for none)`,
-		);
-	if (typeof input.idempotencyKey !== "string" || !OPERATION_KEY.test(input.idempotencyKey))
+	if (
+		Object.hasOwn(call, "idempotencyKey") &&
+		(typeof call.idempotencyKey !== "string" || !OPERATION_KEY.test(call.idempotencyKey))
+	)
 		throw new CloudToolArgumentRefusal(
 			`idempotencyKey must be 1 to 128 letters, digits or . _ : -, starting with a letter or digit (${OPERATION_KEY.source})`,
 		);
-	cloudToolJsonText(input.input, 64 * 1024);
-	validateValue(input.input as JsonValue, descriptor.inputSchema);
-	return { idempotencyKey: input.idempotencyKey, input: structuredClone(input.input) as JsonValue };
+	cloudToolJsonText(input, 64 * 1024);
+	validateValue(input as JsonValue, descriptor.inputSchema);
+	return {
+		...(typeof call.idempotencyKey === "string" ? { idempotencyKey: call.idempotencyKey } : {}),
+		input: structuredClone(input) as JsonValue,
+	};
+}
+
+/**
+ * The call's key when the model sent none. A read is its own call: the same read later in the run asks the provider
+ * again (a list after a create shows the new item). A write is keyed by its fields: the identical write again in this
+ * run is the same effect, replayed or refused by its receipt, never a second one; a different write is a new one.
+ */
+function invocationKey(reads: boolean, input: JsonValue, callId: string): string {
+	const keyed = reads ? cloudToolJsonText([callId, input]) : cloudToolJsonText(input);
+	return `${reads ? "read" : "write"}-${createHash("sha256").update(keyed).digest("hex").slice(0, 48)}`;
 }
 
 export function cloudSecretTools(options: {
@@ -585,6 +619,9 @@ export function cloudSecretTools(options: {
 	broker: CloudSecretOperationClient;
 }): CloudNativeTool[] {
 	return options.descriptors.map((descriptor) => {
+		// A read of this build's catalog shows the model its own fields; a write shows the envelope, so its key is in
+		// sight for a retry. Either takes both shapes (parseInvocation).
+		const reads = cloudConnectorOperationReads(descriptor);
 		const target = Object.freeze({
 			grantId: descriptor.grantId,
 			connectorId: descriptor.connectorId,
@@ -624,30 +661,36 @@ export function cloudSecretTools(options: {
 			name: descriptor.toolName,
 			source: "connector",
 			description: descriptor.description,
-			inputSchema: {
-				type: "object",
-				properties: {
-					idempotencyKey: {
-						type: "string",
-						description: "Stable key for this exact external effect; reuse it for an identical retry.",
-						pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+			inputSchema: reads
+				? structuredClone(descriptor.inputSchema)
+				: {
+						type: "object",
+						properties: {
+							idempotencyKey: {
+								type: "string",
+								description: "Stable key for this exact external effect; reuse it for an identical retry.",
+								pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+							},
+							input: structuredClone(descriptor.inputSchema),
+						},
+						required: ["idempotencyKey", "input"],
+						additionalProperties: false,
 					},
-					input: structuredClone(descriptor.inputSchema),
-				},
-				required: ["idempotencyKey", "input"],
-				additionalProperties: false,
-			},
 			parseArguments(value) {
+				// Always the envelope, so the review, the card and the effect read one shape.
 				const parsed = parseInvocation(value, descriptor);
-				return { idempotencyKey: parsed.idempotencyKey, input: parsed.input };
+				return parsed.idempotencyKey === undefined
+					? { input: parsed.input }
+					: { idempotencyKey: parsed.idempotencyKey, input: parsed.input };
 			},
 			async execute(value, context) {
 				const parsed = parseInvocation(value, descriptor);
+				const key = parsed.idempotencyKey ?? invocationKey(reads, parsed.input, context.callId);
 				return options.operations.execute({
 					operation: {
 						tool: descriptor.toolName,
 						toolVersion: `${descriptor.operationVersion}-${descriptor.adapterSha256}`,
-						logicalOperationKey: `${descriptor.grantId}:${parsed.idempotencyKey}`,
+						logicalOperationKey: `${descriptor.grantId}:${key}`,
 						arguments: parsed.input,
 						target,
 						requiresCompanyRevision: false,

@@ -47,7 +47,7 @@ only by the broker artifact's SHA-256 (built from reviewed source on node 2).
 
 | Connector | Credential field | Operations (tool names) |
 | --- | --- | --- |
-| `github` (api.github.com) | `access_token` | `github_list_repositories`, `github_search_issues`, `github_get_issue`, `github_create_issue`, `github_comment_on_issue`, `github_read_file`, `github_get_pull_request` |
+| `github` (api.github.com) | `access_token` | `github_list_repositories`, `github_search_issues`, `github_get_issue`, `github_create_issue`, `github_comment_on_issue`, `github_read_file`, `github_get_pull_request`, `github_create_repository` (since `20260930556000`) |
 | `gmail` (gmail.googleapis.com) | `refresh_token` | `gmail_search_messages`, `gmail_read_message`, `gmail_read_thread`, `gmail_send_message` |
 | `google_drive` (www.googleapis.com) | `refresh_token` | `google_drive_search_files`, `google_drive_read_file`, `google_drive_create_file`, `google_drive_update_file` |
 
@@ -75,6 +75,45 @@ refresh token for an access token on every call and keep neither. A revoked
 Google grant surfaces as `authorization_required`, which tells the agent to
 ask the member to reconnect rather than retry. The broker's existing
 reflected-secret fence still runs on every result.
+
+### GitHub repositories (v194, 3 November 2026; migration `20260930556000`, SQL test 557)
+
+In the founder's company-building test the Co-Founder had to ask the founder to create `wristband-shop` by hand.
+`github_create_repository` (`create_repository` v1) creates one: `name`; `owner`, an organization (left out, or the
+connected account's own login, it is the account itself: the adapter reads `GET /user` to tell); `description`;
+`private`, default true; `auto_init`, default true (a README, so a default branch). It posts `POST /user/repos` or
+`POST /orgs/{owner}/repos`.
+
+- **Review.** A write, so an outside effect for the automatic review. The card reads "Create a GitHub repository"
+  (or "Create a public GitHub repository") with the account or organization, who can see it, its description and what
+  it starts with. A public repository is a built-in access check whatever the reviewer called it
+  (`repositoryAccessCheck` in `cloud-action-review.ts`): an owner or admin approves it on a card unless a company Allow
+  rule covers it.
+- **Permission at GitHub.** The OAuth App sign-in has asked for `repo` since this step, and `repo` lets the token
+  create repositories for the account and in its organizations, as far as each organization's policy lets that
+  account: existing sign-ins need no reconnect. A typed token needs Administration read and write (fine-grained) or
+  `repo` (classic; `public_repo` covers only public repositories). An organization with OAuth App access restrictions
+  must approve Qorpera's app, and one that stops members creating repositories must allow it.
+- **Refusals the agent can relay.** A 403 or 404 for the account answers `forbidden`: "GitHub refused to create the
+  repository: the GitHub connection needs to be connected again with permission to create repositories (GitHub: …)".
+  For an organization, a 403 says an owner of it must allow it or the connection be connected again, and a 404 that no
+  such organization takes repositories from the account. A taken name answers GitHub's own words ("name already exists
+  on this account"); a rate limit stays `rate_limited`.
+- **Grants.** New shares and hires issue every active operation, so they carry it. For connections shared before it,
+  the migration's `qorpera_backfill_connector_operation_grants('github', 'create_issue', 'create_repository', 1)`
+  issues it to every active agent holding a live `create_issue` grant on a shared company connection, under the same
+  issuer (still an owner or admin) and expiry, one `grant_issued` audit row each, never restoring a revoked one. The
+  function is kept for the next catalog addition; no API role may call it.
+- **Release.** The migration, the runtime bundle and the secret broker build (the adapter). An older broker has no
+  adapter for the operation and refuses the call.
+
+### Call shape (v194, 3 November 2026)
+
+A connector tool takes the tool's fields on their own or inside `input`, either with an optional `idempotencyKey`
+(`cloud-secret-tools.ts`). A read of the runtime's own catalog shows the model only its fields; a write shows the
+`{idempotencyKey, input}` envelope. Without a key a read is keyed by its call (each call asks the provider), and a
+write by its fields (the identical write again in a run is the same effect, answered by its receipt). On 30 October a
+Co-Founder run's bare `github_list_repositories` call was refused until it was wrapped in the envelope.
 
 ### OAuth inside the broker (`cloud-connector-oauth.ts`, broker HTTP routes)
 

@@ -228,6 +228,45 @@ const GITHUB: CloudConnectorDefinition = {
 			},
 			recipe: "GET /repos/{owner}/{repo}/pulls/{number}; GET /repos/{owner}/{repo}/pulls/{number}/files?per_page=50",
 		},
+		{
+			// 3 November 2026: the Co-Founder had to ask the founder to create a repository by hand. Private unless the
+			// call says otherwise; a public one is a built-in access check in the automatic review.
+			id: "create_repository",
+			version: 1,
+			toolName: "github_create_repository",
+			effect: "write",
+			description:
+				"Create a new repository in the connected GitHub account, or in an organization that account belongs to (owner). It is private unless private is false; a public repository is visible to everyone on the internet. By default it starts with a README, so it has a default branch. A refusal says when the name is taken or when the GitHub connection must be connected again with permission to create repositories.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					name: {
+						type: "string",
+						description: "Name of the new repository, without the owner: letters, digits, - _ and .",
+						minLength: 1,
+						maxLength: 100,
+						pattern: "^[A-Za-z0-9_.-]{1,100}$",
+					},
+					owner: {
+						...owner,
+						description:
+							"Organization to create it in. Omit it, or give the connected account's own login, for the connected account itself.",
+					},
+					description: { type: "string", description: "Short description shown on GitHub.", maxLength: 350 },
+					private: {
+						type: "boolean",
+						description: "Default true. false makes the repository public: anyone on the internet can see it.",
+					},
+					auto_init: {
+						type: "boolean",
+						description: "Default true: start with a README. false creates an empty repository.",
+					},
+				},
+				required: ["name"],
+				additionalProperties: false,
+			},
+			recipe: "GET /user (when owner is given); POST /user/repos or POST /orgs/{owner}/repos",
+		},
 	],
 };
 
@@ -601,6 +640,25 @@ export function cloudConnectorOperation(
 	return { connector, operation };
 }
 
+/** Whether a granted operation is one of this build's reads: the catalog's own read at the same version and adapter
+ * hash. Anything else, an operation this build does not know included, counts as a write. */
+export function cloudConnectorOperationReads(granted: {
+	readonly connectorId: string;
+	readonly operationId: string;
+	readonly operationVersion: number;
+	readonly adapterSha256: string;
+}): boolean {
+	const connector = CLOUD_CONNECTORS.find((item) => item.id === granted.connectorId);
+	const operation = connector?.operations.find((item) => item.id === granted.operationId);
+	return (
+		connector !== undefined &&
+		operation !== undefined &&
+		operation.effect === "read" &&
+		operation.version === granted.operationVersion &&
+		cloudConnectorAdapterSha256(connector, operation) === granted.adapterSha256
+	);
+}
+
 /** The adapter hash the SQL catalog pins and the broker checks before unwrapping
  * a credential. It covers what the catalog declares for the operation:
  * destination, credential placement, closed input schema and the recipe text.
@@ -659,7 +717,9 @@ export function cloudConnectorCatalogRows(): readonly CloudConnectorCatalogRow[]
 				operation.description.length > 2048 ||
 				!Number.isSafeInteger(operation.version) ||
 				operation.version < 1 ||
-				toolNames.has(operation.toolName)
+				toolNames.has(operation.toolName) ||
+				// A call may send the fields on their own or inside `input` (cloud-secret-tools.ts): no field takes that name.
+				Object.hasOwn(operation.inputSchema.properties, "input")
 			)
 				throw new Error("Cloud connector operation definition is invalid");
 			toolNames.add(operation.toolName);
