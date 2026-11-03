@@ -7,8 +7,10 @@
 -- admission and reports login_removed in plain words, never "The coding turn did not finish.". The owner signs in with
 -- another login and moves the session to it (never while a turn runs, never as another member, never to a login that
 -- cannot pay); the move is an event, a second move to the same login does nothing, the session pays with the binding
--- the dispatch would choose for that login, and the next turn's wake and run pay with it. The other login states read
--- as their own reasons, and the API reaches only the two member functions.
+-- the dispatch would choose for that login, and the next turn's wake and run pay with it. A failure without a code
+-- reports what the turn's rows say, and a turn that ran keeps its report after the login's words. The other login
+-- states read as their own reasons; a login whose consent to work while away was withdrawn and given again is offered
+-- again and pays with its new version; and the API reaches only the two member functions.
 
 -- The runner's failure report on a run's binding.
 create function pg_temp.cl_fail(p_binding jsonb, p_error text) returns void language plpgsql as $$
@@ -234,7 +236,8 @@ begin
 		and pg_temp.cl_view() ->> 'loginState' = 'ready', 'the view after the move: ' || v_view::text);
 	v_event := pg_temp.cl_event('step');
 	perform pg_temp.base_assert(v_event.actor = 'member' and v_event.sequence = 3
-		and v_event.body = '{"loginChosen":true,"text":"Moved to another login"}'::jsonb, 'the move''s event: ' || to_jsonb(v_event)::text);
+		and v_event.body = jsonb_build_object('loginChosen', true, 'text', 'Moved to another login', 'from', v_old, 'to', v_connection),
+		'the move''s event: ' || to_jsonb(v_event)::text);
 	perform pg_temp.base_assert(pg_temp.cl_logins() -> 'logins' -> 0 ->> 'current' = 'true'
 		and pg_temp.cl_logins() -> 'current' = jsonb_build_object('connectionId', v_connection, 'state', 'ready'), 'the logins after it');
 	-- The same choice again changes nothing.
@@ -244,12 +247,16 @@ begin
 		and (pg_temp.c3_worker(w.id)).owner_sponsor_binding_id = w.owner_sponsor_binding_id, 'a second choice is a no-op');
 end $$;
 
--- 5. The next turn pays with the chosen login -------------------------------------------------------------------------
+-- 5. The next turn pays with the chosen login; a session waiting for its claim may still be moved ----------------------
 do $$
 declare v_token uuid; v_begin jsonb; v_pass jsonb; v_wake public.qorpera_wake_occurrences%rowtype;
 	w public.qorpera_runtime_workers%rowtype;
 begin
 	perform pg_temp.c3_answer('92800000-0000-4000-8000-0000000000b1', 'Go on with the new login.');
+	-- Queued for the executor, nothing began: a choice is taken (this one changes nothing).
+	perform pg_temp.base_assert((pg_temp.c3_session('92800000-0000-4000-8000-0000000000b1')).phase in ('queued', 'input_ready'),
+		'the session waits for its claim');
+	perform pg_temp.cl_choose(current_setting('qorpera_test.cl_second')::uuid);
 	v_token := pg_temp.cl_claim();
 	v_begin := public.qorpera_begin_coding_turn('92800000-0000-4000-8000-0000000000b1', v_token, '{}');
 	v_pass := pg_temp.base_materialize();
@@ -260,22 +267,77 @@ begin
 		'the turn''s wake and run pay with the chosen login: ' || to_jsonb(v_wake)::text || ' ' || v_pass::text);
 	-- While it runs, the session keeps it.
 	perform pg_temp.base_error(format('select pg_temp.cl_choose(%L)', current_setting('qorpera_test.cl_second')), '55000');
+	perform set_config('qorpera_test.cl_token', v_token::text, false);
+	perform set_config('qorpera_test.cl_wake', v_wake.id::text, false);
 end $$;
 
--- 6. The other states of a login, and their words ----------------------------------------------------------------------
+-- 6. A failure's own code: what the turn's rows say when no code does ---------------------------------------------------
+do $$
+declare v_wake uuid := current_setting('qorpera_test.cl_wake')::uuid; v_run uuid; v_job uuid;
+	v_connection uuid := current_setting('qorpera_test.cl_second')::uuid; w public.qorpera_runtime_workers%rowtype;
+	v_words text;
+	v_said constant text := 'The coding turn did not finish.';
+begin
+	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1');
+	select o.run_id, r.job_id into strict v_run, v_job from public.qorpera_wake_occurrences o
+	join public.qorpera_execution_runs r on r.id = o.run_id where o.id = v_wake;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_said)
+		= jsonb_build_object('reason', 'turn_failed', 'summary', v_said), 'a run that did not finish');
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp() where id = v_job;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_said) ->> 'reason' = 'ended_without_submission', 'completed');
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'cancelled', result = null, finished_at = null,
+		cancelled_at = clock_timestamp(), cancelled_by_user_id = '92400000-0000-4000-8000-000000000001' where id = v_job;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_said) ->> 'reason' = 'stopped', 'cancelled');
+	-- A wake that ended without a run: for its payer's authority, the login; for anything else, run_not_started.
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set run_id = null, status = 'cancelled', finished_at = clock_timestamp(),
+		blocked_reason = 'Wake recipient or source authority is unavailable' where id = v_wake;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_said)
+		= jsonb_build_object('reason', 'run_not_started', 'summary', v_said), 'no run');
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set blocked_reason = 'Wake compute authority is unavailable' where id = v_wake;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_said) = jsonb_build_object('reason', 'login_unavailable',
+		'summary', pg_temp.cl_words('This coding session''s login cannot pay for work right now, so its turn could not run.')),
+		'no run for the payer''s authority');
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set run_id = v_run, status = 'materialized', finished_at = null, blocked_reason = null
+	where id = v_wake;
+	update public.qorpera_runner_jobs set status = 'queued', result = null, finished_at = null, cancelled_at = null,
+		cancelled_by_user_id = null where id = v_job;
+	-- An owner or admin turns the login off while the run works: the turn that ran fails with the login's words first,
+	-- and keeps what the executor said of it after them.
+	update public.qorpera_provider_connections set status = 'disabled' where id = v_connection;
+	set local session_replication_role = origin;
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_complete_coding_turn('92800000-0000-4000-8000-0000000000b1',
+		current_setting('qorpera_test.cl_token')::uuid, 'failed', v_said);
+	v_words := pg_temp.cl_words('This coding session''s login was turned off by an owner or admin, so its turn could not run. '
+		|| 'It can run again once they turn the login back on.') || ' The turn''s own report: ' || v_said;
+	w := pg_temp.c3_worker(w.id);
+	perform pg_temp.base_assert(w.state = 'failed' and w.result ->> 'reason' = 'login_disabled' and w.result ->> 'summary' = v_words
+		and pg_temp.cl_outcome(w.sequence) ->> 'reason' = 'login_disabled', 'a run that ran keeps its report: ' || w.result::text);
+	set local session_replication_role = replica;
+	update public.qorpera_provider_connections set status = 'active' where id = v_connection;
+	set local session_replication_role = origin;
+end $$;
+
+-- 7. The other states of a login; consent withdrawn and given again is the same login to choose again ---------------
 do $$
 declare v_connection uuid := current_setting('qorpera_test.cl_second')::uuid; w public.qorpera_runtime_workers%rowtype;
-	v_failure jsonb;
+	v_failure jsonb; v_logins jsonb; v_sponsor public.qorpera_execution_sponsor_versions%rowtype;
 begin
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1');
 	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'ready', 'ready');
 	set local session_replication_role = replica;
 	update public.qorpera_provider_connections set status = 'disabled' where id = v_connection;
 	set local session_replication_role = origin;
-	v_failure := public.qorpera_coding_turn_failure(w, 'The coding turn did not finish.');
-	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'disabled' and v_failure = jsonb_build_object(
-		'reason', 'login_disabled', 'summary', pg_temp.cl_words('This coding session''s login was turned off by an owner or admin, '
-			|| 'so its turn could not run. It can run again once they turn the login back on.')), 'disabled: ' || v_failure::text);
+	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'disabled', 'disabled');
 	set local session_replication_role = replica;
 	update public.qorpera_provider_connections set status = 'active' where id = v_connection;
 	update public.qorpera_provider_connection_versions set authorization_state = 'reauthentication_required'
@@ -287,6 +349,17 @@ begin
 		'needs a sign-in: ' || v_failure::text);
 	set local session_replication_role = replica;
 	update public.qorpera_provider_connection_versions set authorization_state = 'active' where connection_id = v_connection and version = 2;
+	-- Its credential is no longer active: unavailable, and no choice.
+	update public.qorpera_native_credential_capsules set status = 'revoked', revoked_at = clock_timestamp()
+	where id = '55300000-0000-4000-8000-000000000060';
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'unavailable'
+		and pg_temp.cl_logins() -> 'logins' = '[]'::jsonb, 'no active credential: ' || pg_temp.cl_logins()::text);
+	set local session_replication_role = replica;
+	update public.qorpera_native_credential_capsules set status = 'active', revoked_at = null
+	where id = '55300000-0000-4000-8000-000000000060';
+	-- The owner turns work while away off for the login (version 3), then on again (version 4): the session still pays
+	-- with version 2, which version 3 ended, so its login cannot work while they are away.
 	insert into public.qorpera_provider_connection_versions
 	select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
 		to_jsonb(v) || '{"version":3,"allow_autonomous":false}'::jsonb)).*
@@ -295,15 +368,29 @@ begin
 	v_failure := public.qorpera_coding_turn_failure(w, 'The coding turn did not finish.');
 	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'not_allowed_away'
 		and v_failure ->> 'reason' = 'login_not_allowed_away', 'no work while away: ' || v_failure::text);
-	-- Such a login is no choice for a session either.
 	perform pg_temp.base_assert(pg_temp.cl_logins() -> 'logins' = '[]'::jsonb, 'nothing to choose: ' || pg_temp.cl_logins()::text);
 	set local session_replication_role = replica;
-	delete from public.qorpera_provider_connection_versions where connection_id = v_connection and version = 3;
+	insert into public.qorpera_provider_connection_versions
+	select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+		to_jsonb(v) || '{"version":4,"allow_autonomous":true}'::jsonb)).*
+	from public.qorpera_provider_connection_versions v where connection_id = v_connection and version = 2;
 	set local session_replication_role = origin;
-	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'ready', 'ready again');
+	perform pg_temp.base_assert(public.qorpera_coding_session_login_state(w) = 'not_allowed_away', 'still pinned to version 2');
+	-- The same login, allowed again, is a choice and not the current one; choosing it pays with version 4.
+	v_logins := pg_temp.cl_logins();
+	perform pg_temp.base_assert(v_logins -> 'current' = jsonb_build_object('connectionId', v_connection, 'state', 'not_allowed_away')
+		and v_logins -> 'logins' = jsonb_build_array(jsonb_build_object('connectionId', v_connection, 'email', null, 'current', false)),
+		'the login allowed again: ' || v_logins::text);
+	perform pg_temp.cl_choose(v_connection);
+	w := pg_temp.c3_worker(w.id);
+	select * into strict v_sponsor from public.qorpera_execution_sponsor_versions
+	where binding_id = w.owner_sponsor_binding_id and version = w.owner_sponsor_version;
+	perform pg_temp.base_assert(v_sponsor.provider_connection_id = v_connection and v_sponsor.provider_connection_version = 4
+		and public.qorpera_coding_session_login_state(w) = 'ready'
+		and pg_temp.cl_logins() -> 'logins' -> 0 ->> 'current' = 'true', 'moved to version 4: ' || to_jsonb(v_sponsor)::text);
 end $$;
 
--- 7. The API reaches the two member functions only; every new or patched body names this migration -------------------
+-- 8. The API reaches the two member functions only; every new or patched body names this migration -------------------
 do $$
 declare v_role text; v_name text;
 begin

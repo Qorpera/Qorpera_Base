@@ -617,8 +617,9 @@ export class CodingSessionElement {
 	}
 
 	/** When the owner is offered their other logins: the session takes a message and its login cannot pay, or its
-	 * last turn stopped at its login's usage limit and it was not moved since. Undefined when nothing is offered;
-	 * else the state the offer is read for. */
+	 * last turn stopped for its login (its usage limit, or a login code the session's state no longer shows, such as
+	 * a credential admission refused) and it was not moved since. Undefined when nothing is offered; else the state
+	 * the offer is read for. */
 	#loginOfferKey(owns: boolean): string | undefined {
 		const session = this.#session;
 		const api = this.#options.api;
@@ -630,7 +631,8 @@ export class CodingSessionElement {
 		const moved = this.#events.some(
 			(event) => event.kind === "step" && flag(event.body, "loginChosen") && (!failed || event.id > failed.id),
 		);
-		if (!cannotPay && !(session.reason === "usage_limit" && !moved)) return undefined;
+		const forLogin = session.reason === "usage_limit" || session.reason?.startsWith("login_") === true;
+		if (!cannotPay && !(forLogin && !moved)) return undefined;
 		return JSON.stringify([session.workerId, session.sequence, session.loginState, session.reason, moved]);
 	}
 

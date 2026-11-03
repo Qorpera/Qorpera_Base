@@ -1167,6 +1167,21 @@ describe("the element in the thread", () => {
 		);
 		expect(element.el.querySelectorAll(".coding-logins button")).toHaveLength(0);
 		element.dispose?.();
+		// A turn refused for its login while the session's state reads ready (its credential at admission) offers
+		// them too.
+		const refused = mount(
+			codingSession({ phase: "failed", workerState: "failed", loginState: "ready", reason: "login_unavailable" }),
+			{
+				events: [event(1, "failed", { summary: "x", code: "login_unavailable" }, "executor")],
+				logins: {
+					current: { connectionId: id(31), state: "ready" },
+					logins: [{ connectionId: id(32), current: false }],
+				},
+			},
+		);
+		await settle();
+		expect(button(refused.element.el, "Use Model account 1")).toBeTruthy();
+		refused.element.dispose?.();
 		// Moved since the limit: nothing is offered; a session that is working is offered nothing either.
 		for (const [session, events] of [
 			[limited, [failed, event(2, "step", { loginChosen: true }, "member")]],

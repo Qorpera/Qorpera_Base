@@ -15,10 +15,12 @@
 -- Now:
 -- * qorpera_coding_session_login_state(worker): whether the login the session pays with can pay for its next turn, as
 --   admission checks it: 'ready', or 'removed' (signed out or its binding ended), 'disabled' (an owner or admin turned
---   it off), 'needs_sign_in', 'not_allowed_away' (it no longer allows work while its member is away) or 'unavailable'
---   (that kind of login is switched off). Null for a worker with no owner's payer.
+--   it off), 'needs_sign_in', 'not_allowed_away' (the version it pays with no longer allows work while its member is
+--   away) or 'unavailable' (that kind of login is switched off, or its credential is not active). Null for a worker
+--   with no owner's payer.
 -- * qorpera_coding_turn_failure(worker, summary): what a failed turn reports. A login that cannot pay comes first (the
---   next turn would fail the same way): reason login_<state> and fixed words the agent can relay, never provider text.
+--   next turn would fail the same way): reason login_<state> and fixed words the agent can relay, never provider text
+--   (a turn whose own run ran keeps the executor's summary after them).
 --   Then a run stopped at its login's usage limit (20260930549300's words, pointing at the session's card instead of
 --   the conversation's Login menu): reason usage_limit. Then a wake cancelled for its payer's authority:
 --   login_unavailable. Otherwise the summary stays and the reason is the failure's own code: the [code=...] of the
@@ -57,6 +59,9 @@ returns text language sql stable security definer set search_path = '' as $$
 				where newer.connection_id = version.connection_id and newer.version > version.version and not newer.allow_autonomous)
 			then 'not_allowed_away'
 		when not public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
+			or (version.authentication_mode = 'native_subscription' and not exists (select 1
+				from public.qorpera_native_credential_capsules as capsule
+				where capsule.id = version.credential_capsule_id and capsule.status = 'active'))
 			then 'unavailable'
 		else 'ready' end
 	from (select 1) as one
@@ -76,7 +81,7 @@ revoke all on function public.qorpera_coding_session_login_state(public.qorpera_
 create function public.qorpera_coding_turn_failure(p_worker public.qorpera_runtime_workers, p_summary text)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_state text := public.qorpera_coding_session_login_state(p_worker); v_occurrence uuid; v_usage text;
-	v_wake public.qorpera_wake_occurrences%rowtype; v_job public.qorpera_runner_jobs%rowtype; v_code text;
+	v_wake public.qorpera_wake_occurrences%rowtype; v_job public.qorpera_runner_jobs%rowtype; v_code text; v_login text;
 	-- The same tail for every login reason: the payer never changes without the member (20260930059000).
 	v_tail constant text := ' The session does not move to another login by itself: the member who owns it can choose '
 		|| 'another of their logins for it on the coding session''s card in the conversation, then ask for the work again.';
@@ -84,17 +89,29 @@ begin
 	-- 20260930551000.
 	select turn.occurrence_id into v_occurrence from public.qorpera_coding_session_turns as turn
 	where turn.worker_id = p_worker.id and turn.sequence = p_worker.sequence;
-	-- 1. The session's login cannot pay: its next turn would fail the same way, whatever ended this one.
+	if v_occurrence is not null then
+		select * into v_wake from public.qorpera_wake_occurrences where id = v_occurrence;
+		if v_wake.run_id is not null then
+			select job.* into v_job from public.qorpera_execution_runs as run
+			join public.qorpera_runner_jobs as job on job.id = run.job_id where run.id = v_wake.run_id;
+		end if;
+	end if;
+	-- 1. The session's login cannot pay: its next turn would fail the same way, whatever ended this one. A turn whose
+	-- own run ran keeps what the executor said of it after the words, when both fit.
 	if v_state is not null and v_state <> 'ready' then
-		return jsonb_build_object('reason', 'login_' || v_state, 'summary', case v_state
+		v_login := case v_state
 			when 'removed' then 'This coding session''s login was removed (signed out), so its turn could not run.'
 			when 'disabled' then 'This coding session''s login was turned off by an owner or admin, so its turn could not run. '
 				|| 'It can run again once they turn the login back on.'
 			when 'needs_sign_in' then 'This coding session''s login needs a new sign-in, so its turn could not run. '
 				|| 'The member can sign in to it again in Settings, AI subscriptions.'
 			when 'not_allowed_away' then 'This coding session''s login no longer allows work while its member is away, so its '
-				|| 'turn could not run.'
-			else 'This coding session''s login cannot pay for work right now, so its turn could not run.' end || v_tail);
+				|| 'turn could not run. Once the member allows it again (Settings, AI subscriptions), they can choose it again '
+				|| 'for this session on its card.'
+			else 'This coding session''s login cannot pay for work right now, so its turn could not run.' end || v_tail;
+		if v_wake.run_id is not null and octet_length(v_login || ' The turn''s own report: ' || p_summary) <= 4000 then
+			v_login := v_login || ' The turn''s own report: ' || p_summary; end if;
+		return jsonb_build_object('reason', 'login_' || v_state, 'summary', v_login);
 	end if;
 	-- 2. Its run stopped at the login's usage limit (20260930549300): those words, with the session's own place to choose.
 	v_usage := public.qorpera_worker_usage_limit_text(v_occurrence);
@@ -102,13 +119,6 @@ begin
 		return jsonb_build_object('reason', 'usage_limit', 'summary', replace(v_usage,
 			'choose another of their logins for it (in the conversation''s Login menu)',
 			'choose another of their logins for it (on the coding session''s card in the conversation)'));
-	end if;
-	if v_occurrence is not null then
-		select * into v_wake from public.qorpera_wake_occurrences where id = v_occurrence;
-		if v_wake.run_id is not null then
-			select job.* into v_job from public.qorpera_execution_runs as run
-			join public.qorpera_runner_jobs as job on job.id = run.job_id where run.id = v_wake.run_id;
-		end if;
 	end if;
 	-- 3. The wake never became a run because its payer had no authority at admission (a race with a sign-in, or a
 	-- check the state above does not make): the login is the reason.
@@ -204,7 +214,8 @@ language sql stable security definer set search_path = '' as $$
 	-- 20260930551000: qorpera_coding_owner_login's logins, all of them, without its order.
 	select connection.id, version.version, version.provider_account_email
 	from public.qorpera_provider_connections as connection
-	cross join lateral (select v.version, v.allow_autonomous, v.authentication_mode, v.native_harness, v.provider_account_email
+	cross join lateral (select v.version, v.allow_autonomous, v.authentication_mode, v.native_harness, v.provider_account_email,
+			v.credential_capsule_id
 		from public.qorpera_provider_connection_versions as v
 		where v.connection_id = connection.id and v.authorization_state = 'active'
 			and v.native_harness = case p_harness when 'codex' then 'codex-cli' when 'claude-code' then 'claude-code' end
@@ -215,6 +226,9 @@ language sql stable security definer set search_path = '' as $$
 		and not exists (select 1 from public.qorpera_provider_connection_versions as newer
 			where newer.connection_id = connection.id and newer.version > version.version and not newer.allow_autonomous)
 		and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
+		and (version.authentication_mode <> 'native_subscription' or exists (select 1
+			from public.qorpera_native_credential_capsules as capsule
+			where capsule.id = version.credential_capsule_id and capsule.status = 'active'))
 		and not public.qorpera_connection_is_chatgpt_plan(connection.id)
 $$;
 revoke all on function public.qorpera_coding_session_login_candidates(public.qorpera_runtime_workers, text)
@@ -223,18 +237,24 @@ revoke all on function public.qorpera_coding_session_login_candidates(public.qor
 -- The session's owner reads its login and the logins they may move it to (20260930551000).
 create function public.qorpera_list_coding_session_logins(p_worker_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
-declare v_worker public.qorpera_runtime_workers%rowtype; v_session public.qorpera_coding_sessions%rowtype; v_current uuid;
+declare v_worker public.qorpera_runtime_workers%rowtype; v_session public.qorpera_coding_sessions%rowtype;
+	v_current public.qorpera_execution_sponsor_versions%rowtype; v_state text;
 begin
 	-- 20260930551000: the owner only (qorpera_coding_session_owner_row checks the caller and the company).
 	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);
 	select * into strict v_session from public.qorpera_coding_sessions where worker_id = v_worker.id;
-	v_current := (select sponsor.provider_connection_id from public.qorpera_execution_sponsor_versions as sponsor
-		where sponsor.binding_id = v_worker.owner_sponsor_binding_id
-			and sponsor.version = public.qorpera_live_sponsor_version(v_worker.owner_sponsor_binding_id, v_worker.owner_sponsor_version));
+	select * into v_current from public.qorpera_execution_sponsor_versions as sponsor
+	where sponsor.binding_id = v_worker.owner_sponsor_binding_id
+		and sponsor.version = public.qorpera_live_sponsor_version(v_worker.owner_sponsor_binding_id, v_worker.owner_sponsor_version);
+	v_state := public.qorpera_coding_session_login_state(v_worker);
+	-- A login is the session's current one only while the session pays with that very version and can: the same login
+	-- whose consent came back in a newer version is a choice (moving to it pays with that version).
 	return jsonb_build_object('schema', 'qorpera.coding-session-logins/v1', 'workerId', v_worker.id,
-		'current', jsonb_build_object('connectionId', v_current, 'state', public.qorpera_coding_session_login_state(v_worker)),
+		'current', jsonb_build_object('connectionId', v_current.provider_connection_id, 'state', v_state),
 		'logins', coalesce((select jsonb_agg(jsonb_build_object('connectionId', candidate.connection_id,
-				'email', candidate.provider_account_email, 'current', candidate.connection_id = v_current)
+				'email', candidate.provider_account_email, 'current', v_state = 'ready'
+					and candidate.connection_id = v_current.provider_connection_id
+					and candidate.connection_version = v_current.provider_connection_version)
 				order by candidate.connection_id)
 			from public.qorpera_coding_session_login_candidates(v_worker, v_session.harness) as candidate), '[]'::jsonb));
 end
@@ -306,7 +326,7 @@ begin
 		owner_sponsor_version = v_sponsor.version, updated_at = clock_timestamp()
 	where id = v_worker.id returning * into v_worker;
 	perform public.qorpera_coding_event(v_worker.id, v_worker.sequence, 'step', 'member',
-		jsonb_build_object('loginChosen', true, 'text', 'Moved to another login'));
+		jsonb_build_object('loginChosen', true, 'text', 'Moved to another login', 'from', v_current, 'to', p_connection_id));
 	return public.qorpera_coding_session_view(v_session, v_worker);
 end
 $$;
