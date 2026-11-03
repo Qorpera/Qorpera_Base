@@ -34,7 +34,7 @@ import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
-import { newVersionNotice, RUNNING_SOURCE_COMMIT, watchNewVersion } from "./new-version.ts";
+import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
@@ -114,9 +114,13 @@ export function mountApplication(
 	const versionWatch = new AbortController();
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main), versionLine);
 	watchNewVersion(
-		RUNNING_SOURCE_COMMIT,
+		runningBuildFiles(),
 		() => {
-			versionLine.replaceChildren(newVersionNotice(root));
+			versionLine.replaceChildren(
+				newVersionNotice(root, () =>
+					[...(company?.conversations.values() ?? [])].some((store) => (store.get().draft ?? "").trim() !== ""),
+				),
+			);
 			versionLine.hidden = false;
 		},
 		versionWatch.signal,

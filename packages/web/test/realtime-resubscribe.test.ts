@@ -309,11 +309,18 @@ describe("the company's live badge recovers without a new tab", () => {
 		channels[1]!.status!("SUBSCRIBED");
 		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS);
 		expect(health.map(([phase]) => phase)).toEqual(["connecting", "connected", "connected"]);
-		// Hidden for long, its retries failing too: still nothing, and once back the grace starts then.
+		// Hidden for long, its retries failing too: still nothing, and once back the grace starts then. Hidden again
+		// before it ends, it stays held until the page is back.
 		visibility = "hidden";
 		channels[1]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(60_000);
 		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
+		expect(health).toHaveLength(3);
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1);
+		visibility = "hidden";
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS);
 		expect(health).toHaveLength(3);
 		visibility = "visible";
 		document.dispatchEvent(new Event("visibilitychange"));
@@ -353,6 +360,45 @@ describe("the company's live badge recovers without a new tab", () => {
 		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
 		expect(health.at(-1)).toEqual(["degraded", "channel error: transport failure"]);
 		subscription.stop();
+	});
+
+	it("reads again what a hidden tab's channel may have missed, though its failure never showed", async () => {
+		const f = fixture();
+		const channels: { status?: Status }[] = [];
+		vi.mocked(f.cloud.supabase.channel).mockImplementation((topic: string) => {
+			const channel = {
+				on: vi.fn(() => channel),
+				subscribe: vi.fn((status: Status) => {
+					channel.status = status;
+					return channel;
+				}),
+				status: undefined as Status | undefined,
+			};
+			if (topic.startsWith(`qorpera-profile-${profileA.profileId}-`)) channels.push(channel);
+			return channel as never;
+		});
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		vi.mocked(f.api.listMemberMentions).mockResolvedValue([]);
+		let visibility: DocumentVisibilityState = "visible";
+		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		try {
+			await controller.start();
+			channels[0]!.status!("SUBSCRIBED");
+			const activity = vi.mocked(f.api.listStaffActivity).mock.calls.length;
+			visibility = "hidden";
+			channels[0]!.status!("CHANNEL_ERROR", transport());
+			await vi.advanceTimersByTimeAsync(500);
+			visibility = "visible";
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			channels.at(-1)!.status!("SUBSCRIBED");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(controller.store.get().realtime).toBe("connected");
+			expect(vi.mocked(f.api.listStaffActivity).mock.calls.length).toBeGreaterThan(activity);
+		} finally {
+			controller.stop();
+		}
 	});
 
 	it("goes from degraded back to connected after the automatic resubscription", async () => {

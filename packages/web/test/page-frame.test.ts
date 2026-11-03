@@ -181,6 +181,7 @@ describe("an HTML page's frame", () => {
 			'const keyOf = getter(KeyboardEvent.prototype, "key");',
 			'const composing = getter(KeyboardEvent.prototype, "isComposing");',
 			'const prevented = getter(Event.prototype, "defaultPrevented");',
+			"const later = setTimeout;",
 		]) {
 			expect(script, taken).toContain(taken);
 			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
@@ -189,9 +190,14 @@ describe("an HTML page's frame", () => {
 		const listened = script.indexOf("apply(listen, window, [");
 		expect(listened).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
 		expect(script.slice(listened)).toContain(
-			'if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, []) || apply(prevented, pressed, []))',
+			'if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, [])) return;',
 		);
-		expect(script.slice(listened)).toContain(`app.postMessage({ type: "${PAGE_ESCAPE}" }, "*");`);
+		// Asked only once every handler of the page has had the key, also one the page adds after the frame's.
+		const after = script.indexOf("apply(later, window, [", listened);
+		expect(after).toBeGreaterThan(listened);
+		expect(script.slice(after)).toContain(
+			`if (!apply(prevented, pressed, [])) app.postMessage({ type: "${PAGE_ESCAPE}" }, "*");`,
+		);
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {

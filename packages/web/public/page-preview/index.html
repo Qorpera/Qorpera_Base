@@ -37,6 +37,7 @@
 	const attachShadow = Element.prototype.attachShadow;
 	const [open, write, close] = ["open", "write", "close"].map((name) => Document.prototype[name]);
 	const listen = EventTarget.prototype.addEventListener;
+	const later = setTimeout;
 	const keyOf = getter(KeyboardEvent.prototype, "key");
 	const composing = getter(KeyboardEvent.prototype, "isComposing");
 	const prevented = getter(Event.prototype, "defaultPrevented");
@@ -107,14 +108,19 @@
 		apply(open, document, []);
 		apply(write, document, [data.html]);
 		apply(close, document, []);
-		// Added once the page is written (opening the document drops the window's listeners), on the window, where the
-		// page's own handlers have had the key first: a page that takes Escape for itself (its own menu) keeps it.
+		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every
+		// handler of the page has had the key, also one it adds later: a page that takes Escape for itself (its own
+		// menu) keeps it.
 		apply(listen, window, [
 			"keydown",
 			function passEscape(pressed) {
-				if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, []) || apply(prevented, pressed, []))
-					return;
-				app.postMessage({ type: "qorpera-page-escape" }, "*");
+				if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, [])) return;
+				apply(later, window, [
+					function afterPage() {
+						if (!apply(prevented, pressed, [])) app.postMessage({ type: "qorpera-page-escape" }, "*");
+					},
+					0,
+				]);
 			},
 		]);
 	});

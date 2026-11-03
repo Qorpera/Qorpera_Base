@@ -12,6 +12,10 @@ export interface RealtimeSubscription {
 	stop(): void;
 }
 
+/** A channel's health. `recovered`: this subscription replaces a channel that failed, so hints may have been missed,
+ * also when the failure was never reported (it came while the page was hidden, and the grace covered it). */
+export type RealtimeHealth = (phase: RealtimePhase, error?: string, recovered?: boolean) => void;
+
 const FILTERS: { resource: RealtimeResource; table: string }[] = [
 	{ resource: "sessions", table: "qorpera_shared_sessions" },
 	{ resource: "staff", table: "qorpera_profile_staff" },
@@ -44,16 +48,14 @@ function pageHidden(): boolean {
  * degraded only if the channel has not subscribed again within RESUME_GRACE_MS. The same grace covers a failure that
  * arrives just after the page came back (the closed socket's news, held while the tab was frozen).
  */
-function keepSubscribed(
-	cloud: Cloud,
-	open: () => RealtimeChannel,
-	onHealth: (phase: RealtimePhase, error?: string) => void,
-): RealtimeSubscription {
+function keepSubscribed(cloud: Cloud, open: () => RealtimeChannel, onHealth: RealtimeHealth): RealtimeSubscription {
 	let channel: RealtimeChannel | undefined;
 	/** The current channel failed and has not been replaced yet. */
 	let failed = false;
 	/** The current channel is subscribed. */
 	let subscribed = false;
+	/** A channel failed since the last subscription, reported or held: hints may have been missed meanwhile. */
+	let missed = false;
 	let failures = 0;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let renewing = false;
@@ -80,7 +82,8 @@ function keepSubscribed(
 		grace = setTimeout(
 			() => {
 				grace = undefined;
-				if (stopped || subscribed || unreported === undefined) return;
+				// Hidden again before the grace ended: still held, until the page is back.
+				if (stopped || subscribed || unreported === undefined || pageHidden()) return;
 				const error = unreported;
 				unreported = undefined;
 				onHealth("degraded", error);
@@ -111,7 +114,9 @@ function keepSubscribed(
 				clearTimeout(grace);
 				grace = undefined;
 				unreported = undefined;
-				onHealth("connected");
+				const recovered = missed;
+				missed = false;
+				onHealth("connected", undefined, recovered);
 			} else if (
 				status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR ||
 				status === REALTIME_SUBSCRIBE_STATES.TIMED_OUT ||
@@ -119,6 +124,7 @@ function keepSubscribed(
 			) {
 				failed = true;
 				subscribed = false;
+				missed = true;
 				report(error instanceof Error ? error.message : status);
 				schedule();
 			}
@@ -205,7 +211,7 @@ export function subscribeProfileRealtime(
 	cloud: Cloud,
 	profileId: string,
 	onChange: (resource: RealtimeResource) => void,
-	onHealth: (phase: RealtimePhase, error?: string) => void,
+	onHealth: RealtimeHealth,
 ): RealtimeSubscription {
 	return keepSubscribed(
 		cloud,

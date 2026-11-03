@@ -80,8 +80,11 @@ export function companyNameFromIdea(idea: string): string {
 		.replace(/\p{Cc}/gu, " ")
 		.replace(/\s+/g, " ")
 		.trim();
-	// A stop, a space and a capital letter end the sentence; "e.g. ceramics" does not.
-	let name = line.split(/(?<=[.!?…])\s+(?=\p{Lu})/u, 1)[0] ?? "";
+	// A stop, a space and a capital letter end the sentence; "e.g. ceramics" does not, and a sentence is at least two
+	// words, so "Dr. Hansen's clinic" keeps its "Dr.".
+	const sentences = line.split(/(?<=[.!?…])\s+(?=\p{Lu})/u);
+	let name = sentences[0] ?? "";
+	for (let next = 1; next < sentences.length && !name.includes(" "); next++) name = `${name} ${sentences[next]}`;
 	if (name.length > IDEA_NAME_MAX_CHARACTERS) {
 		// One character more, so a word that ends exactly at the limit stays whole.
 		const space = name.slice(0, IDEA_NAME_MAX_CHARACTERS + 1).lastIndexOf(" ");
@@ -120,6 +123,8 @@ class NewCompanyView {
 
 	constructor(hub: HubController) {
 		this.#hub = hub;
+		// The newest box is the one on the page (a new language builds another).
+		hub.onTableOpened = (idea) => this.#opened(idea);
 		this.#idea = h("textarea", {
 			id: "newCompanyIdea",
 			class: "hero-idea",
@@ -322,24 +327,22 @@ class NewCompanyView {
 			this.#idea.focus();
 			return;
 		}
-		this.#open(idea, "start");
+		void this.#hub.startFromIdea(idea, "start");
 	}
 
 	#withFriends(): void {
-		this.#open(this.#idea.value.trim(), "friends");
+		void this.#hub.startFromIdea(this.#idea.value.trim(), "friends");
 	}
 
-	/** Opens the table; once it is open the box starts empty, so the next company's idea is never written after this
-	 * one's. */
-	#open(idea: string, intent: "start" | "friends"): void {
-		void this.#hub.startFromIdea(idea, intent).then((opened) => {
-			if (!opened || this.#idea.value.trim() !== idea) return;
-			this.#refocus = false;
-			this.#idea.value = "";
-			this.#carried = undefined;
-			for (const kind of this.#kinds) kind.setAttribute("aria-pressed", "false");
-			this.#changed();
-		});
+	/** A table opened with this idea (from the arrow, Invite friends or Resume): the box starts empty, so the next
+	 * company's idea is never written after this one's. */
+	#opened(idea: string): void {
+		if (this.#idea.value.trim() !== idea.trim()) return;
+		this.#refocus = false;
+		this.#idea.value = "";
+		this.#carried = undefined;
+		for (const kind of this.#kinds) kind.setAttribute("aria-pressed", "false");
+		this.#changed();
 	}
 
 	#touch(): void {

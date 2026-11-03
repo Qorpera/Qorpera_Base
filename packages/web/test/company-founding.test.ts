@@ -842,8 +842,11 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(companyNameFromIdea("A Danish webshop that sells silicone wristbands. A Danish webshop")).toBe(
 			"A Danish webshop that sells silicone wristbands",
 		);
-		// A stop that ends no sentence stays; a cut never ends on a comma.
+		// A stop that ends no sentence stays (an abbreviation is no sentence of its own); a cut never ends on a comma.
 		expect(companyNameFromIdea("A shop for e.g. ceramics and glass!")).toBe("A shop for e.g. ceramics and glass");
+		expect(companyNameFromIdea("Dr. Hansen's dental clinic. We fix teeth.")).toBe("Dr. Hansen's dental clinic");
+		expect(companyNameFromIdea("St. Louis BBQ truck")).toBe("St. Louis BBQ truck");
+		expect(companyNameFromIdea("Webshop. Ceramics.")).toBe("Webshop. Ceramics");
 		expect(companyNameFromIdea("Coffee, tea, cakes, bread, sandwiches, soups, salads, juice and more")).toBe(
 			"Coffee, tea, cakes, bread, sandwiches, soups",
 		);
@@ -1353,20 +1356,37 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends");
 		hub.dispose();
 	});
-	it("empties the box once the table is open, and keeps the idea when it could not open", async () => {
-		const { api } = fixture();
+	it("empties the box once a table opens with its idea, also through Resume, and keeps it while none has", async () => {
+		const { api, cloud } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		let opens = 0;
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_open_company_founding") {
+				opens++;
+				if (opens === 1) throw new Error("Failed to fetch");
+				return wire({ vision: "" });
+			}
+			if (name === "qorpera_update_company_founding") return wire({ vision: String(args.p_vision), revision: 5 });
+			throw new Error(`Unexpected RPC ${name}`);
+		});
 		const hub = new HubController(api, me);
-		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		hub.store.subscribe(() => renderNewCompany(hub, container, { userId: me, name: "Anna" }));
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
-		box.value = "A Danish webshop that sells silicone wristbands.";
+		const idea = "A Danish webshop that sells silicone wristbands.";
+		box.value = idea;
 		box.dispatchEvent(new Event("input"));
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		await settle();
-		expect(start).toHaveBeenLastCalledWith("A Danish webshop that sells silicone wristbands.", "start");
-		expect(box.value).toBe("A Danish webshop that sells silicone wristbands.");
-		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		expect(opens).toBe(1);
+		expect(box.value).toBe(idea);
+		const resume = [...container.querySelectorAll<HTMLButtonElement>(".hero-status button")].find((button) =>
+			button.textContent?.startsWith("Resume creating"),
+		)!;
+		resume.click();
 		await settle();
+		expect(opens).toBe(2);
+		expect(location.hash).toBe(`#/found/${table}`);
 		// 3 Nov 2026: the second company's idea was typed after the first one's, still in the kept box.
 		expect(box.value).toBe("");
 		hub.dispose();

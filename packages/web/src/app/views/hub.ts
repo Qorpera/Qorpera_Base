@@ -62,6 +62,8 @@ export interface HubState {
 
 export class HubController {
 	readonly store = new Store<HubState>({ loading: true, profiles: [], invitations: [], tables: [] });
+	/** Told the idea a table just opened with (the new-company box empties itself). */
+	onTableOpened: ((idea: string) => void) | undefined;
 	readonly #api: CloudApi;
 	readonly #founding: CompanyFoundingApi;
 	readonly #userId?: string;
@@ -289,6 +291,7 @@ export class HubController {
 			}
 			this.store.set({ creating: undefined, creationRetry: undefined });
 			void this.refresh();
+			if (creation.vision) this.onTableOpened?.(creation.vision);
 			setFoundingIntent(table.profileId, {
 				...(creation.intent === "friends" ? { friends: true } : {}),
 				...(pending ? { vision: pending } : {}),
