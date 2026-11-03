@@ -27,8 +27,9 @@ export const RESUBSCRIBE_DELAYS_MS: readonly number[] = [1_000, 2_000, 5_000, 10
  * can fail for good (CHANNEL_ERROR "transport failure", TIMED_OUT, or CLOSED by the server), and
  * only a new tab used to recover. Here a failed channel is replaced by a fresh one after the next
  * of RESUBSCRIBE_DELAYS_MS, with Realtime's token refreshed first (it may have expired while the
- * connection was down). A subscription resets the waits; the window regaining focus or the
- * browser coming back online tries at once. `open` makes a new channel each time (its own topic).
+ * connection was down); while the socket itself is down, a try reopens it and waits again instead.
+ * A subscription resets the waits; the window regaining focus or the browser coming back online
+ * tries at once. `open` makes a new channel each time (its own topic).
  */
 function keepSubscribed(
 	cloud: Cloud,
@@ -80,6 +81,19 @@ function keepSubscribed(
 
 	const renew = async (): Promise<void> => {
 		if (stopped || renewing) return;
+		const realtime = cloud.supabase.realtime;
+		if (realtime && !realtime.isConnected() && channel && channel.state !== "closed") {
+			// While the socket is down a new channel's join (and the old one's leave) would only wait in the client's
+			// send buffer and all go out at once on reconnect. Bring the socket back instead: the SDK rejoins a failed
+			// channel when it opens. A closed channel has no rejoin, so it is replaced even then.
+			try {
+				realtime.connect();
+			} catch {
+				// No socket to open (no WebSocket here): the next wait tries again.
+			}
+			schedule();
+			return;
+		}
 		renewing = true;
 		// The failed channel's late answers no longer count.
 		const old = channel;
@@ -92,7 +106,7 @@ function keepSubscribed(
 		}
 		renewing = false;
 		if (!stopped) subscribe();
-		// Removed once the new channel exists, so the client never has no channel and closes the socket.
+		// Removed once the new channel exists, so the client never goes without a channel.
 		if (old) void cloud.supabase.removeChannel(old).catch(() => {});
 	};
 

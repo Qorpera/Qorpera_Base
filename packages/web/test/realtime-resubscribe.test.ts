@@ -19,6 +19,7 @@ type Status = (status: string, error?: Error) => void;
 
 interface FakeChannel {
 	topic: string;
+	state: string;
 	status?: Status;
 	on: ReturnType<typeof vi.fn>;
 	subscribe: ReturnType<typeof vi.fn>;
@@ -34,11 +35,16 @@ function fakeCloud() {
 		order.push(`remove ${channels.indexOf(channel)}`);
 		return "ok";
 	});
+	const socket = { connected: true };
+	const connect = vi.fn(() => {
+		order.push("connect");
+	});
 	const cloud = {
 		supabase: {
 			channel: vi.fn((topic: string) => {
 				const channel: FakeChannel = {
 					topic,
+					state: "errored",
 					on: vi.fn(() => channel),
 					subscribe: vi.fn((status: Status) => {
 						channel.status = status;
@@ -50,10 +56,10 @@ function fakeCloud() {
 				return channel;
 			}),
 			removeChannel,
-			realtime: { setAuth },
+			realtime: { setAuth, connect, isConnected: () => socket.connected },
 		},
 	} as unknown as Cloud;
-	return { cloud, channels, order, setAuth, removeChannel };
+	return { cloud, channels, order, setAuth, removeChannel, socket, connect };
 }
 
 const transport = () => new Error("channel error: transport failure");
@@ -218,6 +224,43 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(channels).toHaveLength(2);
 		expect(removeChannel).toHaveBeenCalledWith(channels[1]);
+	});
+
+	it("reopens a socket that is down instead of queueing joins, and replaces the channel once it is up", async () => {
+		const { cloud, channels, socket, connect, setAuth } = fakeCloud();
+		subscribeProfileRealtime(
+			cloud,
+			profileA.profileId,
+			() => {},
+			() => {},
+		);
+		socket.connected = false;
+		channels[0]!.status!("CHANNEL_ERROR", transport());
+		// Each wait while the socket is down only asks it to reconnect: no join or leave piles up.
+		for (const wait of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) await vi.advanceTimersByTimeAsync(wait);
+		expect(connect).toHaveBeenCalledTimes(6);
+		expect(channels).toHaveLength(1);
+		expect(setAuth).not.toHaveBeenCalled();
+		window.dispatchEvent(new Event("online"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(connect).toHaveBeenCalledTimes(7);
+		expect(channels).toHaveLength(1);
+		// The SDK rejoins the failed channel once the socket opens: that ends the waits.
+		socket.connected = true;
+		channels[0]!.status!("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(channels).toHaveLength(1);
+		// Up again but the channel stays failed: it is replaced at the next wait.
+		channels[0]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(channels).toHaveLength(2);
+		// A channel the server closed has no rejoin: replaced even while the socket is down.
+		socket.connected = false;
+		channels[1]!.state = "closed";
+		channels[1]!.status!("CLOSED");
+		// (the second failure since the last subscription: a 2 s wait)
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(channels).toHaveLength(3);
 	});
 
 	it("keeps the sidebar's channel subscribed the same way", async () => {
