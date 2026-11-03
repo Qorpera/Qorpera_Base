@@ -679,9 +679,9 @@ export function cloudSecretTools(options: {
 			parseArguments(value) {
 				// Always the envelope, so the review, the card and the effect read one shape.
 				const parsed = parseInvocation(value, descriptor);
-				return parsed.idempotencyKey === undefined
-					? { input: parsed.input }
-					: { idempotencyKey: parsed.idempotencyKey, input: parsed.input };
+				const envelope: { [key: string]: JsonValue } = { input: parsed.input };
+				if (parsed.idempotencyKey !== undefined) envelope.idempotencyKey = parsed.idempotencyKey;
+				return envelope;
 			},
 			async execute(value, context) {
 				const parsed = parseInvocation(value, descriptor);
