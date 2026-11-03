@@ -763,8 +763,15 @@ it("answers 503 busy when the database could not serve the call, which the host 
 			body: JSON.stringify({ schema: "qorpera.model-login-request/v1", binding: f.run, knownVersion: null }),
 		});
 	const secret = "PRIVATE_LOGIN_6f0c";
+	// The server's answer carries its source routine; the pooler's own (Supavisor) is FATAL and has none.
 	const sqlError = (code: string) =>
-		Object.assign(new DatabaseError(`server said ${secret}`, 0, "error"), { code, severity: "ERROR" });
+		Object.assign(new DatabaseError(`server said ${secret}`, 0, "error"), {
+			code,
+			severity: "ERROR",
+			routine: "exec_stmt_raise",
+		});
+	const poolerError = (code: string) =>
+		Object.assign(new DatabaseError(`pooler said ${secret}`, 0, "error"), { code, severity: "FATAL" });
 	const system = (code: string) => Object.assign(new Error(`connect ${code} ${secret}`), { code });
 	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	// What the vault's database client and its 5 s deadline throw when the database could not serve the call.
@@ -773,7 +780,8 @@ it("answers 503 busy when the database could not serve the call, which the host 
 		["connection lost", sqlError("08006"), "08006"],
 		["too many connections", sqlError("53300"), "53300"],
 		["statement timeout", sqlError("57014"), "57014"],
-		["pooler failure", sqlError("XX000"), "XX000"],
+		["pooler failure", poolerError("XX000"), "XX000"],
+		["pooler session limit", poolerError("08P01"), "08P01"],
 		["pool wait", new Error("timeout exceeded when trying to connect"), "pool timeout"],
 		["connect timeout", new Error("Connection terminated due to connection timeout"), "connect timeout"],
 		["socket", system("ECONNRESET"), "ECONNRESET"],
@@ -808,6 +816,8 @@ it("answers 503 busy when the database could not serve the call, which the host 
 		["not in prerequisite state", markCloudVaultDatabaseFailure(sqlError("55000"))],
 		["invalid parameter", markCloudVaultDatabaseFailure(sqlError("22023"))],
 		["raised", markCloudVaultDatabaseFailure(sqlError("P0001"))],
+		// This repository's SQL raises XX000 on purpose for a broken invariant.
+		["raised invariant", markCloudVaultDatabaseFailure(sqlError("XX000"))],
 		["not the database's", sqlError("57P01")],
 		["helper socket", system("ECONNREFUSED")],
 		["vault refusal", new Error("Model login envelope is another kind of login")],

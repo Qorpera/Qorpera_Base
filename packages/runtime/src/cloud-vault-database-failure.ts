@@ -24,11 +24,14 @@ interface DatabaseFailure {
 const failures = new WeakMap<Error, DatabaseFailure>();
 
 /** SQLSTATEs that say the database or its pooler could not serve the call now, never that it refused it: a lost or
- * refused connection (class 08), a server shutting down or not yet up (57P01-57P03), too many connections (53300), a
- * statement timeout (57014), and the pooler's own pool and session failures, which Supavisor reports as XX000 (Postgres
- * uses it only for an internal error, never for a refusal). */
-function busySqlState(code: string): boolean {
-	return code.startsWith("08") || ["57P01", "57P02", "57P03", "53300", "57014", "XX000"].includes(code);
+ * refused connection (class 08), a server shutting down or not yet up (57P01-57P03), too many connections (53300) and
+ * a statement timeout (57014). XX000 is busy only as the pooler's own answer: Supavisor reports its pool and session
+ * failures (max clients, checkout timeout, its database handler gone) as XX000 FATAL without the source routine every
+ * Postgres error carries, while this repository's SQL raises XX000 on purpose (ERROR, with a routine) for a broken
+ * invariant, which stays a refusal. */
+function busySqlState(code: string, severity: string, routine: unknown): boolean {
+	if (code === "XX000") return severity === "FATAL" || routine === undefined;
+	return code.startsWith("08") || ["57P01", "57P02", "57P03", "53300", "57014"].includes(code);
 }
 
 /** A system error code (ECONNRESET, EAI_AGAIN, ...) or undici's (UND_ERR_SOCKET, ...): fixed names, never text. */
@@ -41,9 +44,9 @@ function systemCode(error: Error): string | undefined {
  * SQLSTATE and a severity; any other failure there is the pool's, the connection's or its socket's, none of which is a
  * refusal. pg's own failures carry fixed messages, read here only to pick a fixed name (pg 8.23, pg-pool 3.14). */
 function databaseFailure(error: Error): DatabaseFailure {
-	const { code, severity } = error as { code?: unknown; severity?: unknown };
+	const { code, severity, routine } = error as { code?: unknown; severity?: unknown; routine?: unknown };
 	if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) && typeof severity === "string")
-		return { failureClass: code, busy: busySqlState(code) };
+		return { failureClass: code, busy: busySqlState(code, severity, routine) };
 	const named: Record<string, string> = {
 		"timeout exceeded when trying to connect": "pool timeout",
 		"Connection terminated due to connection timeout": "connect timeout",

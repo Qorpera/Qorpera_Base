@@ -580,8 +580,8 @@ class CodexBoundaryRpc {
 	#failureCategory: CloudRuntimeErrorCategory = "unknown";
 	#providerErrorCategory?: CloudRuntimeErrorCategory;
 	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
-	/** Codex's last terminal error discriminant as a fixed name (nativeCodexErrorToken); a known one is kept over an
-	 * unknown one, as the category is. */
+	/** Codex's last terminal error discriminant as a fixed name (nativeCodexErrorToken); a name is kept over `unknown`
+	 * and `null`, which say nothing of the cause. */
 	#providerErrorToken?: string;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	readonly #requestIds = new Set<string>();
@@ -710,7 +710,8 @@ class CodexBoundaryRpc {
 	}
 	#noteProviderErrorToken(info: unknown): void {
 		const token = nativeCodexErrorToken(info);
-		if (token !== "unknown" || this.#providerErrorToken === undefined) this.#providerErrorToken = token;
+		const named = (value: string | undefined) => value !== undefined && value !== "unknown" && value !== "null";
+		if (named(token) || !named(this.#providerErrorToken)) this.#providerErrorToken = token;
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;

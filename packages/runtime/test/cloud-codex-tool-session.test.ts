@@ -579,6 +579,9 @@ it.each([
 	["terminal-rate-error", "httpConnectionFailed:429"],
 	["terminal-http-error", "httpConnectionFailed:503"],
 	["terminal-context-error", "contextWindowExceeded"],
+	// A completion without a discriminant keeps the name a notice gave; alone it says `null`.
+	["terminal-notice-then-null", "unauthorized"],
+	["terminal-null-error", "null"],
 	// Only unrecognized discriminants (and a status of the wrong type, or an extra field) were reported.
 	["unknown-error-notice", "unknown"],
 	["diagnostic-binding", null],

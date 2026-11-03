@@ -15,6 +15,7 @@ import {
 	SharedCloudSecretBrokerCompanies,
 } from "@qorpera/runtime/cloud-secret-broker-shared";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { markCloudVaultDatabaseFailure } from "@qorpera/runtime/cloud-vault-database-failure";
 import { afterEach, expect, it, vi } from "vitest";
 
 afterEach(() => {
@@ -310,6 +311,41 @@ it("answers a request for a registered company once the refresh in flight ends, 
 	release();
 	await refreshing;
 	expect((await resolving)?.companyId).toBe(one);
+});
+
+it("answers busy, not unserved, for a company it does not serve yet while the database could not list them", async () => {
+	let now = 1_000_000;
+	const one = randomUUID();
+	const { principal } = principalFixture();
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		now: () => now,
+	});
+	const signal = new AbortController().signal;
+	const lost = markCloudVaultDatabaseFailure(Object.assign(new Error("private detail"), { code: "ECONNRESET" }));
+	// Its own lookup, then the 2 s after it, which does not ask again.
+	principal.companies.mockRejectedValueOnce(lost);
+	await expect(companies.resolve(one, signal)).rejects.toBe(lost);
+	now += 500;
+	await expect(companies.resolve(one, signal)).rejects.toBe(lost);
+	expect(principal.companies).toHaveBeenCalledTimes(1);
+	// A refresh in flight (a start's first, or the loop's) that fails the same way.
+	now += 2000;
+	principal.companies.mockRejectedValueOnce(lost);
+	const refreshing = companies.refresh(signal).catch(() => undefined);
+	await expect(companies.resolve(one, signal)).rejects.toBe(lost);
+	await refreshing;
+	// Any other failure of a refresh in flight still reads as not served here.
+	principal.companies.mockRejectedValueOnce(new Error("Shared vault companies are invalid"));
+	const refused = companies.refresh(signal).catch(() => undefined);
+	expect(await companies.resolve(one, signal)).toBeUndefined();
+	await refused;
+	// Once a refresh succeeds, an unknown company is not served, as before.
+	now += 2000;
+	await companies.refresh(signal);
+	expect(await companies.resolve(one, signal)).toBeUndefined();
 });
 
 it("stops a company's upkeep pass after the renewal in hand when the vault closes", async () => {

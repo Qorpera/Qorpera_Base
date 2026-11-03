@@ -21,7 +21,7 @@ import {
 	type PostgresCloudSecretBrokerPrincipal,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
-import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
+import { cloudVaultDatabaseBusy, cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
@@ -118,6 +118,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#lastLookup = Number.NEGATIVE_INFINITY;
 	#lastSweep = Number.NEGATIVE_INFINITY;
 	#refreshing: Promise<void> | undefined;
+	/** The last refresh's failure, until one succeeds. */
+	#refreshFailure: unknown;
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
 	#running = new Set<Promise<void>>();
 	readonly #closing = new AbortController();
@@ -182,13 +184,21 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		const running = this.#refreshing;
 		if (running) {
 			await running.catch(() => undefined);
-			return this.#served.get(id)?.scope;
+			return this.#unknown(id);
 		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
-		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return undefined;
+		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return this.#unknown(id);
 		this.#lastLookup = this.#now();
 		await this.refresh(signal);
 		return this.#served.get(id)?.scope;
+	}
+
+	/** A company not served after a refresh: not here, unless that refresh found the database unavailable, which is
+	 * thrown again so the request is answered busy, not as a company this vault does not serve (3 November 2026). */
+	#unknown(id: string): CloudSecretBrokerCompanyScope | undefined {
+		const scope = this.#served.get(id)?.scope;
+		if (!scope && cloudVaultDatabaseBusy(this.#refreshFailure)) throw this.#refreshFailure;
+		return scope;
 	}
 
 	signingIn(companyId: string): void {
@@ -197,9 +207,19 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 
 	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
 	refresh(signal: AbortSignal): Promise<void> {
-		this.#refreshing ??= this.#refresh(signal).finally(() => {
-			this.#refreshing = undefined;
-		});
+		this.#refreshing ??= this.#refresh(signal)
+			.then(
+				() => {
+					this.#refreshFailure = undefined;
+				},
+				(error: unknown) => {
+					this.#refreshFailure = error;
+					throw error;
+				},
+			)
+			.finally(() => {
+				this.#refreshing = undefined;
+			});
 		return this.#refreshing;
 	}
 
