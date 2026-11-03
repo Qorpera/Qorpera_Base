@@ -9,6 +9,7 @@ import { createWebEventHooks } from "../../cloud/event-hooks.ts";
 import { interfacePageCalls } from "../../cloud/interface-pages.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
+import { createWebSites } from "../../cloud/sites.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
@@ -33,6 +34,7 @@ import { MemoryView } from "./settings-memory.ts";
 import { PagesView } from "./settings-pages.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
+import { SitesView } from "./settings-sites.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
@@ -86,13 +88,20 @@ const TABS = [
 		keywords:
 			"services accounts gmail google drive github token secrets agents environment variables webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler postkasser hændelser",
 	},
+	{
+		id: "sites",
+		label: phrase("Sites"),
+		icon: "globe",
+		keywords:
+			"sites websites website web link url password share shop preview publish published unpublish offline hjemmesider hjemmeside websted link adgangskode kodeord del webshop udgiv udgivet",
+	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
 /** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. */
 export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections";
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
-const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections", "sites"]);
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -187,6 +196,8 @@ export class SettingsView {
 	/** The company's coding environment variables, on Company connections. */
 	#companyEnvironment: CodingEnvironmentView | undefined;
 	#hooks: HooksView | undefined;
+	/** The company's websites, on Sites. */
+	#sites: SitesView | undefined;
 	#rules: RulesView | undefined;
 	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
 	#memory: MemoryView | undefined;
@@ -486,6 +497,7 @@ export class SettingsView {
 		this.#digitalPost?.dispose();
 		this.#companyEnvironment?.dispose();
 		this.#hooks?.dispose();
+		this.#sites?.dispose();
 		this.#rules?.dispose();
 		this.#memory?.dispose();
 		this.#pages?.dispose();
@@ -846,6 +858,27 @@ export class SettingsView {
 						this.#hooks.el,
 					),
 				);
+			} else if (tab === "sites" && !this.#sites) {
+				// Every member sees the company's sites and their links; owners and admins also read and change their
+				// passwords and take them offline (the kernel enforces the same rule).
+				this.#sites = new SitesView(createWebSites(this.#api.cloud, environment), signal(), {
+					access: {
+						canManage: () => {
+							const role = company.store.get().team?.role;
+							return role === "owner" || role === "admin";
+						},
+					},
+				});
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("Sites"),
+						t(
+							"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
+						),
+						this.#sites.el,
+					),
+				);
 			}
 		}
 		const panel =
@@ -1031,6 +1064,8 @@ export class SettingsView {
 		this.#companyEnvironment = undefined;
 		this.#hooks?.dispose();
 		this.#hooks = undefined;
+		this.#sites?.dispose();
+		this.#sites = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#memory?.dispose();
@@ -1048,7 +1083,8 @@ export class SettingsView {
 		this.#hoursLoading = false;
 		this.#hoursMissing = false;
 		this.#hoursFailed = false;
-		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions", "company-connections", "sites"] as const)
+			this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
@@ -1060,6 +1096,7 @@ export class SettingsView {
 				this.#digitalPost?.update();
 				this.#companyEnvironment?.update();
 				this.#hooks?.update();
+				this.#sites?.update();
 				this.#rules?.update();
 				this.#memory?.update();
 				this.#pages?.update();

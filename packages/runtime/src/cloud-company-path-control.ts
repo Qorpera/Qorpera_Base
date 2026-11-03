@@ -166,6 +166,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
 			"qorpera_memory_events_run",
 			"qorpera_memory_compaction_record",
+			// Company sites (20260930550000): the check before the review, a publish's three steps, and unpublishing.
+			"qorpera_site_publish_check",
+			"qorpera_site_publish_begin",
+			"qorpera_site_publish_put",
+			"qorpera_site_publish_finish",
+			"qorpera_site_unpublish",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);

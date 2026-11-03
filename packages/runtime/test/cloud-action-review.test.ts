@@ -13,6 +13,7 @@ import {
 	cloudActionReviewRequest,
 	describeCloudAction,
 	parseCloudActionVerdict,
+	siteAccessCheck,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
@@ -2474,6 +2475,161 @@ describe("the boundary's review step", () => {
 		for (const f of [refused, failed, oversized]) {
 			expect(f.check).not.toHaveBeenCalled();
 			expect(f.execute).not.toHaveBeenCalled();
+		}
+	});
+});
+
+describe("company sites (20260930550000)", () => {
+	const prepared = (mode: "new" | "update") => ({
+		slug: "wristband-shop",
+		source: "product/webshop",
+		title: "Wristbands",
+		kind: "folder",
+		mode,
+		url: "https://sites.qorpera.com/wristband-shop/",
+		liveSource: mode === "update" ? "product/webshop" : null,
+		files: 3,
+		bytes: 2_621_440,
+		manifestSha256: "a".repeat(64),
+		paths: ["about.html", "img/logo.png", "index.html"],
+		pathsOmitted: 0,
+		skipped: [],
+		skippedOmitted: 0,
+	});
+	const verdict = (decision: "allow" | "ask" | "deny", builtIn = "none") =>
+		parseCloudActionVerdict({ decision, ruleIds: [], builtIn, reason: "Requested.", proposedRule: null });
+
+	it("reviews a publish as an outside effect and taking a site offline as a deletion", () => {
+		expect(cloudActionEffect(tool("publish_site"), prepared("new"))).toBe("external");
+		expect(cloudActionEffect(tool("publish_site"), prepared("update"))).toBe("external");
+		expect(cloudActionEffect(tool("unpublish_site"), { slug: "wristband-shop" })).toBe("destructive");
+	});
+
+	it("names the link, the files and their size, and what a first publish or an update does", () => {
+		expect(describeCloudAction(tool("publish_site"), prepared("new"))).toEqual({
+			title: "Publish a new password-protected website",
+			target: "https://sites.qorpera.com/wristband-shop/",
+			details: {
+				title: "Wristbands",
+				from: "Webshop",
+				files: "3 files, 2.5 MB",
+				pages: "about.html, index.html",
+				effect: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
+			},
+		});
+		expect(describeCloudAction(tool("publish_site"), { ...prepared("update"), files: 1, bytes: 300 })).toMatchObject({
+			title: "Update a published website",
+			details: {
+				files: "1 file, 1 KB",
+				effect: "Replaces the whole site; people with its password see the new version",
+			},
+		});
+		expect(
+			describeCloudAction(tool("publish_site"), { ...prepared("update"), source: "product/webshop-v2" }),
+		).toMatchObject({
+			title: "Publish a website from another folder",
+			details: { from: "Webshop v2", "until now from": "Webshop" },
+		});
+		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({
+			title: "Take a website offline",
+			target: "wristband-shop",
+			details: {
+				effect: "Its link stops working and its password is deleted; the files stay in the company folder",
+			},
+		});
+	});
+
+	it("makes a first publish a built-in access check, whatever the reviewer called it, and leaves the rest", () => {
+		const call = (mode: "new" | "update", source: "runtime" | "connector" = "runtime") => ({
+			tool: { name: "publish_site", source },
+			parsed: prepared(mode),
+		});
+		expect(siteAccessCheck(call("new"), verdict("allow"))).toEqual({
+			decision: "allow",
+			ruleIds: [],
+			builtIn: "access_change",
+			reason: "Requested.",
+			proposedRule: "publish a password-protected website for the company",
+		});
+		expect(siteAccessCheck(call("new"), verdict("ask")).builtIn).toBe("access_change");
+		// A denial stays one; a check the reviewer named stays its own; an update and a connector of the same name
+		// are as the reviewer says.
+		expect(siteAccessCheck(call("new"), verdict("deny", "not_requested"))).toEqual(verdict("deny", "not_requested"));
+		expect(siteAccessCheck(call("new"), verdict("ask", "money")).builtIn).toBe("money");
+		expect(siteAccessCheck(call("update"), verdict("allow"))).toEqual(verdict("allow"));
+		// An update from another folder than the live site's is a first publish of that folder.
+		expect(
+			siteAccessCheck(
+				{
+					tool: { name: "publish_site", source: "runtime" },
+					parsed: { ...prepared("update"), source: "product/other" },
+				},
+				verdict("allow"),
+			).builtIn,
+		).toBe("access_change");
+		expect(siteAccessCheck(call("new", "connector"), verdict("allow"))).toEqual(verdict("allow"));
+		// Without a prepared mode (no prepare ran), it is a first publish.
+		expect(
+			siteAccessCheck({ tool: { name: "publish_site", source: "runtime" }, parsed: { slug: "x" } }, verdict("allow"))
+				.builtIn,
+		).toBe("access_change");
+	});
+
+	it("records a first publish's allow as an access check for the kernel, and an update as the reviewer said", async () => {
+		for (const mode of ["new", "update"] as const) {
+			const recorded: Array<Record<string, unknown>> = [];
+			const control: CloudActionReviewControl = {
+				call: async (method, args) => {
+					if (method === "qorpera_begin_action_review")
+						return {
+							state: "review",
+							agent: { name: "Tina" },
+							company: { name: "Acme" },
+							requester: null,
+							rules: [],
+						};
+					if (method === "qorpera_record_action_review") {
+						recorded.push(args.p_review as Record<string, unknown>);
+						return { reviewId: randomUUID(), decision: "allow", card: false, reason: "Fine." };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			};
+			const gateInstance = new CloudActionReviewGate({
+				binding,
+				control,
+				reviewer: {
+					review: async () => ({
+						decision: "allow",
+						ruleIds: [],
+						builtIn: "none",
+						reason: "Fine.",
+						proposedRule: null,
+					}),
+				},
+				request: "Publish the shop for my friends.",
+				holdMs: 0,
+				pollMs: 1,
+			});
+			await gateInstance.check(
+				{
+					tool: tool("publish_site"),
+					parsed: prepared(mode),
+					argumentsText: '{"slug":"wristband-shop","source":"product/webshop"}',
+					argumentSha256: "b".repeat(64),
+					callId: "call_site",
+				},
+				new AbortController().signal,
+			);
+			expect(recorded[0]).toMatchObject({
+				tool: "publish_site",
+				effect: "external",
+				builtIn: mode === "new" ? "access_change" : "none",
+				action: {
+					title: mode === "new" ? "Publish a new password-protected website" : "Update a published website",
+					arguments: '{"slug":"wristband-shop","source":"product/webshop"}',
+				},
+			});
 		}
 	});
 });

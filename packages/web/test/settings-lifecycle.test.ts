@@ -86,7 +86,16 @@ function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
 const ACCOUNT_TABS = ["general", "appearance", "friends", "plan", "ai-subscriptions"];
-const ALL_TABS = ["general", "appearance", "company", "friends", "plan", "ai-subscriptions", "company-connections"];
+const ALL_TABS = [
+	"general",
+	"appearance",
+	"company",
+	"friends",
+	"plan",
+	"ai-subscriptions",
+	"company-connections",
+	"sites",
+];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -572,7 +581,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
-	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
+	it("opens all eight tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -591,6 +600,7 @@ describe("settings session lifecycle", () => {
 			"Plan & usage",
 			"AI subscriptions",
 			"Company connections",
+			"Sites",
 		]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
@@ -1002,6 +1012,34 @@ describe("settings session lifecycle", () => {
 		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("webhooks")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("postkasser")).toEqual(["settings-tab-company-connections"]);
+	});
+	it("shows the company's websites on Sites, read only once that tab opens", async () => {
+		const f = await setup();
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_list_company_sites") return [];
+			throw new Error("Unexpected RPC");
+		});
+		open(f.root);
+		await draw();
+		expect(sdkRpcs(f)).not.toContain("qorpera_list_company_sites");
+		// The Danish word finds it too: the label is English, so the keywords carry it. The search shows the one tab
+		// it finds, which opens the page.
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
+		search.value = "hjemmesider";
+		search.dispatchEvent(new Event("input"));
+		expect(navTabs(f.root)).toEqual(["sites"]);
+		expect(selectedTab(f.root)).toBe("sites");
+		search.value = "";
+		search.dispatchEvent(new Event("input"));
+		click(f.root, "#settings-tab-sites");
+		await draw();
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+		expect(content.querySelector("h1")?.textContent).toBe("Sites");
+		expect(content.querySelector(".settings-lead")?.textContent).toBe(
+			"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
+		);
+		expect(content.textContent).toContain("No sites yet.");
+		expect(sdkRpcs(f).filter((name) => name === "qorpera_list_company_sites")).toHaveLength(1);
 	});
 	it("brings a service sign-in back to Company connections", async () => {
 		sessionStorage.setItem(

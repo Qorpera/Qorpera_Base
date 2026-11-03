@@ -94,6 +94,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			// A card a room wake's answer answers, beyond the run's history (21 October 2026).
 			"_agent_file_edit_move.sql",
 			"_memory_run_resume_receipts.sql",
+			// Company sites: the check before the review, a publish's three steps and unpublishing (3 November 2026).
+			"_company_sites.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -126,7 +128,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(115);
+	expect(rows).toHaveLength(120);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",
