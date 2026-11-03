@@ -15,8 +15,8 @@
 
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
-/** The function tests the old workflows ran (web-client and step2-lxd), and the artifact GC worker's (its folder phase,
- * C1D §9.10); the others never ran in CI. */
+/** The function tests the old workflows ran (web-client and step2-lxd), the artifact GC worker's (its folder phase,
+ * C1D §9.10) and the company sites' server's; the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
@@ -29,6 +29,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
 	"supabase/functions/runner-control/runner-control.test.ts",
 	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
+	"supabase/functions/site-serve/site-serve.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -297,7 +298,7 @@ export const STEPS = [
 		cores: 0.4,
 		width: 2,
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},

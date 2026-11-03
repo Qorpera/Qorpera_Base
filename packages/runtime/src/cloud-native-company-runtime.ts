@@ -108,6 +108,7 @@ import {
 } from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
+import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
@@ -989,6 +990,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
+											// Company sites (20260930550000): a static website from the company folder at a
+											// private, password-protected link, and taking one offline.
+											...cloudSiteTools({ binding, identity, control: this.#paths, folder: folder.client }),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent

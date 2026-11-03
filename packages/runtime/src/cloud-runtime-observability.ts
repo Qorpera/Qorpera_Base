@@ -79,6 +79,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Changing part of a file, and moving or renaming one (21 October 2026).
 	"company_edit",
 	"company_move",
+	// Company sites (20260930550000): a static website at a private, password-protected link, and taking one offline.
+	"publish_site",
+	"unpublish_site",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
