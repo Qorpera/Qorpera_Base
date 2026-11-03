@@ -74,7 +74,11 @@ import {
 	openCloudSecretRelay,
 } from "./cloud-secret-broker-relay.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
-import { cloudVaultDatabaseBusy, cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
+import {
+	CloudSecretBrokerBusyError,
+	cloudVaultDatabaseBusy,
+	cloudVaultFailureClass,
+} from "./cloud-vault-database-failure.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -1547,15 +1551,6 @@ export class HttpCloudSecretBrokerClient {
 			20_000,
 			signal,
 		);
-	}
-}
-
-/** The vault answered 503 `busy`: its database could not serve the call, so it neither issued nor refused a login (3
- * November 2026). A run host takes it for a lost answer. */
-export class CloudSecretBrokerBusyError extends Error {
-	constructor() {
-		super("Cloud secret broker was busy; the model login was neither issued nor refused");
-		this.name = "CloudSecretBrokerBusyError";
 	}
 }
 

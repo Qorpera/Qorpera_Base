@@ -123,7 +123,14 @@ it("keeps a valid Codex error name with the failure, and refuses any other", () 
 				tagNativeRuntimeFailure(new Error("x"), "codex-turn-completion", "provider_failed", null, token),
 			)?.codexError,
 		).toBe(token);
-	for (const token of ["PRIVATE_FAILURE", "", "unauthorized:401", "httpConnectionFailed:42", "httpConnectionFailed:1e2", "httpConnectionFailed:503:x"])
+	for (const token of [
+		"PRIVATE_FAILURE",
+		"",
+		"unauthorized:401",
+		"httpConnectionFailed:42",
+		"httpConnectionFailed:1e2",
+		"httpConnectionFailed:503:x",
+	])
 		expect(() =>
 			tagNativeRuntimeFailure(new Error("x"), "codex-turn-completion", "provider_failed", null, token),
 		).toThrow("Invalid native failure metadata");

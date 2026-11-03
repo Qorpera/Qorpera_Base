@@ -22,8 +22,8 @@ import {
 	type NativeIsolationConfiguration,
 } from "./cloud-native-isolation.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
-import { CloudSecretBrokerBusyError } from "./cloud-secret-broker-http.ts";
 import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
+import { CloudSecretBrokerBusyError } from "./cloud-vault-database-failure.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
 

@@ -65,7 +65,12 @@ export function nativeCodexErrorToken(value: unknown): string {
 	const keys = Object.keys(value);
 	if (keys.length !== 1 || !CODEX_ERROR_STATUS_NAMES.includes(keys[0])) return "unknown";
 	const details = (value as Record<string, unknown>)[keys[0]];
-	if (!details || typeof details !== "object" || Array.isArray(details) || Object.keys(details).join() !== "httpStatusCode")
+	if (
+		!details ||
+		typeof details !== "object" ||
+		Array.isArray(details) ||
+		Object.keys(details).join() !== "httpStatusCode"
+	)
 		return "unknown";
 	const status = (details as Record<string, unknown>).httpStatusCode;
 	if (status === null) return `${keys[0]}:null`;

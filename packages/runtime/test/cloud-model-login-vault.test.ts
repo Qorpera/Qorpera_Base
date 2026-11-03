@@ -10,13 +10,12 @@ import {
 	parseCodexLogin,
 } from "@qorpera/runtime/cloud-model-login-vault";
 import { CloudSecretBroker, type CloudSecretBrokerAuthority } from "@qorpera/runtime/cloud-secret-broker";
+import { HttpCloudSecretBrokerService, issueModelLogin } from "@qorpera/runtime/cloud-secret-broker-http";
+import { CloudSecretKeyring, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
 import {
 	CloudSecretBrokerBusyError,
-	HttpCloudSecretBrokerService,
-	issueModelLogin,
-} from "@qorpera/runtime/cloud-secret-broker-http";
-import { CloudSecretKeyring, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
-import { markCloudVaultDatabaseFailure } from "@qorpera/runtime/cloud-vault-database-failure";
+	markCloudVaultDatabaseFailure,
+} from "@qorpera/runtime/cloud-vault-database-failure";
 import { DatabaseError } from "pg";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -743,14 +742,24 @@ it("answers 503 busy when the database could not serve the call, which the host 
 	const port = await service.start();
 	const issue = () =>
 		issueModelLogin(
-			{ origin: `http://127.0.0.1:${port}`, runtimeToken, companyId: f.companyId, holder: () => holder, allowLoopback: true },
+			{
+				origin: `http://127.0.0.1:${port}`,
+				runtimeToken,
+				companyId: f.companyId,
+				holder: () => holder,
+				allowLoopback: true,
+			},
 			{ binding: f.run, knownVersion: null },
 			new AbortController().signal,
 		);
 	const post = () =>
 		fetch(`http://127.0.0.1:${port}/v1/model-logins?company=${f.companyId}`, {
 			method: "POST",
-			headers: { authorization: `Bearer ${runtimeToken}`, "content-type": "application/json", "x-qorpera-identity": holder },
+			headers: {
+				authorization: `Bearer ${runtimeToken}`,
+				"content-type": "application/json",
+				"x-qorpera-identity": holder,
+			},
 			body: JSON.stringify({ schema: "qorpera.model-login-request/v1", binding: f.run, knownVersion: null }),
 		});
 	const secret = "PRIVATE_LOGIN_6f0c";
@@ -784,7 +793,9 @@ it("answers 503 busy when the database could not serve the call, which the host 
 		);
 	}
 	// The binding proof is a database call too, and the host's client takes the 503 for its own error.
-	proveBinding.mockRejectedValueOnce(markCloudVaultDatabaseFailure(new Error("timeout exceeded when trying to connect")));
+	proveBinding.mockRejectedValueOnce(
+		markCloudVaultDatabaseFailure(new Error("timeout exceeded when trying to connect")),
+	);
 	await expect(issue()).rejects.toBeInstanceOf(CloudSecretBrokerBusyError);
 	// A call's own deadline passing is the database's too.
 	f.authority.issueModelLogin.mockRejectedValueOnce(markCloudVaultDatabaseFailure(new Error("late"), "call deadline"));

@@ -57,9 +57,11 @@ it("takes only a failure the database client marked for its own, and finds it un
 });
 
 it("logs a class for any failure, never its text", () => {
-	expect(cloudVaultFailureClass(new TypeError("fetch failed", { cause: Object.assign(new Error(SECRET), { code: "UND_ERR_SOCKET" }) }))).toBe(
-		"UND_ERR_SOCKET",
-	);
+	expect(
+		cloudVaultFailureClass(
+			new TypeError("fetch failed", { cause: Object.assign(new Error(SECRET), { code: "UND_ERR_SOCKET" }) }),
+		),
+	).toBe("UND_ERR_SOCKET");
 	expect(cloudVaultFailureClass(new CloudRequestTimeoutError())).toBe("timeout");
 	expect(cloudVaultFailureClass(new DOMException("late", "TimeoutError"))).toBe("timeout");
 	expect(cloudVaultFailureClass(new DOMException("stopped", "AbortError"))).toBe("aborted");

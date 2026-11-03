@@ -7,6 +7,16 @@
  * background passes log the class. Never the error's message: it may name a login, a company or a token.
  */
 
+/** The vault answered 503 `busy`: its database could not serve the call, so it neither issued nor refused a login. A
+ * run host takes it for a lost answer. It lives here, with no imports, so the run host and the model login helper,
+ * which import the host's module, take in nothing of the vault's own. */
+export class CloudSecretBrokerBusyError extends Error {
+	constructor() {
+		super("Cloud secret broker was busy; the model login was neither issued nor refused");
+		this.name = "CloudSecretBrokerBusyError";
+	}
+}
+
 interface DatabaseFailure {
 	failureClass: string;
 	busy: boolean;
