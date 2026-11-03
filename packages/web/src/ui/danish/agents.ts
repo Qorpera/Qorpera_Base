@@ -273,6 +273,8 @@ export const AGENTS: Record<string, string> = {
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
 	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
 		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.":
+		"ChatGPT var overbelastet eller havde en serverfejl, mens sessionen arbejdede. Det går som regel hurtigt over, og loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.":
 		"Sessionen mistede forbindelsen, mens den arbejdede. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":

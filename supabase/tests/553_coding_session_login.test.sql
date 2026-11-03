@@ -83,12 +83,16 @@ values ('92800000-0000-4000-8000-0000000000d1', 'member', '92400000-0000-4000-80
 	'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000001', 'exec-928', repeat('7', 64), '{}');
 set local session_replication_role = origin;
 
--- 1. A turn that fails at the provider keeps its summary and reports the bridge's code ----------------------------------
+-- 1. A turn that fails at the provider says so in plain words and reports the bridge's code (words: 20260930560000) ----
 do $$
 declare v_token uuid; v_begin jsonb; v_pass jsonb; v_turn jsonb; v_event public.qorpera_coding_session_events%rowtype;
 	w public.qorpera_runtime_workers%rowtype;
 	v_error constant text := 'Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]';
 	v_summary constant text := 'The coding turn did not finish: ' || v_error;
+	-- 20260930560000: what the agent and the card read instead of the bridge's text.
+	v_said constant text := 'ChatGPT refused or could not answer Codex''s request, so the coding turn stopped. The member '
+		|| 'whose login pays for this session can check that login in Settings, AI subscriptions. The files the turn wrote '
+		|| 'stay in the session''s workspace as it left them; a follow-up turn continues from them.';
 begin
 	v_token := pg_temp.cl_claim();
 	v_begin := public.qorpera_begin_coding_turn('92800000-0000-4000-8000-0000000000b1', v_token, '{}');
@@ -104,13 +108,13 @@ begin
 		'the run''s code: ' || public.qorpera_coding_turn_failure(w, 'The coding turn did not finish.')::text);
 	perform public.qorpera_complete_coding_turn('92800000-0000-4000-8000-0000000000b1', v_token, 'failed', v_summary);
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1');
-	perform pg_temp.base_assert(w.state = 'failed' and w.result ->> 'summary' = v_summary
+	perform pg_temp.base_assert(w.state = 'failed' and w.result ->> 'summary' = v_said
 		and w.result ->> 'reason' = 'NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED', 'the worker''s result: ' || w.result::text);
 	perform pg_temp.base_assert(pg_temp.cl_outcome(1) ->> 'reason' = 'NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED'
-		and pg_temp.cl_outcome(1) ->> 'summary' = v_summary, 'the turn''s outcome: ' || coalesce(pg_temp.cl_outcome(1)::text, 'none'));
+		and pg_temp.cl_outcome(1) ->> 'summary' = v_said, 'the turn''s outcome: ' || coalesce(pg_temp.cl_outcome(1)::text, 'none'));
 	v_event := pg_temp.cl_event('failed');
 	perform pg_temp.base_assert(v_event.sequence = 1 and v_event.body ->> 'code' = 'NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED'
-		and v_event.body ->> 'summary' = v_summary and not v_event.body ? 'reason', 'the failed event: ' || v_event.body::text);
+		and v_event.body ->> 'summary' = v_said and not v_event.body ? 'reason', 'the failed event: ' || v_event.body::text);
 	perform pg_temp.base_assert(pg_temp.cl_view() ->> 'loginState' = 'ready'
 		and pg_temp.cl_view() ->> 'reason' = 'NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED', 'the view: ' || pg_temp.cl_view()::text);
 end $$;

@@ -1022,7 +1022,7 @@ export class CodingSessionElement {
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							codingFailureReason(text(event.body, "reason", "summary"), limit),
+							codingFailureReason(text(event.body, "reason", "summary"), limit, text(event.body, "code")),
 							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? " " : null,
 							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? manageUsageLink() : null,
 						),

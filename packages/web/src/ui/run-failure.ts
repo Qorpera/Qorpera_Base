@@ -228,6 +228,11 @@ const CODING_REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
 	),
 };
 
+/** A coding turn whose run ChatGPT could not serve (its own overload or server error, 20260930560000). */
+const CODING_PROVIDER_OUTAGE = phrase(
+	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
+);
+
 /** What the kernel tells about a coding turn that stopped at its login's usage limit (20260929993000). */
 export interface CodingUsageLimit {
 	usageLimit?: boolean;
@@ -241,15 +246,25 @@ export interface CodingUsageLimit {
  * executor's summary, which carries the run's last error and its fixed code;
  * both name machinery, so neither is ever shown as it is. A turn the kernel says
  * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan. */
-export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}): string {
+export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}, code?: string): string {
 	if (limit.usageLimit === true)
 		return limit.paidByChatgptPlan === true && limit.mine === true
 			? `${planUsageLimitReason()} ${t("The workspace is kept; a follow-up continues it.")}`
 			: t(CODING_REASONS.usage_limit);
+	// The run failed with the model provider's outage (20260930560000): ChatGPT's, usually brief; the login is fine.
+	if (code === "provider_outage") return t(CODING_PROVIDER_OUTAGE);
+	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
+	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a
+	// step refused on Qorpera's side, as the bridge's text said. Lower-case reasons (turn_failed, stopped, ...) name no
+	// code, and a summary that still carries its own code (from before 20260930560000) keeps it.
+	const byCode =
+		code !== undefined && /^[A-Z0-9_]{1,42}(?::[A-Z0-9_]{1,42})?$/.test(code) && !reason?.includes("[code=");
+	if (byCode) reason = ` [code=${code}]`;
 	if (reason === "executor-lease-expired") return t(CODING_REASONS.lost);
 	if (reason === CODING_TURN_ENDED || reason?.includes("[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]"))
 		return t(CODING_REASONS.no_submission);
-	const kind = classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed");
+	const classified = classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed");
+	const kind = byCode && classified === "other" ? "bridge" : classified;
 	return t((limit.mine === true ? undefined : CODING_REASONS_FOR_OTHERS[kind]) ?? CODING_REASONS[kind]);
 }
 
