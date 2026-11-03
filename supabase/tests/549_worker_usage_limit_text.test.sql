@@ -6,7 +6,8 @@
 -- in the worker's result, its `reported` event and its results.md claim, the fixed words with the window's reset, and
 -- the `failed` event says the same and keeps usageLimit. An in-house worker whose run stops the same way fails with
 -- reason usage_limit and the same words. The reset is the signal's own when it is ahead, else the full window's, else
--- left out; a run without the signal, or no run, has no text; and no API role calls the new function.
+-- left out; a run without the signal, or no run, has no text, nor has the signal of an attempt that paused and went on
+-- (only a later attempt's own signal counts); and no API role calls the new function.
 
 -- The node host's calls on a run's binding: a provider signal, and the runner's failure report.
 create function pg_temp.ul_signal(p_binding jsonb, p_kind text) returns jsonb language plpgsql as $$
@@ -120,7 +121,7 @@ end $$;
 do $$
 declare v_occurrence uuid := current_setting('qorpera_test.ul_occurrence')::uuid;
 	v_week timestamptz := current_setting('qorpera_test.ul_week')::timestamptz; v_run uuid;
-	v_soon timestamptz := date_trunc('minute', clock_timestamp()) + interval '90 minutes';
+	v_soon timestamptz := date_trunc('minute', clock_timestamp()) + interval '90 minutes'; v_assignment uuid;
 begin
 	select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_occurrence;
 	set local session_replication_role = replica;
@@ -148,6 +149,27 @@ begin
 	set local session_replication_role = replica;
 	update public.qorpera_provider_connection_usage_signals set signal_kind = 'usage_limit' where run_id = v_run and signal_kind = 'rate_limited';
 	set local session_replication_role = origin;
+	-- A paused attempt's signal says nothing about how the run ended: a run with a live log pauses at the limit and goes
+	-- on after the reset (W5a-1; run_paused names the paused attempt).
+	select assignment_id into strict v_assignment from public.qorpera_provider_connection_usage_signals
+	where run_id = v_run and signal_kind = 'usage_limit';
+	perform pg_temp.base_assert(v_assignment is not null, 'the signal names its attempt');
+	set local session_replication_role = replica;
+	insert into public.qorpera_execution_run_events(run_id, event_type, payload)
+	values (v_run, 'run_paused', jsonb_build_object('schema', 'qorpera.run-resume/v1', 'assignmentId', v_assignment,
+		'reason', 'usage limit'));
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_worker_usage_limit_text(v_occurrence) is null, 'a paused attempt''s signal has no text');
+	-- A later attempt that reaches the limit again ends the run there: its own signal counts.
+	set local session_replication_role = replica;
+	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id, sponsor_version,
+		provider_connection_id, provider_connection_version, provider, signal_kind, source, resets_at, assignment_id)
+	select profile_id, run_id, job_id, sponsor_binding_id, sponsor_version, provider_connection_id, provider_connection_version,
+		provider, signal_kind, source, v_soon, extensions.gen_random_uuid()
+	from public.qorpera_provider_connection_usage_signals where run_id = v_run and assignment_id = v_assignment;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(public.qorpera_worker_usage_limit_text(v_occurrence) = pg_temp.ul_words(v_soon),
+		'the last attempt''s signal');
 end $$;
 
 -- 3. An in-house worker stopped at the login's usage limit ---------------------------------------------------------------

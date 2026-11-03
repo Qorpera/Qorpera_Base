@@ -10,7 +10,8 @@
 -- reporting a result."
 --
 -- Now, when the worker's run has a usage-limit signal for the login it runs on (qorpera_record_provider_usage_signal,
--- the same test as qorpera_coding_turn_usage_limit and the run recovery's usage_limit), the report's summary is fixed
+-- as qorpera_coding_turn_usage_limit and the run recovery's usage_limit test it) from an attempt that was not paused
+-- and resumed afterwards (W5a-1 keeps signals per attempt), the report's summary is fixed
 -- wording, never provider text: the login paying for this work reached its usage limit; when it resets, if known; the
 -- work does not move to another login by itself; the member can choose another of their logins for it (the
 -- conversation's Login menu) or wait. The reset is the signal's resets_at when it is still ahead, else the latest reset
@@ -29,7 +30,9 @@
 set local lock_timeout = '3s';
 
 -- The plain words for a worker run stopped at its login's usage limit, or null when the run of p_occurrence_id has no
--- usage-limit signal for the sponsor version it runs on (20260930549300).
+-- usage-limit signal for the sponsor version it runs on from an attempt that ended it (20260930549300). Signals are kept
+-- per attempt (W5a-1): a run with a live log pauses at the limit (run_paused names the paused attempt's assignment) and
+-- goes on after the reset, so the signal of a paused attempt says nothing about how the run ended.
 create function public.qorpera_worker_usage_limit_text(p_occurrence_id uuid)
 returns text language sql stable security definer set search_path = '' as $$
 	-- 20260930549300.
@@ -40,8 +43,12 @@ returns text language sql stable security definer set search_path = '' as $$
 		|| '(in the conversation''s Login menu), or wait until the limit resets.'
 	from public.qorpera_wake_occurrences as wake
 	join public.qorpera_execution_runs as run on run.id = wake.run_id
-	join public.qorpera_provider_connection_usage_signals as signal
-		on signal.run_id = run.id and signal.sponsor_version = run.sponsor_version and signal.signal_kind = 'usage_limit'
+	cross join lateral (select recorded.* from public.qorpera_provider_connection_usage_signals as recorded
+		where recorded.run_id = run.id and recorded.sponsor_version = run.sponsor_version and recorded.signal_kind = 'usage_limit'
+			and not exists (select 1 from public.qorpera_execution_run_events as resumed
+				where resumed.run_id = run.id and resumed.event_type in ('run_paused', 'run_cut_off')
+					and resumed.payload ->> 'assignmentId' = recorded.assignment_id::text)
+		order by recorded.observed_at desc, recorded.id desc limit 1) as signal
 	cross join lateral (select coalesce(
 		case when signal.resets_at > statement_timestamp() then signal.resets_at end,
 		(select max((window_row.value ->> 'resetAt')::timestamptz)
