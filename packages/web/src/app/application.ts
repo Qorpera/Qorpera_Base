@@ -490,7 +490,7 @@ export function mountApplication(
 				else {
 					// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
 					// page: it finishes while Settings closes or the route changes, stopping only if the
-					// account changes, and My connections shows the outcome.
+					// account changes, and AI subscriptions shows the outcome.
 					const plan = createWebNativeSubscription(
 						cloud,
 						profile.profileId,
@@ -504,8 +504,8 @@ export function mountApplication(
 					queueMicrotask(() => {
 						if (disposed || company !== controller) return;
 						const route = currentRoute();
-						if (route.name === "company" && route.section === "home") settingsAfterHome = "my-connections";
-						else openSettings("my-connections");
+						if (route.name === "company" && route.section === "home") settingsAfterHome = "ai-subscriptions";
+						else openSettings("ai-subscriptions");
 					});
 				}
 			}

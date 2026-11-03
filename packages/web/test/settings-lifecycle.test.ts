@@ -76,6 +76,17 @@ function open(root: Element) {
 	click(root, ".account-trigger");
 	click(root, '[data-account-action="settings"]');
 }
+/** The settings pages the nav shows, by id. */
+function navTabs(root: Element): string[] {
+	return [...root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]')]
+		.filter((tab) => !tab.hidden)
+		.map((tab) => tab.id.replace("settings-tab-", ""));
+}
+function selectedTab(root: Element): string | undefined {
+	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
+}
+const ACCOUNT_TABS = ["general", "appearance", "friends", "plan", "ai-subscriptions"];
+const ALL_TABS = ["general", "appearance", "company", "friends", "plan", "ai-subscriptions", "company-connections"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -143,15 +154,22 @@ describe("settings session lifecycle", () => {
 			open(f.root);
 			click(f.root, "#settings-tab-company");
 			const content = () => f.root.querySelector("#settings-content")!;
-			expect(content().textContent).toContain("Open a company to see these settings.");
+			// No company is open yet: only the account's pages, and General in the Company page's place.
+			expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
+			expect(selectedTab(f.root)).toBe("general");
+			expect(content().textContent).not.toContain("Open a company to see these settings.");
 			pending.resolve(profiles);
 			await draw();
 			if (profiles.length > 1) {
 				// Several companies: the member opens one from the list first.
-				expect(content().textContent).toContain("Open a company to see these settings.");
+				expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
+				expect(selectedTab(f.root)).toBe("general");
 				expect(content().querySelector(".settings-file-card")).toBeNull();
 				expect(f.api.getTeam).not.toHaveBeenCalled();
 			} else {
+				// The only company opens, and with it the Company page asked for.
+				expect(navTabs(f.root)).toEqual(ALL_TABS);
+				expect(selectedTab(f.root)).toBe("company");
 				// The Company tab has no heading of its own.
 				expect(content().querySelector("h1")).toBeNull();
 				expect(
@@ -256,16 +274,18 @@ describe("settings session lifecycle", () => {
 			view.el.querySelector("#settings-content .settings-file-card")?.getAttribute("data-profile-id");
 		expect(shown()).toBe(profileA.profileId);
 		expect(view.el.querySelector("#settings-content h1")).toBeNull();
-		// Settings over a company never show another one, however often the list repeats.
+		// Settings over a company never show another one, however often the list repeats: with none, they show the
+		// account's pages, General for the Company page.
 		view.updateProfiles([profileB]);
 		view.updateProfiles([{ ...profileB }]);
-		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
-			"Open a company to see these settings.",
-		);
+		expect(navTabs(view.el)).toEqual(ACCOUNT_TABS);
+		expect(selectedTab(view.el)).toBe("general");
 		expect(shown()).toBeUndefined();
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		view.updateProfiles([profileA, profileB]);
 		await settle();
+		expect(navTabs(view.el)).toEqual(ALL_TABS);
+		expect(selectedTab(view.el)).toBe("company");
 		expect(shown()).toBe(profileA.profileId);
 		// The open company is borrowed again: Settings neither start nor stop it.
 		expect(f.api.getTeam).not.toHaveBeenCalled();
@@ -293,9 +313,7 @@ describe("settings session lifecycle", () => {
 			hub.dispose();
 			auth.dispose();
 		};
-		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
-			"Open a company to see these settings.",
-		);
+		expect(selectedTab(view.el)).toBe("general");
 		const shown = () =>
 			view.el.querySelector("#settings-content .settings-file-card")?.getAttribute("data-profile-id");
 		expect(shown()).toBeUndefined();
@@ -385,9 +403,8 @@ describe("settings session lifecycle", () => {
 		};
 		view.updateProfiles([{ ...profileB }]);
 		await settle();
-		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
-			"Open a company to see these settings.",
-		);
+		expect(navTabs(view.el)).toEqual(ACCOUNT_TABS);
+		expect(selectedTab(view.el)).toBe("general");
 		expect(view.el.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(false);
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 	});
@@ -407,8 +424,131 @@ describe("settings session lifecycle", () => {
 		// The revoked company is still listed; Settings used to start it again,
 		// fail at once and close themselves.
 		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
-		expect(f.root.querySelector("#settings-content")!.textContent).toContain("Open a company to see these settings.");
+		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
+		expect(selectedTab(f.root)).toBe("general");
 		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(teams);
+	});
+	it("shows only the account's pages and no Storage with no company open, and every page inside one", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		await draw();
+		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
+		expect(selectedTab(f.root)).toBe("general");
+		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(true);
+		// A search never brings a company page back (inside a company, "invitations" finds Company and Friends).
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
+		search.value = "invitations";
+		search.dispatchEvent(new Event("input"));
+		expect(navTabs(f.root)).toEqual(["friends"]);
+		expect(selectedTab(f.root)).toBe("friends");
+		click(f.root, ".settings-close");
+		// Inside a company, its pages and Storage are there as before.
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		open(f.root);
+		await draw();
+		expect(navTabs(f.root)).toEqual(ALL_TABS);
+		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(false);
+	});
+	it.each([
+		["company-connections", "general"],
+		["storage", "general"],
+		["my-connections", "ai-subscriptions"],
+	] as const)("opens %s with no company open on %s", async (asked, opened) => {
+		history.replaceState(null, "", "/#/");
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA, profileB],
+			undefined,
+			() => {},
+			() => {},
+			asked,
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			auth.dispose();
+		};
+		await settle();
+		expect(selectedTab(view.el)).toBe(opened);
+		expect(view.el.querySelector<HTMLElement>("#settings-content")!.hidden).toBe(false);
+		expect(view.el.querySelector<HTMLElement>("#settings-storage-content")!.hidden).toBe(true);
+		const text = view.el.querySelector(".settings-dialog")!.textContent;
+		expect(text).not.toContain("Open a company to see these settings.");
+		expect(text).not.toContain("Open a company to see its storage.");
+	});
+	it("lists the member's AI subscriptions with no company open, read through the first company that shares them", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileB, profileA]);
+		const f = await setup(fixtureState);
+		const calls: Array<[string, unknown]> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = String(input);
+				if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
+				const method = url.slice(url.lastIndexOf("/") + 1);
+				const company = (JSON.parse(String(init?.body ?? "{}")) as { p_profile_id?: unknown }).p_profile_id;
+				calls.push([method, company]);
+				if (method === "qorpera_list_account_model_logins")
+					return Response.json({
+						schema: "qorpera.account-model-logins/v1",
+						// Company A has a vault of its own; Company B's sign-ins are account sign-ins.
+						enabled: company === profileB.profileId,
+						logins: [
+							{
+								loginId: id(90),
+								loginKind: "codex",
+								status: "active",
+								providerAccountEmail: "member@example.com",
+								createdAt: timestamp,
+								companies: 2,
+								connectionIds: [],
+							},
+						],
+					});
+				if (method === "qorpera_list_member_native_execution_connections")
+					return Response.json({ compute_identity: null, connections: [] });
+				throw new Error("Unexpected request in the AI subscriptions fixture");
+			}),
+		);
+		open(f.root);
+		click(f.root, "#settings-tab-ai-subscriptions");
+		await draw();
+		await draw();
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+		expect(content.querySelector("h1")?.textContent).toBe("AI subscriptions");
+		expect(content.textContent).not.toContain("Open a company to see these settings.");
+		const card = content.querySelector<HTMLElement>(`.connection-card[data-login-id="${id(90)}"]`)!;
+		expect(card.textContent).toContain("member@example.com");
+		expect(card.textContent).toContain("Used in all your companies");
+		expect([...card.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Sign out everywhere"]);
+		expect(content.querySelector(".connection-note")?.textContent).toBe(
+			"A ChatGPT subscription you add here is used in all your companies.",
+		);
+		expect(content.querySelector(".connection-add")?.textContent).toBe("Add ChatGPT subscription");
+		expect(content.querySelector(".connection-provider-picker")).toBeNull();
+		// Companies are asked in id order (A, then B); everything after that is read in Company B, the first that
+		// shares sign-ins.
+		expect(calls.slice(0, 2)).toEqual([
+			["qorpera_list_account_model_logins", profileA.profileId],
+			["qorpera_list_account_model_logins", profileB.profileId],
+		]);
+		expect(calls.slice(2).map(([, company]) => company)).toEqual(calls.slice(2).map(() => profileB.profileId));
+		expect(calls.map(([method]) => method)).toContain("qorpera_list_member_native_execution_connections");
+		// No company was opened for it.
+		expect(f.api.getTeam).not.toHaveBeenCalled();
 	});
 	it("ends the rail with a way back to the company list, not a company picker", async () => {
 		const f = await setup();
@@ -449,7 +589,7 @@ describe("settings session lifecycle", () => {
 			"Company",
 			"Friends",
 			"Plan & usage",
-			"My connections",
+			"AI subscriptions",
 			"Company connections",
 		]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
@@ -853,11 +993,11 @@ describe("settings session lifecycle", () => {
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
-		expect(shown("connections")).toEqual(["settings-tab-my-connections", "settings-tab-company-connections"]);
+		expect(shown("connections")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
 		// The Danish word finds both too: the labels are English, so the keywords carry it.
-		expect(shown("forbindelser")).toEqual(["settings-tab-my-connections", "settings-tab-company-connections"]);
-		expect(shown("chatgpt")).toEqual(["settings-tab-my-connections"]);
-		expect(shown("claude")).toEqual(["settings-tab-my-connections"]);
+		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
+		expect(shown("chatgpt")).toEqual(["settings-tab-ai-subscriptions"]);
+		expect(shown("claude")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("webhooks")).toEqual(["settings-tab-company-connections"]);
@@ -1776,8 +1916,9 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.root.querySelector(".settings-overlay")).toBe(settings);
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
-		click(f.root, "#settings-tab-company");
-		expect(settings!.textContent).toContain("Open a company to see these settings.");
+		// The company is gone: Settings show only the account's pages.
+		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
+		expect(selectedTab(f.root)).toBe("general");
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 	});
 	it("returns the standalone Team page to an updated hub after leaving", async () => {
@@ -1844,7 +1985,7 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each([
-		["my-connections", ".connection-section-heading button", ["qorpera_list_coding_environment"]],
+		["ai-subscriptions", ".connection-section-heading button", ["qorpera_list_coding_environment"]],
 		[
 			"company-connections",
 			".service-card button:not(:disabled)",
@@ -1867,10 +2008,10 @@ describe("settings session lifecycle", () => {
 		expect(content.firstElementChild).toBe(panel);
 		expect(content.contains(document.activeElement)).toBe(true);
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
-		// Opened alone, each tab reads only its own lists: My connections never reads the services.
+		// Opened alone, each tab reads only its own lists: AI subscriptions never reads the services.
 		expect(sdkRpcs(f)).toEqual(rpcs);
 	});
-	it("reads only the member's own accounts on My connections, and only the company's on Company connections", async () => {
+	it("reads only the member's own accounts on AI subscriptions, and only the company's on Company connections", async () => {
 		// Isolate Settings reads from an open conversation's quota polling.
 		// The Team route keeps the same company authority without a composer.
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
@@ -1907,9 +2048,9 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual(companyReads);
 		expect(memberReads()).toEqual([]);
 
-		click(f.root, "#settings-tab-my-connections");
+		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
-		expect(content.querySelector("h1")?.textContent).toBe("My connections");
+		expect(content.querySelector("h1")?.textContent).toBe("AI subscriptions");
 		expect(content.querySelector(".settings-lead")?.textContent).toBe(
 			"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
 		);
@@ -1923,7 +2064,7 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual([...companyReads, "qorpera_list_coding_environment"]);
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
-	it("reads My connections' coding variables again after Company connections gives one to a repository", async () => {
+	it("reads AI subscriptions' coding variables again after Company connections gives one to a repository", async () => {
 		const f = await setup();
 		const companyToken = {
 			schema: "qorpera.coding-environment-secret/v1",
@@ -1958,7 +2099,7 @@ describe("settings session lifecycle", () => {
 			[...root.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!.click();
 		const reach = () => card("member", id(32)).querySelector(".hook-state")?.textContent;
 		open(f.root);
-		click(f.root, "#settings-tab-my-connections");
+		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
 		expect(reach()).toBe("Your coding sessions get it.");
 
@@ -1982,13 +2123,13 @@ describe("settings session lifecycle", () => {
 		];
 		expect(sdkRpcs(f)).toEqual(reads);
 
-		click(f.root, "#settings-tab-my-connections");
+		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
 		expect(reach()).toBe("Your coding sessions get it. In acme/web, the company's NPM_TOKEN is used instead.");
 		// Switching tabs alone reads nothing again.
 		click(f.root, "#settings-tab-company-connections");
 		await draw();
-		click(f.root, "#settings-tab-my-connections");
+		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
 		expect(sdkRpcs(f)).toEqual(reads);
 	});

@@ -1562,6 +1562,13 @@ describe("account model logins", () => {
 		expect(view.el.textContent).toContain("member@example.com");
 	});
 
+	it("keeps the company page as it was: no account-wide note, and Add account with its picker", async () => {
+		await setupAccount();
+		expect(view.el.querySelector(".connection-note")).toBeNull();
+		expect(view.el.querySelector(".connection-add")?.textContent).toBe("Add account");
+		expect(view.el.querySelector(".connection-provider-picker")).not.toBeNull();
+	});
+
 	it("shows the account login's card in Danish", async () => {
 		setLanguagePreference("da");
 		try {

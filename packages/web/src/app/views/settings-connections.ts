@@ -17,7 +17,10 @@ import {
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
-type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
+export type ConnectionsClient = Pick<
+	WebNativeSubscription,
+	"listConnections" | "revokeConnection" | "createMemberSponsor"
+> &
 	Partial<
 		Pick<
 			WebNativeSubscription,
@@ -177,6 +180,12 @@ export class ConnectionsView {
 	#connections: WebExecutionConnections | undefined;
 	/** The member's account logins by this company's connection: one sign-in used in all their companies. */
 	#accountLogins = new Map<string, WebAccountLogin>();
+	/** All of the member's account logins, also those this company does not use. */
+	#logins: readonly WebAccountLogin[] = [];
+	/** Settings with no company open: only the member's account logins, signed in through `companyName`. */
+	readonly #accountWide: { companyName: string } | undefined;
+	/** With no company open: how the last ChatGPT sign-in ended when it was not an account login. */
+	#outcome: string | undefined;
 	#loading = true;
 	#adding = false;
 	#working: string | undefined;
@@ -211,8 +220,10 @@ export class ConnectionsView {
 		offered: readonly Provider[] = PROVIDERS.map((provider) => provider.id),
 		navigate: (url: string) => void = (url) => location.assign(url),
 		plan?: PlanSignIn,
+		accountWide?: { companyName: string },
 	) {
 		this.#client = client;
+		this.#accountWide = accountWide;
 		this.#navigate = navigate;
 		this.#plan = offered.includes("openai") ? plan : undefined;
 		this.#offered = PROVIDERS.filter((provider) => offered.includes(provider.id));
@@ -231,7 +242,7 @@ export class ConnectionsView {
 			if (
 				!document.hidden &&
 				this.el.isConnected &&
-				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#connections?.connections.some(live))
+				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#shown().some(live))
 			)
 				void this.#refreshUsage();
 		};
@@ -360,7 +371,7 @@ export class ConnectionsView {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
-			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
+			if (this.#lifetime.signal.aborted || !this.#shown().some(live)) return;
 			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 		} catch {
@@ -398,6 +409,7 @@ export class ConnectionsView {
 					latest.set(connection.connectionId, connection);
 			}
 			const connections = { ...observed, connections: [...latest.values()] };
+			let accountRead = false;
 			if (this.#client.listAccountLogins) {
 				try {
 					const account = await this.#client.listAccountLogins(this.#lifetime.signal);
@@ -405,6 +417,11 @@ export class ConnectionsView {
 					this.#accountLogins = new Map(
 						account.logins.flatMap((login) => login.connectionIds.map((id) => [id, login] as const)),
 					);
+					// A login that was not listed before ends what an earlier sign-in's outcome said.
+					const listed = new Set(this.#logins.map((login) => login.loginId));
+					if (account.logins.some((login) => !listed.has(login.loginId))) this.#outcome = undefined;
+					this.#logins = account.logins;
+					accountRead = true;
 				} catch {
 					// The cards read as this company's own logins until the next read.
 					if (this.#lifetime.signal.aborted) return;
@@ -412,18 +429,31 @@ export class ConnectionsView {
 			}
 			this.#connections = connections;
 			this.#error = undefined;
-			for (const [provider, attempt] of this.#attempts)
-				if (
-					attempt.login &&
-					(connections.connections.some(
-						(item) =>
-							item.provider === provider &&
-							item.clientConnectionId === attempt.login?.clientConnectionId &&
-							live(item),
-					) ||
-						Date.parse(attempt.login.expiresAt) <= Date.now())
-				)
+			for (const [provider, attempt] of this.#attempts) {
+				const finished = connections.connections.find(
+					(item) =>
+						item.provider === provider &&
+						item.clientConnectionId === attempt.login?.clientConnectionId &&
+						live(item),
+				);
+				if (attempt.login && (finished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
+					// With no company open only account logins are listed: say where a company login went, and that a
+					// sign-in ended without one.
+					if (this.#accountWide && provider === "openai" && !finished)
+						this.#outcome = t("The ChatGPT sign-in did not finish. Try again.");
+					else if (
+						this.#accountWide &&
+						provider === "openai" &&
+						finished &&
+						accountRead &&
+						!this.#accountLogins.has(finished.connectionId)
+					)
+						this.#outcome = t("This subscription was added to {company} only. Open that company to see it.", {
+							company: this.#accountWide.companyName,
+						});
+				}
+			}
 			void this.#enable();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
@@ -433,10 +463,12 @@ export class ConnectionsView {
 			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
-	/** Connecting an account is the member's choice to use it for their messages. */
+	/** Connecting an account is the member's choice to use it for their messages. With no company open nothing is
+	 * enabled: an account login comes with its own sponsor in each company, and the company's own logins are not this
+	 * page's. */
 	async #enable(): Promise<void> {
 		const connections = this.#connections;
-		if (!connections || connections.computeIdentity?.status !== "active") return;
+		if (this.#accountWide || !connections || connections.computeIdentity?.status !== "active") return;
 		for (const connection of connections.connections) {
 			const key = `${connection.connectionId}:${connection.connectionVersion}`;
 			if (
@@ -479,6 +511,7 @@ export class ConnectionsView {
 			return;
 		const attempt: Attempt = { starting: true };
 		this.#adding = false;
+		this.#outcome = undefined;
 		attempts.set(provider, attempt);
 		signIns.changed();
 		this.el.querySelector<HTMLElement>(`[data-focus-key="status:${provider}"]`)?.focus();
@@ -668,6 +701,43 @@ export class ConnectionsView {
 			this.#away(connection),
 		);
 	}
+	/** With no company open: an account login, its usage read through the sign-in company's link when that company
+	 * uses it. Only Sign out everywhere; "Stop using here" needs a company. */
+	#login(login: WebAccountLogin): HTMLElement {
+		const connection = this.#connections?.connections.find(
+			(item) => login.connectionIds.includes(item.connectionId) && item.connectionStatus !== "revoked",
+		);
+		const working = this.#working === `everywhere:${login.loginId}`;
+		const everywhere = button(
+			working ? t("Signing out everywhere…") : t("Sign out everywhere"),
+			() => void this.#signOutEverywhere(login),
+			{ disabled: Boolean(this.#working) || !this.#client.signOutEverywhere },
+		);
+		everywhere.dataset.focusKey = `everywhere:${login.loginId}`;
+		const usable = login.status === "active" && (!connection || live(connection));
+		return h(
+			"article",
+			{ class: "connection-card", dataset: { loginId: login.loginId } },
+			h("img", { class: "connection-logo", src: "./assets/provider-openai.svg", alt: "" }),
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, PROVIDERS[0]!.label),
+				h("small", { class: "connection-email" }, login.providerAccountEmail ?? t("Email unavailable")),
+				h("small", { class: "connection-scope" }, t("Used in all your companies")),
+				usable ? null : h("small", { role: "status" }, t("Sign out and add this account again to reconnect.")),
+			),
+			h("div", { class: "connection-actions" }, everywhere),
+			connection ? this.#usage(connection) : h("div", { class: "connection-usage muted" }, t("Usage unavailable")),
+		);
+	}
+	/** The connections whose usage this page shows: with no company open, only the account logins' links. */
+	#shown(): readonly WebMemberConnection[] {
+		const connections = this.#connections?.connections ?? [];
+		return this.#accountWide
+			? connections.filter((connection) => this.#accountLogins.has(connection.connectionId))
+			: connections;
+	}
 	#usage(connection: NativeMemberConnection): HTMLElement {
 		const usage = connection.providerAccountUsage;
 		const now = Date.now();
@@ -803,7 +873,7 @@ export class ConnectionsView {
 	}
 	#draw(): void {
 		clearTimeout(this.#usageClock);
-		if (this.#connections?.connections.some(live))
+		if (this.#shown().some(live))
 			this.#usageClock = setTimeout(() => {
 				if (document.hidden) this.#draw();
 				else void this.#refreshUsage();
@@ -822,6 +892,11 @@ export class ConnectionsView {
 		const lookalikes = new Map<string, number>();
 		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const accountWide = Boolean(this.#accountWide);
+		// With no company open the cards are the member's account logins, whichever companies use them.
+		const cards = accountWide
+			? this.#logins.map((login) => this.#login(login))
+			: accounts.map((connection) => this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1));
 		// Greyed out, not disabled: a disabled button would drop keyboard focus
 		// to "Add account" at the read's first redraw. A press checks the state
 		// the button was drawn in, so one before a background read's first
@@ -836,31 +911,47 @@ export class ConnectionsView {
 		);
 		if (busy) refresh.setAttribute("aria-disabled", "true");
 		refresh.dataset.focusKey = "refresh";
-		const add = button(
-			t("Add account"),
-			() => {
-				this.#adding = !this.#adding;
-				if (this.#adding) void this.#checkPlan();
-				this.#draw();
-				this.el
-					.querySelector<HTMLButtonElement>(
-						this.#adding ? ".connection-provider-picker button:not(:disabled)" : ".connection-add",
-					)
-					?.focus();
-			},
-			{ disabled: this.#loading || !canConnect },
-		);
+		// With no company open there is one choice: a ChatGPT subscription, signed in at once (no Claude for chat).
+		const openai = this.#attempts.get("openai");
+		const add = accountWide
+			? button(t("Add ChatGPT subscription"), () => void this.#connect("openai"), {
+					disabled: this.#loading || !canConnect || Boolean(openai?.starting || openai?.login),
+				})
+			: button(
+					t("Add account"),
+					() => {
+						this.#adding = !this.#adding;
+						if (this.#adding) void this.#checkPlan();
+						this.#draw();
+						this.el
+							.querySelector<HTMLButtonElement>(
+								this.#adding ? ".connection-provider-picker button:not(:disabled)" : ".connection-add",
+							)
+							?.focus();
+					},
+					{ disabled: this.#loading || !canConnect },
+				);
 		add.classList.add("connection-add");
 		add.dataset.focusKey = "add";
-		add.setAttribute("aria-expanded", String(this.#adding));
-		add.setAttribute("aria-controls", "connection-provider-picker");
+		if (!accountWide) {
+			add.setAttribute("aria-expanded", String(this.#adding));
+			add.setAttribute("aria-controls", "connection-provider-picker");
+		}
 		replace(
 			this.el,
 			h(
 				"section",
 				{ class: "settings-group" },
 				h("div", { class: "connection-section-heading" }, h("h2", null, t("Model accounts")), refresh),
+				accountWide
+					? h(
+							"p",
+							{ class: "connection-note muted" },
+							t("A ChatGPT subscription you add here is used in all your companies."),
+						)
+					: null,
 				this.#usageError ? h("p", { class: "muted", role: "status" }, this.#usageError) : null,
+				this.#outcome ? h("p", { class: "muted", role: "status" }, this.#outcome) : null,
 				this.#error
 					? h(
 							"p",
@@ -873,12 +964,13 @@ export class ConnectionsView {
 				h(
 					"div",
 					{ class: "connection-list" },
-					...accounts.map((connection) =>
-						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
-					),
+					...cards,
+					// With no company open, only a ChatGPT sign-in (one begun on the company's own page may be Claude's).
 					...PROVIDERS.flatMap((provider) => {
 						const attempt = this.#attempts.get(provider.id);
-						return attempt ? [this.#attempt(provider, attempt)] : [];
+						return attempt && (!accountWide || provider.id === "openai")
+							? [this.#attempt(provider, attempt)]
+							: [];
 					}),
 					this.#planStarting || this.#plan?.finishing || this.#planMessage
 						? h(
@@ -893,7 +985,7 @@ export class ConnectionsView {
 						: null,
 					this.#loading
 						? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
-						: !accounts.length && !this.#attempts.size && !this.#error
+						: !cards.length && !(accountWide ? openai : this.#attempts.size) && !this.#error
 							? h("p", { class: "connection-empty muted" }, t("No model accounts connected."))
 							: null,
 					h(
@@ -901,46 +993,54 @@ export class ConnectionsView {
 						{ class: "connection-add-area" },
 						add,
 						!canConnect ? h("small", { class: "muted" }, t("Adding accounts is not available yet.")) : null,
-						h(
-							"div",
-							{ id: "connection-provider-picker", class: "connection-provider-picker", hidden: !this.#adding },
-							h("p", null, t("Choose a model provider")),
-							...this.#offered.map((provider) => {
-								const choice = button(
-									[
-										h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
-										provider.label,
-									],
-									() => void this.#connect(provider.id),
+						accountWide
+							? null
+							: h(
+									"div",
 									{
-										disabled: Boolean(
-											this.#attempts.get(provider.id)?.starting || this.#attempts.get(provider.id)?.login,
-										),
+										id: "connection-provider-picker",
+										class: "connection-provider-picker",
+										hidden: !this.#adding,
 									},
-								);
-								choice.dataset.focusKey = `provider:${provider.id}`;
-								return choice;
-							}),
-							// A member has one ChatGPT plan; with a signed-in one, it is not offered again.
-							this.#planAvailable && !accounts.some((connection) => planLogin(connection) && live(connection))
-								? (() => {
+									h("p", null, t("Choose a model provider")),
+									...this.#offered.map((provider) => {
 										const choice = button(
 											[
-												h("img", {
-													class: "connection-logo",
-													src: "./assets/provider-openai.svg",
-													alt: "",
-												}),
-												t("Continue with ChatGPT"),
+												h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+												provider.label,
 											],
-											() => void this.#connectPlan(),
-											{ disabled: this.#planStarting || this.#plan?.finishing === true },
+											() => void this.#connect(provider.id),
+											{
+												disabled: Boolean(
+													this.#attempts.get(provider.id)?.starting ||
+														this.#attempts.get(provider.id)?.login,
+												),
+											},
 										);
-										choice.dataset.focusKey = "provider:chatgpt-plan";
+										choice.dataset.focusKey = `provider:${provider.id}`;
 										return choice;
-									})()
-								: null,
-						),
+									}),
+									// A member has one ChatGPT plan; with a signed-in one, it is not offered again.
+									this.#planAvailable &&
+										!accounts.some((connection) => planLogin(connection) && live(connection))
+										? (() => {
+												const choice = button(
+													[
+														h("img", {
+															class: "connection-logo",
+															src: "./assets/provider-openai.svg",
+															alt: "",
+														}),
+														t("Continue with ChatGPT"),
+													],
+													() => void this.#connectPlan(),
+													{ disabled: this.#planStarting || this.#plan?.finishing === true },
+												);
+												choice.dataset.focusKey = "provider:chatgpt-plan";
+												return choice;
+											})()
+										: null,
+								),
 					),
 				),
 			),

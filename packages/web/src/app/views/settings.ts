@@ -24,6 +24,7 @@ import { CompanyFolderBrowser } from "./company-folder.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
+import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { DigitalPostView } from "./settings-digital-post.ts";
@@ -72,11 +73,11 @@ const TABS = [
 			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
-		id: "my-connections",
-		label: phrase("My connections"),
+		id: "ai-subscriptions",
+		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"model accounts providers subscriptions sign in openai chatgpt codex anthropic claude usage environment variables mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
+			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage environment variables ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
 	},
 	{
 		id: "company-connections",
@@ -87,7 +88,15 @@ const TABS = [
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
-export type SettingsTab = SettingsCategory | "storage" | "recents";
+/** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. */
+export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections";
+/** Pages of the open company. Settings with no company open (from the company list with several) show only the
+ * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
+
+/** AI subscriptions' lead, with or without a company open. */
+const subscriptionsLead = () =>
+	t("Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.");
 
 /** A connections tab: its title, the rule that sorts a connection into it, then its lists. */
 function connectionsPage(title: string, rule: string, ...content: HTMLElement[]): HTMLElement {
@@ -131,6 +140,8 @@ export class SettingsView {
 		hidden: true,
 	});
 	readonly #nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") });
+	readonly #empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
+	readonly #modes = h("div", { class: "settings-modes", role: "group", "aria-label": t("Settings and storage") });
 	readonly #storageNav = h("nav", {
 		class: "settings-nav settings-storage-nav",
 		"aria-label": t("Storage"),
@@ -167,7 +178,9 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
-	/** The member's own coding environment variables, on My connections. */
+	/** AI subscriptions with no company open: the member's account logins. */
+	#accountSubscriptions: AccountSubscriptionsView | undefined;
+	/** The member's own coding environment variables, on AI subscriptions. */
 	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
 	#digitalPost: DigitalPostView | undefined;
@@ -227,7 +240,7 @@ export class SettingsView {
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
-		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
+		const empty = this.#empty;
 		const nav = this.#nav;
 		const tablist = h("div", {
 			role: "tablist",
@@ -242,7 +255,10 @@ export class SettingsView {
 					role: "tab",
 					id: `settings-tab-${tab.id}`,
 					"aria-controls": "settings-content",
-					onclick: () => this.#select(tab.id),
+					onclick: () => {
+						this.#mode = "settings";
+						this.#select(tab.id);
+					},
 				},
 				icon(tab.icon),
 				uiText(tab.label),
@@ -254,7 +270,7 @@ export class SettingsView {
 		tablist.onkeydown = (event: KeyboardEvent) => {
 			if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
 			const tabs = [...this.#tabs.entries()].filter(([, button]) => !button.hidden);
-			const index = tabs.findIndex(([id]) => id === this.#tab);
+			const index = tabs.findIndex(([id]) => id === this.#shownTab());
 			const next =
 				event.key === "Home"
 					? 0
@@ -270,15 +286,8 @@ export class SettingsView {
 			}
 		};
 		search.oninput = () => {
-			// Every word must match, so "delete company" finds the tab its button is on.
-			const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-			for (const tab of TABS) {
-				const text = `${tab.label} ${tab.keywords}`.toLowerCase();
-				this.#tabs.get(tab.id)!.hidden = !words.every((word) => text.includes(word));
-			}
-			const first = [...this.#tabs.entries()].find(([, button]) => !button.hidden);
-			empty.hidden = Boolean(first);
-			if (first && this.#tabs.get(this.#tab)?.hidden) this.#select(first[0]);
+			const first = this.#filterTabs();
+			if (first && this.#tabs.get(this.#shownTab())?.hidden) this.#select(first);
 		};
 		// The rail's way out of a company. The company list itself needs none;
 		// following the link closes Settings like any other in-app link.
@@ -289,7 +298,7 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
-		const modes = h("div", { class: "settings-modes", role: "group", "aria-label": t("Settings and storage") });
+		const modes = this.#modes;
 		for (const [mode, label] of [
 			["settings", phrase("Settings")],
 			["storage", phrase("Storage")],
@@ -376,7 +385,8 @@ export class SettingsView {
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
 		// The tab asked for is drawn first: General's rules load only if Settings opens on General.
-		this.#tab = tab === "storage" || tab === "recents" ? "general" : tab;
+		this.#tab =
+			tab === "storage" || tab === "recents" ? "general" : tab === "my-connections" ? "ai-subscriptions" : tab;
 		this.#mode = tab === "storage" || tab === "recents" ? "storage" : "settings";
 		this.#storageSection = tab === "recents" ? "recents" : "documents";
 		this.#setCompany(company, false);
@@ -408,7 +418,7 @@ export class SettingsView {
 	}
 
 	focus(): void {
-		(this.#mode === "storage" ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#tab))?.focus();
+		(this.#storageShown() ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#shownTab()))?.focus();
 	}
 
 	/** A folder link (ui/folder-links.ts): Storage shows what it names, a folder in the list or a file in the preview,
@@ -432,8 +442,24 @@ export class SettingsView {
 			? profiles.find((item) => item.profileId === this.#borrowedCompany?.profile.profileId)
 			: (profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
 				(profiles.length === 1 ? profiles[0] : undefined));
+		const companies = (list: HostedProfile[]) =>
+			list
+				.map((item) => item.profileId)
+				.sort()
+				.join();
+		const joined = companies(profiles) !== companies(this.#profiles);
 		this.#profiles = profiles;
-		if (profile?.profileId === this.#company?.profile.profileId) return;
+		if (profile?.profileId === this.#company?.profile.profileId) {
+			// No company open: AI subscriptions sign in through one of the member's companies, so a company joined or
+			// left reads them again.
+			if (!this.#company && joined && this.#accountSubscriptions) {
+				this.#accountSubscriptions.dispose();
+				this.#accountSubscriptions = undefined;
+				this.#panels.delete("ai-subscriptions");
+				if (!this.#storageShown() && this.#shownTab() === "ai-subscriptions") this.#select(this.#tab);
+			}
+			return;
+		}
 		if (
 			profile &&
 			profile.profileId === this.#borrowedCompany?.profile.profileId &&
@@ -454,6 +480,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#accountSubscriptions?.dispose();
 		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
 		this.#digitalPost?.dispose();
@@ -508,16 +535,42 @@ export class SettingsView {
 		}
 	};
 
+	/** Storage is the open company's: with none open, Settings show their pages instead and offer no Storage. */
+	#storageShown(): boolean {
+		return this.#mode === "storage" && Boolean(this.#company);
+	}
+
+	/** The tab Settings show: the one chosen, or General while a company page is chosen and no company is open. */
+	#shownTab(): SettingsCategory {
+		return this.#company || !COMPANY_TABS.has(this.#tab) ? this.#tab : "general";
+	}
+
+	/** Hides the company's pages while no company is open, and the pages the search does not match. Returns the first
+	 * page left. Every word must match, so "delete company" finds the tab its button is on. */
+	#filterTabs(): SettingsCategory | undefined {
+		const words = this.#search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+		for (const tab of TABS) {
+			const text = `${tab.label} ${tab.keywords}`.toLowerCase();
+			this.#tabs.get(tab.id)!.hidden =
+				(!this.#company && COMPANY_TABS.has(tab.id)) || !words.every((word) => text.includes(word));
+		}
+		const first = [...this.#tabs.entries()].find(([, button]) => !button.hidden);
+		this.#empty.hidden = Boolean(first);
+		return first?.[0];
+	}
+
 	#switchMode(mode: "settings" | "storage"): void {
 		this.#mode = mode;
-		const storage = mode === "storage";
+		const storage = this.#storageShown();
+		this.#modes.hidden = !this.#company;
 		this.#nav.hidden = storage;
 		this.#content.hidden = storage;
 		this.#search.hidden = storage;
 		this.#storageNav.hidden = !storage;
 		this.#storageContent.hidden = !storage;
 		this.#storageSearch.hidden = !storage;
-		for (const [value, control] of this.#modeButtons) control.setAttribute("aria-pressed", String(mode === value));
+		for (const [value, control] of this.#modeButtons)
+			control.setAttribute("aria-pressed", String((storage ? "storage" : "settings") === value));
 		if (storage) this.#drawStorage(true);
 		else this.#select(this.#tab);
 	}
@@ -679,8 +732,9 @@ export class SettingsView {
 		replace(this.#storageUsage, storage.meter, h("small", null, storage.text));
 	}
 
-	#select(tab: SettingsCategory): void {
-		this.#tab = tab;
+	#select(choice: SettingsCategory): void {
+		this.#tab = choice;
+		const tab = this.#shownTab();
 		for (const [id, button] of this.#tabs) {
 			button.setAttribute("aria-selected", String(tab === id));
 			button.tabIndex = tab === id ? 0 : -1;
@@ -690,6 +744,7 @@ export class SettingsView {
 		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
+		else if (tab === "ai-subscriptions" && !this.#company) this.#drawAccountSubscriptions();
 		else if (this.#company) {
 			const company = this.#company;
 			const memberId = this.#auth.userId!;
@@ -698,7 +753,7 @@ export class SettingsView {
 				profileId: company.profile.profileId,
 				environmentId: company.profile.environmentId,
 			};
-			if (tab === "my-connections" && !this.#connections) {
+			if (tab === "ai-subscriptions" && !this.#connections) {
 				const lifetime = signal();
 				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 				// A sign-in belongs to the member, not to this page: it continues while
@@ -735,10 +790,8 @@ export class SettingsView {
 				this.#panels.set(
 					tab,
 					connectionsPage(
-						t("My connections"),
-						t(
-							"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
-						),
+						t("AI subscriptions"),
+						subscriptionsLead(),
 						this.#connections.el,
 						this.#memberEnvironment.el,
 					),
@@ -770,8 +823,8 @@ export class SettingsView {
 					signal(),
 					{ access: { canManage } },
 				);
-				// Where a company variable is given decides where a member's own of that name is used, so My
-				// connections reads its list again after each change here (opened later, it reads one anyway).
+				// Where a company variable is given decides where a member's own of that name is used, so AI
+				// subscriptions reads its list again after each change here (opened later, it reads one anyway).
 				this.#companyEnvironment = new CodingEnvironmentView(
 					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
 					signal(),
@@ -806,6 +859,44 @@ export class SettingsView {
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
 		// A company change selects the open tab again; its panel, and a field being typed in, stay put.
 		if (panel.parentElement !== this.#content) replace(this.#content, panel);
+	}
+
+	/** AI subscriptions with no company open: the member's account logins, signed in through one of their companies
+	 * (settings-ai-subscriptions.ts). */
+	#drawAccountSubscriptions(): void {
+		if (this.#accountSubscriptions) return;
+		const memberId = this.#auth.userId!;
+		const auth = this.#auth;
+		const cloud = this.#api.cloud;
+		const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]);
+		this.#accountSubscriptions = new AccountSubscriptionsView(
+			this.#profiles,
+			(profile) => {
+				const profileId = profile.profileId;
+				// As on a company's page, a sign-in belongs to the member, not to this page.
+				const signIn = createWebNativeSubscription(cloud, profileId, memberId, new AbortController().signal, () => {
+					if (auth.userId !== memberId) throw new Error("The account changed.");
+				});
+				return {
+					client: createWebNativeSubscription(cloud, profileId, memberId, lifetime, () => {
+						lifetime.throwIfAborted();
+						if (
+							auth.userId !== memberId ||
+							this.#company ||
+							!this.#profiles.some((item) => item.profileId === profileId)
+						)
+							throw new Error("The account or company changed.");
+					}),
+					signIns: memberProviderSignIns(memberId, profileId),
+					begin: (input) => signIn.beginProviderLogin(input),
+				};
+			},
+			lifetime,
+		);
+		this.#panels.set(
+			"ai-subscriptions",
+			connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#accountSubscriptions.el),
+		);
 	}
 
 	/** General shows only the account's error and message, so it is redrawn only
@@ -928,6 +1019,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#accountSubscriptions?.dispose();
+		this.#accountSubscriptions = undefined;
 		this.#memberEnvironment?.dispose();
 		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
@@ -955,7 +1048,7 @@ export class SettingsView {
 		this.#hoursLoading = false;
 		this.#hoursMissing = false;
 		this.#hoursFailed = false;
-		for (const tab of ["company", "my-connections", "company-connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
@@ -977,8 +1070,8 @@ export class SettingsView {
 			});
 			if (owned) void company.start();
 		}
-		if (this.#mode === "storage") this.#drawStorage();
-		else this.#select(this.#tab);
+		this.#filterTabs();
+		this.#switchMode(this.#mode);
 	}
 
 	#drawCompany(): void {

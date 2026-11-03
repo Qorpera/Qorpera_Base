@@ -1069,7 +1069,7 @@ export class FoundingView {
 							"warn",
 							firstRun === "waiting_for_login"
 								? t(
-										"The Co-Founder has not started: no ChatGPT account could pay for its first run. Connect yours in Settings → My connections, then write to the Co-Founder in its thread.",
+										"The Co-Founder has not started: no ChatGPT account could pay for its first run. Connect yours in Settings → AI subscriptions, then write to the Co-Founder in its thread.",
 									)
 								: t(
 										"The Co-Founder's first run did not start. Write to the Co-Founder in its thread to begin.",

@@ -1141,14 +1141,14 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		return { ...f, confirm, signals };
 	}
 
-	it("goes back to the page the sign-in began on and finishes it in My connections", async () => {
+	it("goes back to the page the sign-in began on and finishes it in AI subscriptions", async () => {
 		const { confirm, signals } = returned();
 		await draw();
 		await draw();
 		expect(location.hash).toBe(chat);
 		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
 		expect(settingsOpen()).toBe(true);
-		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		expect(document.querySelector("#settings-tab-ai-subscriptions")?.getAttribute("aria-selected")).toBe("true");
 		expect(status()).toBe("Finishing your ChatGPT sign-in…");
 		await vi.advanceTimersByTimeAsync(3500);
 		await draw();
@@ -1157,7 +1157,7 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		expect(status()).toBe("Your ChatGPT plan is connected.");
 	});
 
-	it("finishes it while Settings is closed, and My connections shows the outcome when it opens", async () => {
+	it("finishes it while Settings is closed, and AI subscriptions shows the outcome when it opens", async () => {
 		const { confirm, signals } = returned();
 		await draw();
 		await draw();
@@ -1171,19 +1171,19 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		document.querySelector<HTMLButtonElement>(".account-trigger")!.click();
 		document.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
 		await draw();
-		document.querySelector<HTMLButtonElement>("#settings-tab-my-connections")!.click();
+		document.querySelector<HTMLButtonElement>("#settings-tab-ai-subscriptions")!.click();
 		await draw();
 		expect(status()).toBe("Your ChatGPT plan is connected.");
 		expect(confirm).toHaveBeenCalledOnce();
 	});
 
-	it("from the company list, goes to the company and opens My connections once home has moved on", async () => {
+	it("from the company list, goes to the company and opens AI subscriptions once home has moved on", async () => {
 		const { signals } = returned(userA.id, `#/c/${profileA.profileId}`);
 		await draw();
 		await draw();
 		expect(location.hash).toBe(chat);
 		expect(settingsOpen()).toBe(true);
-		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		expect(document.querySelector("#settings-tab-ai-subscriptions")?.getAttribute("aria-selected")).toBe("true");
 		await vi.advanceTimersByTimeAsync(3500);
 		await draw();
 		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
