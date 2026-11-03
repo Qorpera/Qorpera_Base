@@ -2,7 +2,8 @@
 -- C3a (migration 20260930077000, deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (C3)"): a coding session
 -- dispatched on folder-v2, through manage_worker's folder entry (qorpera_folder_worker_commit) with its brief.md. A1's
 -- twelve cases from 396 (snapshot-v1, deleted with the old core): the six refusals, in the old worker writer's order
--- and words, as rule refusals that write nothing; the worker, its session, its first turn and event; no wake; a replay;
+-- and words (the executor's and the grant's in D-B's, 20260930557000), as rule refusals that write nothing; the
+-- worker, its session, its first turn and event; no wake; a replay;
 -- an in-house worker beside it; a second session that queues and is cancelled. Then: a coding follow-up; a coding
 -- session's turn claimed, begun, authorized, submitted and completed on folder-v2, its turn's wake carrying the
 -- folder-v2 payload, report_work refused to it, and its parent revived by F2's drain once the parent's turn ended, its
@@ -137,25 +138,31 @@ select pg_temp.base_commit(pg_temp.base_owner(), 'c3-todos', jsonb_build_array(
 		'{"kind":"todo","id":"92800000-0000-4000-8000-0000000000a1","title":"Fix the login page","status":"open","requestedBy":null,"detail":""}'),
 	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/fix-login'))) \g /dev/null
 
--- 1. The refusals, in A1's order (cases 1-6): each a rule refusal with the legacy words, and nothing written ---------
+-- 1. The refusals, in A1's order (cases 1-6): each a rule refusal with its words, and nothing written ---------------
 do $$
 declare
 	v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/session-1';
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1');
 begin
-	-- 1. No coding executor serves the company for the harness.
+	-- 1. No coding executor serves the company for the harness: a member cannot set that up in the app, and the words
+	-- say so (D-B, 20260930557000).
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-1', v_folder, v_brief), v_brief,
-		'No coding executor serves this company for codex');
+		'Coding with codex is not set up for this company yet: no coding machine serves it for codex. Only Qorpera can set '
+		|| 'this up today; there is no step for it in the app yet. Tell the member; calling again with codex will not help.');
 	perform public.qorpera_configure_coding_executor('92400000-0000-4000-8000-000000000020', 'exec-928', true, array['codex']);
-	-- 2. An executor, but no grant of the repository to the agent.
+	-- 2. An executor, but no grant of the repository to the agent (D-B's words too).
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-2', v_folder, v_brief), v_brief,
-		'This agent has no grant for that repository');
+		'Coding is not set up for Qorpera/Qorpera_Base on master yet: this agent has no grant for that repository and branch. '
+		|| 'Only Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling again for '
+		|| 'that repository and branch will not help.');
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	-- 3. A harness the executor does not serve.
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-3', v_folder,
 		pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', p_harness => 'claude-code')),
-		v_brief, 'No coding executor serves this company for claude-code');
+		v_brief, 'Coding with claude-code is not set up for this company yet: no coding machine serves it for claude-code. '
+		|| 'Only Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling again with '
+		|| 'claude-code will not help.');
 	-- 4. Write access.
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-4', v_folder,
 		pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', p_access => 'write')),
