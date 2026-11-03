@@ -1,5 +1,5 @@
 import type { Session, User } from "@supabase/supabase-js";
-import type { Cloud } from "../cloud/client.ts";
+import { type Cloud, forgetStoredSession, type SessionRejection } from "../cloud/client.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
@@ -25,13 +25,18 @@ export class AuthController {
 	readonly #cloud: Cloud;
 	#disposed = false;
 	#unsubscribe?: () => void;
+	#stopRejections?: () => void;
 	#providerRequest?: AbortController;
+	/** A refused session is being signed out; further refusals wait for that one sign-out. */
+	#signingOut = false;
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
 	}
 
 	async start(): Promise<void> {
+		// Listen before the first cloud read, so a session refused on the first request is seen.
+		this.#stopRejections = this.#cloud.onSessionRejected?.((rejection) => this.#sessionRejected(rejection));
 		const original = new URL(location.href);
 		const callbackFields = [
 			"code",
@@ -89,8 +94,53 @@ export class AuthController {
 	dispose(): void {
 		this.#disposed = true;
 		this.#unsubscribe?.();
+		this.#stopRejections?.();
 		this.#providerRequest?.abort();
 		this.store.dispose();
+	}
+
+	/* A session the cloud no longer accepts (new signing keys, a revoked or expired token)
+	 * is a signed-out member: clear it in this browser and show sign-in, once. Only a refusal
+	 * of the token this browser holds now counts; a late answer to a request sent with an
+	 * earlier token, a permission refusal or a network failure leaves the member signed in. */
+	#sessionRejected(rejection: SessionRejection): void {
+		const session = this.store.get().session;
+		if (this.#disposed || !session || this.#signingOut) return;
+		const refused =
+			rejection.accessToken !== undefined
+				? rejection.accessToken === session.access_token
+				: rejection.refreshToken !== undefined && rejection.refreshToken === session.refresh_token;
+		if (!refused) return;
+		this.#signingOut = true;
+		void this.#signOutRejected(session);
+	}
+
+	async #signOutRejected(session: Session): Promise<void> {
+		try {
+			// A refresh may have replaced the refused token while this waited for Auth's lock: that session stays.
+			const { data } = await this.#cloud.supabase.auth.getSession();
+			if (data.session && data.session.access_token !== session.access_token) return;
+			// Local only: the cloud already refuses this session, so there is nothing to revoke there.
+			const { error } = await this.#cloud.supabase.auth.signOut({ scope: "local" });
+			// Auth keeps a session it could not load (a refresh that failed on the network): forget it here.
+			if (error) forgetStoredSession();
+		} catch {
+			forgetStoredSession();
+		} finally {
+			this.#signingOut = false;
+		}
+		if (this.#disposed) return;
+		const current = this.store.get().session;
+		// The member signed in again meanwhile: that session is a new one and stays.
+		if (current && current.access_token !== session.access_token) return;
+		this.store.set({
+			session: null,
+			user: null,
+			pendingEmail: undefined,
+			error: undefined,
+			message: t("You were signed out. Sign in again."),
+		});
+		if (current) void this.#loadProviders();
 	}
 
 	async #loadProviders(): Promise<void> {
