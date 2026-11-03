@@ -73,7 +73,9 @@ shared between the service and a slot.
    `stopping`; stop runner then host unit (bounded, never blocking); then
    verify both are down, remove the tmpfs material, empty the slot scratch,
    release the company ceiling exactly once (a reservation whose reply was
-   lost is released on a best-effort basis), and archive the journal as
+   lost is owed too: only a refused release, an HTTP 4xx answer, means it
+   never committed; a timeout or a server error is tried again, 3 Nov 2026),
+   and archive the journal as
    `stopped` under `journals/archive/`. A retirement that keeps failing (a
    unit that will not die, a release the control plane does not confirm) is
    retried on every pass and after twelve failures archived as `lost` with the

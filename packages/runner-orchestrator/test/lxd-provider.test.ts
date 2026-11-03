@@ -1112,8 +1112,141 @@ describe("LXD cloud runner provider", () => {
 		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
 			physicalState: "creating",
 			capacityRegistered: true,
+			createRequested: true,
 		});
 	});
+
+	it.each([
+		["the database fails its second reservation", "reservation"],
+		["the node refuses its re-admission", "node"],
+	] as const)(
+		"releases a run's machine whose guest was never asked for when %s (29 Oct 2026)",
+		async (_label, failure) => {
+			// Node 1, 29 Oct 2026: both acquisitions failed in their create step after their machine and node demand were
+			// reserved, before LXD was asked for a guest (one second reservation answered 525, one re-admission
+			// NODE_OBSERVATION_UNAVAILABLE). The next pass marked each journal lost and released nothing; both allocations
+			// stayed reserved until an operator released them on 3 Nov, and held the node's drain.
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const provision = fetchProvisioner([]);
+			let reservations = 0;
+			let admissions = 0;
+			let databaseDown = true;
+			const releases: unknown[] = [];
+			const fetcher: typeof fetch = async (input, init) => {
+				const url = String(input);
+				if (url.includes("qorpera_reserve_runtime_machine") && failure === "reservation" && ++reservations === 2)
+					return new Response("<html>origin unreachable</html>", { status: 525 });
+				if (url.includes("qorpera_reserve_runtime_node_machine") && failure === "node" && ++admissions === 2)
+					return Response.json({ state: "refused", reason: "NODE_OBSERVATION_UNAVAILABLE" });
+				if (url.includes("qorpera_release_runtime_machine")) {
+					releases.push(JSON.parse(String(init?.body)));
+					if (databaseDown) return Response.json({ code: "57014", message: "statement timeout" }, { status: 503 });
+				}
+				return provision(input, init);
+			};
+			const settings = governedConfig(stateRoot);
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+			const failed = await backend
+				.acquire(runId, work(), new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(failed).toMatchObject(
+				failure === "reservation"
+					? { stage: "create", rpc: "qorpera_reserve_runtime_machine", rpcStatus: 525 }
+					: { name: "LxdMachineAdmissionRefused", reason: "NODE_OBSERVATION_UNAVAILABLE" },
+			);
+			const path = join(stateRoot, runId, "journal.json");
+			const journal = async () => JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+			expect(lxd.createCalls).toHaveLength(0);
+			expect(await journal()).toMatchObject({
+				physicalState: "creating",
+				createRequested: false,
+				capacityRegistered: true,
+				nodeCapacity: { cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+			});
+			// The next pass finds no guest, and none was ever asked for: the machine is released at once. The database does
+			// not answer yet, so the journal is a dead one the log names, and the pass goes on (a failed pass stops claims).
+			const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			await expect(backend.reconcile()).resolves.toBeUndefined();
+			expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+				`dead journal kept: acquisition=${runId} stage=release rpc=qorpera_release_runtime_machine status=503 code=57014`,
+			]);
+			log.mockRestore();
+			expect(await journal()).toMatchObject({ physicalState: "lost", deletionConfirmed: true });
+			expect(await journal()).not.toHaveProperty("capacityReleased");
+			// It is tried again on every pass until the release is confirmed, then never again. A restarted provider
+			// reads the same from the journal.
+			databaseDown = false;
+			const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+			await restarted.reconcile();
+			await restarted.reconcile();
+			expect(releases).toHaveLength(2);
+			expect(releases[1]).toMatchObject({ p_allocation_id: runId, p_provider_adapter: "lxd" });
+			expect(await journal()).toMatchObject({ physicalState: "lost", capacityReleased: true });
+			await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+				"cannot be replayed",
+			);
+			expect(lxd.createCalls).toHaveLength(0);
+		},
+	);
+
+	it.each([
+		["whose create may have been sent", false],
+		["an older build wrote", true],
+	] as const)(
+		"releases a lost journal %s once LXD has not shown its guest for fifteen minutes",
+		async (_label, older) => {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			lxd.createFailure = new Error("remote operation response lost");
+			const fetcher = fetchProvisioner([]);
+			await expect(
+				new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher).acquire(
+					runId,
+					work(),
+					new AbortController().signal,
+				),
+			).rejects.toThrow("remote operation response lost");
+			const path = join(stateRoot, runId, "journal.json");
+			const journal = async () => JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+			const age = async (ms: number) =>
+				writeFile(
+					path,
+					JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - ms).toISOString() }),
+					{
+						mode: 0o600,
+					},
+				);
+			const releases = () =>
+				vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+			expect(await journal()).toMatchObject({ physicalState: "creating", createRequested: true });
+			if (older) {
+				const { createRequested: _requested, ...written } = await journal();
+				await writeFile(path, JSON.stringify(written), { mode: 0o600 });
+			}
+			const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+			// The create may still be pending in LXD: the journal is lost, its capacity kept.
+			await backend.reconcile();
+			expect(await journal()).toMatchObject({ physicalState: "lost" });
+			expect(await journal()).not.toHaveProperty("deletionConfirmed");
+			await age(14 * 60_000);
+			await backend.reconcile();
+			expect(releases()).toHaveLength(0);
+			// Fifteen minutes on, an LXD that does not answer is still not a missing guest.
+			await age(16 * 60_000);
+			const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			const unreachable = vi.spyOn(lxd, "getInstance").mockRejectedValue(new Error("LXD unavailable"));
+			await expect(backend.reconcile()).rejects.toThrow("LXD unavailable");
+			unreachable.mockRestore();
+			log.mockRestore();
+			expect(releases()).toHaveLength(0);
+			// LXD answers that the guest is missing: the machine is released, once.
+			await backend.reconcile();
+			await backend.reconcile();
+			expect(releases()).toHaveLength(1);
+			expect(await journal()).toMatchObject({ physicalState: "lost", capacityReleased: true });
+		},
+	);
 
 	it("never reserves capacity again for an allocation whose release is confirmed", async () => {
 		// A crash between the release mark and the terminal state leaves a registered, released journal.
@@ -1212,7 +1345,11 @@ describe("LXD cloud runner provider", () => {
 				([url, init]) =>
 					String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId),
 			);
-		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
+		// Released either way (3 Nov 2026): a reservation whose answer was lost may have committed unrecorded.
+		expect(releases).toHaveLength(1);
+		expect(JSON.parse(await readFile(join(f.stateRoot, reservingId, "journal.json"), "utf8"))).toMatchObject({
+			capacityReleased: true,
+		});
 		// A provider restart must not let the retired reservation block unrelated work.
 		f.lxd.instance = { ...f.lxd.instance!, status: "Stopped", statusCode: 102 };
 		await backend.reconcile();

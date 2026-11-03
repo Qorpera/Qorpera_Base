@@ -13,6 +13,7 @@ import {
 	exactRunner,
 	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
+	ProviderRpcFailed,
 	record,
 	runAttemptAcquisitionId,
 	sha256,
@@ -936,11 +937,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		);
 	}
 
-	/** Release exactly once. A confirmed reservation must be confirmed released;
-	 * a reservation whose reply was lost is released on a best-effort basis. */
+	/** Release exactly once. A confirmed reservation must be confirmed released. A reservation whose reply was lost
+	 * may have committed, so it stays owed until the control plane answers too (3 Nov 2026: a timeout or a server
+	 * error during a database outage counted as nothing owed, and the journal was archived as released). Only a
+	 * refusal of the release (an HTTP 4xx answer: the host may release only an allocation of its own run, and one that
+	 * never committed is none) proves there is nothing to release. */
 	async #releaseMachine(current: SharedExecutionJournal, signal?: AbortSignal): Promise<void> {
 		if (current.capacityReleased || (!current.capacityRequested && !current.capacityRegistered)) return;
-		let result: Record<string, unknown> | undefined;
+		let result: Record<string, unknown>;
 		try {
 			result = record(
 				await this.#rpc(
@@ -955,15 +959,21 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				"Machine release",
 			);
 		} catch (error) {
-			if (current.capacityRegistered) throw error;
-			return;
+			if (
+				!current.capacityRegistered &&
+				error instanceof ProviderRpcFailed &&
+				error.status >= 400 &&
+				error.status < 500
+			)
+				return;
+			throw error;
 		}
 		const confirmed =
 			Object.keys(result).sort().join() === "allocationId,instanceSha256,state" &&
 			result.state === "released" &&
 			result.allocationId === current.acquisitionId &&
 			result.instanceSha256 === current.instanceSha256;
-		if (!confirmed && current.capacityRegistered) throw new Error("Sandbox capacity release was not confirmed");
+		if (!confirmed) throw new Error("Sandbox capacity release was not confirmed");
 	}
 
 	/** Stop both units, wipe the slot, release the company ceiling exactly once
@@ -1683,7 +1693,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		});
 		if (!response.ok) {
 			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Runner provisioning failed (${response.status})`);
+			throw new ProviderRpcFailed(
+				`Runner provisioning failed (${response.status})`,
+				name,
+				response.status,
+				undefined,
+			);
 		}
 		return response.json() as Promise<unknown>;
 	}
