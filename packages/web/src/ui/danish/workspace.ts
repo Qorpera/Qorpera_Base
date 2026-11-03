@@ -40,6 +40,7 @@ export const WORKSPACE: Record<string, string> = {
 		"Tjek din e-mail. Skriv koden herunder, eller åbn login-linket på denne enhed.",
 	"This sign-in provider is unavailable. Continue with email.":
 		"Denne loginmetode er ikke tilgængelig. Fortsæt med e-mail.",
+	"You were signed out. Sign in again.": "Du er blevet logget ud. Log ind igen.",
 	Member: "Medlem",
 
 	// app/start-conversation.ts

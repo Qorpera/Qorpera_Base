@@ -133,6 +133,7 @@ export function createWebSessionModel(
 					cache: "no-store",
 					credentials: "omit",
 				});
+				cloud.noticeResponse?.(`${origin.origin}/rest/v1/rpc/${method}`, data.session.access_token, response);
 				try {
 					check();
 					if (response.status === 401 || response.status === 403)

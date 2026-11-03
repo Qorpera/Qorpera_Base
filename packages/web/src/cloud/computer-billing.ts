@@ -138,6 +138,7 @@ async function stripePage(cloud: Cloud, route: "checkout" | "portal", body: obje
 	} catch {
 		throw new ComputerBillingError("unavailable");
 	}
+	cloud.noticeResponse?.(`${cloud.config.projectUrl}/functions/v1/computer-billing/${route}`, token, response);
 	const answer: unknown = await response.json().catch(() => null);
 	const fields =
 		answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>) : {};
