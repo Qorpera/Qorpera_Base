@@ -147,20 +147,22 @@ begin
 	-- 1. No coding executor serves the company for the harness: a member cannot set that up in the app, and the words
 	-- say so (D-B, 20260930557000).
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-1', v_folder, v_brief), v_brief,
-		'Coding is not set up for this company yet: no coding machine serves it for codex. Only Qorpera can set this up '
-		|| 'today; there is no step for it in the app yet. Tell the member; calling again will not help.');
+		'Coding with codex is not set up for this company yet: no coding machine serves it for codex. Only Qorpera can set '
+		|| 'this up today; there is no step for it in the app yet. Tell the member; calling again with codex will not help.');
 	perform public.qorpera_configure_coding_executor('92400000-0000-4000-8000-000000000020', 'exec-928', true, array['codex']);
 	-- 2. An executor, but no grant of the repository to the agent (D-B's words too).
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-2', v_folder, v_brief), v_brief,
-		'Coding is not set up for Qorpera/Qorpera_Base yet: this agent has no grant for that repository. Only Qorpera can '
-		|| 'set this up today; there is no step for it in the app yet. Tell the member; calling again for it will not help.');
+		'Coding is not set up for Qorpera/Qorpera_Base on master yet: this agent has no grant for that repository and branch. '
+		|| 'Only Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling again for '
+		|| 'that repository and branch will not help.');
 	perform public.qorpera_set_coding_repository_grant('92400000-0000-4000-8000-000000000020',
 		'92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
 	-- 3. A harness the executor does not serve.
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-3', v_folder,
 		pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', p_harness => 'claude-code')),
-		v_brief, 'Coding is not set up for this company yet: no coding machine serves it for claude-code. Only Qorpera can '
-		|| 'set this up today; there is no step for it in the app yet. Tell the member; calling again will not help.');
+		v_brief, 'Coding with claude-code is not set up for this company yet: no coding machine serves it for claude-code. '
+		|| 'Only Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling again with '
+		|| 'claude-code will not help.');
 	-- 4. Write access.
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-4', v_folder,
 		pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', p_access => 'write')),

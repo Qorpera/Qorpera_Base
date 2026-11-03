@@ -8,10 +8,10 @@
 -- calling again does not help.
 --
 -- The worker rules (C3a, 20260928489260:208-215) now say it in the words the agent passes on:
--- - no enabled executor for the harness: 'Coding is not set up for this company yet: no coding machine serves it for
---   <harness>. ...';
--- - no grant of the repository to the agent: 'Coding is not set up for <owner>/<name> yet: this agent has no grant for
---   that repository. ...';
+-- - no enabled executor for the harness: 'Coding with <harness> is not set up for this company yet: no coding machine
+--   serves it for <harness>. ...' (another harness may be served, so the words name only this one);
+-- - no grant of the repository to the agent: 'Coding is not set up for <owner>/<name> on <baseBranch> yet: this agent
+--   has no grant for that repository and branch. ...' (a grant is for one exact repository and base branch);
 -- each with 'Only Qorpera can set this up today; there is no step for it in the app yet.' and the agent's next step.
 -- The receipt's own next text (cloud-folder-workers.ts, "Nothing was changed: say why to the member, ...") stays. The
 -- path with no operator step (the company's executor, the agent's grant and the node's repository list) is D-B PR 2.
@@ -35,16 +35,18 @@ end $$;
 select pg_temp.db557_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$				v_problem := 'No coding executor serves this company for ' || (v_request ->> 'harness');$old$,
 	$new$				-- 20260930557000 (D-B): a member cannot set this up in the app, so the words say so.
-				v_problem := 'Coding is not set up for this company yet: no coding machine serves it for '
-					|| (v_request ->> 'harness') || '. Only Qorpera can set this up today; there is no step for it in the app'
-					|| ' yet. Tell the member; calling again will not help.';$new$);
+				v_problem := 'Coding with ' || (v_request ->> 'harness') || ' is not set up for this company yet: no coding'
+					|| ' machine serves it for ' || (v_request ->> 'harness') || '. Only Qorpera can set this up today; there'
+					|| ' is no step for it in the app yet. Tell the member; calling again with ' || (v_request ->> 'harness')
+					|| ' will not help.';$new$);
 
 select pg_temp.db557_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$				v_problem := 'This agent has no grant for that repository';$old$,
 	$new$				-- 20260930557000 (D-B): as for the executor.
 				v_problem := 'Coding is not set up for ' || (v_request -> 'repository' ->> 'owner') || '/'
-					|| (v_request -> 'repository' ->> 'name') || ' yet: this agent has no grant for that repository. Only'
-					|| ' Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling'
-					|| ' again for it will not help.';$new$);
+					|| (v_request -> 'repository' ->> 'name') || ' on ' || (v_request -> 'repository' ->> 'baseBranch')
+					|| ' yet: this agent has no grant for that repository and branch. Only Qorpera can set this up today;'
+					|| ' there is no step for it in the app yet. Tell the member; calling again for that repository and'
+					|| ' branch will not help.';$new$);
 
 drop function pg_temp.db557_replace(regprocedure, text, text);
