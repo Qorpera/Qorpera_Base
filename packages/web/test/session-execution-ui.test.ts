@@ -1345,3 +1345,269 @@ describe("conversation execution account", () => {
 		expect(f.listConnections).toHaveBeenCalledTimes(3);
 	});
 });
+
+/** The Login row of the composer's "Chat settings and more" menu. */
+function loginRow(view: ConversationView): HTMLButtonElement {
+	return [...view.el.querySelectorAll<HTMLButtonElement>('.composer-menu button[aria-haspopup="menu"]')].find((item) =>
+		item.textContent?.startsWith("Login"),
+	)!;
+}
+function loginPage(view: ConversationView): HTMLElement {
+	return view.el.querySelector<HTMLElement>(".composer-logins")!;
+}
+function openMenu(view: ConversationView): void {
+	view.el.querySelector<HTMLButtonElement>('[aria-label="Chat settings and more"]')!.click();
+}
+function openLogins(view: ConversationView): HTMLElement {
+	openMenu(view);
+	loginRow(view).click();
+	return loginPage(view);
+}
+/** Each listed login's name and whether it is ticked. */
+function logins(page: HTMLElement): [string, string | null][] {
+	return [...page.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].map((item) => [
+		item.textContent ?? "",
+		item.getAttribute("aria-checked"),
+	]);
+}
+function login(page: HTMLElement, name: string): HTMLButtonElement {
+	return [...page.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+		(item) => item.textContent === name,
+	)!;
+}
+function key(name: string): void {
+	document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+}
+
+describe("the composer's Login page", () => {
+	it("shows no Login row unless two or more of the member's own logins can pay", async () => {
+		const f = setup(false, connections(1));
+		await settle();
+		openMenu(f.view);
+		expect(loginRow(f.view).hidden).toBe(true);
+		// Two logins, one used up: one can pay.
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(true);
+		// Another member's logins are never offered.
+		const mine = connections();
+		f.listConnections.mockResolvedValue({
+			...mine,
+			computeIdentity: { ...mine.computeIdentity!, ownerUserId: userB.id },
+		});
+		refresh();
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(true);
+		f.listConnections.mockResolvedValue(mine);
+		refresh();
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(false);
+	});
+
+	it("shows no Login row where the cloud chooses but the member's pick can't reach it", async () => {
+		const f = setup(
+			false,
+			withUsage([80, 40]),
+			vi.fn(async (): Promise<string | undefined> => id(90)),
+		);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(loginRow(f.view).hidden).toBe(true);
+	});
+
+	it("lists the member's logins as the login choice numbers them, the current one ticked, never Claude", async () => {
+		const observed = withUsage([20, 80]);
+		observed.connections[1]!.providerAccountEmail = "jonas@example.com";
+		observed.connections.push({
+			...observed.connections[0]!,
+			connectionId: id(95),
+			clientConnectionId: id(195),
+			sponsorBindingId: id(96),
+			provider: "anthropic",
+			nativeHarness: "claude-code",
+			// More room than either Codex login: still never offered for chat.
+			providerAccountUsage: {
+				observedAt: new Date().toISOString(),
+				windows: [{ id: "primary", label: "5 hours", usedPercent: 0, resetAt: "2099-01-01T00:00:00.000Z" }],
+			},
+		});
+		const f = setup(false, observed);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		const page = openLogins(f.view);
+		expect(page.hidden).toBe(false);
+		expect(loginRow(f.view).getAttribute("aria-label")).toBe("Login: jonas@example.com");
+		expect(loginRow(f.view).getAttribute("aria-expanded")).toBe("true");
+		expect(logins(page)).toEqual([
+			["jonas@example.com", "true"],
+			["Model account 2", "false"],
+		]);
+		expect(page.textContent).toContain(
+			"Pays for your messages in this conversation. Applies from your next message.",
+		);
+		expect(document.activeElement).toBe(login(page, "jonas@example.com"));
+		// The page leaves with its row once only one login can pay.
+		f.listConnections.mockResolvedValue({
+			...observed,
+			connections: observed.connections.map((connection) =>
+				connection.connectionId === id(90)
+					? { ...connection, usageLimitResetAt: "2099-01-01T00:00:00.000Z" }
+					: connection,
+			),
+		});
+		refresh();
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(true);
+		expect(page.hidden).toBe(true);
+		expect(f.view.el.querySelector<HTMLElement>(".composer-menu")?.hidden).toBe(false);
+		expect(document.activeElement).toBe(buttonNamed(f.view, "Attach files"));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("moves a group chat to the login the member picks, and only then", async () => {
+		const f = setup(true, withUsage([20, 80]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		const page = openLogins(f.view);
+		expect(page.textContent).toContain("Pays for your messages in this group chat. Applies from your next message.");
+		// The login that pays already stays as it is.
+		login(page, "Model account 1").click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		login(page, "Model account 2").click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(logins(page)).toEqual([
+			["Model account 1", "false"],
+			["Model account 2", "true"],
+		]);
+		expect(loginRow(f.view).getAttribute("aria-label")).toBe("Login: Model account 2");
+		// A later read never moves it back to the login with more allowance.
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
+	});
+
+	it("moves the conversation through the cloud's choice once, with the picked login", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([80, 40]), select, undefined, choose);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		const page = openLogins(f.view);
+		expect(logins(page)).toEqual([
+			["Model account 1", "true"],
+			["Model account 2", "false"],
+		]);
+		login(page, "Model account 1").click();
+		await settle();
+		expect(choose).not.toHaveBeenCalled();
+		select.mockResolvedValue(id(91));
+		login(page, "Model account 2").click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(logins(page)).toEqual([
+			["Model account 1", "false"],
+			["Model account 2", "true"],
+		]);
+		expect(page.hidden).toBe(false);
+	});
+
+	it("says on the page when the cloud refuses the pick, and keeps the conversation's login", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, _connection: string): Promise<string> => {
+			throw new Error("refused");
+		});
+		const f = setup(false, withUsage([80, 40]), select, undefined, choose);
+		await settle();
+		const page = openLogins(f.view);
+		login(page, "Model account 2").click();
+		await settle();
+		expect(choose).toHaveBeenCalledOnce();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(page.querySelector('[role="status"]')?.textContent).toBe("The login could not be chosen. Try again.");
+		expect(login(page, "Model account 2").disabled).toBe(false);
+	});
+
+	it("is locked while a message is on its way, a retry waits or the member can't write", async () => {
+		const pending = deferred<boolean>();
+		const f = setup(false, withUsage([20, 80]));
+		f.sendMessage.mockReturnValueOnce(pending.promise);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		const page = openLogins(f.view);
+		expect(login(page, "Model account 2").disabled).toBe(false);
+		f.send().click();
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+		expect(loginRow(f.view).disabled).toBe(true);
+		expect(login(page, "Model account 2").disabled).toBe(true);
+		login(page, "Model account 2").click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		pending.resolve(true);
+		await settle();
+		expect(login(page, "Model account 2").disabled).toBe(false);
+		// An uncertain retry keeps its original login.
+		f.company.conversation(session.sessionId).set({
+			retrySend: {
+				clientInputId: id(150),
+				clientRequestId: id(150),
+				text: "Hello",
+				files: [],
+				executionSponsor: f.sponsor()!,
+			},
+		});
+		await settle();
+		expect(loginRow(f.view).disabled).toBe(true);
+		expect(login(page, "Model account 2").disabled).toBe(true);
+		f.company.conversation(session.sessionId).set({ retrySend: undefined });
+		await settle();
+		expect(login(page, "Model account 2").disabled).toBe(false);
+		f.company.conversation(session.sessionId).set({ sending: true });
+		await settle();
+		expect(loginRow(f.view).disabled).toBe(true);
+		expect(f.view.el.querySelector<HTMLElement>(".composer-menu")?.hidden).toBe(true);
+		f.company.conversation(session.sessionId).set({ sending: false });
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		await settle();
+		expect(loginRow(f.view).disabled).toBe(true);
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("opens and closes from the keyboard as the Model page does", async () => {
+		const f = setup(false, withUsage([20, 80]));
+		await settle();
+		openMenu(f.view);
+		expect(document.activeElement).toBe(buttonNamed(f.view, "Attach files"));
+		key("ArrowDown");
+		expect(document.activeElement).toBe(loginRow(f.view));
+		key("ArrowRight");
+		const page = loginPage(f.view);
+		expect(page.hidden).toBe(false);
+		expect(document.activeElement).toBe(login(page, "Model account 1"));
+		key("ArrowDown");
+		expect(document.activeElement).toBe(login(page, "Model account 2"));
+		key("ArrowDown");
+		expect(document.activeElement).toBe(buttonNamed(f.view, "Login"));
+		key("ArrowLeft");
+		expect(page.hidden).toBe(true);
+		expect(loginRow(f.view).getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(loginRow(f.view));
+		key("ArrowRight");
+		expect(page.hidden).toBe(false);
+		key("Escape");
+		expect(page.hidden).toBe(true);
+		expect(document.activeElement).toBe(loginRow(f.view));
+		key("Escape");
+		expect(f.view.el.querySelector<HTMLElement>(".composer-menu")?.hidden).toBe(true);
+		expect(document.activeElement).toBe(f.view.el.querySelector('[aria-label="Chat settings and more"]'));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+});

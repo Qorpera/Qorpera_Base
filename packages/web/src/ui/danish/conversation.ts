@@ -269,6 +269,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Use {account}": "Brug {account}",
 	"Model account {number}": "Modelkonto {number}",
 
+	// The Login page of the composer's menu (app/views/composer-logins.ts)
+	"Login: {account}": "Login: {account}",
+	"Pays for your messages in this conversation. Applies from your next message.":
+		"Betaler for dine beskeder i denne samtale. Gælder fra din næste besked.",
+	"Pays for your messages in this group chat. Applies from your next message.":
+		"Betaler for dine beskeder i denne gruppechat. Gælder fra din næste besked.",
+
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
 	"{title} can run while you're away.": "{title} kan køre, mens du er væk.",

@@ -67,6 +67,7 @@ import { type AgentState, answersInteraction, type CompanyController, type Conve
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
+import { ComposerLogins } from "./composer-logins.ts";
 import { ComposerModels } from "./composer-models.ts";
 import {
 	type FieldEdits,
@@ -291,6 +292,8 @@ export class ConversationView {
 	readonly #menu: HTMLElement;
 	readonly #menuMain: HTMLElement;
 	readonly #models: ComposerModels;
+	/** Which of the member's logins pays here; only where the conversation's model account is shown. */
+	readonly #logins: ComposerLogins | undefined;
 	readonly #attach: HTMLButtonElement;
 	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
@@ -556,16 +559,27 @@ export class ConversationView {
 			sessionId,
 			actions.sessionModel,
 			this.#notificationSignal,
-			() => this.#setModelMenu(true),
-			() => this.#setModelMenu(false),
+			() => this.#setSubmenu(this.#models, true),
+			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
+		this.#logins = this.#execution
+			? new ComposerLogins(
+					this.#execution,
+					() => {
+						if (this.#logins) this.#setSubmenu(this.#logins, true);
+					},
+					() => {
+						if (this.#logins) this.#setSubmenu(this.#logins, false);
+					},
+				)
+			: undefined;
 		this.#attachNote = h(
 			"p",
 			{ class: "composer-menu-note", hidden: true },
 			t("Images are not supported in group chats. Use Company File."),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button);
+		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button, this.#logins?.button);
 		this.#menu = h(
 			"div",
 			{
@@ -577,23 +591,27 @@ export class ConversationView {
 			},
 			this.#menuMain,
 			this.#models.el,
+			this.#logins?.el,
 		);
 		this.#menu.addEventListener("keydown", (event) => {
-			if (matchesKey(event, "dismiss") || (matchesKey(event, "left") && !this.#models.el.hidden)) {
+			const submenus = [this.#models, ...(this.#logins ? [this.#logins] : [])];
+			const open = submenus.find((submenu) => !submenu.el.hidden);
+			const opener = submenus.find((submenu) => document.activeElement === submenu.button);
+			if (matchesKey(event, "dismiss") || (matchesKey(event, "left") && open)) {
 				event.preventDefault();
 				event.stopPropagation();
-				if (!this.#models.el.hidden) this.#setModelMenu(false);
+				if (open) this.#setSubmenu(open, false);
 				else this.#setMenu(false);
-			} else if (matchesKey(event, "right") && document.activeElement === this.#models.button) {
+			} else if (matchesKey(event, "right") && opener) {
 				event.preventDefault();
-				this.#setModelMenu(true);
+				this.#setSubmenu(opener, true);
 			} else if (
 				["next", "previous", "first", "last"].some((key) =>
 					matchesKey(event, key as "next" | "previous" | "first" | "last"),
 				)
 			) {
 				event.preventDefault();
-				const page = this.#models.el.hidden ? this.#menuMain : this.#models.el;
+				const page = open?.el ?? this.#menuMain;
 				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
 				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
 				const index = matchesKey(event, "first")
@@ -863,26 +881,34 @@ export class ConversationView {
 
 	#setMenu(open: boolean, restoreFocus = true): void {
 		this.#menuMain.hidden = false;
-		this.#models.el.hidden = true;
-		this.#models.button.setAttribute("aria-expanded", "false");
+		for (const submenu of [this.#models, this.#logins]) {
+			if (!submenu) continue;
+			submenu.el.hidden = true;
+			submenu.button.setAttribute("aria-expanded", "false");
+		}
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) {
-			// A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it.
-			const first = this.#menuMain.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])");
-			(first ?? this.#menu).focus();
-		} else if (restoreFocus) this.#more.focus();
+		if (open) this.#focusMenu();
+		else if (restoreFocus) this.#more.focus();
 	}
 
-	#setModelMenu(open: boolean): void {
-		if (open && this.#models.button.disabled) return;
+	/** A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it. */
+	#focusMenu(): void {
+		const first = this.#menuMain.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])");
+		(first ?? this.#menu).focus();
+	}
+
+	/** Opens a page of the menu (Model, Login) in place of its main page, or goes back from it. */
+	#setSubmenu(submenu: ComposerModels | ComposerLogins, open: boolean): void {
+		if (open && (submenu.button.disabled || submenu.button.hidden)) return;
 		this.#menuMain.hidden = open;
-		this.#models.el.hidden = !open;
-		this.#models.button.setAttribute("aria-expanded", String(open));
+		submenu.el.hidden = !open;
+		submenu.button.setAttribute("aria-expanded", String(open));
 		if (open) {
-			this.#models.focus();
-			void this.#models.refresh();
-		} else this.#models.button.focus();
+			submenu.focus();
+			if (submenu === this.#models) void this.#models.refresh();
+		} else if (submenu.button.hidden) this.#focusMenu();
+		else submenu.button.focus();
 	}
 
 	#openDetails(): void {
@@ -1699,6 +1725,9 @@ export class ConversationView {
 			room,
 		);
 		this.#execution?.update();
+		this.#logins?.update(room, this.#submitting);
+		// The Login page leaves with its row: the member has no other login that can pay now.
+		if (this.#logins?.button.hidden && !this.#logins.el.hidden) this.#setSubmenu(this.#logins, false);
 		this.#run?.update(
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
 			canWrite,
