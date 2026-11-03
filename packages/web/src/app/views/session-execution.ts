@@ -500,7 +500,8 @@ export class SessionExecutionView {
 			...others.map((connectionId) => {
 				// Numbered as "Choose a login to continue" numbers them.
 				const account =
-					observed.connections.find((candidate) => candidate.connectionId === connectionId)?.providerAccountEmail ??
+					observed.connections.find((candidate) => candidate.connectionId === connectionId)
+						?.providerAccountEmail ??
 					t("Model account {number}", { number: available.indexOf(connectionId) + 1 });
 				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
 					small: true,
