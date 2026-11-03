@@ -31,6 +31,7 @@ import {
 	sealNativeCredentialCapsule,
 } from "@qorpera/runtime/cloud-native-provider-host";
 import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
+import { CLOUD_RUN_ROW_READ_MS } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
 import { CloudRunLogGone } from "@qorpera/runtime/cloud-run-log";
@@ -91,6 +92,7 @@ async function fixture(
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
 	folderSearch = false,
+	timeoutMs = 10_000,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -616,7 +618,7 @@ async function fixture(
 			: { call: pathCall },
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
-		timeoutMs: 10_000,
+		timeoutMs,
 		...(secretBroker ? { secretBroker } : {}),
 		// The vault's company accounts route (A1-4) on every host here: who is offered company_account is the runtime's
 		// choice. This suite never opens an account.
@@ -899,6 +901,29 @@ it("closes an initialized office session when native execution admission fails",
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeEndpoint.perform).not.toHaveBeenCalled();
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
+});
+
+it("waits for the run's admission and context bind as long as the database may run them, and sends each once", async () => {
+	// Over the HTTP path control, whose own cut applies. On 3 Nov 2026 the database answered every caller in 3 to 6.6 s
+	// for 8 s; both calls answer here past the 3 s and 5 s defaults they had.
+	const f = await fixture("company-runtime", true, undefined, false, false, 30_000);
+	const original = f.pathCall.getMockImplementation()!;
+	const slow = ["qorpera_begin_native_company_execution_v3", "qorpera_bind_native_company_context"];
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (slow.includes(method)) await new Promise((resolve) => setTimeout(resolve, 5_500));
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	for (const method of slow)
+		expect(f.pathCall.mock.calls.filter(([called]) => called === method), method).toHaveLength(1);
+});
+
+it("names that budget to the path control for the run's admission and context bind", async () => {
+	// The path control would otherwise cut each at 3 s.
+	const f = await fixture("company-runtime");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	for (const method of ["qorpera_begin_native_company_execution_v3", "qorpera_bind_native_company_context"])
+		expect(f.pathCall.mock.calls.find(([called]) => called === method)?.[3], method).toBe(CLOUD_RUN_ROW_READ_MS);
 });
 
 it("runs a standard-tier run without Fast", async () => {
