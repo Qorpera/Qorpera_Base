@@ -806,7 +806,8 @@ its own ordinary connection for it, so the connection list, usage and Disconnect
 
 - `qorpera_list_account_model_logins(profile)`: `{schema: "qorpera.account-model-logins/v1", enabled, logins}`, the
   caller's own account logins (members of the company only). `enabled` says whether sign-ins in this company are
-  account sign-ins now. Each login has `loginId`, `loginKind`, `status` (`active` or `needs_sign_in`),
+  account sign-ins now (the switch is on, the shared vault serves the company and the company takes sign-ins in the
+  vault; the last since `20260930554000`). Each login has `loginId`, `loginKind`, `status` (`active` or `needs_sign_in`),
   `providerAccountEmail`, `createdAt`, `companies` (how many companies use it) and `connectionIds` (its connections
   in this company). Label those connections "Used in all your companies"; their Disconnect only stops using the login
   in this company (it is never linked there again until the member signs in again).
