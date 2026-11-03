@@ -1177,6 +1177,27 @@ ends a sign-in; a member's own end when they leave, as their other secrets do. R
   secretName, origin, kind, headerName, headerPrefix, ownerKind, version, createdAt, updatedAt}]`, the company's
   active sign-ins and the caller's own, by origin. Every member may read it, a viewer too; anyone else gets `[]`.
 
+### Company sites (20260930550000_company_sites)
+
+Websites the company's agents publish from the company folder (`publish_site`), each at a private link
+`https://sites.qorpera.com/<slug>/` that visitors open with the site's password (`supabase/functions/site-serve`).
+Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until the sites host is routed.
+
+- `qorpera_list_company_sites(profile)`: `[{schema: "qorpera.company-site/v1", id, slug, title, url, state, source,
+  files, bytes, publishedAt, publishedBy, createdAt, passwordChangedAt}]`, newest published first, for any member of
+  the company (viewers too; 42501 for anyone else). `state` is `live`, or `publishing` while a site's first upload has
+  not finished (its link does not work yet). `source` is the Company File path it was published from; `publishedBy`
+  is `{agentId, name}`, or null when that agent is gone. Never a password.
+- `qorpera_company_site_password(site)`: `{schema: "qorpera.company-site-password/v1", siteId, password, changedAt}`,
+  owners and admins only (42501 for anyone else, a site that is gone included).
+- `qorpera_set_company_site_password(site, password)`: owners and admins. `password` null makes a new random one;
+  otherwise 10 to 128 characters, no control characters, not only spaces (22023 "A site password is 10 to 128
+  characters"). Every visitor's session ends, so they enter the new one. Answers as `qorpera_company_site_password`.
+- `qorpera_unpublish_company_site(site)`: owners and admins. Deletes the site, its files, password and sessions at
+  once (the Company File keeps the source). `{schema: "qorpera.company-site-unpublish/v1", siteId, removed}`;
+  `removed` false when it was already gone.
+- The tables are closed to every API role; the agent's and the edge function's calls are service-only.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
@@ -1306,6 +1327,12 @@ machine.
   an `email.received` without a valid message id), 401 (bad or stale
   signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
   `Retry-After`) or 503 (mail switched off, or retry).
+- `site-serve` (20260930550000) — the company sites' public host,
+  `https://sites.qorpera.com/<slug>/` (the front proxy sends that host, and no
+  other, to `/functions/v1/site-serve/`), not for clients: a visitor's
+  password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
+  static files under the visitor's session (`/<slug>/~<token>/<path>`), each
+  file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),

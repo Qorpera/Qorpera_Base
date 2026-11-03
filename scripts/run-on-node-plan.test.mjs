@@ -109,6 +109,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.match(functions, /mail-intake\/mail-intake\.test\.ts/);
 	assert.match(functions, /mail-outbox\/mail-outbox\.test\.ts/);
 	assert.match(functions, /runner-control\/runner-control\.test\.ts/);
+	assert.match(functions, /site-serve\/site-serve\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
 	// The office delete-disposition script's runtime bundle: its entry points and the files they import.

@@ -264,7 +264,13 @@ export function cloudActionEffect(
 					: "external";
 		// An email from a company mailbox leaves the company (M2b).
 		case "send_mail":
+		// A website at a private link (company sites, 20260930550000) is reachable from the internet: a first publish and
+		// an update are outside effects. A first publish is also a built-in access check (siteAccessCheck, below).
+		case "publish_site":
 			return "external";
+		// Taking a website offline deletes its published copy and password for good (its files stay in the folder).
+		case "unpublish_site":
+			return "destructive";
 		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
 		// company takes in. Removing one ends it for good, and a removed mailbox's address is free for any company.
 		case "manage_hook":
@@ -309,6 +315,26 @@ export function cloudActionEffect(
 		default:
 			return "external";
 	}
+}
+
+/**
+ * A website's first publish shares company work with people outside it (company sites, 20260930550000): a built-in
+ * access check, whatever the reviewer called it, so the kernel asks an owner or admin unless a company Allow rule the
+ * reviewer cited covers it (qorpera_record_action_review), and the database publishes a new site only on such an
+ * approval. A denial stays one; an update of a live site is reviewed as the reviewer says.
+ */
+export function siteAccessCheck(
+	call: Pick<CloudActionCall, "tool" | "parsed">,
+	verdict: CloudActionVerdict,
+): CloudActionVerdict {
+	if (call.tool.name !== "publish_site" || call.tool.source !== "runtime" || verdict.builtIn !== "none")
+		return verdict;
+	if (record(call.parsed).mode === "update") return verdict;
+	return {
+		...verdict,
+		builtIn: "access_change",
+		proposedRule: verdict.proposedRule ?? "publish a new password-protected website for the company",
+	};
 }
 
 /** Connector tools carry their catalog effect (read or write) by tool name. */
@@ -594,6 +620,27 @@ export function describeCloudAction(
 			);
 		if (args.action === "remove")
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
+	} else if (tool.name === "publish_site") {
+		// Its prepared arguments (cloud-site-tools.ts): what the files are, read before the review.
+		title = args.mode === "update" ? "Update a published website" : "Publish a new password-protected website";
+		target = text(args.url) || text(args.slug) || null;
+		add("title", args.title);
+		if (typeof args.source === "string") add("from", fileName(args.source));
+		if (typeof args.files === "number" && typeof args.bytes === "number")
+			add(
+				"files",
+				`${args.files} ${args.files === 1 ? "file" : "files"}, ${args.bytes < 1024 * 1024 ? `${Math.max(1, Math.ceil(args.bytes / 1024))} KB` : `${(args.bytes / 1024 / 1024).toFixed(1)} MB`}`,
+			);
+		add(
+			"effect",
+			args.mode === "update"
+				? "Replaces the whole site; people with its password see the new version"
+				: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
+		);
+	} else if (tool.name === "unpublish_site") {
+		title = "Take a website offline";
+		target = text(args.slug) || null;
+		add("effect", "Its link stops working and its password is deleted; the files stay in the company folder");
 	} else if (tool.name === "company_account") {
 		title =
 			args.action === "open"
@@ -1240,6 +1287,7 @@ export class CloudActionReviewGate {
 				text: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 			};
 		}
+		verdict = siteAccessCheck(call, verdict);
 		const recorded = object(
 			await this.#control.call(
 				"qorpera_record_action_review",
