@@ -539,7 +539,8 @@ describe("conversation execution account", () => {
 		expect(f.view.el.querySelector(".composer")!.textContent).toContain("Add a message to send with the images.");
 	});
 	it("rejects picker, pasted and dropped images in group chats on a cloud that keeps them text-only", async () => {
-		const f = setup(true);
+		// One login: the menu has no Login row, so it holds no live control.
+		const f = setup(true, connections(1));
 		// The sidebar read answered without group chats: this cloud keeps them text-only.
 		f.company.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [] } });
 		await settle();
