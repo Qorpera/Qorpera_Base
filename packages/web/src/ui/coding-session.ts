@@ -228,9 +228,13 @@ export function codingLoginReason(
 							: undefined;
 	if (!reason) return undefined;
 	return `${reason} ${
-		names.ownerIsViewer
-			? t("Choose another of your logins for it, then send a message to continue.")
-			: t("Only {owner} can choose another login for it.", { owner: names.owner })
+		!names.ownerIsViewer
+			? t("Only {owner} can choose another login for it.", { owner: names.owner })
+			: code === "login_not_allowed_away"
+				? t(
+						"Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.",
+					)
+				: t("Choose another of your logins for it, then send a message to continue.")
 	}`;
 }
 
@@ -481,7 +485,15 @@ export class CodingSessionElement {
 		else
 			options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", () => this.#onVisibility(), { signal: this.#lifetime.signal });
-		window.addEventListener("focus", () => void this.refresh(), { signal: this.#lifetime.signal });
+		window.addEventListener(
+			"focus",
+			() => {
+				// Back from Settings, say: the owner's logins may have changed, so an offer reads them again.
+				if (this.#logins?.value) this.#logins = undefined;
+				void this.refresh();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		this.#render();
 		void this.refresh();
@@ -664,7 +676,7 @@ export class CodingSessionElement {
 				"p",
 				{ class: "muted" },
 				others.length
-					? t("Continue this session with another of your logins:")
+					? t("Continue this session with one of your logins:")
 					: t(
 							"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.",
 						),

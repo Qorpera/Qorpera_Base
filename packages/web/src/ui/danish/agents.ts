@@ -245,7 +245,9 @@ export const AGENTS: Record<string, string> = {
 	"Only {owner} can choose another login for it.": "Kun {owner} kan vælge et andet login til den.",
 	"You moved the session to another login": "Du flyttede sessionen til et andet login",
 	"{owner} moved the session to another login": "{owner} flyttede sessionen til et andet login",
-	"Continue this session with another of your logins:": "Fortsæt sessionen med et andet af dine logins:",
+	"Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.":
+		"Tillad det at arbejde, mens du er væk, igen under Indstillinger, AI-abonnementer, og vælg det så her, eller vælg et andet af dine logins; send derefter en besked for at fortsætte.",
+	"Continue this session with one of your logins:": "Fortsæt sessionen med et af dine logins:",
 	"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.":
 		"Ingen af dine andre logins kan betale for sessionen. Log ind med et andet under Indstillinger, AI-abonnementer.",
 	"1 command stopped": "1 kommando stoppet",

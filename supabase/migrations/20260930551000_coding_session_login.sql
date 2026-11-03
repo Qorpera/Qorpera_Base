@@ -268,7 +268,7 @@ create function public.qorpera_choose_coding_session_login(p_worker_id uuid, p_c
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_worker public.qorpera_runtime_workers%rowtype; v_session public.qorpera_coding_sessions%rowtype;
 	v_login record; v_binding public.qorpera_execution_sponsor_bindings%rowtype;
-	v_sponsor public.qorpera_execution_sponsor_versions%rowtype; v_client uuid; v_current uuid;
+	v_sponsor public.qorpera_execution_sponsor_versions%rowtype; v_client uuid; v_current uuid; v_current_version bigint;
 begin
 	-- 20260930551000.
 	if p_connection_id is null then raise exception 'Coding session login is invalid' using errcode = '22023'; end if;
@@ -283,10 +283,13 @@ begin
 	select * into v_login from public.qorpera_coding_session_login_candidates(v_worker, v_session.harness) as candidate
 	where candidate.connection_id = p_connection_id;
 	if not found then raise exception 'This login cannot pay for this coding session' using errcode = '22023'; end if;
-	v_current := (select sponsor.provider_connection_id from public.qorpera_execution_sponsor_versions as sponsor
-		where sponsor.binding_id = v_worker.owner_sponsor_binding_id
-			and sponsor.version = public.qorpera_live_sponsor_version(v_worker.owner_sponsor_binding_id, v_worker.owner_sponsor_version));
-	if v_current = p_connection_id and public.qorpera_coding_session_login_state(v_worker) = 'ready' then
+	select sponsor.provider_connection_id, sponsor.provider_connection_version into v_current, v_current_version
+	from public.qorpera_execution_sponsor_versions as sponsor
+	where sponsor.binding_id = v_worker.owner_sponsor_binding_id
+		and sponsor.version = public.qorpera_live_sponsor_version(v_worker.owner_sponsor_binding_id, v_worker.owner_sponsor_version);
+	-- Already paying with that very version, and able to: nothing to move (the list calls exactly this one current).
+	if v_current = p_connection_id and v_current_version = v_login.connection_version
+		and public.qorpera_coding_session_login_state(v_worker) = 'ready' then
 		return public.qorpera_coding_session_view(v_session, v_worker); end if;
 	-- The binding qorpera_coding_owner_sponsor pays this login with: its active member binding on this version, else
 	-- the one it makes under the same client id (so a later dispatch finds the same one).

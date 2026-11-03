@@ -1124,7 +1124,7 @@ describe("the element in the thread", () => {
 		]);
 		expect(listed).toHaveBeenCalledWith(WORKER);
 		expect(element.el.querySelector(".coding-logins p")?.textContent).toBe(
-			"Continue this session with another of your logins:",
+			"Continue this session with one of your logins:",
 		);
 		expect(chooseLogin).not.toHaveBeenCalled();
 		// The click moves it; the session read again pays with it, and the offer goes.
@@ -1154,7 +1154,7 @@ describe("the element in the thread", () => {
 			{ summary: "The login paying for this work reached its usage limit.", usageLimit: true, code: "usage_limit" },
 			"executor",
 		);
-		const { element } = mount(limited, {
+		const { element, logins: listed } = mount(limited, {
 			events: [failed],
 			logins: {
 				current: { connectionId: id(31), state: "ready" },
@@ -1166,6 +1166,11 @@ describe("the element in the thread", () => {
 			"None of your other logins can pay for this session. Sign in with another one in Settings, AI subscriptions.",
 		);
 		expect(element.el.querySelectorAll(".coding-logins button")).toHaveLength(0);
+		// Back from Settings (the window's focus), the offer reads the owner's logins again.
+		expect(listed).toHaveBeenCalledTimes(1);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(listed).toHaveBeenCalledTimes(2);
 		element.dispose?.();
 		// A turn refused for its login while the session's state reads ready (its credential at admission) offers
 		// them too.
@@ -1200,7 +1205,9 @@ describe("the element in the thread", () => {
 		expect(codingLoginReason("login_needs_sign_in", other)).toBe(
 			"This session's login needs a new sign-in, so its turn could not run. Only Jonas can choose another login for it.",
 		);
-		expect(codingLoginReason("login_not_allowed_away", owner)).toMatch(/^This session's login no longer allows work/);
+		expect(codingLoginReason("login_not_allowed_away", owner)).toBe(
+			"This session's login no longer allows work while its member is away, so its turn could not run. Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.",
+		);
 		expect(codingLoginReason("login_unavailable", owner)).toMatch(
 			/^This session's login can't pay for work right now/,
 		);
