@@ -538,7 +538,8 @@ function cookieTokens(header: string | null): string[] {
  * whatever the caller sent. */
 export function onSitesHost(request: Request, origin: URL): boolean {
 	const forwarded = request.headers.get("x-forwarded-host");
-	return forwarded !== null && forwarded.trim().toLowerCase() === origin.host;
+	// No trim: Headers has already taken off the spaces and tabs HTTP allows around a value, and nothing else goes.
+	return forwarded !== null && forwarded.toLowerCase() === origin.host;
 }
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;

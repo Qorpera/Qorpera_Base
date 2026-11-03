@@ -160,6 +160,9 @@ describe("site-serve: the host and the root", () => {
 			"sites.qorpera.com:443",
 			"sites.qorpera.com:8080",
 			"sites.qorpera.com.",
+			// Only the spaces and tabs HTTP allows around a value are dropped (by Headers), nothing else.
+			"\u00a0sites.qorpera.com",
+			"sites.qorpera.com\u00a0",
 			"sites.qorpera.com.evil.example",
 			"evil.example/sites.qorpera.com",
 			"xsites.qorpera.com",

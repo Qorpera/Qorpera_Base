@@ -2,8 +2,9 @@
  * (the dbhome kit's front/envoy-front.yaml, 3 Nov 2026) with this block, in front of a model of the gateway (api-gw,
  * upstream self-hosted v0.8.3: x-forwarded-host set to the request's authority only when absent, /functions/v1/
  * rewritten to /) and an echo server standing in for the functions runtime. It shows what reaches a function for each
- * Host and x-forwarded-host a visitor can send. Runs where Docker holds the image (the node test machines); never
- * pulls. */
+ * Host and x-forwarded-host a visitor can send. It never pulls. It runs where Docker holds the image, and must run on a
+ * node test machine whose setup pulled it (guest-setup.sh names it in /etc/qorpera-test-machine-versions): there a
+ * missing image fails the run. Elsewhere (a Mac, a machine set up before that) it is skipped, saying why. */
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -15,11 +16,10 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 const BLOCK = readFileSync(new URL("./envoy-front-sites.yaml", import.meta.url), "utf8");
-// api-front's image (docker-compose.dbhome-front.yml); the tag when the digest is not held locally.
-const IMAGES = [
-	"envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4",
-	"envoyproxy/envoy:v1.39.1",
-];
+// api-front's image (docker-compose.dbhome-front.yml), by its digest only.
+const IMAGE = "envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4";
+// What deploy/test-machine/guest-setup.sh writes last on a node test machine.
+const TEST_MACHINE = "/etc/qorpera-test-machine-versions";
 const SITES = "sites.qorpera.com";
 const API = "api.qorpera.com";
 
@@ -80,11 +80,16 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 // --- In a real Envoy ---------------------------------------------------------------------------------------------------
 
 function heldImage() {
-	for (const image of IMAGES) {
-		const inspected = spawnSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { stdio: "ignore" });
-		if (inspected.status === 0) return image;
+	return spawnSync("docker", ["image", "inspect", "--format", "{{.Id}}", IMAGE], { stdio: "ignore" }).status === 0;
+}
+
+/** A node test machine whose setup pulled the image: its versions file names it. */
+function imageRequired() {
+	try {
+		return /^envoy_test_image=/m.test(readFileSync(TEST_MACHINE, "utf8"));
+	} catch {
+		return false;
 	}
-	return null;
 }
 
 function freePort() {
@@ -200,11 +205,17 @@ function raw(port, path, headers) {
 	});
 }
 
-const image = heldImage();
+const held = heldImage();
+const required = imageRequired();
 
 describe(
 	"envoy-front-sites.yaml: in api-front's Envoy",
-	{ skip: image ? false : "no envoyproxy/envoy:v1.39.1 in Docker here" },
+	{
+		skip:
+			held || required
+				? false
+				: `Docker here does not hold ${IMAGE.split("@")[0]} at its digest, and ${TEST_MACHINE} does not name it`,
+	},
 	() => {
 		let dir;
 		let echo;
@@ -219,6 +230,10 @@ describe(
 		};
 
 		before(async () => {
+			assert.ok(
+				held,
+				`${TEST_MACHINE} names the Envoy image but Docker does not hold ${IMAGE}: run guest-setup.sh again`,
+			);
 			echo = createServer((request, response) => {
 				// Every copy of a header as it arrived (Node would join repeated ones).
 				const values = (header) => {
@@ -261,7 +276,7 @@ describe(
 					`${dir}:/cfg:ro`,
 					"--entrypoint",
 					"envoy",
-					image,
+					IMAGE,
 					"-c",
 					"/cfg/front.yaml",
 					"--disable-hot-restart",
