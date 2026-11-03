@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	CODING_GIT_IDENTITY,
 	CODING_GUEST_REFUSED_EXIT_CODE,
 	type CodingGuestCommandPorts,
-	CODING_GIT_IDENTITY,
 	codingCommandWritablePaths,
 	ensureCodingGitIdentity,
 	executeCodingGuestCommand,

@@ -626,7 +626,10 @@ async function recordRefusal(root: string, commandId: string, code: string): Pro
  * Codex's first commit in a coding session did (3 November 2026). Written once into the home's own git config
  * ($XDG_CONFIG_HOME/git/config), which ~/.gitconfig and the repository's config both override, so an identity an agent
  * or member set always wins. Best effort: a home it cannot write leaves git as it was. */
-export const CODING_GIT_IDENTITY = Object.freeze({ name: "Qorpera coding agent", email: "coding-agent@noreply.qorpera.com" });
+export const CODING_GIT_IDENTITY = Object.freeze({
+	name: "Qorpera coding agent",
+	email: "coding-agent@noreply.qorpera.com",
+});
 
 export async function ensureCodingGitIdentity(homePath: string): Promise<void> {
 	const files = [join(homePath, ".gitconfig"), join(homePath, ".config", "git", "config")];
