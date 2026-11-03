@@ -241,6 +241,13 @@ describe("AI subscriptions with no company open", () => {
 		expect(view!.el.querySelector(".connection-attempt")).toBeNull();
 		expect(view!.el.textContent).toContain("The ChatGPT sign-in did not finish. Try again.");
 		expect(add().disabled).toBe(false);
+		// The vault finished it after all (the browser's clock ran ahead): the login shows and the message goes.
+		b.client.state.logins = [login];
+		b.client.state.connections = observed(linked);
+		view!.el.querySelector<HTMLButtonElement>(".connection-section-heading button")!.click();
+		await settle();
+		expect(cards().map((card) => card.dataset.loginId)).toEqual([id(90)]);
+		expect(view!.el.textContent).not.toContain("did not finish");
 	});
 
 	it("says so when a sign-in was kept for its company only", async () => {

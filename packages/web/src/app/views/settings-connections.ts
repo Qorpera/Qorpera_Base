@@ -417,6 +417,9 @@ export class ConnectionsView {
 					this.#accountLogins = new Map(
 						account.logins.flatMap((login) => login.connectionIds.map((id) => [id, login] as const)),
 					);
+					// A login that was not listed before ends what an earlier sign-in's outcome said.
+					const listed = new Set(this.#logins.map((login) => login.loginId));
+					if (account.logins.some((login) => !listed.has(login.loginId))) this.#outcome = undefined;
 					this.#logins = account.logins;
 					accountRead = true;
 				} catch {
