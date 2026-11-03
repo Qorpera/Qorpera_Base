@@ -590,6 +590,30 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		]);
 		expect(listed.connections[0]).toMatchObject({ connectionId: id(81), sponsorBindingId: id(281) });
 	});
+	it("reads each login's recent turns from the same answer (20260930551000)", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				compute_identity: null,
+				connections: [
+					row(81, { recent_turns: { refused: true, completed: false } }),
+					row(82, { recent_turns: { refused: false, completed: true } }),
+					row(83, {}),
+					row(84, { recent_turns: { refused: "yes", completed: true } }),
+					row(85, { recent_turns: null }),
+				],
+			}),
+		);
+		const listed = await f.client.listConnections();
+		expect(listed.connections.map(({ recentTurns }) => recentTurns)).toEqual([
+			{ refused: true, completed: false },
+			{ refused: false, completed: true },
+			// An older cloud, and fields the web cannot read, read as absent.
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
 	it("binds a plan for the member's own messages without consenting it", async () => {
 		const f = setup();
 		const rpc = vi.spyOn(f.cloud, "rpc");

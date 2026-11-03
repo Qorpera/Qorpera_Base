@@ -6,7 +6,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import type { WebExecutionConnections, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -867,6 +867,97 @@ describe("conversation execution account", () => {
 		f.company.setExecutionSponsor(session.sessionId, observed, undefined);
 		const tied = withUsage([50, 50]);
 		f.listConnections.mockResolvedValue({ ...tied, connections: [...tied.connections].reverse() });
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
+	it("ranks by room on one scale, a login known to work first and a refusing login last (20260930551000)", async () => {
+		const day = 86_400_000;
+		// Login 90's weekly window and login 91's 30-day window, used this much, resetting in so many days.
+		const logins = (
+			weekly: readonly [number, number],
+			monthly: readonly [number, number],
+			turns: readonly ({ refused: boolean; completed: boolean } | undefined)[] = [],
+		): WebExecutionConnections => {
+			const observed = withUsage([0, 0]);
+			const now = Date.now();
+			const windows = [
+				{ label: "Weekly", usedPercent: weekly[0], days: weekly[1], windowSeconds: 604_800 },
+				{ label: "Current window", usedPercent: monthly[0], days: monthly[1], windowSeconds: 2_592_000 },
+			];
+			return {
+				...observed,
+				connections: observed.connections.map((connection, index) => ({
+					...connection,
+					providerAccountUsage: {
+						observedAt: new Date(now).toISOString(),
+						windows: [
+							{
+								id: "primary" as const,
+								label: windows[index]!.label,
+								usedPercent: windows[index]!.usedPercent,
+								resetAt: new Date(now + windows[index]!.days * day).toISOString(),
+								windowSeconds: windows[index]!.windowSeconds,
+							},
+						],
+					},
+					...(turns[index] ? { recentTurns: turns[index] } : {}),
+				})),
+			};
+		};
+		// 50% left of a week that resets in a day (350) beats 97% left of 30 days with 27 to go (about 108).
+		const f = setup(true, logins([50, 1], [3, 27]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// With six days to go the week has less room (about 58), so the 30-day login comes first...
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(logins([50, 6], [3, 27]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// ...unless only the weekly login completed a run this week: a login known to work comes first.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[50, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: true },
+					{ refused: false, completed: false },
+				],
+			),
+		);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// A login known to work needs 20% left in each window to come first.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[85, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: true },
+					{ refused: false, completed: false },
+				],
+			),
+		);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// A login whose provider refused its last three runs comes last, however much room it has.
+		f.company.setExecutionSponsor(session.sessionId, logins([50, 6], [3, 27]), undefined);
+		f.listConnections.mockResolvedValue(
+			logins(
+				[50, 6],
+				[3, 27],
+				[
+					{ refused: false, completed: false },
+					{ refused: true, completed: true },
+				],
+			),
+		);
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
