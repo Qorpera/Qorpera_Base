@@ -590,7 +590,7 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		]);
 		expect(listed.connections[0]).toMatchObject({ connectionId: id(81), sponsorBindingId: id(281) });
 	});
-	it("reads each login's recent turns from the same answer (20260930551000)", async () => {
+	it("reads each login's recent turns from the same answer (20260930559000)", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(
 			Response.json({

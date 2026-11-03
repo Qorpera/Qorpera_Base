@@ -233,7 +233,7 @@ begin
 	perform pg_temp.base_assert(position('20260929992000' in v_sponsor) > 0 and position('20260930077000' in v_sponsor) > 0
 		and position('qorpera_coding_owner_login(p_profile_id, p_owner_user_id, p_harness)' in v_sponsor) > 0,
 		'the sponsor pays the login''s choice');
-	-- Since 20260930551000 both order by the same rank (a login that works, the room on one scale; test 553).
+	-- Since 20260930559000 both order by the same rank (a login that works, the room on one scale; test 559).
 	perform pg_temp.base_assert(position('order by public.qorpera_native_account_rank(own.connection_id, own.connection_version)'
 		in v_starter) > 0 and position('public.qorpera_native_account_rank(connection.id, version.version)' in v_login) > 0,
 		'the starter''s order for new work');

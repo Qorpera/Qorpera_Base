@@ -37,7 +37,7 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 	return windows ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
 }
 
-/** The login's room on one scale (migration 20260930551000, qorpera_native_account_paced_room): each
+/** The login's room on one scale (migration 20260930559000, qorpera_native_account_paced_room): each
  * window's remaining percent divided by the share of that window still to run (5% to all of it; all
  * of it when the reading has no length or reset), the tightest window deciding. 50% left of a week
  * that resets in a day is 350; 97% left of a 30-day window with 27 days to go is about 108. */
@@ -58,7 +58,7 @@ function pacedRoom(connection: NativeMemberConnection, now: number): number | un
 }
 
 /** How a first choice orders a login, best first, as the cloud's qorpera_native_account_rank does
- * (migration 20260930551000): a login whose provider refused its last three runs last; then one at
+ * (migration 20260930559000): a login whose provider refused its last three runs last; then one at
  * its limit; then one that completed a run this week with at least 20% left (or unknown usage) first;
  * then the most room on one scale, unknown usage after measured room. */
 function loginRank(connection: WebMemberConnection, now: number): readonly number[] {
@@ -91,7 +91,7 @@ export interface SessionLogin {
 /** A conversation keeps its own account, also at its usage limit: sending waits until it
  * resets, and only the member moves a conversation to another account (founder decision
  * 2026-10-04, migration 20260930059000). New conversations choose the member's account that
- * works and has the most room on one scale (loginRank, migration 20260930551000). */
+ * works and has the most room on one scale (loginRank, migration 20260930559000). */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;

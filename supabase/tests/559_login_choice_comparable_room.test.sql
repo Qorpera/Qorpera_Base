@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- A first login choice that works and compares room fairly (migration 20260930551000; live company-building test, 3
+-- A first login choice that works and compares room fairly (migration 20260930559000; live company-building test, 3
 -- November 2026). 924's owner (…001) pays with login A, on which Alice's run is leased; they connect login B the same
 -- way. A reports a weekly window, B a 30-day one (the founder's workspace plan). Checked: the room on one scale (a share
 -- of a week that resets soon against a share of 30 days); a login that completed a run this week comes first while it
@@ -12,15 +12,15 @@
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.lr_login', public.qorpera_begin_native_provider_login(
-	'92400000-0000-4000-8000-000000000010', '55300000-0000-4000-8000-000000000051', '55300000-0000-4000-8000-000000000052',
+	'92400000-0000-4000-8000-000000000010', '55900000-0000-4000-8000-000000000051', '55900000-0000-4000-8000-000000000052',
 	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid, 'openai', 'codex-cli', repeat('c', 64), 900)::text,
 	true) \g /dev/null
 reset role;
 select pg_temp.base_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.lr_connection', public.qorpera_complete_native_provider_login(
-	(current_setting('qorpera_test.lr_login')::jsonb ->> 'login_id')::uuid, repeat('c', 64), '55300000-0000-4000-8000-000000000060',
-	'object://native-capsules/55300000-0000-4000-8000-000000000060', repeat('d', 64), 'fixture-openai-account-lr', 'personal-subscription',
+	(current_setting('qorpera_test.lr_login')::jsonb ->> 'login_id')::uuid, repeat('c', 64), '55900000-0000-4000-8000-000000000060',
+	'object://native-capsules/55900000-0000-4000-8000-000000000060', repeat('d', 64), 'fixture-openai-account-lr', 'personal-subscription',
 	'qorpera-native-provider-consent/v1',
 	'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}')::text,
 	true) \g /dev/null
@@ -33,7 +33,7 @@ where connection_id = (current_setting('qorpera_test.lr_connection')::jsonb ->> 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.lr_sponsor', public.qorpera_create_member_execution_sponsor(
-	'92400000-0000-4000-8000-000000000010', '55300000-0000-4000-8000-000000000061',
+	'92400000-0000-4000-8000-000000000010', '55900000-0000-4000-8000-000000000061',
 	(current_setting('qorpera_test.lr_connection')::jsonb ->> 'connection_id')::uuid, 2, true)::text, true) \g /dev/null
 reset role;
 select pg_temp.base_claims('service_role');
@@ -242,12 +242,12 @@ begin
 	if position('20260930059000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
 		or position('20260930059000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
 		or position('20260930543000' in pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure)) = 0
-		or position('20260930551000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930551000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
-		or position('20260930551000' in pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure)) = 0
-		or position('20260930551000' in pg_get_functiondef('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure)) = 0
+		or position('20260930559000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
+		or position('20260930559000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
+		or position('20260930559000' in pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure)) = 0
+		or position('20260930559000' in pg_get_functiondef('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure)) = 0
 	then
-		raise exception 'a first choice lacks its earlier or its 20260930551000 body'; end if;
+		raise exception 'a first choice lacks its earlier or its 20260930559000 body'; end if;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_native_account_login_connections(uuid)',
 			'public.qorpera_native_account_turns_refused(uuid)', 'public.qorpera_native_account_turn_completed(uuid)',

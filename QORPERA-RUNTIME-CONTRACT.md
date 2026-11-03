@@ -2456,7 +2456,7 @@ follows a run:
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
-> **Amended 2026-11-03 (migration 20260930551000).** "The most room left" above
+> **Amended 2026-11-03 (migration 20260930559000).** "The most room left" above
 > is now an order of the member's logins, best first, for every first choice (a
 > new conversation, new work, a new coding session after its consent and plan
 > keys): a login whose provider refused its last three finished runs, the newest

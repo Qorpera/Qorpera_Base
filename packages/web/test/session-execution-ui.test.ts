@@ -872,7 +872,7 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
-	it("ranks by room on one scale, a login known to work first and a refusing login last (20260930551000)", async () => {
+	it("ranks by room on one scale, a login known to work first and a refusing login last (20260930559000)", async () => {
 		const day = 86_400_000;
 		// Login 90's weekly window and login 91's 30-day window, used this much, resetting in so many days.
 		const logins = (

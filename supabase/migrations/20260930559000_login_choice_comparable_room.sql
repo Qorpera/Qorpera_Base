@@ -33,7 +33,7 @@
 -- (`recent_turns`: `refused`, `completed`), so the web orders "Choose a login" the same way.
 --
 -- Locks: one new index on the leases table (small: one row per native run). The order reads leases, jobs and usage
--- readings without locks. Every changed body carries the marker 20260930551000.
+-- readings without locks. Every changed body carries the marker 20260930559000.
 
 set local lock_timeout = '3s';
 
@@ -55,7 +55,7 @@ revoke all on function public.qorpera_native_account_login_connections(uuid)
 create function public.qorpera_native_account_turns_refused(p_connection_id uuid)
 returns boolean
 language sql stable security definer set search_path = '' as $$
-	-- 20260930551000
+	-- 20260930559000
 	select count(*) = 3 and bool_and(recent.refused)
 		and max(recent.finished_at) > statement_timestamp() - interval '6 hours'
 	from (
@@ -78,7 +78,7 @@ revoke all on function public.qorpera_native_account_turns_refused(uuid)
 create function public.qorpera_native_account_turn_completed(p_connection_id uuid)
 returns boolean
 language sql stable security definer set search_path = '' as $$
-	-- 20260930551000
+	-- 20260930559000
 	select exists (select 1
 		from public.qorpera_native_account_login_connections(p_connection_id) as login
 		join public.qorpera_native_provider_connection_leases as lease on lease.provider_connection_id = login.connection_id
@@ -94,7 +94,7 @@ revoke all on function public.qorpera_native_account_turn_completed(uuid)
 create function public.qorpera_native_account_paced_room_company(p_connection_id uuid, p_connection_version bigint)
 returns numeric
 language sql stable security definer set search_path = '' as $$
-	-- 20260930551000
+	-- 20260930559000
 	select case when public.qorpera_native_account_usage_limit_reset_company(p_connection_id) is not null then 0
 		else coalesce((select min((100 - (w.value ->> 'usedPercent')::numeric) / greatest(0.05, least(1,
 				case when jsonb_typeof(w.value -> 'windowSeconds') = 'number' and (w.value ->> 'windowSeconds')::numeric > 0
@@ -115,7 +115,7 @@ revoke all on function public.qorpera_native_account_paced_room_company(uuid, bi
 create function public.qorpera_native_account_paced_room(p_connection_id uuid, p_connection_version bigint)
 returns numeric
 language sql stable security definer set search_path = '' as $$
-	-- 20260930551000
+	-- 20260930559000
 	select case when public.qorpera_native_account_usage_limit_reset(p_connection_id) is not null then 0
 		else coalesce((select min(known.room) from (
 				select public.qorpera_native_account_paced_room_company(p_connection_id, p_connection_version) as room
@@ -131,7 +131,7 @@ revoke all on function public.qorpera_native_account_paced_room(uuid, bigint)
 create function public.qorpera_native_account_rank(p_connection_id uuid, p_connection_version bigint)
 returns numeric[]
 language sql stable security definer set search_path = '' as $$
-	-- 20260930551000
+	-- 20260930559000
 	select array[
 		case when public.qorpera_native_account_turns_refused(p_connection_id) then 1 else 0 end,
 		case when usage.remaining = 0 then 1 else 0 end,
@@ -149,21 +149,21 @@ returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
 begin
 	if (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930551000 patch differs: % near %', p_target, left(p_old, 60); end if;
+		raise exception '20260930559000 patch differs: % near %', p_target, left(p_old, 60); end if;
 	execute replace(v_definition, p_old, p_new);
 end
 $$;
 
 do $$
 begin
-	if position('20260930551000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) > 0
+	if position('20260930559000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) > 0
 	then
 		return;
 	end if;
 	-- A new conversation's first choice.
 	perform pg_temp.lr_patch('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure,
 		'order by candidate.remaining desc,candidate.connection_id,candidate.binding_id limit 1;',
-		E'-- 20260930551000: a login that works and the most room on one scale (qorpera_native_account_rank).\n'
+		E'-- 20260930559000: a login that works and the most room on one scale (qorpera_native_account_rank).\n'
 		|| E'        order by public.qorpera_native_account_rank(candidate.connection_id, (select max(version.version)\n'
 		|| E'                from public.qorpera_provider_connection_versions as version\n'
 		|| E'                where version.connection_id = candidate.connection_id)),\n'
@@ -177,20 +177,20 @@ begin
 		|| E'\t\t\tversion.version as connection_version');
 	perform pg_temp.lr_patch('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure,
 		'order by own.remaining = 0, own.remaining desc, own.created_at desc, own.binding_id',
-		E'-- 20260930551000: a login that works and the most room on one scale, a used-up one after those.\n'
+		E'-- 20260930559000: a login that works and the most room on one scale, a used-up one after those.\n'
 		|| E'\t\t\torder by public.qorpera_native_account_rank(own.connection_id, own.connection_version), own.created_at desc,\n'
 		|| E'\t\t\t\town.binding_id');
 	-- A new coding session's first choice, after the consent and the plan rule.
 	perform pg_temp.lr_patch('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure,
 		'usage.remaining = 0, usage.remaining desc, connection.created_at desc, connection.id',
-		E'-- 20260930551000: a login that works and the most room on one scale.\n'
+		E'-- 20260930559000: a login that works and the most room on one scale.\n'
 		|| E'\t\tpublic.qorpera_native_account_rank(connection.id, version.version), usage.remaining = 0,\n'
 		|| E'\t\tconnection.created_at desc, connection.id');
 	-- The member's connection list reports each login's recent turns.
 	perform pg_temp.lr_patch('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure,
 		$old$'usage_limit_reset_at', public.qorpera_native_account_usage_limit_reset(connection.id),$old$,
 		$new$'usage_limit_reset_at', public.qorpera_native_account_usage_limit_reset(connection.id),
-                 -- 20260930551000: whether the provider refused the login's last three runs (six hours) and whether
+                 -- 20260930559000: whether the provider refused the login's last three runs (six hours) and whether
                  -- it completed one this week, for the web's order of the member's logins.
                  'recent_turns', jsonb_build_object(
                      'refused', public.qorpera_native_account_turns_refused(connection.id),
