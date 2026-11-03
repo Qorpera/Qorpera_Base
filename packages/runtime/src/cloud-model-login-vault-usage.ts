@@ -61,6 +61,8 @@ export interface ModelLoginUsageAnswer {
 
 interface RefreshLogin {
 	loginId: string;
+	/** An account login's member (20260930548000): its member's key opens it. */
+	ownerUserId?: string;
 	version: number;
 	keyId: string;
 	envelope: Uint8Array;
@@ -95,21 +97,21 @@ function positive(value: unknown, label: string): number {
 	return value as number;
 }
 
+const LOGIN_KEYS = [
+	"loginId",
+	"version",
+	"keyId",
+	"encryptedEnvelopeBase64",
+	"envelopeSha256",
+	"connectionId",
+	"connectionVersion",
+	"credentialCapsuleId",
+];
+
 function parseLogin(item: unknown): RefreshLogin {
-	const login = record(
-		item,
-		[
-			"loginId",
-			"version",
-			"keyId",
-			"encryptedEnvelopeBase64",
-			"envelopeSha256",
-			"connectionId",
-			"connectionVersion",
-			"credentialCapsuleId",
-		],
-		"Vault account refresh login",
-	);
+	const account =
+		Boolean(item) && typeof item === "object" && !Array.isArray(item) && Object.hasOwn(item as object, "ownerUserId");
+	const login = record(item, account ? [...LOGIN_KEYS, "ownerUserId"] : LOGIN_KEYS, "Vault account refresh login");
 	if (
 		typeof login.keyId !== "string" ||
 		!KEY_ID.test(login.keyId) ||
@@ -121,6 +123,7 @@ function parseLogin(item: unknown): RefreshLogin {
 	// Every other field first: an envelope is decoded only for an otherwise valid login.
 	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
 	const loginId = uuid(login.loginId, "Vault account refresh login id");
+	const ownerUserId = account ? uuid(login.ownerUserId, "Vault account refresh login member") : undefined;
 	const version = positive(login.version, "Vault account refresh login version");
 	const connectionId = uuid(login.connectionId, "Vault account refresh connection");
 	const connectionVersion = positive(login.connectionVersion, "Vault account refresh connection version");
@@ -133,7 +136,15 @@ function parseLogin(item: unknown): RefreshLogin {
 		envelope.fill(0);
 		throw new Error("Vault account refresh login is invalid");
 	}
-	return { loginId, version, keyId: login.keyId, envelope, connectionId, connectionVersion };
+	return {
+		loginId,
+		...(ownerUserId === undefined ? {} : { ownerUserId }),
+		version,
+		keyId: login.keyId,
+		envelope,
+		connectionId,
+		connectionVersion,
+	};
 }
 
 function parseDescription(value: unknown): RefreshDescription {
@@ -241,32 +252,47 @@ export class CloudModelLoginUsage {
 		signal: AbortSignal,
 	): Promise<void> {
 		try {
-			const metadata = await this.#keys.use(
-				login.envelope,
-				{
-					companyId: description.companyId,
-					environmentId: description.computeIdentityId,
-					secretId: login.loginId,
-					version: login.version,
-					keyId: login.keyId,
-				},
-				async (fields) => {
-					const text = fields[MODEL_LOGIN_FIELD];
-					if (typeof text !== "string" || Object.keys(fields).length !== 1)
-						throw new Error("Model login envelope is invalid");
-					const codex = parseCodexLogin(text);
-					return {
-						email: nativeProviderAccountEmail("codex-cli", codex.text) ?? null,
-						identity: nativeProviderAccountIdentity(codex.text) ?? null,
-						usage:
-							(await readNativeProviderAccountUsage(
-								codex.text,
-								AbortSignal.any([signal, AbortSignal.timeout(USAGE_DEADLINE_MS)]),
-								this.#fetch,
-							)) ?? null,
-					};
-				},
-			);
+			const read = async (fields: Readonly<Record<string, string>>) => {
+				const text = fields[MODEL_LOGIN_FIELD];
+				if (typeof text !== "string" || Object.keys(fields).length !== 1)
+					throw new Error("Model login envelope is invalid");
+				const codex = parseCodexLogin(text);
+				return {
+					email: nativeProviderAccountEmail("codex-cli", codex.text) ?? null,
+					identity: nativeProviderAccountIdentity(codex.text) ?? null,
+					usage:
+						(await readNativeProviderAccountUsage(
+							codex.text,
+							AbortSignal.any([signal, AbortSignal.timeout(USAGE_DEADLINE_MS)]),
+							this.#fetch,
+						)) ?? null,
+				};
+			};
+			// An account login is the refresh's own member's (the database lists no other): its member's key opens it.
+			if (login.ownerUserId !== undefined && login.ownerUserId !== description.requestedByUserId) return;
+			const metadata =
+				login.ownerUserId !== undefined
+					? await this.#keys.useMember(
+							login.envelope,
+							{
+								memberId: login.ownerUserId,
+								loginId: login.loginId,
+								version: login.version,
+								keyId: login.keyId,
+							},
+							read,
+						)
+					: await this.#keys.use(
+							login.envelope,
+							{
+								companyId: description.companyId,
+								environmentId: description.computeIdentityId,
+								secretId: login.loginId,
+								version: login.version,
+								keyId: login.keyId,
+							},
+							read,
+						);
 			if (!metadata.email && !metadata.identity && !metadata.usage) return;
 			await this.#authority.recordModelLoginAccountMetadata(
 				{

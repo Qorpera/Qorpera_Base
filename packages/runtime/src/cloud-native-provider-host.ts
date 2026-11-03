@@ -23,6 +23,7 @@ import {
 } from "./cloud-native-isolation.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
+import { CloudSecretBrokerBusyError } from "./cloud-vault-database-failure.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
 
@@ -572,13 +573,19 @@ const LOST_ANSWER_CODES = new Set([
 	"UND_ERR_BODY_TIMEOUT",
 ]);
 
-/** Whether a credential download got no answer: its request's deadline passed, or the connection failed or was cut
- * (28 October 2026). An answer that says no (a refusal, a revoked login, or the broker's 403 for its own failure), a
- * malformed answer and a redirect are answers. */
+/** Whether a credential download got no answer: its request's deadline passed, the connection failed or was cut (28
+ * October 2026), or the vault answered 503 `busy` because its database could not serve the call (3 November 2026). An
+ * answer that says no (a refusal, a revoked login, or the broker's 403 for any other failure of its own), a malformed
+ * answer and a redirect are answers. */
 function credentialDownloadLost(error: unknown): boolean {
 	let current = error;
 	for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
-		if (current instanceof CloudRequestTimeoutError || current.name === "TimeoutError") return true;
+		if (
+			current instanceof CloudRequestTimeoutError ||
+			current instanceof CloudSecretBrokerBusyError ||
+			current.name === "TimeoutError"
+		)
+			return true;
 		if (LOST_ANSWER_CODES.has(String((current as NodeJS.ErrnoException).code))) return true;
 		current = current.cause;
 	}

@@ -51,6 +51,9 @@ begin
 	-- The company Digital Post sync (20260930529000) adds claiming the company's due sync, keeping, staging, sealing and
 	-- holding its letters and finishing it, each on the company's own authority, and the shared vault's list of due
 	-- companies.
+	-- Account model logins (20260930548000) add completing a member's account sign-in on the company's own authority,
+	-- and the shared vault's own account login calls on its principal: saving and giving back a renewal, the idle pass,
+	-- recording a login's account and switching off the logins an account login replaced.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -58,6 +61,7 @@ begin
 		and function.proname like 'qorpera_%'
 		and has_function_privilege('qorpera_secret_broker', function.oid, 'EXECUTE');
 	if v_functions is distinct from array[
+		'qorpera_account_model_logins_without_account(uuid,text)',
 		'qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text)',
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)',
@@ -73,8 +77,10 @@ begin
 		'qorpera_claim_digital_post_sync(uuid,text)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
 		'qorpera_claim_event_verifications(uuid,text,integer)',
+		'qorpera_commit_account_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_commit_chatgpt_plan_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
+		'qorpera_complete_account_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
 		'qorpera_complete_chatgpt_plan_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,timestamp with time zone)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
@@ -108,16 +114,20 @@ begin
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
+		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
+		'qorpera_release_account_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
 		'qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
 		'qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)',
 		'qorpera_stage_digital_post_chunk(uuid,text,uuid,bigint,uuid,uuid,integer,integer,bytea)',
+		'qorpera_switch_off_replaced_by_account_logins(uuid,text)',
 		'qorpera_switch_off_replaced_node_logins(uuid,text)',
 		'qorpera_take_chatgpt_plan_revocation(uuid,text)',
+		'qorpera_take_idle_account_model_login_renewal(uuid,text)',
 		'qorpera_take_idle_model_login_renewal(uuid,text)',
 		'qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid)'
 	]::text[] then

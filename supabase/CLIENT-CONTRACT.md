@@ -798,6 +798,22 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the vault could not take (Digital Post moves them to the Virk mailbox).
 - The letters, their staged files and the sync are closed to every API role; the vault reaches them through its own
   functions.
+### Account model logins (20260930548000_account_model_login)
+
+Built switched off (`qorpera_account_model_login_settings`). A member's Codex sign-in in a company the shared vault
+serves is kept once for the member and used in every company of theirs that the vault serves; each company still has
+its own ordinary connection for it, so the connection list, usage and Disconnect work as before.
+
+- `qorpera_list_account_model_logins(profile)`: `{schema: "qorpera.account-model-logins/v1", enabled, logins}`, the
+  caller's own account logins (members of the company only). `enabled` says whether sign-ins in this company are
+  account sign-ins now. Each login has `loginId`, `loginKind`, `status` (`active` or `needs_sign_in`),
+  `providerAccountEmail`, `createdAt`, `companies` (how many companies use it) and `connectionIds` (its connections
+  in this company). Label those connections "Used in all your companies"; their Disconnect only stops using the login
+  in this company (it is never linked there again until the member signs in again).
+- `qorpera_sign_out_account_model_login(login)`: Sign out everywhere. Only the login's member; every company's
+  connection for it is revoked as Disconnect does, and the login is ended. Answers
+  `{schema: "qorpera.account-model-login-sign-out/v1", loginId, status: "revoked", companies}`.
+
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
 Built switched off with plan logins. Show none of it while plan logins are switched off for the company

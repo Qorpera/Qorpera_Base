@@ -428,6 +428,11 @@ async function handle(message) {
 			failed({ message: "PRIVATE_PROVIDER_ERROR", additionalDetails: "PRIVATE_PROVIDER_DETAILS", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } });
 		} else if (mode === "terminal-rate-error") {
 			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } });
+		} else if (mode === "terminal-notice-then-null") {
+			nativeError("unauthorized", false);
+			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: null });
+		} else if (mode === "terminal-null-error") {
+			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: null });
 		} else if (mode === "terminal-context-error") {
 			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: "contextWindowExceeded" });
 		} else if (mode === "unknown-error-notice") {

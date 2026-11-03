@@ -187,7 +187,10 @@ export function nativeProviderFailureCode(error: unknown): string {
 }
 function safeRequestDiagnostic(error: unknown): string {
 	const failure = nativeRuntimeFailureMetadata(error);
-	if (failure) return `Native provider execution failed (stage=${failure.stage}, category=${failure.category})`;
+	// Codex's error discriminant, as a fixed name, goes to this journal line only: the stored code keeps its two parts,
+	// which the runner and older runners check exactly (bridgeRefusalCode).
+	if (failure)
+		return `Native provider execution failed (stage=${failure.stage}, category=${failure.category}${failure.codexError === null ? "" : `, codexError=${failure.codexError}`})`;
 	const message = error instanceof Error ? error.message : "";
 	const diagnostic = message.replace(MOUTH_STATE, "");
 	if (
