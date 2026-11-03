@@ -4,7 +4,9 @@
      the page's own inline styles and scripts run and loads nothing from the network; eval adds nothing a page's own
      scripts can't do in here, and some inlined libraries need it. No browser lets a policy stop WebRTC, so before the
      page runs its WebRTC interfaces go, and a frame put into the page goes before it loads (a frame would be a window of
-     its own, with them). The frame waits for its page from the app that framed it, then becomes that page. -->
+     its own, with them). The frame waits for its page from the app that framed it, then becomes that page. Escape
+     pressed in the page (and not taken by it) is passed to the app, which has no other way to hear a key pressed in
+     here: it closes what the page is shown in, as Escape does everywhere else. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -34,6 +36,11 @@
 	const observe = MutationObserver.prototype.observe;
 	const attachShadow = Element.prototype.attachShadow;
 	const [open, write, close] = ["open", "write", "close"].map((name) => Document.prototype[name]);
+	const listen = EventTarget.prototype.addEventListener;
+	const later = setTimeout;
+	const keyOf = getter(KeyboardEvent.prototype, "key");
+	const composing = getter(KeyboardEvent.prototype, "isComposing");
+	const prevented = getter(Event.prototype, "defaultPrevented");
 	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
 	// (`clonable`, a throwing `attributeFilter`) is never read from them.
 	const create = Object.create;
@@ -101,6 +108,21 @@
 		apply(open, document, []);
 		apply(write, document, [data.html]);
 		apply(close, document, []);
+		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every
+		// handler of the page has had the key, also one it adds later: a page that takes Escape for itself (its own
+		// menu) keeps it.
+		apply(listen, window, [
+			"keydown",
+			function passEscape(pressed) {
+				if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, [])) return;
+				apply(later, window, [
+					function afterPage() {
+						if (!apply(prevented, pressed, [])) app.postMessage({ type: "qorpera-page-escape" }, "*");
+					},
+					0,
+				]);
+			},
+		]);
 	});
 	app.postMessage({ type: "qorpera-page-ready" }, "*");
 })();

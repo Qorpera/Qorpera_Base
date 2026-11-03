@@ -34,6 +34,7 @@ import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
+import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
@@ -108,7 +109,22 @@ export function mountApplication(
 		"aria-label": t("Close company navigation"),
 		onclick: () => setNavigationOpen(false),
 	});
-	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
+	// A deploy since this tab loaded: one quiet line offers the new build (app/new-version.ts).
+	const versionLine = h("div", { class: "app-version-notice", hidden: true });
+	const versionWatch = new AbortController();
+	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main), versionLine);
+	watchNewVersion(
+		runningBuildFiles(),
+		() => {
+			versionLine.replaceChildren(
+				newVersionNotice(root, () =>
+					[...(company?.conversations.values() ?? [])].some((store) => (store.get().draft ?? "").trim() !== ""),
+				),
+			);
+			versionLine.hidden = false;
+		},
+		versionWatch.signal,
+	);
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
@@ -133,11 +149,18 @@ export function mountApplication(
 		root.append(feedback.el);
 		feedback.open();
 	}
+	/** Settings was opened from a folder link in the open conversation: closing it gives the composer focus again,
+	 * so what the founder types next goes into their message. */
+	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;
-		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
+		const toComposer = settingsFromConversation;
+		settingsFromConversation = false;
+		if (!restoreFocus) return;
+		if (toComposer && conversation?.el.isConnected) conversation.focus();
+		else frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
 	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
 	function openSettings(tab?: SettingsTab, folderPath?: string): void {
@@ -168,7 +191,10 @@ export function mountApplication(
 		const path = link?.dataset.folderPath;
 		if (path === undefined || event.defaultPrevented) return;
 		event.preventDefault();
+		const fromConversation = conversation !== undefined && main.contains(link);
+		const open = settings;
 		openSettings("storage", path);
+		if (settings && settings !== open) settingsFromConversation = fromConversation;
 	}
 	root.addEventListener("click", onFolderLink);
 	let routeRevision = 0;
@@ -1519,6 +1545,7 @@ export function mountApplication(
 		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
+		versionWatch.abort();
 	};
 }
 

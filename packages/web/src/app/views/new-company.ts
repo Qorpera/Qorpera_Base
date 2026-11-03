@@ -12,7 +12,8 @@ import type { HubController } from "./hub.ts";
  * `app.qorpera.com/?ide=…&kind=…` (and `#/new?idea=…` works too).
  *
  * The view is built once per hub and kept: typing, the caret, an IME composition and focus survive
- * every refresh of the company list. */
+ * every refresh of the company list, a move between the hub and `#/new`, and a new language. Once the table is
+ * open the box is empty again, so a second company never starts with the first one's words. */
 
 /** Who is signed in, for the avatar in the box. */
 export interface Viewer {
@@ -68,20 +69,30 @@ function takeWebsiteIdea(): WebsiteHandoff | undefined {
 	}
 }
 
-/** A name to open the table with, from the idea's first line; the founders can change it at the table. */
+/** The longest name a table opens with. */
+const IDEA_NAME_MAX_CHARACTERS = 48;
+
+/** A name to open the table with: the idea's first sentence in its own words, cut on a word boundary, with no
+ * closing full stop ("A Danish webshop that sells silicone wristbands. We ship…" → "A Danish webshop that sells
+ * silicone wristbands"). The founders can change it at the table. */
 export function companyNameFromIdea(idea: string): string {
 	const line = (idea.trim().split(/\r?\n/, 1)[0] ?? "")
 		.replace(/\p{Cc}/gu, " ")
 		.replace(/\s+/g, " ")
-		.replace(/^(?:an?|the|en|et)\s+/i, "")
-		.replace(/[\s.!?…:;,]+$/u, "");
-	if (!line) return t("New company");
-	let name = line;
-	if (name.length > 48) {
-		const cut = name.slice(0, 48);
-		const space = cut.lastIndexOf(" ");
-		name = space > 20 ? cut.slice(0, space) : cut;
+		.trim();
+	// A stop, a space and a capital letter end the sentence; "e.g. ceramics" does not, and a sentence is at least two
+	// words, so "Dr. Hansen's clinic" keeps its "Dr.".
+	const sentences = line.split(/(?<=[.!?…])\s+(?=\p{Lu})/u);
+	let name = sentences[0] ?? "";
+	for (let next = 1; next < sentences.length && !name.includes(" "); next++) name = `${name} ${sentences[next]}`;
+	if (name.length > IDEA_NAME_MAX_CHARACTERS) {
+		// One character more, so a word that ends exactly at the limit stays whole.
+		const space = name.slice(0, IDEA_NAME_MAX_CHARACTERS + 1).lastIndexOf(" ");
+		name = name.slice(0, space > 20 ? space : IDEA_NAME_MAX_CHARACTERS);
 	}
+	// Last, so a cut that ends on a comma or a stop loses it too.
+	name = name.replace(/[\s.!?…:;,\-–—]+$/u, "");
+	if (!name) return t("New company");
 	return name.charAt(0).toLocaleUpperCase() + name.slice(1);
 }
 
@@ -103,19 +114,32 @@ class NewCompanyView {
 	#viewerKey = "";
 	#statusKey = "";
 	#typing: ReturnType<typeof setTimeout> | undefined;
+	/** The founder has been in the box: the example ideas stop writing themselves for good. */
+	#touched = false;
+	/** Where the caret stood when the box lost focus to a move or a new language, to put it back. */
+	#caret: { start: number; end: number; direction: "forward" | "backward" | "none" } | undefined;
+	/** The box had focus when an opening started, so it gets it back if the opening fails. */
+	#refocus = false;
 
 	constructor(hub: HubController) {
 		this.#hub = hub;
+		// The newest box is the one on the page (a new language builds another).
+		hub.onTableOpened = (idea) => this.#opened(idea);
 		this.#idea = h("textarea", {
 			id: "newCompanyIdea",
 			class: "hero-idea",
 			rows: 1,
 			maxlength: IDEA_MAX_CHARACTERS,
 			"aria-label": t("Your idea"),
-			oninput: () => this.#changed(),
-			onfocus: () => this.#placeholder(),
-			onblur: () => this.#placeholder(),
+			oninput: () => {
+				this.#touch();
+				this.#changed();
+			},
+			onfocus: () => this.#touch(),
+			onpointerdown: () => this.#touch(),
+			oncompositionstart: () => this.#touch(),
 			onkeydown: (event: KeyboardEvent) => {
+				this.#touch();
 				// Enter sends, as on qorpera.com; Shift+Enter is a new line, and Enter that ends an IME composition is neither.
 				if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
 				event.preventDefault();
@@ -182,7 +206,10 @@ class NewCompanyView {
 	mount(container: HTMLElement, wrapperClass: string): void {
 		const wrapper = this.el.parentElement;
 		if (wrapper?.parentElement === container && wrapper.className === wrapperClass) return;
+		// Moving the box takes focus from it: whoever is typing keeps typing where they were.
+		if (document.activeElement === this.#idea) this.#caret = caretOf(this.#idea);
 		container.replaceChildren(h("section", { class: wrapperClass, "data-form-owner": "new-company" }, this.el));
+		this.#restoreCaret();
 		// The crown stops when it leaves the page; a new one looks over the box each time it comes back.
 		this.#crown?.dispose();
 		this.#crownStage.replaceChildren();
@@ -210,6 +237,9 @@ class NewCompanyView {
 	adopt(other: NewCompanyView): void {
 		this.#idea.value = other.#idea.value;
 		this.#carried = other.#carried;
+		this.#touched = other.#touched;
+		// Focus goes with the words: the new box takes it when it is put in the page.
+		if (document.activeElement === other.#idea) this.#caret = caretOf(other.#idea);
 		for (const [at, kind] of this.#kinds.entries())
 			kind.setAttribute("aria-pressed", other.#kinds[at]?.getAttribute("aria-pressed") ?? "false");
 		this.#changed();
@@ -219,7 +249,18 @@ class NewCompanyView {
 		const state = this.#hub.store.get();
 		const busy = Boolean(state.creating);
 		const paused = state.foundingAvailable === false;
+		if (busy && document.activeElement === this.#idea) this.#refocus = true;
 		this.#idea.disabled = busy;
+		if (!busy && this.#refocus) {
+			// An opening that failed hands the box back to the founder, caret at the end.
+			this.#refocus = false;
+			// Only when focus went nowhere: a founder who moved on meanwhile keeps their place.
+			const lost = document.activeElement === null || document.activeElement === document.body;
+			if (this.el.isConnected && lost && (state.error || state.creationRetry)) {
+				this.#idea.focus();
+				this.#idea.setSelectionRange(this.#idea.value.length, this.#idea.value.length);
+			}
+		}
 		this.#go.disabled = busy || paused;
 		this.#invite.disabled = busy || paused;
 		for (const kind of this.#kinds) kind.disabled = busy;
@@ -293,7 +334,33 @@ class NewCompanyView {
 		void this.#hub.startFromIdea(this.#idea.value.trim(), "friends");
 	}
 
-	/** An empty box writes out example ideas, as qorpera.com does, until you type or it has focus. It goes
+	/** A table opened with this idea (from the arrow, Invite friends or Resume): the box starts empty, so the next
+	 * company's idea is never written after this one's. */
+	#opened(idea: string): void {
+		if (this.#idea.value.trim() !== idea.trim()) return;
+		this.#refocus = false;
+		this.#idea.value = "";
+		this.#carried = undefined;
+		for (const kind of this.#kinds) kind.setAttribute("aria-pressed", "false");
+		this.#changed();
+	}
+
+	#touch(): void {
+		if (this.#touched) return;
+		this.#touched = true;
+		this.#placeholder();
+	}
+
+	#restoreCaret(): void {
+		const caret = this.#caret;
+		this.#caret = undefined;
+		if (!caret || !this.el.isConnected || this.#idea.disabled) return;
+		this.#idea.focus({ preventScroll: true });
+		this.#idea.setSelectionRange(caret.start, caret.end, caret.direction);
+	}
+
+	/** An empty box writes out example ideas, as qorpera.com does, in its placeholder only (never its text), until
+	 * the founder first focuses it, presses in it or types: from then on it rests on the first example. It goes
 	 * through them twice, then rests on the first. */
 	#placeholder(): void {
 		clearTimeout(this.#typing);
@@ -301,6 +368,7 @@ class NewCompanyView {
 		this.#idea.placeholder = examples[0]!;
 		const still =
 			window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true ||
+			this.#touched ||
 			document.activeElement === this.#idea ||
 			this.#idea.value !== "" ||
 			!this.el.isConnected;
@@ -309,7 +377,12 @@ class NewCompanyView {
 			length = 0,
 			erasing = false;
 		const step = () => {
-			if (!this.el.isConnected || document.activeElement === this.#idea || this.#idea.value !== "") {
+			if (
+				!this.el.isConnected ||
+				this.#touched ||
+				document.activeElement === this.#idea ||
+				this.#idea.value !== ""
+			) {
 				this.#idea.placeholder = examples[0]!;
 				return;
 			}
@@ -334,6 +407,16 @@ class NewCompanyView {
 		};
 		this.#typing = setTimeout(step, 600);
 	}
+}
+
+/** The caret of a box, to put back where it was. */
+function caretOf(box: HTMLTextAreaElement): { start: number; end: number; direction: "forward" | "backward" | "none" } {
+	return {
+		start: box.selectionStart,
+		end: box.selectionEnd,
+		direction:
+			box.selectionDirection === "backward" ? "backward" : box.selectionDirection === "forward" ? "forward" : "none",
+	};
 }
 
 const views = new WeakMap<HubController, NewCompanyView>();

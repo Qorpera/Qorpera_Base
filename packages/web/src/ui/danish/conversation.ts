@@ -251,8 +251,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Stop run": "Stop kørsel",
 
 	// The model account (app/views/session-execution.ts)
-	"Model accounts are unavailable. Refresh to try again.":
-		"Modelkonti er ikke tilgængelige. Opdater for at prøve igen.",
+	"Model accounts are unavailable. Trying again…": "Modelkonti er ikke tilgængelige. Prøver igen…",
 	"Execution history is unavailable.": "Kørselshistorikken er ikke tilgængelig.",
 	"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.":
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",

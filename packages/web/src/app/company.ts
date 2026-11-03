@@ -602,9 +602,14 @@ export class CompanyController {
 			this.#api.cloud,
 			this.profile.profileId,
 			(resource) => this.#onHint(resource),
-			(phase, error) => {
+			(phase, error, recovered) => {
 				if (this.#stopped) return;
-				const back = phase === "connected" && this.#connectedBefore && this.store.get().realtime !== "connected";
+				// Back after a failure, also one the badge never showed (a hidden tab's, inside the grace): read again
+				// what the hints may have missed.
+				const back =
+					phase === "connected" &&
+					this.#connectedBefore &&
+					(this.store.get().realtime !== "connected" || recovered === true);
 				if (phase === "connected") this.#connectedBefore = true;
 				this.store.set({ realtime: phase, realtimeError: error });
 				if (back) this.#catchUp();

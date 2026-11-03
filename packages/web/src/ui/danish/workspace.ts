@@ -12,6 +12,10 @@ export const WORKSPACE: Record<string, string> = {
 		"Samtalens modtager er ændret. Opdater, før du sender.",
 	"This agent is not available in the company.": "Denne agent er ikke tilgængelig i virksomheden.",
 	"Connecting to the cloud": "Forbinder til skyen",
+	// app/new-version.ts
+	"A new version is available.": "Der er en ny version.",
+	Reload: "Genindlæs",
+	"Text you have not sent will be lost. Reload anyway?": "Tekst, du ikke har sendt, går tabt. Genindlæs alligevel?",
 	"This company is not available to your account.": "Denne virksomhed er ikke tilgængelig for din konto.",
 	"Back to companies": "Tilbage til virksomheder",
 	"Your access to this company was revoked.": "Din adgang til denne virksomhed er blevet fjernet.",

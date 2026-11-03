@@ -4,6 +4,7 @@ import { CompanyController } from "../src/app/company.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import {
 	RESUBSCRIBE_DELAYS_MS,
+	RESUME_GRACE_MS,
 	type RealtimePhase,
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
@@ -280,6 +281,126 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 });
 
 describe("the company's live badge recovers without a new tab", () => {
+	it("says nothing about a channel that failed while the page was hidden if it is back within the grace", async () => {
+		const { cloud, channels } = fakeCloud();
+		const health: [RealtimePhase, string | undefined][] = [];
+		let visibility: DocumentVisibilityState = "visible";
+		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+		const subscription = subscribeProfileRealtime(
+			cloud,
+			profileA.profileId,
+			() => {},
+			(phase, error) => health.push([phase, error]),
+		);
+		channels[0]!.status!("SUBSCRIBED");
+		// 3 Nov 2026: Chrome froze the hidden tab, Realtime closed its socket, and on return the badge flashed
+		// "channel error: transport failure" for the second the channel took to come back.
+		visibility = "hidden";
+		document.dispatchEvent(new Event("visibilitychange"));
+		channels[0]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(500);
+		expect(channels).toHaveLength(1);
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(0);
+		// Back: it tries at once, and says nothing while the new channel joins.
+		expect(channels).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1);
+		channels[1]!.status!("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS);
+		expect(health.map(([phase]) => phase)).toEqual(["connecting", "connected", "connected"]);
+		// Hidden for long, its retries failing too: still nothing, and once back the grace starts then. Hidden again
+		// before it ends, it stays held until the page is back.
+		visibility = "hidden";
+		channels[1]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(60_000);
+		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
+		expect(health).toHaveLength(3);
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1);
+		visibility = "hidden";
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS);
+		expect(health).toHaveLength(3);
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1);
+		expect(health).toHaveLength(3);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(health.at(-1)).toEqual(["degraded", "channel error: transport failure"]);
+		subscription.stop();
+	});
+
+	it("holds a failure that arrives just after the page came back for the grace, then says so if it lasts", async () => {
+		const { cloud, channels } = fakeCloud();
+		const health: [RealtimePhase, string | undefined][] = [];
+		const subscription = subscribeProfileRealtime(
+			cloud,
+			profileA.profileId,
+			() => {},
+			(phase, error) => health.push([phase, error]),
+		);
+		channels[0]!.status!("SUBSCRIBED");
+		// A frozen tab hears of its closed socket only once it runs again.
+		document.dispatchEvent(new Event("resume"));
+		channels[0]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(1_000);
+		channels[1]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1_001);
+		expect(health.map(([phase]) => phase)).toEqual(["connecting", "connected"]);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(health).toEqual([
+			["connecting", undefined],
+			["connected", undefined],
+			["degraded", "channel error: transport failure"],
+		]);
+		// Outside the grace a failure shows at once, as before.
+		await vi.advanceTimersByTimeAsync(10_000);
+		channels.at(-1)!.status!("SUBSCRIBED");
+		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
+		expect(health.at(-1)).toEqual(["degraded", "channel error: transport failure"]);
+		subscription.stop();
+	});
+
+	it("reads again what a hidden tab's channel may have missed, though its failure never showed", async () => {
+		const f = fixture();
+		const channels: { status?: Status }[] = [];
+		vi.mocked(f.cloud.supabase.channel).mockImplementation((topic: string) => {
+			const channel = {
+				on: vi.fn(() => channel),
+				subscribe: vi.fn((status: Status) => {
+					channel.status = status;
+					return channel;
+				}),
+				status: undefined as Status | undefined,
+			};
+			if (topic.startsWith(`qorpera-profile-${profileA.profileId}-`)) channels.push(channel);
+			return channel as never;
+		});
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		vi.mocked(f.api.listMemberMentions).mockResolvedValue([]);
+		let visibility: DocumentVisibilityState = "visible";
+		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		try {
+			await controller.start();
+			channels[0]!.status!("SUBSCRIBED");
+			const activity = vi.mocked(f.api.listStaffActivity).mock.calls.length;
+			visibility = "hidden";
+			channels[0]!.status!("CHANNEL_ERROR", transport());
+			await vi.advanceTimersByTimeAsync(500);
+			visibility = "visible";
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			channels.at(-1)!.status!("SUBSCRIBED");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(controller.store.get().realtime).toBe("connected");
+			expect(vi.mocked(f.api.listStaffActivity).mock.calls.length).toBeGreaterThan(activity);
+		} finally {
+			controller.stop();
+		}
+	});
+
 	it("goes from degraded back to connected after the automatic resubscription", async () => {
 		const f = fixture();
 		// The company's own hints channel; the sidebar (and anything else) opens channels of its own.

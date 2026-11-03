@@ -23,11 +23,13 @@ export const PAGE_FRAME_URL = "./page-preview/";
 /** The frame's word that it is ready, and this app's answer carrying the page (public/page-preview/index.html). */
 export const PAGE_READY = "qorpera-page-ready";
 export const PAGE_CONTENT = "qorpera-page";
+/** The frame's word that Escape was pressed in the page and the page left it alone. */
+export const PAGE_ESCAPE = "qorpera-page-escape";
 /** Link hints the browser acts on without asking the page's policy. */
 const NETWORK_HINTS = new Set(["dns-prefetch", "preconnect"]);
 
-function isReady(data: unknown): boolean {
-	return typeof data === "object" && data !== null && (data as { type?: unknown }).type === PAGE_READY;
+function isMessage(data: unknown, type: string): boolean {
+	return typeof data === "object" && data !== null && (data as { type?: unknown }).type === type;
 }
 
 /** Template attributes that make the parser attach a shadow root (the second is the older spelling). */
@@ -78,7 +80,10 @@ export function framePage(html: string): string | null {
 }
 
 /** The pages of one view's frames. Only a frame made here is answered, with its own page, each time it is ready (a
- * page that reloads itself is handed its page again); a frame gone from the page is forgotten. */
+ * page that reloads itself is handed its page again); a frame gone from the page is forgotten. Escape pressed in a
+ * frame's page reaches the app as Escape pressed on the frame, so what shows the page closes as it does for Escape
+ * anywhere else in it (a key pressed in a frame never reaches the app on its own: 3 Nov 2026, a page shown across
+ * the window would not close, and the keys typed next went into the page). */
 export class PageFrames {
 	readonly #pages = new Map<HTMLIFrameElement, string>();
 	/** Frames that have had their page: once out of the page, they are done. */
@@ -106,7 +111,14 @@ export class PageFrames {
 	}
 
 	#answer(event: MessageEvent): void {
-		if (!isReady(event.data) || event.source === null) return;
+		if (event.source === null) return;
+		if (isMessage(event.data, PAGE_ESCAPE)) {
+			for (const frame of this.#pages.keys())
+				if (frame.isConnected && frame.contentWindow === event.source)
+					frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			return;
+		}
+		if (!isMessage(event.data, PAGE_READY)) return;
 		for (const [frame, html] of this.#pages) {
 			if (!frame.isConnected) this.#pages.delete(frame);
 			// The frame has no origin, so its window is the only thing that tells it apart.
