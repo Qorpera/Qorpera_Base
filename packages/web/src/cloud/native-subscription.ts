@@ -62,7 +62,8 @@ export interface WebAccountLogin {
 	connectionIds: readonly string[];
 }
 export interface WebAccountLogins {
-	/** Whether sign-ins here are account sign-ins (the switch is on and the shared vault serves this company). */
+	/** Whether sign-ins here are account sign-ins (the switch is on, the shared vault serves this company and the
+	 * company takes sign-ins in the vault: 20260930554000). */
 	enabled: boolean;
 	logins: readonly WebAccountLogin[];
 }
