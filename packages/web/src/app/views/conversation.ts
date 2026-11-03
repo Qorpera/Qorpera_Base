@@ -898,8 +898,10 @@ export class ConversationView {
 		(first ?? this.#menu).focus();
 	}
 
-	/** Opens a page of the menu (Model, Login) in place of its main page, or goes back from it. */
-	#setSubmenu(submenu: ComposerModels | ComposerLogins, open: boolean): void {
+	/** Opens a page of the menu (Model, Login) in place of its main page, or goes back from it. Going back,
+	 * focus returns to the page's row, or to the menu while that row can't take it (hidden, or disabled
+	 * during a read), so Escape and the arrows keep working. */
+	#setSubmenu(submenu: ComposerModels | ComposerLogins, open: boolean, restoreFocus = true): void {
 		if (open && (submenu.button.disabled || submenu.button.hidden)) return;
 		this.#menuMain.hidden = open;
 		submenu.el.hidden = !open;
@@ -907,8 +909,10 @@ export class ConversationView {
 		if (open) {
 			submenu.focus();
 			if (submenu === this.#models) void this.#models.refresh();
-		} else if (submenu.button.hidden) this.#focusMenu();
-		else submenu.button.focus();
+		} else if (restoreFocus) {
+			if (submenu.button.hidden || submenu.button.disabled) this.#focusMenu();
+			else submenu.button.focus();
+		}
 	}
 
 	#openDetails(): void {
@@ -1726,8 +1730,10 @@ export class ConversationView {
 		);
 		this.#execution?.update();
 		this.#logins?.update(room, this.#submitting);
-		// The Login page leaves with its row: the member has no other login that can pay now.
-		if (this.#logins?.button.hidden && !this.#logins.el.hidden) this.#setSubmenu(this.#logins, false);
+		// The Login page leaves with its row: the member has no other login that can pay now. Focus moves only
+		// if it was in the menu (the member may be typing in the field).
+		if (this.#logins?.button.hidden && !this.#logins.el.hidden)
+			this.#setSubmenu(this.#logins, false, this.#menu.contains(document.activeElement));
 		this.#run?.update(
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
 			canWrite,

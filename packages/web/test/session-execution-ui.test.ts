@@ -1558,6 +1558,10 @@ describe("the composer's Login page", () => {
 		login(page, "Model account 2").click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// Going back while the row is disabled leaves focus in the menu, so Escape still closes it.
+		key("Escape");
+		expect(page.hidden).toBe(true);
+		expect(document.activeElement).toBe(buttonNamed(f.view, "Attach files"));
 		pending.resolve(true);
 		await settle();
 		expect(login(page, "Model account 2").disabled).toBe(false);
@@ -1586,6 +1590,42 @@ describe("the composer's Login page", () => {
 		await settle();
 		expect(loginRow(f.view).disabled).toBe(true);
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("leaves focus in the message field when the Login row goes away", async () => {
+		const f = setup(false, withUsage([20, 80]));
+		await settle();
+		const page = openLogins(f.view);
+		const field = f.view.el.querySelector("textarea")!;
+		field.focus();
+		f.listConnections.mockResolvedValue(withUsage([0, 80]));
+		refresh();
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(true);
+		expect(page.hidden).toBe(true);
+		expect(document.activeElement).toBe(field);
+	});
+
+	it("offers no pick where the cloud chooses until it has answered again after a send", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([80, 40]), select, undefined, choose);
+		await settle();
+		expect(loginRow(f.view).hidden).toBe(false);
+		// A read made while a message is on its way does not ask the cloud: a pick then would stay local.
+		f.company.conversation(session.sessionId).set({ sending: true });
+		refresh();
+		await settle();
+		f.company.conversation(session.sessionId).set({ sending: false });
+		await settle();
+		expect(select).toHaveBeenCalledOnce();
+		expect(loginRow(f.view).hidden).toBe(true);
+		refresh();
+		await settle();
+		expect(select).toHaveBeenCalledTimes(2);
+		expect(loginRow(f.view).hidden).toBe(false);
+		expect(choose).not.toHaveBeenCalled();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
 	it("opens and closes from the keyboard as the Model page does", async () => {

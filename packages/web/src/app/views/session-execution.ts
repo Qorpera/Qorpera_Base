@@ -372,10 +372,15 @@ export class SessionExecutionView {
 
 	/** The member's own logins that can pay for this conversation now, in the order and with the names
 	 * "Choose a login to continue" gives them, the conversation's own marked: what the composer's Login
-	 * page lists. None where the member's pick would not reach the cloud. */
+	 * page lists. None where the member's pick would not reach the cloud: where the cloud chooses, also
+	 * after a read made while a message was on its way, which has no answer from the cloud to move. */
 	get logins(): readonly SessionLogin[] {
 		const observed = this.#observed;
-		if (!observed || (this.#serverSelection && !this.#native.chooseSessionAccount)) return [];
+		if (
+			!observed ||
+			(this.#native.selectSessionAccount && (!this.#serverSelection || !this.#native.chooseSessionAccount))
+		)
+			return [];
 		const available = this.#available();
 		const own = this.#own();
 		return available.map((connectionId) => ({
