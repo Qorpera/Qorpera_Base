@@ -353,6 +353,24 @@ export class SessionExecutionView {
 		}
 	}
 
+	/** When the usage limit of the member's own login behind a sponsor binding (a failed run's payer) resets, from the
+	 * provider's own usage reading: the latest reset still ahead of its full windows, as the agent reads it
+	 * (qorpera_worker_usage_limit_text, 20260930549300). Unknown for another member's login, which this member's list
+	 * does not hold, and never the cloud's estimate for a limit with no known reset (usageLimitResetAt may be the
+	 * signal's time plus six hours). */
+	usageLimitResetFor(sponsorBindingId: string | undefined, now = Date.now()): string | undefined {
+		let latest: string | undefined;
+		for (const connection of this.#observed?.connections ?? []) {
+			if (!sponsorBindingId || connection.sponsorBindingId !== sponsorBindingId) continue;
+			for (const window of connection.providerAccountUsage?.windows ?? []) {
+				const at = Date.parse(window.resetAt ?? "");
+				if (window.usedPercent >= 100 && at > now && (latest === undefined || at > Date.parse(latest)))
+					latest = window.resetAt;
+			}
+		}
+		return latest;
+	}
+
 	/** The member still has this login: listed, and not disconnected (revoked). */
 	#keeps(connectionId: string): boolean {
 		return (this.#observed?.connections ?? []).some(

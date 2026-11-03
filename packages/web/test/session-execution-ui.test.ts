@@ -8,6 +8,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -1656,5 +1657,81 @@ describe("the composer's Login page", () => {
 		expect(f.view.el.querySelector<HTMLElement>(".composer-menu")?.hidden).toBe(true);
 		expect(document.activeElement).toBe(f.view.el.querySelector('[aria-label="Chat settings and more"]'));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+});
+
+describe("a failed run at its login's usage limit", () => {
+	const LIMIT =
+		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account.";
+	it("says when the limit resets, from the member's own login that paid for the run", async () => {
+		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
+		const observed = connections();
+		// The first login's weekly window is full until `reset`; its 5-hour window has room. The second login has room.
+		const f = setup(false, {
+			...observed,
+			connections: observed.connections.map((connection, index) => ({
+				...connection,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [
+						{ id: "primary" as const, label: "5 hours", usedPercent: 40, resetAt: later },
+						{ id: "secondary" as const, label: "Week", usedPercent: index === 0 ? 100 : 70, resetAt: reset },
+					],
+				},
+			})),
+		});
+		await settle();
+		const run = {
+			runId: id(170),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const recovery = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]",
+			usageLimit: true,
+			unsettledOperations: 0,
+		};
+		const reason = () => f.view.el.querySelector(".run-failure-reason")?.textContent;
+		// The first login paid (its sponsor binding): its full window's reset.
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(100) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again when the limit resets (${fmtTime(reset)}).`);
+		// The second login has no full window: no time is known.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(101) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		// Another member's login, which this member's list does not hold, or a cloud that names no binding: no time.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(199) } } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		f.company.store.set({ recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		// The same login refused by ChatGPT: the member checks it or picks another, and no reset is said.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					sponsorBindingId: id(100),
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(reason()).toBe(
+			"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
+		);
+		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
+			"Dismiss",
+		]);
 	});
 });

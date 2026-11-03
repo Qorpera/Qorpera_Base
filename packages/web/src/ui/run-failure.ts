@@ -1,4 +1,4 @@
-import { button, h } from "./dom.ts";
+import { button, fmtTime, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { phrase, t } from "./preferences.ts";
 
@@ -8,6 +8,9 @@ import { phrase, t } from "./preferences.ts";
 export type RunFailureKind =
 	| "computer_hours"
 	| "usage_limit"
+	| "provider_refused"
+	| "connection"
+	| "login_unavailable"
 	| "credential"
 	| "dispatch"
 	| "completion_refused"
@@ -35,14 +38,26 @@ export function classifyRunFailure(
 	// contact minutes later.
 	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
-	// It names Qorpera's own machinery, not a member's account, so its words never decide the class: the step stays
-	// "bridge", as it was before the code. Only its category can: a step that ran out of time
+	// Most name Qorpera's own machinery, not a member's account, so the words inside a code never decide the class: the
+	// step stays "bridge", as it was before the code. Only its category can (the part after the colon, from the runtime's
+	// closed list), or a whole code that names one step: a step that ran out of time
 	// ("[code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]") took too long, it was not refused (Jonas, 21 October 2026).
 	const timedOut = / \[code=(?:[A-Z0-9_]{1,42}:)?(?:[A-Z0-9_]{0,41}_)?(?:TIMEOUT|TIMED_OUT)\]/.test(lastError ?? "");
 	// A step whose code's category is "cancelled" ("[code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]") was stopped from
 	// Qorpera's side while it ran, e.g. when the run's authority could not be read through a database outage (28
 	// October 2026): it was not refused.
 	const stepCancelled = / \[code=[A-Z0-9_]{1,42}:CANCELLED\]/.test(lastError ?? "");
+	// The category "provider_failed": Codex ended the turn with the model provider's own error (ChatGPT refused the
+	// login's request, as for a workspace plan's login whose Codex turns all failed on 3 November 2026, or could not
+	// answer it), or refused one of the run's requests. The member checks the login paying for the run first.
+	const providerFailed = / \[code=[A-Z0-9_]{1,42}:PROVIDER_FAILED\]/.test(lastError ?? "");
+	// The category "transport_unavailable": a connection dropped or could not be made while a step worked (to ChatGPT,
+	// or a cloud call of the run). It is usually brief, so the run is worth trying again.
+	const connectionLost = / \[code=[A-Z0-9_]{1,42}:TRANSPORT_UNAVAILABLE\]/.test(lastError ?? "");
+	// The host could not download the run's login before the model started (the whole code, with or without a category
+	// other than a timeout or a cancellation, which read as theirs above): the login vault or its store refused it (a
+	// login signed out since, a binding it does not accept) or failed.
+	const loginUnavailable = / \[code=NATIVE_CREDENTIAL_DOWNLOAD(?::[A-Z0-9_]{1,42})?\]/.test(lastError ?? "");
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	// A rate limit is not a usage limit: it passes by itself (contract 17).
 	if (usageLimit === undefined && /usage limit|quota/i.test(error)) return "usage_limit";
@@ -60,6 +75,9 @@ export function classifyRunFailure(
 	if (timedOut || /timed? ?out|did not respond/i.test(error)) return "step_timeout";
 	// Only runs from before the time limit was removed carry an expired run deadline.
 	if (/deadline expired/i.test(error)) return "timeout";
+	if (providerFailed) return "provider_refused";
+	if (connectionLost) return "connection";
+	if (loginUnavailable) return "login_unavailable";
 	if (/bridge request failed/i.test(error)) return "bridge";
 	if (jobStatus === "cancelled") return "cancelled";
 	return "other";
@@ -70,6 +88,14 @@ const REASONS: Record<RunFailureKind, string> = {
 	// A usage limit stops the work: it never moves to another account (founder decision 2026-10-01).
 	usage_limit: phrase(
 		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+	),
+	// The member checks the login or picks another one; the work never moves to another login by itself.
+	provider_refused: phrase(
+		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
+	),
+	connection: phrase("The run lost its connection while it was working. This is usually brief, so try again."),
+	login_unavailable: phrase(
+		"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.",
 	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
@@ -105,13 +131,22 @@ export function manageUsageLink(): HTMLElement {
 	return link;
 }
 
-/** Why a run stopped, in the member's words. */
+/** Why a run stopped, in the member's words. `resetsAt` is when the usage limit of the login that paid for the run
+ * resets, when the web knows it (SessionExecutionView.usageLimitResetFor); it is said only for a usage limit, and only
+ * while it is ahead. */
 export function runFailureReason(
 	lastError: string | undefined,
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
+	resetsAt?: string,
 ): string {
-	return t(REASONS[classifyRunFailure(lastError, jobStatus, usageLimit)]);
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
+	if (kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now())
+		return t(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).",
+			{ time: fmtTime(resetsAt) },
+		);
+	return t(REASONS[kind]);
 }
 
 // The coding executor's own words for a turn that ended with no coding_finish or
@@ -130,6 +165,15 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	),
 	usage_limit: phrase(
 		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+	),
+	provider_refused: phrase(
+		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	connection: phrase(
+		"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.",
+	),
+	login_unavailable: phrase(
+		"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 	),
 	credential: phrase(
 		"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.",
@@ -175,10 +219,11 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 }
 
 /** Whether the run was interrupted rather than refused: Qorpera lost contact with
- * it, a step got no answer in time, it was stopped for time, cancelled, or never
- * got a computer. Those are worth trying again as they are.
- * A reached usage limit, a disconnected account or a company out of computer hours
- * need someone to act first, so their card offers Dismiss only and says what to do.
+ * it, a step got no answer in time or lost its connection, it was stopped for time,
+ * cancelled, or never got a computer. Those are worth trying again as they are.
+ * A reached usage limit, a disconnected account, a login ChatGPT refused or that
+ * could not be loaded, or a company out of computer hours need someone to act
+ * first, so their card offers Dismiss only and says what to do.
  * A refused completion keeps the Try again it had when it read as lost contact: the
  * card still hides it while the run's save is unsettled (canRetryFailedRun), and
  * its reason says a person checks that save first. */
@@ -192,6 +237,7 @@ export function runFailureInterrupted(
 		kind === "lost" ||
 		kind === "completion_refused" ||
 		kind === "step_timeout" ||
+		kind === "connection" ||
 		kind === "timeout" ||
 		kind === "dispatch" ||
 		kind === "cancelled"

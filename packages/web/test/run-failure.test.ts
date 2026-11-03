@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { fmtTime } from "../src/ui/dom.ts";
 import { codingFailureReason, runFailureInterrupted, runFailureReason } from "../src/ui/run-failure.ts";
 
 // The runner's own failure when the cloud refuses a run's completion for good (runtime cloud-runner-worker.ts).
 const COMPLETION_REFUSED =
 	"Runner completion was refused: the run left unsettled work, such as an open operation receipt [code=RUN_COMPLETION_REFUSED]";
+// The runner's report of a refused bridge request, as production stored it (3 November 2026), for a code.
+const BRIDGE = (code: string) => `Native provider bridge request failed (422) [code=${code}]`;
+const PROVIDER_REFUSED =
+	/^ChatGPT refused or could not answer this run's request\. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation\.$/;
+const CONNECTION_LOST = /^The run lost its connection while it was working\. This is usually brief, so try again\.$/;
+const LOGIN_UNAVAILABLE =
+	/^The run could not load the login that pays for it\. Check that login in Settings → AI subscriptions, or choose another login for this conversation\.$/;
+const QORPERA_REFUSED = /^The run started, but one of its steps was refused\. The problem is on Qorpera's side\.$/;
 
 describe("why a run stopped, in the member's words", () => {
 	it.each([
@@ -81,6 +90,44 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/one of its steps was refused/,
 		],
+		// The model provider's own error, not Qorpera's machinery (3 November 2026: a ChatGPT workspace plan's login whose
+		// every Codex turn failed): the category decides, whatever the step.
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
+		[
+			`${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}; durable attempt output requires review`,
+			"failed",
+			PROVIDER_REFUSED,
+		],
+		[BRIDGE("NATIVE_CODEX_TURN_START:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
+		[BRIDGE("NATIVE_CODEX_THREAD_START:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED],
+		// A connection that dropped or could not be made, to ChatGPT or a cloud call (31 October 2026, while the database
+		// stopped answering): usually brief.
+		[BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"), "failed", CONNECTION_LOST],
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE"), "failed", CONNECTION_LOST],
+		// The run's login could not be downloaded before the model started; a download that got no answer is a timeout.
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD"), "failed", LOGIN_UNAVAILABLE],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:UNKNOWN"), "failed", LOGIN_UNAVAILABLE],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT"), "failed", /steps got no answer in time/],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD:CANCELLED"), "failed", /^Qorpera lost contact with this run\./],
+		// Qorpera's own machinery stays Qorpera's: the company's context, a coding session's own step, opening or sealing
+		// the login on the host, the host's own credential, a spent budget the cloud did not record as a usage limit.
+		[BRIDGE("NATIVE_COMPANY_CONTEXT:UNKNOWN"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODING_SESSION:UNKNOWN"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CREDENTIAL_OPENING"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CREDENTIAL_UPLOAD:UNKNOWN"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_HOST_CREDENTIAL"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED"), "failed", QORPERA_REFUSED],
+		// Only a whole category or a whole code decides, never words inside a code.
+		[BRIDGE("NATIVE_PROVIDER_FAILED_WATCH:UNKNOWN"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED_AGAIN"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_TRANSPORT_UNAVAILABLE"), "failed", QORPERA_REFUSED],
+		[BRIDGE("NATIVE_CREDENTIAL_DOWNLOADER"), "failed", QORPERA_REFUSED],
+		// The runner's own provider of computers, as production stored it: no computer, not ChatGPT.
+		[
+			"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422) [code=PROVIDER_ACQUIRE]",
+			"failed",
+			/^No computer could be started for this run\./,
+		],
 		// A run has no time limit any more; only older runs carry a deadline.
 		["Execution deadline expired before durable completion", "failed", /took too long/],
 		["No computer could start the run within a day", "failed", /No computer could be started/],
@@ -125,6 +172,36 @@ describe("why a run stopped, in the member's words", () => {
 		// A rate limit passes by itself.
 		expect(runFailureReason("Rate limit reached for requests", "failed")).not.toMatch(limit);
 	});
+
+	it("says when the limit resets, when the paying login's reset is known and ahead", () => {
+		const budget = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED");
+		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		expect(runFailureReason(budget, "failed", true, reset)).toBe(
+			`The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets (${fmtTime(reset)}).`,
+		);
+		// A reset that has passed, or none known: no time.
+		const plain =
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.";
+		expect(runFailureReason(budget, "failed", true, new Date(Date.now() - 60_000).toISOString())).toBe(plain);
+		expect(runFailureReason(budget, "failed", true)).toBe(plain);
+		// A reset never makes a usage limit of another failure.
+		expect(runFailureReason(BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", false, reset)).toMatch(
+			PROVIDER_REFUSED,
+		);
+		expect(runFailureReason(budget, "failed", false, reset)).toMatch(QORPERA_REFUSED);
+	});
+
+	it("never says the work moves to another login by itself", () => {
+		for (const error of [
+			BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"),
+			BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD"),
+			BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"),
+		]) {
+			const reason = runFailureReason(error, "failed", false);
+			expect(reason).not.toMatch(/moves? to another|switch|automatic/i);
+			expect(reason).not.toMatch(/Qorpera's side/);
+		}
+	});
 });
 
 describe("whether a stopped run is worth trying again as it is", () => {
@@ -154,6 +231,11 @@ describe("whether a stopped run is worth trying again as it is", () => {
 			true,
 		],
 		["Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]", "failed", false],
+		// ChatGPT refused the login's request: the member checks the login or picks another one first.
+		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", false],
+		// A dropped connection is usually brief.
+		[BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"), "failed", true],
+		[BRIDGE("NATIVE_COMPANY_CONTEXT:UNKNOWN"), "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
 		expect(runFailureInterrupted(error, status)).toBe(expected);
@@ -211,6 +293,19 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		[
 			`${DID_NOT_FINISH}Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT]`,
 			/^One of the session's steps got no answer in time\./,
+		],
+		// As production stored it (3 November 2026): the session's login was refused by ChatGPT.
+		[
+			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED")}`,
+			/^ChatGPT refused or could not answer the session's request\. Check the login that pays for it in Settings → AI subscriptions\./,
+		],
+		[
+			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE")}`,
+			/^The session lost its connection while it was working\./,
+		],
+		[
+			`${DID_NOT_FINISH}${BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD")}`,
+			/^The session could not load the login that pays for it\. Check that login in Settings → AI subscriptions\./,
 		],
 		[`${DID_NOT_FINISH}Execution deadline expired before durable completion`, /^The session took too long/],
 		[

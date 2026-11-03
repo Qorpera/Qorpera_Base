@@ -3335,7 +3335,12 @@ export class ConversationView {
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit)
+					? runFailureReason(
+							recovery.lastError,
+							recovery.jobStatus,
+							recovery.usageLimit,
+							this.#execution?.usageLimitResetFor(recovery.sponsorBindingId),
+						)
 					: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
