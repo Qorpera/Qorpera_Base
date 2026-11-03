@@ -3,10 +3,12 @@
  * An agent publishes a static site from the company folder; this function serves it at
  * https://sites.qorpera.com/<slug>/, behind the site's password. The sites host's front (envoy-front, the sites virtual
  * host in deploy/sites/envoy-front-sites.yaml) rewrites every path there to /functions/v1/site-serve/<path> and sets
- * x-forwarded-host to the sites host; the API host answers 404 for /functions/v1/site-serve, so agent-made content is
- * never served from api.qorpera.com or app.qorpera.com. The function also refuses any request whose x-forwarded-host
- * (else host) is not the sites host. It holds no company data: the database (qorpera_site_serve, qorpera_site_unlock,
- * service role only) decides every answer, and the function reaches it with the platform's service key.
+ * x-forwarded-host to the sites host; the API host answers 404 for /functions/v1/site-serve and replaces a visitor's
+ * x-forwarded-host with the name the request asked for, so agent-made content is never served from api.qorpera.com or
+ * app.qorpera.com. The function also refuses any request whose x-forwarded-host is not exactly the sites host (Host
+ * never decides). It holds no company data: the database (qorpera_site_serve, qorpera_site_unlock, service role only)
+ * decides every answer, and the function reaches it with the platform's service key. The password limits key on
+ * CF-Connecting-IP only, which Cloudflare sets itself.
  *
  * Every site shares the one origin, so isolation comes from the browser: a site's files are served with a CSP
  * `sandbox` that leaves out allow-same-origin, so each document has an opaque origin and cannot read another site's
@@ -529,10 +531,37 @@ function cookieTokens(header: string | null): string[] {
 	return tokens.slice(0, 3);
 }
 
-/** The host the request came in on: the sites host front's x-forwarded-host, else Host. */
-function requestHost(request: Request): string {
+/** Whether the request came in on the sites host. Only x-forwarded-host decides, and only the front sets it: its sites
+ * host overwrites a visitor's with the sites host, its API host replaces a visitor's with the name the request asked
+ * for (deploy/sites/envoy-front-sites.yaml). It must be exactly the sites origin's host: one value (no comma list, no
+ * second header), no other port, no trailing dot; letters in any case. Host never decides: behind the gateway it is
+ * whatever the caller sent. */
+export function onSitesHost(request: Request, origin: URL): boolean {
 	const forwarded = request.headers.get("x-forwarded-host");
-	return ((forwarded ?? request.headers.get("host") ?? "").split(",")[0] ?? "").trim().toLowerCase();
+	return forwarded !== null && forwarded.trim().toLowerCase() === origin.host;
+}
+
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+/** The visitor's address for the password limits: CF-Connecting-IP, which Cloudflare's edge sets on every request it
+ * passes on (replacing a visitor's own), when it holds exactly one IPv4 or IPv6 address; else "", one bucket shared by
+ * every such request. An IPv6 address comes back in its canonical form (the database counts its /64) and an
+ * IPv4-mapped one as its IPv4. Never X-Forwarded-For, X-Real-IP, True-Client-IP or Forwarded: a visitor sets those. */
+export function clientAddress(header: string | null): string {
+	const value = (header ?? "").trim();
+	if (IPV4.test(value)) return value;
+	if (!value.includes(":") || !/^[0-9A-Fa-f:.]{2,45}$/.test(value)) return "";
+	let address: string;
+	try {
+		address = new URL(`http://[${value}]/`).hostname.slice(1, -1);
+	} catch {
+		return "";
+	}
+	const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(address);
+	if (!mapped) return address;
+	const high = Number.parseInt(mapped[1] ?? "", 16);
+	const low = Number.parseInt(mapped[2] ?? "", 16);
+	return [high >> 8, high & 255, low >> 8, low & 255].join(".");
 }
 
 /** Reads a body up to `limit` bytes; null when it is longer. */
@@ -594,7 +623,7 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 	const lang = language(request.headers.get("accept-language"));
 	const route = ROUTE.exec(new URL(request.url).pathname);
 	// Only through the sites host: never as the API's or the app's origin.
-	if (!route || requestHost(request) !== origin.host) return notFound(request, lang);
+	if (!route || !onSitesHost(request, origin)) return notFound(request, lang);
 	const rest = route[1] ?? "/";
 	const method = request.method;
 	if (rest === "/" || rest === "/robots.txt") {
@@ -701,11 +730,7 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 	let answer: UnlockAnswer;
 	try {
 		answer = parseUnlockAnswer(
-			await options.store.unlock(
-				slug,
-				password,
-				(request.headers.get("cf-connecting-ip") ?? "").trim().slice(0, 64),
-			),
+			await options.store.unlock(slug, password, clientAddress(request.headers.get("cf-connecting-ip"))),
 		);
 	} catch (error) {
 		return unavailable(request, lang, error);

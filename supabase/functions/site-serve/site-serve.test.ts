@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
 	byteRange,
 	CONTENT_SECURITY_POLICY,
+	clientAddress,
 	escapeHtml,
 	handleSiteServe,
 	isSitePath,
@@ -11,6 +12,7 @@ import {
 	MAX_FILE_BYTES,
 	MAX_STORE_ANSWER_BYTES,
 	MAX_UNLOCK_BODY_BYTES,
+	onSitesHost,
 	PAGE_SECURITY_POLICY,
 	PostgrestSiteStore,
 	parseServeAnswer,
@@ -132,26 +134,79 @@ function assertContent(response: Response, hash: string): void {
 }
 
 describe("site-serve: the host and the root", () => {
-	it("serves only on the sites host, from x-forwarded-host or else Host", async () => {
+	it("serves only when x-forwarded-host is exactly the sites host, in any case", async () => {
 		const { calls, store: siteStore } = store();
-		for (const headers of [{ "x-forwarded-host": "api.qorpera.com" }, { "x-forwarded-host": "" }]) {
-			const response = await serve(request(`/shop/~${TOKEN}/`, { headers }), siteStore);
-			assert.equal(response.status, 404);
+		for (const host of ["sites.qorpera.com", "SITES.Qorpera.COM", " sites.qorpera.com "]) {
+			const response = await serve(
+				request(`/shop/~${TOKEN}/`, { headers: { "x-forwarded-host": host } }),
+				siteStore,
+			);
+			assert.equal(response.status, 200, host);
+		}
+		assert.equal(calls.serve.length, 3);
+	});
+
+	it("refuses every other forwarded host unasked: the API's, a list, a port, a trailing dot, a look-alike", async () => {
+		const { calls, store: siteStore } = store();
+		for (const host of [
+			"api.qorpera.com",
+			"app.qorpera.com",
+			"",
+			// A list is never the front's: its sites host overwrites, its API host replaces a visitor's with its own Host.
+			"sites.qorpera.com, api.qorpera.com",
+			"api.qorpera.com, sites.qorpera.com",
+			"sites.qorpera.com,sites.qorpera.com",
+			// The front takes these to its API host, which passes the Host it was asked for: never the sites host.
+			"sites.qorpera.com:443",
+			"sites.qorpera.com:8080",
+			"sites.qorpera.com.",
+			"sites.qorpera.com.evil.example",
+			"evil.example/sites.qorpera.com",
+			"xsites.qorpera.com",
+			"https://sites.qorpera.com",
+		]) {
+			const response = await serve(
+				request(`/shop/~${TOKEN}/`, { headers: { "x-forwarded-host": host } }),
+				siteStore,
+			);
+			assert.equal(response.status, 404, host);
 			assertPage(response);
 		}
-		const noForwarded = new Request(`${BASE}/shop/~${TOKEN}/`, { headers: { host: "app.qorpera.com" } });
-		assert.equal((await serve(noForwarded, siteStore)).status, 404);
+		// Two headers arrive joined as a list.
+		const twice = new Headers({ "x-forwarded-host": "sites.qorpera.com" });
+		twice.append("x-forwarded-host", "sites.qorpera.com");
+		assert.equal((await serve(new Request(`${BASE}/shop/~${TOKEN}/`, { headers: twice }), siteStore)).status, 404);
 		assert.equal(calls.serve.length, 0);
-		// No x-forwarded-host: Host decides.
-		const byHost = new Request(`${BASE}/shop/~${TOKEN}/`, { headers: { host: "sites.qorpera.com" } });
-		assert.equal((await serve(byHost, siteStore)).status, 200);
-		// A comma list: its first entry.
-		calls.serve.length = 0;
-		const listed = await serve(
-			request(`/shop/~${TOKEN}/`, { headers: { "x-forwarded-host": "SITES.qorpera.com, api.qorpera.com" } }),
-			siteStore,
+	});
+
+	it("never takes Host for the sites host: without x-forwarded-host nothing is served", async () => {
+		const { calls, store: siteStore } = store();
+		for (const host of ["sites.qorpera.com", "app.qorpera.com"]) {
+			const bare = new Request(`${BASE}/shop/~${TOKEN}/`, { headers: { host } });
+			assert.equal((await serve(bare, siteStore)).status, 404, host);
+			const unlock = new Request(`${BASE}/shop/.qorpera/unlock`, {
+				method: "POST",
+				body: "password=pw",
+				headers: { host, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+			});
+			assert.equal((await serve(unlock, siteStore)).status, 404, host);
+		}
+		assert.equal(calls.serve.length, 0);
+		assert.equal(calls.unlock.length, 0);
+	});
+
+	it("takes the origin's own port when it names one", async () => {
+		const answer = (host: string) =>
+			handleSiteServe(request(`/shop/~${TOKEN}/`, { headers: { "x-forwarded-host": host } }), {
+				origin: "https://sites.example.test:8443",
+				store: store().store,
+			});
+		assert.equal((await answer("sites.example.test:8443")).status, 200);
+		assert.equal((await answer("sites.example.test")).status, 404);
+		assert.equal(
+			onSitesHost(request("/", { headers: { "x-forwarded-host": "sites.qorpera.com" } }), new URL(ORIGIN)),
+			true,
 		);
-		assert.equal(listed.status, 200);
 	});
 
 	it("takes the path with or without /functions/v1, and nothing else", async () => {
@@ -599,6 +654,80 @@ describe("site-serve: the password form", () => {
 			siteStore,
 		);
 		assert.equal(bare.status, 303);
+	});
+
+	it("keys the limits on CF-Connecting-IP only, and only when it holds one address", async () => {
+		const cases: [Record<string, string>, string][] = [
+			[{ "cf-connecting-ip": "203.0.113.9" }, "203.0.113.9"],
+			// The database counts an IPv6 address's /64; any spelling of it is one address.
+			[{ "cf-connecting-ip": "2001:DB8:0:0:0:0:0:1" }, "2001:db8::1"],
+			[{ "cf-connecting-ip": "::ffff:203.0.113.9" }, "203.0.113.9"],
+			// Headers a visitor sets, which Cloudflare passes on or appends to: never a key.
+			[
+				{
+					"cf-connecting-ip": "203.0.113.9",
+					"x-forwarded-for": "198.51.100.1",
+					"x-real-ip": "198.51.100.2",
+					"true-client-ip": "198.51.100.3",
+					forwarded: "for=198.51.100.4",
+				},
+				"203.0.113.9",
+			],
+			[
+				{
+					"x-forwarded-for": "198.51.100.1",
+					"x-real-ip": "198.51.100.2",
+					"true-client-ip": "198.51.100.3",
+					forwarded: "for=198.51.100.4",
+				},
+				"",
+			],
+			// Not one address: one key shared by every such request, never a fresh one per spelling.
+			[{ "cf-connecting-ip": "203.0.113.9, 198.51.100.1" }, ""],
+			[{ "cf-connecting-ip": `guess-${"x".repeat(40)}` }, ""],
+		];
+		for (const [headers, client] of cases) {
+			const { calls, store: siteStore } = store(undefined, { state: "wrong" });
+			await serve(post("shop", "password=pw", headers), siteStore);
+			assert.deepEqual(calls.unlock, [["shop", "pw", client]], JSON.stringify(headers));
+		}
+		for (const value of [
+			"203.0.113.9:443",
+			"203.0.113.9/8",
+			"203.0.113.09",
+			"256.0.0.1",
+			"203.0.113",
+			"fe80::1%eth0",
+			"[2001:db8::1]",
+			"2001:db8::1/64",
+			"2001:db8::1::2",
+			"1:2:3:4:5:6:7:8:9",
+			"localhost",
+			"",
+		])
+			assert.equal(clientAddress(value), "", value);
+		assert.equal(clientAddress(null), "");
+		assert.equal(clientAddress("2001:db8:aa:bb:1:2:3:4"), "2001:db8:aa:bb:1:2:3:4");
+		assert.equal(clientAddress("0:0:0:0:0:ffff:c000:0201"), "192.0.2.1");
+		assert.equal(clientAddress("::"), "::");
+	});
+
+	it("keeps one counter a slug: another case or an escaped letter is no site name and reaches no limit", async () => {
+		const { calls, store: siteStore } = store();
+		// The front decodes an escaped letter (normalize_path) before the function sees it, so /%73hop/ arrives as /shop/;
+		// one that still arrives escaped is refused, as is any capital.
+		for (const slug of ["Shop", "SHOP", "%73hop", "sh%6Fp", "shop%2D1"]) {
+			const response = await serve(
+				request(`/${slug}/.qorpera/unlock`, {
+					method: "POST",
+					body: "password=pw",
+					headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN },
+				}),
+				siteStore,
+			);
+			assert.equal(response.status, 404, slug);
+		}
+		assert.equal(calls.unlock.length, 0);
 	});
 
 	it("sends GET of the form's address to the site, and refuses other methods", async () => {

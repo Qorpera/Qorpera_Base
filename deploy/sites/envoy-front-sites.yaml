@@ -1,14 +1,20 @@
-# Company sites (deploy/sites/): the front door's two changes, for /opt/dbhome/front/envoy-front.yaml (the dbhome kit's
+# Company sites (deploy/sites/): the front door's changes, for /opt/dbhome/front/envoy-front.yaml (the dbhome kit's
 # front/envoy-front.yaml, service api-front). This block replaces that file's `virtual_hosts:` block whole, from
 # `virtual_hosts:` to the api host's last route, at the same indentation (18 spaces). Against the file of 3 Nov 2026 it
-# changes two things and nothing else:
+# changes three things and nothing else:
 #  1. A virtual host `sites`, before the api host: every path on sites.qorpera.com goes to the site-serve function
 #     (prefix_rewrite /functions/v1/site-serve/), and nothing else of the stack is reachable on that name (no /rest,
 #     /auth, /storage, /realtime or other function). It sets x-forwarded-host to the sites host, replacing a visitor's
-#     own; the function serves only when that header names it.
+#     own; the function serves only when that header is exactly the sites host.
 #  2. On the api host, /functions/v1/site-serve answers 404 (before the functions route), so agent-made sites are never
 #     served as api.qorpera.com's origin.
-# Envoy picks a virtual host by its exact name before "*" whatever the order; the order here only reads that way.
+#  3. On the api host, a visitor's x-forwarded-host is dropped and the name the request asked for (its Host) is set in
+#     its place, so no request on this name can claim the sites host. That is the value the gateway (api-gw, which only
+#     adds the header when it is absent) set before for every request that came without one, so no caller sees a change.
+#     A Host that only looks like the sites host (another port, a trailing dot) comes here and is refused by the
+#     function, which takes the sites host exactly.
+# Envoy picks a virtual host by its exact name (letters in any case) before "*" whatever the order; the order here only
+# reads that way. Envoy removes the listed headers before it adds, so an empty Host leaves no visitor value either.
 # Check before restarting: docker compose run --rm --no-deps --entrypoint envoy api-front --mode validate -c /etc/envoy/front.yaml
                   virtual_hosts:
                     # Company sites: the site-serve function on every path, and nothing else of the stack.
@@ -21,6 +27,11 @@
                         - { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/ } }
                     - name: api
                       domains: ["*"]
+                      # The API name's own forwarded host: never a visitor's, so never the sites host.
+                      request_headers_to_remove: [x-forwarded-host]
+                      request_headers_to_add:
+                        - header: { key: x-forwarded-host, value: "%REQ(:AUTHORITY)%" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
                       routes:
                         # timeout 0s: the gateway's own route timeouts apply (30 s; functions 160/410 s).
                         - { match: { prefix: /auth/v1/ }, route: { cluster: api_gw, timeout: 0s } }
