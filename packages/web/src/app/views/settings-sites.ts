@@ -8,7 +8,7 @@ import { phrase, t } from "../../ui/preferences.ts";
  * own password. Every member sees each site's name, link, state, when and by which agent it was last published, and
  * where in the Company File it came from. An owner or admin also reads a site's password (to share it), changes it
  * (every visitor then enters the new one) and takes a site offline; the kernel refuses anyone else. Agents never see a
- * password.
+ * password. An app link (v195) is a site too: one port of a company machine, shown with its machine and port.
  */
 
 type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
@@ -25,6 +25,14 @@ const MANAGERS_ONLY = phrase("Only founders and admins can see passwords or take
 /** A site as members call it: its title, else its name in the link. */
 function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
+}
+
+/** Where an app link's app runs: its machine, unless it was deleted, and its port. */
+function appPlace(site: CompanySite): string {
+	const port = String(site.port);
+	return site.machine
+		? t("App on machine {name}, port {port}", { name: site.machine, port })
+		: t("App on port {port} of a machine that was deleted", { port });
 }
 
 /** Why a change was refused, in the interface language. */
@@ -238,10 +246,15 @@ export class SitesView {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		if (
 			!(await confirmDialog(
-				t(
-					"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
-					{ name: nameOf(site) },
-				),
+				site.kind === "app"
+					? t(
+							"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
+							{ name: nameOf(site) },
+						)
+					: t(
+							"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
+							{ name: nameOf(site) },
+						),
 				t("Unpublish"),
 				true,
 				undefined,
@@ -287,17 +300,18 @@ export class SitesView {
 		if (!this.#lifetime.signal.aborted) this.#draw(`site-copy-${kind}:${site.id}`);
 	}
 
-	/** The site's state: live or still publishing, when and by whom it was last published, and how big it is. */
+	/** The site's state: live or still publishing, when and by whom it was last published, and how big it is (an app
+	 * link has no files). */
 	#state(site: CompanySite): string {
 		const files = site.files === 1 ? t("1 file") : t("{count} files", { count: String(site.files) });
 		return [
-			site.state === "live" ? t("Live") : t("Publishing…"),
+			site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
 			site.publishedAt
 				? site.publishedBy
 					? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
 					: t("Published {time}", { time: fmtTime(site.publishedAt) })
 				: "",
-			`${files}, ${fmtBytes(site.bytes)}`,
+			site.kind === "app" ? "" : `${files}, ${fmtBytes(site.bytes)}`,
 		]
 			.filter(Boolean)
 			.join(" · ");
@@ -421,7 +435,11 @@ export class SitesView {
 				{ class: "settings-copy" },
 				h("strong", null, nameOf(site)),
 				h("small", { class: "hook-state" }, this.#state(site)),
-				site.source ? h("small", null, t("From {source}", { source: site.source })) : null,
+				site.kind === "app"
+					? h("small", null, appPlace(site))
+					: site.source
+						? h("small", null, t("From {source}", { source: site.source }))
+						: null,
 			),
 			h("div", { class: "connection-actions" }, ...actions),
 			this.#row(link, [copyLink]),

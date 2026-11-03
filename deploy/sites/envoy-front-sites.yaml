@@ -1,7 +1,9 @@
-# Company sites (deploy/sites/): the front door's changes, for /opt/dbhome/front/envoy-front.yaml (the dbhome kit's
-# front/envoy-front.yaml, service api-front). This block replaces that file's `virtual_hosts:` block whole, from
-# `virtual_hosts:` to the api host's last route, at the same indentation (18 spaces). Against the file of 3 Nov 2026 it
-# changes three things and nothing else:
+# Company sites and private app links (deploy/sites/): the front door's changes, for /opt/dbhome/front/envoy-front.yaml
+# (the dbhome kit's front/envoy-front.yaml, service api-front). This block replaces that file's `virtual_hosts:` block
+# whole, from `virtual_hosts:` to the api host's last route, at the same indentation (18 spaces). App links also need
+# the cluster `app_relay` in that file's `clusters:` block: envoy-front-app-relay-cluster.yaml, added after api_gw
+# (Envoy refuses a route to a cluster it does not have, so both go in together). Against the file of 3 Nov 2026 it
+# changes these things and nothing else:
 #  1. A virtual host `sites`, before the api host: every path on sites.qorpera.com goes to the site-serve function
 #     (prefix_rewrite /functions/v1/site-serve/), and nothing else of the stack is reachable on that name (no /rest,
 #     /auth, /storage, /realtime or other function). It sets x-forwarded-host to the sites host, replacing a visitor's
@@ -13,8 +15,17 @@
 #     adds the header when it is absent) set before for every request that came without one, so no caller sees a change.
 #     A Host that only looks like the sites host (another port, a trailing dot) comes here and is refused by the
 #     function, which takes the sites host exactly.
-# Envoy picks a virtual host by its exact name (letters in any case) before "*" whatever the order; the order here only
-# reads that way. Envoy removes the listed headers before it adds, so an empty Host leaves no visitor value either.
+#  4. A virtual host `apps` (APP-PREVIEW.md, section 4): every path on <slug>-preview.qorpera.com goes to the app relay
+#     (cluster app_relay, app-relay:8090), WebSocket upgrades too (the link programs' /.qorpera/connect), with no route
+#     timeout (the relay answers 504 itself, and keeps its programs' connections alive). x-forwarded-host is the
+#     request's own name, a visitor's dropped; the relay serves only names that are a slug and -preview.qorpera.com.
+#  5. A virtual host `others` for every other name under qorpera.com: 404 on every path. The wildcard DNS name and
+#     tunnel rule (sites-route.mjs) bring any such name here, and none of them may reach the API.
+#  6. The api host lists "api.qorpera.com" first; "*" stays for every name outside qorpera.com (the stack's own
+#     callers, a Host with a port).
+# Envoy picks a virtual host by its exact name (letters in any case), then the longest suffix wildcard
+# (*-preview.qorpera.com before *.qorpera.com), then "*", whatever the order; the order here only reads that way. Envoy
+# removes the listed headers before it adds, so an empty Host leaves no visitor value either.
 # Check before restarting: docker compose run --rm --no-deps --entrypoint envoy api-front --mode validate -c /etc/envoy/front.yaml
                   virtual_hosts:
                     # Company sites: the site-serve function on every path, and nothing else of the stack.
@@ -25,8 +36,22 @@
                           append_action: OVERWRITE_IF_EXISTS_OR_ADD
                       routes:
                         - { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/ } }
+                    # Private app links: the app relay on every path, WebSocket upgrades on, and nothing else of the stack.
+                    - name: apps
+                      domains: ["*-preview.qorpera.com"]
+                      request_headers_to_remove: [x-forwarded-host]
+                      request_headers_to_add:
+                        - header: { key: x-forwarded-host, value: "%REQ(:AUTHORITY)%" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                      routes:
+                        - { match: { prefix: / }, route: { cluster: app_relay, timeout: 0s, upgrade_configs: [{ upgrade_type: websocket }] } }
+                    # Every other name under qorpera.com: nothing.
+                    - name: others
+                      domains: ["*.qorpera.com"]
+                      routes:
+                        - { match: { prefix: / }, direct_response: { status: 404 } }
                     - name: api
-                      domains: ["*"]
+                      domains: ["api.qorpera.com", "*"]
                       # The API name's own forwarded host: never a visitor's, so never the sites host.
                       request_headers_to_remove: [x-forwarded-host]
                       request_headers_to_add:

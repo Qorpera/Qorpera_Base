@@ -1,0 +1,43 @@
+# Private app links (deploy/sites/APP-PREVIEW.md, sections 3 and 4): the app relay, for the dbhome kit's
+# docker-compose.dbhome-front.yml. This service goes under that file's `services:`, beside api-front, at the same
+# indentation (2 spaces before `app-relay:`); it uses the file's own `x-slice` anchor. relay.mjs and client.mjs go in
+# /opt/dbhome/front/app-relay/ (mode 0644: the container's user only reads them). api-front reaches it as
+# app-relay:8090 (envoy-front-app-relay-cluster.yaml); nothing is published on the node.
+#  - image: node 24, the digest scripts/run-on-node-plan.mjs pins (NODE_IMAGE); no package is installed, the relay has
+#    no dependencies.
+#  - QORPERA_API: the gateway on the compose network (api-gw, port 8000: front/envoy-front.yaml's api_gw cluster), so
+#    the relay's RPCs never leave the node.
+#  - QORPERA_SERVICE_KEY: the service role JWT from .env (SERVICE_ROLE_KEY, the one the functions service gets as
+#    SUPABASE_SERVICE_ROLE_KEY), sent as apikey and bearer. It stays in the container's environment; the relay never
+#    logs it.
+#  - Kill switch: `docker compose stop app-relay` (every app link then answers 503 from api-front), or apps_enabled =
+#    false in qorpera_site_settings.
+  app-relay:
+    <<: *slice
+    container_name: dbhome-app-relay
+    image: node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      api-gw:
+        condition: service_healthy
+    working_dir: /app
+    entrypoint: ["node", "/app/relay.mjs"]
+    environment:
+      QORPERA_API: http://api-gw:8000
+      QORPERA_SERVICE_KEY: ${SERVICE_ROLE_KEY:?SERVICE_ROLE_KEY is not set in .env}
+      QORPERA_APP_HOST_SUFFIX: -preview.qorpera.com
+      QORPERA_APP_RELAY_PORT: "8090"
+    volumes:
+      - ./front/app-relay:/app:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch("http://127.0.0.1:8090/.qorpera/health").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+      interval: 10s
+      timeout: 5s
+      retries: 3

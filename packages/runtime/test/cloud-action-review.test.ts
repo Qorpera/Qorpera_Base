@@ -2745,11 +2745,13 @@ describe("company sites (20260930550000)", () => {
 			title: "Publish a website from another folder",
 			details: { from: "Webshop v2", "until now from": "Webshop" },
 		});
+		// The call names only the slug: the card is true for a website and an app link alike (v195).
 		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({
-			title: "Take a website offline",
+			title: "Take a website or app link offline",
 			target: "wristband-shop",
 			details: {
-				effect: "Its link stops working and its password is deleted; the files stay in the company folder",
+				effect:
+					"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
 			},
 		});
 	});
@@ -2843,6 +2845,146 @@ describe("company sites (20260930550000)", () => {
 				action: {
 					title: mode === "new" ? "Publish a new password-protected website" : "Update a published website",
 					arguments: '{"slug":"wristband-shop","source":"product/webshop"}',
+				},
+			});
+		}
+	});
+});
+
+describe("private app links (v195, 20260930562000)", () => {
+	const prepared = (mode: "new" | "update", extra: Record<string, JsonValue> = {}) => ({
+		slug: "saml-shop",
+		title: null,
+		machine: "shop-server",
+		port: 3000,
+		mode,
+		needsReview: mode === "new",
+		url: "https://saml-shop-preview.qorpera.com/",
+		liveMachine: mode === "update" ? "shop-server" : null,
+		livePort: mode === "update" ? 3000 : null,
+		...extra,
+	});
+	const verdict = (decision: "allow" | "ask" | "deny", builtIn = "none") =>
+		parseCloudActionVerdict({ decision, ruleIds: [], builtIn, reason: "Requested.", proposedRule: null });
+
+	it("reviews a share the database's check says needs one as an outside effect, and its own link again not at all", () => {
+		expect(cloudActionEffect(tool("share_app"), prepared("new"))).toBe("external");
+		expect(cloudActionEffect(tool("share_app"), prepared("update", { needsReview: true }))).toBe("external");
+		expect(cloudActionEffect(tool("share_app"), prepared("update"))).toBe("internal");
+		// Without a prepared answer (no prepare ran), it is reviewed.
+		expect(cloudActionEffect(tool("share_app"), { slug: "saml-shop", machine: "shop-server", port: 3000 })).toBe(
+			"external",
+		);
+	});
+
+	it("names the link, the machine and the port on the card", () => {
+		expect(describeCloudAction(tool("share_app"), prepared("new"))).toEqual({
+			title: "Share a private, password-protected app link",
+			target: "https://saml-shop-preview.qorpera.com/",
+			details: {
+				"from machine": "shop-server",
+				port: "3000",
+				effect:
+					"Anyone with the link and its password can open the app on this port of the machine while it runs; owners and admins see the password in Settings",
+			},
+		});
+		expect(
+			describeCloudAction(
+				tool("share_app"),
+				prepared("update", { needsReview: true, liveMachine: "old-server", port: 8080 }),
+			),
+		).toMatchObject({
+			title: "Share an app link from another machine",
+			details: { "from machine": "shop-server", port: "8080", "until now from machine": "old-server" },
+		});
+		expect(describeCloudAction(tool("share_app"), prepared("update")).title).toBe("Share an app link again");
+	});
+
+	it("makes a share that needs a review a built-in access check, whatever the reviewer called it", () => {
+		const call = (parsed: JsonValue, source: CloudNativeTool["source"] = "runtime") => ({
+			tool: { name: "share_app", source },
+			parsed,
+		});
+		expect(siteAccessCheck(call(prepared("new")), verdict("allow"))).toEqual({
+			decision: "allow",
+			ruleIds: [],
+			builtIn: "access_change",
+			reason: "Requested.",
+			proposedRule: "share a password-protected app link for the company",
+		});
+		expect(siteAccessCheck(call(prepared("update", { needsReview: true })), verdict("ask")).builtIn).toBe(
+			"access_change",
+		);
+		expect(siteAccessCheck(call({ slug: "saml-shop" }), verdict("allow")).builtIn).toBe("access_change");
+		// A denial stays one, a check the reviewer named stays its own, and a connector of the same name is as it says.
+		expect(siteAccessCheck(call(prepared("new")), verdict("deny", "not_requested"))).toEqual(
+			verdict("deny", "not_requested"),
+		);
+		expect(siteAccessCheck(call(prepared("new")), verdict("ask", "money")).builtIn).toBe("money");
+		expect(siteAccessCheck(call(prepared("new"), "connector"), verdict("allow"))).toEqual(verdict("allow"));
+		expect(siteAccessCheck(call(prepared("update")), verdict("allow"))).toEqual(verdict("allow"));
+	});
+
+	it("records a first share's allow as an access check for the kernel, and asks for no review of its own link again", async () => {
+		for (const mode of ["new", "update"] as const) {
+			const methods: string[] = [];
+			const recorded: Array<Record<string, unknown>> = [];
+			const control: CloudActionReviewControl = {
+				call: async (method, args) => {
+					methods.push(method);
+					if (method === "qorpera_begin_action_review")
+						return {
+							state: "review",
+							agent: { name: "Tina" },
+							company: { name: "Acme" },
+							requester: null,
+							rules: [],
+						};
+					if (method === "qorpera_record_action_review") {
+						recorded.push(args.p_review as Record<string, unknown>);
+						return { reviewId: randomUUID(), decision: "allow", card: false, reason: "Fine." };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			};
+			const result = await new CloudActionReviewGate({
+				binding,
+				control,
+				reviewer: {
+					review: async () => ({
+						decision: "allow",
+						ruleIds: [],
+						builtIn: "none",
+						reason: "Fine.",
+						proposedRule: null,
+					}),
+				},
+				request: "Share the shop so I can open it.",
+				holdMs: 0,
+				pollMs: 1,
+			}).check(
+				{
+					tool: tool("share_app"),
+					parsed: prepared(mode),
+					argumentsText: '{"slug":"saml-shop","machine":"shop-server","port":3000}',
+					argumentSha256: "b".repeat(64),
+					callId: "call_share",
+				},
+				new AbortController().signal,
+			);
+			expect(result.run).toBe(true);
+			if (mode === "update") {
+				expect(methods).toEqual([]);
+				continue;
+			}
+			expect(recorded[0]).toMatchObject({
+				tool: "share_app",
+				effect: "external",
+				builtIn: "access_change",
+				action: {
+					title: "Share a private, password-protected app link",
+					target: "https://saml-shop-preview.qorpera.com/",
+					arguments: '{"slug":"saml-shop","machine":"shop-server","port":3000}',
 				},
 			});
 		}

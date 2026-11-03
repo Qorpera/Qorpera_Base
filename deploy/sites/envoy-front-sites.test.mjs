@@ -1,13 +1,15 @@
 /* The front door's sites block (envoy-front-sites.yaml) in a real Envoy: api-front's own image and listener settings
- * (the dbhome kit's front/envoy-front.yaml, 3 Nov 2026) with this block, in front of a model of the gateway (api-gw,
- * upstream self-hosted v0.8.3: x-forwarded-host set to the request's authority only when absent, /functions/v1/
- * rewritten to /) and an echo server standing in for the functions runtime. It shows what reaches a function for each
+ * (the dbhome kit's front/envoy-front.yaml, 3 Nov 2026) with this block and the app_relay cluster
+ * (envoy-front-app-relay-cluster.yaml), in front of a model of the gateway (api-gw, upstream self-hosted v0.8.3:
+ * x-forwarded-host set to the request's authority only when absent, /functions/v1/ rewritten to /) and an echo server
+ * standing in for the functions runtime and for the app relay. It shows what reaches a function or the relay for each
  * Host and x-forwarded-host a visitor can send. It never pulls. It runs where Docker holds the image, and must run on a
  * node test machine whose setup pulled it (guest-setup.sh names it in /etc/qorpera-test-machine-versions): there a
  * missing image fails the run. Elsewhere (a Mac, a machine set up before that) it is skipped, saying why. */
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, createServer as createTcpServer } from "node:net";
@@ -16,12 +18,14 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 const BLOCK = readFileSync(new URL("./envoy-front-sites.yaml", import.meta.url), "utf8");
+const CLUSTER = readFileSync(new URL("./envoy-front-app-relay-cluster.yaml", import.meta.url), "utf8");
 // api-front's image (docker-compose.dbhome-front.yml), by its digest only.
 const IMAGE = "envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4";
 // What deploy/test-machine/guest-setup.sh writes last on a node test machine.
 const TEST_MACHINE = "/etc/qorpera-test-machine-versions";
 const SITES = "sites.qorpera.com";
 const API = "api.qorpera.com";
+const APP = "shop-preview.qorpera.com";
 
 /** The block as front-sites.py puts it in: from `virtual_hosts:` on, its comment header dropped. */
 function virtualHosts() {
@@ -35,13 +39,32 @@ function virtualHosts() {
 	return lines.slice(start).join("\n").trimEnd();
 }
 
-/** One virtual host's lines, from its `- name:` to the next one's. */
+/** One virtual host's lines, from its `- name:` to the next one's (or the comment before it). */
 function virtualHost(name) {
 	const lines = virtualHosts().split("\n");
 	const start = lines.indexOf(`${" ".repeat(20)}- name: ${name}`);
 	assert.ok(start > 0, name);
-	const end = lines.findIndex((line, index) => index > start && line.startsWith(`${" ".repeat(20)}- name: `));
+	const end = lines.findIndex(
+		(line, index) =>
+			index > start && (line.startsWith(`${" ".repeat(20)}- name: `) || line.startsWith(`${" ".repeat(20)}#`)),
+	);
 	return lines.slice(start, end === -1 ? undefined : end);
+}
+
+/** The app relay's cluster as it goes under the kit's `clusters:`: its comment header dropped. */
+function appRelayCluster() {
+	const lines = CLUSTER.split("\n");
+	const start = lines.indexOf(`${" ".repeat(4)}- name: app_relay`);
+	assert.ok(start > 0, "the cluster's name line at 4 spaces");
+	assert.ok(
+		lines.slice(0, start).every((line) => line.startsWith("#") || !line.trim()),
+		"only comments before it",
+	);
+	assert.ok(
+		lines.slice(start).every((line) => !line.trim() || line.startsWith(" ".repeat(4))),
+		"every line inside the clusters list",
+	);
+	return lines.slice(start).join("\n").trimEnd();
 }
 
 describe("envoy-front-sites.yaml: what the file says", () => {
@@ -57,7 +80,7 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 
 	it("drops a visitor's x-forwarded-host on the api name and sets the Host it was asked for", () => {
 		const api = virtualHost("api").join("\n");
-		assert.match(api, /domains: \["\*"\]/);
+		assert.match(api, /domains: \["api\.qorpera\.com", "\*"\]/);
 		assert.match(api, /request_headers_to_remove: \[x-forwarded-host\]/);
 		assert.match(
 			api,
@@ -74,6 +97,57 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 		);
 		const functions = routes.findIndex((line) => line.includes("{ match: { prefix: /functions/v1/ }, route:"));
 		assert.ok(block >= 0 && functions > block, "the site-serve 404 comes first");
+	});
+
+	it("sends every path of an app host to the relay, WebSocket upgrades on, with the request's own name", () => {
+		const apps = virtualHost("apps").join("\n");
+		assert.match(apps, /domains: \["\*-preview\.qorpera\.com"\]/);
+		assert.match(apps, /request_headers_to_remove: \[x-forwarded-host\]/);
+		assert.match(
+			apps,
+			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
+		);
+		const routes = virtualHost("apps").filter((line) => line.trimStart().startsWith("- { match:"));
+		assert.deepEqual(
+			routes.map((line) => line.trim()),
+			[
+				"- { match: { prefix: / }, route: { cluster: app_relay, timeout: 0s, upgrade_configs: [{ upgrade_type: websocket }] } }",
+			],
+		);
+	});
+
+	it("answers 404 for every other name under qorpera.com, so none reaches the API", () => {
+		const others = virtualHost("others");
+		assert.match(others.join("\n"), /domains: \["\*\.qorpera\.com"\]/);
+		assert.deepEqual(
+			others.filter((line) => line.trimStart().startsWith("- { match:")).map((line) => line.trim()),
+			["- { match: { prefix: / }, direct_response: { status: 404 } }"],
+		);
+		// Each name in exactly one virtual host (Envoy refuses a name twice).
+		const domains = [...virtualHosts().matchAll(/domains: \[(.*)\]/g)].flatMap((match) =>
+			JSON.parse(`[${match[1]}]`),
+		);
+		assert.deepEqual(domains, [
+			"sites.qorpera.com",
+			"*-preview.qorpera.com",
+			"*.qorpera.com",
+			"api.qorpera.com",
+			"*",
+		]);
+	});
+
+	it("has the app_relay cluster the apps host routes to, as the kit's clusters list takes it", () => {
+		const cluster = appRelayCluster();
+		assert.match(cluster, /^ {4}- name: app_relay\n {6}type: STRICT_DNS\n {6}connect_timeout: 5s\n/);
+		assert.match(cluster, /cluster_name: app_relay\n/);
+		assert.match(cluster, /socket_address: \{ address: app-relay, port_value: 8090 \}$/);
+		// Envoy drops an idle connection to the relay before the relay does (its keep-alive is 75 s).
+		assert.match(cluster, /common_http_protocol_options: \{ idle_timeout: 60s \}/);
+		const relay = readFileSync(new URL("./app-relay/relay.mjs", import.meta.url), "utf8");
+		assert.match(relay, /server\.keepAliveTimeout = 75_000;/);
+		// Every cluster the block routes to: the kit's api_gw and this one.
+		const clusters = new Set([...virtualHosts().matchAll(/cluster: ([a-z_]+)/g)].map((match) => match[1]));
+		assert.deepEqual([...clusters].sort(), ["api_gw", "app_relay"]);
 	});
 });
 
@@ -175,13 +249,26 @@ ${virtualHosts()}
   clusters:
 ${cluster("api_gw", gatewayPort)}
 ${cluster("functions", echoPort)}
+${relayCluster(echoPort)}
 `;
 }
 
+/** The app_relay cluster file exactly, its address the echo server here (the relay stands in as the echo). */
+function relayCluster(port) {
+	const cluster = appRelayCluster();
+	const local = cluster.replace(
+		"socket_address: { address: app-relay, port_value: 8090 }",
+		`socket_address: { address: 127.0.0.1, port_value: ${port} }`,
+	);
+	assert.notEqual(local, cluster);
+	return local;
+}
+
 /** One raw HTTP/1.1 request, exactly as written (the Host and every header as given), to the front. The answer ends at
- * its Content-Length (Envoy's own answers wait a second for the client to close first), else at the close. */
-function raw(port, path, headers) {
-	const text = `GET ${path} HTTP/1.1\r\n${headers.map(([name, value]) => `${name}: ${value}\r\n`).join("")}Connection: close\r\n\r\n`;
+ * its Content-Length (Envoy's own answers wait a second for the client to close first), else at the close. An upgrade
+ * sends its own Connection header. */
+function raw(port, path, headers, { upgrade = false } = {}) {
+	const text = `GET ${path} HTTP/1.1\r\n${headers.map(([name, value]) => `${name}: ${value}\r\n`).join("")}${upgrade ? "" : "Connection: close\r\n"}\r\n`;
 	return new Promise((resolve, reject) => {
 		const socket = connect(port, "127.0.0.1");
 		let answer = Buffer.alloc(0);
@@ -189,7 +276,7 @@ function raw(port, path, headers) {
 			const whole = answer.toString("utf8");
 			const end = whole.indexOf("\r\n\r\n");
 			const head = end === -1 ? whole : whole.slice(0, end);
-			resolve({ status: Number(head.split(" ")[1]), body: end === -1 ? "" : whole.slice(end + 4) });
+			resolve({ status: Number(head.split(" ")[1]), head, body: end === -1 ? "" : whole.slice(end + 4) });
 			socket.destroy();
 		};
 		socket.setTimeout(10_000, () => socket.destroy(new Error("timeout")));
@@ -252,6 +339,16 @@ describe(
 				);
 				response.writeHead(200, { "content-type": "application/json", "content-length": String(body.byteLength) });
 				response.end(body);
+			});
+			// The app relay's side of a WebSocket handshake: what it was asked for, in the 101's headers.
+			echo.on("upgrade", (request, socket) => {
+				const accept = createHash("sha1")
+					.update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+					.digest("base64");
+				socket.end(
+					`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n` +
+						`X-Seen-Path: ${request.url}\r\nX-Seen-Host: ${request.headers["x-forwarded-host"]}\r\n\r\n`,
+				);
 			});
 			await new Promise((resolve) => echo.listen(0, "127.0.0.1", resolve));
 			front = await freePort();
@@ -341,8 +438,9 @@ describe(
 					assert.deepEqual(answer.fromFront, [API], `${path} ${sent.join(",")}`);
 				}
 			}
-			// A Host that only looks like the sites host comes here: its own value, which site-serve refuses.
-			for (const host of [`${SITES}:443`, `${SITES}.`, `x${SITES}`]) {
+			// A Host that only looks like the sites host comes here: its own value, which site-serve refuses. (One under
+			// qorpera.com, as xsites.qorpera.com, gets the others host's 404.)
+			for (const host of [`${SITES}:443`, `${SITES}.`]) {
 				const answer = seen(
 					await raw(front, "/rest/v1/", [
 						["Host", host],
@@ -379,6 +477,75 @@ describe(
 						assert.notEqual(reached.path.split("/")[1]?.toLowerCase(), "site-serve", `${host} ${path}`);
 						assert.deepEqual(reached.forwardedHost, [host], `${host} ${path}`);
 					} else assert.ok([400, 404].includes(answer.status), `${host} ${path}: ${answer.status}`);
+				}
+		});
+
+		it("gives the app relay every path of an app host, with the request's own name, never a visitor's", async () => {
+			for (const host of [APP, "SHOP-Preview.Qorpera.com", "saml-shop-preview.qorpera.com"])
+				for (const sent of [[], [API], [SITES, API]])
+					for (const path of [
+						"/",
+						"/a/b?c=1",
+						"/rest/v1/",
+						"/functions/v1/site-serve/shop/",
+						"/.qorpera/unlock",
+					]) {
+						const answer = seen(
+							await raw(front, path, [
+								["Host", host],
+								...sent.map((value) => ["X-Forwarded-Host", value]),
+								["CF-Connecting-IP", "203.0.113.9"],
+							]),
+						);
+						const label = `${host} ${path} ${sent.join(",")}`;
+						// Straight to the relay: no rewrite, no gateway between.
+						assert.equal(answer.path, path, label);
+						assert.deepEqual(answer.fromFront, [], label);
+						assert.deepEqual(
+							answer.forwardedHost.map((value) => value.toLowerCase()),
+							[host.toLowerCase()],
+							label,
+						);
+						assert.deepEqual(answer.client, ["203.0.113.9"], label);
+					}
+		});
+
+		it("passes a link program's WebSocket handshake to the relay", async () => {
+			const answer = await raw(
+				front,
+				"/.qorpera/connect",
+				[
+					["Host", APP],
+					["X-Forwarded-Host", API],
+					["Upgrade", "websocket"],
+					["Connection", "Upgrade"],
+					["Sec-WebSocket-Version", "13"],
+					["Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="],
+					["Authorization", "Bearer test-claim-0123456789"],
+				],
+				{ upgrade: true },
+			);
+			assert.equal(answer.status, 101, answer.head);
+			assert.match(answer.head, /\r\nsec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=/i);
+			assert.match(answer.head, /\r\nx-seen-path: \/\.qorpera\/connect(\r\n|$)/i);
+			assert.match(answer.head, /\r\nx-seen-host: shop-preview\.qorpera\.com(\r\n|$)/i);
+		});
+
+		it("answers 404 itself for every other name under qorpera.com", async () => {
+			for (const host of [
+				`x${SITES}`,
+				"evil.qorpera.com",
+				"-preview.qorpera.com",
+				"a.b.qorpera.com",
+				"EVIL.Qorpera.com",
+			])
+				for (const path of ["/", "/rest/v1/", "/functions/v1/event-intake/x", "/.qorpera/health"]) {
+					const answer = await raw(front, path, [
+						["Host", host],
+						["X-Forwarded-Host", API],
+					]);
+					assert.equal(answer.status, 404, `${host} ${path}`);
+					assert.equal(answer.body, "", `${host} ${path}: Envoy's own answer, nothing reached`);
 				}
 		});
 	},

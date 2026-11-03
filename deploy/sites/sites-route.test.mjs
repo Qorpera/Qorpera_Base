@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	API,
+	APP_HEALTH_URL,
+	APPS_HOST,
 	Cloudflare,
 	describeIngress,
 	dnsPlan,
@@ -9,6 +11,7 @@ import {
 	main,
 	readToken,
 	SERVICE,
+	withAppsIngress,
 	withSitesIngress,
 } from "./sites-route.mjs";
 
@@ -20,20 +23,28 @@ const API_RULE = {
 	originRequest: { noTLSVerify: false },
 };
 const CATCH_ALL = { service: "http_status:404" };
+const SITES_RULE = { hostname: HOST, service: SERVICE };
+const APPS_RULE = { hostname: APPS_HOST, service: SERVICE };
 
-/** A fake Cloudflare: the zone, the tunnel, its configuration and the DNS records, as the API answers them. */
+/** A fake Cloudflare: the zone, the tunnel, its configuration and the DNS records (listed by name), as the API answers
+ * them; and the two public answers --check reads. */
 function cloudflare({
 	ingress = [API_RULE, CATCH_ALL],
 	records = [],
 	robots = { status: 200, text: "User-agent: *\nDisallow: /\n" },
+	health = { status: 200, text: "ok\n" },
 } = {}) {
-	const state = { config: { ingress, "warp-routing": { enabled: false } }, records: [...records] };
+	const state = {
+		config: { ingress, "warp-routing": { enabled: false } },
+		records: records.map((record) => ({ ...record })),
+	};
 	const sent = [];
 	const ok = (result) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
 	const fetcher = async (input, init = {}) => {
 		const url = String(input);
 		sent.push({ url, method: init.method ?? "GET", body: init.body, authorization: init.headers?.authorization });
 		if (url === `https://${HOST}/robots.txt`) return new Response(robots.text, { status: robots.status });
+		if (url === APP_HEALTH_URL) return new Response(health.text, { status: health.status });
 		assert.ok(url.startsWith(API), url);
 		const path = url.slice(API.length);
 		if (path === "/zones?name=qorpera.com")
@@ -47,15 +58,17 @@ function cloudflare({
 			}
 			return ok({ tunnel_id: TUNNEL_ID, version: 3, config: state.config, source: "cloudflare" });
 		}
-		if (path === `/zones/zone1/dns_records?name=${HOST}`) return ok(state.records);
+		const listed = /^\/zones\/zone1\/dns_records\?name=(.+)$/.exec(path)?.[1];
+		if (listed === HOST || listed === APPS_HOST) return ok(state.records.filter((record) => record.name === listed));
 		if (path === "/zones/zone1/dns_records" && init.method === "POST") {
-			const record = { id: "rec1", ...JSON.parse(init.body) };
+			const record = { id: `rec${state.records.length + 1}`, ...JSON.parse(init.body) };
 			state.records.push(record);
 			return ok(record);
 		}
-		if (path === "/zones/zone1/dns_records/rec1" && init.method === "PATCH") {
-			Object.assign(state.records[0], JSON.parse(init.body));
-			return ok(state.records[0]);
+		const patched = state.records.find((record) => path === `/zones/zone1/dns_records/${record.id}`);
+		if (patched && init.method === "PATCH") {
+			Object.assign(patched, JSON.parse(init.body));
+			return ok(patched);
 		}
 		return new Response(JSON.stringify({ success: false, errors: [{ code: 7003, message: `no route ${TOKEN}` }] }), {
 			status: 404,
@@ -95,6 +108,33 @@ describe("sites-route: the ingress", () => {
 		);
 	});
 
+	it("adds the app links' wildcard rule after the exact rules and before the catch-all, once", () => {
+		const config = { ingress: [SITES_RULE, API_RULE, CATCH_ALL], "warp-routing": { enabled: false } };
+		const { config: next, changed } = withAppsIngress(config);
+		assert.equal(changed, true);
+		assert.deepEqual(next.ingress, [SITES_RULE, API_RULE, APPS_RULE, CATCH_ALL]);
+		assert.deepEqual(next["warp-routing"], { enabled: false });
+		assert.deepEqual(config.ingress, [SITES_RULE, API_RULE, CATCH_ALL], "the original is not changed");
+		assert.deepEqual(withAppsIngress(next), { config: next, changed: false });
+		// The sites rule still goes first, before the wildcard, whichever comes first.
+		assert.deepEqual(withSitesIngress(withAppsIngress({ ingress: [API_RULE, CATCH_ALL] }).config).config.ingress, [
+			SITES_RULE,
+			API_RULE,
+			APPS_RULE,
+			CATCH_ALL,
+		]);
+	});
+
+	it("refuses a wildcard rule that is not the app links' own, and an ingress without a catch-all", () => {
+		assert.throws(() => withAppsIngress({ ingress: [API_RULE] }), /catch-all/);
+		assert.throws(
+			() => withAppsIngress({ ingress: [{ hostname: APPS_HOST, service: "http://other:80" }, CATCH_ALL] }),
+			/already holds \*\.qorpera\.com/,
+		);
+		assert.throws(() => withAppsIngress({ ingress: [{ ...APPS_RULE, path: "/x" }, CATCH_ALL] }), /already holds/);
+		assert.throws(() => withAppsIngress({ ingress: [APPS_RULE, APPS_RULE, CATCH_ALL] }), /already holds/);
+	});
+
 	it("describes rules without anything secret", () => {
 		assert.deepEqual(
 			describeIngress([API_RULE, { hostname: "x.test", path: "/p", service: "http://s" }, CATCH_ALL]),
@@ -126,6 +166,19 @@ describe("sites-route: the DNS record", () => {
 		});
 	});
 
+	it("plans the wildcard name the same way, with its own comment", () => {
+		const made = dnsPlan([], TUNNEL_ID, APPS_HOST);
+		assert.equal(made.action, "create");
+		assert.equal(made.body.name, "*.qorpera.com");
+		assert.equal(made.body.content, `${TUNNEL_ID}.cfargotunnel.com`);
+		assert.equal(made.body.proxied, true);
+		assert.match(made.body.comment, /App links/);
+		assert.throws(
+			() => dnsPlan([{ id: "w", type: "A", content: "192.0.2.1", proxied: true }], TUNNEL_ID, APPS_HOST),
+			/\*\.qorpera\.com already has 1 other DNS record/,
+		);
+	});
+
 	it("refuses a name another record holds", () => {
 		assert.throws(
 			() => dnsPlan([{ id: "r", type: "A", content: "192.0.2.1", proxied: true }], TUNNEL_ID),
@@ -144,9 +197,10 @@ describe("sites-route: the script", () => {
 		assert.deepEqual(new Set(fake.sent.map((call) => call.method)), new Set(["GET"]));
 		assert.match(
 			output,
-			/ingress after:\n {2}sites\.qorpera\.com -> http:\/\/api-front:8080\n {2}api\.qorpera\.com -> http:\/\/api-front:8080\n {2}\* -> http_status:404/,
+			/ingress after:\n {2}sites\.qorpera\.com -> http:\/\/api-front:8080\n {2}api\.qorpera\.com -> http:\/\/api-front:8080\n {2}\*\.qorpera\.com -> http:\/\/api-front:8080\n {2}\* -> http_status:404/,
 		);
-		assert.match(output, /a proxied CNAME to .* is to be made/);
+		assert.match(output, /dns sites\.qorpera\.com: a proxied CNAME to .* is to be made/);
+		assert.match(output, /dns \*\.qorpera\.com: a proxied CNAME to .* is to be made/);
 		assert.match(output, /dry run: nothing changed/);
 		assert.ok(!output.includes(TOKEN));
 		assert.ok(
@@ -157,10 +211,15 @@ describe("sites-route: the script", () => {
 	it("applies once, then finds nothing to change, and checks", async () => {
 		const fake = cloudflare();
 		assert.equal((await run(["--apply"], fake)).code, 0);
-		assert.deepEqual(fake.state.config.ingress, [{ hostname: HOST, service: SERVICE }, API_RULE, CATCH_ALL]);
+		assert.deepEqual(fake.state.config.ingress, [SITES_RULE, API_RULE, APPS_RULE, CATCH_ALL]);
 		assert.deepEqual(fake.state.config["warp-routing"], { enabled: false });
-		assert.equal(fake.state.records.length, 1);
-		assert.equal(fake.state.records[0].proxied, true);
+		assert.deepEqual(
+			fake.state.records.map((record) => [record.name, record.type, record.content, record.proxied]),
+			[
+				[HOST, "CNAME", `${TUNNEL_ID}.cfargotunnel.com`, true],
+				[APPS_HOST, "CNAME", `${TUNNEL_ID}.cfargotunnel.com`, true],
+			],
+		);
 		const writes = fake.sent.filter((call) => call.method !== "GET").length;
 		const again = await run(["--apply"], fake);
 		assert.equal(again.code, 0);
@@ -185,10 +244,37 @@ describe("sites-route: the script", () => {
 		const result = await run(["--check"], down);
 		assert.equal(result.code, 1);
 		assert.match(result.output, /robots\.txt: 404/);
+		const relayDown = cloudflare({
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			health: { status: 502, text: "" },
+		});
+		const noRelay = await run(["--check"], relayDown);
+		assert.equal(noRelay.code, 1);
+		assert.match(noRelay.output, /qorpera-health-preview\.qorpera\.com\/\.qorpera\/health: 502/);
+		assert.match(noRelay.output, /check: FAILED/);
+	});
+
+	it("adds only what is missing on a tunnel that has the sites rule and record already", async () => {
+		const sites = { id: "s1", name: HOST, type: "CNAME", content: `${TUNNEL_ID}.cfargotunnel.com`, proxied: true };
+		const fake = cloudflare({ ingress: [SITES_RULE, API_RULE, CATCH_ALL], records: [sites] });
+		assert.equal((await run(["--apply"], fake)).code, 0);
+		assert.deepEqual(fake.state.config.ingress, [SITES_RULE, API_RULE, APPS_RULE, CATCH_ALL]);
+		const posts = fake.sent.filter((call) => call.method === "POST").map((call) => JSON.parse(call.body).name);
+		assert.deepEqual(posts, [APPS_HOST]);
+		assert.equal((await run(["--check"], fake)).code, 0);
+	});
+
+	it("changes nothing when another record holds *", async () => {
+		const fake = cloudflare({
+			records: [{ id: "x", name: APPS_HOST, type: "CNAME", content: "elsewhere.example", proxied: true }],
+		});
+		await assert.rejects(run(["--apply"], fake), /\*\.qorpera\.com already has 1 other DNS record/);
+		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, 0);
 	});
 
 	it("changes nothing when another record holds the name", async () => {
-		const fake = cloudflare({ records: [{ id: "x", type: "A", content: "192.0.2.1", proxied: true }] });
+		const fake = cloudflare({ records: [{ id: "x", name: HOST, type: "A", content: "192.0.2.1", proxied: true }] });
 		await assert.rejects(run(["--apply"], fake), /other DNS record/);
 		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, 0);
 	});

@@ -172,6 +172,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_site_publish_put",
 			"qorpera_site_publish_finish",
 			"qorpera_site_unpublish",
+			// Private app links (v195): the check before the review, and the share with its one-time claim.
+			"qorpera_site_share_check",
+			"qorpera_site_share_app",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);

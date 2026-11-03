@@ -991,7 +991,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
 											// Company sites (20260930550000): a static website from the company folder at a
-											// private, password-protected link, and taking one offline.
+											// private, password-protected link, and taking one offline; private app links (v195): one
+											// port of an always-on machine at such a link (share_app).
 											...cloudSiteTools({ binding, identity, control: this.#paths, folder: folder.client }),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and

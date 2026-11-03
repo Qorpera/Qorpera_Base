@@ -206,6 +206,22 @@ describe("machine tools", () => {
 		}
 	});
 
+	it("points a company agent's run to share_app for a server members open; a worker has no share_app", () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			for (const name of ["machine_start", "machine_run"]) {
+				expect(agent.tools.find((tool) => tool.name === name)!.description).toContain(
+					"share its port with share_app",
+				);
+				expect(helper.tools.find((tool) => tool.name === name)!.description).not.toContain("share_app");
+			}
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
 	it("offers waiting to workers only: an agent is woken instead", () => {
 		const agent = fixture();
 		const helper = fixture(undefined, true);
