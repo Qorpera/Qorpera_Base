@@ -2085,12 +2085,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			// terminal runs were re-tried on every pass); a stale one is retired.
 			if (Date.now() - Date.parse(current.updatedAt) < RESERVING_RETIREMENT_MS) return;
 			// Released whatever the journal knows (3 Nov 2026): a reservation whose answer was lost may have committed
-			// although this journal never recorded it. A reserving journal never asked for a guest, and the release
-			// answers for an allocation that was never made too.
+			// although this journal never recorded it, and the release answers for an allocation that was never made
+			// too. A reserving journal never asked for a guest in any build, so its guest's absence is final. It is
+			// marked lost first: a release the database does not answer is a dead journal, tried on every pass (from
+			// its deletion proof) without failing the pass, and the journal settles only once the release is confirmed.
+			step.stage = "journal";
+			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle", deletionConfirmed: true });
 			step.stage = "release";
 			await this.#releaseMachine(current, signal);
-			step.stage = "journal";
-			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
 		// A run that never starts again needs no identity volume: stopped or lost, or its guest's

@@ -150,9 +150,10 @@ interface Fixture {
 	masterKey: string;
 	runtime: LxdNativeCompanyRuntimeConfig;
 	reservation: { state: string; reason?: string };
-	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, a refusal (HTTP 4xx), or no
-	 * answer from the database (HTTP 5xx, as in an outage). */
-	release: "released" | "unconfirmed" | "error" | "outage";
+	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, the host call's refusal (42501,
+	 * which PostgREST answers 401 to the publishable key), another 4xx (the function missing while the schema cache
+	 * reloads), or no answer from the database (an edge 525, as in an outage). */
+	release: "released" | "unconfirmed" | "refused" | "missing" | "outage";
 	identityState: SharedExecutionIdentityState;
 	/** Whether the identity's login is kept by the vault (Stateless Compute step 1). */
 	loginInVault: boolean;
@@ -328,7 +329,9 @@ async function fixture(
 				});
 			}
 			if (name === "qorpera_release_runtime_machine") {
-				if (state.release === "error") return new Response("no allocation", { status: 404 });
+				if (state.release === "refused")
+					return Response.json({ code: "42501", message: "execution host call is refused" }, { status: 401 });
+				if (state.release === "missing") return Response.json({ code: "PGRST202" }, { status: 404 });
 				if (state.release === "outage") return new Response("<html>origin unreachable</html>", { status: 525 });
 				if (state.release === "unconfirmed") return Response.json({ state: "refused" });
 				return Response.json({
@@ -860,9 +863,11 @@ describe("shared execution provider backend", () => {
 	});
 
 	it.each([
-		// The release is refused (HTTP 4xx): the host may release only its own run's allocation, so none was made.
-		["refused", "error", 1],
-		// The database does not answer (3 Nov 2026): the reservation may have committed, so it stays owed.
+		// The host call refuses the release (42501): the host may release only its own run's allocation, so none was made.
+		["refused", "refused", 1],
+		// Any other answer (3 Nov 2026) leaves the reservation owed, which may have committed: a 4xx that is not the
+		// host call's refusal, or a database that does not answer.
+		["missing", "missing", 2],
 		["unanswered", "outage", 2],
 	] as const)(
 		"retires a sandbox stuck in 'reserving' after ten minutes and releases a reservation whose reply was lost (release %s)",
@@ -910,9 +915,11 @@ describe("shared execution provider backend", () => {
 			expect(await journal(f)).toMatchObject({ physicalState: "reserving" });
 			f.clock.now += 11 * 60_000;
 			f.release = release;
-			if (release === "outage") {
+			if (release !== "refused") {
 				// Not archived as released: the sandbox stays retiring, and the next pass asks again.
-				await expect(f.backend.reconcile()).rejects.toThrow("Runner provisioning failed (525)");
+				await expect(f.backend.reconcile()).rejects.toThrow(
+					`Runner provisioning failed (${release === "missing" ? 404 : 525})`,
+				);
 				expect(await journal(f)).toMatchObject({ physicalState: "stopping", retireAttempts: 1 });
 				expect(await journal(f)).not.toHaveProperty("capacityReleased");
 				f.release = "released";
