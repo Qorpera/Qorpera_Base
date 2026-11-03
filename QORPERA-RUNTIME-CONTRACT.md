@@ -2470,6 +2470,20 @@ requester's login with room left first, then a company account).
 > every first choice over a weekly login at 50%, and refused every Codex turn.
 > Kept logins and which logins may pay are unchanged.
 
+2026-11-03 amendment: a coding session's owner moves it to another login by
+hand (live company-building test; migration 20260930551000). A coding session
+keeps the login it was dispatched with, as work that follows a run does. When
+that login cannot pay (removed, disabled, needing a new sign-in, no longer
+allowed to work while its member is away) or its last turn stopped at the
+login's usage limit, the failed turn says so in fixed words with a reason code
+(login_removed, login_disabled, login_needs_sign_in, login_not_allowed_away,
+login_unavailable, usage_limit), and every other failed turn reports its own
+failure code. The session's card offers its owner their other logins that may
+pay for it (their own, for its harness, allowed to work while they are away,
+not a ChatGPT plan); a pick moves the session's payer to that login's binding
+from its next turn, never while a turn runs. Nothing moves a session by itself,
+and nobody but its owner moves it.
+
 Routines follow the same rule (migration 20260930095000):
 
 - A routine keeps a payer that serves its saver (their own login, or a company

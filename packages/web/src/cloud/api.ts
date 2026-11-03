@@ -1,8 +1,10 @@
 import type { Cloud } from "./client.ts";
 import {
 	type CodingSession,
+	type CodingSessionLogins,
 	type CodingSessionRead,
 	parseCodingSession,
+	parseCodingSessionLogins,
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
@@ -636,6 +638,24 @@ export class CloudApi {
 			.rpc("qorpera_archive_coding_session", {
 				p_worker_id: requiredUuid(workerId, "Coding session id"),
 				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then((value) => parseCodingSession(value, asked));
+	}
+
+	/** The session's owner reads its login and the logins they may move it to (20260930551000). */
+	listCodingSessionLogins(workerId: string): Promise<CodingSessionLogins> {
+		return this.cloud
+			.rpc("qorpera_list_coding_session_logins", { p_worker_id: requiredUuid(workerId, "Coding session id") })
+			.then(parseCodingSessionLogins);
+	}
+
+	/** The session's owner moves it to another of their logins; nothing moves a session by itself. */
+	chooseCodingSessionLogin(workerId: string, connectionId: string): Promise<CodingSession> {
+		const asked = performance.now();
+		return this.cloud
+			.rpc("qorpera_choose_coding_session_login", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_connection_id: requiredUuid(connectionId, "Login id"),
 			})
 			.then((value) => parseCodingSession(value, asked));
 	}
