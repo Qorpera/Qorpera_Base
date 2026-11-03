@@ -73,6 +73,7 @@ import {
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -107,6 +108,7 @@ import {
 } from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
+import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
@@ -599,7 +601,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				}
 				stage = "native-tools";
 				const { contextSha256, contextBytes, ...input } = composed;
-				// The context is bound once, and the call writes the run's start: a lost answer is not asked again.
+				// The context is bound once, and the call writes the run's start: a lost answer is not asked again. Sent once,
+				// it waits as long as the database may run it (CLOUD_RUN_ROW_READ_MS), not the 3 s and 5 s defaults: on 3 Nov
+				// 2026 a run failed its admission while the database answered every caller in 3 to 6.6 s for 8 s.
 				const admission = admitted;
 				if (!admission) throw new Error("Native execution admission was not confirmed");
 				const started = await cloudToolRequest(
@@ -608,8 +612,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							"qorpera_bind_native_company_context",
 							{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
 							requestSignal,
+							CLOUD_RUN_ROW_READ_MS,
 						),
 					openingSignal,
+					CLOUD_RUN_ROW_READ_MS,
 				);
 				confirmNativeAdmission(started, {
 					...admission,
@@ -752,6 +758,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+						// Sent once, it waits as long as the database may run it, as the bind below does.
 						const answer = await this.#paths.call(
 							"qorpera_begin_native_company_execution_v3",
 							{
@@ -762,6 +769,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								p_tool_catalog_text: toolCatalogText,
 							},
 							requestSignal,
+							CLOUD_RUN_ROW_READ_MS,
 						);
 						const admission = {
 							runId: binding.runId,
@@ -982,6 +990,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
+											// Company sites (20260930550000): a static website from the company folder at a
+											// private, password-protected link, and taking one offline.
+											...cloudSiteTools({ binding, identity, control: this.#paths, folder: folder.client }),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent

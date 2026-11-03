@@ -77,11 +77,11 @@ export const AGENTS: Record<string, string> = {
 		"Dette login kan ikke betale for arbejde, mens du er væk, lige nu. Vælg et andet.",
 	"This login has reached its usage limit. Choose another one, or wait until it resets.":
 		"Dette login har nået sin forbrugsgrænse. Vælg et andet, eller vent til den nulstilles.",
-	"Sign in to this login again in Settings → My connections, or choose another one.":
-		"Log ind på dette login igen under Indstillinger → Mine forbindelser, eller vælg et andet.",
+	"Sign in to this login again in Settings → AI subscriptions, or choose another one.":
+		"Log ind på dette login igen under Indstillinger → AI-abonnementer, eller vælg et andet.",
 	"Runs wait until this login's usage limit resets.": "Kørslerne venter, til loginnets forbrugsgrænse nulstilles.",
-	"Sign in to this login again in Settings → My connections to let it run.":
-		"Log ind på dette login igen under Indstillinger → Mine forbindelser, så rutinen kan køre.",
+	"Sign in to this login again in Settings → AI subscriptions to let it run.":
+		"Log ind på dette login igen under Indstillinger → AI-abonnementer, så rutinen kan køre.",
 	"Runs wait until {name} signs in to this login again.":
 		"Kørslerne venter, til {name} logger ind på dette login igen.",
 	"Runs wait until this login is signed in again.": "Kørslerne venter, til der er logget ind på dette login igen.",
@@ -140,8 +140,8 @@ export const AGENTS: Record<string, string> = {
 	Never: "Aldrig",
 	When: "Hvornår",
 	"Runs on": "Kører på",
-	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
-		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
+	"Connect a model account in Settings → AI subscriptions first. A routine runs on a member's own account.":
+		"Forbind først en modelkonto i Indstillinger → AI-abonnementer. En rutine kører på et medlems egen konto.",
 
 	// Group details (app/views/group-details.ts, group-edits.ts, app/update-group.ts)
 	Participants: "Deltagere",

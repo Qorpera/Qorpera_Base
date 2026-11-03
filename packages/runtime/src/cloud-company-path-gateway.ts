@@ -107,7 +107,13 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_branches"
 	// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
 	| "qorpera_memory_events_run"
-	| "qorpera_memory_compaction_record";
+	| "qorpera_memory_compaction_record"
+	// Company sites (20260930550000): a static website from the company folder at a private, password-protected link.
+	| "qorpera_site_publish_check"
+	| "qorpera_site_publish_begin"
+	| "qorpera_site_publish_put"
+	| "qorpera_site_publish_finish"
+	| "qorpera_site_unpublish";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

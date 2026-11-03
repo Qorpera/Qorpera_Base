@@ -40,6 +40,7 @@ export const WORKSPACE: Record<string, string> = {
 		"Tjek din e-mail. Skriv koden herunder, eller åbn login-linket på denne enhed.",
 	"This sign-in provider is unavailable. Continue with email.":
 		"Denne loginmetode er ikke tilgængelig. Fortsæt med e-mail.",
+	"You were signed out. Sign in again.": "Du er blevet logget ud. Log ind igen.",
 	Member: "Medlem",
 
 	// app/start-conversation.ts
@@ -48,8 +49,8 @@ export const WORKSPACE: Record<string, string> = {
 		"Du har ikke tilladelse til at sende beskeder i denne virksomhed.",
 	"Choose active agents from this company before sending.": "Vælg aktive agenter fra denne virksomhed, før du sender.",
 	"Enter a message of no more than 64 KiB.": "Skriv en besked på højst 64 KiB.",
-	"Connect a model account in Settings → My connections to send messages.":
-		"Forbind en modelkonto i Indstillinger → Mine forbindelser for at sende beskeder.",
+	"Connect a model account in Settings → AI subscriptions to send messages.":
+		"Forbind en modelkonto i Indstillinger → AI-abonnementer for at sende beskeder.",
 	"The group chat could not be created. Your message is still here.":
 		"Gruppechatten kunne ikke oprettes. Din besked er her stadig.",
 	"The group chat is still opening. Send again to retry the same conversation.":

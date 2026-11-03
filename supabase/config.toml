@@ -66,3 +66,8 @@ verify_jwt = false
 # notices); it sends company mail with the platform's Resend key.
 [functions.mail-outbox]
 verify_jwt = false
+
+# Company sites: public, at https://sites.qorpera.com/<slug>/ through the sites host's front. Visitors carry no JWT:
+# a site's password page, then a session token in the path, which the database checks.
+[functions.site-serve]
+verify_jwt = false

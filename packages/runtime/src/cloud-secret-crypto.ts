@@ -302,6 +302,34 @@ function derivedWrappingKey(masterKey: Uint8Array, companyId: string): Buffer {
 	return Buffer.from(hkdfSync("sha256", masterKey, "qorpera.company-kek/v1", companyId.toLowerCase(), 32));
 }
 
+/** A member's wrapping key (account model logins): HKDF-SHA256 of the shared vault's master key with the member's
+ * user id under its own label, so it is never a company's key and both copies of the vault derive the same one. */
+function memberWrappingKey(masterKey: Uint8Array, memberId: string): Buffer {
+	if (!UUID.test(memberId)) throw new Error("Cloud secret member is invalid");
+	return Buffer.from(hkdfSync("sha256", masterKey, "qorpera.member-kek/v1", memberId.toLowerCase(), 32));
+}
+
+/** Whose sealed secret a member envelope holds: the member and the login, under one of the vault's master keys. */
+export interface CloudSecretMemberEnvelopeIdentity {
+	readonly memberId: string;
+	readonly loginId: string;
+	readonly version: number;
+	readonly keyId: string;
+}
+
+/** A member envelope is bound to its member and login: both identity fields name the member, the secret is the
+ * login. Its key is the member's, so a company envelope never opens as one, nor one as a company envelope. */
+export function memberEnvelopeIdentity(identity: CloudSecretMemberEnvelopeIdentity): CloudSecretEnvelopeIdentity {
+	const memberId = identity.memberId.toLowerCase();
+	return {
+		companyId: memberId,
+		environmentId: memberId,
+		secretId: identity.loginId.toLowerCase(),
+		version: identity.version,
+		keyId: identity.keyId,
+	};
+}
+
 /** The PKCS#8 prefix (RFC 8410) of an X25519 private key, for a raw 32-byte seed. */
 const PKCS8_X25519 = Buffer.from("302e020100300506032b656e04220420", "hex");
 const SPKI_X25519_BYTES = 12;
@@ -386,6 +414,38 @@ export class CloudSecretKeyring {
 		const derived = derivedWrappingKey(master, identity.companyId);
 		try {
 			return await withCloudSecretFields(envelope, derived, identity, callback);
+		} finally {
+			derived.fill(0);
+		}
+	}
+
+	/** Whether this keyring can derive a member's key under a key id: only a shared vault's master key can. */
+	hasMemberKey(keyId: string): boolean {
+		return this.#derived.has(keyId);
+	}
+
+	/** Seals a member's own secret (an account model login) under the member's key. */
+	sealMember(fields: Readonly<Record<string, string>>, identity: CloudSecretMemberEnvelopeIdentity): Uint8Array {
+		const master = this.#derived.get(identity.keyId);
+		if (!master) throw new Error("Cloud secret member key is unavailable");
+		const derived = memberWrappingKey(master, identity.memberId);
+		try {
+			return sealCloudSecretFields(fields, derived, memberEnvelopeIdentity(identity));
+		} finally {
+			derived.fill(0);
+		}
+	}
+
+	async useMember<T>(
+		envelope: Uint8Array,
+		identity: CloudSecretMemberEnvelopeIdentity,
+		callback: (fields: Readonly<Record<string, string>>) => Promise<T>,
+	): Promise<T> {
+		const master = this.#derived.get(identity.keyId);
+		if (!master) throw new Error("Cloud secret member key is unavailable");
+		const derived = memberWrappingKey(master, identity.memberId);
+		try {
+			return await withCloudSecretFields(envelope, derived, memberEnvelopeIdentity(identity), callback);
 		} finally {
 			derived.fill(0);
 		}

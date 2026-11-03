@@ -1,4 +1,4 @@
--- 20260930548000 (D-B, PR 1): a normal company's coding dispatch fails closed with a precise reason.
+-- 20260930557000 (D-B, PR 1): a normal company's coding dispatch fails closed with a precise reason.
 --
 -- A new company with GitHub connected and an approved private repository asked its agent for a coding session, and
 -- the dispatch was refused with 'No coding executor serves this company for codex' (browser test, 30 Oct 05:02Z). The
@@ -23,28 +23,28 @@
 
 set local lock_timeout = '3s';
 
-create function pg_temp.db548_replace(p_function regprocedure, p_old text, p_new text)
+create function pg_temp.db557_replace(p_function regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930548000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+		raise exception '20260930557000 anchor differs in %: %', p_function, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
-select pg_temp.db548_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.db557_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$				v_problem := 'No coding executor serves this company for ' || (v_request ->> 'harness');$old$,
-	$new$				-- 20260930548000 (D-B): a member cannot set this up in the app, so the words say so.
+	$new$				-- 20260930557000 (D-B): a member cannot set this up in the app, so the words say so.
 				v_problem := 'Coding is not set up for this company yet: no coding machine serves it for '
 					|| (v_request ->> 'harness') || '. Only Qorpera can set this up today; there is no step for it in the app'
 					|| ' yet. Tell the member; calling again will not help.';$new$);
 
-select pg_temp.db548_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+select pg_temp.db557_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$				v_problem := 'This agent has no grant for that repository';$old$,
-	$new$				-- 20260930548000 (D-B): as for the executor.
+	$new$				-- 20260930557000 (D-B): as for the executor.
 				v_problem := 'Coding is not set up for ' || (v_request -> 'repository' ->> 'owner') || '/'
 					|| (v_request -> 'repository' ->> 'name') || ' yet: this agent has no grant for that repository. Only'
 					|| ' Qorpera can set this up today; there is no step for it in the app yet. Tell the member; calling'
 					|| ' again for it will not help.';$new$);
 
-drop function pg_temp.db548_replace(regprocedure, text, text);
+drop function pg_temp.db557_replace(regprocedure, text, text);

@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import {
+	CloudRequestTimeoutError,
 	readBoundedCloudResponse,
 	supabaseServiceHeaders,
 	withCloudDeadline,
@@ -37,13 +38,18 @@ import {
 	EventHookVault,
 } from "./cloud-event-hook-vault.ts";
 import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
-import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
+import type {
+	AccountModelLoginAuthority,
+	ModelLoginAuthority,
+	ModelLoginRunBinding,
+} from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -2387,6 +2393,32 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** An account sign-in's completion (20260930548000): the login sealed under its member's key, linked into every
+	 * company of the member that the shared vault serves. */
+	completeAccountModelLoginSignIn(
+		completion: Parameters<ModelLoginSignInAuthority["completeModelLoginSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_account_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.loginId,
+				completion.capabilitySha256,
+				completion.modelLoginId,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.accessIssuedAt,
+				completion.accessExpiresAt,
+				completion.providerAccountReference,
+				completion.providerAccountEmail,
+			],
+			signal,
+		);
+	}
+
 	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
 	completeChatGptPlanSignIn(
 		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],
@@ -2510,24 +2542,31 @@ export class PostgresCloudSecretBrokerAuthority
 	}
 }
 
-/** One broker database call: exactly one row with a `result`, within 5 s. */
-function oneCloudSecretRpc(
+/** One broker database call: exactly one row with a `result`, within 5 s. A call that passed its own 5 s (not its
+ * caller's signal) waited on the database: it is marked as the database's failure, as the client's own are. */
+async function oneCloudSecretRpc(
 	database: CloudSecretPostgresClient,
 	text: string,
 	values: readonly unknown[],
 	signal: AbortSignal,
 ): Promise<unknown> {
-	return withCloudDeadline(
-		async () => {
-			const result = await database.query<{ result: unknown }>(text, values);
-			if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
-				throw new Error("Cloud secret authority returned invalid data");
-			}
-			return result.rows[0]?.result;
-		},
-		5000,
-		signal,
-	);
+	try {
+		return await withCloudDeadline(
+			async () => {
+				const result = await database.query<{ result: unknown }>(text, values);
+				if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
+					throw new Error("Cloud secret authority returned invalid data");
+				}
+				return result.rows[0]?.result;
+			},
+			5000,
+			signal,
+		);
+	} catch (error) {
+		throw error instanceof CloudRequestTimeoutError && !signal.aborted
+			? markCloudVaultDatabaseFailure(error, "call deadline")
+			: error;
+	}
 }
 
 const PRINCIPAL_SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -2545,8 +2584,9 @@ export function sharedBrokerCapability(principalSecret: string, companyId?: stri
 }
 
 /** The shared vault's principal: it lists the companies it serves and registers new ones, and hands out
- * each company's own authority, which every existing broker call uses unchanged. */
-export class PostgresCloudSecretBrokerPrincipal {
+ * each company's own authority, which every existing broker call uses unchanged. It also keeps its members'
+ * account model logins (20260930548000): their renewals, idle pass, accounts and switch-off are its own calls. */
+export class PostgresCloudSecretBrokerPrincipal implements AccountModelLoginAuthority {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #principalId: string;
 	readonly #principalSecret: string;
@@ -2608,6 +2648,88 @@ export class PostgresCloudSecretBrokerPrincipal {
 			this.#database,
 			"select public.qorpera_register_company_with_broker_principal($1::uuid,$2::text,$3::uuid,$4::text) as result",
 			[this.#principalId, this.#capabilitySha256, companyId, createHash("sha256").update(capability).digest("hex")],
+			signal,
+		);
+	}
+
+	commitAccountModelLoginRenewal(
+		renewal: Parameters<AccountModelLoginAuthority["commitAccountModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_commit_account_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
+			[
+				this.#principalId,
+				this.#capabilitySha256,
+				renewal.loginId,
+				renewal.token,
+				renewal.baseVersion,
+				renewal.keyId,
+				Buffer.from(renewal.encryptedEnvelope).toString("base64"),
+				renewal.envelopeSha256,
+				renewal.accessIssuedAt,
+				renewal.accessExpiresAt,
+			],
+			signal,
+		);
+	}
+
+	releaseAccountModelLoginRenewal(
+		release: Parameters<AccountModelLoginAuthority["releaseAccountModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_release_account_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
+			[
+				this.#principalId,
+				this.#capabilitySha256,
+				release.loginId,
+				release.token,
+				release.baseVersion,
+				release.permanent,
+				release.reason,
+			],
+			signal,
+		);
+	}
+
+	takeIdleAccountModelLoginRenewal(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_take_idle_account_model_login_renewal($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	listAccountModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_account_model_logins_without_account($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	recordAccountModelLoginAccount(
+		account: Parameters<AccountModelLoginAuthority["recordAccountModelLoginAccount"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_record_account_model_login_account($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#principalId, this.#capabilitySha256, account.loginId, account.accountIdentity],
+			signal,
+		);
+	}
+
+	switchOffReplacedByAccountLogins(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_switch_off_replaced_by_account_logins($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);
 	}

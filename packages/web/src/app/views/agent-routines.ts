@@ -161,7 +161,7 @@ function refusalWords(reason: WebRoutineLoginRefusal): string {
 		case "usage_limit":
 			return t("This login has reached its usage limit. Choose another one, or wait until it resets.");
 		case "sign_in":
-			return t("Sign in to this login again in Settings → My connections, or choose another one.");
+			return t("Sign in to this login again in Settings → AI subscriptions, or choose another one.");
 		case "plan_listener":
 			return t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.");
 		case "not_yours":
@@ -610,7 +610,7 @@ export class AgentRoutines {
 		if (paid.waitsFor === "usage_limit") return t("Runs wait until this login's usage limit resets.");
 		if (paid.waitsFor !== "sign_in") return t("Paused: no model account pays for it");
 		if (paid.payerUserId === this.#access?.memberId)
-			return t("Sign in to this login again in Settings → My connections to let it run.");
+			return t("Sign in to this login again in Settings → AI subscriptions to let it run.");
 		const name = paid.payerUserId && this.#access?.memberName?.(paid.payerUserId);
 		return name
 			? t("Runs wait until {name} signs in to this login again.", { name })
@@ -1277,7 +1277,7 @@ export class AgentRoutines {
 							this.#accounts.length
 								? noPayer()
 								: t(
-										"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
+										"Connect a model account in Settings → AI subscriptions first. A routine runs on a member's own account.",
 									),
 						),
 					];

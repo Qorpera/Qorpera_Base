@@ -873,6 +873,25 @@ describe("native provider host", () => {
 				expect(logged).toHaveBeenLastCalledWith(
 					"Native provider request rejected: Native provider execution failed (stage=codex-turn-completion, category=provider_failed) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
 				);
+				// Codex's own discriminant, by its fixed name, goes to the journal line only; the stored code is unchanged.
+				execute.mockRejectedValueOnce(
+					tagNativeRuntimeFailure(
+						new Error(privateDiagnostic),
+						"codex-turn-completion",
+						"provider_failed",
+						null,
+						"unauthorized",
+					),
+				);
+				const named = await bridge.startCompany({ ...nativeAuthority, leaseId: otherComputeIdentityId }, job);
+				await expect(named.result).rejects.toThrow(
+					exactly(
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+					),
+				);
+				expect(logged).toHaveBeenLastCalledWith(
+					"Native provider request rejected: Native provider execution failed (stage=codex-turn-completion, category=provider_failed, codexError=unauthorized) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				);
 				execute.mockRejectedValueOnce(
 					new Error("Provider harness exited with 1 (provider authorization unavailable)"),
 				);
@@ -883,7 +902,7 @@ describe("native provider host", () => {
 				expect(logged).toHaveBeenLastCalledWith(
 					"Native provider request rejected: Provider harness exited with 1 (provider authorization unavailable) [mouth=uninitialized] [code=HARNESS_EXITED:PROVIDER_AUTHORIZATION]",
 				);
-				expect(logged).toHaveBeenCalledTimes(3);
+				expect(logged).toHaveBeenCalledTimes(4);
 				expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
 			} finally {
 				logged.mockRestore();

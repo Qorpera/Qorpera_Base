@@ -1,4 +1,5 @@
 import type { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
+import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 
 /**
  * The vault's own upkeep (Stateless Compute step 1, founder decisions 2026-09-28). Every few
@@ -68,15 +69,17 @@ export class CloudModelLoginUpkeep {
 	}
 
 	/** One pass: accounts and the switch-off first, then due logins until none is left, a take fails,
-	 * or the pass has done enough, then unused plan logins. Each part's failure is logged by fact only: an
-	 * error may name a login. */
+	 * or the pass has done enough, then unused plan logins. Each part's failure is logged by fact and class only
+	 * (cloudVaultFailureClass): an error's text may name a login. */
 	async pass(): Promise<void> {
 		await this.#renewals();
 		for (let ended = 0; ended < REVOCATIONS_PER_PASS && !this.#closed; ended += 1) {
 			try {
 				if ((await this.#vault.revokeUnused(AbortSignal.timeout(TAKE_DEADLINE_MS))) !== "revoked") return;
-			} catch {
-				console.error("Model login upkeep: ending an unused ChatGPT plan login failed; the next pass tries again.");
+			} catch (error) {
+				console.error(
+					`Model login upkeep: ending an unused ChatGPT plan login failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+				);
 				return;
 			}
 		}
@@ -85,8 +88,10 @@ export class CloudModelLoginUpkeep {
 	async #renewals(): Promise<void> {
 		try {
 			await this.#vault.recordAccounts(AbortSignal.timeout(TAKE_DEADLINE_MS * 2));
-		} catch {
-			console.error("Model login upkeep: recording login accounts failed; the next pass tries again.");
+		} catch (error) {
+			console.error(
+				`Model login upkeep: recording login accounts failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+			);
 		}
 		try {
 			const switched = await this.#vault.switchOffReplacedNodeLogins(AbortSignal.timeout(TAKE_DEADLINE_MS));
@@ -94,16 +99,20 @@ export class CloudModelLoginUpkeep {
 				console.error(
 					`Model login upkeep: switched off ${switched.switchedOff} old node login(s) the vault replaced.`,
 				);
-		} catch {
-			console.error("Model login upkeep: the switch-off pass failed; the next pass tries again.");
+		} catch (error) {
+			console.error(
+				`Model login upkeep: the switch-off pass failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+			);
 		}
 		for (let renewed = 0; renewed < RENEWALS_PER_PASS && !this.#closed; renewed += 1) {
 			try {
 				if ((await this.#vault.renewIdle(AbortSignal.timeout(TAKE_DEADLINE_MS))) === "none") return;
-			} catch {
+			} catch (error) {
 				// The database or the answer failed: the next pass tries again. The error itself may name
-				// a login; only the fact is logged, so a broken call never switches renewal off unseen.
-				console.error("Model login upkeep: a pass stopped on an error; the next pass tries again.");
+				// a login; only the fact and its class are logged, so a broken call never switches renewal off unseen.
+				console.error(
+					`Model login upkeep: a pass stopped on an error (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+				);
 				return;
 			}
 		}

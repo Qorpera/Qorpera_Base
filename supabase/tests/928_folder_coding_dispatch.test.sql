@@ -2,7 +2,7 @@
 -- C3a (migration 20260930077000, deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (C3)"): a coding session
 -- dispatched on folder-v2, through manage_worker's folder entry (qorpera_folder_worker_commit) with its brief.md. A1's
 -- twelve cases from 396 (snapshot-v1, deleted with the old core): the six refusals, in the old worker writer's order
--- and words (the executor's and the grant's in D-B's, 20260930548000), as rule refusals that write nothing; the
+-- and words (the executor's and the grant's in D-B's, 20260930557000), as rule refusals that write nothing; the
 -- worker, its session, its first turn and event; no wake; a replay;
 -- an in-house worker beside it; a second session that queues and is cancelled. Then: a coding follow-up; a coding
 -- session's turn claimed, begun, authorized, submitted and completed on folder-v2, its turn's wake carrying the
@@ -145,7 +145,7 @@ declare
 	v_brief jsonb := pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1');
 begin
 	-- 1. No coding executor serves the company for the harness: a member cannot set that up in the app, and the words
-	-- say so (D-B, 20260930548000).
+	-- say so (D-B, 20260930557000).
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'c3-refuse-1', v_folder, v_brief), v_brief,
 		'Coding is not set up for this company yet: no coding machine serves it for codex. Only Qorpera can set this up '
 		|| 'today; there is no step for it in the app yet. Tell the member; calling again will not help.');

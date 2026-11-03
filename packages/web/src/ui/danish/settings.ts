@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Plan & usage, Friends, Company, My connections, Company connections. */
+/** Settings: General, Plan & usage, Friends, Company, AI subscriptions, Company connections, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -271,15 +271,15 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company execution (app/views/company-execution.ts)
 
-	// My connections and Company connections (app/views/settings.ts)
-	"My connections": "Mine forbindelser",
+	// AI subscriptions and Company connections (app/views/settings.ts)
+	"AI subscriptions": "AI-abonnementer",
 	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
 	"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.":
 		"Virksomhedens egne konti, webhooks og postkasser. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
-	// My connections: model accounts (app/views/settings-connections.ts)
+	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
 	"Opening ChatGPT…": "Åbner ChatGPT…",
 	"Finishing your ChatGPT sign-in…": "Afslutter dit ChatGPT-login…",
@@ -317,6 +317,23 @@ export const SETTINGS: Record<string, string> = {
 	"Added {time} · {id}": "Tilføjet {time} · {id}",
 	"Sign out and add this account again to reconnect.": "Log ud og tilføj kontoen igen for at genoprette forbindelsen.",
 	"The account could not be disconnected. Try again.": "Kontoen kunne ikke afbrydes. Prøv igen.",
+	"Used in all your companies": "Bruges i alle dine virksomheder",
+	"Stop using here": "Stop med at bruge her",
+	"Stopping…": "Stopper…",
+	"Sign out everywhere": "Log ud overalt",
+	"Signing out everywhere…": "Logger ud overalt…",
+	"You could not be signed out everywhere. Try again.": "Du kunne ikke logges ud overalt. Prøv igen.",
+	"A ChatGPT subscription you add here is used in all your companies.":
+		"Et ChatGPT-abonnement, du tilføjer her, bruges i alle dine virksomheder.",
+	"Add ChatGPT subscription": "Tilføj ChatGPT-abonnement",
+	"This subscription was added to {company} only. Open that company to see it.":
+		"Abonnementet blev kun tilføjet til {company}. Åbn virksomheden for at se det.",
+	// AI subscriptions with no company open (app/views/settings-ai-subscriptions.ts)
+	"Create or join a company first. Then you can add a ChatGPT subscription here.":
+		"Opret eller bliv medlem af en virksomhed først. Så kan du tilføje et ChatGPT-abonnement her.",
+	"Your AI subscriptions could not be read.": "Dine AI-abonnementer kunne ikke hentes.",
+	"Your companies can't share an AI subscription yet. Open a company to add one there.":
+		"Dine virksomheder kan ikke dele et AI-abonnement endnu. Åbn en virksomhed for at tilføje et der.",
 	"Usage limit reached · resets in {time}": "Forbrugsgrænsen er nået · nulstilles om {time}",
 	"Usage unavailable": "Forbrug ikke tilgængeligt",
 	"{percent}% left": "{percent}% tilbage",
@@ -495,6 +512,46 @@ export const SETTINGS: Record<string, string> = {
 		"Webhooken er klar. Giv dens adresse til den tjeneste, der sender hændelserne.",
 	"The mailbox is ready. Email sent to it can start the company's routines.":
 		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
+
+	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
+	Sites: "Hjemmesider",
+	"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.":
+		"Hjemmesider, som virksomhedens agenter har udgivet. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
+	"Only founders and admins can see passwords or take sites offline.":
+		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
+	"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.":
+		"Ingen hjemmesider endnu. Når en agent udgiver en hjemmeside for virksomheden, vises den her med sit link og sin adgangskode.",
+	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
+	"Publishing…": "Udgiver…",
+	"Published {time} by {agent}": "Udgivet {time} af {agent}",
+	"Published {time}": "Udgivet {time}",
+	"1 file": "1 fil",
+	"From {source}": "Fra {source}",
+	"The link is copied.": "Linket er kopieret.",
+	"The link could not be copied. Select it and copy it.": "Linket kunne ikke kopieres. Markér det, og kopiér det.",
+	"Show password": "Vis adgangskode",
+	Hide: "Skjul",
+	"The password is copied.": "Adgangskoden er kopieret.",
+	"The password could not be copied. Select it and copy it.":
+		"Adgangskoden kunne ikke kopieres. Markér den, og kopiér den.",
+	"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.":
+		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden. En besøgendes eget link åbner hjemmesiden i 7 dage; en ny adgangskode afslutter alle besøg.",
+	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
+	"Change password": "Skift adgangskode",
+	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
+	"New password for {name}": "Ny adgangskode til {name}",
+	"Save password": "Gem adgangskode",
+	"Make a new password": "Lav en ny adgangskode",
+	"Every visitor enters the new password; the old one stops working at once.":
+		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
+	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
+	"The password is changed. Every visitor enters the new one.":
+		"Adgangskoden er skiftet. Alle besøgende skal skrive den nye.",
+	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
+	Unpublish: "Tag offline",
+	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
+		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
+	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",
