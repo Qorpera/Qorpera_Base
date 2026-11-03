@@ -1495,3 +1495,81 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 		expect(status()).toBeUndefined();
 	});
 });
+
+describe("account model logins", () => {
+	/** A Codex login the member signed in to once, used in all their companies (20260930548000). */
+	const account = { loginId: id(90), status: "active" as const, companies: 2, connectionIds: [id(81)] };
+	const linked = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+	async function setupAccount(
+		listAccountLogins: WebNativeSubscription["listAccountLogins"] = vi.fn(async () => ({
+			enabled: true,
+			logins: [account],
+		})),
+	) {
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(observed(linked))),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			listAccountLogins,
+			signOutEverywhere: vi.fn(async () => undefined),
+		};
+		const lifetime = new AbortController();
+		view = new ConnectionsView(client, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		return client;
+	}
+	const buttons = () => [...card(OPENAI).querySelectorAll<HTMLButtonElement>("button")];
+
+	it("says an account login is used in all the member's companies, and stops using it here only", async () => {
+		const client = await setupAccount();
+		expect(card(OPENAI).textContent).toContain("Used in all your companies");
+		expect(buttons().map((item) => item.textContent)).toEqual(["Stop using here", "Sign out everywhere"]);
+		buttons()[0]!.click();
+		await settle();
+		expect(client.revokeConnection).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: id(81) },
+			expect.any(AbortSignal),
+		);
+		expect(client.signOutEverywhere).not.toHaveBeenCalled();
+	});
+
+	it("signs out everywhere from the account login's card, then reads the accounts again", async () => {
+		const client = await setupAccount();
+		const reads = vi.mocked(client.listConnections).mock.calls.length;
+		buttons()[1]!.click();
+		await settle();
+		expect(client.signOutEverywhere).toHaveBeenCalledExactlyOnceWith(id(90), expect.any(AbortSignal));
+		expect(client.revokeConnection).not.toHaveBeenCalled();
+		expect(vi.mocked(client.listConnections).mock.calls.length).toBeGreaterThan(reads);
+	});
+
+	it("says so when signing out everywhere fails", async () => {
+		const client = await setupAccount();
+		vi.mocked(client.signOutEverywhere).mockRejectedValueOnce(new Error("offline"));
+		buttons()[1]!.click();
+		await settle();
+		expect(view.el.textContent).toContain("You could not be signed out everywhere. Try again.");
+	});
+
+	it("keeps a company login's own Sign out, also when the account logins cannot be read", async () => {
+		await setupAccount(vi.fn(async () => ({ enabled: true, logins: [] })));
+		expect(card(OPENAI).textContent).not.toContain("Used in all your companies");
+		expect(buttons().map((item) => item.textContent)).toEqual(["Sign out"]);
+		view.dispose();
+		await setupAccount(vi.fn(async () => Promise.reject(new Error("offline"))));
+		expect(buttons().map((item) => item.textContent)).toEqual(["Sign out"]);
+		expect(view.el.textContent).toContain("member@example.com");
+	});
+
+	it("shows the account login's card in Danish", async () => {
+		setLanguagePreference("da");
+		try {
+			await setupAccount();
+			expect(card(OPENAI).textContent).toContain("Bruges i alle dine virksomheder");
+			expect(buttons().map((item) => item.textContent)).toEqual(["Stop med at bruge her", "Log ud overalt"]);
+		} finally {
+			setLanguagePreference("en");
+		}
+	});
+});

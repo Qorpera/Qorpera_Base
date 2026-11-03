@@ -51,6 +51,53 @@ export type WebMemberConnection = NativeMemberConnection & {
 export interface WebExecutionConnections extends NativeExecutionConnections {
 	connections: readonly WebMemberConnection[];
 }
+/** A member's account model login (20260930548000): one sign-in, used in every company of theirs that the shared
+ * vault serves. `connectionIds` are its connections in this company. */
+export interface WebAccountLogin {
+	loginId: string;
+	status: "active" | "needs_sign_in";
+	providerAccountEmail?: string;
+	/** How many companies use it now. */
+	companies: number;
+	connectionIds: readonly string[];
+}
+export interface WebAccountLogins {
+	/** Whether sign-ins here are account sign-ins (the switch is on and the shared vault serves this company). */
+	enabled: boolean;
+	logins: readonly WebAccountLogin[];
+}
+
+/** The member's account logins from the cloud's answer; anything malformed reads as none. */
+export function parseAccountLogins(value: unknown): WebAccountLogins {
+	const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+	if (input.schema !== "qorpera.account-model-logins/v1" || !Array.isArray(input.logins))
+		throw new Error("Invalid cloud response");
+	const logins: WebAccountLogin[] = [];
+	for (const item of input.logins) {
+		const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+		if (
+			typeof entry.loginId !== "string" ||
+			!UUID_PATTERN.test(entry.loginId) ||
+			(entry.status !== "active" && entry.status !== "needs_sign_in") ||
+			typeof entry.companies !== "number" ||
+			!Number.isSafeInteger(entry.companies) ||
+			!Array.isArray(entry.connectionIds) ||
+			!entry.connectionIds.every((connection) => typeof connection === "string" && UUID_PATTERN.test(connection))
+		)
+			throw new Error("Invalid cloud response");
+		logins.push({
+			loginId: entry.loginId,
+			status: entry.status,
+			...(typeof entry.providerAccountEmail === "string"
+				? { providerAccountEmail: entry.providerAccountEmail }
+				: {}),
+			companies: entry.companies,
+			connectionIds: entry.connectionIds as string[],
+		});
+	}
+	return { enabled: input.enabled === true, logins };
+}
+
 /** A ChatGPT plan login: its member alone turns on work while away (Sign in with ChatGPT). */
 export const planLogin = (connection: WebMemberConnection): boolean => connection.loginKind === "chatgpt_plan";
 
@@ -88,6 +135,10 @@ export interface WebNativeSubscription {
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
 	): Promise<{ connectionId: string; status: "revoked" }>;
+	/** The member's account logins, and which of this company's connections use them. */
+	listAccountLogins?(signal?: AbortSignal): Promise<WebAccountLogins>;
+	/** Ends an account login in every company (the per-company Disconnect only stops using it here). */
+	signOutEverywhere?(loginId: string, signal?: AbortSignal): Promise<void>;
 }
 
 /** The same rule as the server's admission: usage observed within the last
@@ -846,5 +897,29 @@ export function createWebNativeSubscription(
 			);
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
+		listAccountLogins: async (signal) => {
+			signal?.throwIfAborted();
+			let value: unknown;
+			try {
+				value = await cloud.rpc("qorpera_list_account_model_logins", { p_profile_id: profileId });
+			} catch (error) {
+				// A deployment without account logins has no such function: there are none.
+				if (error instanceof CloudRpcError && error.missing) return { enabled: false, logins: [] };
+				throw error;
+			}
+			signal?.throwIfAborted();
+			current();
+			return parseAccountLogins(value);
+		},
+		signOutEverywhere: async (loginId, signal) => {
+			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid account login.");
+			signal?.throwIfAborted();
+			current();
+			const value = (await cloud.rpc("qorpera_sign_out_account_model_login", { p_login_id: loginId })) as {
+				loginId?: unknown;
+				status?: unknown;
+			} | null;
+			if (value?.loginId !== loginId || value.status !== "revoked") throw new Error("Invalid cloud response");
+		},
 	};
 }

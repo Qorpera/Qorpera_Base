@@ -6,7 +6,11 @@ import {
 	parseChatGptPlanLogin,
 	serializeChatGptPlanLogin,
 } from "./cloud-chatgpt-plan.ts";
-import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import type {
+	CloudSecretEnvelopeIdentity,
+	CloudSecretKeyring,
+	CloudSecretMemberEnvelopeIdentity,
+} from "./cloud-secret-crypto.ts";
 import { chatGptPlanAccountIdentity, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 
 /**
@@ -22,6 +26,10 @@ import { chatGptPlanAccountIdentity, nativeProviderAccountIdentity } from "./nat
  * A ChatGPT plan login (Sign in with ChatGPT, built switched off) is kept the same way under the same
  * lock. The vault renews it itself with OpenAI's token endpoint (no Codex), hands a run only its access
  * token, and ends it at OpenAI once nothing uses it.
+ *
+ * An account login (founder, 3 November 2026) is a member's Codex login kept once by the shared vault and used in
+ * every company of the member that the vault serves: the run's answer names its member, the vault opens it with that
+ * member's key, and only the shared vault's own calls (its principal) save or give back its renewal.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -129,6 +137,28 @@ export interface ModelLoginAuthority {
 	): Promise<unknown>;
 }
 
+/** The shared vault's own side of account logins (its principal): their renewals, the idle pass, their accounts and
+ * the switch-off of the logins they replaced. */
+export interface AccountModelLoginAuthority {
+	commitAccountModelLoginRenewal(
+		renewal: Parameters<ModelLoginAuthority["commitModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown>;
+	releaseAccountModelLoginRenewal(
+		release: Parameters<ModelLoginAuthority["releaseModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** Takes the renewal lock of the vault's most urgent idle account login that is still used somewhere. */
+	takeIdleAccountModelLoginRenewal(signal: AbortSignal): Promise<unknown>;
+	listAccountModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown>;
+	recordAccountModelLoginAccount(
+		account: { loginId: string; accountIdentity: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** One pass switching off members' older logins of the same account in the companies an account login is linked into. */
+	switchOffReplacedByAccountLogins(signal: AbortSignal): Promise<unknown>;
+}
+
 /** What one switch-off pass did: old node logins switched off, still in use, or not movable yet. */
 export interface ModelLoginSwitchOff {
 	readonly switchedOff: number;
@@ -149,8 +179,11 @@ export interface ModelLoginRenewer {
 interface IssueResult {
 	loginId: string;
 	loginKind: "codex" | "chatgpt_plan";
-	companyId: string;
-	computeIdentityId: string;
+	/** A company login's company and identity; a run's account login names the run's company and identity too. */
+	companyId?: string;
+	computeIdentityId?: string;
+	/** An account login's member: the vault opens it with that member's key. */
+	ownerUserId?: string;
 	version: number;
 	accessExpiresAt: string;
 	renewing: boolean;
@@ -332,6 +365,11 @@ function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion:
 		renewing: input.renewing,
 	};
 	if (result.computeIdentityId !== binding.computeIdentityId) throw new Error("Model login names another identity");
+	if (input.scope !== undefined) {
+		// An account login (20260930548000): a Codex login of one member, opened with that member's key.
+		if (input.scope !== "account" || result.loginKind !== "codex") throw new Error("Model login issue is invalid");
+		result.ownerUserId = uuid(input.ownerUserId, "Model login member");
+	} else if (input.ownerUserId !== undefined) throw new Error("Model login issue is invalid");
 	if (input.unchanged === true) {
 		if (knownVersion !== result.version || input.renewal !== undefined)
 			throw new Error("Model login issue is invalid");
@@ -366,21 +404,58 @@ function parseIdleRenewal(value: unknown): IssueResult | null {
 	return result;
 }
 
-/** Whose login an envelope holds: its company, Compute Identity and login. */
-type LoginOwner = Pick<IssueResult, "loginId" | "companyId" | "computeIdentityId">;
+/** The shared vault's idle account login, or null when none is due. */
+function parseIdleAccountRenewal(value: unknown): IssueResult | null {
+	const input = record(value, "Account model login idle renewal");
+	if (input.schema !== "qorpera.account-model-login-idle-renewal/v1")
+		throw new Error("Account model login idle renewal is invalid");
+	if (input.renewal === null) {
+		if (Object.keys(input).length !== 2) throw new Error("Account model login idle renewal is invalid");
+		return null;
+	}
+	const result: IssueResult = {
+		loginId: uuid(input.loginId, "Model login"),
+		loginKind: loginKind(input.loginKind),
+		ownerUserId: uuid(input.ownerUserId, "Model login member"),
+		version: version(input.version, "Model login version"),
+		accessExpiresAt: timestamp(input.accessExpiresAt, "Model login pass end"),
+		renewing: false,
+	};
+	if (result.loginKind !== "codex") throw new Error("Account model login idle renewal is invalid");
+	result.envelope = parseEnvelope(input);
+	result.renewal = parseRenewal(input.renewal, result.version);
+	return result;
+}
 
-function envelopeIdentity(issue: LoginOwner, versionNumber: number, keyId: string): CloudSecretEnvelopeIdentity {
+/** Whose login an envelope holds: a company login's company, Compute Identity and login, or an account login's
+ * member and login. */
+type LoginOwner = Pick<IssueResult, "loginId" | "companyId" | "computeIdentityId" | "ownerUserId">;
+
+/** The envelope identity of a company login; an account login has a member identity instead. */
+function sealedIdentity(
+	owner: LoginOwner,
+	versionNumber: number,
+	keyId: string,
+): { readonly member: CloudSecretMemberEnvelopeIdentity } | { readonly company: CloudSecretEnvelopeIdentity } {
+	if (owner.ownerUserId !== undefined)
+		return { member: { memberId: owner.ownerUserId, loginId: owner.loginId, version: versionNumber, keyId } };
+	if (owner.companyId === undefined || owner.computeIdentityId === undefined)
+		throw new Error("Model login owner is invalid");
 	return {
-		companyId: issue.companyId,
-		environmentId: issue.computeIdentityId,
-		secretId: issue.loginId,
-		version: versionNumber,
-		keyId,
+		company: {
+			companyId: owner.companyId,
+			environmentId: owner.computeIdentityId,
+			secretId: owner.loginId,
+			version: versionNumber,
+			keyId,
+		},
 	};
 }
 
 export class CloudModelLoginVault {
-	readonly #authority: ModelLoginAuthority;
+	readonly #authority: ModelLoginAuthority | undefined;
+	/** The shared vault's own calls for account logins; absent, an account login is never handed out here. */
+	readonly #account: AccountModelLoginAuthority | undefined;
 	readonly #keys: CloudSecretKeyring;
 	readonly #renewer: ModelLoginRenewer | undefined;
 
@@ -388,15 +463,24 @@ export class CloudModelLoginVault {
 	readonly #plan: ChatGptPlanOAuth | undefined;
 
 	constructor(options: {
-		authority: ModelLoginAuthority;
+		/** A company's broker authority; absent for the shared vault's own account pass. */
+		authority?: ModelLoginAuthority;
+		accountAuthority?: AccountModelLoginAuthority;
 		keyring: CloudSecretKeyring;
 		renewer?: ModelLoginRenewer;
 		chatGptPlan?: ChatGptPlanOAuth;
 	}) {
+		if (!options.authority && !options.accountAuthority) throw new Error("Model login vault needs an authority");
 		this.#authority = options.authority;
+		this.#account = options.accountAuthority;
 		this.#keys = options.keyring;
 		this.#renewer = options.renewer;
 		this.#plan = options.chatGptPlan;
+	}
+
+	get #company(): ModelLoginAuthority {
+		if (!this.#authority) throw new Error("Model login vault serves no company");
+		return this.#authority;
 	}
 
 	/** Hands a live run its login: the current version, renewed first when it is due and this call
@@ -407,10 +491,12 @@ export class CloudModelLoginVault {
 		// The database decides whether the login is due; a lock this vault cannot use for the login's kind
 		// is given back at once.
 		const canRenew = this.#renewer !== undefined || this.#plan !== undefined;
-		const answer = await this.#authority.issueModelLogin(binding, knownVersion, canRenew, signal);
+		const answer = await this.#company.issueModelLogin(binding, knownVersion, canRenew, signal);
 		let issue: IssueResult;
 		try {
 			issue = parseIssue(answer, binding, knownVersion);
+			if (issue.ownerUserId !== undefined && !this.#account)
+				throw new Error("Account model logins are not served here");
 		} catch (error) {
 			await this.#releaseUnread(answer);
 			throw error;
@@ -467,10 +553,24 @@ export class CloudModelLoginVault {
 	 * way as a run's renewal. `none` when no login is due, or when this vault renews nothing. */
 	async renewIdle(signal: AbortSignal): Promise<"renewed" | "failed" | "none"> {
 		if (!this.#renewer && !this.#plan) return "none";
-		const answer = await this.#authority.takeIdleModelLoginRenewal(signal);
+		return this.#renewTaken(await this.#company.takeIdleModelLoginRenewal(signal), parseIdleRenewal);
+	}
+
+	/** The shared vault's one idle pass over its account logins: renews the most urgent idle account login still used
+	 * in some company, under the same lock a run's renewal takes. `none` when none is due or nothing renews here. */
+	async renewIdleAccount(signal: AbortSignal): Promise<"renewed" | "failed" | "none"> {
+		const account = this.#account;
+		if (!account || !this.#renewer) return "none";
+		return this.#renewTaken(await account.takeIdleAccountModelLoginRenewal(signal), parseIdleAccountRenewal);
+	}
+
+	async #renewTaken(
+		answer: unknown,
+		parse: (value: unknown) => IssueResult | null,
+	): Promise<"renewed" | "failed" | "none"> {
 		let issue: IssueResult | null;
 		try {
-			issue = parseIdleRenewal(answer);
+			issue = parse(answer);
 		} catch (error) {
 			await this.#releaseUnread(answer);
 			throw error;
@@ -497,7 +597,7 @@ export class CloudModelLoginVault {
 	async revokeUnused(signal: AbortSignal): Promise<"revoked" | "failed" | "none"> {
 		const plan = this.#plan;
 		if (!plan) return "none";
-		const input = record(await this.#authority.takeChatGptPlanRevocation(signal), "ChatGPT plan revocation");
+		const input = record(await this.#company.takeChatGptPlanRevocation(signal), "ChatGPT plan revocation");
 		if (input.schema !== "qorpera.chatgpt-plan-revocation/v1") throw new Error("ChatGPT plan revocation is invalid");
 		if (input.revocation === null) return "none";
 		const revocation = record(input.revocation, "ChatGPT plan revocation");
@@ -520,7 +620,7 @@ export class CloudModelLoginVault {
 		if ((await plan.revoke(opened.plan.refreshToken, AbortSignal.timeout(RENEWAL_BUDGET_MS))) !== "revoked")
 			return "failed";
 		const finished = record(
-			await this.#authority.finishChatGptPlanRevocation(
+			await this.#company.finishChatGptPlanRevocation(
 				{ loginId: owner.loginId, token, baseVersion },
 				AbortSignal.timeout(SAVE_DEADLINE_MS),
 			),
@@ -537,7 +637,7 @@ export class CloudModelLoginVault {
 	 * keeps what they started. Returns how many it recorded; a login it cannot read is tried again at the
 	 * next pass. */
 	async recordAccounts(signal: AbortSignal): Promise<number> {
-		const input = record(await this.#authority.listModelLoginsWithoutAccount(signal), "Model login accounts");
+		const input = record(await this.#company.listModelLoginsWithoutAccount(signal), "Model login accounts");
 		if (input.schema !== "qorpera.model-login-accounts/v1" || !Array.isArray(input.logins) || input.logins.length > 8)
 			throw new Error("Model login accounts are invalid");
 		let recorded = 0;
@@ -555,7 +655,40 @@ export class CloudModelLoginVault {
 						? nativeProviderAccountIdentity(opened.codex.text)
 						: chatGptPlanAccountIdentity(opened.plan.subject);
 				if (!accountIdentity) continue;
-				await this.#authority.recordModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
+				await this.#company.recordModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
+				recorded += 1;
+			} catch {
+				// This login is tried again at the next pass; the others go on.
+			}
+		}
+		return recorded;
+	}
+
+	/** The shared vault's account logins with no recorded ChatGPT account yet, as recordAccounts does for a company's
+	 * logins: the switch-off pass pairs a member's older logins of the same account with them. */
+	async recordAccountLogins(signal: AbortSignal): Promise<number> {
+		const account = this.#account;
+		if (!account) return 0;
+		const input = record(await account.listAccountModelLoginsWithoutAccount(signal), "Account model login accounts");
+		if (
+			input.schema !== "qorpera.account-model-login-accounts/v1" ||
+			!Array.isArray(input.logins) ||
+			input.logins.length > 8
+		)
+			throw new Error("Account model login accounts are invalid");
+		let recorded = 0;
+		for (const item of input.logins) {
+			try {
+				const entry = record(item, "Account model login account");
+				const login: LoginOwner = {
+					loginId: uuid(entry.loginId, "Model login"),
+					ownerUserId: uuid(entry.ownerUserId, "Model login member"),
+				};
+				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
+				if (opened.kind !== "codex") continue;
+				const accountIdentity = nativeProviderAccountIdentity(opened.codex.text);
+				if (!accountIdentity) continue;
+				await account.recordAccountModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
 				recorded += 1;
 			} catch {
 				// This login is tried again at the next pass; the others go on.
@@ -567,29 +700,51 @@ export class CloudModelLoginVault {
 	/** One pass switching off members' old node logins that a vault login of the same ChatGPT account
 	 * replaced (the database moves their pins first and waits for their work to finish). */
 	async switchOffReplacedNodeLogins(signal: AbortSignal): Promise<ModelLoginSwitchOff> {
-		const input = record(await this.#authority.switchOffReplacedNodeLogins(signal), "Model login switch-off");
-		const count = (value: unknown): number => {
-			if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 4)
-				throw new Error("Model login switch-off is invalid");
-			return value;
-		};
-		if (input.schema !== "qorpera.model-login-switch-off/v1") throw new Error("Model login switch-off is invalid");
-		return { switchedOff: count(input.switchedOff), waiting: count(input.waiting), refused: count(input.refused) };
+		return parseSwitchOff(await this.#company.switchOffReplacedNodeLogins(signal));
+	}
+
+	/** The same pass for account logins, across the companies the shared vault serves. */
+	async switchOffReplacedByAccountLogins(signal: AbortSignal): Promise<ModelLoginSwitchOff> {
+		const account = this.#account;
+		if (!account) return { switchedOff: 0, waiting: 0, refused: 0 };
+		return parseSwitchOff(await account.switchOffReplacedByAccountLogins(signal));
 	}
 
 	#open(
-		issue: LoginOwner,
+		owner: LoginOwner,
 		versionNumber: number,
 		envelope: { keyId: string; bytes: Uint8Array },
 	): Promise<OpenedLogin> {
-		return this.#keys.use(envelope.bytes, envelopeIdentity(issue, versionNumber, envelope.keyId), async (fields) => {
+		const read = async (fields: Readonly<Record<string, string>>): Promise<OpenedLogin> => {
 			if (Object.keys(fields).length !== 1) throw new Error("Model login envelope is invalid");
 			const codex = fields[MODEL_LOGIN_FIELD];
 			if (typeof codex === "string") return { kind: "codex", codex: parseCodexLogin(codex) };
 			const plan = fields[CHATGPT_PLAN_LOGIN_FIELD];
 			if (typeof plan === "string") return { kind: "chatgpt_plan", plan: parseChatGptPlanLogin(plan) };
 			throw new Error("Model login envelope is invalid");
-		});
+		};
+		const identity = sealedIdentity(owner, versionNumber, envelope.keyId);
+		return "member" in identity
+			? this.#keys.useMember(envelope.bytes, identity.member, read)
+			: this.#keys.use(envelope.bytes, identity.company, read);
+	}
+
+	#seal(
+		owner: LoginOwner,
+		fields: Readonly<Record<string, string>>,
+		versionNumber: number,
+		keyId: string,
+	): Uint8Array {
+		const identity = sealedIdentity(owner, versionNumber, keyId);
+		return "member" in identity
+			? this.#keys.sealMember(fields, identity.member)
+			: this.#keys.seal(fields, identity.company);
+	}
+
+	/** Whether this vault can seal the login's next version under the lock's key: an account login needs the shared
+	 * vault's master key (its member's key is derived from it). */
+	#canSeal(owner: LoginOwner, keyId: string): boolean {
+		return owner.ownerUserId !== undefined ? this.#keys.hasMemberKey(keyId) : this.#keys.has(keyId);
 	}
 
 	/** Renews under the lock this call holds. Every way out gives the lock back: a refused
@@ -602,7 +757,7 @@ export class CloudModelLoginVault {
 	): Promise<{ login: CodexLogin; version: number } | undefined> {
 		const renewer = this.#renewer;
 		// A key the broker cannot seal with would strand a renewal the provider already made.
-		if (!renewer || !this.#keys.has(renewal.keyId)) {
+		if (!renewer || !this.#canSeal(issue, renewal.keyId)) {
 			await this.#release(issue, renewal, false, renewer ? "renewal_key_unavailable" : "renewer_unavailable");
 			return undefined;
 		}
@@ -636,27 +791,25 @@ export class CloudModelLoginVault {
 		// after a lost answer finds its version saved. If it is still not saved, this run keeps
 		// the new pass and the login asks for a new sign-in.
 		try {
-			const envelope = this.#keys.seal(
-				{ [MODEL_LOGIN_FIELD]: renewed.text },
-				envelopeIdentity(issue, next, renewal.keyId),
-			);
+			const envelope = this.#seal(issue, { [MODEL_LOGIN_FIELD]: renewed.text }, next, renewal.keyId);
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
+			const commit = {
+				loginId: issue.loginId,
+				token: renewal.token,
+				baseVersion: renewal.baseVersion,
+				keyId: renewal.keyId,
+				encryptedEnvelope: envelope,
+				envelopeSha256,
+				accessIssuedAt: renewed.accessIssuedAt,
+				accessExpiresAt: renewed.accessExpiresAt,
+			};
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
+					const signal = AbortSignal.timeout(SAVE_DEADLINE_MS);
 					const saved = record(
-						await this.#authority.commitModelLoginRenewal(
-							{
-								loginId: issue.loginId,
-								token: renewal.token,
-								baseVersion: renewal.baseVersion,
-								keyId: renewal.keyId,
-								encryptedEnvelope: envelope,
-								envelopeSha256,
-								accessIssuedAt: renewed.accessIssuedAt,
-								accessExpiresAt: renewed.accessExpiresAt,
-							},
-							AbortSignal.timeout(SAVE_DEADLINE_MS),
-						),
+						issue.ownerUserId !== undefined
+							? await this.#accountAuthority.commitAccountModelLoginRenewal(commit, signal)
+							: await this.#company.commitModelLoginRenewal(commit, signal),
 						"Model login renewal",
 					);
 					if (saved.schema !== "qorpera.model-login-renewal/v1" || saved.version !== next)
@@ -673,6 +826,11 @@ export class CloudModelLoginVault {
 		return { login: renewed, version: renewal.baseVersion };
 	}
 
+	get #accountAuthority(): AccountModelLoginAuthority {
+		if (!this.#account) throw new Error("Account model logins are not served here");
+		return this.#account;
+	}
+
 	/** Renews a plan login under the lock this call holds, with OpenAI's token endpoint. As with a Codex
 	 * login, every way out gives the lock back, and a renewal OpenAI made but the vault could not save (the
 	 * old refresh token is spent) marks the login for a new sign-in; this run keeps the newest pass. */
@@ -682,7 +840,8 @@ export class CloudModelLoginVault {
 		current: ChatGptPlanLogin,
 	): Promise<{ login: ChatGptPlanLogin; version: number } | undefined> {
 		const plan = this.#plan;
-		if (!plan || !this.#keys.has(renewal.keyId)) {
+		// A plan login is a company login only.
+		if (!plan || issue.ownerUserId !== undefined || !this.#keys.has(renewal.keyId)) {
 			await this.#release(issue, renewal, false, plan ? "renewal_key_unavailable" : "renewer_unavailable");
 			return undefined;
 		}
@@ -702,15 +861,17 @@ export class CloudModelLoginVault {
 		}
 		const next = renewal.baseVersion + 1;
 		try {
-			const envelope = this.#keys.seal(
+			const envelope = this.#seal(
+				issue,
 				{ [CHATGPT_PLAN_LOGIN_FIELD]: serializeChatGptPlanLogin(renewed) },
-				envelopeIdentity(issue, next, renewal.keyId),
+				next,
+				renewal.keyId,
 			);
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
 					const saved = record(
-						await this.#authority.commitChatGptPlanRenewal(
+						await this.#company.commitChatGptPlanRenewal(
 							{
 								loginId: issue.loginId,
 								token: renewal.token,
@@ -740,7 +901,8 @@ export class CloudModelLoginVault {
 		return { login: renewed, version: renewal.baseVersion };
 	}
 
-	/** An answer this vault could not read may still carry a renewal lock: give it back. */
+	/** An answer this vault could not read may still carry a renewal lock: give it back, to the shared vault for an
+	 * account login. */
 	async #releaseUnread(answer: unknown): Promise<void> {
 		const input =
 			answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>) : {};
@@ -759,18 +921,19 @@ export class CloudModelLoginVault {
 			renewal.baseVersion < 1
 		)
 			return;
-		await this.#authority
-			.releaseModelLoginRenewal(
-				{
-					loginId: input.loginId,
-					token: renewal.token,
-					baseVersion: renewal.baseVersion,
-					permanent: false,
-					reason: "issue_unreadable",
-				},
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
-			)
-			.catch(() => undefined);
+		const release = {
+			loginId: input.loginId,
+			token: renewal.token,
+			baseVersion: renewal.baseVersion,
+			permanent: false,
+			reason: "issue_unreadable",
+		};
+		const account = input.scope === "account" || input.ownerUserId !== undefined;
+		if (account && !this.#account) return;
+		await (account
+			? this.#accountAuthority.releaseAccountModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
+			: this.#company.releaseModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
+		).catch(() => undefined);
 	}
 
 	async #release(
@@ -779,17 +942,30 @@ export class CloudModelLoginVault {
 		permanent: boolean,
 		reason: string,
 	): Promise<void> {
-		await this.#authority
-			.releaseModelLoginRenewal(
-				{
-					loginId: issue.loginId,
-					token: renewal.token,
-					baseVersion: renewal.baseVersion,
-					permanent,
-					reason: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "renewal_failed",
-				},
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
-			)
-			.catch(() => undefined);
+		const release = {
+			loginId: issue.loginId,
+			token: renewal.token,
+			baseVersion: renewal.baseVersion,
+			permanent,
+			reason: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "renewal_failed",
+		};
+		try {
+			await (issue.ownerUserId !== undefined
+				? this.#accountAuthority.releaseAccountModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
+				: this.#company.releaseModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS)));
+		} catch {
+			// The lock lapses by itself after 5 minutes.
+		}
 	}
+}
+
+function parseSwitchOff(value: unknown): ModelLoginSwitchOff {
+	const input = record(value, "Model login switch-off");
+	const count = (item: unknown): number => {
+		if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 0 || item > 4)
+			throw new Error("Model login switch-off is invalid");
+		return item;
+	};
+	if (input.schema !== "qorpera.model-login-switch-off/v1") throw new Error("Model login switch-off is invalid");
+	return { switchedOff: count(input.switchedOff), waiting: count(input.waiting), refused: count(input.refused) };
 }
