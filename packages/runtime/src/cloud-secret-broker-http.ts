@@ -74,6 +74,7 @@ import {
 	openCloudSecretRelay,
 } from "./cloud-secret-broker-relay.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
+import { cloudVaultDatabaseBusy, cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -1216,9 +1217,22 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
-		} catch {
+		} catch (error) {
 			if (!reply.headersSent && !reply.destroyed) {
-				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, cors);
+				// The database's own unavailability (a lost session, the pool's wait, a deadline) is not a refusal: 503
+				// `busy`, which a run host's login download takes for a lost answer and tries again from the start (3
+				// November 2026). Every other failure stays the opaque 403. Only the failure's class is logged.
+				if (cloudVaultDatabaseBusy(error)) {
+					console.error(
+						`Cloud secret broker: the database could not serve a request (class: ${cloudVaultFailureClass(error)}); answered busy.`,
+					);
+					response(
+						reply,
+						503,
+						{ schema: "qorpera.cloud-secret-error/v1", error: "busy" },
+						{ ...cors, "retry-after": "5" },
+					);
+				} else response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, cors);
 			} else {
 				reply.destroy();
 			}
@@ -1536,6 +1550,15 @@ export class HttpCloudSecretBrokerClient {
 	}
 }
 
+/** The vault answered 503 `busy`: its database could not serve the call, so it neither issued nor refused a login (3
+ * November 2026). A run host takes it for a lost answer. */
+export class CloudSecretBrokerBusyError extends Error {
+	constructor() {
+		super("Cloud secret broker was busy; the model login was neither issued nor refused");
+		this.name = "CloudSecretBrokerBusyError";
+	}
+}
+
 /** The run host's model login client (Stateless Compute step 1). Same origin, token and
  * company routing as operations; the answer is never cached and holds no renewal token. */
 export async function issueModelLogin(
@@ -1577,6 +1600,7 @@ export async function issueModelLogin(
 			);
 			if (!responseValue.ok) {
 				void responseValue.body?.cancel().catch(() => undefined);
+				if (responseValue.status === 503) throw new CloudSecretBrokerBusyError();
 				throw new Error("Cloud secret broker refused the model login");
 			}
 			const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);

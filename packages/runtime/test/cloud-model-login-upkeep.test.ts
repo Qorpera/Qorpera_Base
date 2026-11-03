@@ -1,4 +1,6 @@
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
+import { markCloudVaultDatabaseFailure } from "@qorpera/runtime/cloud-vault-database-failure";
+import { DatabaseError } from "pg";
 import { afterEach, expect, it, vi } from "vitest";
 
 afterEach(() => {
@@ -36,14 +38,25 @@ it("renews due logins one at a time until none is left, past a failed one", asyn
 	expect(logins.renewIdle).toHaveBeenCalledWith(expect.any(AbortSignal));
 });
 
-it("stops a pass after an error or twelve renewals, and logs only that it stopped", async () => {
+it("stops a pass after an error or twelve renewals, and logs only that it stopped and the error's class", async () => {
 	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	const failing = vault([new Error("login 6f0c private detail")]);
 	await new CloudModelLoginUpkeep({ vault: failing }).pass();
 	expect(failing.renewIdle).toHaveBeenCalledTimes(1);
 	expect(log).toHaveBeenCalledExactlyOnceWith(
-		"Model login upkeep: a pass stopped on an error; the next pass tries again.",
+		"Model login upkeep: a pass stopped on an error (class: other); the next pass tries again.",
 	);
+	// A lost database session names its SQLSTATE, never the server's words.
+	log.mockClear();
+	const ended = Object.assign(new DatabaseError("terminating connection login 6f0c", 0, "error"), {
+		code: "57P01",
+		severity: "FATAL",
+	});
+	await new CloudModelLoginUpkeep({ vault: vault([markCloudVaultDatabaseFailure(ended) as Error]) }).pass();
+	expect(log).toHaveBeenCalledExactlyOnceWith(
+		"Model login upkeep: a pass stopped on an error (class: 57P01); the next pass tries again.",
+	);
+	expect(log.mock.calls.flat().join("\n")).not.toContain("6f0c");
 	log.mockRestore();
 	const busy = vault(["renewed"]);
 	await new CloudModelLoginUpkeep({ vault: busy }).pass();
@@ -80,8 +93,8 @@ it("records accounts and switches off replaced node logins before renewing, and 
 	await new CloudModelLoginUpkeep({ vault: logins }).pass();
 	expect(order).toEqual(["renew"]);
 	expect(log.mock.calls).toEqual([
-		["Model login upkeep: recording login accounts failed; the next pass tries again."],
-		["Model login upkeep: the switch-off pass failed; the next pass tries again."],
+		["Model login upkeep: recording login accounts failed (class: other); the next pass tries again."],
+		["Model login upkeep: the switch-off pass failed (class: other); the next pass tries again."],
 	]);
 	log.mockRestore();
 });
@@ -121,7 +134,7 @@ it("ends unused ChatGPT plan logins after the renewals, at most four a pass, and
 	const broken = vault(["none"], [new Error("login 6f0c private detail")]);
 	await new CloudModelLoginUpkeep({ vault: broken }).pass();
 	expect(log).toHaveBeenCalledExactlyOnceWith(
-		"Model login upkeep: ending an unused ChatGPT plan login failed; the next pass tries again.",
+		"Model login upkeep: ending an unused ChatGPT plan login failed (class: other); the next pass tries again.",
 	);
 	log.mockRestore();
 });

@@ -575,6 +575,22 @@ it.each([
 });
 
 it.each([
+	["terminal-error-notice", "usageLimitExceeded"],
+	["terminal-rate-error", "httpConnectionFailed:429"],
+	["terminal-http-error", "httpConnectionFailed:503"],
+	["terminal-context-error", "contextWindowExceeded"],
+	// Only unrecognized discriminants (and a status of the wrong type, or an extra field) were reported.
+	["unknown-error-notice", "unknown"],
+	["diagnostic-binding", null],
+	["failed-turn", null],
+	["interrupted-turn", null],
+])("names Codex's terminal error by a fixed name only: %s", async (mode, codexError) => {
+	const error = await run(mode).result.catch((failure: unknown) => failure);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "codex-turn-completion", codexError });
+	expect(JSON.stringify(nativeRuntimeFailureMetadata(error))).not.toMatch(/PRIVATE_|thread_fixture|turn_fixture/);
+});
+
+it.each([
 	["missing-direct-tools", "codex-initialize"],
 	["unsafe-config", "codex-configuration"],
 	["extra-skills", "codex-skills"],

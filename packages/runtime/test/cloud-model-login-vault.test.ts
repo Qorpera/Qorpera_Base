@@ -10,8 +10,14 @@ import {
 	parseCodexLogin,
 } from "@qorpera/runtime/cloud-model-login-vault";
 import { CloudSecretBroker, type CloudSecretBrokerAuthority } from "@qorpera/runtime/cloud-secret-broker";
-import { HttpCloudSecretBrokerService, issueModelLogin } from "@qorpera/runtime/cloud-secret-broker-http";
+import {
+	CloudSecretBrokerBusyError,
+	HttpCloudSecretBrokerService,
+	issueModelLogin,
+} from "@qorpera/runtime/cloud-secret-broker-http";
 import { CloudSecretKeyring, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
+import { markCloudVaultDatabaseFailure } from "@qorpera/runtime/cloud-vault-database-failure";
+import { DatabaseError } from "pg";
 import { afterEach, expect, it, vi } from "vitest";
 
 const services: HttpCloudSecretBrokerService[] = [];
@@ -708,5 +714,104 @@ it("serves the route only with the runtime token, uncached, and the client reads
 	const refused = await post(port, `Bearer ${runtimeToken}`);
 	expect(refused.status).toBe(403);
 	expect(await refused.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+	f.keyring.close();
+});
+
+it("answers 503 busy when the database could not serve the call, which the host takes for a lost answer, and 403 for a refusal", async () => {
+	const f = fixture({ stored: codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt-stored" }) });
+	const refuse = vi.fn(async () => {
+		throw new Error("not in this test");
+	});
+	const broker = new CloudSecretBroker({
+		authority: {
+			describeCapture: refuse,
+			completeCapture: refuse,
+			authorizeOperation: refuse,
+			authorizeRepositoryCredential: refuse,
+		},
+		keyring: f.keyring,
+		adapters: [],
+	});
+	const runtimeToken = randomBytes(32).toString("base64url");
+	const holder = `job.${f.run.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`;
+	const proveBinding = vi.fn(async (_binding: object, _holder: string) => undefined);
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
+		modelLogins: new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring }),
+		proveBinding,
+	});
+	services.push(service);
+	const port = await service.start();
+	const issue = () =>
+		issueModelLogin(
+			{ origin: `http://127.0.0.1:${port}`, runtimeToken, companyId: f.companyId, holder: () => holder, allowLoopback: true },
+			{ binding: f.run, knownVersion: null },
+			new AbortController().signal,
+		);
+	const post = () =>
+		fetch(`http://127.0.0.1:${port}/v1/model-logins?company=${f.companyId}`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${runtimeToken}`, "content-type": "application/json", "x-qorpera-identity": holder },
+			body: JSON.stringify({ schema: "qorpera.model-login-request/v1", binding: f.run, knownVersion: null }),
+		});
+	const secret = "PRIVATE_LOGIN_6f0c";
+	const sqlError = (code: string) =>
+		Object.assign(new DatabaseError(`server said ${secret}`, 0, "error"), { code, severity: "ERROR" });
+	const system = (code: string) => Object.assign(new Error(`connect ${code} ${secret}`), { code });
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	// What the vault's database client and its 5 s deadline throw when the database could not serve the call.
+	for (const [label, failure, logged] of [
+		["session ended", sqlError("57P01"), "57P01"],
+		["connection lost", sqlError("08006"), "08006"],
+		["too many connections", sqlError("53300"), "53300"],
+		["statement timeout", sqlError("57014"), "57014"],
+		["pooler failure", sqlError("XX000"), "XX000"],
+		["pool wait", new Error("timeout exceeded when trying to connect"), "pool timeout"],
+		["connect timeout", new Error("Connection terminated due to connection timeout"), "connect timeout"],
+		["socket", system("ECONNRESET"), "ECONNRESET"],
+		["socket pipe", system("EPIPE"), "EPIPE"],
+		["ended", new Error("Connection terminated unexpectedly"), "connection ended"],
+		["unnamed", new Error(`pg said ${secret}`), "no sqlstate"],
+	] as const) {
+		log.mockClear();
+		f.authority.issueModelLogin.mockRejectedValueOnce(markCloudVaultDatabaseFailure(failure));
+		const busy = await post();
+		expect(busy.status, label).toBe(503);
+		expect(busy.headers.get("retry-after"), label).toBe("5");
+		expect(busy.headers.get("cache-control"), label).toBe("no-store");
+		expect(await busy.json(), label).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "busy" });
+		expect(log, label).toHaveBeenCalledExactlyOnceWith(
+			`Cloud secret broker: the database could not serve a request (class: ${logged}); answered busy.`,
+		);
+	}
+	// The binding proof is a database call too, and the host's client takes the 503 for its own error.
+	proveBinding.mockRejectedValueOnce(markCloudVaultDatabaseFailure(new Error("timeout exceeded when trying to connect")));
+	await expect(issue()).rejects.toBeInstanceOf(CloudSecretBrokerBusyError);
+	// A call's own deadline passing is the database's too.
+	f.authority.issueModelLogin.mockRejectedValueOnce(markCloudVaultDatabaseFailure(new Error("late"), "call deadline"));
+	await expect(issue()).rejects.toBeInstanceOf(CloudSecretBrokerBusyError);
+	log.mockClear();
+	// A refusal the database raised on purpose, a failure that is not the database's (even one shaped like a lost
+	// session), and the vault's own refusal stay the opaque 403, and the host's client takes them for a refusal.
+	for (const [label, failure] of [
+		["insufficient privilege", markCloudVaultDatabaseFailure(sqlError("42501"))],
+		["not in prerequisite state", markCloudVaultDatabaseFailure(sqlError("55000"))],
+		["invalid parameter", markCloudVaultDatabaseFailure(sqlError("22023"))],
+		["raised", markCloudVaultDatabaseFailure(sqlError("P0001"))],
+		["not the database's", sqlError("57P01")],
+		["helper socket", system("ECONNREFUSED")],
+		["vault refusal", new Error("Model login envelope is another kind of login")],
+	] as const) {
+		f.authority.issueModelLogin.mockRejectedValueOnce(failure);
+		const refused = await post();
+		expect(refused.status, label).toBe(403);
+		expect(await refused.json(), label).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+	}
+	f.authority.issueModelLogin.mockRejectedValueOnce(markCloudVaultDatabaseFailure(sqlError("42501")));
+	const refusal = await issue().catch((error: unknown) => error);
+	expect(refusal).toBeInstanceOf(Error);
+	expect(refusal).not.toBeInstanceOf(CloudSecretBrokerBusyError);
+	expect(log).not.toHaveBeenCalled();
+	expect(log.mock.calls.flat().join("\n")).not.toContain(secret);
+	log.mockRestore();
 	f.keyring.close();
 });

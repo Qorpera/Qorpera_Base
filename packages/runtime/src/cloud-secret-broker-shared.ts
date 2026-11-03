@@ -21,6 +21,7 @@ import {
 	type PostgresCloudSecretBrokerPrincipal,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
 /**
@@ -436,8 +437,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				this.#timers.delete(timer);
 				if (this.#closed) return;
 				const running = work()
-					.catch(() => {
-						console.error("Shared vault: a background pass failed; the next one tries again.");
+					.catch((error: unknown) => {
+						// Only the failure's class (a SQLSTATE, a system error code or a named timeout), never its text.
+						console.error(
+							`Shared vault: a background pass failed (class: ${cloudVaultFailureClass(error)}); the next one tries again.`,
+						);
 					})
 					.finally(() => {
 						this.#running.delete(running);

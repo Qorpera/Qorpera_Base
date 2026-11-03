@@ -316,7 +316,7 @@ describe("the single-company broker's loop", () => {
 			await vi.advanceTimersByTimeAsync(60_000);
 			expect(pass).toHaveBeenCalledTimes(3);
 			expect(log.mock.calls.map(([line]) => line)).toEqual([
-				"Connector token revocation: a pass stopped on an error; the next pass tries again.",
+				"Connector token revocation: a pass stopped on an error (class: other); the next pass tries again.",
 				"Connector token revocation: 2 completed, 1 failed (offered again later).",
 			]);
 			await upkeep.close();
