@@ -354,7 +354,9 @@ begin
 		and v_list -> 0 ->> 'state' = 'live' and (v_list -> 0 ->> 'files')::int = 3 and v_list #>> '{0,publishedBy,name}' = 'Alice'
 		and v_list -> 0 ->> 'schema' = 'qorpera.company-site/v1' and strpos(v_list::text, current_setting('qorpera_test.cs_password')) = 0
 		and (select array_agg(key order by key collate "C") from jsonb_object_keys(v_list -> 0) as key) = array['bytes', 'createdAt', 'files', 'id',
-			'passwordChangedAt', 'publishedAt', 'publishedBy', 'schema', 'slug', 'source', 'state', 'title', 'url'],
+			'kind', 'machine', 'passwordChangedAt', 'port', 'publishedAt', 'publishedBy', 'schema', 'slug', 'source', 'state', 'title', 'url']
+		-- 20260930562000: a website's row says so, with no machine or port.
+		and v_list -> 0 ->> 'kind' = 'files' and v_list -> 0 -> 'machine' = 'null'::jsonb and v_list -> 0 -> 'port' = 'null'::jsonb,
 		'A viewer lists the site, never its password: ' || v_list::text);
 	perform pg_temp.base_error(format('select public.qorpera_company_site_password(%L)', v_site), '42501');
 	perform pg_temp.cs_as('92400000-0000-4000-8000-000000000002');

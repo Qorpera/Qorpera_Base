@@ -1003,6 +1003,7 @@ it.each([
 				"manage_hook",
 				"publish_site",
 				"unpublish_site",
+				"share_app",
 				"read_context",
 				"read_skill",
 				"recall_memory",
@@ -2948,7 +2949,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// agent's job, so they moved again. Since the platform's folders moved under QorperaOS/ (21 October 2026),
 	// table_read's, table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there,
 	// so they moved again. Company sites (20260930550000) add publish_site and unpublish_site after manage_hook, so
-	// they moved again; every other tool is as on master.
+	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
+	// links, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2972,6 +2974,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_hook",
 		"publish_site",
 		"unpublish_site",
+		"share_app",
 		"update_memory",
 		"recall_memory",
 		"read_skill",
@@ -2985,9 +2988,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"889841b8e3c1d060da7cfe7ec0904f8915fee05fff86b6e4240c426d97b2f05f",
+		"4b3fcbe3233fb53a871609ee990b147ce998508dabe18f5c8ae8a54c44420abf",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"dd39f95967501cd51a6bc8f5282a08e96dd7e9a4e0f44dbb54f957bf022abc77",
+		"2c6a4a475fa90f6c91e5cb88f024be2b17bd72b5accecfef1af1b5d1aa30a66d",
 	);
 });

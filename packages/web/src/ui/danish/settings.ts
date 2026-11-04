@@ -552,6 +552,11 @@ export const SETTINGS: Record<string, string> = {
 	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
 	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
+	// An app link: one port of a company machine at a site's link (v195)
+	"App on machine {name}, port {port}": "App på maskinen {name}, port {port}",
+	"App on port {port} of a machine that was deleted": "App på port {port} på en maskine, der er slettet",
+	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
+		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",

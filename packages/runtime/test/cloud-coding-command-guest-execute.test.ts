@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	CODING_GIT_IDENTITY,
 	CODING_GUEST_REFUSED_EXIT_CODE,
 	type CodingGuestCommandPorts,
 	codingCommandWritablePaths,
+	ensureCodingGitIdentity,
 	executeCodingGuestCommand,
 } from "../src/cloud-coding-command-guest.ts";
 import type { CodingGuestConfiguration } from "../src/cloud-coding-guest-configuration.ts";
@@ -166,5 +168,43 @@ describe("coding command execute step refused before the command starts", () => 
 		expect(await executeCodingGuestCommand("../session", f.commandId, f.ports)).toBe(125);
 		expect(await executeCodingGuestCommand(randomUUID(), f.commandId, f.ports)).toBe(125);
 		expect(f.sandboxes).toEqual([]);
+	});
+});
+
+describe("a commit's default identity", () => {
+	async function home() {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "coding-git-identity-")));
+		roots.push(root);
+		return root;
+	}
+	const xdg = (root: string) => join(root, ".config", "git", "config");
+
+	it("writes the home's own git config once when no identity is set", async () => {
+		const root = await home();
+		await ensureCodingGitIdentity(root);
+		await ensureCodingGitIdentity(root);
+		expect(await readFile(xdg(root), "utf8")).toBe(
+			`[user]\n\tname = ${CODING_GIT_IDENTITY.name}\n\temail = ${CODING_GIT_IDENTITY.email}\n`,
+		);
+	});
+
+	it("keeps an identity set in ~/.gitconfig or the git config, and their other settings", async () => {
+		const root = await home();
+		await writeFile(join(root, ".gitconfig"), "[user]\n\temail = founder@example.com\n");
+		await ensureCodingGitIdentity(root);
+		expect(await readdir(root)).toEqual([".gitconfig"]);
+		const other = await home();
+		await mkdir(join(other, ".config", "git"), { recursive: true });
+		await writeFile(xdg(other), "[safe]\n\tdirectory = *\n");
+		await ensureCodingGitIdentity(other);
+		expect(await readFile(xdg(other), "utf8")).toBe(
+			`[safe]\n\tdirectory = *\n[user]\n\tname = ${CODING_GIT_IDENTITY.name}\n\temail = ${CODING_GIT_IDENTITY.email}\n`,
+		);
+	});
+
+	it("leaves a home it cannot write as it was", async () => {
+		const root = await home();
+		await writeFile(join(root, ".config"), "not a folder");
+		await expect(ensureCodingGitIdentity(root)).resolves.toBeUndefined();
 	});
 });

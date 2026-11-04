@@ -269,7 +269,15 @@ export function cloudActionEffect(
 		// an update are outside effects. A first publish is also a built-in access check (siteAccessCheck, below).
 		case "publish_site":
 			return "external";
-		// Taking a website offline deletes its published copy and password for good (its files stay in the folder).
+		// A private app link (v195, 20260930562000) lets the internet reach a port of a company machine: its first share,
+		// and a share from another machine or port (another service), is an outside effect and a built-in access check
+		// (siteAccessCheck). share_app's prepare says which (the database's check, told the slug, the machine and the
+		// port). Sharing the live link again on the same machine and port, which only starts its link program anew, is
+		// not reviewed. Without a prepared answer it is.
+		case "share_app":
+			return args.needsReview === false ? "internal" : "external";
+		// Taking a website offline deletes its published copy and password for good (its files stay in the folder); an
+		// app link goes off and its visitors' sessions end.
 		case "unpublish_site":
 			return "destructive";
 		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
@@ -323,15 +331,26 @@ export function cloudActionEffect(
  * (company sites, 20260930550000): a built-in access check, whatever the reviewer called it, so the kernel asks an
  * owner or admin unless a company Allow rule the reviewer cited covers it (qorpera_record_action_review), and the
  * database publishes it only on such an approval in the same run. A denial stays one; any other update of a live site
- * is reviewed as the reviewer says.
+ * is reviewed as the reviewer says. A private app link's first share, and its share from another machine or port, is
+ * the same check (share_app, v195).
  */
 export function siteAccessCheck(
 	call: Pick<CloudActionCall, "tool" | "parsed">,
 	verdict: CloudActionVerdict,
 ): CloudActionVerdict {
-	if (call.tool.name !== "publish_site" || call.tool.source !== "runtime" || verdict.builtIn !== "none")
-		return verdict;
+	if (call.tool.source !== "runtime" || verdict.builtIn !== "none") return verdict;
 	const args = record(call.parsed);
+	// A private app link (v195) whose prepare said it needs a review: a new one, or one from another machine or port.
+	// The database shares it only on such an approval in the same run (qorpera_site_share_app).
+	if (call.tool.name === "share_app")
+		return args.needsReview === false
+			? verdict
+			: {
+					...verdict,
+					builtIn: "access_change",
+					proposedRule: verdict.proposedRule ?? "share a password-protected app link for the company",
+				};
+	if (call.tool.name !== "publish_site") return verdict;
 	// An update from the live site's own folder is reviewed as the reviewer says; one from another folder shares other
 	// work with the site's visitors, as a first publish does.
 	if (args.mode === "update" && !sitePublishMoves(args)) return verdict;
@@ -685,10 +704,36 @@ export function describeCloudAction(
 				? "Replaces the whole site; people with its password see the new version"
 				: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
 		);
+	} else if (tool.name === "share_app") {
+		// Its prepared arguments (cloud-site-tools.ts): the database's check, read before the review.
+		const update = args.mode === "update";
+		const moved = update && args.machine !== args.liveMachine;
+		const ported = update && args.port !== args.livePort;
+		title = !update
+			? "Share a private, password-protected app link"
+			: moved
+				? "Share an app link from another machine"
+				: ported
+					? "Share an app link from another port"
+					: "Share an app link again";
+		target = text(args.url) || text(args.slug) || null;
+		add("title", args.title);
+		add("from machine", args.machine);
+		add("port", args.port);
+		if (moved && typeof args.liveMachine === "string") add("until now from machine", args.liveMachine);
+		if (ported && typeof args.livePort === "number") add("until now port", args.livePort);
+		add(
+			"effect",
+			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
+		);
 	} else if (tool.name === "unpublish_site") {
-		title = "Take a website offline";
+		// The call names only the slug, so the card is true for a website and an app link alike (v195).
+		title = "Take a website or app link offline";
 		target = text(args.slug) || null;
-		add("effect", "Its link stops working and its password is deleted; the files stay in the company folder");
+		add(
+			"effect",
+			"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
+		);
 	} else if (tool.name === "company_account") {
 		title =
 			args.action === "open"

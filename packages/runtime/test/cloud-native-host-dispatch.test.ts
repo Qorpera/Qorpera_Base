@@ -96,6 +96,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_memory_run_resume_receipts.sql",
 			// Company sites: the check before the review, a publish's three steps and unpublishing (3 November 2026).
 			"_company_sites.sql",
+			// Private app links (v195): the share's check before the review, and the share.
+			"_company_app_sites.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -128,7 +130,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(120);
+	expect(rows).toHaveLength(122);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",
