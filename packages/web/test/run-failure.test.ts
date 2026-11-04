@@ -380,3 +380,48 @@ describe("a coding session's failed turn, to the member who owns it", () => {
 		).toMatch(/^ChatGPT refused or could not answer the session's request\. The member whose login pays for it /);
 	});
 });
+
+describe("a coding session's failed turn, by its code (20260930560000)", () => {
+	// The summary is the cloud's plain words now; the failed event's code decides.
+	const WORDS = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
+	it.each([
+		[
+			"provider_outage",
+			/^ChatGPT was overloaded or had a server error while the session worked\. This is usually brief/,
+		],
+		[
+			"NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED",
+			/^ChatGPT refused or could not answer the session's request\. The member whose login pays for it /,
+		],
+		["NATIVE_CODEX_TURN_START:PROVIDER_FAILED", /^Something on Qorpera's side refused one of the session's steps\./],
+		["NATIVE_CODING_SESSION:UNKNOWN", /^Something on Qorpera's side refused one of the session's steps\./],
+		["NATIVE_CODEX_TURN_COMPLETION:CANCELLED", /^Qorpera lost contact with this session\./],
+		["NATIVE_PROMPT_COMPOSITION:TIMEOUT", /^One of the session's steps got no answer in time\./],
+		["NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE", /^The session lost its connection while it was working\./],
+		["NATIVE_CREDENTIAL_DOWNLOAD", /^The session could not load the login that pays for it\./],
+		["CODING_TURN_ENDED_WITHOUT_SUBMISSION", /^The session's last turn ended without saving its work/],
+		["COMPUTER_HOURS_EXHAUSTED", /^The company ran out of computer hours\./],
+		["RUN_COMPLETION_REFUSED", /^One of the session's saves did not finish, and a person must check it first\./],
+		// Lower-case reasons name no code: the summary decides, as before.
+		["turn_failed", /^The session stopped because of an internal error\./],
+	] as const)("%s", (code, expected) => {
+		const said = codingFailureReason(WORDS, {}, code);
+		expect(said).toMatch(expected);
+		expect(said).toMatch(/ The workspace is kept; a follow-up (continues|starts it again|tries again)/);
+		expect(said).not.toMatch(/\d{3}|\[|code|runner|provider|bridge|lease|dispatch|native|submission|executor/i);
+	});
+
+	it("keeps the code a summary from before carries", () => {
+		const before =
+			"The coding turn did not finish: Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]";
+		expect(codingFailureReason(before, {}, "NATIVE_CODEX_TURN_COMPLETION:CANCELLED")).toMatch(
+			/^Qorpera lost contact with this session\./,
+		);
+	});
+
+	it("tells the owner the outage is not their login's", () => {
+		expect(codingFailureReason(WORDS, { mine: true }, "provider_outage")).toBe(
+			"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
+		);
+	});
+});
