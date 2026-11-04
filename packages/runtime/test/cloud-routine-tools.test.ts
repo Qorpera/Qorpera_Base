@@ -293,7 +293,7 @@ describe("agent routine tool", () => {
 	});
 	// What the model is told about a bad trigger: the argument's name and a good value ("" is no reason).
 	const because = {
-		kind: 'trigger is an object whose kind is dynamic, every, weekly, file_change or event, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
+		kind: 'trigger is an object whose kind is dynamic, when_done, every, weekly, file_change or event, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
 		everyKeys:
 			'a trigger of kind every takes minutes, and optionally firstRunAt and report, nothing else, like {"kind":"every","minutes":60}',
 		dynamicKeys:
