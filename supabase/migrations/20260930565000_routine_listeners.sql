@@ -15,9 +15,10 @@
 -- * The firing: nothing new is written when a todo or a task closes. The folder tick that starts a dynamic routine's
 --   next run (qorpera_folder_dynamic_routines_due, then qorpera_folder_restore_dynamic_routine_run, every 30 s) leaves a
 --   listening version alone: one whose trigger has `after`, whose `at` is still ahead, that has had no run yet, and
---   whose todo or task is still open (qorpera_routine_listener_open). Once that stops holding, the tick inserts the run
---   at once (not at `at`). The run's payload says which it was: `after` (the key) and `done` (true when nothing open is
---   left there, false when the fallback came first).
+--   whose todo or task is still open (qorpera_routine_listener_state). Once that stops holding, the tick inserts the run
+--   at once (not at `at`). A member's Stop of the routine's latest run is still seen at once: the tick lists such a
+--   routine, and the restore pauses it. The run's payload says what it waited for, `after` (the key), and `state`: done,
+--   cancelled, gone, or open when the latest time came first. A listener's `at` is at most 31 days ahead.
 -- * Reads only: the open check reads the todo index and the human-task index by the environment and the folder key, no
 --   lock. The tick's locks and order are unchanged.
 -- Every patched body carries the marker 20260930565000; the guard at the end checks them.
@@ -26,7 +27,7 @@ set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes.
 do $$ begin
-	if to_regprocedure('public.qorpera_routine_listener_open(uuid,text)') is not null then
+	if to_regprocedure('public.qorpera_routine_listener_state(uuid,text)') is not null then
 		raise exception 'Listener routines (20260930565000) are already applied'; end if;
 end $$;
 
@@ -41,19 +42,42 @@ end $$;
 
 -- 1. What a listener waits for ----------------------------------------------------------------------------------------
 
--- Whether something open is still at a todo's or a human task's folder key: an open or blocked todo, or an open or
--- returned task. A closed, deleted or never-made one is not (a deleted todo's row is retired, and its key a tombstone).
-create function public.qorpera_routine_listener_open(p_environment_id uuid, p_key text)
-returns boolean language sql stable security definer set search_path = '' as $$
+-- What is at a todo's or a human task's folder key: open (an open or blocked todo, an open or returned task), done (a
+-- done todo, a done or accepted task), cancelled (a cancelled todo, a declined or cancelled task) or gone (nothing live
+-- there: deleted, moved or never made; a deleted todo's row is retired, and its key a tombstone). By the folder key in
+-- collation "C", so the todo lookup takes qorpera_runtime_agent_todos_folder_key and the task lookup its key index.
+create function public.qorpera_routine_listener_state(p_environment_id uuid, p_key text)
+returns text language sql stable security definer set search_path = '' as $$
 	-- 20260930565000 (L1).
-	select exists (select 1 from public.qorpera_runtime_agent_todos t
+	select coalesce(
+		(select case when t.state in ('open','blocked') then 'open' when t.state = 'done' then 'done' else 'cancelled' end
+			from public.qorpera_runtime_agent_todos t
 			where t.folder_environment_id = p_environment_id and t.folder_path is not null and t.folder_retired_at is null
-				and t.state in ('open','blocked') and public.qorpera_folder_key(t.folder_path) = p_key)
-		or exists (select 1 from public.qorpera_folder_human_task_index h
-			where h.environment_id = p_environment_id and h.folder_key = p_key and h.retired_at is null
-				and h.status in ('open','returned'))
+				and (public.qorpera_folder_key(t.folder_path)) collate "C" = p_key collate "C"
+			order by t.state in ('open','blocked') desc limit 1),
+		(select case when h.status in ('open','returned') then 'open' when h.status in ('done','accepted') then 'done'
+				else 'cancelled' end
+			from public.qorpera_folder_human_task_index h
+			where h.environment_id = p_environment_id and h.folder_key = p_key collate "C" and h.retired_at is null
+			order by h.status in ('open','returned') desc limit 1),
+		'gone')
 $$;
-revoke all on function public.qorpera_routine_listener_open(uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_routine_listener_state(uuid, text) from public, anon, authenticated, service_role;
+
+-- Whether the routine's latest run was stopped by a member and the routine has not paused for it yet: the restore pauses
+-- it then (its own check), so the tick must list a listening routine in that case instead of holding it back.
+create function public.qorpera_routine_stop_unseen(p_routine_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930565000 (L1): the restore's own test (qorpera_folder_restore_dynamic_routine_run), read only.
+	select coalesce((select w.run_id is not null
+			and w.blocked_reason is distinct from 'A member stopped this run; the routine paused'
+			and exists (select 1 from public.qorpera_execution_runs run
+				join public.qorpera_runner_jobs job on job.id = run.job_id
+				where run.id = w.run_id and job.status = 'cancelled' and job.cancelled_by_user_id is not null)
+		from public.qorpera_wake_occurrences w where w.routine_id = p_routine_id
+		order by w.created_at desc, w.id desc limit 1), false)
+$$;
+revoke all on function public.qorpera_routine_stop_unseen(uuid) from public, anon, authenticated, service_role;
 
 -- Whether a routine's current version still listens: its trigger has `after`, its `at` is ahead, it has had no run, and
 -- something open is still at `after`. The tick holds such a version's run back.
@@ -63,7 +87,7 @@ returns boolean language sql stable security definer set search_path = '' as $$
 	select coalesce(p_trigger ? 'after' and (p_trigger ->> 'at')::timestamptz > statement_timestamp()
 		and not exists (select 1 from public.qorpera_wake_occurrences w
 			where w.routine_id = p_routine.id and w.routine_version = p_routine.current_version)
-		and public.qorpera_routine_listener_open(p_routine.environment_id, p_trigger ->> 'after'), false)
+		and public.qorpera_routine_listener_state(p_routine.environment_id, p_trigger ->> 'after') = 'open', false)
 $$;
 revoke all on function public.qorpera_routine_listening(public.qorpera_cloud_routines, jsonb)
 	from public, anon, authenticated, service_role;
@@ -97,19 +121,26 @@ select pg_temp.l1_replace('public.qorpera_cloud_routine_trigger_valid(jsonb)'::r
 				and p_trigger ->> 'after' = public.qorpera_folder_key(p_trigger ->> 'after')
 				and coalesce(public.qorpera_structured_path_kind(p_trigger ->> 'after'), '') in ('todo','human-task')))$new$);
 
--- The rules: `after` names a live todo or human task of this company. A closed one is fine (the run comes at once).
+-- The rules: `after` names a live todo or human task of this company (a closed one is fine: the run comes at once), and
+-- a listener's latest time is at most 31 days ahead, so a todo nobody closes is not looked up for months. The tool
+-- refuses a latest time in the past or more than 30 days ahead; a later save of the same file (a conclusion) keeps it.
 select pg_temp.l1_replace('public.qorpera_company_state_routine_rules(uuid,uuid,jsonb,text,jsonb,boolean)'::regprocedure,
 	$old$	-- 20260930061000 (E2a): an event routine listens to a live hook or mailbox of its company. Checked in decide, under the$old$,
 	$new$	-- 20260930565000 (L1): a listener waits for a todo or a human task this company has.
 	elsif v_when = 'once' and jsonb_typeof(p_parse -> 'trigger' -> 'after') = 'string'
 		and not exists (select 1 from public.qorpera_runtime_agent_todos t
 			where t.folder_environment_id = p_environment_id and t.folder_path is not null and t.folder_retired_at is null
-				and public.qorpera_folder_key(t.folder_path) = public.qorpera_folder_key(p_parse -> 'trigger' ->> 'after'))
+				and (public.qorpera_folder_key(t.folder_path)) collate "C"
+					= public.qorpera_folder_key(p_parse -> 'trigger' ->> 'after') collate "C")
 		and not exists (select 1 from public.qorpera_folder_human_task_index h
 			where h.environment_id = p_environment_id and h.retired_at is null
-				and h.folder_key = public.qorpera_folder_key(p_parse -> 'trigger' ->> 'after')) then
+				and h.folder_key = public.qorpera_folder_key(p_parse -> 'trigger' ->> 'after') collate "C") then
 		v_problem := 'after names no todo or human task of this company: ' || left(p_parse -> 'trigger' ->> 'after', 100)
 			|| '; give the path of one, as manage_todo or the human task lists show it';
+	elsif v_when = 'once' and jsonb_typeof(p_parse -> 'trigger' -> 'after') = 'string'
+		and public.qorpera_company_state_instant(p_parse -> 'trigger' -> 'at')
+		and (p_parse -> 'trigger' ->> 'at')::timestamptz > statement_timestamp() + interval '31 days' then
+		v_problem := 'a listener waits at most 31 days: choose an at within that, and decide again then if it is still open';
 	-- 20260930061000 (E2a): an event routine listens to a live hook or mailbox of its company. Checked in decide, under the$new$);
 
 -- 3. The tick holds a listening version's run back, then starts it at once ---------------------------------------------
@@ -117,8 +148,9 @@ select pg_temp.l1_replace('public.qorpera_company_state_routine_rules(uuid,uuid,
 select pg_temp.l1_replace('public.qorpera_folder_dynamic_routines_due(uuid,integer)'::regprocedure,
 	$old$			and public.qorpera_dynamic_routine_pending_occurrence(routine.id, routine.current_version) is null$old$,
 	$new$			and public.qorpera_dynamic_routine_pending_occurrence(routine.id, routine.current_version) is null
-			-- 20260930565000 (L1): not while it listens.
-			and not (version.triggers -> 0 ? 'after' and public.qorpera_routine_listening(routine, version.triggers -> 0))$new$);
+			-- 20260930565000 (L1): not while it listens, unless a member stopped its latest run (the restore pauses it).
+			and not (version.triggers -> 0 ? 'after' and public.qorpera_routine_listening(routine, version.triggers -> 0)
+				and not public.qorpera_routine_stop_unseen(routine.id))$new$);
 
 select pg_temp.l1_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$	v_at := case when v_ended = 0 then greatest((v_trigger ->> 'at')::timestamptz, statement_timestamp())$old$,
@@ -131,9 +163,9 @@ select pg_temp.l1_replace('public.qorpera_folder_restore_dynamic_routine_run(uui
 select pg_temp.l1_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$			jsonb_build_object('schema', 'qorpera.routine-once-occurrence/v1', 'attempt', v_ended + 1))$old$,
 	$new$			jsonb_build_object('schema', 'qorpera.routine-once-occurrence/v1', 'attempt', v_ended + 1)
-			-- 20260930565000 (L1): what the run waited for, and whether it is done or the fallback came first.
+			-- 20260930565000 (L1): what the run waited for, and what became of it (open: the latest time came first).
 			|| case when v_trigger ? 'after' then jsonb_build_object('after', v_trigger -> 'after',
-				'done', not public.qorpera_routine_listener_open(v_routine.environment_id, v_trigger ->> 'after'))
+				'state', public.qorpera_routine_listener_state(v_routine.environment_id, v_trigger ->> 'after'))
 				else '{}'::jsonb end)$new$);
 
 drop function pg_temp.l1_replace(regprocedure, text, text);

@@ -830,7 +830,14 @@ export function describeCloudAction(
 		title = "Change what a routine does";
 		target = text(args.title) || null;
 		const next = clock(args.at, timeZone);
-		add("schedule", next && `Next run ${next} (${timeZone})`);
+		// whenDone (compiled to after): the time is the latest one.
+		add(
+			"schedule",
+			next &&
+				(typeof args.after === "string"
+					? `When ${listened(args.after)} is done, at the latest ${next} (${timeZone})`
+					: `Next run ${next} (${timeZone})`),
+		);
 		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "manage_worker") {
 		const repository = record(args.repository ?? null);

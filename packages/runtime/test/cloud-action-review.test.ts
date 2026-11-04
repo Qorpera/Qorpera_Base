@@ -755,6 +755,22 @@ describe("what the card shows for delegation", () => {
 				timeZone: "UTC",
 			}),
 		).toBe("When the human task “Sign contract” is done, at the latest 6 Nov 2026 at 08:00 (UTC)");
+		// A decision that waits again names what it waits for.
+		expect(
+			describeCloudAction(
+				tool("decide_routine"),
+				parse("decide_routine", {
+					action: "next",
+					operationKey: "k",
+					at: new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 86_400_000).toISOString(),
+					intent: "Review the landing page.",
+					whenDone: "QorperaOS/agents/product-builder/todos/landing-page.md",
+				}),
+				{ timeZone: "UTC" },
+			).details.schedule,
+		).toMatch(
+			/^When the todo “Landing page” of product-builder is done, at the latest \d+ \w{3} \d{4} at \d\d:00 \(UTC\)$/,
+		);
 		// A file is named as people say it, never by its path.
 		expect(schedule({ kind: "file_change", path: "sales/leads", match: "subtree", timeZone: COPENHAGEN })).toBe(
 			"When anything in “Leads” changes",

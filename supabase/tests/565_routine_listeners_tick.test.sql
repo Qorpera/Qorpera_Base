@@ -2,7 +2,9 @@
 -- Listener routines, L1 (20260930565000; deploy/first-node/RUNTIME-LISTENER-ROUTINES.md): the folder tick holds a
 -- dynamic routine's first run back while its `after` todo or human task is still open and its `at` is ahead, then
 -- starts it at once when nothing open is left there (done, cancelled, declined, deleted) or when `at` comes. The run's
--- payload says what it waited for and whether that is done. A dynamic routine without `after` is unchanged. The
+-- payload says what it waited for and what became of it (done, cancelled, gone, or open when the latest time came
+-- first). A member's Stop of its latest run pauses it at once, also while it listens. The lookups use the folder key
+-- indexes. A dynamic routine without `after` is unchanged. The
 -- version trigger's shape: `after` is a folded key of a todo or a human task file.
 
 create function pg_temp.due(p_after uuid default null, p_limit integer default 100) returns jsonb language sql as $$
@@ -111,7 +113,7 @@ begin
 	v_wake := pg_temp.inserted(v_result);
 	if v_result ->> 'status' <> 'inserted' or v_wake.not_before > clock_timestamp() or v_wake.occurrence_key <> 'once:1:1'
 		or v_wake.payload ->> 'schema' <> 'qorpera.routine-once-occurrence/v1' or v_wake.payload ->> 'attempt' <> '1'
-		or v_wake.payload ->> 'after' <> 'qorperaos/agents/builder/todos/landing-page.md' or v_wake.payload ->> 'done' <> 'true' then
+		or v_wake.payload ->> 'after' <> 'qorperaos/agents/builder/todos/landing-page.md' or v_wake.payload ->> 'state' <> 'done' then
 		raise exception 'The heard run comes now and says what it waited for: % / %', v_result, to_jsonb(v_wake); end if;
 	if pg_temp.listed(v_routine) or pg_temp.restore(v_routine) ->> 'status' <> 'pending' then
 		raise exception 'Then it is an ordinary pending run'; end if;
@@ -125,7 +127,7 @@ begin
 	perform pg_temp.path_claims('service_role');
 	if not pg_temp.listed(v_routine) then raise exception 'A listener whose latest time passed is due'; end if;
 	v_result := pg_temp.restore(v_routine);
-	if v_result ->> 'status' <> 'inserted' or (pg_temp.inserted(v_result)).payload ->> 'done' <> 'false'
+	if v_result ->> 'status' <> 'inserted' or (pg_temp.inserted(v_result)).payload ->> 'state' <> 'open'
 		or (pg_temp.inserted(v_result)).not_before > clock_timestamp() then
 		raise exception 'The fallback run says its todo is not done: % / %', v_result, to_jsonb(pg_temp.inserted(v_result)); end if;
 end $$;
@@ -138,19 +140,99 @@ begin
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.fx(format('update public.qorpera_runtime_agent_todos set state = %L where id = %L', 'cancelled', v_cancelled));
 	perform pg_temp.fx(format('update public.qorpera_runtime_agent_todos set folder_retired_at = clock_timestamp() where id = %L', v_retired));
+	if public.qorpera_routine_listener_state('63400000-0000-4000-8000-000000000020',
+			'qorperaos/agents/builder/todos/cancelled-one.md') <> 'cancelled'
+		or public.qorpera_routine_listener_state('63400000-0000-4000-8000-000000000020',
+			'qorperaos/agents/builder/todos/deleted-one.md') <> 'gone' then
+		raise exception 'A cancelled todo is cancelled, a deleted one gone'; end if;
 	foreach v_routine in array array[
 		pg_temp.listener('qorperaos/agents/builder/todos/cancelled-one.md', clock_timestamp() + interval '2 days'),
 		pg_temp.listener('qorperaos/agents/builder/todos/deleted-one.md', clock_timestamp() + interval '2 days'),
 		pg_temp.listener('qorperaos/agents/builder/todos/never.md', clock_timestamp() + interval '2 days')] loop
 		if not pg_temp.listed(v_routine) then raise exception 'Nothing open is left: % is due', v_routine; end if;
 	end loop;
+	if (pg_temp.inserted(pg_temp.restore(v_routine))).payload ->> 'state' <> 'gone' then
+		raise exception 'A never-made todo is gone'; end if;
 	v_routine := pg_temp.listener('qorperaos/human-tasks/sign.md', clock_timestamp() + interval '2 days');
 	if pg_temp.listed(v_routine) then raise exception 'An open human task holds the run back'; end if;
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set status = %L where id = %L', 'returned', v_task));
 	if pg_temp.listed(v_routine) then raise exception 'A returned human task is open again'; end if;
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set status = %L where id = %L', 'done', v_task));
-	if not pg_temp.listed(v_routine) or (pg_temp.inserted(pg_temp.restore(v_routine))).payload ->> 'done' <> 'true' then
+	if not pg_temp.listed(v_routine) or (pg_temp.inserted(pg_temp.restore(v_routine))).payload ->> 'state' <> 'done' then
 		raise exception 'A done human task lets the run come'; end if;
+	v_routine := pg_temp.listener('qorperaos/human-tasks/decline.md', clock_timestamp() + interval '2 days');
+	perform pg_temp.task('decline', 'declined');
+	if (pg_temp.inserted(pg_temp.restore(v_routine))).payload ->> 'state' <> 'cancelled' then
+		raise exception 'A declined human task is cancelled'; end if;
+end $$;
+
+-- 4b. A member stopped the run that set the listener: the tick lists the routine while it still listens, and the restore
+-- pauses it at once (not at its latest time). The listener is version 2; version 1's run is the stopped one, built by
+-- hand as in 819.
+do $$
+declare v_todo uuid := pg_temp.todo('stopped-one', 'open'); v_wake uuid; v_run uuid := extensions.gen_random_uuid();
+	v_job uuid := extensions.gen_random_uuid();
+	v_routine uuid := pg_temp.listener('qorperaos/agents/builder/todos/stopped-one.md', clock_timestamp() + interval '2 days');
+begin
+	perform pg_temp.path_claims('service_role');
+	v_wake := extensions.gen_random_uuid();
+	perform pg_temp.fx(format($f$insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id,
+		environment_id, staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256,
+		created_by_user_id)
+		select routine_id, 2, extensions.gen_random_uuid(), profile_id, environment_id, staff_agent_id, title, prompt, triggers,
+			effort, sponsor_binding_id, sponsor_version, repeat('f', 64), created_by_user_id
+		from public.qorpera_cloud_routine_versions where routine_id = %L and version = 1$f$, v_routine));
+	perform pg_temp.fx(format('update public.qorpera_cloud_routines set current_version = 2 where id = %L', v_routine));
+	perform pg_temp.fx(format($f$insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id,
+		client_job_id, required_capability, job_type, payload, created_by_user_id, status, run_id, cancelled_at, cancelled_by_user_id)
+		values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', extensions.gen_random_uuid(),
+			extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}', '63400000-0000-4000-8000-000000000002', 'cancelled', %L,
+			clock_timestamp(), '63400000-0000-4000-8000-000000000002')$f$, v_job, v_run));
+	perform pg_temp.fx(format($f$insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id,
+		job_id, substrate_version_id, company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version,
+		required_capability, job_type, payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id,
+		model_provider, model_id, model_selection, audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids)
+		values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', 'wake', %L, %L,
+			extensions.gen_random_uuid(), extensions.gen_random_uuid(), '63400000-0000-4000-8000-0000000000a1', 1,
+			'63400000-0000-4000-8000-0000000000b1', 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0,
+			'63400000-0000-4000-8000-000000000002', '63400000-0000-4000-8000-000000000002', 'openai', 'gpt-test',
+			'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), '{}')$f$, v_run, v_wake, v_job));
+	perform pg_temp.fx(format($f$insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id,
+		routine_version, trigger_id, occurrence_key, scheduled_for, not_before, payload, status, run_id, finished_at)
+		values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', %L, 1, 't1', 'once:1:1',
+			clock_timestamp(), clock_timestamp(), '{}', 'failed', %L, clock_timestamp())$f$, v_wake, v_routine, v_run));
+	if not public.qorpera_routine_listening(
+			(select r from public.qorpera_cloud_routines r where r.id = v_routine),
+			(select triggers -> 0 from public.qorpera_cloud_routine_versions where routine_id = v_routine and version = 2)) then
+		raise exception 'Version 2 still listens'; end if;
+	if not pg_temp.listed(v_routine) or pg_temp.restore(v_routine, 2) ->> 'status' <> 'stopped'
+		or (select status || '/' || pause_reason from public.qorpera_cloud_routines where id = v_routine) <> 'paused/member'
+		or exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_routine and routine_version = 2) then
+		raise exception 'A member''s Stop pauses a listening routine at once'; end if;
+end $$;
+
+-- 4c. The lookups can use the folder key indexes (seq scans off: the fixture's tables are tiny).
+do $$
+declare v_plan text := ''; v_line text;
+begin
+	set local enable_seqscan = off;
+	for v_line in execute $q$explain (costs off) select 1 from public.qorpera_runtime_agent_todos t
+		where t.folder_environment_id = '63400000-0000-4000-8000-000000000020' and t.folder_path is not null
+			and t.folder_retired_at is null
+			and (public.qorpera_folder_key(t.folder_path)) collate "C" = 'qorperaos/agents/builder/todos/x.md' collate "C"$q$ loop
+		v_plan := v_plan || v_line || E'\n'; end loop;
+	if v_plan not like '%qorpera_runtime_agent_todos_folder_key%' then
+		raise exception 'The todo lookup uses its folder key index: %', v_plan; end if;
+	raise notice 'L1 todo lookup plan: %', v_plan;
+	v_plan := '';
+	for v_line in execute $q$explain (costs off) select 1 from public.qorpera_folder_human_task_index h
+		where h.environment_id = '63400000-0000-4000-8000-000000000020'
+			and h.folder_key = 'qorperaos/human-tasks/x.md' collate "C" and h.retired_at is null$q$ loop
+		v_plan := v_plan || v_line || E'\n'; end loop;
+	if v_plan not like '%qorpera_folder_human_task_index_key%' then
+		raise exception 'The task lookup uses its folder key index: %', v_plan; end if;
+	raise notice 'L1 task lookup plan: %', v_plan;
+	reset enable_seqscan;
 end $$;
 
 -- 5. A dynamic routine without `after` is unchanged: its first run is queued for its `at`.
@@ -164,7 +246,7 @@ begin
 	if not pg_temp.listed(v_routine) then raise exception 'A plain dynamic routine is listed'; end if;
 	v_result := pg_temp.restore(v_routine);
 	if v_result ->> 'status' <> 'inserted' or (pg_temp.inserted(v_result)).not_before <> v_at
-		or (pg_temp.inserted(v_result)).payload ? 'done' then
+		or (pg_temp.inserted(v_result)).payload ? 'state' then
 		raise exception 'A plain dynamic routine runs at its at: % / %', v_result, to_jsonb(pg_temp.inserted(v_result)); end if;
 end $$;
 

@@ -452,6 +452,8 @@ describe("agent routine tool", () => {
 	});
 	it("compiles a when_done listener on a todo or a human task, with its latest time", async () => {
 		const f = await fixture();
+		// Two days ahead, on the hour; a listener's latest time is ahead and within 30 days.
+		const latest = new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 2 * 86_400_000).toISOString();
 		try {
 			const todo = await f.boundary.invoke("w1", "qorpera", "manage_routine", {
 				...weekly,
@@ -459,7 +461,7 @@ describe("agent routine tool", () => {
 				trigger: {
 					kind: "when_done",
 					path: "QorperaOS/agents/product-builder/todos/landing-page.md",
-					latestAt: "2026-11-06T09:00:00+01:00",
+					latestAt: latest,
 					timeZone: "Europe/Copenhagen",
 				},
 			});
@@ -471,7 +473,7 @@ describe("agent routine tool", () => {
 				trigger: {
 					kind: "when_done",
 					path: "QorperaOS/agents/product-builder/todos/landing-page",
-					latestAt: "2026-11-06T09:00:00Z",
+					latestAt: latest,
 					timeZone: "UTC",
 				},
 			});
@@ -481,7 +483,7 @@ describe("agent routine tool", () => {
 				trigger: {
 					kind: "when_done",
 					path: "QorperaOS/human-tasks/sign-contract.md",
-					latestAt: "2026-11-06T09:00:00Z",
+					latestAt: latest,
 					timeZone: "UTC",
 					report: "required",
 				},
@@ -490,21 +492,21 @@ describe("agent routine tool", () => {
 			expect(f.saved().map((request) => request.trigger)).toEqual([
 				{
 					kind: "once",
-					at: "2026-11-06T08:00:00.000Z",
+					at: latest,
 					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
 					timeZone: "Europe/Copenhagen",
 					replyPolicy: "optional",
 				},
 				{
 					kind: "once",
-					at: "2026-11-06T09:00:00.000Z",
+					at: latest,
 					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
 					timeZone: "UTC",
 					replyPolicy: "optional",
 				},
 				{
 					kind: "once",
-					at: "2026-11-06T09:00:00.000Z",
+					at: latest,
 					after: "QorperaOS/human-tasks/sign-contract.md",
 					timeZone: "UTC",
 					replyPolicy: "required",
@@ -514,10 +516,30 @@ describe("agent routine tool", () => {
 			const other = await f.boundary.invoke("w4", "qorpera", "manage_routine", {
 				...weekly,
 				operationKey: "w4",
-				trigger: { kind: "when_done", path: "product/plan.md", latestAt: "2026-11-06T09:00:00Z", timeZone: "UTC" },
+				trigger: { kind: "when_done", path: "product/plan.md", latestAt: latest, timeZone: "UTC" },
 			});
 			expect(other.success).toBe(false);
 			expect(other.contentItems[0].text).toContain("path is the path of a todo or a human task file");
+			// A latest time already passed, or more than 30 days ahead, is refused.
+			for (const [key, at] of [
+				["w6", new Date(Date.now() - 60_000).toISOString()],
+				["w7", new Date(Date.now() + 31 * 86_400_000).toISOString()],
+			] as const) {
+				const late = await f.boundary.invoke(key, "qorpera", "manage_routine", {
+					...weekly,
+					operationKey: key,
+					trigger: {
+						kind: "when_done",
+						path: "QorperaOS/human-tasks/sign-contract.md",
+						latestAt: at,
+						timeZone: "UTC",
+					},
+				});
+				expect(late.success).toBe(false);
+				expect(late.contentItems[0].text).toContain(
+					"latestAt is when you look at the latest, ahead and within 30 days",
+				);
+			}
 			const open = await f.boundary.invoke("w5", "qorpera", "manage_routine", {
 				...weekly,
 				operationKey: "w5",
@@ -729,21 +751,30 @@ describe("dynamic routine decision tool", () => {
 			f.run.close();
 		}
 	});
-	it("hands the writer a next run that waits for a todo, and refuses another file", async () => {
+	it("hands the writer a next run that waits for a todo, and refuses another file or a far latest time", async () => {
 		const f = await decision();
+		const latest = new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 2 * 86_400_000).toISOString();
 		try {
 			const refused = await f.boundary.invoke("l1", "qorpera", "decide_routine", {
 				action: "next",
 				operationKey: "next-1",
-				at: "2026-11-06T09:00:00Z",
+				at: latest,
 				whenDone: "QorperaOS/vision/vision.md",
 			});
 			expect(refused.success).toBe(false);
 			expect(refused.contentItems[0].text).toContain("whenDone is the path of a todo or a human task file");
+			const far = await f.boundary.invoke("l0", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-0",
+				at: new Date(Date.now() + 40 * 86_400_000).toISOString(),
+				whenDone: "QorperaOS/agents/product-builder/todos/landing-page.md",
+			});
+			expect(far.success).toBe(false);
+			expect(far.contentItems[0].text).toContain("at is when you look at the latest, ahead and within 30 days");
 			const next = await f.boundary.invoke("l2", "qorpera", "decide_routine", {
 				action: "next",
 				operationKey: "next-2",
-				at: "2026-11-06T09:00:00Z",
+				at: latest,
 				whenDone: "QorperaOS/agents/product-builder/todos/landing-page.md",
 			});
 			expect(next.success, JSON.stringify(next)).toBe(true);
@@ -751,7 +782,7 @@ describe("dynamic routine decision tool", () => {
 				{
 					action: "next",
 					operationKey: "next-2",
-					at: "2026-11-06T09:00:00.000Z",
+					at: latest,
 					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
 				},
 				expect.objectContaining({ callId: "l2" }),

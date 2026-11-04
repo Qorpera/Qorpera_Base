@@ -124,6 +124,19 @@ export function cloudRoutineListenedPath(value: unknown, label: string): string 
 	throw refusal();
 }
 
+/** A listener's latest time: ahead, and at most 30 days ahead, so a todo nobody closes is not waited on for months (the
+ * routine rules allow 31). */
+const LISTENER_DAYS = 30;
+function latestTime(value: unknown, label: string): string {
+	const at = instant(value, label);
+	const ms = Date.parse(at) - Date.now();
+	if (ms <= 0 || ms > LISTENER_DAYS * 86_400_000)
+		throw new CloudToolArgumentRefusal(
+			`${label} is when you look at the latest, ahead and within ${LISTENER_DAYS} days; if it is still open then, wait again`,
+		);
+	return at;
+}
+
 /** The model describes a cadence in the three shapes people use; the cloud
  * scheduler's closed trigger forms are compiled here. The trigger id is
  * host-owned and every routine has exactly one trigger (contract 16.3). A
@@ -189,7 +202,7 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		});
 		return {
 			kind: "once",
-			at: instant(t.latestAt, "latestAt"),
+			at: latestTime(t.latestAt, "latestAt"),
 			after: cloudRoutineListenedPath(t.path, "path"),
 			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
@@ -265,7 +278,7 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
 	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or an existing dynamic routine's next run if still ahead; the member's IANA timeZone), when_done (path of a todo or human task file, latestAt, IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, watching a situation; when_done to follow up a todo or human task, never a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.done says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
+	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, watching a situation; when_done to follow up a todo or human task, not a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.state says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
 	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new, to learn what it needs; never leave new standing work idle for days. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
 	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
@@ -308,7 +321,7 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 
 export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
-	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time. " +
+	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time (within 30 days). " +
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
 	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
 	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
@@ -725,7 +738,11 @@ export function cloudRoutineDecisionTool(
 			);
 			if (typeof n.operationKey !== "string" || !OPERATION_KEY.test(n.operationKey))
 				throw new Error("Invalid routine key");
-			const request: Record<string, unknown> = { action, operationKey: n.operationKey, at: instant(n.at, "at") };
+			const request: Record<string, unknown> = {
+				action,
+				operationKey: n.operationKey,
+				at: n.whenDone === undefined ? instant(n.at, "at") : latestTime(n.at, "at"),
+			};
 			if (n.intent !== undefined) request.intent = text(n.intent, 32768);
 			if (n.title !== undefined) request.title = text(n.title, 160, true);
 			if (n.effort !== undefined) {

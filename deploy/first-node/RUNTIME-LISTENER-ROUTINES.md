@@ -51,8 +51,9 @@ A listener is a routine that waits for something to happen, with a fallback time
 * **Happens**: done, changed, replied, ready, visited.
 * **Once or repeating**: a once listener is a dynamic routine. When it wakes it decides like any dynamic routine: next
   run (a time, or a new listener) or conclude. A repeating listener is what `file_change` and `event` already are.
-* **Fallback**: every once listener has a latest time. The run gets `done: true` when the thing happened and
-  `done: false` when the time came first, so it knows whether to review or to chase.
+* **Fallback**: every once listener has a latest time, ahead and at most 30 days away (the rules allow 31), so nothing
+  waits for months. The run's `state` says what became of the thing: `done`, `cancelled` (or declined), `gone` (deleted
+  or moved), or `open` when the time came first, so it knows whether to review, find out why, or chase.
 
 ### 3.1 How the agent sets it
 
@@ -99,9 +100,13 @@ run back while all of this holds:
 * it has had no run yet, and
 * something open is still at `after`: an open or blocked todo, or an open or returned human task.
 
-When that stops holding, the tick starts the run at once. "Nothing open is left" covers done, cancelled, declined,
+When that stops holding, the tick starts the run at once. A member's Stop of the routine's latest run is seen at once
+too: the tick lists a listening routine whose latest run a member stopped, and the restore pauses it as for any
+dynamic routine. "Nothing open is left" covers done, cancelled, declined,
 accepted and deleted. The check is a read of the todo and human-task indexes by environment and folder key; it takes
-no lock, and the tick's locks and order are unchanged. The run's payload carries `after` and `done`.
+no lock, and the tick's locks and order are unchanged. Both lookups compare the folder key in collation "C", so they
+use `qorpera_runtime_agent_todos_folder_key` and `qorpera_folder_human_task_index_key` (SQL test 565 checks the plans).
+The run's payload carries `after` and `state`.
 
 Why polling and not a trigger on the todo row: the todo and task commits must not lock or write wake rows (the folder
 lock order), and a wake row's time cannot change once written. The tick already visits every dynamic routine each
@@ -132,5 +137,11 @@ pass, so the extra cost is one indexed read per listening routine.
 ## 6. Deploy order
 
 The migration first, then the web (its routine list parser, in cloud-client, now takes `after`; the old one refuses a
-version that has it), then the runtime, which is the only writer of `after`. The new SQL accepts files with and without
-it, so an old runtime keeps working.
+version that has it), then the runtime, which is the only tool writer of `after`. The new SQL accepts files with and
+without it, so an old runtime keeps working.
+
+Rollback: once any routine version has `after`, rolling the web back to a build before this one breaks the routine
+lists that show it (the old parser refuses the version), and rolling the runtime back makes those routine files
+unreadable to its tools (its file parser refuses `after`), while the tick still runs them. Nothing stops an agent or member from hand-writing `after:` in a routine file
+with the file tools before the web is deployed: the SQL accepts it as soon as the migration is in. So deploy the web
+right after the migration.
