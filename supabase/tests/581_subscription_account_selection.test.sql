@@ -49,23 +49,33 @@ reset role;
 
 -- A real connected Claude subscription remains available to its own supported
 -- surfaces, but must not enter the governed Codex execution candidate pool.
+-- Since 20260930564000 a Claude sign-in is the vault's and makes no provider connection: this one is an older
+-- per-node Claude connection (none ever completed in production), its rows written as that path wrote them.
 do $$
-declare identity_id uuid; login jsonb; connection jsonb;
+declare identity_id uuid; capsule_id uuid := extensions.gen_random_uuid(); v_connection uuid := extensions.gen_random_uuid();
 begin
     select id into strict identity_id from public.qorpera_member_compute_identities
     where profile_id = '16300000-0000-4000-8000-000000000010';
-    login := public.qorpera_begin_native_provider_login('16300000-0000-4000-8000-000000000010',
-        extensions.gen_random_uuid(),extensions.gen_random_uuid(),identity_id,'anthropic','claude-code',repeat('c',64),900);
-    perform set_config('request.jwt.claims','{"role":"service_role"}',true);
-    connection := public.qorpera_complete_native_provider_login((login ->> 'login_id')::uuid,repeat('c',64),
-        extensions.gen_random_uuid(),'object://selection/claude',repeat('d',64),'claude-account',
-        'personal-subscription','qorpera-native-provider-consent/v1',
-        '{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":1}');
+    insert into public.qorpera_native_credential_capsules(id, profile_id, compute_identity_id, ownership_kind, owner_user_id,
+        provider, native_harness, encrypted_capsule_reference, attestation_policy_sha256, created_by_user_id)
+    values (capsule_id, '16300000-0000-4000-8000-000000000010', identity_id, 'member', '16300000-0000-4000-8000-000000000001',
+        'anthropic', 'claude-code', 'object://selection/claude', repeat('d', 64), '16300000-0000-4000-8000-000000000001');
+    insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider,
+        created_by_user_id)
+    values (v_connection, '16300000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+        '16300000-0000-4000-8000-000000000001', 'anthropic', '16300000-0000-4000-8000-000000000001');
+    insert into public.qorpera_provider_connection_versions(connection_id, version, authentication_mode, native_harness,
+        billing_source, consent_version, consented_by_user_id, allow_autonomous, quota_policy, created_by_user_id,
+        credential_capsule_id, authorization_state, max_native_concurrency)
+    values (v_connection, 1, 'native_subscription', 'claude-code', 'personal_subscription',
+        'qorpera-native-provider-consent/v1', '16300000-0000-4000-8000-000000000001', false,
+        '{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":1}',
+        '16300000-0000-4000-8000-000000000001', capsule_id, 'active', 1);
     perform set_config('request.jwt.claims','{"sub":"16300000-0000-4000-8000-000000000001","role":"authenticated"}',true);
     perform public.qorpera_create_member_execution_sponsor('16300000-0000-4000-8000-000000000010',
-        extensions.gen_random_uuid(),(connection ->> 'connection_id')::uuid,1,false);
+        extensions.gen_random_uuid(),v_connection,1,false);
     if exists(select 1 from public.qorpera_eligible_member_accounts('16300000-0000-4000-8000-000000000010',
-        '16300000-0000-4000-8000-000000000001') where connection_id = (connection ->> 'connection_id')::uuid) then
+        '16300000-0000-4000-8000-000000000001') as eligible where eligible.connection_id = v_connection) then
         raise exception 'Unsupported governed harness was eligible'; end if;
 end $$;
 update public.qorpera_native_provider_account_metadata
