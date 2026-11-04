@@ -298,7 +298,7 @@ export const STEPS = [
 		cores: 0.4,
 		width: 2,
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs deploy/sites/app-relay/relay.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
