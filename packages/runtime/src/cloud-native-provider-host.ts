@@ -142,7 +142,14 @@ export interface NativeHarnessLoginHandle {
 	prompt: Promise<NativeHarnessLoginPrompt>;
 	completed: Promise<{ providerAccountReference?: string; providerAccountEmail?: string }>;
 	cancel(): Promise<void>;
+	/** Claude Code only: the code Anthropic showed the member, written once to the official sign-in's input. */
+	submitCode?(code: string): void;
 }
+
+/** The pages Claude Code's own sign-in sends a member to (`claude auth login --claudeai`). */
+const CLAUDE_SIGN_IN_HOSTS = new Set(["claude.com", "claude.ai", "platform.claude.com"]);
+/** Anthropic's code as Claude Code reads it: one line of printable ASCII. */
+const CLAUDE_SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 
 /** The official CLI's login driver. Executions run through the cloud runtime (`NativeCloudExecutionDriver`). */
 export interface NativeHarnessDriver {
@@ -937,17 +944,20 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		root: string,
 		environment: NodeJS.ProcessEnv,
 		signal: AbortSignal,
+		options: { harness?: NativeHarnessKind; keepInput?: boolean } = {},
 	): Promise<{ child: NativeHarnessChild; close(): Promise<void> }> {
 		signal.throwIfAborted();
 		await this.#beforeLaunch?.();
 		signal.throwIfAborted();
 		if (!this.#isolation) {
-			const child = spawn(command, args, {
-				cwd: root,
-				env: environment,
-				stdio: ["ignore", "pipe", "pipe"],
-				windowsHide: true,
-			});
+			const child = options.keepInput
+				? spawn(command, args, { cwd: root, env: environment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+				: spawn(command, args, {
+						cwd: root,
+						env: environment,
+						stdio: ["ignore", "pipe", "pipe"],
+						windowsHide: true,
+					});
 			return { child, close: () => terminateChild(child) };
 		}
 		const scratchRoot = await mkdtemp(join(this.#scratchParent ?? tmpdir(), "qorpera-native-auth-"));
@@ -959,10 +969,11 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				command,
 				args,
 				scratchRoot,
-				codexHome: join(root, "codex"),
+				codexHome: join(root, options.harness === "claude-code" ? "claude" : "codex"),
+				...(options.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
 				signal,
 			});
-			isolated.child.stdin.end();
+			if (!options.keepInput) isolated.child.stdin.end();
 			return {
 				child: isolated.child,
 				async close() {
@@ -981,8 +992,6 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		identityRoot: string,
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle> {
-		if (this.#isolation && harness !== "codex-cli")
-			throw new Error("The governed native runtime currently accepts Codex only");
 		const root = requiredAbsolutePath(identityRoot, "Native identity root");
 		const environment = await prepareHarnessEnvironment(root);
 		const command = harness === "codex-cli" ? this.#codexPath : this.#claudePath;
@@ -993,7 +1002,12 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			AbortSignal.timeout(600_000),
 			...(signal ? [signal] : []),
 		]);
-		const launched = await this.#loginProcess(command, args, root, environment, loginSignal);
+		// Claude Code asks for the code Anthropic shows the member on its input; Codex reads nothing.
+		const claude = harness === "claude-code";
+		const launched = await this.#loginProcess(command, args, root, environment, loginSignal, {
+			harness,
+			keepInput: claude,
+		});
 		const child = launched.child;
 		const capture = collectChildOutput(child);
 		const abort = (): void => {
@@ -1006,7 +1020,18 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			const poll = (): void => {
 				const parsed = interactionFromOutput(capture.output());
 				if (parsed.interactionUrl || parsed.userCode || child.exitCode !== null) {
-					resolvePrompt(parsed);
+					// Claude's link is Anthropic's own sign-in page, and it brings no device code.
+					if (
+						claude &&
+						parsed.interactionUrl &&
+						!CLAUDE_SIGN_IN_HOSTS.has(new URL(parsed.interactionUrl).hostname)
+					) {
+						reject(new Error("Provider login did not present an official interaction URL"));
+						return;
+					}
+					resolvePrompt(
+						claude ? (parsed.interactionUrl ? { interactionUrl: parsed.interactionUrl } : {}) : parsed,
+					);
 					return;
 				}
 				if (Date.now() - started >= 10_000) {
@@ -1021,7 +1046,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			.then(async () => {
 				loginSignal.throwIfAborted();
 				const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
-				const status = await this.#loginProcess(command, statusArgs, root, environment, loginSignal);
+				const status = await this.#loginProcess(command, statusArgs, root, environment, loginSignal, { harness });
 				const stopStatus = (): void => {
 					void status.close();
 				};
@@ -1058,6 +1083,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				await launched.close();
 			});
 		void completed.catch(() => undefined);
+		let submitted = false;
 		return {
 			prompt,
 			completed,
@@ -1065,6 +1091,18 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				cancellation.abort();
 				await launched.close();
 			},
+			...(claude
+				? {
+						submitCode: (code: string): void => {
+							const input = child.stdin;
+							if (submitted || !input || child.exitCode !== null || !CLAUDE_SIGN_IN_CODE.test(code))
+								throw new Error("Provider login code is not accepted");
+							submitted = true;
+							// Once, then closed: Claude Code exchanges the code with Anthropic itself.
+							input.end(`${code}\n`);
+						},
+					}
+				: {}),
 		};
 	}
 }

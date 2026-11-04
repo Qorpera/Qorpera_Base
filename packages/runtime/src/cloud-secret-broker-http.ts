@@ -48,7 +48,7 @@ import {
 	type ModelLoginIssueRequest,
 	parseModelLoginRunBinding,
 } from "./cloud-model-login-vault.ts";
-import type { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
+import { ClaudeCodeRefused, type CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import { isNativeJobHolder, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -835,6 +835,7 @@ export class HttpCloudSecretBrokerService {
 		const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
 		const planCallback = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/callback$/i.exec(path);
 		const planConfirm = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/confirm$/i.exec(path);
+		const claudeCode = /^\/v1\/model-logins\/([0-9a-f-]{36})\/claude\/code$/i.exec(path);
 		const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
@@ -885,6 +886,7 @@ export class HttpCloudSecretBrokerService {
 				signIn?.[1] ??
 				planCallback?.[1] ??
 				planConfirm?.[1] ??
+				claudeCode?.[1] ??
 				accountRefresh?.[1] ??
 				url.searchParams.get("company") ??
 				undefined
@@ -1149,6 +1151,30 @@ export class HttpCloudSecretBrokerService {
 					return;
 				}
 				response(reply, 200, answer);
+				return;
+			}
+			// The code Anthropic showed the member for a Claude sign-in (20260930564000), through the web client's edge
+			// function, with the sign-in's capability as bearer. The answer waits while Claude Code exchanges it (the
+			// helper's 29 s, then the save: 34 s in all, inside the edge function's 40 s); a code Claude Code refused
+			// answers 403, and the member starts again.
+			if (claudeCode && UUID.test(claudeCode[1]) && scope.modelLoginSignIns !== undefined) {
+				const authorization = request.headers.authorization;
+				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
+					throw new Error("Vault sign-in capability is missing");
+				try {
+					const answer = await scope.modelLoginSignIns.submitClaudeCode(
+						{
+							companyId: claudeCode[1],
+							capability: authorization.slice("Bearer ".length),
+							body: await readRequest(request),
+						},
+						AbortSignal.timeout(34_000),
+					);
+					response(reply, 200, { ...answer });
+				} catch (error) {
+					if (!(error instanceof ClaudeCodeRefused)) throw error;
+					response(reply, 403, { schema: "qorpera.claude-sign-in-code-failed/v1", reason: "code_not_accepted" });
+				}
 				return;
 			}
 			// The usage of the logins the vault keeps (change 2C): the account refresh chooser names

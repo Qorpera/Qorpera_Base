@@ -82,6 +82,7 @@ begin
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_complete_account_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
 		'qorpera_complete_chatgpt_plan_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,timestamp with time zone)',
+		'qorpera_complete_claude_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
 		'qorpera_complete_connector_token_revocation(uuid,text,uuid,bigint,text,text)',

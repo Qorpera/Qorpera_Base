@@ -2419,6 +2419,30 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** A Claude sign-in's completion (20260930564000): Claude Code's login files, sealed under the member's key, become
+	 * the member's Claude login (coding sessions only; nothing else reads it). */
+	completeClaudeLoginSignIn(
+		completion: Parameters<NonNullable<ModelLoginSignInAuthority["completeClaudeLoginSignIn"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_claude_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::text,$10::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.loginId,
+				completion.capabilitySha256,
+				completion.claudeLoginId,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.providerAccountReference,
+				completion.providerAccountEmail,
+			],
+			signal,
+		);
+	}
+
 	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
 	completeChatGptPlanSignIn(
 		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],

@@ -9,6 +9,9 @@ export const NATIVE_CODEX_EGRESS_HOSTS = Object.freeze(["chatgpt.com", "auth.ope
 /** A run on a member's ChatGPT plan (Sign in with ChatGPT) reaches OpenAI's API alone: the vault, not the
  * run, renews the plan's tokens, and the run never uses the Codex login's ChatGPT backend. */
 export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
+/** A member's Claude sign-in in the vault's helper: the official Claude Code exchanges Anthropic's code there and reads
+ * the account it signed in. */
+export const NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS = Object.freeze(["platform.claude.com", "api.anthropic.com"]);
 const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
@@ -131,11 +134,15 @@ export async function startNativeCodexEgress(options: {
 	root: string;
 	signal: AbortSignal;
 	transport?: NativeEgressTransport;
-	/** The hosts this run may reach; the Codex login's hosts unless the run is on a ChatGPT plan. */
+	/** The hosts this run may reach; the Codex login's hosts unless the run is on a ChatGPT plan or a Claude sign-in. */
 	hosts?: readonly string[];
 }): Promise<{ path: string; close(): Promise<void> }> {
 	const hosts = options.hosts ?? NATIVE_CODEX_EGRESS_HOSTS;
-	if (hosts !== NATIVE_CODEX_EGRESS_HOSTS && hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS)
+	if (
+		hosts !== NATIVE_CODEX_EGRESS_HOSTS &&
+		hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS &&
+		hosts !== NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS
+	)
 		throw new Error("Unsupported native egress hosts");
 	const metadata = await lstat(options.root);
 	if (

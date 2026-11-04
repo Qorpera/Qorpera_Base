@@ -13,11 +13,26 @@ import type { NativeHarnessDriver } from "./cloud-native-provider-host.ts";
  * One helper serves every company broker on its host. A sign-in is bound to its company, its
  * Compute Identity and its capability digest; a newer sign-in of the same identity ends the
  * older one, and each company may run only a few at once.
+ *
+ * A Claude sign-in (20260930564000) runs the official, unmodified Claude Code (`claude auth login
+ * --claudeai`) the same way. It shows Anthropic's sign-in page and then waits for the code Anthropic
+ * gives the member, which the member pastes into Qorpera's page: `submitCode` writes it once to
+ * Claude Code's input. Claude Code exchanges it itself; its login files are kept as they are, unread
+ * (`CLAUDE_LOGIN_FILES`), for the vault to seal.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_AUTH_JSON_BYTES = 32 * 1024;
+/** Claude Code's login files in its config directory: its credentials, and its account settings (which name the
+ * signed-in account). Kept as bytes, never parsed. */
+export const CLAUDE_LOGIN_FILES = [".credentials.json", ".claude.json"] as const;
+export const CLAUDE_LOGIN_FILES_SCHEMA = "qorpera.claude-login-files/v1";
+const MAX_CLAUDE_FILE_BYTES = 16 * 1024;
+/** Both Claude files in base64, well inside a sealed login's 128 KiB. */
+const MAX_CLAUDE_FILES_BYTES = 64 * 1024;
+/** After its code, Claude Code exchanges it with Anthropic and reads the account; the answer waits this long. */
+const CODE_WAIT_MS = 25_000;
 /** Codex's device code lasts 15 minutes; a sign-in never runs longer. */
 const MAX_SIGN_IN_MS = 15 * 60_000;
 /** A finished or failed sign-in waits this long for its broker (which may be restarting). */
@@ -30,6 +45,7 @@ export type ModelLoginSignInState =
 	| { readonly status: "awaiting_member"; readonly interactionUrl?: string; readonly userCode?: string }
 	| {
 			readonly status: "completed";
+			/** Codex's auth.json, or for a Claude sign-in its login files (`qorpera.claude-login-files/v1`). */
 			readonly authJson: string;
 			readonly providerAccountReference?: string;
 			readonly providerAccountEmail?: string;
@@ -42,6 +58,8 @@ export interface ModelLoginSignInBinding {
 	readonly computeIdentityId: string;
 	readonly capabilitySha256: string;
 	readonly expiresAt: string;
+	/** A Claude sign-in; absent for Codex. */
+	readonly harness?: "claude-code";
 }
 
 /** The helper's side of members' sign-ins, as a broker sees it. */
@@ -60,6 +78,11 @@ export interface ModelLoginSignInHelper {
 	): Promise<ReadonlyArray<{ signInId: string; capabilitySha256: string }>>;
 	/** Ends the sign-in and wipes it (saved, refused, or no longer pending). */
 	finishSignIn(request: { signInId: string; companyId: string }, signal: AbortSignal): Promise<void>;
+	/** A Claude sign-in: Anthropic's code, given once; the state once Claude Code has used it (or still waiting). */
+	submitCode?(
+		request: { signInId: string; companyId: string; code: string },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInState | { readonly status: "unknown" }>;
 }
 
 interface Entry {
@@ -67,6 +90,7 @@ interface Entry {
 	root?: string;
 	state: ModelLoginSignInState;
 	cancel?: () => Promise<void>;
+	submitCode?: (code: string) => void;
 	timer: ReturnType<typeof setTimeout>;
 	changed: Promise<void>;
 	notify: () => void;
@@ -78,7 +102,8 @@ function checkBinding(binding: ModelLoginSignInBinding): number {
 		!UUID.test(binding.signInId) ||
 		!UUID.test(binding.companyId) ||
 		!UUID.test(binding.computeIdentityId) ||
-		!SHA256.test(binding.capabilitySha256)
+		!SHA256.test(binding.capabilitySha256) ||
+		(binding.harness !== undefined && binding.harness !== "claude-code")
 	)
 		throw new Error("Sign-in binding is invalid");
 	const expiresAt = Date.parse(binding.expiresAt);
@@ -88,8 +113,31 @@ function checkBinding(binding: ModelLoginSignInBinding): number {
 
 const settled = (state: ModelLoginSignInState): boolean => state.status === "completed" || state.status === "failed";
 
+/** Claude Code's login files, as bytes: its credentials (required) and its account settings (when it wrote them). */
+async function claudeLoginFiles(configDirectory: string): Promise<string> {
+	const files: Record<string, string> = {};
+	for (const name of CLAUDE_LOGIN_FILES) {
+		let bytes: Buffer;
+		try {
+			bytes = await readFile(join(configDirectory, name));
+		} catch (error) {
+			if (name !== ".credentials.json" && (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") continue;
+			throw error;
+		}
+		try {
+			if (bytes.byteLength < 2 || bytes.byteLength > MAX_CLAUDE_FILE_BYTES)
+				throw new Error("Claude login file size");
+			files[name] = bytes.toString("base64");
+		} finally {
+			bytes.fill(0);
+		}
+	}
+	return JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files });
+}
+
 export class CodexSignIns implements ModelLoginSignInHelper {
 	readonly #driver: Pick<NativeHarnessDriver, "beginLogin">;
+	readonly #claude: boolean;
 	readonly #temporaryRoot: string;
 	readonly #limit: number;
 	readonly #companyLimit: number;
@@ -105,10 +153,13 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 		limit?: number;
 		companyLimit?: number;
 		promptWaitMs?: number;
+		/** The driver runs the pinned official Claude Code too; without it a Claude sign-in fails. */
+		claude?: boolean;
 	}) {
 		if (!isAbsolute(options.temporaryRoot) || resolve(options.temporaryRoot) !== options.temporaryRoot)
 			throw new Error("Sign-in temporary root must be absolute");
 		this.#driver = options.driver;
+		this.#claude = options.claude ?? false;
 		this.#temporaryRoot = options.temporaryRoot;
 		this.#limit = options.limit ?? 6;
 		this.#companyLimit = options.companyLimit ?? 2;
@@ -122,7 +173,8 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 			entry &&
 			(entry.binding.companyId !== binding.companyId ||
 				entry.binding.computeIdentityId !== binding.computeIdentityId ||
-				entry.binding.capabilitySha256 !== binding.capabilitySha256)
+				entry.binding.capabilitySha256 !== binding.capabilitySha256 ||
+				entry.binding.harness !== binding.harness)
 		)
 			throw new Error("Sign-in belongs to another company or capability");
 		if (!entry) {
@@ -190,12 +242,40 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 		await this.#end(request.signInId);
 	}
 
+	async submitCode(
+		request: { signInId: string; companyId: string; code: string },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInState | { readonly status: "unknown" }> {
+		const entry = this.#entries.get(request.signInId);
+		if (!entry || entry.binding.companyId !== request.companyId) return { status: "unknown" };
+		if (entry.binding.harness !== "claude-code" || entry.state.status !== "awaiting_member" || !entry.submitCode)
+			throw new Error("Sign-in takes no code now");
+		const changed = entry.changed;
+		entry.submitCode(request.code);
+		entry.submitCode = undefined;
+		await Promise.race([
+			changed,
+			new Promise<void>((resolveWait) => {
+				const timer = setTimeout(resolveWait, CODE_WAIT_MS);
+				signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolveWait();
+					},
+					{ once: true },
+				);
+			}),
+		]);
+		return entry.state;
+	}
+
 	/** Ends every sign-in (the helper is stopping). */
 	async close(): Promise<void> {
 		await Promise.all([...this.#entries.keys()].map((id) => this.#end(id)));
 	}
 
-	/** Registers the entry at once (a second poll finds it), then starts Codex. */
+	/** Registers the entry at once (a second poll finds it), then starts Codex or Claude Code. */
 	#start(binding: ModelLoginSignInBinding, lifetime: number): Entry {
 		let notify = (): void => undefined;
 		const entry: Entry = {
@@ -231,8 +311,21 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 					await rm(root, { recursive: true, force: true });
 					return;
 				}
-				const handle = await this.#driver.beginLogin("codex-cli", root, AbortSignal.timeout(lifetime));
+				const claude = binding.harness === "claude-code";
+				if (claude && !this.#claude) {
+					settle({ status: "failed", reason: "claude_unavailable" });
+					return;
+				}
+				const handle = await this.#driver.beginLogin(
+					claude ? "claude-code" : "codex-cli",
+					root,
+					AbortSignal.timeout(lifetime),
+				);
 				entry.cancel = () => handle.cancel();
+				if (claude) {
+					if (!handle.submitCode) throw new Error("Claude Code takes no code");
+					entry.submitCode = (code) => handle.submitCode?.(code);
+				}
 				if (entry.ended) {
 					await handle.cancel().catch(() => undefined);
 					return;
@@ -253,12 +346,14 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 					async (account) => {
 						let authJson: string;
 						try {
-							authJson = await readFile(join(root, "codex", "auth.json"), "utf8");
+							authJson = claude
+								? await claudeLoginFiles(join(root, "claude"))
+								: await readFile(join(root, "codex", "auth.json"), "utf8");
 						} catch {
 							settle({ status: "failed", reason: "sign_in_no_login" });
 							return;
 						}
-						if (Buffer.byteLength(authJson) > MAX_AUTH_JSON_BYTES) {
+						if (Buffer.byteLength(authJson) > (claude ? MAX_CLAUDE_FILES_BYTES : MAX_AUTH_JSON_BYTES)) {
 							settle({ status: "failed", reason: "sign_in_login_too_large" });
 							return;
 						}
@@ -274,7 +369,10 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 					() => settle({ status: "failed", reason: "sign_in_not_completed" }),
 				);
 			} catch {
-				settle({ status: "failed", reason: "codex_launch_failed" });
+				settle({
+					status: "failed",
+					reason: binding.harness === "claude-code" ? "claude_launch_failed" : "codex_launch_failed",
+				});
 			}
 		})();
 		return entry;

@@ -13,6 +13,7 @@ import {
 } from "../src/app/views/settings-connections.ts";
 import {
 	ChatGptPlanSignInError,
+	ClaudeCodeError,
 	PlanSwitchBusyError,
 	type WebExecutionConnections,
 	type WebMemberConnection,
@@ -77,9 +78,16 @@ async function setup(
 ) {
 	const client: Pick<
 		WebNativeSubscription,
-		"listConnections" | "revokeConnection" | "createMemberSponsor" | "onboardingAvailable" | "beginProviderLogin"
+		| "listConnections"
+		| "revokeConnection"
+		| "createMemberSponsor"
+		| "onboardingAvailable"
+		| "beginProviderLogin"
+		| "listClaudeLogins"
 	> = {
 		listConnections: vi.fn(async () => structuredClone(initial)),
+		// Claude is offered while the member may sign in with it (20260930564000); these flows are the same for both.
+		listClaudeLogins: vi.fn(async () => ({ signInOpen: true, logins: [] })),
 		revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
 		createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
 		onboardingAvailable,
@@ -1578,5 +1586,130 @@ describe("account model logins", () => {
 		} finally {
 			setLanguagePreference("en");
 		}
+	});
+});
+
+describe("Claude sign-in (coding only, offered while the member may sign in with it)", () => {
+	const claudeLogin = {
+		loginId: id(95),
+		clientConnectionId: id(96),
+		createdAt: timestamp,
+		providerAccountEmail: "member@example.com",
+	};
+	async function claudeSetup(signInOpen: boolean, submitCode = vi.fn(async (_code: string) => undefined)) {
+		const listed = { signInOpen, logins: [] as (typeof claudeLogin)[] };
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(observed(connected))),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			onboardingAvailable: true,
+			beginProviderLogin: vi.fn(
+				async (
+					input: Parameters<WebNativeSubscription["beginProviderLogin"]>[0],
+				): Promise<WebNativeProviderLogin> => ({
+					loginId: input.clientLoginId,
+					clientConnectionId: input.clientConnectionId,
+					status: "awaiting_member",
+					interactionUrl: "https://claude.com/cai/oauth/authorize?code=true&state=fixture",
+					expiresAt: new Date(Date.now() + 60_000).toISOString(),
+					submitCode,
+				}),
+			),
+			listClaudeLogins: vi.fn(async () => structuredClone(listed)),
+			signOutClaude: vi.fn(async () => {
+				listed.logins = [];
+			}),
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		return { client, listed, submitCode };
+	}
+	const pickerLabels = () => {
+		view.el.querySelector<HTMLButtonElement>(".connection-add")!.click();
+		return [...view.el.querySelectorAll<HTMLButtonElement>(".connection-provider-picker button")].map(
+			(item) => item.textContent,
+		);
+	};
+	function paste(code: string) {
+		const input = card(CLAUDE).querySelector<HTMLInputElement>(".connection-code input")!;
+		input.value = code;
+		input.dispatchEvent(new Event("input"));
+		card(CLAUDE).querySelector<HTMLFormElement>(".connection-code")!.requestSubmit();
+	}
+
+	it("is not offered while the member may not sign in with Claude", async () => {
+		await claudeSetup(false);
+		expect(pickerLabels()).toEqual([OPENAI]);
+	});
+
+	it("opens Anthropic's page, sends the pasted code once, and then shows the member's Claude login", async () => {
+		const { client, listed, submitCode } = await claudeSetup(true);
+		expect(pickerLabels()).toEqual([OPENAI, CLAUDE]);
+		addAccount(CLAUDE);
+		await settle();
+		expect(vi.mocked(client.beginProviderLogin).mock.calls[0]![0].provider).toBe("anthropic");
+		const link = card(CLAUDE).querySelector<HTMLAnchorElement>(".connection-sign-in a")!;
+		expect(link.textContent).toBe("Open Claude sign-in");
+		expect(link.href).toBe("https://claude.com/cai/oauth/authorize?code=true&state=fixture");
+		expect(status(CLAUDE)).toBe("Sign in on Claude's page, then paste the code it shows you here.");
+		expect(card(CLAUDE).textContent).toContain("Used only for coding sessions you start.");
+		// Nothing is sent without a code.
+		paste("   ");
+		await settle();
+		expect(submitCode).not.toHaveBeenCalled();
+		expect(status(CLAUDE)).toBe("Paste the code from Claude first.");
+		listed.logins = [
+			{
+				...claudeLogin,
+				clientConnectionId: vi.mocked(client.beginProviderLogin).mock.calls[0]![0].clientConnectionId,
+			},
+		];
+		paste("  anthropic-code#state \n");
+		await settle();
+		expect(submitCode).toHaveBeenCalledTimes(1);
+		expect(submitCode).toHaveBeenCalledWith("anthropic-code#state");
+		expect(view.el.querySelector(".connection-code")).toBeNull();
+		expect(view.el.textContent).toContain("Claude is connected. It is used only for coding sessions you start.");
+		const saved = card("Claude · coding only");
+		expect(saved.textContent).toContain("member@example.com");
+		expect(saved.textContent).toContain("Agents never use it for chats or routines.");
+		// No sponsor is made for it: it is no provider connection.
+		expect(client.createMemberSponsor).toHaveBeenCalledTimes(1);
+		expect(client.createMemberSponsor).toHaveBeenCalledWith(
+			expect.objectContaining({ providerConnectionId: id(81) }),
+			expect.anything(),
+		);
+	});
+
+	it("says a refused code did not work and offers a new sign-in", async () => {
+		const { client } = await claudeSetup(
+			true,
+			vi.fn(async () => {
+				throw new ClaudeCodeError();
+			}),
+		);
+		addAccount(CLAUDE);
+		await settle();
+		paste("wrong-code-1234");
+		await settle();
+		expect(status(CLAUDE)).toBe("That code did not work. Start the sign-in again.");
+		expect(view.el.querySelector(".connection-code")).toBeNull();
+		action(CLAUDE).click();
+		await settle();
+		expect(client.beginProviderLogin).toHaveBeenCalledTimes(2);
+	});
+
+	it("signs the member's Claude login out from its card", async () => {
+		const { client, listed } = await claudeSetup(true);
+		listed.logins = [claudeLogin];
+		view.dispose();
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		card("Claude · coding only").querySelector<HTMLButtonElement>("button")!.click();
+		await settle();
+		expect(client.signOutClaude).toHaveBeenCalledWith(id(95), expect.any(AbortSignal));
+		expect(card("Claude · coding only")).toBeUndefined();
 	});
 });

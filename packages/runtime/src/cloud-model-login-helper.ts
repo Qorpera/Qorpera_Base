@@ -22,7 +22,8 @@ import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-v
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 48 * 1024;
-const MAX_RESPONSE_BYTES = 48 * 1024;
+/** A finished sign-in carries its login: Codex's auth.json, or Claude Code's two login files in base64. */
+const MAX_RESPONSE_BYTES = 96 * 1024;
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
 /** The helper answers inside this, and the broker waits a little longer: both stay well inside
  * the vault's 35 s renewal budget, so a renewal the provider made is never answered too late. */
@@ -32,6 +33,11 @@ const CLIENT_WAIT_MS = HELPER_ANSWER_MS + 2_000;
  * member's browser, through the edge function's 30 s budget) asks again. */
 const SIGN_IN_ANSWER_MS = 12_000;
 const SIGN_IN_CLIENT_WAIT_MS = SIGN_IN_ANSWER_MS + 3_000;
+/** A Claude code's answer waits for Claude Code to exchange it and read the account (at most 25 s). */
+const SIGN_IN_CODE_ANSWER_MS = 27_000;
+const SIGN_IN_CODE_CLIENT_WAIT_MS = SIGN_IN_CODE_ANSWER_MS + 2_000;
+/** Anthropic's code as Claude Code reads it: one line of printable ASCII. */
+const SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -83,7 +89,9 @@ function signInRequest(value: unknown, schema: string, keys: readonly string[]):
 			typeof text !== "string" ||
 			((key === "signInId" || key === "companyId" || key === "computeIdentityId") && !UUID.test(text)) ||
 			(key === "capabilitySha256" && !SHA256.test(text)) ||
-			(key === "expiresAt" && !Number.isFinite(Date.parse(text)))
+			(key === "expiresAt" && !Number.isFinite(Date.parse(text))) ||
+			(key === "harness" && text !== "claude-code") ||
+			(key === "code" && !SIGN_IN_CODE.test(text))
 		)
 			throw new Error("Login helper request is invalid");
 	}
@@ -91,7 +99,10 @@ function signInRequest(value: unknown, schema: string, keys: readonly string[]):
 }
 
 const BINDING_KEYS = ["signInId", "companyId", "computeIdentityId", "capabilitySha256", "expiresAt"] as const;
+/** A Claude sign-in's binding names its harness; a Codex one is unchanged. */
+const CLAUDE_BINDING_KEYS = [...BINDING_KEYS, "harness"] as const;
 const SIGN_IN_KEYS = ["signInId", "companyId"] as const;
+const SIGN_IN_CODE_KEYS = ["signInId", "companyId", "code"] as const;
 
 function optionalText(value: unknown, maximum: number): string | undefined {
 	if (value === undefined) return undefined;
@@ -255,7 +266,13 @@ export class ModelLoginHelperService {
 
 	async #handle(request: IncomingMessage): Promise<{ status: number; body: Record<string, unknown> }> {
 		const signIns = this.#signIns;
-		const signInRoutes = ["/v1/sign-in", "/v1/sign-in/read", "/v1/sign-in/completed", "/v1/sign-in/finish"];
+		const signInRoutes = [
+			"/v1/sign-in",
+			"/v1/sign-in/read",
+			"/v1/sign-in/completed",
+			"/v1/sign-in/finish",
+			"/v1/sign-in/code",
+		];
 		const client = this.#client(request.headers.authorization);
 		if (
 			request.method !== "POST" ||
@@ -270,20 +287,30 @@ export class ModelLoginHelperService {
 				const body = await readBody(request);
 				input =
 					request.url === "/v1/sign-in"
-						? signInRequest(body, "qorpera.model-login-sign-in-request/v1", BINDING_KEYS)
+						? signInRequest(
+								body,
+								"qorpera.model-login-sign-in-request/v1",
+								body && typeof body === "object" && Object.hasOwn(body, "harness")
+									? CLAUDE_BINDING_KEYS
+									: BINDING_KEYS,
+							)
 						: request.url === "/v1/sign-in/completed"
 							? signInRequest(body, "qorpera.model-login-sign-in-list/v1", ["companyId"])
-							: signInRequest(
-									body,
-									request.url === "/v1/sign-in/read"
-										? "qorpera.model-login-sign-in-read/v1"
-										: "qorpera.model-login-sign-in-finish/v1",
-									SIGN_IN_KEYS,
-								);
+							: request.url === "/v1/sign-in/code"
+								? signInRequest(body, "qorpera.model-login-sign-in-code/v1", SIGN_IN_CODE_KEYS)
+								: signInRequest(
+										body,
+										request.url === "/v1/sign-in/read"
+											? "qorpera.model-login-sign-in-read/v1"
+											: "qorpera.model-login-sign-in-finish/v1",
+										SIGN_IN_KEYS,
+									);
 			} catch {
 				return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
 			}
-			const signal = AbortSignal.timeout(SIGN_IN_ANSWER_MS);
+			const signal = AbortSignal.timeout(
+				request.url === "/v1/sign-in/code" ? SIGN_IN_CODE_ANSWER_MS : SIGN_IN_ANSWER_MS,
+			);
 			try {
 				if (request.url === "/v1/sign-in") {
 					const binding: ModelLoginSignInBinding = {
@@ -292,6 +319,7 @@ export class ModelLoginHelperService {
 						computeIdentityId: input.computeIdentityId as string,
 						capabilitySha256: input.capabilitySha256 as string,
 						expiresAt: input.expiresAt as string,
+						...(input.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
 					};
 					// Another client's sign-in: refused, as a binding of another company is.
 					if (!this.#owns(binding.signInId, client)) throw new Error("Sign-in belongs to another client");
@@ -317,6 +345,12 @@ export class ModelLoginHelperService {
 					const state = this.#owns(target.signInId, client)
 						? await signIns.readSignIn(target, signal)
 						: { status: "unknown" as const };
+					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+				}
+				if (request.url === "/v1/sign-in/code") {
+					if (!this.#owns(target.signInId, client) || !signIns.submitCode)
+						throw new Error("Sign-in belongs to another client");
+					const state = await signIns.submitCode({ ...target, code: input.code as string }, signal);
 					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
 				}
 				if (request.url === "/v1/sign-in/completed") {
@@ -445,6 +479,23 @@ export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSign
 				});
 			},
 			AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+		);
+	}
+
+	submitCode(
+		request: { signInId: string; companyId: string; code: string },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInState | { readonly status: "unknown" }> {
+		return this.#post(
+			"/v1/sign-in/code",
+			{
+				schema: "qorpera.model-login-sign-in-code/v1",
+				signInId: request.signInId,
+				companyId: request.companyId,
+				code: request.code,
+			},
+			(value) => parseSignInState(value, true),
+			AbortSignal.any([signal, AbortSignal.timeout(SIGN_IN_CODE_CLIENT_WAIT_MS)]),
 		);
 	}
 

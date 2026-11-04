@@ -38,6 +38,61 @@ export interface WebNativeProviderLogin {
 	interactionUrl?: string;
 	userCode?: string;
 	expiresAt: string;
+	/** A Claude sign-in (20260930564000): sends the code Anthropic showed the member, once. Resolves when Claude Code
+	 * has the login; throws `ClaudeCodeError` when it refused the code. */
+	submitCode?: (code: string, signal?: AbortSignal) => Promise<void>;
+}
+
+/** A member's Claude login (20260930564000): their own, used only for coding sessions they start. */
+export interface WebClaudeLogin {
+	loginId: string;
+	providerAccountEmail?: string;
+	createdAt: string;
+	clientConnectionId: string;
+}
+export interface WebClaudeLogins {
+	/** Whether this member may sign in with Claude in this company now. */
+	signInOpen: boolean;
+	logins: readonly WebClaudeLogin[];
+}
+
+/** Claude Code did not take the code (or it was not one): the member signs in again. */
+export class ClaudeCodeError extends Error {
+	constructor() {
+		super("The code was not accepted.");
+	}
+}
+
+/** The pages Claude Code's own sign-in sends a member to. */
+const CLAUDE_SIGN_IN_HOSTS = new Set(["claude.com", "claude.ai", "platform.claude.com"]);
+
+function parseClaudeLogins(value: unknown): WebClaudeLogins {
+	const input = value as Record<string, unknown> | null;
+	if (!input || input.schema !== "qorpera.claude-logins/v1" || !Array.isArray(input.logins))
+		throw new Error("Invalid cloud response");
+	const logins: WebClaudeLogin[] = [];
+	for (const item of input.logins) {
+		const entry = item as Record<string, unknown> | null;
+		if (
+			!entry ||
+			typeof entry.loginId !== "string" ||
+			!UUID_PATTERN.test(entry.loginId) ||
+			typeof entry.clientConnectionId !== "string" ||
+			!UUID_PATTERN.test(entry.clientConnectionId) ||
+			typeof entry.createdAt !== "string" ||
+			(entry.providerAccountEmail !== null && typeof entry.providerAccountEmail !== "string")
+		)
+			throw new Error("Invalid cloud response");
+		logins.push({
+			loginId: entry.loginId,
+			clientConnectionId: entry.clientConnectionId,
+			createdAt: entry.createdAt,
+			...(typeof entry.providerAccountEmail === "string"
+				? { providerAccountEmail: entry.providerAccountEmail }
+				: {}),
+		});
+	}
+	return { signInOpen: input.signInOpen === true, logins };
 }
 
 /** A member's connection with what the web reads beside the SDK's fields (migration
@@ -128,6 +183,10 @@ export interface WebNativeSubscription {
 	recordRoutineOffer?(connectionId: string, signal?: AbortSignal): Promise<string>;
 	/** Whether the company may use ChatGPT plan logins now (both switches on). */
 	chatGptPlanAvailable?(signal?: AbortSignal): Promise<boolean>;
+	/** The member's Claude login and whether they may sign in with Claude here (20260930564000). */
+	listClaudeLogins?(signal?: AbortSignal): Promise<WebClaudeLogins>;
+	/** Ends the member's Claude login; its sealed files are wiped. */
+	signOutClaude?(loginId: string, signal?: AbortSignal): Promise<void>;
 	/** Begins "Continue with ChatGPT": OpenAI's address to send the browser to, and what this tab keeps. */
 	beginChatGptPlanSignIn?(
 		displayName: string,
@@ -481,7 +540,69 @@ export function createWebNativeSubscription(
 						prompt = await bridge.beginLogin(authorization);
 						check();
 					}
-					return { ...prompt, clientConnectionId: request.clientConnectionId, expiresAt: authorization.expiresAt };
+					if (request.provider !== "anthropic")
+						return {
+							...prompt,
+							clientConnectionId: request.clientConnectionId,
+							expiresAt: authorization.expiresAt,
+						};
+					// Claude: Anthropic's own sign-in page, then the code it shows the member, sent once to the vault with the
+					// sign-in's capability (never the member's token, never kept).
+					if (
+						prompt.status === "awaiting_member" &&
+						(!prompt.interactionUrl || !CLAUDE_SIGN_IN_HOSTS.has(new URL(prompt.interactionUrl).hostname))
+					)
+						throw new Error("Claude sign-in did not answer with Anthropic's address.");
+					const capability = authorization.capability;
+					let sent = false;
+					const submitCode = async (code: string, codeSignal?: AbortSignal): Promise<void> => {
+						if (sent) throw new ClaudeCodeError();
+						sent = true;
+						const checked = AbortSignal.any([
+							AbortSignal.timeout(CONFIRM_DEADLINE_MS),
+							companySignal,
+							...(codeSignal ? [codeSignal] : []),
+						]);
+						current();
+						const response = await fetch(new URL("claude-code", loginBase).href, {
+							method: "POST",
+							headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+							body: JSON.stringify({
+								schema: "qorpera.claude-sign-in-code/v1",
+								login_id: authorization.loginId,
+								code,
+							}),
+							signal: checked,
+							credentials: "omit",
+							cache: "no-store",
+							redirect: "error",
+						});
+						let value: Record<string, unknown> = {};
+						try {
+							const read: unknown = JSON.parse(
+								new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
+							);
+							if (read && typeof read === "object") value = read as Record<string, unknown>;
+						} catch {
+							// An unreadable answer is a failed code.
+						}
+						current();
+						if (response.status === 403 && value.schema === "qorpera.claude-sign-in-code-failed/v1")
+							throw new ClaudeCodeError();
+						// `preparing`: Claude Code is still saving the login; the page sees it in the member's list.
+						if (
+							response.status !== 200 ||
+							value.login_id !== authorization.loginId ||
+							(value.status !== "completed" && value.status !== "preparing")
+						)
+							throw new Error("The Claude sign-in could not be finished.");
+					};
+					return {
+						...prompt,
+						clientConnectionId: request.clientConnectionId,
+						expiresAt: authorization.expiresAt,
+						...(prompt.status === "awaiting_member" ? { submitCode } : {}),
+					};
 				},
 				120000,
 				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
@@ -908,6 +1029,16 @@ export function createWebNativeSubscription(
 			);
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
+		listClaudeLogins: async (signal) =>
+			parseClaudeLogins(await rpc("qorpera_list_claude_logins", { p_profile_id: profileId }, signal)),
+		signOutClaude: async (loginId, signal) => {
+			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");
+			const value = (await rpc("qorpera_sign_out_claude_login", { p_login_id: loginId }, signal)) as {
+				loginId?: unknown;
+				status?: unknown;
+			} | null;
+			if (value?.loginId !== loginId || value.status !== "revoked") throw new Error("Invalid cloud response");
+		},
 		// Account logins are the member's own: read and ended through the member's own calls, like the connections.
 		listAccountLogins: async (signal) =>
 			parseAccountLogins(await rpc("qorpera_list_account_model_logins", { p_profile_id: profileId }, signal)),

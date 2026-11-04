@@ -3,6 +3,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_EGRESS_HOSTS,
 	startNativeCodexEgress,
 } from "./cloud-native-egress.ts";
@@ -59,9 +60,13 @@ async function privateDirectory(path: string): Promise<void> {
 		throw new Error("Unsafe native isolation working directory");
 }
 
-/** The hosts a native process may reach: OpenAI's API alone for a ChatGPT plan run, the Codex login's
- * hosts otherwise. */
-export function nativeIsolationEgressHosts(chatGptPlan: NativeChatGptPlanAccess | undefined): readonly string[] {
+/** The hosts a native process may reach: OpenAI's API alone for a ChatGPT plan run, Anthropic's sign-in hosts for a
+ * Claude sign-in, the Codex login's hosts otherwise. */
+export function nativeIsolationEgressHosts(
+	chatGptPlan: NativeChatGptPlanAccess | undefined,
+	harness?: "claude-code",
+): readonly string[] {
+	if (harness === "claude-code") return NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS;
 	return chatGptPlan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS;
 }
 
@@ -76,8 +81,11 @@ export function nativeIsolationInvocation(options: {
 	relayPath: string;
 	fenceSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
+	harness?: "claude-code";
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
+	const claude = options.harness === "claude-code";
+	if (claude && (plan || options.fenceSocket)) throw new Error("A Claude sign-in runs alone");
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
@@ -145,7 +153,14 @@ export function nativeIsolationInvocation(options: {
 	];
 	const environment = {
 		HOME: join(options.scratchRoot, "home"),
-		CODEX_HOME: options.codexHome,
+		// Claude Code keeps its login in its config directory; it never updates itself or calls home beyond its sign-in.
+		...(claude
+			? {
+					CLAUDE_CONFIG_DIR: options.codexHome,
+					DISABLE_AUTOUPDATER: "1",
+					CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+				}
+			: { CODEX_HOME: options.codexHome }),
 		XDG_CONFIG_HOME: join(options.scratchRoot, "config"),
 		XDG_DATA_HOME: join(options.scratchRoot, "data"),
 		XDG_CACHE_HOME: join(options.scratchRoot, "cache"),
@@ -192,6 +207,8 @@ export async function launchIsolatedNativeProcess(options: {
 	codexHome: string;
 	fenceSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
+	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
+	harness?: "claude-code";
 	signal: AbortSignal;
 }): Promise<{ child: ChildProcessWithoutNullStreams; close(): Promise<void> }> {
 	if (process.platform !== "linux" || !process.getuid?.())
@@ -216,7 +233,7 @@ export async function launchIsolatedNativeProcess(options: {
 	const relay = await startNativeCodexEgress({
 		root: options.scratchRoot,
 		signal: options.signal,
-		hosts: nativeIsolationEgressHosts(plan),
+		hosts: nativeIsolationEgressHosts(plan, options.harness),
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {

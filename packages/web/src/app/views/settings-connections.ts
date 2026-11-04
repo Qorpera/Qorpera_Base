@@ -6,9 +6,12 @@ import {
 } from "../../cloud/chatgpt-plan-sign-in.ts";
 import {
 	ChatGptPlanSignInError,
+	ClaudeCodeError,
 	PlanSwitchBusyError,
 	planLogin,
 	type WebAccountLogin,
+	type WebClaudeLogin,
+	type WebClaudeLogins,
 	type WebExecutionConnections,
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
@@ -33,6 +36,8 @@ export type ConnectionsClient = Pick<
 			| "finishChatGptPlanSignIn"
 			| "listAccountLogins"
 			| "signOutEverywhere"
+			| "listClaudeLogins"
+			| "signOutClaude"
 		>
 	>;
 
@@ -58,6 +63,9 @@ interface Attempt {
 	login?: WebNativeProviderLogin;
 	error?: string;
 	starting: boolean;
+	/** A Claude sign-in: the code the member is pasting, kept only until it is sent. */
+	code?: string;
+	sending?: boolean;
 }
 
 /** Sign-ins in progress outlive the page that started them: a node may spend a
@@ -182,6 +190,8 @@ export class ConnectionsView {
 	#accountLogins = new Map<string, WebAccountLogin>();
 	/** All of the member's account logins, also those this company does not use. */
 	#logins: readonly WebAccountLogin[] = [];
+	/** The member's Claude login (coding sessions only) and whether they may sign in with Claude here. */
+	#claude: WebClaudeLogins | undefined;
 	/** Settings with no company open: only the member's account logins, signed in through `companyName`. */
 	readonly #accountWide: { companyName: string } | undefined;
 	/** With no company open: how the last ChatGPT sign-in ended when it was not an account login. */
@@ -427,6 +437,16 @@ export class ConnectionsView {
 					if (this.#lifetime.signal.aborted) return;
 				}
 			}
+			// A Claude login is no provider connection: it has its own list (20260930564000), on a company's page only.
+			if (this.#client.listClaudeLogins && !this.#accountWide) {
+				try {
+					this.#claude = await this.#client.listClaudeLogins(this.#lifetime.signal);
+					if (this.#lifetime.signal.aborted) return;
+				} catch {
+					// Claude is offered again once the next read answers.
+					if (this.#lifetime.signal.aborted) return;
+				}
+			}
 			this.#connections = connections;
 			this.#error = undefined;
 			for (const [provider, attempt] of this.#attempts) {
@@ -436,8 +456,17 @@ export class ConnectionsView {
 						item.clientConnectionId === attempt.login?.clientConnectionId &&
 						live(item),
 				);
-				if (attempt.login && (finished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
+				const claudeFinished =
+					provider === "anthropic" &&
+					Boolean(
+						this.#claude?.logins.some((login) => login.clientConnectionId === attempt.login?.clientConnectionId),
+					);
+				// A Claude sign-in still being sent ends when its answer arrives.
+				if (attempt.sending && !claudeFinished) continue;
+				if (attempt.login && (finished || claudeFinished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
+					if (claudeFinished)
+						this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
 					// With no company open only account logins are listed: say where a company login went, and that a
 					// sign-in ended without one.
 					if (this.#accountWide && provider === "openai" && !finished)
@@ -533,6 +562,82 @@ export class ConnectionsView {
 		}
 		// The page that started this may be gone; whichever page is open now redraws.
 		if (attempts.get(provider) === attempt) signIns.changed();
+	}
+	/** Sends the code Anthropic showed the member, once. A refused code ends the sign-in: the member starts again. */
+	async #sendCode(attempt: Attempt): Promise<void> {
+		const login = attempt.login;
+		const code = attempt.code?.trim() ?? "";
+		if (!login?.submitCode || attempt.sending || this.#lifetime.signal.aborted) return;
+		if (!code) {
+			attempt.error = t("Paste the code from Claude first.");
+			this.#signIns.changed();
+			return;
+		}
+		attempt.sending = true;
+		attempt.error = undefined;
+		this.#signIns.changed();
+		try {
+			await login.submitCode(code);
+			if (this.#attempts.get("anthropic") === attempt) this.#attempts.delete("anthropic");
+			this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
+		} catch (error) {
+			attempt.login = undefined;
+			attempt.error =
+				error instanceof ClaudeCodeError
+					? t("That code did not work. Start the sign-in again.")
+					: t("The Claude sign-in could not be finished. Try again.");
+		} finally {
+			attempt.code = undefined;
+			attempt.sending = false;
+		}
+		this.#signIns.changed();
+		if (!this.#lifetime.signal.aborted) void this.#refresh();
+	}
+	async #signOutClaude(login: WebClaudeLogin): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted || !this.#client.signOutClaude) return;
+		this.#working = `claude:${login.loginId}`;
+		this.#error = undefined;
+		this.#draw();
+		let failed = false;
+		try {
+			await this.#client.signOutClaude(login.loginId, this.#lifetime.signal);
+		} catch {
+			failed = true;
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+		if (failed && !this.#lifetime.signal.aborted && !this.#error) {
+			this.#error = t("The account could not be disconnected. Try again.");
+			this.#draw();
+		}
+	}
+	/** The member's Claude login: theirs alone, in all their companies, for coding sessions only. */
+	#claudeCard(login: WebClaudeLogin): HTMLElement {
+		const working = this.#working === `claude:${login.loginId}`;
+		const signOut = button(working ? t("Signing out…") : t("Sign out"), () => void this.#signOutClaude(login), {
+			disabled: Boolean(this.#working) || !this.#client.signOutClaude,
+		});
+		signOut.dataset.focusKey = `claude:${login.loginId}`;
+		return h(
+			"article",
+			{ class: "connection-card", dataset: { claudeLoginId: login.loginId } },
+			h("img", { class: "connection-logo", src: "./assets/provider-claude.svg", alt: "" }),
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, t("Claude · coding only")),
+				h("small", { class: "connection-email" }, login.providerAccountEmail ?? t("Email unavailable")),
+				h(
+					"small",
+					{ class: "connection-scope" },
+					t(
+						"Used only for coding sessions you start, in all your companies. Agents never use it for chats or routines.",
+					),
+				),
+			),
+			h("div", { class: "connection-actions" }, signOut),
+		);
 	}
 	async #disconnect(connection: NativeMemberConnection): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
@@ -818,11 +923,16 @@ export class ConnectionsView {
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const claude = Boolean(attempt.login?.submitCode);
 		const status = attempt.starting
 			? t("Preparing sign-in. The first time can take a minute or two.")
-			: attempt.login
-				? t("Waiting for you to finish signing in…")
-				: (attempt.error ?? t("Sign-in has not finished."));
+			: attempt.sending
+				? t("Connecting Claude…")
+				: attempt.login && claude
+					? (attempt.error ?? t("Sign in on Claude's page, then paste the code it shows you here."))
+					: attempt.login
+						? t("Waiting for you to finish signing in…")
+						: (attempt.error ?? t("Sign-in has not finished."));
 		const action = attempt.login
 			? button(t("Cancel"), () => {
 					this.#attempts.delete(provider.id);
@@ -833,7 +943,50 @@ export class ConnectionsView {
 					disabled: !canConnect || this.#loading || attempt.starting,
 				});
 		action.dataset.focusKey = `attempt:${provider.id}`;
+		if (attempt.sending) action.setAttribute("aria-disabled", "true");
 		const login = attempt.login;
+		// Claude: the code Anthropic shows after its sign-in, pasted here and sent once. Never kept after that.
+		const codeForm =
+			login && claude
+				? h(
+						"form",
+						{
+							class: "connection-code",
+							onsubmit: (event: Event) => {
+								event.preventDefault();
+								void this.#sendCode(attempt);
+							},
+						},
+						h("label", { for: `connection-code-${provider.id}` }, t("Paste the code from Claude")),
+						h("input", {
+							id: `connection-code-${provider.id}`,
+							type: "text",
+							autocomplete: "off",
+							autocapitalize: "off",
+							spellcheck: "false",
+							maxlength: "600",
+							value: attempt.code ?? "",
+							disabled: attempt.sending === true,
+							dataset: { focusKey: `code:${provider.id}` },
+							oninput: (event: Event) => {
+								attempt.code = (event.target as HTMLInputElement).value;
+							},
+						}),
+						(() => {
+							const connect = button(attempt.sending ? t("Connecting…") : t("Connect"), () => undefined, {
+								disabled: attempt.sending === true,
+							});
+							connect.type = "submit";
+							connect.dataset.focusKey = `connect:${provider.id}`;
+							return connect;
+						})(),
+						h(
+							"small",
+							null,
+							t("Used only for coding sessions you start. Agents never use it for chats or routines."),
+						),
+					)
+				: null;
 		return h(
 			"article",
 			{ class: "connection-card connection-attempt" },
@@ -861,12 +1014,14 @@ export class ConnectionsView {
 										referrerpolicy: "no-referrer",
 										dataset: { focusKey: `login:${provider.id}` },
 									},
-									t("Open {provider} sign-in", {
-										provider: provider.id === "openai" ? "OpenAI" : "Anthropic",
-									}),
+									claude
+										? t("Open Claude sign-in")
+										: t("Open {provider} sign-in", {
+												provider: provider.id === "openai" ? "OpenAI" : "Anthropic",
+											}),
 								)
 							: null,
-						h("small", null, t("This page updates by itself when you are done.")),
+						claude ? codeForm : h("small", null, t("This page updates by itself when you are done.")),
 					)
 				: null,
 		);
@@ -896,7 +1051,12 @@ export class ConnectionsView {
 		// With no company open the cards are the member's account logins, whichever companies use them.
 		const cards = accountWide
 			? this.#logins.map((login) => this.#login(login))
-			: accounts.map((connection) => this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1));
+			: [
+					...accounts.map((connection) =>
+						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
+					),
+					...(this.#claude?.logins ?? []).map((login) => this.#claudeCard(login)),
+				];
 		// Greyed out, not disabled: a disabled button would drop keyboard focus
 		// to "Add account" at the read's first redraw. A press checks the state
 		// the button was drawn in, so one before a background read's first
@@ -1003,23 +1163,30 @@ export class ConnectionsView {
 										hidden: !this.#adding,
 									},
 									h("p", null, t("Choose a model provider")),
-									...this.#offered.map((provider) => {
-										const choice = button(
-											[
-												h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
-												provider.label,
-											],
-											() => void this.#connect(provider.id),
-											{
-												disabled: Boolean(
-													this.#attempts.get(provider.id)?.starting ||
-														this.#attempts.get(provider.id)?.login,
-												),
-											},
-										);
-										choice.dataset.focusKey = `provider:${provider.id}`;
-										return choice;
-									}),
+									// Claude only while the member may sign in with it here (Anthropic's written OK is still owed).
+									...this.#offered
+										.filter((provider) => provider.id !== "anthropic" || this.#claude?.signInOpen === true)
+										.map((provider) => {
+											const choice = button(
+												[
+													h("img", {
+														class: "connection-logo",
+														src: `./assets/${provider.logo}`,
+														alt: "",
+													}),
+													provider.label,
+												],
+												() => void this.#connect(provider.id),
+												{
+													disabled: Boolean(
+														this.#attempts.get(provider.id)?.starting ||
+															this.#attempts.get(provider.id)?.login,
+													),
+												},
+											);
+											choice.dataset.focusKey = `provider:${provider.id}`;
+											return choice;
+										}),
 									// A member has one ChatGPT plan; with a signed-in one, it is not offered again.
 									this.#planAvailable &&
 										!accounts.some((connection) => planLogin(connection) && live(connection))
