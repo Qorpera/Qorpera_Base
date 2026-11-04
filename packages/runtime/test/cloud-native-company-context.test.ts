@@ -710,6 +710,16 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
 	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
 	expect(cofounder).toContain("Hire freely for continuing work; never hire for a one-off task");
+	// v8 (Jonas, 4 November 2026): the team grows like a company of employees, not only once the vision is agreed.
+	expect(cofounder).toContain("Continuing work appears as soon as it exists, not only once the vision is agreed");
+	expect(cofounder).toContain(
+		"so hire one owner for it in that run, give them the founder's ask, at the size they asked, as their first assignment",
+	);
+	expect(cofounder).toContain(
+		"In your planning runs, staff the company the way a well-run company of its kind and stage is staffed",
+	);
+	expect(cofounder).toContain("at the latest once your team's first findings are in");
+	expect(cofounder).toContain("An owner reporting the same blocker twice is stuck: find another way");
 	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
@@ -1495,31 +1505,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
 // conversations as the members' quick way in), taken again when a member's "push it" or "open a PR" became a coding
 // session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
-// Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026). A change to either is a
+// Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026), and for overlay v8 (the team
+// grows like a company of employees; Jonas, 4 November 2026). A change to either is a
 // change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "8b7c3f83b706c71a207ffa574a57b3310244bbdbc70da95708b2818be6b3d90b",
-			prompt: "efb3b8a386ed0b226351b38078c1382ad9641dd52df3a4527f1c36143c1096a6",
+			instructions: "3713494ac1c9887031ec713ed9a9fa091702240050c7cd68f189815157511dbb",
+			prompt: "a8fd997969a8cf2bb8d710dacb7ba2a30a94ae405defeb7eb400dd99db6c7ed5",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "7b8e65a3077f1736efc057d7f38261650aa9e63ada114b10c8c2e9a35117131c",
-			prompt: "8b70f741e6b20b4ad888248ee51e8e26e640c343ae7bdef619a8f7a6ed619b56",
+			instructions: "666237940ae206620d52aab4eb76fce0e3b44c580a3a4eaa84cd17486047f17d",
+			prompt: "86c6fd2f75cc4af25c598a06a0edbe8b04a2a2ffcb9fd3313bd997adfb3b5dd0",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "8b7c3f83b706c71a207ffa574a57b3310244bbdbc70da95708b2818be6b3d90b",
-			prompt: "a1cf7d991f48d53a1a27bdf2fbeaba1e65f6b415e1992ad12ef5a9be1fd8e4ef",
+			instructions: "3713494ac1c9887031ec713ed9a9fa091702240050c7cd68f189815157511dbb",
+			prompt: "3f234f98017ff2a298b31e834b6ca32c089de6118ccef5cd82eb38cb95335ab9",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
