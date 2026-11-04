@@ -15,6 +15,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
 	acceptKey,
+	addressGroup,
 	appCookie,
 	appHost,
 	CLEAR_GATE_COOKIE,
@@ -61,6 +62,10 @@ const RELAY = { apiKey: ANON_KEY, relayJwt: RELAY_JWT };
 const PASSWORD = "k7mq-x2pa-9fhd";
 const CLIENT = fileURLToPath(new URL("./client.mjs", import.meta.url));
 const BIG = randomBytes(3 * 1024 * 1024 + 17);
+/** A link program's id, as client.mjs makes one per process. */
+const PROGRAM = randomBytes(32).toString("base64url");
+/** A raw connect's credentials: the Bearer secret and the program's id. */
+const bearer = (secret, id = PROGRAM) => `Authorization: Bearer ${secret}\r\nX-Qorpera-Program: ${id}\r\n`;
 
 function listen(server) {
 	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
@@ -109,11 +114,13 @@ function fakeDatabase() {
 	const answer = (name, args) => {
 		const app = db.sites.get(args.p_slug);
 		if (name === "qorpera_site_app_connect") {
-			if (!app) return { state: "refused" };
+			if (!app || typeof args.p_program !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(args.p_program))
+				return { state: "refused" };
 			const claim = app.claims.get(args.p_secret);
-			if (claim && !claim.used) {
-				// Used at once; the new key replaces the old one, so only the newest program connects.
-				claim.used = true;
+			// A claim serves the program that first used it (again, a while, should its key not have arrived), no other;
+			// each use's key replaces the one before, so only the newest program connects.
+			if (claim && (claim.program === null || claim.program === args.p_program)) {
+				claim.program = args.p_program;
 				app.key = secret();
 				return { state: "ok", key: app.key, port: app.port, siteId: app.id };
 			}
@@ -151,7 +158,7 @@ function fakeDatabase() {
 	});
 	db.claim = (slug) => {
 		const claim = secret();
-		db.sites.get(slug).claims.set(claim, { used: false });
+		db.sites.get(slug).claims.set(claim, { program: null });
 		return claim;
 	};
 	db.session = (slug) => {
@@ -228,6 +235,9 @@ function testApp() {
 				'"v1"',
 			]);
 			res.end("export {};");
+		} else if (req.url === "/account.json") {
+			res.writeHead(200, { "content-type": "application/json", "cache-control": "max-age=0, No-Store" });
+			res.end("{}");
 		} else if (req.url === "/big") {
 			res.writeHead(200, { "content-type": "application/octet-stream" });
 			res.end(BIG);
@@ -375,6 +385,56 @@ function rawRequest(port, text) {
 }
 
 const mask = () => randomBytes(4);
+
+/** The next request a program gets, by hand: its head, then its body to the end message. */
+async function nextRequest(frames) {
+	const head = decodeMessage((await frames.message()).payload);
+	assert.equal(head.type, TYPE.head);
+	const body = [];
+	for (;;) {
+		const message = decodeMessage((await frames.message()).payload);
+		assert.equal(message.stream, head.stream);
+		if (message.type === TYPE.end) break;
+		assert.equal(message.type, TYPE.body);
+		body.push(message.payload);
+	}
+	return { ...head, body: Buffer.concat(body) };
+}
+
+/** A program's answer, by hand: the head, each body chunk, the end. */
+function respond(socket, stream, status, headers, chunks = []) {
+	socket.write(
+		encodeFrame(0x2, encodeMessage(TYPE.response, stream, Buffer.from(JSON.stringify({ status, headers }))), {
+			mask: mask(),
+		}),
+	);
+	for (const chunk of chunks)
+		socket.write(encodeFrame(0x2, encodeMessage(TYPE.body, stream, Buffer.from(chunk)), { mask: mask() }));
+	socket.write(encodeFrame(0x2, encodeMessage(TYPE.end, stream), { mask: mask() }));
+}
+
+/** A visitor's GET on a relay, with a gate cookie. */
+function get(port, host, path, session) {
+	return new Promise((resolve, reject) => {
+		const req = request(
+			{
+				host: "127.0.0.1",
+				port,
+				path,
+				agent: false,
+				headers: { "x-forwarded-host": host, cookie: `${GATE_COOKIE}=${session}` },
+			},
+			(res) => {
+				readAll(res).then(
+					(data) => resolve({ status: res.statusCode, headers: res.headers, text: data.toString() }),
+					reject,
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end();
+	});
+}
 
 describe("app relay: end to end with the link program", () => {
 	const db = fakeDatabase();
@@ -643,7 +703,8 @@ describe("app relay: end to end with the link program", () => {
 		const [first] = db.connects();
 		assert.equal(first.args.p_slug, "shop");
 		assert.ok(first.args.p_secret === claim, "the claim, as the Bearer");
-		assert.ok(db.sites.get("shop").claims.get(claim).used);
+		assert.match(first.args.p_program, /^[A-Za-z0-9_-]{43}$/, "the program's own id");
+		assert.ok(db.sites.get("shop").claims.get(claim).program === first.args.p_program);
 		const hello = await visit("/hello", { headers: withSession() });
 		assert.equal(hello.status, 200);
 		assert.equal(hello.text, "hello");
@@ -777,6 +838,10 @@ describe("app relay: end to end with the link program", () => {
 		const plain = await visit("/hello", { headers: withSession() });
 		assert.equal(plain.headers["cache-control"], "private, no-cache");
 		assert.equal(plain.headers["cdn-cache-control"], "no-store");
+		// What the app says must never be stored is not stored by the browser either.
+		const account = await visit("/account.json", { headers: withSession() });
+		assert.deepEqual(values(account.raw, "cache-control"), ["private, no-store"]);
+		assert.deepEqual(values(account.raw, "cdn-cache-control"), ["no-store"]);
 	});
 
 	it("answers 504 when the app has no answer in time, and ends the app's request", async () => {
@@ -850,6 +915,7 @@ describe("app relay: end to end with the link program", () => {
 		const again = db.connects().slice(connects);
 		assert.equal(again.length, 1);
 		assert.ok(again[0].args.p_secret === key, "the key, not the claim");
+		assert.equal(again[0].args.p_program, db.connects()[0].args.p_program, "the same program's id");
 		assert.ok(db.sites.get("shop").key === key, "no new key");
 		// The port line is said once, not on every reconnect.
 		assert.equal(program.count("This link is shared for port"), 1);
@@ -947,7 +1013,7 @@ describe("app relay: end to end with the link program", () => {
 
 		it("connects: the database first, then the handshake, then hello with the key, the url and the port", async () => {
 			db.sites.get("lab").sessions.add(session);
-			lab = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${db.claim("lab")}\r\n`);
+			lab = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", bearer(db.claim("lab")));
 			assert.equal(lab.status, 101);
 			const accept = acceptKey({
 				upgrade: "websocket",
@@ -1040,6 +1106,33 @@ describe("app relay: end to end with the link program", () => {
 			assert.equal((await visitor).text, "ok");
 		});
 
+		it("refuses an answer that names its length twice or not in digits: 502, and the stream is reset", async () => {
+			for (const headers of [
+				[
+					["content-length", "2"],
+					["Content-Length", "2"],
+				],
+				[
+					["content-length", "2"],
+					["content-length", "7"],
+				],
+				[["content-length", "+2"]],
+				[["content-length", "0x2"]],
+				[["content-length", ""]],
+			]) {
+				const visitor = labVisit("/length");
+				const head = await nextHead();
+				answerWith(head.stream, 200, headers, "ab");
+				endStream(head.stream);
+				const answer = await visitor;
+				assert.equal(answer.status, 502, JSON.stringify(headers));
+				assert.match(answer.text, /The app is not answering/);
+				const reset = decodeMessage((await frames.message()).payload);
+				assert.deepEqual([reset.type, reset.stream], [TYPE.reset, head.stream]);
+			}
+			assert.equal(relay.isConnected("lab"), true);
+		});
+
 		it("ends the connection with 1002 on a frame that is not masked", async () => {
 			lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.keepalive, 0)));
 			const close = await frames.message();
@@ -1051,9 +1144,16 @@ describe("app relay: end to end with the link program", () => {
 			await until(() => !relay.isConnected("lab"), "the lab program to be gone");
 		});
 
-		it("refuses no secret, a wrong one or another scheme with 4001, after asking the database for a Bearer only", async () => {
+		it("refuses with 4001 what is no claim or key with a program id, asking the database only for a well-formed one", async () => {
 			const asked = db.connects().length;
-			for (const extra of ["", `Authorization: Bearer ${"w".repeat(43)}\r\n`, "Authorization: Basic abc\r\n"]) {
+			for (const extra of [
+				"",
+				bearer("w".repeat(43)),
+				`Authorization: Basic abc\r\nX-Qorpera-Program: ${PROGRAM}\r\n`,
+				`Authorization: Bearer ${db.claim("lab")}\r\n`,
+				bearer(db.claim("lab"), "short"),
+				bearer(db.claim("lab"), `${PROGRAM.slice(1)}!`),
+			]) {
 				const refused = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", extra);
 				assert.equal(refused.status, 101);
 				const frame = await frameReader(refused.socket, refused.rest).message();
@@ -1077,7 +1177,7 @@ describe("app relay: end to end with the link program", () => {
 				[Buffer.from([0xc2, 0x80, 1, 2, 3, 4]), 1002],
 				[pings, CLOSE.tooManyPings],
 			]) {
-				const socket = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${key}\r\n`);
+				const socket = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", bearer(key));
 				const reader = frameReader(socket.socket, socket.rest);
 				assert.equal(decodeMessage((await reader.message()).payload).type, TYPE.hello);
 				socket.socket.write(frame);
@@ -1113,7 +1213,7 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 			...options,
 		});
 		const port = await listen(relay);
-		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", `Authorization: Bearer ${db.claim("lab")}\r\n`);
+		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", bearer(db.claim("lab")));
 		t.after(async () => {
 			lab.socket.destroy();
 			await new Promise((resolve) => relay.close(resolve));
@@ -1122,7 +1222,7 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 		});
 		const frames = frameReader(lab.socket, lab.rest);
 		assert.equal(decodeMessage((await frames.next()).payload).type, TYPE.hello);
-		return { db, relay, frames };
+		return { db, relay, port, lab, frames };
 	}
 
 	it("sends keepalives, and drops a program that stays silent", async (t) => {
@@ -1175,12 +1275,44 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 			failing.close();
 			failing.closeAllConnections();
 		});
-		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", `Authorization: Bearer ${"c".repeat(43)}\r\n`);
+		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", bearer("c".repeat(43)));
 		assert.equal(lab.status, 503);
 		lab.socket.destroy();
 	});
 
-	it("completes no handshake before the database answers, and limits connect attempts per address", async (t) => {
+	it("asks again before it drops a program: a kept session of an earlier site is locked, the new site's program serves on", async (t) => {
+		const { db, relay, port, lab, frames } = await setup(t, { sessionCacheMs: 30_000, recheckMs: 0 });
+		const earlier = db.session("lab");
+		// A visitor of the earlier site, served by its program; the open answer is kept for 30 s.
+		const first = get(port, LAB, "/x", earlier);
+		respond(lab.socket, (await nextRequest(frames)).stream, 200, [["content-length", "3"]], ["one"]);
+		assert.equal((await first).text, "one");
+		// The member deletes the link; the name is shared again at once, and the new site's program connects.
+		db.retake("lab");
+		const newer = await rawUpgrade(
+			port,
+			LAB,
+			"/.qorpera/connect",
+			bearer(db.claim("lab"), randomBytes(32).toString("base64url")),
+		);
+		t.after(() => newer.socket.destroy());
+		const newFrames = frameReader(newer.socket, newer.rest);
+		assert.equal(decodeMessage((await newFrames.message()).payload).type, TYPE.hello);
+		assert.equal((await frames.message()).payload.readUInt16BE(0), CLOSE.replaced);
+		// The earlier visitor's kept answer names the earlier site: asked again, the session is locked, nothing dropped.
+		const asked = db.connects().length;
+		const stale = await get(port, LAB, "/x", earlier);
+		assert.equal(stale.status, 401);
+		assert.deepEqual(stale.headers["set-cookie"], [CLEAR_GATE_COOKIE]);
+		assert.equal(relay.isConnected("lab"), true);
+		assert.equal(db.connects().length, asked);
+		// The new site's program serves its own visitors.
+		const visitor = get(port, LAB, "/y", db.session("lab"));
+		respond(newer.socket, (await nextRequest(newFrames)).stream, 200, [["content-length", "3"]], ["two"]);
+		assert.equal((await visitor).text, "two");
+	});
+
+	it("completes no handshake before the database answers, and holds connects in flight to a total", async (t) => {
 		const asked = [];
 		let answer;
 		const gate = new Promise((resolve) => {
@@ -1196,7 +1328,7 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 			...RELAY,
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
-			connectLimit: { perMinute: 2, pending: 1, total: 10 },
+			connectLimit: { refusedPerMinute: 2, total: 2 },
 			log: () => {},
 		});
 		const port = await listen(relay);
@@ -1210,7 +1342,7 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 				port,
 				LAB,
 				"/.qorpera/connect",
-				`Authorization: Bearer ${"k".repeat(43)}\r\nCF-Connecting-IP: ${address}\r\n`,
+				`${bearer("k".repeat(43))}CF-Connecting-IP: ${address}\r\n`,
 			);
 			sockets.push(socket);
 			const got = [];
@@ -1219,21 +1351,84 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 			return { socket, got, head: answerHead(socket) };
 		};
 		const first = attempt("203.0.113.1");
-		await until(() => asked.length === 1, "the database to be asked");
-		// One in flight for this address already: the next waits, another address does not.
-		const second = attempt("203.0.113.1");
-		assert.equal((await second.head).status, 429);
-		const other = attempt("198.51.100.7");
-		await until(() => asked.length === 2, "the other address's connect");
+		const second = attempt("198.51.100.7");
+		await until(() => asked.length === 2, "the database to be asked twice");
+		// Two in flight, the total: the next waits, whatever its address.
+		assert.equal((await attempt("192.0.2.3").head).status, 429);
 		await sleep(100);
 		assert.equal(first.got.length, 0, "nothing written before the database answered");
+		assert.deepEqual(asked[0], { p_slug: "lab", p_secret: "k".repeat(43), p_program: PROGRAM });
 		answer();
 		assert.equal((await first.head).status, 101);
-		assert.equal((await other.head).status, 101);
-		// Two a minute for this address: one more, then 429.
-		assert.equal((await attempt("203.0.113.1").head).status, 101);
-		assert.equal((await attempt("203.0.113.1").head).status, 429);
+		assert.equal((await second.head).status, 101);
+		assert.equal((await attempt("192.0.2.3").head).status, 101);
 		assert.equal(asked.length, 3);
+	});
+
+	it("counts only refused connects, per address (an IPv6 /64) and link, and never the agent exits' addresses", async (t) => {
+		const asked = [];
+		// A secret that starts with "r" is refused; any other is taken.
+		const fetcher = async (_url, init) => {
+			const args = JSON.parse(init.body);
+			asked.push(args);
+			return Response.json(
+				args.p_secret.startsWith("r")
+					? { state: "refused" }
+					: { state: "ok", key: null, port: 3000, siteId: randomUUID() },
+			);
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			connectLimit: { refusedPerMinute: 2, total: 100 },
+			trustedAddresses: [" 192.0.2.50", "2001:DB8:FFFF::1"],
+			log: () => {},
+		});
+		const port = await listen(relay);
+		const sockets = [];
+		t.after(async () => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise((resolve) => relay.close(resolve));
+		});
+		const attempt = async (address, { refused = false, host = LAB, extra } = {}) => {
+			const { socket } = handshake(
+				port,
+				host,
+				"/.qorpera/connect",
+				`${extra ?? bearer((refused ? "r" : "k").repeat(43))}CF-Connecting-IP: ${address}\r\n`,
+			);
+			socket.on("error", () => {});
+			sockets.push(socket);
+			return (await answerHead(socket)).status;
+		};
+		// Malformed: refused at once (101, then 4001), asking and counting nothing.
+		for (let i = 0; i < 5; i++) assert.equal(await attempt("203.0.113.1", { extra: "" }), 101);
+		assert.equal(asked.length, 0);
+		// Two refusals for this address and link, then it waits, whatever it sends; other links and addresses do not.
+		assert.equal(await attempt("203.0.113.1", { refused: true }), 101);
+		assert.equal(await attempt("203.0.113.1", { refused: true }), 101);
+		assert.equal(await attempt("203.0.113.1"), 429);
+		assert.equal(await attempt("203.0.113.1", { host: HOST }), 101);
+		assert.equal(await attempt("203.0.113.2"), 101);
+		// An IPv6 host stands for its /64.
+		assert.equal(await attempt("2001:db8:1:2::1", { refused: true }), 101);
+		assert.equal(await attempt("2001:db8:1:2:aaaa::9", { refused: true }), 101);
+		assert.equal(await attempt("2001:db8:1:2::ffff"), 429);
+		assert.equal(await attempt("2001:db8:1:3::1"), 101);
+		// Connects that are taken never count.
+		for (let i = 0; i < 4; i++) assert.equal(await attempt("198.51.100.9"), 101);
+		// The agent exits' addresses: every company's machines, never held back.
+		for (const address of ["192.0.2.50", "2001:db8:ffff:0:0:0:0:1"]) {
+			for (let i = 0; i < 4; i++) assert.equal(await attempt(address, { refused: true }), 101, address);
+			assert.equal(await attempt(address), 101, address);
+		}
+		assert.ok(asked.every((args) => args.p_program === PROGRAM));
+		assert.throws(
+			() => createRelay({ api: "http://x", ...RELAY, trustedAddresses: ["agent-exit.example"] }),
+			/trusted/,
+		);
 	});
 });
 
@@ -1363,6 +1558,27 @@ describe("app relay: the pure parts", () => {
 			responseHeaders([]),
 			FORWARDED_CACHE_HEADERS.map((pair) => [...pair]),
 		);
+		// no-store kept (as private), any case, among other directives; a look-alike is not it.
+		for (const value of ["no-store", "No-Store", "private, max-age=0, no-store", "no-cache,no-store"])
+			assert.deepEqual(
+				values(responseHeaders([["Cache-Control", value]]), "cache-control"),
+				["private, no-store"],
+				value,
+			);
+		for (const value of ["no-storefront", "max-age=60", "public"])
+			assert.deepEqual(
+				values(responseHeaders([["Cache-Control", value]]), "cache-control"),
+				["private, no-cache"],
+				value,
+			);
+		// One Content-Length, in digits only: Node would take +2 or 0x2, and write every copy.
+		assert.deepEqual(values(responseHeaders([["Content-Length", "12"]]), "content-length"), ["12"]);
+		for (const lengths of [["2", "2"], ["2", "7"], ["+2"], ["0x2"], [""], ["2 2"], ["-1"], ["1".repeat(16)]])
+			assert.equal(
+				responseHeaders(lengths.map((value, index) => [index ? "Content-Length" : "content-length", value])),
+				null,
+				lengths.join("|"),
+			);
 		assert.equal(responseHeaders("x"), null);
 		assert.equal(responseHeaders([["a", 1]]), null);
 		assert.equal(responseHeaders([["a"]]), null);
@@ -1396,6 +1612,23 @@ describe("app relay: the pure parts", () => {
 		assert.equal(language("da-DK,da;q=0.9,en;q=0.8"), "da");
 		assert.equal(language("en-GB,da;q=0.8"), "en");
 		assert.equal(language(undefined), "en");
+	});
+
+	it("groups an address's refused connects: an IPv4 address itself, an IPv6 address by its /64", () => {
+		assert.equal(addressGroup("203.0.113.9"), "203.0.113.9");
+		assert.equal(addressGroup(""), "");
+		for (const [address, group] of [
+			["2001:db8::1", "2001:db8:0:0::/64"],
+			["2001:db8:aa:bb:1:2:3:4", "2001:db8:aa:bb::/64"],
+			["2001:db8:aa:bb::9", "2001:db8:aa:bb::/64"],
+			["::1", "0:0:0:0::/64"],
+			["fe80::", "fe80:0:0:0::/64"],
+		])
+			assert.equal(addressGroup(clientAddress(address)), group, address);
+		assert.equal(
+			addressGroup(clientAddress("2001:0DB8:0001:0002:ffff::")),
+			addressGroup(clientAddress("2001:db8:1:2:0:0:0:1")),
+		);
 	});
 
 	it("keys the limits on CF-Connecting-IP's one address", () => {

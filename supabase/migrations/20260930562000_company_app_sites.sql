@@ -15,10 +15,12 @@
 --    qorpera_company_site_app_claims: claims of 15 minutes, each recording the share_app call that issued it. The
 --    agent's command carries a claim; the program trades it for a connection key at once, so the command text (which
 --    members see in the machine's list) holds nothing that works for long. A claim stays redeemable for 2 minutes after
---    its first use (an answer lost on the way still lets the program connect); each redemption makes a new key in
---    place of the last, so only the newest program connects.
+--    its first use (an answer lost on the way still lets the program connect), by the program that first redeemed it
+--    only (its per-process id, kept as a sha256); each redemption makes a new key in place of the last, so only the
+--    newest program connects.
 -- 3. The relay's own API role, qorpera_site_relay (PostgREST switches to it from authenticator, as to anon): it runs
---    the relay's three functions and nothing else of the sites, and reads no table.
+--    the relay's three functions and no other function in public (every other one is revoked from PUBLIC), and reads
+--    no table.
 -- 4. The agent's calls, through the native host with the run's binding (scope binding), as the publish calls:
 --    qorpera_site_share_check (read only, before the automatic review: the slug, the machine and the port, so a share
 --    that would fail on its machine is refused before any card) and qorpera_site_share_app. A new app link (no live
@@ -100,7 +102,10 @@ create table public.qorpera_company_site_app_claims (
 	created_at timestamptz not null default clock_timestamp(),
 	-- Redeemable until then: 15 minutes from the share, 2 minutes from the first use, now when a newer share ends it.
 	expires_at timestamptz not null,
-	used_at timestamptz
+	used_at timestamptz,
+	-- sha256 of the per-process id of the program that first redeemed it: only that program redeems it again.
+	program_sha256 text check (program_sha256 ~ '^[0-9a-f]{64}$'),
+	check ((used_at is null) = (program_sha256 is null))
 );
 create index qorpera_company_site_app_claims_site on public.qorpera_company_site_app_claims(site_id, created_at);
 alter table public.qorpera_company_site_app_claims enable row level security;
@@ -661,17 +666,21 @@ begin
 end $$;
 
 -- The link program's connection, with the site's id (the relay forwards a visitor only to a program of the site the
--- visitor's session is of). p_secret is the link's current key (key null; read only), or a claim of the slug's live
--- app link redeemable now: the site locked, a new key replaces the last, so only the newest program connects; the key
--- is answered this once and only its sha256 is kept. Anything else (an unknown slug, a link that is off or does not
--- answer, a switch off, the company being deleted, a wrong or ended secret) is the same 'refused'.
-create function public.qorpera_site_app_connect(p_slug text, p_secret text)
+-- visitor's session is of). p_program is the program's per-process id (43 characters of base64url; anything else is
+-- refused). p_secret is the link's current key (key null; read only; any well-formed p_program), or a claim of the
+-- slug's live app link redeemable now: the site locked, a new key replaces the last, so only the newest program
+-- connects; the key is answered this once and only its sha256 is kept. The first redemption binds the claim to
+-- p_program: in its 2 minutes more only that program redeems it again, so a claim read off the machine by anyone else
+-- takes nothing over. Anything else (an unknown slug, a link that is off or does not answer, a switch off, the company
+-- being deleted, a wrong or ended secret, a claim another program redeemed) is the same 'refused'.
+create function public.qorpera_site_app_connect(p_slug text, p_secret text, p_program text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 -- 20260930562000
-declare v_site public.qorpera_company_sites%rowtype; v_sha text; v_key text;
+declare v_site public.qorpera_company_sites%rowtype; v_sha text; v_program text; v_key text;
 begin
 	if not coalesce((select settings.enabled and settings.apps_enabled from public.qorpera_site_settings as settings), false)
-		or not public.qorpera_site_slug_valid(p_slug) or p_secret is null or p_secret !~ '^[A-Za-z0-9_-]{43}$' then
+		or not public.qorpera_site_slug_valid(p_slug) or p_secret is null or p_secret !~ '^[A-Za-z0-9_-]{43}$'
+		or p_program is null or p_program !~ '^[A-Za-z0-9_-]{43}$' then
 		return jsonb_build_object('state', 'refused'); end if;
 	select site.* into v_site from public.qorpera_company_sites as site
 	where site.slug = p_slug and site.kind = 'app' and not public.qorpera_company_deleting(site.profile_id);
@@ -679,17 +688,22 @@ begin
 	v_sha := public.qorpera_site_sha256(p_secret);
 	if v_site.app_key_sha256 = v_sha then
 		return jsonb_build_object('state', 'ok', 'key', null, 'port', v_site.app_port, 'siteId', v_site.id::text); end if;
+	v_program := public.qorpera_site_sha256(p_program);
 	if not exists (select 1 from public.qorpera_company_site_app_claims as claim
-		where claim.claim_sha256 = v_sha and claim.site_id = v_site.id and claim.expires_at > clock_timestamp()) then
+		where claim.claim_sha256 = v_sha and claim.site_id = v_site.id and claim.expires_at > clock_timestamp()
+			and (claim.program_sha256 is null or claim.program_sha256 = v_program)) then
 		return jsonb_build_object('state', 'refused'); end if;
 	-- A claim: locked, so a key never lands on a link turned off or moved meanwhile.
 	select site.* into v_site from public.qorpera_company_sites as site
 	where site.id = v_site.id and not public.qorpera_company_deleting(site.profile_id) for update;
 	if not found or not public.qorpera_site_app_live(v_site) then return jsonb_build_object('state', 'refused'); end if;
-	-- Its first use leaves it 2 minutes more, for an answer lost on the way; later uses keep that end.
+	-- Its first use binds it to this program and leaves it 2 minutes more, for an answer lost on the way; later uses (by
+	-- that program only) keep that end.
 	update public.qorpera_company_site_app_claims as claim set used_at = coalesce(claim.used_at, clock_timestamp()),
+		program_sha256 = coalesce(claim.program_sha256, v_program),
 		expires_at = case when claim.used_at is null then clock_timestamp() + interval '2 minutes' else claim.expires_at end
-	where claim.claim_sha256 = v_sha and claim.site_id = v_site.id and claim.expires_at > clock_timestamp();
+	where claim.claim_sha256 = v_sha and claim.site_id = v_site.id and claim.expires_at > clock_timestamp()
+		and (claim.program_sha256 is null or claim.program_sha256 = v_program);
 	if not found then return jsonb_build_object('state', 'refused'); end if;
 	v_key := public.qorpera_site_new_secret();
 	update public.qorpera_company_sites set app_key_sha256 = public.qorpera_site_sha256(v_key) where id = v_site.id;
@@ -715,9 +729,9 @@ begin
 	return jsonb_build_object('state', 'open', 'siteId', v_site.id::text);
 end $$;
 
-revoke all on function public.qorpera_site_app_unlock(text, text, text), public.qorpera_site_app_connect(text, text),
+revoke all on function public.qorpera_site_app_unlock(text, text, text), public.qorpera_site_app_connect(text, text, text),
 	public.qorpera_site_app_session(text, text) from public, anon, authenticated;
-grant execute on function public.qorpera_site_app_unlock(text, text, text), public.qorpera_site_app_connect(text, text),
+grant execute on function public.qorpera_site_app_unlock(text, text, text), public.qorpera_site_app_connect(text, text, text),
 	public.qorpera_site_app_session(text, text) to service_role, qorpera_site_relay;
 
 -- 7. Observations ------------------------------------------------------------------------------------------------------

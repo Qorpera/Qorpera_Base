@@ -6,14 +6,16 @@
 //
 // It dials out to Qorpera's relay and hands each visitor's request to the app at 127.0.0.1, on the port the link is
 // shared for (the relay says which when it connects; the port given here is only checked against it). Nothing new
-// listens on this machine. The claim works once, for 15 minutes: the relay trades it for a connection key at once.
-// The key stays in this program's memory only; after a dropped connection the program connects again with it. Stop
-// the program (Ctrl-C) and the link says "This app is not running right now".
+// listens on this machine. The claim works for 15 minutes, for this program only: the relay trades it for a connection
+// key at once, bound to the random id this program makes when it starts (sent on every connect). The key and the id
+// stay in this program's memory only; after a dropped connection the program connects again with them. Stop the
+// program (Ctrl-C) and the link says "This app is not running right now".
 //
 // Messages with the relay (binary WebSocket frames): 1 byte type, 4-byte stream id, payload. 1 request head (JSON
 // {method, path, headers}), 2 body chunk, 3 body end, 4 response head (JSON {status, headers}), 5 reset, 6 hello
 // (JSON {key, url, port}), 7 keepalive. Headers travel as [name, value] pairs.
 
+import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 
 const HEAD = 1;
@@ -44,6 +46,7 @@ const url = `https://${slug}${suffix}/`;
 const connectUrl = `${process.env.QORPERA_APP_RELAY_ORIGIN || `wss://${slug}${suffix}`}/.qorpera/connect`;
 
 let secret = claim; // the claim, until the relay gives a key
+const programId = randomBytes(32).toString("base64url"); // this process's own id: a claim serves only the first one
 let holdsKey = false;
 let port = null; // the port the link is shared for, from the relay's hello
 let delay = 1000;
@@ -60,7 +63,9 @@ function message(type, stream, payload = Buffer.alloc(0)) {
 function connect() {
 	let ws;
 	try {
-		ws = new WebSocket(connectUrl, { headers: { authorization: `Bearer ${secret}` } });
+		ws = new WebSocket(connectUrl, {
+			headers: { authorization: `Bearer ${secret}`, "x-qorpera-program": programId },
+		});
 	} catch {
 		console.error(`The relay's address is not valid: ${connectUrl}`);
 		process.exit(2);

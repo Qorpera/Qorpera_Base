@@ -52,10 +52,11 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   is a company site of kind 'app'. Before the automatic review it asks the database whether the machine can serve
  *   one (refused at once if not, as is a machine that is not running), whether the slug makes a new app link or
  *   updates one, its link, and whether that needs a review (a new link, or one moved to another machine or port: a
- *   built-in access check, cloud-action-review.ts). Then the share issues a one-time claim, and the tool starts the link
- *   program with it on that machine itself, as machine_run starts a command (no time limit, no notify): the claim never
- *   reaches the model. The program trades the claim for its connection key at once, so the command members see in the
- *   machine's list holds nothing that still works.
+ *   built-in access check, cloud-action-review.ts). Then the share issues a one-time claim, and the platform starts the
+ *   link program with it on that machine, as machine_run starts a command (no time limit, no notify); the tool's answer
+ *   never holds the claim. The claim is a word of that command, so it shows on the machine and, cut to its first 300
+ *   characters, in the members' command list; the program spends it within seconds for its connection key, and only
+ *   the program that spent it can use it again.
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
@@ -67,7 +68,6 @@ const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const CLAIM = /^[A-Za-z0-9_+/=-]{16,256}$/;
 const CLIENT_URL = /^https:\/\/[a-z0-9][a-z0-9.-]{0,252}\/\.qorpera\/client\.mjs$/;
 const HOST_SUFFIX = /^-[a-z0-9-]{0,14}(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** A site path segment, as the database stores it: no hidden file, no '..', no character a link would escape. */
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
 export const SITE_MAX_FILES = 500;
@@ -135,7 +135,7 @@ export const CLOUD_SHARE_APP_TOOL_DESCRIPTION =
 	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there with machine_run listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>. " +
 	"Static files (HTML, CSS, JavaScript, images) need no machine: publish them with publish_site instead. " +
 	"slug is the link's name: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
-	"The machine must be running. share_app starts the link program that connects the link to the app on that machine itself, as a command with no time limit (machine_list counts it; machine_read shows its status lines, machine_cancel stops it). The link works while it and the app run; otherwise the link says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it). " +
+	"The machine must be running. The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines, machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise the link says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it). " +
 	"A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. " +
 	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it. unpublish_site turns the link off.";
 
@@ -430,8 +430,7 @@ export function cloudSiteTools(options: {
 				!!item &&
 				typeof item === "object" &&
 				(item as { name?: unknown }).name === name &&
-				typeof (item as { machineId?: unknown }).machineId === "string" &&
-				UUID.test((item as { machineId: string }).machineId),
+				isUuid((item as { machineId?: unknown }).machineId),
 		);
 		if (!found) refuse(machineMissing(name));
 		if (found.state !== "running")
@@ -858,7 +857,8 @@ export function cloudSiteTools(options: {
 			const file = `/root/.qorpera-app-link-${prepared.slug}.mjs`;
 			const command = `curl -fsS ${shared.clientUrl} -o ${file}.tmp && mv -f ${file}.tmp ${file} && exec node ${file} ${prepared.slug} ${prepared.port} ${shared.claim} ${suffix}`;
 			const operationKey = `share-app.${createHash("sha256").update(context.callId).digest("hex").slice(0, 32)}`;
-			let started: CloudMachineCommandReceipt | string;
+			// The command's receipt; why it did not start; or undefined when whether it started is not known.
+			let started: CloudMachineCommandReceipt | string | undefined;
 			try {
 				const content = await machines.operations.execute({
 					// A command on the machine, as machine_run starts one (its receipt is the command's authority), with no time
@@ -914,7 +914,7 @@ export function cloudSiteTools(options: {
 				else throw new Error("App link program result differs");
 			} catch {
 				context.signal.throwIfAborted();
-				started = "its start could not be confirmed";
+				started = undefined;
 			}
 			const password = shared.newPassword
 				? "The link has a new password. You never see it: the founder finds, copies and changes it in Settings → Sites."
@@ -927,32 +927,34 @@ export function cloudSiteTools(options: {
 				port: prepared.port,
 				newPassword: shared.newPassword,
 			};
+			const reply = (state: string, extra: Record<string, JsonValue>) => ({
+				kind: "text" as const,
+				value: cloudToolJsonText({ schema: "qorpera.app-share-result/v1", state, ...link, ...extra, password }),
+			});
 			if (typeof started === "string")
-				return {
-					kind: "text",
-					value: cloudToolJsonText({
-						schema: "qorpera.app-share-result/v1",
-						state: "not_connected",
-						...link,
-						reason: `The link is shared, but its link program did not start: ${started}.`,
-						next: `Check machine_list: if ${prepared.machine} is not running, wake it with machine_start. Then call share_app again; until a link program runs, the link says the app is not running.`,
-						password,
-					}),
-				};
-			return {
-				kind: "text",
-				value: cloudToolJsonText({
-					schema: "qorpera.app-share-result/v1",
-					state: started.state === "running" ? "connecting" : "program_ended",
-					...link,
-					linkProgram: { commandId: started.commandId, state: started.state },
-					next:
-						started.state === "running"
-							? `The link program runs on ${prepared.machine} (command ${started.commandId}) and connects the link to the app on port ${prepared.port}: the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is in Settings → Sites.`
-							: `The link program ended at once (${started.state}): read why with machine_read (machine ${prepared.machine}, command ${started.commandId}), then call share_app again.`,
-					password,
-				}),
-			};
+				return reply("not_connected", {
+					reason: `The link is shared, but its link program did not start: ${started}.`,
+					next: `Check machine_list: if ${prepared.machine} is not running, wake it with machine_start. Then call share_app again; until a link program runs, the link says the app is not running.`,
+				});
+			// Whether the program started is not known: it may run, so the agent looks before it shares again.
+			if (started === undefined || started.state === "unconfirmed")
+				return reply("program_unconfirmed", {
+					...(started ? { linkProgram: { commandId: started.commandId, state: started.state } } : {}),
+					reason: "The link is shared, but the start of its link program could not be confirmed.",
+					next: started
+						? `Check it with machine_read (machine ${prepared.machine}, command ${started.commandId}) or machine_list. If it does not run, call share_app again; a new program replaces any earlier one of this link.`
+						: `Check machine_list for a command on ${prepared.machine} that runs the link program. If none runs, call share_app again; a new program replaces any earlier one of this link.`,
+				});
+			const linkProgram = { commandId: started.commandId, state: started.state };
+			if (started.state !== "running")
+				return reply("program_ended", {
+					linkProgram,
+					next: `The link program ended at once (${started.state}): read why with machine_read (machine ${prepared.machine}, command ${started.commandId}), then call share_app again.`,
+				});
+			return reply("connecting", {
+				linkProgram,
+				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is in Settings → Sites.`,
+			});
 		},
 	};
 	return [publish, unpublish, share];

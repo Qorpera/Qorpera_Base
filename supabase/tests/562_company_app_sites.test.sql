@@ -70,6 +70,12 @@ $$;
 create function pg_temp.ca_keys(p_value jsonb) returns text[] language sql immutable as $$
 	select array_agg(key order by key collate "C") from jsonb_object_keys(p_value) as key
 $$;
+-- The link program's connection as the relay asks for it: by the platform's program (its per-process id) unless another
+-- is named.
+create function pg_temp.ca_connect(p_slug text, p_secret text, p_program text default repeat('P', 43)) returns jsonb
+language sql as $$
+	select public.qorpera_site_app_connect(p_slug, p_secret, p_program)
+$$;
 -- A site's id as connect and session name it.
 create function pg_temp.ca_site(p_slug text) returns text language sql as $$
 	select id::text from public.qorpera_company_sites where slug = p_slug
@@ -93,7 +99,7 @@ begin
 			where name = v_name), v_name || ' is the native host''s, with the run''s binding');
 	end loop;
 	foreach v_signature in array array['public.qorpera_site_share_check(jsonb,text,text,integer)',
-		'public.qorpera_site_share_app(jsonb,text,jsonb,uuid)', 'public.qorpera_site_app_connect(text,text)',
+		'public.qorpera_site_share_app(jsonb,text,jsonb,uuid)', 'public.qorpera_site_app_connect(text,text,text)',
 		'public.qorpera_site_app_session(text,text)', 'public.qorpera_site_app_unlock(text,text,text)',
 		'public.qorpera_site_publish_check(jsonb,text)', 'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)',
 		'public.qorpera_site_unpublish(jsonb,text)', 'public.qorpera_site_serve(text,text,text,text,integer,integer)',
@@ -121,13 +127,22 @@ begin
 	perform pg_temp.base_assert((select not rolcanlogin and not rolinherit and not rolsuper and not rolbypassrls and not rolcreaterole
 		from pg_roles where rolname = 'qorpera_site_relay') and has_schema_privilege('qorpera_site_relay', 'public', 'usage'),
 		'The relay has a role of its own');
-	select string_agg(p.oid::regprocedure::text, ', ') into v_bad from pg_proc as p
+	-- Of every function in public, the relay runs its three calls only. The one exception is this suite's own: its
+	-- bootstrap (supabase/tests/bootstrap.sql) installs the dblink extension into public for the concurrency tests, and
+	-- an extension's functions are executable by PUBLIC as it makes them. No migration installs dblink, and production
+	-- has none in public; any other function, an extension's included, fails here.
+	select string_agg(p.oid::regprocedure::text || case when p.prosecdef then ' (definer)' else '' end, ', '
+		order by p.oid::regprocedure::text) into v_bad from pg_proc as p
 	where p.pronamespace = 'public'::regnamespace
-		and (p.proname like 'qorpera\_site\_%' or p.proname in ('qorpera_list_company_sites', 'qorpera_company_site_password',
-			'qorpera_set_company_site_password', 'qorpera_unpublish_company_site', 'qorpera_company_site_for_admin'))
 		and has_function_privilege('qorpera_site_relay', p.oid, 'execute')
-			<> (p.proname in ('qorpera_site_app_connect', 'qorpera_site_app_session', 'qorpera_site_app_unlock'));
-	perform pg_temp.base_assert(v_bad is null, 'The relay runs its three calls only: ' || coalesce(v_bad, ''));
+			<> (p.oid in ('public.qorpera_site_app_connect(text,text,text)'::regprocedure,
+				'public.qorpera_site_app_session(text,text)'::regprocedure, 'public.qorpera_site_app_unlock(text,text,text)'::regprocedure))
+		and not exists (select 1 from pg_depend as dependency join pg_extension as extension on extension.oid = dependency.refobjid
+			where dependency.classid = 'pg_proc'::regclass and dependency.objid = p.oid and dependency.deptype = 'e'
+				and dependency.refclassid = 'pg_extension'::regclass and extension.extname = 'dblink'
+				and not p.prosecdef);
+	perform pg_temp.base_assert(v_bad is null, 'The relay runs its three calls only, of every function in public: '
+		|| coalesce(v_bad, ''));
 	select string_agg(c.oid::regclass::text, ', ') into v_bad from pg_class as c
 	where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v', 'm', 'p', 'f')
 		and has_table_privilege('qorpera_site_relay', c.oid, 'select');
@@ -277,34 +292,50 @@ do $$
 declare v_claim text := current_setting('qorpera_test.ca_claim_2'); v_answer jsonb; v_key text; v_again text; v_key2 text;
 	v_share jsonb; v_site text := pg_temp.ca_site('shop-preview');
 begin
-	-- An ended claim, an unknown slug, a wrong or malformed secret: all refused alike.
-	foreach v_answer in array array[public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_claim_1')),
-		public.qorpera_site_app_connect('no-such-app', v_claim), public.qorpera_site_app_connect('shop-preview', repeat('A', 43)),
-		public.qorpera_site_app_connect('shop-preview', 'short'), public.qorpera_site_app_connect('shop-preview', null),
-		public.qorpera_site_app_connect('Shop-preview', v_claim), public.qorpera_site_app_connect('shop-preview', v_claim || '=')] loop
+	-- An ended claim, an unknown slug, a wrong or malformed secret, a malformed program id: all refused alike, and none
+	-- uses the claim.
+	foreach v_answer in array array[pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_claim_1')),
+		pg_temp.ca_connect('no-such-app', v_claim), pg_temp.ca_connect('shop-preview', repeat('A', 43)),
+		pg_temp.ca_connect('shop-preview', 'short'), pg_temp.ca_connect('shop-preview', null),
+		pg_temp.ca_connect('Shop-preview', v_claim), pg_temp.ca_connect('shop-preview', v_claim || '='),
+		pg_temp.ca_connect('shop-preview', v_claim, null), pg_temp.ca_connect('shop-preview', v_claim, 'short'),
+		pg_temp.ca_connect('shop-preview', v_claim, repeat('P', 44)), pg_temp.ca_connect('shop-preview', v_claim, repeat('P', 42) || '=')] loop
 		perform pg_temp.base_assert(v_answer = '{"state":"refused"}'::jsonb, 'Refused: ' || v_answer::text);
 	end loop;
+	perform pg_temp.base_assert((select used_at is null and program_sha256 is null from public.qorpera_company_site_app_claims
+		where claim_sha256 = pg_temp.ca_sha(v_claim)), 'No refused attempt used the claim');
 	-- The claim: a new key, of which only the digest is kept, and the site's id.
-	v_answer := public.qorpera_site_app_connect('shop-preview', v_claim);
+	v_answer := pg_temp.ca_connect('shop-preview', v_claim);
 	v_key := v_answer ->> 'key';
 	perform pg_temp.base_assert(pg_temp.ca_keys(v_answer) = array['key', 'port', 'siteId', 'state'] and v_answer ->> 'state' = 'ok'
 		and v_key ~ '^[A-Za-z0-9_-]{43}$' and v_key <> v_claim and v_answer -> 'port' = '3000'::jsonb and v_answer ->> 'siteId' = v_site,
 		'The claim is traded for a key: ' || v_answer::text);
 	perform pg_temp.base_assert((select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-preview')
 		and (select used_at is not null and expires_at between clock_timestamp() + interval '1 minute' and clock_timestamp() + interval '2 minutes'
+				and program_sha256 = pg_temp.ca_sha(repeat('P', 43))
 			from public.qorpera_company_site_app_claims where claim_sha256 = pg_temp.ca_sha(v_claim)),
-		'The key''s digest is kept and the claim has 2 minutes more');
-	-- For those 2 minutes the claim connects again (an answer lost on the way), each time with a new key in place of the
-	-- last: only the newest program connects.
-	v_again := public.qorpera_site_app_connect('shop-preview', v_claim) ->> 'key';
+		'The key''s digest is kept, the claim is the program''s and has 2 minutes more');
+	-- In those 2 minutes another program (one that read the claim off the machine) never redeems it: the link stays with
+	-- the first program.
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_claim, repeat('Q', 43)) = '{"state":"refused"}'::jsonb
+		and (select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-preview')
+		and pg_temp.ca_connect('shop-preview', v_key) = pg_temp.ca_ok('shop-preview', 3000),
+		'Another program cannot take the claim over');
+	-- The first program connects with the claim again (an answer lost on the way), each time with a new key in place of
+	-- the last: only the newest key connects.
+	v_again := pg_temp.ca_connect('shop-preview', v_claim) ->> 'key';
 	perform pg_temp.base_assert(v_again ~ '^[A-Za-z0-9_-]{43}$' and v_again <> v_key
-		and public.qorpera_site_app_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
+		and pg_temp.ca_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
 		'The claim again: a new key in place of the last');
+	-- A key check reads only the key: any well-formed program id, none other.
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_again, repeat('Q', 43)) = pg_temp.ca_ok('shop-preview', 3000)
+		and pg_temp.ca_connect('shop-preview', v_again, 'short') = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', v_again, null) = '{"state":"refused"}'::jsonb, 'A key with a program id');
 	update public.qorpera_company_site_app_claims set expires_at = clock_timestamp() - interval '1 second'
 	where claim_sha256 = pg_temp.ca_sha(v_claim);
-	perform pg_temp.base_assert(public.qorpera_site_app_connect('shop-preview', v_claim) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_claim) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
 		'After its 2 minutes the claim is refused; the key reconnects');
 	v_key := v_again;
 	-- An expired claim is refused, and the key still works: sharing the same machine and port again needs no approval
@@ -314,20 +345,20 @@ begin
 		and v_share ->> 'machine' = 'shop-box', 'Sharing the live link again needs no approval: ' || v_share::text);
 	update public.qorpera_company_site_app_claims set created_at = created_at - interval '20 minutes',
 		expires_at = clock_timestamp() - interval '1 second' where claim_sha256 = pg_temp.ca_sha(v_share ->> 'claim');
-	perform pg_temp.base_assert(public.qorpera_site_app_connect('shop-preview', v_share ->> 'claim') = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', v_key) = pg_temp.ca_ok('shop-preview', 3000), 'An expired claim is refused');
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_share ->> 'claim') = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', v_key) = pg_temp.ca_ok('shop-preview', 3000), 'An expired claim is refused');
 	-- Another port is another service: only on an approval, and the connected program is cut off at once.
 	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-3', pg_temp.ca_request('shop-preview', p_port => 8080)),
 		'42501', 'SITE_APPROVAL_REQUIRED: a new app link, or an app link from another machine or port, goes out only after an owner or admin approves it on a card');
 	v_share := pg_temp.ca_share('share-3', pg_temp.ca_request('shop-preview', p_port => 8080),
 		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once'));
 	perform pg_temp.base_assert(v_share -> 'port' = '8080'::jsonb and v_share -> 'firstShare' = 'false'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
 		and (select app_key_sha256 is null from public.qorpera_company_sites where slug = 'shop-preview'),
 		'A new port cuts the old program off');
-	v_key2 := public.qorpera_site_app_connect('shop-preview', v_share ->> 'claim') ->> 'key';
+	v_key2 := pg_temp.ca_connect('shop-preview', v_share ->> 'claim') ->> 'key';
 	perform pg_temp.base_assert(v_key2 ~ '^[A-Za-z0-9_-]{43}$'
-		and public.qorpera_site_app_connect('shop-preview', v_key2) = pg_temp.ca_ok('shop-preview', 8080),
+		and pg_temp.ca_connect('shop-preview', v_key2) = pg_temp.ca_ok('shop-preview', 8080),
 		'The new program connects to the new port');
 	perform set_config('qorpera_test.ca_key', v_key2, true);
 end
@@ -361,9 +392,9 @@ begin
 		and (pg_temp.ca_check('shop-preview', 'shop-box', 8080) ->> 'needsReview')::boolean
 		and (select title = 'Shop preview' and source_path = 'spare-box' and app_key_sha256 is null
 			from public.qorpera_company_sites where slug = 'shop-preview')
-		and public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
+		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
 		'The link moved to another machine, and the old program is cut off: ' || v_share::text);
-	v_key := public.qorpera_site_app_connect('shop-preview', v_share ->> 'claim') ->> 'key';
+	v_key := pg_temp.ca_connect('shop-preview', v_share ->> 'claim') ->> 'key';
 	perform pg_temp.base_assert(v_key is not null, 'The program on the other machine connects');
 	perform set_config('qorpera_test.ca_key', v_key, true);
 
@@ -425,21 +456,21 @@ begin
 	-- App links switched off: locked, refused, and the password opens nothing; on again, the session is open again.
 	update public.qorpera_site_settings set apps_enabled = false;
 	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
 		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.2') = '{"state":"wrong"}'::jsonb, 'App links off');
 	update public.qorpera_site_settings set apps_enabled = true, enabled = false;
 	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
 		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.3') = '{"state":"wrong"}'::jsonb, 'Sites off');
 	update public.qorpera_site_settings set enabled = true;
 	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = v_opened
-		and public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = pg_temp.ca_ok('shop-preview', 8080),
+		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = pg_temp.ca_ok('shop-preview', 8080),
 		'Both on again: open');
 
 	-- Its machine being deleted (not yet removed): the link does not answer, as share_app no longer takes the machine.
 	update public.qorpera_company_machines set desired_state = 'deleted' where id = '56200000-0000-4000-8000-0000000000a2';
 	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
 		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.4') = '{"state":"wrong"}'::jsonb
 		and pg_temp.ca_check('shop-preview') - 'url' = '{"state":"new","needsReview":true}'::jsonb
 		and pg_temp.ca_check('shop-preview', 'spare-box', 8080)
@@ -546,7 +577,7 @@ begin
 		'APP_MACHINE_NOT_FOUND: the company has no machine of that name; start an always-on one with machine_start');
 	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'their-app') ->> 'removed' = 'false'
 		and (select published_at is not null from public.qorpera_company_sites where slug = 'their-app'), 'Their link stays');
-	perform pg_temp.base_assert(public.qorpera_site_app_connect('their-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
+	perform pg_temp.base_assert(pg_temp.ca_connect('their-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
 		'Alice''s key is her link''s only');
 	-- A visitor's session is its link's only, and names its site.
 	v_token := public.qorpera_site_app_unlock('their-app', 'other-company-pw', '192.0.2.9') ->> 'token';
@@ -563,10 +594,10 @@ begin
 	insert into public.qorpera_company_deletions (profile_id) values ('56200000-0000-4000-8000-000000000010');
 	perform pg_temp.base_assert(public.qorpera_site_app_session('their-app', v_token) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_app_unlock('their-app', 'other-company-pw', '192.0.2.10') = '{"state":"wrong"}'::jsonb
-		and public.qorpera_site_app_connect('their-other', repeat('t', 43)) = '{"state":"refused"}'::jsonb,
+		and pg_temp.ca_connect('their-other', repeat('t', 43)) = '{"state":"refused"}'::jsonb,
 		'A company being deleted shares nothing');
 	delete from public.qorpera_company_deletions where profile_id = '56200000-0000-4000-8000-000000000010';
-	v_answer := public.qorpera_site_app_connect('their-other', repeat('t', 43));
+	v_answer := pg_temp.ca_connect('their-other', repeat('t', 43));
 	perform pg_temp.base_assert(v_answer ->> 'key' is not null and v_answer ->> 'siteId' = '56200000-0000-4000-8000-000000000031',
 		'Its claim was refused for the deletion only');
 
@@ -609,7 +640,7 @@ begin
 		and not exists (select 1 from public.qorpera_company_site_sessions where site_id = v_site)
 		and (select password from public.qorpera_company_site_secrets where site_id = v_site) = current_setting('qorpera_test.ca_password'),
 		'Off: no key, claims or sessions; the password stays');
-	perform pg_temp.base_assert(public.qorpera_site_app_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
 		and public.qorpera_site_app_session('shop-preview', current_setting('qorpera_test.ca_token')) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_app_unlock('shop-preview', current_setting('qorpera_test.ca_password'), '192.0.2.20') = '{"state":"wrong"}'::jsonb,
 		'An off link answers nothing');

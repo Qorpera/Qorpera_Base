@@ -41,16 +41,19 @@ members' list, password change and unpublish. Only serving differs.
   takes a machine by; a files site as before (`current_version_id is not null`). An app site that is off holds its name
   for a day after its last change, as an unfinished files site does; a shared one always holds it.
 - `qorpera_company_site_app_claims (claim_sha256 pk, site_id fk cascade, run_id, call_id, first_share, new_password,
-  created_at, expires_at, used_at)`: claims of 15 minutes, each recording the `share_app` call that issued it. A claim
-  is what the agent's command carries; the program trades it for a connection key at once, so the command text (which
-  members see in the machine's list) holds nothing that works for long. A claim stays redeemable for 2 minutes after
-  its first use (an answer lost on the way still lets the program connect); a newer share ends it at once.
+  created_at, expires_at, used_at, program_sha256)`: claims of 15 minutes, each recording the `share_app` call that
+  issued it. A claim is what the agent's command carries; the program trades it for a connection key at once, so the
+  command text (which members see in the machine's list) holds nothing that works for long. A claim stays redeemable
+  for 2 minutes after its first use (an answer lost on the way still lets the program connect), by the program that
+  first redeemed it only (`program_sha256`: the sha256 of that program's per-process id), so a claim read off the
+  machine takes nothing over; a newer share ends it at once.
 - `qorpera_site_settings`: `apps_enabled boolean not null default false` (the apps' own switch; both switches must be
   on) and `app_host_suffix text not null default '-preview.qorpera.com'`. `qorpera_site_url(slug)` gives
   `https://<slug><suffix>/` for an app site.
 - The relay's role `qorpera_site_relay` (nologin, granted to `authenticator`, usage on schema public; the relay's key is
   a JWT with this role): EXECUTE on `qorpera_site_app_connect`, `qorpera_site_app_session` and
-  `qorpera_site_app_unlock` only, and no table.
+  `qorpera_site_app_unlock` only, of every function in schema public (every other one is revoked from PUBLIC; test 562
+  checks the whole schema), and no table.
 - **Agent calls** (native host calls with the run's binding, scope binding, as `qorpera_site_publish_*`):
   - `qorpera_site_share_check(p_binding jsonb, p_slug text, p_machine text, p_port integer) returns jsonb` — read
     only, before the automatic review. When `share_app` would refuse the machine (none of that name, removed or being
@@ -78,12 +81,15 @@ members' list, password change and unpublish. Only serving differs.
     sessions gone; the site, its name and its password stay for the next share). `qorpera_site_publish_check` and
     `qorpera_site_publish_begin` refuse an app site's slug (`SITE_NAME_TAKEN`).
 - **Relay calls** (service_role and `qorpera_site_relay`):
-  - `qorpera_site_app_connect(p_slug text, p_secret text) returns jsonb` — `p_secret` is the site's current key (read
-    only; `key` null) or a claim redeemable now (the site row locked; a new 32-byte key is minted, its sha256 stored,
-    and returned once; each redemption's key replaces the last, so only the newest program connects).
-    `{state: 'ok', key: text | null, port: integer, siteId: text}` or `{state: 'refused'}` (unknown, not live, switch
-    off, company deleting, wrong or ended secret: all alike). `siteId` is the site's uuid: the relay keeps it with the
-    program and forwards a visitor only when the session's `siteId` is the same.
+  - `qorpera_site_app_connect(p_slug text, p_secret text, p_program text) returns jsonb` — `p_program` is the link
+    program's per-process id (43 characters of base64url; anything else is refused). `p_secret` is the site's current
+    key (read only; `key` null; `p_program` is checked for its form only) or a claim redeemable now (the site row
+    locked; a new 32-byte key is minted, its sha256 stored, and returned once; each redemption's key replaces the last,
+    so only the newest program connects). The first redemption stores `sha256(p_program)` on the claim; in the claim's
+    2 minutes more only the same program id redeems it again. `{state: 'ok', key: text | null, port: integer,
+    siteId: text}` or `{state: 'refused'}` (unknown, not live, switch off, company deleting, wrong or ended secret, a
+    claim another program redeemed, a malformed program id: all alike). `siteId` is the site's uuid: the relay keeps it
+    with the program and forwards a visitor only when the session's `siteId` is the same.
   - `qorpera_site_app_session(p_slug text, p_token text) returns jsonb` — `{state: 'open', siteId: text}` for a live
     app site's unexpired session of its current password version, else `{state: 'locked'}`.
   - `qorpera_site_app_unlock(p_slug text, p_password text, p_client text) returns jsonb` — a live app site's password,
@@ -102,7 +108,9 @@ Arguments `{slug, title?, machine, port}`. Flow as `publish_site`: `share_check`
 `needsReview` (the card says: share a private, password-protected app link `<url>` from machine `<m>`, port `<p>`) →
 `share_app` (the check also takes the port: a different machine or port needs the review again). The tool then
 starts the link program itself on that machine, through the same receipted command `machine_run` uses, with no time
-limit, so the one-time claim never reaches the model. The command it runs:
+limit, so the tool's answer never holds the claim. The claim is a word of that command, so it shows on the machine and
+in the members' command list; the program spends it within seconds, and only that program (by its per-process id) can
+redeem it again in the next 2 minutes. The command it runs:
 
 ```
 curl -fsS <clientUrl> -o /root/.qorpera-app-link-<slug>.mjs.tmp && mv -f /root/.qorpera-app-link-<slug>.mjs.tmp /root/.qorpera-app-link-<slug>.mjs && exec node /root/.qorpera-app-link-<slug>.mjs <slug> <port> <claim> <suffix>
@@ -128,27 +136,32 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
 
 - The app host is `x-forwarded-host` as api-front sets it (the request's own name), matched against
   `^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])<suffix>$`; anything else 404.
-- `/.qorpera/` is the platform's on an app host: `connect` (WebSocket upgrade; `Authorization: Bearer <secret>` →
-  `qorpera_site_app_connect`, asked before the handshake completes; a refusal still completes it and closes with
-  4001, the only answer a WebSocket client can read; connect attempts limited per CF-Connecting-IP, 429; the answer's
-  key, the link's URL and its port go to the program in the first message), `client.mjs`, `unlock` (POST form
-  `password`, `next`), anything else 404.
+- `/.qorpera/` is the platform's on an app host: `connect` (WebSocket upgrade; `Authorization: Bearer <secret>` and
+  `x-qorpera-program: <the program's id>` → `qorpera_site_app_connect(slug, secret, id)`, asked before the handshake
+  completes; a refusal still completes it and closes with 4001, the only answer a WebSocket client can read; a secret
+  or id that is not of the platform's form is refused without asking; the answer's key, the link's URL and its port go
+  to the program in the first message), `client.mjs`, `unlock` (POST form `password`, `next`), anything else 404.
+  Connects in flight are capped in all (512). Refused connects are counted per address (an IPv6 address by its /64)
+  and link, 10 a minute, then 429 for that address and link; never for the agent exits' public addresses
+  (`QORPERA_APP_RELAY_TRUSTED_ADDRESSES`, which every company's machines share).
 - The gate: cookie `__Host-qorpera_app` (HttpOnly, Secure, SameSite=Lax, Path=/, the session's max age), checked with
   `qorpera_site_app_session` (an open answer kept 30 s in memory, a locked one 5 s). No valid cookie: the password page
   (401, English or Danish as site-serve's, same look); `unlock` → `qorpera_site_app_unlock(slug, password,
   CF-Connecting-IP)` → cookie → 303 to `next` (a same-host path only). 429 when limited.
 - Forwarding, through the slug's one connected program (a newer connection replaces an older one), and only when that
-  program connected for the very site the session opens (`siteId`): a program left from an earlier site of the slug
-  is dropped (4001) and the visitor gets 503. The request line, headers and body as frames; the response streamed
+  program connected for the very site the session opens (`siteId`). On a mismatch the session is asked again, past the
+  kept answer: locked → the password page; the program's site after all → forwarded; another site still → the program
+  is checked with its key, dropped (4001) only when the database no longer takes it, and the visitor gets 503. The request line, headers and body as frames; the response streamed
   back. No program: 503 "This app is not running right now". No response head in 60 s: 504. Request bodies ≤ 10 MiB.
   A visitor who reads nothing for 30 s while the program waits on them is cut off, so the program serves everyone else
   again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
   https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP only, and `Transfer-Encoding: chunked`
   when the visitor's body came chunked (so the app never reads a body as a request of its own). From the app: the
   app's cache headers (`Cache-Control`, `Expires`, `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control`,
-  `Surrogate-Control`) replaced by `Cache-Control: private, no-cache` and `CDN-Cache-Control: no-store` (Cloudflare's
-  cache sits in front of the password); every answer held to its Content-Length (more or fewer bytes end the
-  visitor's connection, which api-front shares between app hosts); `Domain=` taken out of every `Set-Cookie`
+  `Surrogate-Control`) replaced by `Cache-Control: private, no-cache` (`private, no-store` when the app said
+  `no-store`) and `CDN-Cache-Control: no-store` (Cloudflare's cache sits in front of the password); every answer held
+  to its Content-Length (more or fewer bytes end the visitor's connection, which api-front shares between app hosts),
+  and an answer that names its length twice or not in digits refused (502); `Domain=` taken out of every `Set-Cookie`
   (host-only cookies from the app's answers; an app's script can still set cookies for qorpera.com with
   `document.cookie`, which is why the platform uses no cookie for sign-in on qorpera.com names), any `Set-Cookie` for
   `__Host-qorpera_app` dropped. A visitor's own WebSocket upgrade: 501 in v1.
@@ -158,9 +171,9 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
 - Never logged: a claim, key, token, password, cookie or the relay's JWT. `/.qorpera/health` (no host check) for the
   container's healthcheck.
 
-Link program (`node client.mjs <slug> <port> <claim> [host suffix]`): connects to
-`wss://<slug><suffix>/.qorpera/connect` with the claim, keeps the key it gets (in memory only), reconnects with the key
-after a drop (backoff 1 s → 30 s), and serves each request frame with `http.request` (a connection of its own, no
+Link program (`node client.mjs <slug> <port> <claim> [host suffix]`): makes a random id when it starts (32 bytes,
+base64url, in memory only) and sends it on every connect; connects to `wss://<slug><suffix>/.qorpera/connect` with the
+claim, keeps the key it gets (in memory only), reconnects with the key after a drop (backoff 1 s → 30 s), and serves each request frame with `http.request` (a connection of its own, no
 agent) to `127.0.0.1` on the port the relay's hello names, the one the link is shared for; when its own `<port>`
 differs it says so ("This link is shared for port 3000, not 8080: serving port 3000."). Prints plain status lines
 ("Connected: <url>", "Lost the connection, trying again", "The app on port 3000 is not answering"). Exits 1 with a

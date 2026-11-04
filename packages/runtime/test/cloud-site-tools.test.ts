@@ -102,8 +102,8 @@ interface Database {
 	/** The company's machines as machine_list gives them (default: shop-server and old-server, running). */
 	machines?: { name: string; state: string }[];
 	/** How the machine's executor answers the program's start: a running command (default), one that ended at once,
-	 * a refusal, or a failure. */
-	start?: "running" | "failed" | "MACHINE_NOT_RUNNING" | "throw";
+	 * one whose start is unconfirmed, a refusal, or a failure. */
+	start?: "running" | "failed" | "unconfirmed" | "MACHINE_NOT_RUNNING" | "throw";
 }
 
 /** The site tools behind the boundary, with a review that lets every call run (recording what it read). */
@@ -227,7 +227,7 @@ async function fixture(
 			machineId: scope.machineId,
 			commandId: input.commandId,
 			inputSha256: input.inputSha256,
-			state: options.start === "failed" ? "failed" : "running",
+			state: options.start === "failed" || options.start === "unconfirmed" ? options.start : "running",
 			exitCode: options.start === "failed" ? 1 : null,
 			output: "",
 			truncated: false,
@@ -712,11 +712,11 @@ describe("share_app", () => {
 			port: 3000,
 			newPassword: true,
 			linkProgram: { commandId, state: "running" },
-			next: expect.stringContaining("The link program runs on shop-server"),
+			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password: expect.stringContaining("new password"),
 		});
 		expect(result.answer.next).toContain("the password is in Settings → Sites");
-		// The claim never reaches the model.
+		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
 	});
@@ -877,18 +877,39 @@ describe("share_app", () => {
 		expect(f.start).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		["the machine stopped", "MACHINE_NOT_RUNNING" as const, "shop-server stopped before the program started"],
-		["the executor could not be reached", "throw" as const, "its start could not be confirmed"],
-	])("tells a share whose link program did not start (%s) as shared but not connected", async (_label, start, why) => {
-		const f = await fixture({}, { start });
+	it("tells a share whose link program did not start, the machine having stopped, as shared but not connected", async () => {
+		const f = await fixture({}, { start: "MACHINE_NOT_RUNNING" });
 		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
 		expect(result.status, result.text).toBe("ok");
 		expect(result.answer).toMatchObject({ state: "not_connected", url: APP_URL_OF("saml-shop"), newPassword: true });
-		expect(result.answer.reason).toBe(`The link is shared, but its link program did not start: ${why}.`);
+		expect(result.answer.reason).toBe(
+			"The link is shared, but its link program did not start: shop-server stopped before the program started.",
+		);
 		expect(result.answer.next).toContain("call share_app again");
 		expect(result.text).not.toContain(CLAIM);
 	});
+
+	it.each([
+		["the executor answers unconfirmed", "unconfirmed" as const, "machine_read (machine shop-server, command"],
+		["the executor cannot be reached", "throw" as const, "Check machine_list for a command on shop-server"],
+	])(
+		"tells a link program whose start could not be confirmed (%s) to look before sharing again",
+		async (_label, start, look) => {
+			const f = await fixture({}, { start });
+			const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+			expect(result.status, result.text).toBe("ok");
+			expect(result.answer).toMatchObject({ state: "program_unconfirmed", url: APP_URL_OF("saml-shop") });
+			expect(result.answer.reason).toBe(
+				"The link is shared, but the start of its link program could not be confirmed.",
+			);
+			expect(result.answer.next).toContain(look);
+			expect(result.answer.next).toContain(
+				"call share_app again; a new program replaces any earlier one of this link",
+			);
+			expect(result.text).not.toContain("ended at once");
+			expect(result.text).not.toContain(CLAIM);
+		},
+	);
 
 	it("tells a link program that ended at once where to read why", async () => {
 		const f = await fixture({}, { start: "failed" });
@@ -968,7 +989,8 @@ describe("share_app", () => {
 		expect(share.description).toContain("always-on");
 		expect(share.description).toContain("/company/code/<owner>/<name>/worktrees/<workerId>");
 		expect(share.description).toContain("publish_site");
-		expect(share.description).toContain("share_app starts the link program");
+		expect(share.description).toContain("The platform starts the link program");
+		expect(share.description).toContain("only that program can use it again");
 		expect(share.description).not.toContain("timeoutMs");
 		expect(share.description).toContain("Settings → Sites");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);

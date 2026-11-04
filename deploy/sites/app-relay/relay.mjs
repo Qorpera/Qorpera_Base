@@ -10,20 +10,26 @@
  * only those): qorpera_site_app_connect, qorpera_site_app_session and qorpera_site_app_unlock.
  *
  * On an app host:
- *  - /.qorpera/connect   the link program's WebSocket (Authorization: Bearer <claim or key>). The database is asked
- *                        before the handshake completes; a refusal still completes it and closes with 4001, because a
- *                        WebSocket client sees no HTTP status. A newer program for the same link closes the older one
- *                        with 4002. Connect attempts are limited per CF-Connecting-IP (429).
+ *  - /.qorpera/connect   the link program's WebSocket (Authorization: Bearer <claim or key>, x-qorpera-program: the
+ *                        program's own random id, which the database binds a claim to). The database is asked before the
+ *                        handshake completes; a refusal still completes it and closes with 4001, because a WebSocket
+ *                        client sees no HTTP status. A newer program for the same link closes the older one with 4002.
+ *                        A connect without a well-formed secret and id is refused without asking. Refused connects
+ *                        are limited per address (an IPv6 /64) and link, never for the agent exits' own addresses
+ *                        (QORPERA_APP_RELAY_TRUSTED_ADDRESSES), which every company's machines share (429).
  *  - /.qorpera/client.mjs the link program itself, no password.
  *  - /.qorpera/unlock    the password form (POST password, next).
  *  - /.qorpera/health    (on any host, none needed) the container's healthcheck.
  *  - anything else       the gate (cookie __Host-qorpera_app, checked with the database: an open answer kept 30 s, a
  *                        locked one 5 s), then the app through its link program, when the program serves the very site
- *                        the session is for: 503 when none does, 504 when no response head comes in 60 s, 502 when the
- *                        app does not answer, 413 over 10 MiB, 501 for a visitor's WebSocket. Every forwarded answer is
- *                        `cache-control: private, no-cache` and `cdn-cache-control: no-store` (the app's own cache
- *                        headers are dropped), so Cloudflare never keeps a copy in front of the password; and it is
- *                        held to its Content-Length, so a program can never write into the next answer on a connection.
+ *                        the session is for (a kept answer that disagrees is asked again, and the program is dropped
+ *                        only when the database refuses it): 503 when none does, 504 when no response head comes in
+ *                        60 s, 502 when the app does not answer (or names its length twice, or not in digits), 413 over
+ *                        10 MiB, 501 for a visitor's WebSocket. Every forwarded answer is `cache-control: private,
+ *                        no-cache` (`private, no-store` when the app said no-store) and `cdn-cache-control: no-store`
+ *                        (the app's own cache headers are dropped), so Cloudflare never keeps a copy in front of the
+ *                        password; and it is held to its Content-Length, so a program can never write into the next
+ *                        answer on a connection.
  *
  * Messages on the program's WebSocket (binary frames): one byte type, a 4-byte stream id (big endian), the payload.
  *   1 request head  relay -> program  JSON {method, path, headers: [[name, value], ...]}
@@ -69,8 +75,9 @@ export const SILENT_MS = 60_000;
 export const PAUSED_MS = 30_000;
 /** How often a connected program's key, site and port are checked again. */
 export const RECHECK_MS = 5 * 60_000;
-/** Connect attempts: per address a minute, in flight per address, in flight in all. */
-export const CONNECT_LIMIT = Object.freeze({ perMinute: 120, pending: 32, total: 512 });
+/** Connects: refused ones a minute per address (an IPv6 /64) and link, outside the trusted addresses; in flight in
+ * all, for everyone. */
+export const CONNECT_LIMIT = Object.freeze({ refusedPerMinute: 10, total: 512 });
 export const TYPE = Object.freeze({ head: 1, body: 2, end: 3, response: 4, reset: 5, hello: 6, keepalive: 7 });
 export const CLOSE = Object.freeze({ refused: 4001, replaced: 4002, portChanged: 1012, tooManyPings: 1008 });
 
@@ -78,6 +85,8 @@ const SLUG = "[a-z0-9][a-z0-9-]{1,46}[a-z0-9]";
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 /** A claim or a key as the database makes them (base64url or hex), and as a Bearer header carries them. */
 const SECRET = /^[A-Za-z0-9._~+/-]{16,512}={0,2}$/;
+/** A link program's id: 32 random bytes in base64url, made once per process. */
+const PROGRAM_ID = /^[A-Za-z0-9_-]{43}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const JWT = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -127,6 +136,11 @@ const APP_CACHE_HEADERS = new Set([
 /** Every forwarded answer: the visitor's browser may keep it (and ask again each time), no shared cache may. */
 export const FORWARDED_CACHE_HEADERS = Object.freeze([
 	["cache-control", "private, no-cache"],
+	["cdn-cache-control", "no-store"],
+]);
+/** An answer the app said must never be stored: the browser does not keep it either. */
+export const NO_STORE_CACHE_HEADERS = Object.freeze([
+	["cache-control", "private, no-store"],
 	["cdn-cache-control", "no-store"],
 ]);
 
@@ -229,14 +243,20 @@ export function requestHeaders(raw, { host, client, chunked = false }) {
 }
 
 /** What the visitor gets of an app's response headers: no hop-by-hop ones, every Set-Cookie host-only, none for the gate
- * cookie, only names and values HTTP allows, and the relay's caching headers in place of the app's. Null when the list
- * is not a list of [name, value] strings. */
+ * cookie, only names and values HTTP allows, and the relay's caching headers in place of the app's (no-store kept when
+ * the app said it). Null when the list is not a list of [name, value] strings, or names its length more than once or
+ * not in digits only (Node would take `+2` or `0x2`, and write every copy). */
 export function responseHeaders(pairs) {
 	if (!Array.isArray(pairs) || pairs.length > 500) return null;
 	if (
 		!pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && pair.every((item) => typeof item === "string"))
 	)
 		return null;
+	const lengths = pairs.filter(([name]) => name.toLowerCase() === "content-length");
+	if (lengths.length > 1 || lengths.some(([, value]) => !/^\d{1,15}$/.test(value))) return null;
+	const noStore = pairs.some(
+		([name, value]) => name.toLowerCase() === "cache-control" && /(?:^|,)\s*no-store\s*(?:[,=]|$)/i.test(value),
+	);
 	const listed = connectionListed(pairs);
 	const headers = [];
 	for (const [name, value] of pairs) {
@@ -256,7 +276,7 @@ export function responseHeaders(pairs) {
 		}
 		headers.push([name, value]);
 	}
-	headers.push(...FORWARDED_CACHE_HEADERS.map((pair) => [...pair]));
+	headers.push(...(noStore ? NO_STORE_CACHE_HEADERS : FORWARDED_CACHE_HEADERS).map((pair) => [...pair]));
 	return headers;
 }
 
@@ -281,6 +301,22 @@ function isPlatformPath(path) {
 }
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+/** The group an address's refused connects are counted in: an IPv4 address itself, an IPv6 address's /64 (one host
+ * holds a whole /64), "" for none. Takes clientAddress's canonical forms. */
+export function addressGroup(address) {
+	if (!address.includes(":")) return address;
+	const [head, tail = ""] = address.split("::");
+	const left = head ? head.split(":") : [];
+	const right = address.includes("::") && tail ? tail.split(":") : [];
+	const groups = address.includes("::")
+		? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right]
+		: left;
+	return `${groups
+		.slice(0, 4)
+		.map((group) => Number.parseInt(group, 16).toString(16))
+		.join(":")}::/64`;
+}
 
 /** The visitor's address (as site-serve's): CF-Connecting-IP, which Cloudflare's edge sets, when it holds exactly one
  * IPv4 or IPv6 address (IPv6 canonical, an IPv4-mapped one as its IPv4); else "". Never X-Forwarded-For. */
@@ -829,12 +865,13 @@ async function readLimited(response, limit) {
 
 // --- The relay --------------------------------------------------------------------------------------------------------
 
-/** One connected link program: its WebSocket, the site and port it serves, its key (in memory only) and its open
- * streams. */
+/** One connected link program: its WebSocket, its id, the site and port it serves, its key (in memory only) and its
+ * open streams. */
 class Program {
-	constructor(slug, ws, { key, siteId, port }) {
+	constructor(slug, ws, { id, key, siteId, port }) {
 		this.slug = slug;
 		this.ws = ws;
+		this.id = id;
 		this.key = key;
 		this.siteId = siteId;
 		this.port = port;
@@ -887,6 +924,7 @@ export function createRelay({
 	pausedMs = PAUSED_MS,
 	recheckMs = RECHECK_MS,
 	connectLimit = CONNECT_LIMIT,
+	trustedAddresses = [],
 	clientSource,
 	log = (line) => console.log(`app-relay: ${line}`),
 } = {}) {
@@ -899,14 +937,22 @@ export function createRelay({
 	if (jwtRole(relayJwt) !== RELAY_ROLE) throw new Error(`The relay's JWT must name the role ${RELAY_ROLE}`);
 	if (!/^[-.][a-z0-9.-]*\.[a-z0-9-]+$/.test(hostSuffix)) throw new Error("The host suffix is invalid");
 	const client = Buffer.from(clientSource ?? readFileSync(new URL("./client.mjs", import.meta.url)));
+	/** The agent exits' public addresses: every company's machines connect from them, so none is ever held back. */
+	const trusted = new Set(
+		trustedAddresses.map((value) => {
+			const address = clientAddress(value);
+			if (!address) throw new Error("A trusted address is not one IPv4 or IPv6 address");
+			return address;
+		}),
+	);
 	/** slug -> Program: the one connected link program of each link. */
 	const programs = new Map();
 	/** "slug token" -> {until, siteId}: an open answer (siteId) or a locked one (null), and when it stops counting. */
 	const sessions = new Map();
 	/** Upgrade sockets whose connect the database is answering. */
 	const upgrading = new Set();
-	/** address -> {start, count, pending}: connect attempts in the current minute, and in flight. */
-	const attempts = new Map();
+	/** "address group, slug" -> {start, count}: refused connects in the current minute, outside the trusted addresses. */
+	const refusals = new Map();
 	let pendingTotal = 0;
 
 	function failure(error) {
@@ -929,11 +975,11 @@ export function createRelay({
 		return JSON.parse(await readLimited(response, MAX_RPC_ANSWER_BYTES));
 	}
 
-	/** The site a session token opens on this slug, or null. */
-	async function sessionSite(slug, token) {
+	/** The site a session token opens on this slug, or null; `fresh` asks the database whatever is kept. */
+	async function sessionSite(slug, token, fresh = false) {
 		const id = `${slug} ${token}`;
 		const kept = sessions.get(id);
-		if (kept && kept.until > Date.now()) return kept.siteId;
+		if (!fresh && kept && kept.until > Date.now()) return kept.siteId;
 		sessions.delete(id);
 		const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
 		const siteId = result.state === "open" ? result.siteId : null;
@@ -954,30 +1000,34 @@ export function createRelay({
 		sessions.set(id, { until: Date.now() + ms, siteId });
 	}
 
-	/** One more connect attempt from this address, when its minute and the in-flight limits allow it. */
-	function admit(address) {
+	/** This minute's refused connects for an address and a link (none kept for a trusted address). */
+	function refusalsOf(address, slug) {
+		if (trusted.has(address)) return null;
+		const id = `${addressGroup(address)} ${slug}`;
 		const now = Date.now();
-		let entry = attempts.get(address);
+		let entry = refusals.get(id);
 		if (!entry || now - entry.start >= 60_000) {
-			entry = { start: now, count: 0, pending: entry?.pending ?? 0 };
-			attempts.set(address, entry);
+			entry = { start: now, count: 0 };
+			refusals.set(id, entry);
 		}
-		if (
-			pendingTotal >= connectLimit.total ||
-			entry.pending >= connectLimit.pending ||
-			entry.count >= connectLimit.perMinute
-		)
-			return false;
-		entry.count++;
-		entry.pending++;
+		return entry;
+	}
+
+	/** One more connect for the database to answer: while the in-flight total allows it, and, outside the trusted
+	 * addresses, while this address has not been refused too often for this link this minute. */
+	function admit(address, slug) {
+		if (pendingTotal >= connectLimit.total) return false;
+		if ((refusalsOf(address, slug)?.count ?? 0) >= connectLimit.refusedPerMinute) return false;
 		pendingTotal++;
 		return true;
 	}
 
-	function release(address) {
-		const entry = attempts.get(address);
-		if (entry) entry.pending--;
-		pendingTotal--;
+	/** Whether the database still takes a program: its key, its site. */
+	async function stillHolds(program) {
+		const result = parseConnectAnswer(
+			await rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key, p_program: program.id }),
+		);
+		return result.state === "ok" && result.siteId === program.siteId ? result : null;
 	}
 
 	/** A program that no longer serves its link's site (or port) ends; the link is free for the right one. */
@@ -1016,17 +1066,42 @@ export function createRelay({
 		const tokens = gateTokens(req.headers.cookie);
 		for (const token of tokens) {
 			const siteId = await sessionSite(site.slug, token);
-			if (siteId) return forward(req, res, lang, site, siteId);
+			if (siteId) return serve(req, res, lang, site, token, siteId);
 		}
 		// A session that ended takes its cookie with it.
+		return lockedAnswer(req, res, lang, tokens.length > 0);
+	}
+
+	function lockedAnswer(req, res, lang, clear) {
 		return answer(
 			req,
 			res,
 			401,
-			passwordPage(lang, safeNext(url)),
-			tokens.length ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
+			passwordPage(lang, safeNext(req.url ?? "/")),
+			clear ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
 			"same-origin",
 		);
+	}
+
+	/** The link's program for a session of `siteId`. A program connected for another site of this slug never serves it:
+	 * the session is asked again (a kept answer may be older than the program), and the program is dropped only when the
+	 * database no longer takes it. */
+	async function serve(req, res, lang, site, token, siteId) {
+		const text = TEXT[lang];
+		const notRunning = () =>
+			answer(req, res, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+		let program = programs.get(site.slug);
+		if (program && program.siteId !== siteId) {
+			const fresh = await sessionSite(site.slug, token, true);
+			if (!fresh) return lockedAnswer(req, res, lang, true);
+			program = programs.get(site.slug);
+			if (program && program.siteId !== fresh) {
+				if (!(await stillHolds(program)) && programs.get(site.slug) === program) drop(program, "its site is gone");
+				return notRunning();
+			}
+		}
+		if (!program) return notRunning();
+		return forward(req, res, lang, site, program);
 	}
 
 	async function platform(req, res, lang, site, path) {
@@ -1108,16 +1183,8 @@ export function createRelay({
 	}
 
 	/** One request through the link's program: its head, its body as it comes, the response streamed back. */
-	function forward(req, res, lang, site, siteId) {
+	function forward(req, res, lang, site, program) {
 		const text = TEXT[lang];
-		let program = programs.get(site.slug);
-		// A program connected for an earlier site of this slug (unpublished, the name taken again) never serves this one.
-		if (program && program.siteId !== siteId) {
-			drop(program, "its site is gone");
-			program = undefined;
-		}
-		if (!program)
-			return answer(req, res, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
 		const declared = req.headers["content-length"];
 		if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > maxBodyBytes)) {
 			req.resume();
@@ -1276,9 +1343,10 @@ export function createRelay({
 		else stream.reset();
 	}
 
-	function register(site, ws, secret, result) {
+	function register(site, ws, secret, id, result) {
 		const old = programs.get(site.slug);
 		const program = new Program(site.slug, ws, {
+			id,
 			key: result.key ?? secret,
 			siteId: result.siteId,
 			port: result.port,
@@ -1319,37 +1387,46 @@ export function createRelay({
 			return rawAnswer(socket, 501, messagePage(lang, text.live, text.liveLead));
 		const accept = req.method === "GET" ? acceptKey(req.headers) : null;
 		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
+		/** The handshake completed: a refusal is a close code, which the program reads and stops at. */
+		const opened = () => {
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+			);
+			return new WebSocketConnection(socket, head, { maxQueued: maxQueuedBytes });
+		};
+		const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
+		const id = req.headers["x-qorpera-program"];
+		// Not a claim or key and a program id as the platform makes them: refused, asking nobody, counting nothing.
+		if (!secret || !SECRET.test(secret) || typeof id !== "string" || !PROGRAM_ID.test(id))
+			return opened().close(CLOSE.refused, "refused");
 		const address = clientAddress(req.headers["cf-connecting-ip"]);
-		if (!admit(address))
+		if (!admit(address, site.slug))
 			return rawAnswer(socket, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
 		// Nothing is read from the socket until the database has answered.
 		socket.pause();
 		upgrading.add(socket);
 		try {
-			const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
-			let result = { state: "refused" };
-			if (secret && SECRET.test(secret)) {
-				try {
-					result = parseConnectAnswer(
-						await rpc("qorpera_site_app_connect", { p_slug: site.slug, p_secret: secret }),
-					);
-				} catch (error) {
-					failure(error);
-					return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "10" });
-				}
-				if (result.state !== "ok") log(`${site.slug}: a link program was refused`);
+			let result;
+			try {
+				result = parseConnectAnswer(
+					await rpc("qorpera_site_app_connect", { p_slug: site.slug, p_secret: secret, p_program: id }),
+				);
+			} catch (error) {
+				failure(error);
+				return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "10" });
+			}
+			if (result.state !== "ok") {
+				log(`${site.slug}: a link program was refused`);
+				const refused = refusalsOf(address, site.slug);
+				if (refused) refused.count++;
 			}
 			if (socket.destroyed) return;
-			socket.write(
-				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-			);
-			const ws = new WebSocketConnection(socket, head, { maxQueued: maxQueuedBytes });
-			// A refusal is a close code: the program reads it and stops.
+			const ws = opened();
 			if (result.state !== "ok") return ws.close(CLOSE.refused, "refused");
-			register(site, ws, secret, result);
+			register(site, ws, secret, id, result);
 		} finally {
 			upgrading.delete(socket);
-			release(address);
+			pendingTotal--;
 		}
 	}
 
@@ -1368,7 +1445,7 @@ export function createRelay({
 			}
 			if (recheckMs > 0 && now - program.checkedAt >= recheckMs) {
 				program.checkedAt = now;
-				rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key })
+				rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key, p_program: program.id })
 					.then((value) => {
 						const result = parseConnectAnswer(value);
 						if (programs.get(program.slug) !== program) return;
@@ -1381,8 +1458,7 @@ export function createRelay({
 			}
 		}
 		for (const [id, kept] of sessions) if (kept.until <= now) sessions.delete(id);
-		for (const [address, entry] of attempts)
-			if (entry.pending <= 0 && now - entry.start >= 60_000) attempts.delete(address);
+		for (const [id, entry] of refusals) if (now - entry.start >= 60_000) refusals.delete(id);
 	}
 
 	const server = createServer(handle);
@@ -1424,6 +1500,10 @@ export function main(env = process.env) {
 		apiKey: required("QORPERA_API_KEY"),
 		relayJwt: required("QORPERA_RELAY_JWT"),
 		hostSuffix: env.QORPERA_APP_HOST_SUFFIX?.trim() || DEFAULT_HOST_SUFFIX,
+		trustedAddresses: (env.QORPERA_APP_RELAY_TRUSTED_ADDRESSES ?? "")
+			.split(",")
+			.map((value) => value.trim())
+			.filter(Boolean),
 	});
 	const port = Number(env.QORPERA_APP_RELAY_PORT ?? 8090);
 	server.listen(port, "0.0.0.0", () => console.log(`app-relay: listening on :${port}`));

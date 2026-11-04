@@ -29,6 +29,11 @@
 #      grep -c '^QORPERA_RELAY_JWT=eyJ' .env   # 1: the line is there (its value is never shown)
 #    A new JWT_SECRET (keys.sh mint) ends this JWT too: delete the line and mint it again, then
 #    `docker compose up -d app-relay`.
+#  - QORPERA_APP_RELAY_TRUSTED_ADDRESSES: the agent exits' public addresses, comma separated. Every company's machines
+#    connect from them (both nodes may share one), so the relay never holds back connects from them; refused connects
+#    from any other address are limited per address (an IPv6 /64) and link, and only the total in flight applies to
+#    all. Empty by default: the rollout fills in both nodes' agent exit public addresses, in .env as
+#    QORPERA_APP_RELAY_TRUSTED_ADDRESSES=<node01's>,<node02's>, then `docker compose up -d app-relay`.
 #  - Kill switch: `docker compose stop app-relay` (every app link then answers 503 from api-front), or apps_enabled =
 #    false in qorpera_site_settings.
   app-relay:
@@ -50,6 +55,7 @@
       QORPERA_RELAY_JWT: ${QORPERA_RELAY_JWT:?QORPERA_RELAY_JWT is not set in .env (see the minting step above)}
       QORPERA_APP_HOST_SUFFIX: -preview.qorpera.com
       QORPERA_APP_RELAY_PORT: "8090"
+      QORPERA_APP_RELAY_TRUSTED_ADDRESSES: ${QORPERA_APP_RELAY_TRUSTED_ADDRESSES:-}
     volumes:
       - ./front/app-relay:/app:ro
     healthcheck:
