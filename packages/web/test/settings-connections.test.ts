@@ -1596,7 +1596,10 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		createdAt: timestamp,
 		providerAccountEmail: "member@example.com",
 	};
-	async function claudeSetup(signInOpen: boolean, submitCode = vi.fn(async (_code: string) => undefined)) {
+	async function claudeSetup(
+		signInOpen: boolean,
+		submitCode = vi.fn(async (_code: string): Promise<"completed" | "saving"> => "completed"),
+	) {
 		const listed = { signInOpen, logins: [] as (typeof claudeLogin)[] };
 		const client = {
 			listConnections: vi.fn(async () => structuredClone(observed(connected))),
@@ -1682,10 +1685,33 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		);
 	});
 
+	it("says it is still connecting while the vault saves the login, and connected once the login is listed", async () => {
+		const { client, listed } = await claudeSetup(
+			true,
+			vi.fn(async (): Promise<"completed" | "saving"> => "saving"),
+		);
+		addAccount(CLAUDE);
+		await settle();
+		paste("anthropic-code#state");
+		await settle();
+		expect(status(CLAUDE)).toBe("Connecting Claude…");
+		expect(view.el.querySelector(".connection-code")).toBeNull();
+		expect(view.el.textContent).not.toContain("Claude is connected.");
+		listed.logins = [
+			{
+				...claudeLogin,
+				clientConnectionId: vi.mocked(client.beginProviderLogin).mock.calls[0]![0].clientConnectionId,
+			},
+		];
+		await vi.waitFor(() => expect(card("Claude · coding only")).toBeDefined(), { timeout: 5000 });
+		expect(view.el.textContent).toContain("Claude is connected. It is used only for coding sessions you start.");
+		expect(card(CLAUDE)).toBeUndefined();
+	});
+
 	it("says a refused code did not work and offers a new sign-in", async () => {
 		const { client } = await claudeSetup(
 			true,
-			vi.fn(async () => {
+			vi.fn(async (): Promise<"completed" | "saving"> => {
 				throw new ClaudeCodeError();
 			}),
 		);

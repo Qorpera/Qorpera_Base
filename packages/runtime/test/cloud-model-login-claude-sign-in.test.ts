@@ -386,3 +386,29 @@ it("refuses a wrong Claude code, a code for a Codex sign-in, and a request whose
 		"Vault sign-in description is invalid",
 	);
 });
+
+it("answers preparing once the route's time is up, and still saves the login it took the code for", async () => {
+	const w = vault();
+	const completed = {
+		status: "completed" as const,
+		authJson: JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files: { ".credentials.json": "e30=" } }),
+	};
+	const helper: ModelLoginSignInHelper = {
+		beginSignIn: vi.fn(async () => ({ status: "awaiting_member" as const, interactionUrl: "https://claude.com/x" })),
+		readSignIn: vi.fn(async () => completed),
+		listCompletedSignIns: vi.fn(async () => []),
+		finishSignIn: vi.fn(async () => undefined),
+		submitCode: vi.fn(async () => completed),
+	};
+	const save = vi.mocked(w.authority.completeClaudeLoginSignIn!).getMockImplementation()!;
+	vi.mocked(w.authority.completeClaudeLoginSignIn!).mockImplementation(async (completion, saveSignal) => {
+		await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+		return save(completion, saveSignal);
+	});
+	const signIns = new CloudModelLoginSignIns({ authority: w.authority, keyring: w.keyring, helper });
+	expect(await signIns.submitClaudeCode(w.code(GOOD_CODE), AbortSignal.timeout(100))).toMatchObject({
+		status: "preparing",
+	});
+	await vi.waitFor(() => expect(w.completions).toHaveLength(1));
+	expect(helper.finishSignIn).toHaveBeenCalled();
+});

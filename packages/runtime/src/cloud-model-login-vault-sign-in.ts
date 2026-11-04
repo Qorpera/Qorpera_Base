@@ -492,11 +492,16 @@ export class CloudModelLoginSignIns {
 			await helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
 			throw new ClaudeCodeRefused();
 		}
-		if (state.status === "completed")
-			return answer(
-				loginId,
-				(await this.#complete(description.companyId, loginId, capabilitySha256)) ? "completed" : "preparing",
-			);
+		if (state.status === "completed") {
+			// The save goes on whatever the route's budget (and the collection completes it too); the answer waits for it
+			// only inside that budget, so the edge function never times out on a login that was saved.
+			const saved = this.#complete(description.companyId, loginId, capabilitySha256).catch(() => false);
+			const outOfTime = new Promise<false>((resolveTime) => {
+				if (signal.aborted) resolveTime(false);
+				else signal.addEventListener("abort", () => resolveTime(false), { once: true });
+			});
+			return answer(loginId, (await Promise.race([saved, outOfTime])) ? "completed" : "preparing");
+		}
 		// Claude Code is still exchanging the code: the collection completes it, and the web client's next read sees it.
 		if (state.status === "awaiting_member") return answer(loginId, "preparing");
 		throw new Error("Vault sign-in has ended");

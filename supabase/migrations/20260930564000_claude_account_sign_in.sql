@@ -12,7 +12,8 @@
 -- * Begin: qorpera_begin_native_provider_login with provider 'anthropic' and harness 'claude-code', as before. The
 --   scope trigger marks the sign-in model_login_kind 'claude', scope 'account'; the login gateway chooser sends it to
 --   the company's vault; the v2 read names it (loginKind 'claude'). A vault build without this change refuses it.
---   A Claude sign-in never gets a login machine (a guard on the machine requests).
+--   A Claude sign-in never gets a login machine (guards on the machine requests and allocations), and completes only
+--   as a Claude login (a node's completion, which would make a provider connection and capsule, is refused).
 -- * The vault's helper runs the official, unmodified Claude Code (`claude auth login --claudeai`) in its sandbox. The
 --   member opens Anthropic's page, signs in there and pastes Anthropic's code into Qorpera's page; the vault writes it
 --   once to Claude Code's input. Claude Code exchanges it itself and writes its own login files.
@@ -126,6 +127,13 @@ begin
 		if new.model_login_kind is distinct from old.model_login_kind then
 			raise exception 'A sign-in keeps its kind' using errcode = '42501';
 		end if;
+		-- Only the vault's completion completes a Claude sign-in: its Claude login is written first. Any other
+		-- completion (a node's qorpera_complete_native_provider_login would make a provider connection and a capsule
+		-- that agents could use) is refused, and its transaction with it.
+		if new.status = 'completed' and old.status is distinct from 'completed' and not exists (
+			select 1 from public.qorpera_claude_logins as claude where claude.sign_in_session_id = new.id) then
+			raise exception 'A Claude sign-in completes only as a Claude login' using errcode = '42501';
+		end if;
 		new.model_login_scope := old.model_login_scope;
 	elsif new.model_login_kind is distinct from 'codex' then
 		new.model_login_scope := 'company';
@@ -137,7 +145,8 @@ end
 $$;
 revoke all on function public.qorpera_model_login_session_scope() from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- A Claude sign-in never gets a login machine (the old per-node path), whichever gateway a request reaches.
+-- A Claude sign-in never gets a login machine (the old per-node path), whichever gateway a request reaches: neither
+-- its machine request nor a machine allocation.
 create function public.qorpera_claude_sign_in_machine_guard()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
@@ -154,6 +163,10 @@ revoke all on function public.qorpera_claude_sign_in_machine_guard()
 create trigger qorpera_claude_sign_in_machine_guard
 	before insert on public.qorpera_runtime_login_machine_requests
 	for each row execute function public.qorpera_claude_sign_in_machine_guard();
+create trigger qorpera_claude_sign_in_allocation_guard
+	before insert or update of login_session_id on public.qorpera_runtime_machine_allocations
+	for each row when (new.login_session_id is not null)
+	execute function public.qorpera_claude_sign_in_machine_guard();
 
 -- 4. The login gateway chooser sends a Claude sign-in to its company's vault ---------------------------------------------
 

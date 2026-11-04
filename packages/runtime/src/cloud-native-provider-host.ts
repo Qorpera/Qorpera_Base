@@ -148,6 +148,15 @@ export interface NativeHarnessLoginHandle {
 
 /** The pages Claude Code's own sign-in sends a member to (`claude auth login --claudeai`). */
 const CLAUDE_SIGN_IN_HOSTS = new Set(["claude.com", "claude.ai", "platform.claude.com"]);
+/** Whether a link Claude Code printed is Anthropic's own sign-in page; a link that does not parse is not. */
+function claudeSignInPage(link: string): boolean {
+	try {
+		const url = new URL(link);
+		return url.protocol === "https:" && CLAUDE_SIGN_IN_HOSTS.has(url.hostname);
+	} catch {
+		return false;
+	}
+}
 /** Anthropic's code as Claude Code reads it: one line of printable ASCII. */
 const CLAUDE_SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 
@@ -1020,12 +1029,9 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			const poll = (): void => {
 				const parsed = interactionFromOutput(capture.output());
 				if (parsed.interactionUrl || parsed.userCode || child.exitCode !== null) {
-					// Claude's link is Anthropic's own sign-in page, and it brings no device code.
-					if (
-						claude &&
-						parsed.interactionUrl &&
-						!CLAUDE_SIGN_IN_HOSTS.has(new URL(parsed.interactionUrl).hostname)
-					) {
+					// Claude's link is Anthropic's own sign-in page, and it brings no device code. A link that does not
+					// parse rejects here: this runs on a timer, where a throw would end the process.
+					if (claude && parsed.interactionUrl && !claudeSignInPage(parsed.interactionUrl)) {
 						reject(new Error("Provider login did not present an official interaction URL"));
 						return;
 					}

@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import type { NativeHarnessDriver } from "./cloud-native-provider-host.ts";
 
@@ -113,13 +114,26 @@ function checkBinding(binding: ModelLoginSignInBinding): number {
 
 const settled = (state: ModelLoginSignInState): boolean => state.status === "completed" || state.status === "failed";
 
+/** One of Claude Code's login files, as bytes: a regular file, never through a link (O_NOFOLLOW), read from the
+ * handle it was checked on. */
+async function claudeLoginFile(path: string): Promise<Buffer> {
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const metadata = await handle.stat();
+		if (!metadata.isFile() || metadata.size > MAX_CLAUDE_FILE_BYTES) throw new Error("Claude login file is unsafe");
+		return await handle.readFile();
+	} finally {
+		await handle.close();
+	}
+}
+
 /** Claude Code's login files, as bytes: its credentials (required) and its account settings (when it wrote them). */
 async function claudeLoginFiles(configDirectory: string): Promise<string> {
 	const files: Record<string, string> = {};
 	for (const name of CLAUDE_LOGIN_FILES) {
 		let bytes: Buffer;
 		try {
-			bytes = await readFile(join(configDirectory, name));
+			bytes = await claudeLoginFile(join(configDirectory, name));
 		} catch (error) {
 			if (name !== ".credentials.json" && (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") continue;
 			throw error;

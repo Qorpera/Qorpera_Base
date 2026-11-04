@@ -38,9 +38,10 @@ export interface WebNativeProviderLogin {
 	interactionUrl?: string;
 	userCode?: string;
 	expiresAt: string;
-	/** A Claude sign-in (20260930564000): sends the code Anthropic showed the member, once. Resolves when Claude Code
-	 * has the login; throws `ClaudeCodeError` when it refused the code. */
-	submitCode?: (code: string, signal?: AbortSignal) => Promise<void>;
+	/** A Claude sign-in (20260930564000): sends the code Anthropic showed the member, once. Resolves `completed` when
+	 * the vault saved the login, `saving` when it is still saving it (the member's list shows it soon); throws
+	 * `ClaudeCodeError` when Claude Code refused the code. */
+	submitCode?: (code: string, signal?: AbortSignal) => Promise<"completed" | "saving">;
 }
 
 /** A member's Claude login (20260930564000): their own, used only for coding sessions they start. */
@@ -555,7 +556,7 @@ export function createWebNativeSubscription(
 						throw new Error("Claude sign-in did not answer with Anthropic's address.");
 					const capability = authorization.capability;
 					let sent = false;
-					const submitCode = async (code: string, codeSignal?: AbortSignal): Promise<void> => {
+					const submitCode = async (code: string, codeSignal?: AbortSignal): Promise<"completed" | "saving"> => {
 						if (sent) throw new ClaudeCodeError();
 						sent = true;
 						const checked = AbortSignal.any([
@@ -596,6 +597,7 @@ export function createWebNativeSubscription(
 							(value.status !== "completed" && value.status !== "preparing")
 						)
 							throw new Error("The Claude sign-in could not be finished.");
+						return value.status === "completed" ? "completed" : "saving";
 					};
 					return {
 						...prompt,

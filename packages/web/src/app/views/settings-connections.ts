@@ -66,6 +66,8 @@ interface Attempt {
 	/** A Claude sign-in: the code the member is pasting, kept only until it is sent. */
 	code?: string;
 	sending?: boolean;
+	/** The vault took the code and is still saving the login: the next read that lists it ends the attempt. */
+	saving?: boolean;
 }
 
 /** Sign-ins in progress outlive the page that started them: a node may spend a
@@ -577,9 +579,11 @@ export class ConnectionsView {
 		attempt.error = undefined;
 		this.#signIns.changed();
 		try {
-			await login.submitCode(code);
-			if (this.#attempts.get("anthropic") === attempt) this.#attempts.delete("anthropic");
-			this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
+			if ((await login.submitCode(code)) === "saving") attempt.saving = true;
+			else {
+				if (this.#attempts.get("anthropic") === attempt) this.#attempts.delete("anthropic");
+				this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
+			}
 		} catch (error) {
 			attempt.login = undefined;
 			attempt.error =
@@ -926,7 +930,7 @@ export class ConnectionsView {
 		const claude = Boolean(attempt.login?.submitCode);
 		const status = attempt.starting
 			? t("Preparing sign-in. The first time can take a minute or two.")
-			: attempt.sending
+			: attempt.sending || attempt.saving
 				? t("Connecting Claude…")
 				: attempt.login && claude
 					? (attempt.error ?? t("Sign in on Claude's page, then paste the code it shows you here."))
@@ -947,7 +951,7 @@ export class ConnectionsView {
 		const login = attempt.login;
 		// Claude: the code Anthropic shows after its sign-in, pasted here and sent once. Never kept after that.
 		const codeForm =
-			login && claude
+			login && claude && !attempt.saving
 				? h(
 						"form",
 						{

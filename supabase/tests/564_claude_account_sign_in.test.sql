@@ -141,7 +141,7 @@ select pg_temp.cl_expect(left(pg_temp.cl_begin('92400000-0000-4000-8000-00000000
 reset role;
 select pg_temp.base_claims('service_role');
 
--- 4. It never gets a login machine, and never completes as a Codex login.
+-- 4. It never gets a login machine or allocation, never completes on a node, and never as a Codex login.
 do $$
 begin
 	begin
@@ -153,6 +153,39 @@ begin
 		raise exception 'a Claude sign-in got a login machine';
 	exception when insufficient_privilege then null;
 	end;
+	begin
+		insert into public.qorpera_runtime_machine_allocations(id, profile_id, login_session_id, login_compute_identity_id,
+			provider_adapter, instance_sha256)
+		values (extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000010',
+			current_setting('qorpera_test.cl_login')::uuid, current_setting('qorpera_test.cl_identity')::uuid,
+			'native26-phql-b1', repeat('e', 64));
+		raise exception 'a Claude sign-in got a machine allocation';
+	exception when insufficient_privilege then null;
+	end;
+	-- A node's completion would make a provider connection and capsule agents could use: refused (a Claude sign-in is
+	-- no Codex one), with all it wrote.
+	begin
+		perform public.qorpera_complete_native_provider_login(current_setting('qorpera_test.cl_login')::uuid, repeat('4', 64),
+			extensions.gen_random_uuid(), 'object://claude/node', repeat('d', 64), 'claude-account', 'personal-subscription',
+			'qorpera-native-provider-consent/v1',
+			'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":1}');
+		raise exception 'a node completed a Claude sign-in';
+	exception when object_not_in_prerequisite_state then
+		if sqlerrm <> 'native provider login is unavailable' then raise; end if;
+	end;
+	-- And whatever else would mark it completed without its Claude login.
+	begin
+		update public.qorpera_native_provider_login_sessions set status = 'completed', completed_at = statement_timestamp()
+		where id = current_setting('qorpera_test.cl_login')::uuid;
+		raise exception 'a Claude sign-in completed without its Claude login';
+	exception when insufficient_privilege then
+		if sqlerrm <> 'A Claude sign-in completes only as a Claude login' then raise; end if;
+	end;
+	if (select status from public.qorpera_native_provider_login_sessions
+			where id = current_setting('qorpera_test.cl_login')::uuid) <> 'pending'
+		or exists (select 1 from public.qorpera_native_credential_capsules where provider = 'anthropic')
+		or exists (select 1 from public.qorpera_provider_connections where provider = 'anthropic') then
+		raise exception 'a refused node completion left rows behind'; end if;
 	begin
 		update public.qorpera_native_provider_login_sessions set model_login_kind = 'codex'
 		where id = current_setting('qorpera_test.cl_login')::uuid;
