@@ -736,6 +736,25 @@ describe("what the card shows for delegation", () => {
 		expect(schedule({ kind: "dynamic", timeZone: COPENHAGEN, firstRunAt: "2026-10-01T09:00:00+02:00" })).toBe(
 			"The agent picks each next run, starting 1 Oct 2026 at 09:00 (Europe/Copenhagen)",
 		);
+		// A listener names what it waits for, never its path, and its time is the latest one.
+		expect(
+			schedule({
+				kind: "when_done",
+				path: "QorperaOS/agents/product-builder/todos/landing-page.md",
+				latestAt: "2026-11-06T09:00:00+01:00",
+				timeZone: COPENHAGEN,
+			}),
+		).toBe(
+			"When the todo “Landing page” of product-builder is done, at the latest 6 Nov 2026 at 09:00 (Europe/Copenhagen)",
+		);
+		expect(
+			schedule({
+				kind: "when_done",
+				path: "QorperaOS/human-tasks/sign-contract.md",
+				latestAt: "2026-11-06T08:00:00Z",
+				timeZone: "UTC",
+			}),
+		).toBe("When the human task “Sign contract” is done, at the latest 6 Nov 2026 at 08:00 (UTC)");
 		// A file is named as people say it, never by its path.
 		expect(schedule({ kind: "file_change", path: "sales/leads", match: "subtree", timeZone: COPENHAGEN })).toBe(
 			"When anything in “Leads” changes",

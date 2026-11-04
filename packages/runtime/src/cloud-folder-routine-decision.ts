@@ -64,6 +64,9 @@ export interface CloudFolderRoutineDecisionRequest {
 	readonly effort?: string;
 	readonly report?: "optional" | "required" | "silent";
 	readonly summary?: string;
+	/** decide_routine's whenDone: the next run comes as soon as this todo or human task is done, at `at` at the latest.
+	 * A next run without it is a plain time, so a listener that was heard never wakes the routine again. */
+	readonly after?: string;
 }
 
 const AGAIN = "decide again with a new operationKey";
@@ -246,7 +249,7 @@ export class CloudFolderRoutineDecision {
 					...kept,
 					title: title ?? routine.title,
 					instructions: instructions ?? routine.instructions,
-					trigger: { when: "once", at },
+					trigger: request.after === undefined ? { when: "once", at } : { when: "once", at, after: request.after },
 					effort: (request.effort as RoutineFile["effort"] | undefined) ?? routine.effort,
 					reply: request.report ?? routine.reply,
 				});
@@ -254,7 +257,7 @@ export class CloudFolderRoutineDecision {
 				const problems = problemsOf(path, text);
 				if (problems.length) throw new CloudToolRefusal(invalidMessage(problems, INVALID));
 			} else {
-				const changes: Record<string, CompanyStateSetting> = { at };
+				const changes: Record<string, CompanyStateSetting> = { at, after: request.after ?? null };
 				if (request.effort !== undefined) changes.effort = request.effort;
 				if (request.report !== undefined) changes.reply = request.report;
 				text = setCompanyStateSettings(found.text, changes);

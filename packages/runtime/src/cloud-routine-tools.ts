@@ -1,3 +1,4 @@
+import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	CLOUD_FOLDER_ROUTINE_NAME,
@@ -107,6 +108,22 @@ function instant(value: unknown, label: string): string {
 	return new Date(value).toISOString();
 }
 
+/** What a listener waits for: a todo's or a human task's file, as a path inside the company. A trailing slash is
+ * dropped and `.md` added when it is missing, so a todo named the way list output shows it still reads. */
+export function cloudRoutineListenedPath(value: unknown, label: string): string {
+	const refusal = () =>
+		new CloudToolArgumentRefusal(
+			`${label} is the path of a todo or a human task file, like QorperaOS/agents/product-builder/todos/landing-page.md or QorperaOS/human-tasks/sign-contract.md`,
+		);
+	if (typeof value !== "string" || Buffer.byteLength(value) > 1024) throw refusal();
+	const trimmed = value.trim().replace(/\/+$/, "");
+	for (const path of trimmed.endsWith(".md") ? [trimmed] : [`${trimmed}.md`, trimmed]) {
+		const kind = companyStatePath(path)?.kind;
+		if (kind === "todo" || kind === "human-task") return path;
+	}
+	throw refusal();
+}
+
 /** The model describes a cadence in the three shapes people use; the cloud
  * scheduler's closed trigger forms are compiled here. The trigger id is
  * host-owned and every routine has exactly one trigger (contract 16.3). A
@@ -159,6 +176,21 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		return {
 			kind: "once",
 			...(t.firstRunAt === undefined ? {} : { at: instant(t.firstRunAt, "firstRunAt") }),
+			timeZone: timeZone(t.timeZone, "timeZone"),
+			replyPolicy: reply(t.report),
+		};
+	}
+	if (kind === "when_done") {
+		// A listener: a dynamic routine whose first run waits for the todo or human task, with latestAt as its fallback.
+		const t = triggerKeys(value, kind, ["path", "latestAt", "timeZone"], ["report"], {
+			path: "QorperaOS/agents/product-builder/todos/landing-page.md",
+			latestAt: "2026-11-06T09:00:00+01:00",
+			timeZone: zone,
+		});
+		return {
+			kind: "once",
+			at: instant(t.latestAt, "latestAt"),
+			after: cloudRoutineListenedPath(t.path, "path"),
 			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
 		};
@@ -224,7 +256,7 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		};
 	}
 	throw new CloudToolArgumentRefusal(
-		`trigger is an object whose kind is dynamic, every, weekly, file_change or event, like ${JSON.stringify({ kind: "dynamic", timeZone: zone })}`,
+		`trigger is an object whose kind is dynamic, when_done, every, weekly, file_change or event, like ${JSON.stringify({ kind: "dynamic", timeZone: zone })}`,
 	);
 }
 
@@ -232,14 +264,14 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
-	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or an existing dynamic routine's next run if still ahead; the member's IANA timeZone), when_done (path of a todo or human task file, latestAt, IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
+	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, watching a situation; when_done to follow up a todo or human task, never a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.done says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
+	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new, to learn what it needs; never leave new standing work idle for days. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
 	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
 	"Give a finite watch an expiresAt, or for every or weekly a maxOccurrences, so it ends by itself. quietHours holds non-urgent runs until the window ends. " +
 	"conclude ends a routine with a one-sentence summary of why, and keeps it in the list as concluded; saving it again restarts it. remove deletes it from the list for good. " +
-	"status paused with pauseReason needs_model_account means no model account of the requesting member allows unattended runs yet: say so plainly, it is a one-time account setting. authorization_failed means the account stopped working. " +
+	"For a routine paused with pauseReason needs_model_account or authorization_failed, list says what it waits for and what to tell the member. " +
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. A routine is not a reminder to a person and cannot act beyond your own authority.";
 
 /** A folder-v2 agent's routines are files in its own folder, named by their keys, and each change is reviewed (thin
@@ -276,7 +308,7 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 
 export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
-	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. " +
+	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time. " +
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
 	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
 	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
@@ -383,6 +415,18 @@ export function cloudRoutineTools(
 							properties: {
 								kind: { const: "dynamic" },
 								firstRunAt: { type: "string", format: "date-time" },
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "path", "latestAt", "timeZone"],
+							properties: {
+								kind: { const: "when_done" },
+								path: { type: "string", minLength: 1, maxLength: 1024 },
+								latestAt: { type: "string", format: "date-time" },
 								timeZone: zoneSchema,
 								report: reportSchema,
 							},
@@ -657,6 +701,7 @@ export function cloudRoutineDecisionTool(
 				effort: { type: "string", enum: [...CLOUD_RUNTIME_REASONING_EFFORTS] },
 				report: { type: "string", enum: [...REPLY] },
 				summary: { type: "string", minLength: 1, maxLength: 2000 },
+				whenDone: { type: "string", minLength: 1, maxLength: 1024 },
 			},
 		},
 		parseArguments(value) {
@@ -675,7 +720,7 @@ export function cloudRoutineDecisionTool(
 			}
 			const n = object(
 				value,
-				["action", "operationKey", "at", "intent", "title", "effort", "report"],
+				["action", "operationKey", "at", "intent", "title", "effort", "report", "whenDone"],
 				["action", "operationKey"],
 			);
 			if (typeof n.operationKey !== "string" || !OPERATION_KEY.test(n.operationKey))
@@ -688,6 +733,7 @@ export function cloudRoutineDecisionTool(
 				request.effort = n.effort;
 			}
 			if (n.report !== undefined) request.report = reply(n.report);
+			if (n.whenDone !== undefined) request.after = cloudRoutineListenedPath(n.whenDone, "whenDone");
 			// A rewrite's file is checked now, before the automatic review.
 			options.folderDecision.check(request as unknown as CloudFolderRoutineDecisionRequest);
 			return request as never;

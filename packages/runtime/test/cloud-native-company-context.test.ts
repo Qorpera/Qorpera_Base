@@ -1506,14 +1506,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // conversations as the members' quick way in), taken again when a member's "push it" or "open a PR" became a coding
 // session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
 // Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026), and for overlay v8 (the team
-// grows like a company of employees; Jonas, 4 November 2026). A change to either is a
-// change to every run's bytes.
+// grows like a company of employees; Jonas, 4 November 2026), and for listener routines in Standing work ("put out
+// listeners for a task"; Jonas, 4 November 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "3713494ac1c9887031ec713ed9a9fa091702240050c7cd68f189815157511dbb",
+			instructions: "283eccacaf1ca576bbda379825c07bfd1862377354a3a589dc410a87ef96d0d4",
 			prompt: "a8fd997969a8cf2bb8d710dacb7ba2a30a94ae405defeb7eb400dd99db6c7ed5",
 		},
 	],
@@ -1529,7 +1529,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "3713494ac1c9887031ec713ed9a9fa091702240050c7cd68f189815157511dbb",
+			instructions: "283eccacaf1ca576bbda379825c07bfd1862377354a3a589dc410a87ef96d0d4",
 			prompt: "3f234f98017ff2a298b31e834b6ca32c089de6118ccef5cd82eb38cb95335ab9",
 		},
 	],

@@ -87,6 +87,26 @@ describe("a routine file's trigger as the routine list reads it", () => {
 		expect(
 			cloudRoutineTriggerOfFile(file({ trigger: { when: "once", at: "2026-10-05T07:00:00Z" }, timezone: "UTC" })),
 		).toEqual({ id: "file", kind: "once", at: "2026-10-05T07:00:00Z", timeZone: "UTC", replyPolicy: "required" });
+		// A listener's todo by its folded key, as the index keeps it.
+		expect(
+			cloudRoutineTriggerOfFile(
+				file({
+					trigger: {
+						when: "once",
+						at: "2026-10-05T07:00:00Z",
+						after: "QorperaOS/agents/Otto/todos/landing-page.md",
+					},
+					timezone: "UTC",
+				}),
+			),
+		).toEqual({
+			id: "file",
+			kind: "once",
+			at: "2026-10-05T07:00:00Z",
+			timeZone: "UTC",
+			after: "qorperaos/agents/otto/todos/landing-page.md",
+			replyPolicy: "required",
+		});
 		expect(
 			cloudRoutineTriggerOfFile(file({ trigger: { when: "file-change", watch: "notes", match: "subtree" } })),
 		).toBeNull();

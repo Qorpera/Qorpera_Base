@@ -450,6 +450,90 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	it("compiles a when_done listener on a todo or a human task, with its latest time", async () => {
+		const f = await fixture();
+		try {
+			const todo = await f.boundary.invoke("w1", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "w1",
+				trigger: {
+					kind: "when_done",
+					path: "QorperaOS/agents/product-builder/todos/landing-page.md",
+					latestAt: "2026-11-06T09:00:00+01:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			});
+			expect(todo.success, JSON.stringify(todo)).toBe(true);
+			// A todo named without .md, as lists show it, and a human task.
+			const bare = await f.boundary.invoke("w2", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "w2",
+				trigger: {
+					kind: "when_done",
+					path: "QorperaOS/agents/product-builder/todos/landing-page",
+					latestAt: "2026-11-06T09:00:00Z",
+					timeZone: "UTC",
+				},
+			});
+			const task = await f.boundary.invoke("w3", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "w3",
+				trigger: {
+					kind: "when_done",
+					path: "QorperaOS/human-tasks/sign-contract.md",
+					latestAt: "2026-11-06T09:00:00Z",
+					timeZone: "UTC",
+					report: "required",
+				},
+			});
+			expect(bare.success && task.success, JSON.stringify([bare, task])).toBe(true);
+			expect(f.saved().map((request) => request.trigger)).toEqual([
+				{
+					kind: "once",
+					at: "2026-11-06T08:00:00.000Z",
+					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
+					timeZone: "Europe/Copenhagen",
+					replyPolicy: "optional",
+				},
+				{
+					kind: "once",
+					at: "2026-11-06T09:00:00.000Z",
+					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
+					timeZone: "UTC",
+					replyPolicy: "optional",
+				},
+				{
+					kind: "once",
+					at: "2026-11-06T09:00:00.000Z",
+					after: "QorperaOS/human-tasks/sign-contract.md",
+					timeZone: "UTC",
+					replyPolicy: "required",
+				},
+			]);
+			// Anything else is refused in words the model can act on, before any save: another file, no latest time.
+			const other = await f.boundary.invoke("w4", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "w4",
+				trigger: { kind: "when_done", path: "product/plan.md", latestAt: "2026-11-06T09:00:00Z", timeZone: "UTC" },
+			});
+			expect(other.success).toBe(false);
+			expect(other.contentItems[0].text).toContain("path is the path of a todo or a human task file");
+			const open = await f.boundary.invoke("w5", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "w5",
+				trigger: {
+					kind: "when_done",
+					path: "QorperaOS/human-tasks/sign-contract.md",
+					timeZone: "UTC",
+				},
+			});
+			expect(open.success).toBe(false);
+			expect(open.contentItems[0].text).toContain("a trigger of kind when_done takes path, latestAt and timeZone");
+			expect(f.writer.change).toHaveBeenCalledTimes(3);
+		} finally {
+			f.run.close();
+		}
+	});
 	it("lists through the writer, a page or one routine, and hands it a pause", async () => {
 		const f = await fixture();
 		try {
@@ -641,6 +725,38 @@ describe("dynamic routine decision tool", () => {
 			expect(again.success).toBe(false);
 			expect(again.contentItems[0].text).toContain("INVALID_ARGUMENTS: nothing is owed any more");
 			expect(f.writer.decide).toHaveBeenCalledTimes(1);
+		} finally {
+			f.run.close();
+		}
+	});
+	it("hands the writer a next run that waits for a todo, and refuses another file", async () => {
+		const f = await decision();
+		try {
+			const refused = await f.boundary.invoke("l1", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-1",
+				at: "2026-11-06T09:00:00Z",
+				whenDone: "QorperaOS/vision/vision.md",
+			});
+			expect(refused.success).toBe(false);
+			expect(refused.contentItems[0].text).toContain("whenDone is the path of a todo or a human task file");
+			const next = await f.boundary.invoke("l2", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-2",
+				at: "2026-11-06T09:00:00Z",
+				whenDone: "QorperaOS/agents/product-builder/todos/landing-page.md",
+			});
+			expect(next.success, JSON.stringify(next)).toBe(true);
+			expect(f.writer.decide).toHaveBeenCalledWith(
+				{
+					action: "next",
+					operationKey: "next-2",
+					at: "2026-11-06T09:00:00.000Z",
+					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
+				},
+				expect.objectContaining({ callId: "l2" }),
+			);
+			expect(f.decided).toHaveBeenCalledTimes(1);
 		} finally {
 			f.run.close();
 		}
