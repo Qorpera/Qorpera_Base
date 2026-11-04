@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
-import { isUuid, type JsonValue, parseRecord } from "@qorpera/contracts";
+import { type CloudMachineCommandReceipt, isUuid, type JsonValue, parseRecord } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderFileEntry } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import { unavailable } from "./cloud-folder-file-tools.ts";
+import {
+	CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineCommandGateway,
+	cloudMachineCommandRefusal,
+} from "./cloud-machine-command-http.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -20,6 +26,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 /*
@@ -40,9 +47,27 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   the site to the new version at once. The same call again (its call id) continues or answers its own version.
  * - The agent never sees the password: the founder reads, copies and changes it in Settings → Sites.
  * - unpublish_site takes one of the company's sites offline: its copy, password and visitors' sessions go.
+ * - share_app (private app links, v195; migration 20260930562000, deploy/sites/APP-PREVIEW.md) shares one port of one
+ *   of the company's always-on machines at https://<slug>-preview.qorpera.com/, behind a site's password: an app site
+ *   is a company site of kind 'app'. Before the automatic review it asks the database whether the machine can serve
+ *   one (refused at once if not, as is a machine that is not running), whether the slug makes a new app link or
+ *   updates one, its link, and whether that needs a review (a new link, or one moved to another machine or port: a
+ *   built-in access check, cloud-action-review.ts). Then the share issues a one-time claim, and the platform starts the
+ *   link program with it on that machine, as machine_run starts a command (no time limit, no notify); the tool's answer
+ *   never holds the claim. The claim is a word of that command, so it shows on the machine and, cut to its first 300
+ *   characters, in the members' command list; the program spends it within seconds for its connection key, and only
+ *   the program that spent it can use it again.
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+/** A machine's name, as machine_start gives one (cloud-machine-tools.ts). */
+const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** The words the link program's command is made of: each is checked to be one shell word that needs no quoting (the
+ * claim as base64 or base64url, the program's address on an app host, the host suffix as the database's settings
+ * allow it, qorpera_site_settings.app_host_suffix). */
+const CLAIM = /^[A-Za-z0-9_+/=-]{16,256}$/;
+const CLIENT_URL = /^https:\/\/[a-z0-9][a-z0-9.-]{0,252}\/\.qorpera\/client\.mjs$/;
+const HOST_SUFFIX = /^-[a-z0-9-]{0,14}(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** A site path segment, as the database stores it: no hidden file, no '..', no character a link would escape. */
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
 export const SITE_MAX_FILES = 500;
@@ -103,7 +128,16 @@ export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION =
 	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it.";
 
 export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
-	"Take one of the company's websites offline: its link stops working, and its published copy and password are deleted (the files stay in the company folder). slug is the site's name in its link.";
+	"Take one of the company's websites or app links offline: its link stops working. A website's published copy and password are deleted (the files stay in the company folder); an app link keeps its name and password for its next share_app, and the app keeps running on its machine. slug is the site's name in its link.";
+
+export const CLOUD_SHARE_APP_TOOL_DESCRIPTION =
+	"Share a server app (Node, Python, Docker, any program that answers HTTP) at a private link, https://<slug>-preview.qorpera.com/, that people outside the company open with a password, as they open a website. " +
+	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there with machine_run listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>. " +
+	"Static files (HTML, CSS, JavaScript, images) need no machine: publish them with publish_site instead. " +
+	"slug is the link's name: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
+	"The machine must be running. The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines, machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise the link says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it). " +
+	"A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. " +
+	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it. unpublish_site turns the link off.";
 
 /** One file a site will serve: its path in the site and the folder entry it is read from. */
 interface SiteFile {
@@ -140,6 +174,48 @@ interface PreparedPublish {
 	readonly skippedOmitted: number;
 }
 
+/** What share_app's review and effect read in place of the arguments (`prepare`). */
+interface PreparedShare {
+	readonly slug: string;
+	readonly title: string | null;
+	readonly machine: string;
+	readonly port: number;
+	readonly mode: "new" | "update";
+	/** A new app link, or one moved to another machine or port: a built-in access check. Otherwise no review runs. */
+	readonly needsReview: boolean;
+	readonly url: string;
+	/** The live link's machine and port, for an update; null for a new link (or a machine that was deleted). */
+	readonly liveMachine: string | null;
+	readonly livePort: number | null;
+}
+
+const isPort = (value: unknown): value is number =>
+	typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 65535;
+
+/** An app link as the database gives it: https, the slug's own host, nothing after its slash. */
+function appUrl(value: unknown, slug: string): string | undefined {
+	if (typeof value !== "string") return undefined;
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return undefined;
+	}
+	return url.protocol === "https:" &&
+		url.href === value &&
+		url.pathname === "/" &&
+		!url.search &&
+		!url.hash &&
+		!url.username &&
+		!url.password &&
+		!url.port &&
+		/^[a-z0-9.-]+$/.test(url.hostname) &&
+		url.hostname.startsWith(slug) &&
+		/^[-.]/.test(url.hostname.slice(slug.length))
+		? value
+		: undefined;
+}
+
 function plain(text: string): string {
 	return PLAIN.test(text) ? text : text.replace(/[^ -~À-ÿ]/g, "?");
 }
@@ -149,11 +225,15 @@ function refuse(text: string): never {
 	throw new CloudToolRefusal(plain(text).slice(0, 1000));
 }
 
-/** The database's refusal of a call that began nothing (a check, or a publish's begin), as the tool's answer. */
-function relayed(error: unknown): never {
+function machineMissing(name: string): string {
+	return `APP_MACHINE_NOT_FOUND: the company has no machine named ${name}; start an always-on one with machine_start (lifetime always-on), or name one from machine_list`;
+}
+
+/** The database's refusal of a call that began nothing (a check, a publish's begin, a share), as the tool's answer. */
+function relayed(error: unknown, unavailableText = "NOT_AVAILABLE: publishing is not available now"): never {
 	if (error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal) {
 		const detail = error.detail.replace(/→/g, "->");
-		refuse(detail && PLAIN.test(detail) ? detail : "NOT_AVAILABLE: publishing is not available now");
+		refuse(detail && PLAIN.test(detail) ? detail : unavailableText);
 	}
 	throw error;
 }
@@ -189,6 +269,15 @@ function parseSlug(value: unknown): string {
 	return value;
 }
 
+function parseTitle(value: JsonValue | undefined): string | null {
+	if (value === undefined) return null;
+	if (typeof value !== "string" || !value.trim() || [...value.trim()].length > 120)
+		throw new CloudToolArgumentRefusal("title must be 1 to 120 characters");
+	const title = value.trim();
+	if (/\p{Cc}/u.test(title)) throw new CloudToolArgumentRefusal("title must be one line");
+	return title;
+}
+
 function args(value: JsonValue, tool: string, required: readonly string[], optional: readonly string[] = []) {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal(`${tool} takes an object with ${[...required, ...optional].join(", ")}`);
@@ -202,12 +291,18 @@ function args(value: JsonValue, tool: string, required: readonly string[], optio
 	return value as Record<string, JsonValue>;
 }
 
-/** The two site tools for a company agent's run (never a worker's). */
+/** The site tools for a company agent's run (never a worker's): publish_site, unpublish_site and share_app. */
 export function cloudSiteTools(options: {
 	binding: CloudNativeToolBinding;
 	identity: CloudNativeToolIdentity;
 	control: CloudCompanyPathControl;
 	folder: CloudCompanyFolderClient;
+	/** The run's machine command gateway and operations, as its machine tools have them: share_app starts the link
+	 * program with them. Absent when the run has no machines: share_app then refuses before anything happens. */
+	machines?: {
+		gateway: CloudMachineCommandGateway;
+		operations: Pick<CloudNativeToolOperations, "execute">;
+	};
 }): CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(options.binding);
 	const expected = Object.freeze({ ...options.identity });
@@ -317,6 +412,34 @@ export function cloudSiteTools(options: {
 		};
 	};
 
+	/** The company's machine of this name, which must be running: share_app starts its link program on it at once. */
+	const runningMachine = async (name: string, signal: AbortSignal): Promise<{ machineId: string }> => {
+		let listed: Record<string, unknown>;
+		try {
+			listed = parseRecord(
+				await call("qorpera_native_machine_manage", { p_request: { action: "list" } }, signal),
+				"Machine list differs",
+			);
+		} catch (error) {
+			return relayed(error, "NOT_AVAILABLE: the company's machines cannot be read now");
+		}
+		if (listed.schema !== "qorpera.machine-list/v1" || !Array.isArray(listed.machines))
+			throw new Error("Machine list differs");
+		const found = (listed.machines as unknown[]).find(
+			(item): item is { machineId: string; name: string; state: string } =>
+				!!item &&
+				typeof item === "object" &&
+				(item as { name?: unknown }).name === name &&
+				isUuid((item as { machineId?: unknown }).machineId),
+		);
+		if (!found) refuse(machineMissing(name));
+		if (found.state !== "running")
+			refuse(
+				`APP_MACHINE_NOT_RUNNING: ${name} is ${typeof found.state === "string" && PLAIN.test(found.state) ? found.state : "not running"}; wake it with machine_start (pass only machine with its name), and call share_app again once it runs`,
+			);
+		return { machineId: found.machineId };
+	};
+
 	const publish: CloudNativeTool = {
 		name: "publish_site" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -346,14 +469,7 @@ export function cloudSiteTools(options: {
 				throw new CloudToolArgumentRefusal(
 					"source must be the company's own work, not a platform folder (QorperaOS, hooks, digital-post, bank, members)",
 				);
-			let title: string | null = null;
-			if (input.title !== undefined) {
-				if (typeof input.title !== "string" || !input.title.trim() || [...input.title.trim()].length > 120)
-					throw new CloudToolArgumentRefusal("title must be 1 to 120 characters");
-				title = input.title.trim();
-				if (/\p{Cc}/u.test(title)) throw new CloudToolArgumentRefusal("title must be one line");
-			}
-			return { slug, source, title };
+			return { slug, source, title: parseTitle(input.title) };
 		},
 		// Everything the publish sends out, for the reviewer: every path the prepare listed (bounded there), and what it
 		// leaves out.
@@ -596,7 +712,252 @@ export function cloudSiteTools(options: {
 			};
 		},
 	};
-	return [publish, unpublish];
+	const share: CloudNativeTool = {
+		name: "share_app" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_SHARE_APP_TOOL_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["slug", "machine", "port"],
+			properties: {
+				slug: { type: "string", pattern: SLUG.source },
+				title: { type: "string", minLength: 1, maxLength: 120 },
+				machine: { type: "string", pattern: MACHINE.source },
+				port: { type: "integer", minimum: 1, maximum: 65535 },
+			},
+		},
+		parseArguments(value) {
+			const input = args(value, "share_app", ["slug", "machine", "port"], ["title"]);
+			const slug = parseSlug(input.slug);
+			if (typeof input.machine !== "string" || !MACHINE.test(input.machine))
+				throw new CloudToolArgumentRefusal(
+					"machine must be the name of one of the company's machines, as machine_list shows it",
+				);
+			if (!isPort(input.port))
+				throw new CloudToolArgumentRefusal(
+					"port must be the app's port on the machine, a whole number from 1 to 65535",
+				);
+			return { slug, title: parseTitle(input.title), machine: input.machine, port: input.port };
+		},
+		async prepare(value, context) {
+			assertContext(context);
+			const input = value as { slug: string; title: string | null; machine: string; port: number };
+			if (!options.machines)
+				refuse(
+					"APP_MACHINES_UNAVAILABLE: this run cannot start programs on the company's machines, so no link can connect; try again later",
+				);
+			let checked: Record<string, unknown>;
+			try {
+				checked = parseRecord(
+					await call(
+						"qorpera_site_share_check",
+						{ p_slug: input.slug, p_machine: input.machine, p_port: input.port },
+						context.signal,
+					),
+					"App share check differs",
+				);
+			} catch (error) {
+				return relayed(error, "NOT_AVAILABLE: sharing apps is not available now");
+			}
+			// A share the database would refuse for its machine is refused here, before any card asks for approval.
+			if (checked.state === "refused") {
+				if (checked.reason === "APP_MACHINE_NOT_FOUND") refuse(machineMissing(input.machine));
+				if (checked.reason === "APP_MACHINE_NOT_ALWAYS_ON")
+					refuse(
+						`APP_MACHINE_NOT_ALWAYS_ON: ${input.machine} is a task machine, which sleeps when its task is done, so its link would stop; run the app on an always-on machine (machine_start with lifetime always-on) and share from that`,
+					);
+				throw new Error("App share check differs");
+			}
+			const url = appUrl(checked.url, input.slug);
+			const liveMachine = checked.machine ?? null;
+			const livePort = checked.port ?? null;
+			if (
+				(checked.state !== "new" && checked.state !== "update" && checked.state !== "taken") ||
+				typeof checked.needsReview !== "boolean" ||
+				!url ||
+				!HOST_SUFFIX.test(new URL(url).hostname.slice(input.slug.length)) ||
+				(liveMachine !== null && (typeof liveMachine !== "string" || !MACHINE.test(liveMachine))) ||
+				(livePort !== null && !isPort(livePort))
+			)
+				throw new Error("App share check differs");
+			if (checked.state === "taken")
+				refuse(
+					"APP_NAME_TAKEN: another site already has this name, or it is one of the company's websites from publish_site (an app link never replaces one); choose another slug",
+				);
+			// The link program starts as soon as the share is made: a machine that is not running is refused now, before
+			// any card.
+			await runningMachine(input.machine, context.signal);
+			const prepared: PreparedShare = {
+				slug: input.slug,
+				title: input.title,
+				machine: input.machine,
+				port: input.port,
+				mode: checked.state as "new" | "update",
+				// The database's say: a new link, or a live one shared from another machine or port (qorpera_site_share_app
+				// requires the approval of exactly those).
+				needsReview: checked.needsReview,
+				url,
+				liveMachine: liveMachine as string | null,
+				livePort: livePort as number | null,
+			};
+			return prepared as unknown as JsonValue;
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const prepared = value as unknown as PreparedShare;
+			const machines = options.machines;
+			if (!machines) throw new Error("App link machines unavailable");
+			// Read again after the review: the program starts on the machine as it runs now.
+			const machine = await runningMachine(prepared.machine, context.signal);
+			let shared: Record<string, unknown>;
+			try {
+				shared = parseRecord(
+					await call(
+						"qorpera_site_share_app",
+						{
+							p_call_id: context.callId,
+							p_request: {
+								slug: prepared.slug,
+								...(prepared.title === null ? {} : { title: prepared.title }),
+								machine: prepared.machine,
+								port: prepared.port,
+							},
+							p_review_id: isUuid(context.actionReviewId) ? context.actionReviewId : null,
+						},
+						context.signal,
+						30_000,
+					),
+					"App share differs",
+				);
+			} catch (error) {
+				// The share is the call's first effect: its refusal means nothing happened.
+				return relayed(error, "NOT_AVAILABLE: sharing apps is not available now");
+			}
+			// Every word of the command is checked to be what it should be, so it runs as one plain shell line; the link is
+			// the one the review named, and the program comes from its own host.
+			const url = appUrl(shared.url, prepared.slug);
+			const suffix = url ? new URL(url).hostname.slice(prepared.slug.length) : "";
+			if (
+				shared.slug !== prepared.slug ||
+				!url ||
+				url !== prepared.url ||
+				!HOST_SUFFIX.test(suffix) ||
+				shared.machine !== prepared.machine ||
+				shared.port !== prepared.port ||
+				typeof shared.newPassword !== "boolean" ||
+				typeof shared.claim !== "string" ||
+				!CLAIM.test(shared.claim) ||
+				typeof shared.clientUrl !== "string" ||
+				!CLIENT_URL.test(shared.clientUrl) ||
+				new URL(shared.clientUrl).host !== new URL(url).host
+			)
+				throw new Error("App share differs");
+			// One file a link, written whole before it runs.
+			const file = `/root/.qorpera-app-link-${prepared.slug}.mjs`;
+			const command = `curl -fsS ${shared.clientUrl} -o ${file}.tmp && mv -f ${file}.tmp ${file} && exec node ${file} ${prepared.slug} ${prepared.port} ${shared.claim} ${suffix}`;
+			const operationKey = `share-app.${createHash("sha256").update(context.callId).digest("hex").slice(0, 32)}`;
+			// The command's receipt; why it did not start; or undefined when whether it started is not known.
+			let started: CloudMachineCommandReceipt | string | undefined;
+			try {
+				const content = await machines.operations.execute({
+					// A command on the machine, as machine_run starts one (its receipt is the command's authority), with no time
+					// limit and no notify: the link works while it runs.
+					operation: {
+						tool: "machine_run",
+						toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+						logicalOperationKey: operationKey,
+						arguments: { operationKey, machine: prepared.machine, command, notify: false },
+						target: { realm: "company_machine", machineId: machine.machineId },
+						requiresCompanyRevision: false,
+					},
+					signal: context.signal,
+					authorize: async (_operation, admittedIdentity) => {
+						if (!isDeepStrictEqual(admittedIdentity, expected))
+							throw new Error("App link program identity changed");
+					},
+					perform: async (_operation, effect) => {
+						try {
+							const receipt = await machines.gateway.start(
+								{ machineId: machine.machineId },
+								{
+									commandId: effect.receiptId,
+									inputSha256: effect.inputSha256,
+									command,
+									timeoutMs: null,
+									notify: false,
+								},
+								effect.signal,
+							);
+							return { content: { kind: "json", value: receipt as unknown as JsonValue } };
+						} catch (error) {
+							// The executor refused before anything started.
+							const refusal = cloudMachineCommandRefusal(error);
+							if (refusal === "MACHINE_NOT_RUNNING" || refusal === "MACHINE_COMMAND_ENDED")
+								return { content: { kind: "json", value: { refused: refusal } } };
+							throw error;
+						}
+					},
+				});
+				const answer = content.kind === "json" ? content.value : null;
+				const result = (answer && typeof answer === "object" && !Array.isArray(answer) ? answer : {}) as Record<
+					string,
+					JsonValue | undefined
+				>;
+				if (typeof result.refused === "string") started = `${prepared.machine} stopped before the program started`;
+				else if (
+					result.schema === "qorpera.machine-command-result/v1" &&
+					typeof result.commandId === "string" &&
+					typeof result.state === "string"
+				)
+					started = result as unknown as CloudMachineCommandReceipt;
+				else throw new Error("App link program result differs");
+			} catch {
+				context.signal.throwIfAborted();
+				started = undefined;
+			}
+			const password = shared.newPassword
+				? "The link has a new password. You never see it: the founder finds, copies and changes it in Settings → Sites."
+				: "The password is unchanged. You never see it: it is in Settings → Sites.";
+			const link = {
+				url,
+				slug: prepared.slug,
+				...(prepared.title === null ? {} : { title: prepared.title }),
+				machine: prepared.machine,
+				port: prepared.port,
+				newPassword: shared.newPassword,
+			};
+			const reply = (state: string, extra: Record<string, JsonValue>) => ({
+				kind: "text" as const,
+				value: cloudToolJsonText({ schema: "qorpera.app-share-result/v1", state, ...link, ...extra, password }),
+			});
+			if (typeof started === "string")
+				return reply("not_connected", {
+					reason: `The link is shared, but its link program did not start: ${started}.`,
+					next: `Check machine_list: if ${prepared.machine} is not running, wake it with machine_start. Then call share_app again; until a link program runs, the link says the app is not running.`,
+				});
+			// Whether the program started is not known: it may run, so the agent looks before it shares again.
+			if (started === undefined || started.state === "unconfirmed")
+				return reply("program_unconfirmed", {
+					...(started ? { linkProgram: { commandId: started.commandId, state: started.state } } : {}),
+					reason: "The link is shared, but the start of its link program could not be confirmed.",
+					next: started
+						? `Check it with machine_read (machine ${prepared.machine}, command ${started.commandId}) or machine_list. If it does not run, call share_app again; a new program replaces any earlier one of this link.`
+						: `If machine_list shows no running command on ${prepared.machine}, call share_app again; a new program replaces any earlier one of this link.`,
+				});
+			const linkProgram = { commandId: started.commandId, state: started.state };
+			if (started.state !== "running")
+				return reply("program_ended", {
+					linkProgram,
+					next: `The link program ended at once (${started.state}): read why with machine_read (machine ${prepared.machine}, command ${started.commandId}), then call share_app again.`,
+				});
+			return reply("connecting", {
+				linkProgram,
+				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is in Settings → Sites.`,
+			});
+		},
+	};
+	return [publish, unpublish, share];
 }
 
 interface PublishReceipt {

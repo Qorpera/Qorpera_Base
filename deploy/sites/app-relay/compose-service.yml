@@ -1,0 +1,69 @@
+# Private app links (deploy/sites/APP-PREVIEW.md, sections 3 and 4): the app relay, for the dbhome kit's
+# docker-compose.dbhome-front.yml. This service goes under that file's `services:`, beside api-front, at the same
+# indentation (2 spaces before `app-relay:`); it uses the file's own `x-slice` anchor. relay.mjs and client.mjs go in
+# /opt/dbhome/front/app-relay/ (mode 0644: the container's user only reads them). api-front reaches it as
+# app-relay:8090 (envoy-front-app-relay-cluster.yaml); nothing is published on the node.
+#  - image: node 24, the digest scripts/run-on-node-plan.mjs pins (NODE_IMAGE); no package is installed, the relay has
+#    no dependencies.
+#  - QORPERA_API: the gateway on the compose network (api-gw, port 8000: front/envoy-front.yaml's api_gw cluster), so
+#    the relay's RPCs never leave the node.
+#  - The relay never holds the service role. It calls the database as its own role, qorpera_site_relay, which may
+#    execute qorpera_site_app_connect, qorpera_site_app_session and qorpera_site_app_unlock and nothing else (the
+#    migration makes the role and grants it to authenticator):
+#      QORPERA_API_KEY    the stack's anon key (.env ANON_KEY), the gateway's apikey
+#      QORPERA_RELAY_JWT  a JWT whose role is qorpera_site_relay, the bearer PostgREST runs the RPCs as; the relay
+#                         refuses to start with any other role
+#  - QORPERA_RELAY_JWT is minted once at rollout from the stack's JWT_SECRET, as keys.sh mints ANON_KEY: HS256, claims
+#    {iss: "supabase", role: "qorpera_site_relay", iat, exp: iat + 5 years}, Node in the stack's storage image, the
+#    secret read from .env on stdin and the token written straight into .env, so neither is printed or on a command
+#    line. In /opt/dbhome, as root:
+#      grep -q '^QORPERA_RELAY_JWT=' .env || {
+#        awk 'index($0, "JWT_SECRET=") == 1 { print substr($0, 12) }' .env |
+#        docker compose run --rm --no-deps -T --entrypoint node storage -e '
+#          const c = require("crypto"), s = require("fs").readFileSync(0, "utf8").trim();
+#          const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+#          const iat = Math.floor(Date.now() / 1000), exp = iat + 5 * 365 * 24 * 3600;
+#          const d = b({ alg: "HS256", typ: "JWT" }) + "." + b({ iss: "supabase", role: "qorpera_site_relay", iat, exp });
+#          process.stdout.write("QORPERA_RELAY_JWT=" + d + "." + c.createHmac("sha256", s).update(d).digest("base64url") + "\n");
+#        ' 2>/dev/null >> .env; }
+#      grep -c '^QORPERA_RELAY_JWT=eyJ' .env   # 1: the line is there (its value is never shown)
+#    A new JWT_SECRET (keys.sh mint) ends this JWT too: delete the line and mint it again, then
+#    `docker compose up -d app-relay`.
+#  - QORPERA_APP_RELAY_TRUSTED_ADDRESSES: the agent exits' public addresses, comma separated. Every company's machines
+#    connect from them (both nodes may share one), so the relay never holds back connects from them; refused connects
+#    from any other address are limited per address (an IPv6 /64) and link, and only the total in flight applies to
+#    all. Empty by default: the rollout fills in both nodes' agent exit public addresses, in .env as
+#    QORPERA_APP_RELAY_TRUSTED_ADDRESSES=<node01's>,<node02's>, then `docker compose up -d app-relay`.
+#  - Kill switch: `docker compose stop app-relay` (every app link then answers 503 from api-front), or apps_enabled =
+#    false in qorpera_site_settings.
+  app-relay:
+    <<: *slice
+    container_name: dbhome-app-relay
+    image: node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      api-gw:
+        condition: service_healthy
+    working_dir: /app
+    entrypoint: ["node", "/app/relay.mjs"]
+    environment:
+      QORPERA_API: http://api-gw:8000
+      QORPERA_API_KEY: ${ANON_KEY:?ANON_KEY is not set in .env}
+      QORPERA_RELAY_JWT: ${QORPERA_RELAY_JWT:?QORPERA_RELAY_JWT is not set in .env (see the minting step above)}
+      QORPERA_APP_HOST_SUFFIX: -preview.qorpera.com
+      QORPERA_APP_RELAY_PORT: "8090"
+      QORPERA_APP_RELAY_TRUSTED_ADDRESSES: ${QORPERA_APP_RELAY_TRUSTED_ADDRESSES:-}
+    volumes:
+      - ./front/app-relay:/app:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch("http://127.0.0.1:8090/.qorpera/health").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+      interval: 10s
+      timeout: 5s
+      retries: 3

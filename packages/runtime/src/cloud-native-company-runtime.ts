@@ -875,6 +875,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						// Contract 13: a worker reads, works and reports to its parent. It has no mouth, no
 						// coworker channel and no delegation; an ordinary company run is the dispatcher.
 						const work = cloudWorkerToolFilter(wake);
+						// Machines are the company's: one gateway for the run's machine tools and for share_app, which starts
+						// its link program on the machine itself (v195).
+						const machineGateway =
+							this.#machines && machinesAvailable && identity.audienceKind === "company"
+								? this.#machines(binding)
+								: undefined;
 						return {
 							captures: computer?.captures,
 							folderReports: computer?.folderReports,
@@ -991,19 +997,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
 											// Company sites (20260930550000): a static website from the company folder at a
-											// private, password-protected link, and taking one offline.
-											...cloudSiteTools({ binding, identity, control: this.#paths, folder: folder.client }),
+											// private, password-protected link, and taking one offline; private app links (v195): one
+											// port of an always-on machine at such a link (share_app).
+											...cloudSiteTools({
+												binding,
+												identity,
+												control: this.#paths,
+												folder: folder.client,
+												...(machineGateway ? { machines: { gateway: machineGateway, operations } } : {}),
+											}),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
 								// but waits for its own commands in its run (Jonas, 2026-09-28).
-								...(this.#machines && machinesAvailable && identity.audienceKind === "company"
+								...(machineGateway
 									? cloudMachineTools({
 											binding,
 											identity,
 											control: this.#paths,
 											operations,
-											gateway: this.#machines(binding),
+											gateway: machineGateway,
 											worker: work.isWorker,
 										})
 									: []),

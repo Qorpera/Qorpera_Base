@@ -3,21 +3,28 @@ import { UUID_PATTERN } from "./parse.ts";
 
 /**
  * Member surface for the company's websites: the password-protected sites the company's agents publish at
- * sites.qorpera.com/<slug>/. Every member lists them, with their links. Only owners and admins read or change a
+ * sites.qorpera.com/<slug>/, and the private app links they share from an always-on machine (an app site, v195:
+ * https://<slug>-preview.qorpera.com/, one port of the machine behind the same password). Every member lists them,
+ * with their links. Only owners and admins read or change a
  * site's password and take a site offline; the kernel refuses anyone else (42501). RPCs listed in
  * supabase/CLIENT-CONTRACT.md §2, "Company sites".
  */
 
-export type CompanySiteState = "live" | "publishing";
+/** "publishing": a website's first upload has not finished; "off": an app link is not shared, or its machine is gone. */
+export type CompanySiteState = "live" | "publishing" | "off";
+/** "files": a website of static files (publish_site); "app": one port of a company machine (share_app). */
+export type CompanySiteKind = "files" | "app";
 
 export interface CompanySite {
 	id: string;
 	slug: string;
 	/** The title the agent gave the site, or null. */
 	title: string | null;
-	/** The plain link a founder shares: https://sites.qorpera.com/<slug>/. */
+	kind: CompanySiteKind;
+	/** The plain link a founder shares: https://sites.qorpera.com/<slug>/, or an app's own host. */
 	url: string;
-	/** "publishing": the first upload has not finished, so the link does not work yet. */
+	/** "publishing": the first upload has not finished, so the link does not work yet; "off" (an app link): it is not
+	 * shared now, or its machine was deleted. */
 	state: CompanySiteState;
 	/** The Company File path the site was published from. */
 	source: string;
@@ -27,6 +34,10 @@ export interface CompanySite {
 	publishedBy: { agentId: string; name: string } | null;
 	createdAt: string;
 	passwordChangedAt: string;
+	/** An app link's machine by name; null for a website, or when the app's machine was deleted. */
+	machine: string | null;
+	/** The app's port on its machine; null for a website. */
+	port: number | null;
 }
 
 export interface CompanySitePassword {
@@ -37,11 +48,16 @@ export interface CompanySitePassword {
 
 /** A site's name in its link, as the kernel allows it. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
+/** A machine's name, as an agent gives one. */
+const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_KEYS = [
 	"schema",
 	"id",
 	"slug",
 	"title",
+	"kind",
+	"machine",
+	"port",
 	"url",
 	"state",
 	"source",
@@ -62,8 +78,9 @@ function closedRecord(value: unknown, keys: readonly string[]): Record<string, u
 const count = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-/** The site's own link: https, no sign-in, query or fragment, and the site's name as its whole path. */
-function siteUrl(value: unknown, slug: string): string | undefined {
+/** The site's own link: https, no sign-in, query or fragment, and the site's name as its whole path; an app's, the
+ * site's name at the start of its own host, with nothing after it. */
+function siteUrl(value: unknown, slug: string, kind: CompanySiteKind): string | undefined {
 	if (typeof value !== "string") return undefined;
 	let url: URL;
 	try {
@@ -76,7 +93,9 @@ function siteUrl(value: unknown, slug: string): string | undefined {
 		!url.password &&
 		!url.search &&
 		!url.hash &&
-		url.pathname === `/${slug}/` &&
+		(kind === "files"
+			? url.pathname === `/${slug}/`
+			: url.pathname === "/" && url.hostname.startsWith(slug) && /^[-.]/.test(url.hostname.slice(slug.length))) &&
 		url.href === value
 		? value
 		: undefined;
@@ -87,7 +106,8 @@ export function parseCompanySite(value: unknown): CompanySite {
 	const input = closedRecord(value, SITE_KEYS);
 	const by = input?.publishedBy === null ? null : closedRecord(input?.publishedBy, ["agentId", "name"]);
 	const slug = input && typeof input.slug === "string" && SLUG.test(input.slug) ? input.slug : undefined;
-	const url = slug ? siteUrl(input?.url, slug) : undefined;
+	const kind = input?.kind === "files" || input?.kind === "app" ? (input.kind as CompanySiteKind) : undefined;
+	const url = slug && kind ? siteUrl(input?.url, slug, kind) : undefined;
 	if (
 		!input ||
 		input.schema !== "qorpera.company-site/v1" ||
@@ -96,7 +116,7 @@ export function parseCompanySite(value: unknown): CompanySite {
 		!slug ||
 		!url ||
 		(input.title !== null && (typeof input.title !== "string" || !input.title.trim())) ||
-		(input.state !== "live" && input.state !== "publishing") ||
+		(input.state !== "live" && input.state !== (kind === "app" ? "off" : "publishing")) ||
 		typeof input.source !== "string" ||
 		!count(input.files) ||
 		!count(input.bytes) ||
@@ -105,13 +125,22 @@ export function parseCompanySite(value: unknown): CompanySite {
 		(by !== null &&
 			(typeof by.agentId !== "string" || !UUID_PATTERN.test(by.agentId) || typeof by.name !== "string")) ||
 		typeof input.createdAt !== "string" ||
-		typeof input.passwordChangedAt !== "string"
+		typeof input.passwordChangedAt !== "string" ||
+		// A website names no machine or port; an app link names its port, and its machine unless it was deleted.
+		(kind === "files"
+			? input.machine !== null || input.port !== null
+			: (input.machine !== null && (typeof input.machine !== "string" || !MACHINE.test(input.machine))) ||
+				typeof input.port !== "number" ||
+				!Number.isSafeInteger(input.port) ||
+				input.port < 1 ||
+				input.port > 65535)
 	)
 		throw new Error("Invalid site.");
 	return {
 		id: input.id,
 		slug,
 		title: input.title as string | null,
+		kind: kind as CompanySiteKind,
 		url,
 		state: input.state as CompanySiteState,
 		source: input.source as string,
@@ -121,6 +150,8 @@ export function parseCompanySite(value: unknown): CompanySite {
 		publishedBy: by === null ? null : { agentId: by.agentId as string, name: by.name as string },
 		createdAt: input.createdAt as string,
 		passwordChangedAt: input.passwordChangedAt as string,
+		machine: input.machine as string | null,
+		port: input.port as number | null,
 	};
 }
 

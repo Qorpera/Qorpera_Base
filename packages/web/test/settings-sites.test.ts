@@ -18,6 +18,7 @@ const shop: CompanySite = {
 	id: id(81),
 	slug: "wristband-shop",
 	title: "Wristband shop",
+	kind: "files",
 	url: `${ORIGIN}/wristband-shop/`,
 	state: "live",
 	source: "product/webshop-preview.html",
@@ -27,6 +28,8 @@ const shop: CompanySite = {
 	publishedBy: { agentId: id(90), name: "Co-Founder" },
 	createdAt: timestamp,
 	passwordChangedAt: timestamp,
+	machine: null,
+	port: null,
 };
 // The first upload has not finished: no agent or time yet, and no title.
 const draft: CompanySite = {
@@ -41,6 +44,20 @@ const draft: CompanySite = {
 	bytes: 512,
 	publishedAt: null,
 	publishedBy: null,
+};
+// An app link (v195): one port of an always-on machine, at its own host.
+const app: CompanySite = {
+	...shop,
+	id: id(83),
+	slug: "saml-shop",
+	title: "SAML shop",
+	kind: "app",
+	url: "https://saml-shop-preview.qorpera.com/",
+	source: "shop-server",
+	files: 0,
+	bytes: 0,
+	machine: "shop-server",
+	port: 3000,
 };
 
 type SitesClientMock = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
@@ -129,6 +146,38 @@ describe("Settings → Sites", () => {
 		press(cardOf(shop.id)!, "Copy");
 		await settle();
 		expect(cardOf(shop.id)?.textContent).toContain("The link could not be copied. Select it and copy it.");
+	});
+
+	it("shows an app link as an app on its machine and port, with its link, password and Unpublish", async () => {
+		const { client } = setup([
+			app,
+			// Off: its machine was deleted.
+			{ ...app, id: id(84), slug: "old-shop", title: null, state: "off", machine: null, port: 8080 },
+		]);
+		await settle();
+		const card = cardOf(app.id)!;
+		expect(card.querySelector("strong")?.textContent).toBe("SAML shop");
+		expect(card.querySelector(".hook-state")?.textContent).toMatch(/^Live · Published .+ by Co-Founder$/);
+		expect(card.textContent).toContain("App on machine shop-server, port 3000");
+		expect(card.textContent).not.toContain("From ");
+		expect(card.querySelector<HTMLAnchorElement>("code a")?.href).toBe("https://saml-shop-preview.qorpera.com/");
+		expect(labels(card)).toEqual(["Show password", "Change password", "Unpublish", "Copy"]);
+		expect(cardOf(id(84))?.querySelector(".hook-state")?.textContent).toMatch(/^Off · Published .+ by Co-Founder$/);
+		expect(cardOf(id(84))?.textContent).toContain("App on port 8080 of a machine that was deleted");
+
+		press(card, "Show password");
+		await settle();
+		expect(client.password).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
+		expect(codes(cardOf(app.id)!)).toEqual([app.url, "k7mq-x2pa-9fhd"]);
+
+		press(cardOf(app.id)!, "Unpublish");
+		expect(dialog().textContent).toContain(
+			"Take SAML shop offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
+		);
+		press(dialog(), "Unpublish");
+		await settle();
+		expect(client.unpublish).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
+		expect(ids()).toEqual([id(84)]);
 	});
 
 	it("shows other members the sites and their links, without passwords or actions", async () => {
@@ -398,6 +447,9 @@ describe("sites client", () => {
 		id: shop.id,
 		slug: shop.slug,
 		title: shop.title,
+		kind: "files",
+		machine: null,
+		port: null,
 		url: shop.url,
 		state: "live",
 		source: shop.source,
@@ -409,6 +461,20 @@ describe("sites client", () => {
 		passwordChangedAt: timestamp,
 		...extra,
 	});
+	const appRow = (extra: Record<string, unknown> = {}) =>
+		row({
+			id: app.id,
+			slug: app.slug,
+			title: app.title,
+			kind: "app",
+			machine: app.machine,
+			port: app.port,
+			url: app.url,
+			source: app.source,
+			files: 0,
+			bytes: 0,
+			...extra,
+		});
 	function cloudWith(rpc: (name: string, args: Record<string, unknown>) => unknown) {
 		return {
 			rpc: vi.fn(async (name: string, args: Record<string, unknown>) => rpc(name, args)),
@@ -440,10 +506,36 @@ describe("sites client", () => {
 			row({ publishedBy: { agentId: "x", name: "Co-Founder" } }),
 			row({ publishedBy: { agentId: id(90), name: "Co-Founder", extra: 1 } }),
 			row({ password: "k7mq-x2pa-9fhd" }),
+			// A website names no machine or port, and its link is on the sites host.
+			row({ kind: "page" }),
+			row({ kind: undefined }),
+			row({ machine: "shop-server" }),
+			row({ port: 3000 }),
+			// An app link names its port, and its link is its own host with nothing after it.
+			appRow({ port: null }),
+			appRow({ port: 0 }),
+			appRow({ port: 65536 }),
+			appRow({ port: "3000" }),
+			appRow({ machine: "Shop Server" }),
+			appRow({ url: `${ORIGIN}/saml-shop/` }),
+			appRow({ url: "https://other-shop-preview.qorpera.com/" }),
+			appRow({ url: "https://saml-shopper-preview.qorpera.com/" }),
+			appRow({ url: "https://saml-shop-preview.qorpera.com/admin" }),
+			appRow({ url: "http://saml-shop-preview.qorpera.com/" }),
+			// A website is live or publishing; an app link is live or off.
+			row({ state: "off" }),
+			appRow({ state: "publishing" }),
 			null,
 			[],
 		])
 			expect(() => parseCompanySite(bad)).toThrow("Invalid site.");
+		expect(parseCompanySite(appRow())).toEqual(app);
+		expect(parseCompanySite(appRow({ state: "off", machine: null }))).toMatchObject({
+			kind: "app",
+			state: "off",
+			machine: null,
+			port: 3000,
+		});
 		expect(
 			parseCompanySitePassword(
 				{ schema: "qorpera.company-site-password/v1", siteId: shop.id, password: "p", changedAt: timestamp },

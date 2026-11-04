@@ -127,6 +127,8 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_site_publish_check", "standard"],
 	["qorpera_site_publish_finish", "standard"],
 	["qorpera_site_publish_put", "standard"],
+	["qorpera_site_share_app", "standard"],
+	["qorpera_site_share_check", "standard"],
 	["qorpera_site_unpublish", "standard"],
 	["qorpera_submit_coding_turn", "standard"],
 	["qorpera_validate_native_provider_execution_lease", "long"],
