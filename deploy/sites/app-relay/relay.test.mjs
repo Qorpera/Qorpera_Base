@@ -1,11 +1,13 @@
 /* The relay and the link program (deploy/sites/APP-PREVIEW.md, section 3), end to end in one process: a fake
- * database (PostgREST's RPC paths: claims, keys, sessions, the password), the relay, a tiny app on a random port, a
- * front standing in for api-front (it adds x-forwarded-host, as the apps virtual host does) and the real client.mjs
- * as a child process. Then the pure parts on their own. Run: node --test deploy/sites/ */
+ * database (PostgREST's RPC paths as the relay's own role: claims, keys, sites, sessions, the password), the relay, a
+ * tiny app on a random port, a front standing in for api-front (it adds x-forwarded-host, as the apps virtual host
+ * does) and the real client.mjs as a child process. Then the pure parts on their own.
+ * Run: node --test 'deploy/sites/**\/*.test.mjs' */
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { connect, createServer as createTcpServer } from "node:net";
@@ -23,21 +25,26 @@ import {
 	decodeMessage,
 	encodeFrame,
 	encodeMessage,
+	FORWARDED_CACHE_HEADERS,
 	GATE_COOKIE,
 	gateCookie,
 	gateTokens,
 	headerPairs,
+	jwtRole,
 	language,
+	MAX_QUEUED_BYTES,
 	PAGE_SECURITY_POLICY,
 	parseConnectAnswer,
 	parseSessionAnswer,
 	parseUnlockAnswer,
 	passwordPage,
+	RELAY_ROLE,
+	relayHeaders,
 	requestHeaders,
 	responseHeaders,
 	safeNext,
-	serviceHeaders,
 	TYPE,
+	WebSocketConnection,
 	WebSocketError,
 	withoutGateCookie,
 } from "./relay.mjs";
@@ -46,7 +53,11 @@ const SUFFIX = "-preview.example.test";
 const HOST = `shop${SUFFIX}`;
 const LAB = `lab${SUFFIX}`;
 const ORIGIN = `https://${HOST}`;
-const SERVICE_KEY = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from('{"role":"service_role"}').toString("base64url")}.c2lnbmF0dXJl`;
+const jwt = (claims) =>
+	`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.c2lnbmF0dXJlLW5vdC1yZWFs`;
+const ANON_KEY = jwt({ iss: "supabase", role: "anon" });
+const RELAY_JWT = jwt({ iss: "supabase", role: RELAY_ROLE });
+const RELAY = { apiKey: ANON_KEY, relayJwt: RELAY_JWT };
 const PASSWORD = "k7mq-x2pa-9fhd";
 const CLIENT = fileURLToPath(new URL("./client.mjs", import.meta.url));
 const BIG = randomBytes(3 * 1024 * 1024 + 17);
@@ -73,12 +84,14 @@ async function until(check, what, ms = 10_000) {
 	}
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const values = (pairs, name) => pairs.filter(([key]) => key.toLowerCase() === name).map(([, value]) => value);
 
-/** PostgREST's RPC paths as the four relay functions answer them, for two app sites (shop, lab). */
+/** PostgREST's RPC paths as the relay's three functions answer them, for app sites by slug (shop, lab). A slug can be
+ * taken again by a new site (another id), as after a member's unpublish. */
 function fakeDatabase() {
-	const site = () => ({ claims: new Map(), key: null, port: 0, sessions: new Set() });
+	const site = (port = 0) => ({ id: randomUUID(), claims: new Map(), key: null, port, sessions: new Set() });
 	const db = {
 		sites: new Map([
 			["shop", site()],
@@ -102,19 +115,18 @@ function fakeDatabase() {
 				// Used at once; the new key replaces the old one, so only the newest program connects.
 				claim.used = true;
 				app.key = secret();
-				return { state: "ok", key: app.key, port: app.port };
+				return { state: "ok", key: app.key, port: app.port, siteId: app.id };
 			}
-			if (app.key !== null && args.p_secret === app.key) return { state: "ok", key: null, port: app.port };
+			if (app.key !== null && args.p_secret === app.key)
+				return { state: "ok", key: null, port: app.port, siteId: app.id };
 			return { state: "refused" };
 		}
-		if (name === "qorpera_site_app_session") return { state: app?.sessions.has(args.p_token) ? "open" : "locked" };
-		if (name === "qorpera_site_unlock") {
+		if (name === "qorpera_site_app_session")
+			return app?.sessions.has(args.p_token) ? { state: "open", siteId: app.id } : { state: "locked" };
+		if (name === "qorpera_site_app_unlock") {
 			if (db.limited) return { state: "limited", retryAfter: 125 };
 			if (!app || args.p_password !== PASSWORD) return { state: "wrong" };
-			const token = randomBytes(24).toString("base64url");
-			db.secrets.add(token);
-			app.sessions.add(token);
-			return { state: "open", token, maxAge: 604800 };
+			return { state: "open", token: db.session(args.p_slug), maxAge: 604800 };
 		}
 		return { message: "no such function" };
 	};
@@ -124,8 +136,8 @@ function fakeDatabase() {
 		if (
 			req.method !== "POST" ||
 			!name ||
-			req.headers.apikey !== SERVICE_KEY ||
-			req.headers.authorization !== `Bearer ${SERVICE_KEY}` ||
+			req.headers.apikey !== ANON_KEY ||
+			req.headers.authorization !== `Bearer ${RELAY_JWT}` ||
 			req.headers["content-type"] !== "application/json"
 		) {
 			res.writeHead(401, { "content-type": "application/json" });
@@ -142,12 +154,24 @@ function fakeDatabase() {
 		db.sites.get(slug).claims.set(claim, { used: false });
 		return claim;
 	};
+	db.session = (slug) => {
+		const token = randomBytes(24).toString("base64url");
+		db.secrets.add(token);
+		db.sites.get(slug).sessions.add(token);
+		return token;
+	};
+	/** The slug's site deleted and the name taken by a new site (same port, nothing else carried over). */
+	db.retake = (slug) => {
+		const next = site(db.sites.get(slug).port);
+		db.sites.set(slug, next);
+		return next;
+	};
 	db.connects = () => db.calls.filter((call) => call.name === "qorpera_site_app_connect");
 	db.sessionCalls = () => db.calls.filter((call) => call.name === "qorpera_site_app_session");
 	return db;
 }
 
-/** The app on the machine: hello, an echo, a stream, cookies, a big body and one that never answers. */
+/** The app on the machine: hello, an echo, a stream, cookies, cache headers, big bodies and one that never answers. */
 function testApp() {
 	const app = { seen: [], aborted: [], release: null };
 	app.server = createServer(async (req, res) => {
@@ -186,9 +210,41 @@ function testApp() {
 				"text/plain",
 			]);
 			res.end("cookies");
+		} else if (req.url === "/assets/app.js") {
+			res.writeHead(200, [
+				"Content-Type",
+				"text/javascript",
+				"Cache-Control",
+				"public, max-age=31536000, immutable",
+				"Expires",
+				"Thu, 01 Jan 2099 00:00:00 GMT",
+				"CDN-Cache-Control",
+				"max-age=600",
+				"Cloudflare-CDN-Cache-Control",
+				"max-age=600",
+				"Surrogate-Control",
+				"max-age=600",
+				"ETag",
+				'"v1"',
+			]);
+			res.end("export {};");
 		} else if (req.url === "/big") {
 			res.writeHead(200, { "content-type": "application/octet-stream" });
 			res.end(BIG);
+		} else if (req.url === "/huge") {
+			// 64 MiB, as fast as whoever reads it.
+			res.on("close", () => app.aborted.push(req.url));
+			res.writeHead(200, { "content-type": "application/octet-stream" });
+			const chunk = Buffer.alloc(64 * 1024, 120);
+			let sent = 0;
+			const pump = () => {
+				while (sent < 64 * 1024 * 1024) {
+					sent += chunk.length;
+					if (!res.write(chunk)) return void res.once("drain", pump);
+				}
+				res.end();
+			};
+			pump();
 		} else if (req.url === "/slow") {
 			res.on("close", () => app.aborted.push(req.url));
 		} else {
@@ -231,11 +287,20 @@ function testFront(relayPort) {
 	});
 }
 
-/** A raw WebSocket handshake to a relay: the answer's status and head, and the socket for frames. */
-function rawUpgrade(port, host, path, extra = "") {
+/** The start of a raw WebSocket handshake to a relay, written; the socket for the answer. */
+function handshake(port, host, path, extra = "") {
+	const socket = connect(port, "127.0.0.1");
+	const key = randomBytes(16).toString("base64");
+	socket.write(
+		`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-Host: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+			`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n${extra}\r\n`,
+	);
+	return { socket, key };
+}
+
+/** The answer's head to a handshake (status, head, the bytes after it). */
+function answerHead(socket) {
 	return new Promise((resolve, reject) => {
-		const socket = connect(port, "127.0.0.1");
-		const key = randomBytes(16).toString("base64");
 		let buffer = Buffer.alloc(0);
 		const onData = (chunk) => {
 			buffer = Buffer.concat([buffer, chunk]);
@@ -243,15 +308,17 @@ function rawUpgrade(port, host, path, extra = "") {
 			if (end === -1) return;
 			socket.off("data", onData);
 			const head = buffer.subarray(0, end).toString();
-			resolve({ socket, key, head, status: Number(head.split(" ")[1]), rest: buffer.subarray(end + 4) });
+			resolve({ head, status: Number(head.split(" ")[1]), rest: buffer.subarray(end + 4) });
 		};
 		socket.on("data", onData);
 		socket.on("error", reject);
-		socket.write(
-			`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-Host: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
-				`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n${extra}\r\n`,
-		);
 	});
+}
+
+/** A raw WebSocket handshake to a relay: the answer's status and head, and the socket for frames. */
+async function rawUpgrade(port, host, path, extra = "") {
+	const { socket, key } = handshake(port, host, path, extra);
+	return { socket, key, ...(await answerHead(socket)) };
 }
 
 /** The server's frames on a raw socket, one at a time; `closed` resolves when the socket closes. */
@@ -295,6 +362,18 @@ function frameReader(socket, initial) {
 	};
 }
 
+/** Every byte a raw HTTP request gets back, until the connection closes. */
+function rawRequest(port, text) {
+	return new Promise((resolve) => {
+		const socket = connect(port, "127.0.0.1");
+		const chunks = [];
+		socket.on("data", (chunk) => chunks.push(chunk));
+		socket.on("error", () => {});
+		socket.on("close", () => resolve(Buffer.concat(chunks).toString("latin1")));
+		socket.write(text);
+	});
+}
+
 const mask = () => randomBytes(4);
 
 describe("app relay: end to end with the link program", () => {
@@ -309,13 +388,9 @@ describe("app relay: end to end with the link program", () => {
 	let appPort;
 	let token;
 
-	function linkProgram(claim) {
-		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), claim], {
-			env: {
-				...process.env,
-				QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${frontPort}`,
-				QORPERA_APP_HOST_SUFFIX: SUFFIX,
-			},
+	function linkProgram(claim, port = appPort) {
+		const child = spawn(process.execPath, [CLIENT, "shop", String(port), claim, SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${frontPort}` },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const program = { child, output: "", code: undefined };
@@ -378,7 +453,7 @@ describe("app relay: end to end with the link program", () => {
 		});
 	}
 
-	const withSession = (headers = {}) => ({ cookie: `${GATE_COOKIE}=${token}`, ...headers });
+	const withSession = (headers = {}, session = token) => ({ cookie: `${GATE_COOKIE}=${session}`, ...headers });
 
 	before(async () => {
 		const dbPort = await listen(db.server);
@@ -386,11 +461,14 @@ describe("app relay: end to end with the link program", () => {
 		for (const site of db.sites.values()) site.port = appPort;
 		relay = createRelay({
 			api: `http://127.0.0.1:${dbPort}/`,
-			serviceKey: SERVICE_KEY,
+			...RELAY,
 			hostSuffix: SUFFIX,
-			responseTimeoutMs: 500,
+			// Longer than a paused visitor may hold the program, so a request waiting behind one still gets its answer.
+			responseTimeoutMs: 2500,
 			sessionCacheMs: 200,
+			lockedCacheMs: 200,
 			maxBodyBytes: 256 * 1024,
+			pausedMs: 500,
 			recheckMs: 0,
 			log: (line) => logs.push(line),
 		});
@@ -440,11 +518,12 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal((await visit("/hello", { host: HOST.toUpperCase() })).status, 401);
 	});
 
-	it("serves the link program without the password", async () => {
+	it("serves the link program without the password, never cached on the way", async () => {
 		const client = await visit("/.qorpera/client.mjs");
 		assert.equal(client.status, 200);
 		assert.equal(client.headers["content-type"], "text/javascript; charset=utf-8");
 		assert.equal(client.headers["x-content-type-options"], "nosniff");
+		assert.equal(client.headers["cdn-cache-control"], "no-store");
 		assert.deepEqual(client.body, readFileSync(CLIENT));
 		assert.equal((await visit("/.qorpera/client.mjs", { method: "POST", body: "x" })).status, 405);
 		assert.equal((await visit("/.qorpera/other")).status, 404);
@@ -477,7 +556,22 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal(head.body.length, 0);
 	});
 
+	it("keeps a locked answer a few seconds, so a token nobody holds costs one database call", async () => {
+		const unknown = "Z".repeat(32);
+		const asked = db.sessionCalls().length;
+		for (let i = 0; i < 3; i++) {
+			const answer = await visit("/hello", { headers: withSession({}, unknown) });
+			assert.equal(answer.status, 401);
+			assert.deepEqual(answer.headers["set-cookie"], [CLEAR_GATE_COOKIE]);
+		}
+		assert.equal(db.sessionCalls().length - asked, 1);
+		await sleep(250);
+		await visit("/hello", { headers: withSession({}, unknown) });
+		assert.equal(db.sessionCalls().length - asked, 2);
+	});
+
 	it("refuses another origin and a wrong password, limits tries, and keeps next on this host", async () => {
+		const calls = db.calls.length;
 		for (const origin of ["https://evil.example", "null", `https://lab${SUFFIX}`, `http://${HOST}`])
 			assert.equal((await unlock(PASSWORD, "/", { origin })).status, 403, origin);
 		const json = await visit("/.qorpera/unlock", {
@@ -488,7 +582,7 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal(json.status, 415);
 		const big = await unlock("x".repeat(5000));
 		assert.equal(big.status, 413);
-		assert.equal(db.calls.length, 0);
+		assert.equal(db.calls.length, calls);
 		const wrong = await unlock("nope", "/hello");
 		assert.equal(wrong.status, 401);
 		assert.equal(wrong.headers["set-cookie"], undefined);
@@ -500,10 +594,12 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal(limited.status, 429);
 		assert.equal(limited.headers["retry-after"], "125");
 		assert.match(limited.text, /Prøv igen om 3 minutter\./);
+		// The app sites' own unlock, never the files sites' one.
 		assert.deepEqual(db.calls.at(-1), {
-			name: "qorpera_site_unlock",
+			name: "qorpera_site_app_unlock",
 			args: { p_slug: "shop", p_password: PASSWORD, p_client: "203.0.113.9" },
 		});
+		assert.ok(!db.calls.some((call) => call.name === "qorpera_site_unlock"));
 		for (const next of ["//evil.example/", "https://evil.example/", "/\\evil.example", "/.qorpera/unlock", "hello"]) {
 			const answer = await unlock(PASSWORD, next);
 			assert.equal(answer.status, 303, next);
@@ -534,10 +630,15 @@ describe("app relay: end to end with the link program", () => {
 		assert.match(danish.text, /Appen kører ikke lige nu/);
 	});
 
-	it("connects the link program with its claim, then serves the app", async () => {
+	it("connects the link program with its claim; it serves the port the link is shared for, whatever it was given", async () => {
 		const claim = db.claim("shop");
-		const program = linkProgram(claim);
+		// Started with another port than the shared one: it says so, and serves the shared one.
+		const program = linkProgram(claim, 1);
 		await until(() => program.output.includes(`Connected: https://${HOST}/`), "the program to connect");
+		assert.match(
+			program.output,
+			new RegExp(`This link is shared for port ${appPort}, not 1: serving port ${appPort}\\.`),
+		);
 		assert.equal(relay.isConnected("shop"), true);
 		const [first] = db.connects();
 		assert.equal(first.args.p_slug, "shop");
@@ -557,7 +658,7 @@ describe("app relay: end to end with the link program", () => {
 		await visit("/hello", { headers: withSession() });
 		await visit("/hello", { headers: withSession() });
 		assert.ok(db.sessionCalls().length - asked <= 1);
-		await new Promise((resolve) => setTimeout(resolve, 250));
+		await sleep(250);
 		await visit("/hello", { headers: withSession() });
 		assert.deepEqual(db.sessionCalls().at(-1).args, { p_slug: "shop", p_token: token });
 	});
@@ -592,12 +693,30 @@ describe("app relay: end to end with the link program", () => {
 		assert.deepEqual(values(seen.headers, "x-forwarded-host"), [HOST]);
 		assert.deepEqual(values(seen.headers, "x-app-header"), ["kept"]);
 		assert.deepEqual(values(seen.headers, "content-length"), ["7"]);
+		// Each request on a connection of its own to the app.
+		assert.deepEqual(values(seen.headers, "connection"), ["close"]);
 		for (const name of ["x-real-ip", "forwarded", "x-envoy-original-path", "x-hop"])
 			assert.deepEqual(values(seen.headers, name), [], name);
 		// Only the gate cookie: no Cookie header at all.
 		const bare = JSON.parse((await visit("/echo", { headers: withSession() })).text);
 		assert.deepEqual(values(bare.headers, "cookie"), []);
 		assert.ok(!JSON.stringify(seen.headers).includes(token));
+	});
+
+	it("frames a chunked body for the app whatever the method, so it never reads it as a request of its own", async () => {
+		const smuggled = "GET /smuggled HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n";
+		const answer = await visit("/echo?chunked", {
+			method: "DELETE",
+			body: smuggled,
+			headers: withSession({ "transfer-encoding": "chunked" }),
+		});
+		assert.equal(answer.status, 201);
+		const seen = JSON.parse(answer.text);
+		assert.equal(seen.method, "DELETE");
+		assert.equal(Buffer.from(seen.body, "base64").toString(), smuggled);
+		assert.deepEqual(values(seen.headers, "transfer-encoding"), ["chunked"]);
+		await sleep(100);
+		assert.ok(!app.seen.some((seen) => seen.url === "/smuggled"), "no second request reached the app");
 	});
 
 	it("forwards a binary body over several messages, and a big answer exactly", async () => {
@@ -645,6 +764,21 @@ describe("app relay: end to end with the link program", () => {
 		assert.deepEqual(answer.headers["set-cookie"], ["a=1; Path=/", "b=2; Path=/; HttpOnly", "c=3"]);
 	});
 
+	it("never lets a shared cache keep an answer: the app's cache headers go, private and no-store come", async () => {
+		const answer = await visit("/assets/app.js", { headers: withSession() });
+		assert.equal(answer.status, 200);
+		assert.equal(answer.text, "export {};");
+		assert.deepEqual(values(answer.raw, "cache-control"), ["private, no-cache"]);
+		assert.deepEqual(values(answer.raw, "cdn-cache-control"), ["no-store"]);
+		for (const name of ["expires", "cloudflare-cdn-cache-control", "surrogate-control"])
+			assert.deepEqual(values(answer.raw, name), [], name);
+		// The browser may still ask again with its tag.
+		assert.equal(answer.headers.etag, '"v1"');
+		const plain = await visit("/hello", { headers: withSession() });
+		assert.equal(plain.headers["cache-control"], "private, no-cache");
+		assert.equal(plain.headers["cdn-cache-control"], "no-store");
+	});
+
 	it("answers 504 when the app has no answer in time, and ends the app's request", async () => {
 		const answer = await visit("/slow", { headers: withSession() });
 		assert.equal(answer.status, 504);
@@ -652,6 +786,27 @@ describe("app relay: end to end with the link program", () => {
 		await until(() => app.aborted.includes("/slow"), "the app's request to end");
 		// The program serves on.
 		assert.equal((await visit("/hello", { headers: withSession() })).status, 200);
+	});
+
+	it("ends a visitor who stops reading after a while, so the program serves everyone else again", async () => {
+		const socket = connect(relayPort, "127.0.0.1");
+		let received = 0;
+		socket.on("data", (chunk) => {
+			received += chunk.length;
+		});
+		socket.on("error", () => {});
+		const closed = new Promise((resolve) => socket.on("close", resolve));
+		socket.write(
+			`GET /huge HTTP/1.1\r\nHost: x\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\n\r\n`,
+		);
+		// The visitor never reads: the relay's buffers fill and the program waits, for half a second (pausedMs) at most.
+		socket.pause();
+		await sleep(300);
+		// Another visitor is served while the first still reads nothing: its answer has ended, the program goes on.
+		assert.equal((await visit("/hello", { headers: withSession() })).text, "hello");
+		socket.resume();
+		await closed;
+		assert.ok(received < 64 * 1024 * 1024, `the paused answer was cut off (${received} bytes)`);
 	});
 
 	it("refuses a body over the limit before it reaches the app", async () => {
@@ -696,6 +851,8 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal(again.length, 1);
 		assert.ok(again[0].args.p_secret === key, "the key, not the claim");
 		assert.ok(db.sites.get("shop").key === key, "no new key");
+		// The port line is said once, not on every reconnect.
+		assert.equal(program.count("This link is shared for port"), 1);
 		assert.equal((await visit("/hello", { headers: withSession() })).text, "hello");
 	});
 
@@ -724,6 +881,29 @@ describe("app relay: end to end with the link program", () => {
 		assert.match(logs.join("\n"), /shop: a link program connected, replacing the one before/);
 	});
 
+	it("never lets a program serve another site that took its slug: it is dropped and the link is not running", async () => {
+		const stale = programs.at(-1);
+		// The member unpublished the link; another company's site took the name, and its member unlocked it.
+		db.retake("shop");
+		const theirs = db.session("shop");
+		const reached = app.seen.length;
+		const answer = await visit("/hello", { headers: withSession({}, theirs) });
+		assert.equal(answer.status, 503);
+		assert.match(answer.text, /This app is not running right now/);
+		assert.equal(await stale.exited, 1);
+		assert.match(
+			stale.output,
+			/The relay refused this program: the link was turned off or shared again\. Stopping\./,
+		);
+		assert.equal(relay.isConnected("shop"), false);
+		assert.equal(app.seen.length, reached, "nothing reached the old site's app");
+		// The new site's own program serves it.
+		const own = linkProgram(db.claim("shop"));
+		await until(() => own.output.includes("Connected: "), "the new site's program to connect");
+		assert.equal((await visit("/hello", { headers: withSession({}, theirs) })).text, "hello");
+		token = theirs;
+	});
+
 	it("says the app is not running again as soon as its program stops", async () => {
 		const newest = programs.at(-1);
 		newest.child.kill();
@@ -732,120 +912,194 @@ describe("app relay: end to end with the link program", () => {
 		assert.equal((await visit("/hello", { headers: withSession() })).status, 503);
 	});
 
-	it("speaks the protocol by hand: hello, ping, a request served frame by frame, refusals", async () => {
-		const claim = db.claim("lab");
-		const lab = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${claim}\r\n`);
-		assert.equal(lab.status, 101);
-		assert.match(
-			lab.head,
-			new RegExp(
-				`\\r\\nSec-WebSocket-Accept: ${acceptKey({
-					upgrade: "websocket",
-					connection: "Upgrade",
-					"sec-websocket-version": "13",
-					"sec-websocket-key": lab.key,
-				}).replace(/[+/]/g, "\\$&")}`,
-			),
-		);
-		const frames = frameReader(lab.socket, lab.rest);
-		const hello = decodeMessage((await frames.message()).payload);
-		assert.equal(hello.type, TYPE.hello);
-		assert.equal(hello.stream, 0);
-		const helloJson = JSON.parse(hello.payload.toString());
-		assert.deepEqual(Object.keys(helloJson), ["key", "url"]);
-		assert.ok(helloJson.key === db.sites.get("lab").key);
-		assert.equal(helloJson.url, `https://${LAB}/`);
-		// A ping is answered with its payload.
-		lab.socket.write(encodeFrame(0x9, Buffer.from("are you there"), { mask: mask() }));
-		const pong = await frames.message();
-		assert.equal(pong.opcode, 0xa);
-		assert.equal(pong.payload.toString(), "are you there");
-		// A visitor of lab, served by hand: the head arrives, the answer goes back in two fragments and a body.
-		db.sites.get("lab").sessions.add("L".repeat(32));
-		const visitor = visit("/by-hand?x=1", {
-			host: LAB,
-			method: "POST",
-			body: "ping",
-			headers: { cookie: `${GATE_COOKIE}=${"L".repeat(32)}` },
-		});
-		const head = decodeMessage((await frames.message()).payload);
-		assert.equal(head.type, TYPE.head);
-		const asked = JSON.parse(head.payload.toString());
-		assert.equal(asked.method, "POST");
-		assert.equal(asked.path, "/by-hand?x=1");
-		assert.deepEqual(values(asked.headers, "host"), [LAB]);
-		const body = decodeMessage((await frames.message()).payload);
-		assert.deepEqual([body.type, body.stream, body.payload.toString()], [TYPE.body, head.stream, "ping"]);
-		assert.equal(decodeMessage((await frames.message()).payload).type, TYPE.end);
-		const response = encodeMessage(
-			TYPE.response,
-			head.stream,
-			Buffer.from(
-				JSON.stringify({
-					status: 200,
-					headers: [
-						["content-type", "text/plain"],
-						["Connection", "x-drop"],
-						["x-drop", "1"],
-					],
+	describe("a program speaking the protocol by hand", () => {
+		const session = "L".repeat(32);
+		let lab;
+		let frames;
+
+		const labVisit = (path, init = {}) =>
+			visit(path, { host: LAB, ...init, headers: { cookie: `${GATE_COOKIE}=${session}`, ...init.headers } });
+		/** The next request as the relay sends it: its head, then its body to the end message. */
+		const nextHead = async () => {
+			const head = decodeMessage((await frames.message()).payload);
+			assert.equal(head.type, TYPE.head);
+			const body = [];
+			for (;;) {
+				const message = decodeMessage((await frames.message()).payload);
+				assert.equal(message.stream, head.stream);
+				if (message.type === TYPE.end) break;
+				assert.equal(message.type, TYPE.body);
+				body.push(message.payload);
+			}
+			return { ...head, body: Buffer.concat(body) };
+		};
+		const answerWith = (stream, status, headers, ...chunks) => {
+			lab.socket.write(
+				encodeFrame(0x2, encodeMessage(TYPE.response, stream, Buffer.from(JSON.stringify({ status, headers }))), {
+					mask: mask(),
 				}),
-			),
-		);
-		lab.socket.write(encodeFrame(0x2, response.subarray(0, 7), { mask: mask(), fin: false }));
-		lab.socket.write(encodeFrame(0x0, response.subarray(7), { mask: mask() }));
-		lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.body, head.stream, Buffer.from("pong")), { mask: mask() }));
-		lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.end, head.stream), { mask: mask() }));
-		const served = await visitor;
-		assert.equal(served.status, 200);
-		assert.equal(served.text, "pong");
-		assert.equal(served.headers["x-drop"], undefined);
-		// A frame that is not masked ends the connection with 1002.
-		lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.keepalive, 0)));
-		const close = await frames.message();
-		assert.equal(close.opcode, 0x8);
-		assert.equal(close.payload.readUInt16BE(0), 1002);
-		// The close handshake: answered, then the relay ends the connection.
-		lab.socket.write(encodeFrame(0x8, close.payload.subarray(0, 2), { mask: mask() }));
-		await frames.closed;
-		await until(() => !relay.isConnected("lab"), "the lab program to be gone");
-		// No secret, a wrong one, another scheme: the handshake completes and the close says 4001.
-		for (const extra of ["", `Authorization: Bearer ${"w".repeat(43)}\r\n`, "Authorization: Basic abc\r\n"]) {
-			const refused = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", extra);
-			assert.equal(refused.status, 101);
-			const frame = await frameReader(refused.socket, refused.rest).message();
-			assert.equal(frame.opcode, 0x8);
-			assert.equal(frame.payload.readUInt16BE(0), CLOSE.refused);
-			assert.equal(frame.payload.subarray(2).toString(), "refused");
-			refused.socket.destroy();
-		}
-		// An oversized frame, a text frame, a reserved bit.
-		const key = db.sites.get("lab").key;
-		for (const [frame, code] of [
-			[Buffer.concat([Buffer.from([0x82, 0xff]), Buffer.alloc(8, 0).fill(0xff, 5)]), 1009],
-			[encodeFrame(0x1, Buffer.from("text"), { mask: mask() }), 1003],
-			[Buffer.from([0xc2, 0x80, 1, 2, 3, 4]), 1002],
-		]) {
-			const socket = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${key}\r\n`);
-			const reader = frameReader(socket.socket, socket.rest);
-			assert.equal(decodeMessage((await reader.message()).payload).type, TYPE.hello);
-			socket.socket.write(frame);
-			const close = await reader.message();
+			);
+			for (const chunk of chunks)
+				lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.body, stream, Buffer.from(chunk)), { mask: mask() }));
+		};
+		const endStream = (stream) =>
+			lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.end, stream), { mask: mask() }));
+
+		it("connects: the database first, then the handshake, then hello with the key, the url and the port", async () => {
+			db.sites.get("lab").sessions.add(session);
+			lab = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${db.claim("lab")}\r\n`);
+			assert.equal(lab.status, 101);
+			const accept = acceptKey({
+				upgrade: "websocket",
+				connection: "Upgrade",
+				"sec-websocket-version": "13",
+				"sec-websocket-key": lab.key,
+			});
+			assert.ok(lab.head.includes(`\r\nSec-WebSocket-Accept: ${accept}`));
+			frames = frameReader(lab.socket, lab.rest);
+			const hello = decodeMessage((await frames.message()).payload);
+			assert.deepEqual([hello.type, hello.stream], [TYPE.hello, 0]);
+			const said = JSON.parse(hello.payload.toString());
+			assert.deepEqual(Object.keys(said), ["key", "url", "port"]);
+			assert.ok(said.key === db.sites.get("lab").key);
+			assert.equal(said.url, `https://${LAB}/`);
+			assert.equal(said.port, appPort);
+		});
+
+		it("answers a ping with its payload", async () => {
+			lab.socket.write(encodeFrame(0x9, Buffer.from("are you there"), { mask: mask() }));
+			const pong = await frames.message();
+			assert.equal(pong.opcode, 0xa);
+			assert.equal(pong.payload.toString(), "are you there");
+		});
+
+		it("serves a visitor frame by frame, the answer in fragments, its hop-by-hop headers dropped", async () => {
+			const visitor = labVisit("/by-hand?x=1", { method: "POST", body: "ping" });
+			const head = await nextHead();
+			const asked = JSON.parse(head.payload.toString());
+			assert.equal(asked.method, "POST");
+			assert.equal(asked.path, "/by-hand?x=1");
+			assert.deepEqual(values(asked.headers, "host"), [LAB]);
+			assert.equal(head.body.toString(), "ping");
+			const response = encodeMessage(
+				TYPE.response,
+				head.stream,
+				Buffer.from(
+					JSON.stringify({
+						status: 200,
+						headers: [
+							["content-type", "text/plain"],
+							["Connection", "x-drop"],
+							["x-drop", "1"],
+						],
+					}),
+				),
+			);
+			lab.socket.write(encodeFrame(0x2, response.subarray(0, 7), { mask: mask(), fin: false }));
+			lab.socket.write(encodeFrame(0x0, response.subarray(7), { mask: mask() }));
+			lab.socket.write(
+				encodeFrame(0x2, encodeMessage(TYPE.body, head.stream, Buffer.from("pong")), { mask: mask() }),
+			);
+			endStream(head.stream);
+			const served = await visitor;
+			assert.equal(served.status, 200);
+			assert.equal(served.text, "pong");
+			assert.equal(served.headers["x-drop"], undefined);
+		});
+
+		it("never writes past an answer's Content-Length: the visitor's connection ends instead", async () => {
+			for (const [declared, chunks] of [
+				["2", ["0123456789"]],
+				["2", ["ab", "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nforged"]],
+				["5", ["ab"]],
+			]) {
+				// A kept-alive connection: only the relay's ending it stops a next answer from following on it.
+				const wire = rawRequest(
+					relayPort,
+					`GET /declared HTTP/1.1\r\nHost: x\r\nX-Forwarded-Host: ${LAB}\r\nCookie: ${GATE_COOKIE}=${session}\r\n\r\n`,
+				);
+				const head = await nextHead();
+				answerWith(head.stream, 200, [["content-length", declared]], ...chunks);
+				endStream(head.stream);
+				const got = await wire;
+				const label = `${declared} ${chunks.join("|")}`;
+				const [, body = ""] = got.split("\r\n\r\n");
+				assert.ok(body.length <= Math.min(2, Number(declared)), `${label}: ${JSON.stringify(body)}`);
+				assert.equal(got.split("HTTP/1.1").length - 1, 1, `${label}: one answer only`);
+				assert.doesNotMatch(got, /forged/);
+				// The relay told the program the stream is over.
+				const reset = decodeMessage((await frames.message()).payload);
+				assert.deepEqual([reset.type, reset.stream], [TYPE.reset, head.stream]);
+			}
+			// The program itself is fine.
+			assert.equal(relay.isConnected("lab"), true);
+			const visitor = labVisit("/after");
+			const head = await nextHead();
+			answerWith(head.stream, 200, [["content-length", "2"]], "ok");
+			endStream(head.stream);
+			assert.equal((await visitor).text, "ok");
+		});
+
+		it("ends the connection with 1002 on a frame that is not masked", async () => {
+			lab.socket.write(encodeFrame(0x2, encodeMessage(TYPE.keepalive, 0)));
+			const close = await frames.message();
 			assert.equal(close.opcode, 0x8);
-			assert.equal(close.payload.readUInt16BE(0), code);
-			socket.socket.destroy();
-		}
+			assert.equal(close.payload.readUInt16BE(0), 1002);
+			// The close handshake: answered, then the relay ends the connection.
+			lab.socket.write(encodeFrame(0x8, close.payload.subarray(0, 2), { mask: mask() }));
+			await frames.closed;
+			await until(() => !relay.isConnected("lab"), "the lab program to be gone");
+		});
+
+		it("refuses no secret, a wrong one or another scheme with 4001, after asking the database for a Bearer only", async () => {
+			const asked = db.connects().length;
+			for (const extra of ["", `Authorization: Bearer ${"w".repeat(43)}\r\n`, "Authorization: Basic abc\r\n"]) {
+				const refused = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", extra);
+				assert.equal(refused.status, 101);
+				const frame = await frameReader(refused.socket, refused.rest).message();
+				assert.equal(frame.opcode, 0x8);
+				assert.equal(frame.payload.readUInt16BE(0), CLOSE.refused);
+				assert.equal(frame.payload.subarray(2).toString(), "refused");
+				refused.socket.destroy();
+			}
+			assert.equal(db.connects().length - asked, 1);
+		});
+
+		it("closes on an oversized frame, a text frame, a reserved bit and a flood of pings", async () => {
+			const key = db.sites.get("lab").key;
+			// More than twice the limit, so a second's turn between them cannot hide it.
+			const pings = Buffer.concat(
+				Array.from({ length: 25 }, () => encodeFrame(0x9, Buffer.from("p"), { mask: mask() })),
+			);
+			for (const [frame, code] of [
+				[Buffer.concat([Buffer.from([0x82, 0xff]), Buffer.alloc(8, 0).fill(0xff, 5)]), 1009],
+				[encodeFrame(0x1, Buffer.from("text"), { mask: mask() }), 1003],
+				[Buffer.from([0xc2, 0x80, 1, 2, 3, 4]), 1002],
+				[pings, CLOSE.tooManyPings],
+			]) {
+				const socket = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", `Authorization: Bearer ${key}\r\n`);
+				const reader = frameReader(socket.socket, socket.rest);
+				assert.equal(decodeMessage((await reader.message()).payload).type, TYPE.hello);
+				socket.socket.write(frame);
+				let close;
+				do close = await reader.next();
+				while (close.opcode !== 0x8);
+				assert.equal(close.payload.readUInt16BE(0), code);
+				socket.socket.destroy();
+			}
+		});
 	});
 
 	it("never logs or prints a claim, key, token, password or cookie", () => {
 		const said = [...logs, ...programs.map((program) => program.output)].join("\n");
 		assert.ok(logs.length > 0);
-		for (const secret of [...db.secrets, PASSWORD, SERVICE_KEY, token])
+		for (const secret of [...db.secrets, PASSWORD, ANON_KEY, RELAY_JWT, token])
 			assert.ok(!said.includes(secret), "a secret was logged");
 		assert.doesNotMatch(said, /__Host-qorpera_app/);
 	});
 });
 
-describe("app relay: keepalives and the key check", () => {
+describe("app relay: connecting, keepalives and the recheck", () => {
 	/** A relay with these options and a lab program connected by hand; everything closes when the test ends. */
 	async function setup(t, options) {
 		const db = fakeDatabase();
@@ -853,7 +1107,7 @@ describe("app relay: keepalives and the key check", () => {
 		const dbPort = await listen(db.server);
 		const relay = createRelay({
 			api: `http://127.0.0.1:${dbPort}`,
-			serviceKey: SERVICE_KEY,
+			...RELAY,
 			hostSuffix: SUFFIX,
 			log: () => {},
 			...options,
@@ -879,9 +1133,9 @@ describe("app relay: keepalives and the key check", () => {
 		await until(() => !relay.isConnected("lab"), "the silent program to be dropped", 2000);
 	});
 
-	it("checks a program's key again, and closes it with 4001 once the link is off", async (t) => {
+	it("checks a program again: a key that no longer holds ends it with 4001", async (t) => {
 		const { db, relay, frames } = await setup(t, { recheckMs: 150 });
-		await new Promise((resolve) => setTimeout(resolve, 400));
+		await sleep(400);
 		assert.equal(relay.isConnected("lab"), true, "the key holds");
 		assert.ok(db.connects().length >= 2, "checked again");
 		db.sites.get("lab").key = null;
@@ -890,28 +1144,96 @@ describe("app relay: keepalives and the key check", () => {
 		assert.equal(close.payload.readUInt16BE(0), CLOSE.refused);
 	});
 
-	it("closes with 1013 when the database cannot answer a connect, so the program tries again", async (t) => {
+	it("checks a program again: another site under its slug ends it with 4001", async (t) => {
+		const { db, frames } = await setup(t, { recheckMs: 150 });
+		const key = db.sites.get("lab").key;
+		// The same key answers for a new site of the slug: not this program's site.
+		db.retake("lab").key = key;
+		const close = await frames.message(3000);
+		assert.equal(close.payload.readUInt16BE(0), CLOSE.refused);
+	});
+
+	it("checks a program again: a changed port closes it with 1012, so it connects again and learns the port", async (t) => {
+		const { db, relay, frames } = await setup(t, { recheckMs: 150 });
+		db.sites.get("lab").port = 3001;
+		const close = await frames.message(3000);
+		assert.equal(close.opcode, 0x8);
+		assert.equal(close.payload.readUInt16BE(0), CLOSE.portChanged);
+		assert.equal(relay.isConnected("lab"), false);
+	});
+
+	it("answers 503 before the handshake when the database cannot answer a connect, so the program tries again", async (t) => {
 		const failing = createServer((_req, res) => {
 			res.writeHead(500);
 			res.end("{}");
 		});
 		const dbPort = await listen(failing);
-		const relay = createRelay({
-			api: `http://127.0.0.1:${dbPort}`,
-			serviceKey: SERVICE_KEY,
-			hostSuffix: SUFFIX,
-			log: () => {},
-		});
+		const relay = createRelay({ api: `http://127.0.0.1:${dbPort}`, ...RELAY, hostSuffix: SUFFIX, log: () => {} });
 		const port = await listen(relay);
-		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", `Authorization: Bearer ${"c".repeat(43)}\r\n`);
 		t.after(async () => {
-			lab.socket.destroy();
 			await new Promise((resolve) => relay.close(resolve));
 			failing.close();
 			failing.closeAllConnections();
 		});
-		const close = await frameReader(lab.socket, lab.rest).message();
-		assert.equal(close.payload.readUInt16BE(0), 1013);
+		const lab = await rawUpgrade(port, LAB, "/.qorpera/connect", `Authorization: Bearer ${"c".repeat(43)}\r\n`);
+		assert.equal(lab.status, 503);
+		lab.socket.destroy();
+	});
+
+	it("completes no handshake before the database answers, and limits connect attempts per address", async (t) => {
+		const asked = [];
+		let answer;
+		const gate = new Promise((resolve) => {
+			answer = resolve;
+		});
+		const fetcher = async (_url, init) => {
+			asked.push(JSON.parse(init.body));
+			await gate;
+			return Response.json({ state: "ok", key: null, port: 3000, siteId: randomUUID() });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			connectLimit: { perMinute: 2, pending: 1, total: 10 },
+			log: () => {},
+		});
+		const port = await listen(relay);
+		const sockets = [];
+		t.after(async () => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise((resolve) => relay.close(resolve));
+		});
+		const attempt = (address) => {
+			const { socket } = handshake(
+				port,
+				LAB,
+				"/.qorpera/connect",
+				`Authorization: Bearer ${"k".repeat(43)}\r\nCF-Connecting-IP: ${address}\r\n`,
+			);
+			sockets.push(socket);
+			const got = [];
+			socket.on("data", (chunk) => got.push(chunk));
+			socket.on("error", () => {});
+			return { socket, got, head: answerHead(socket) };
+		};
+		const first = attempt("203.0.113.1");
+		await until(() => asked.length === 1, "the database to be asked");
+		// One in flight for this address already: the next waits, another address does not.
+		const second = attempt("203.0.113.1");
+		assert.equal((await second.head).status, 429);
+		const other = attempt("198.51.100.7");
+		await until(() => asked.length === 2, "the other address's connect");
+		await sleep(100);
+		assert.equal(first.got.length, 0, "nothing written before the database answered");
+		answer();
+		assert.equal((await first.head).status, 101);
+		assert.equal((await other.head).status, 101);
+		// Two a minute for this address: one more, then 429.
+		assert.equal((await attempt("203.0.113.1").head).status, 101);
+		assert.equal((await attempt("203.0.113.1").head).status, 429);
+		assert.equal(asked.length, 3);
 	});
 });
 
@@ -996,6 +1318,11 @@ describe("app relay: the pure parts", () => {
 			["x-forwarded-host", "shop-preview.qorpera.com"],
 			["x-forwarded-for", "203.0.113.9"],
 		]);
+		// A chunked body goes on chunked, the visitor's own header never.
+		assert.deepEqual(
+			values(requestHeaders(raw, { host: "h-preview.qorpera.com", client: "", chunked: true }), "transfer-encoding"),
+			["chunked"],
+		);
 		assert.deepEqual(
 			values(requestHeaders([], { host: "h-preview.qorpera.com", client: "" }), "x-forwarded-for"),
 			[],
@@ -1015,6 +1342,11 @@ describe("app relay: the pure parts", () => {
 				["Set-Cookie", `${GATE_COOKIE}x=1`],
 				["Bad Name", "x"],
 				["X-Bad", "a\r\nb"],
+				["Cache-Control", "public, max-age=31536000"],
+				["expires", "Thu, 01 Jan 2099 00:00:00 GMT"],
+				["CDN-Cache-Control", "max-age=60"],
+				["Cloudflare-CDN-Cache-Control", "max-age=60"],
+				["Surrogate-Control", "max-age=60"],
 				["Location", "/next"],
 			]),
 			[
@@ -1023,7 +1355,13 @@ describe("app relay: the pure parts", () => {
 				["Set-Cookie", "t=2;path=/"],
 				["Set-Cookie", `${GATE_COOKIE}x=1`],
 				["Location", "/next"],
+				["cache-control", "private, no-cache"],
+				["cdn-cache-control", "no-store"],
 			],
+		);
+		assert.deepEqual(
+			responseHeaders([]),
+			FORWARDED_CACHE_HEADERS.map((pair) => [...pair]),
 		);
 		assert.equal(responseHeaders("x"), null);
 		assert.equal(responseHeaders([["a", 1]]), null);
@@ -1102,42 +1440,63 @@ describe("app relay: the pure parts", () => {
 		huge[1] = 0xff;
 		huge.writeBigUInt64BE(2n ** 62n, 2);
 		expect(huge, 1009);
-		assert.equal(
-			acceptKey({
-				upgrade: "websocket",
-				connection: "Upgrade",
-				"sec-websocket-version": "13",
-				"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
-			}),
-			"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+		const handshakeHeaders = (overrides) => ({
+			upgrade: "websocket",
+			connection: "Upgrade",
+			"sec-websocket-version": "13",
+			"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+			...overrides,
+		});
+		assert.equal(acceptKey(handshakeHeaders({})), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+		assert.equal(acceptKey(handshakeHeaders({ "sec-websocket-version": "8" })), null);
+		assert.equal(acceptKey(handshakeHeaders({ connection: "keep-alive" })), null);
+		assert.equal(acceptKey(handshakeHeaders({ "sec-websocket-key": "short" })), null);
+	});
+
+	it("cuts off a peer that lets too much pile up, pongs included, and one that pings too often", () => {
+		class FakeSocket extends EventEmitter {
+			writableLength = 0;
+			written = [];
+			destroyed = false;
+			setNoDelay() {}
+			setTimeout() {}
+			setKeepAlive() {}
+			resume() {}
+			pause() {}
+			end() {}
+			write(data) {
+				this.written.push(data);
+				return true;
+			}
+			destroy() {
+				this.destroyed = true;
+			}
+		}
+		const full = new FakeSocket();
+		const ws = new WebSocketConnection(full, null);
+		full.writableLength = MAX_QUEUED_BYTES - 10;
+		ws.send(Buffer.alloc(4));
+		assert.equal(full.destroyed, false);
+		ws.send(Buffer.alloc(20));
+		assert.equal(full.destroyed, true);
+		const pongs = new FakeSocket();
+		new WebSocketConnection(pongs, null, { maxQueued: 1024 });
+		pongs.writableLength = 1024;
+		pongs.emit("data", encodeFrame(0x9, Buffer.from("p"), { mask: mask() }));
+		assert.equal(pongs.destroyed, true);
+		assert.equal(pongs.written.length, 0);
+		const flood = new FakeSocket();
+		new WebSocketConnection(flood, null, { pingsPerSecond: 3 });
+		flood.emit(
+			"data",
+			Buffer.concat(Array.from({ length: 5 }, () => encodeFrame(0x9, Buffer.alloc(0), { mask: mask() }))),
 		);
-		assert.equal(
-			acceptKey({
-				upgrade: "websocket",
-				connection: "Upgrade",
-				"sec-websocket-version": "8",
-				"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
-			}),
-			null,
+		const sent = flood.written.map((frame) => decodeFrame(frame, { masked: false }));
+		assert.deepEqual(
+			sent.map((frame) => frame.opcode),
+			[0xa, 0xa, 0xa, 0x8],
 		);
-		assert.equal(
-			acceptKey({
-				upgrade: "websocket",
-				connection: "keep-alive",
-				"sec-websocket-version": "13",
-				"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
-			}),
-			null,
-		);
-		assert.equal(
-			acceptKey({
-				upgrade: "websocket",
-				connection: "Upgrade",
-				"sec-websocket-version": "13",
-				"sec-websocket-key": "short",
-			}),
-			null,
-		);
+		assert.equal(sent[3].payload.readUInt16BE(0), CLOSE.tooManyPings);
 	});
 
 	it("frames messages as a type, a 4-byte stream id and the payload", () => {
@@ -1150,35 +1509,59 @@ describe("app relay: the pure parts", () => {
 	});
 
 	it("takes the database's answers only in their exact shape", () => {
-		assert.deepEqual(parseConnectAnswer({ state: "ok", key: "k".repeat(43), port: 3000 }), {
+		const siteId = randomUUID();
+		assert.deepEqual(parseConnectAnswer({ state: "ok", key: "k".repeat(43), port: 3000, siteId }), {
 			state: "ok",
 			key: "k".repeat(43),
 			port: 3000,
+			siteId,
 		});
-		assert.deepEqual(parseConnectAnswer({ state: "ok", key: null, port: 1 }), { state: "ok", key: null, port: 1 });
+		assert.deepEqual(parseConnectAnswer({ state: "ok", key: null, port: 1, siteId }), {
+			state: "ok",
+			key: null,
+			port: 1,
+			siteId,
+		});
 		assert.deepEqual(parseConnectAnswer({ state: "refused" }), { state: "refused" });
 		for (const value of [
 			null,
-			{ state: "ok", key: null },
-			{ state: "ok", key: null, port: 0 },
-			{ state: "ok", key: "short", port: 80 },
-			{ state: "ok", key: null, port: 80, extra: 1 },
+			{ state: "ok", key: null, port: 80 },
+			{ state: "ok", key: null, siteId },
+			{ state: "ok", key: null, port: 0, siteId },
+			{ state: "ok", key: "short", port: 80, siteId },
+			{ state: "ok", key: null, port: 80, siteId: "not-a-uuid" },
+			{ state: "ok", key: null, port: 80, siteId, extra: 1 },
 			{ state: "refused", why: "x" },
 			{ state: "other" },
 		])
 			assert.throws(() => parseConnectAnswer(value), JSON.stringify(value));
-		assert.deepEqual(parseSessionAnswer({ state: "open" }), { state: "open" });
-		assert.throws(() => parseSessionAnswer({ state: "open", x: 1 }));
+		assert.deepEqual(parseSessionAnswer({ state: "open", siteId }), { state: "open", siteId });
+		assert.deepEqual(parseSessionAnswer({ state: "locked" }), { state: "locked" });
+		for (const value of [
+			{ state: "open" },
+			{ state: "open", siteId: "x" },
+			{ state: "locked", siteId },
+			{ state: "x" },
+		])
+			assert.throws(() => parseSessionAnswer(value), JSON.stringify(value));
 		assert.deepEqual(parseUnlockAnswer({ state: "limited", retryAfter: 0 }), { state: "limited", retryAfter: 1 });
 		assert.throws(() => parseUnlockAnswer({ state: "open", token: "short", maxAge: 60 }));
-		assert.deepEqual(serviceHeaders(SERVICE_KEY), { apikey: SERVICE_KEY, authorization: `Bearer ${SERVICE_KEY}` });
-		assert.deepEqual(serviceHeaders("sb_secret_0123456789abcdefghij"), { apikey: "sb_secret_0123456789abcdefghij" });
 	});
 
-	it("refuses to start without its settings", () => {
-		assert.throws(() => createRelay({ api: "ftp://x", serviceKey: SERVICE_KEY }));
-		assert.throws(() => createRelay({ api: "http://u:p@x", serviceKey: SERVICE_KEY }));
-		assert.throws(() => createRelay({ api: "http://x", serviceKey: "" }));
-		assert.throws(() => createRelay({ api: "http://x", serviceKey: SERVICE_KEY, hostSuffix: "preview.qorpera.com" }));
+	it("calls the database as its own role, and refuses to start with any other", () => {
+		assert.deepEqual(relayHeaders(ANON_KEY, RELAY_JWT), { apikey: ANON_KEY, authorization: `Bearer ${RELAY_JWT}` });
+		assert.equal(jwtRole(RELAY_JWT), RELAY_ROLE);
+		assert.equal(jwtRole(ANON_KEY), "anon");
+		assert.equal(jwtRole("sb_secret_0123456789abcdefghij"), null);
+		assert.equal(jwtRole("a.b.c"), null);
+		for (const relayJwt of [jwt({ role: "service_role" }), ANON_KEY, "sb_secret_0123456789abcdefghij", "", undefined])
+			assert.throws(
+				() => createRelay({ api: "http://x", apiKey: ANON_KEY, relayJwt }),
+				/must name the role qorpera_site_relay/,
+			);
+		assert.throws(() => createRelay({ api: "ftp://x", ...RELAY }));
+		assert.throws(() => createRelay({ api: "http://u:p@x", ...RELAY }));
+		assert.throws(() => createRelay({ api: "http://x", apiKey: "", relayJwt: RELAY_JWT }));
+		assert.throws(() => createRelay({ api: "http://x", ...RELAY, hostSuffix: "preview.qorpera.com" }));
 	});
 });

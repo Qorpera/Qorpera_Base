@@ -22,7 +22,14 @@
 #  5. A virtual host `others` for every other name under qorpera.com: 404 on every path. The wildcard DNS name and
 #     tunnel rule (sites-route.mjs) bring any such name here, and none of them may reach the API.
 #  6. The api host lists "api.qorpera.com" first; "*" stays for every name outside qorpera.com (the stack's own
-#     callers, a Host with a port).
+#     callers).
+#  7. Outside this block, in the same file: the `front` listener's connection manager drops a Host's port and trailing
+#     dot before it picks a virtual host, so evil.qorpera.com:8443 or evil.qorpera.com. is evil.qorpera.com (the
+#     others host's 404), never the api host's "*", and every x-forwarded-host above is the bare name. The two lines go
+#     under that listener's http_connection_manager typed_config, right after `use_remote_address: false`, at its
+#     indentation (16 spaces), exactly:
+#                strip_any_host_port: true
+#                strip_trailing_host_dot: true
 # Envoy picks a virtual host by its exact name (letters in any case), then the longest suffix wildcard
 # (*-preview.qorpera.com before *.qorpera.com), then "*", whatever the order; the order here only reads that way. Envoy
 # removes the listed headers before it adds, so an empty Host leaves no visitor value either.

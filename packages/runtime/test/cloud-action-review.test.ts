@@ -2885,7 +2885,7 @@ describe("private app links (v195, 20260930562000)", () => {
 				"from machine": "shop-server",
 				port: "3000",
 				effect:
-					"Anyone with the link and its password can open the app on this port of the machine while it runs; owners and admins see the password in Settings",
+					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
 			},
 		});
 		expect(
@@ -2897,6 +2897,16 @@ describe("private app links (v195, 20260930562000)", () => {
 			title: "Share an app link from another machine",
 			details: { "from machine": "shop-server", port: "8080", "until now from machine": "old-server" },
 		});
+		// Another port is another service on the machine: its card says the port it had.
+		expect(
+			describeCloudAction(tool("share_app"), prepared("update", { needsReview: true, livePort: 8080 })),
+		).toMatchObject({
+			title: "Share an app link from another port",
+			details: { "from machine": "shop-server", port: "3000", "until now port": "8080" },
+		});
+		expect(cloudActionEffect(tool("share_app"), prepared("update", { needsReview: true, livePort: 8080 }))).toBe(
+			"external",
+		);
 		expect(describeCloudAction(tool("share_app"), prepared("update")).title).toBe("Share an app link again");
 	});
 

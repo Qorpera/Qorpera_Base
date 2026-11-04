@@ -7,9 +7,28 @@
 #    no dependencies.
 #  - QORPERA_API: the gateway on the compose network (api-gw, port 8000: front/envoy-front.yaml's api_gw cluster), so
 #    the relay's RPCs never leave the node.
-#  - QORPERA_SERVICE_KEY: the service role JWT from .env (SERVICE_ROLE_KEY, the one the functions service gets as
-#    SUPABASE_SERVICE_ROLE_KEY), sent as apikey and bearer. It stays in the container's environment; the relay never
-#    logs it.
+#  - The relay never holds the service role. It calls the database as its own role, qorpera_site_relay, which may
+#    execute qorpera_site_app_connect, qorpera_site_app_session and qorpera_site_app_unlock and nothing else (the
+#    migration makes the role and grants it to authenticator):
+#      QORPERA_API_KEY    the stack's anon key (.env ANON_KEY), the gateway's apikey
+#      QORPERA_RELAY_JWT  a JWT whose role is qorpera_site_relay, the bearer PostgREST runs the RPCs as; the relay
+#                         refuses to start with any other role
+#  - QORPERA_RELAY_JWT is minted once at rollout from the stack's JWT_SECRET, as keys.sh mints ANON_KEY: HS256, claims
+#    {iss: "supabase", role: "qorpera_site_relay", iat, exp: iat + 5 years}, Node in the stack's storage image, the
+#    secret read from .env on stdin and the token written straight into .env, so neither is printed or on a command
+#    line. In /opt/dbhome, as root:
+#      grep -q '^QORPERA_RELAY_JWT=' .env || {
+#        awk 'index($0, "JWT_SECRET=") == 1 { print substr($0, 12) }' .env |
+#        docker compose run --rm --no-deps -T --entrypoint node storage -e '
+#          const c = require("crypto"), s = require("fs").readFileSync(0, "utf8").trim();
+#          const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+#          const iat = Math.floor(Date.now() / 1000), exp = iat + 5 * 365 * 24 * 3600;
+#          const d = b({ alg: "HS256", typ: "JWT" }) + "." + b({ iss: "supabase", role: "qorpera_site_relay", iat, exp });
+#          process.stdout.write("QORPERA_RELAY_JWT=" + d + "." + c.createHmac("sha256", s).update(d).digest("base64url") + "\n");
+#        ' 2>/dev/null >> .env; }
+#      grep -c '^QORPERA_RELAY_JWT=eyJ' .env   # 1: the line is there (its value is never shown)
+#    A new JWT_SECRET (keys.sh mint) ends this JWT too: delete the line and mint it again, then
+#    `docker compose up -d app-relay`.
 #  - Kill switch: `docker compose stop app-relay` (every app link then answers 503 from api-front), or apps_enabled =
 #    false in qorpera_site_settings.
   app-relay:
@@ -27,7 +46,8 @@
     entrypoint: ["node", "/app/relay.mjs"]
     environment:
       QORPERA_API: http://api-gw:8000
-      QORPERA_SERVICE_KEY: ${SERVICE_ROLE_KEY:?SERVICE_ROLE_KEY is not set in .env}
+      QORPERA_API_KEY: ${ANON_KEY:?ANON_KEY is not set in .env}
+      QORPERA_RELAY_JWT: ${QORPERA_RELAY_JWT:?QORPERA_RELAY_JWT is not set in .env (see the minting step above)}
       QORPERA_APP_HOST_SUFFIX: -preview.qorpera.com
       QORPERA_APP_RELAY_PORT: "8090"
     volumes:

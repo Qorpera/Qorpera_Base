@@ -4,8 +4,13 @@ import { cloudActionEffect, describeCloudAction, siteAccessCheck } from "@qorper
 import type { CloudCompanyFolderClient, CloudCompanyFolderEntry } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import {
+	type CloudMachineCommandGateway,
+	CloudMachineCommandRefusal,
+} from "@qorpera/runtime/cloud-machine-command-http";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudSiteTools } from "@qorpera/runtime/cloud-site-tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -20,6 +25,7 @@ const URL_OF = (slug: string) => `https://sites.qorpera.com/${slug}/`;
 const APP_URL_OF = (slug: string) => `https://${slug}-preview.qorpera.com/`;
 /** A one-time claim as the database issues it (base64url). */
 const CLAIM = "q7Zx_3kPmA9vB2nC4dE6fG8hJ0kL1mN3pQ5rS7tU9wY";
+const MACHINE_IDS: Record<string, string> = { "shop-server": randomUUID(), "old-server": randomUUID() };
 
 /** A company folder of files (path → text or bytes), as the run's own view lists and reads it. */
 function folderOf(files: Record<string, string | Uint8Array>, links: string[] = []) {
@@ -79,8 +85,8 @@ interface Database {
 	refuse?: Partial<Record<string, CloudControlRpcRefused>>;
 	unchanged?: boolean;
 	/** share_app's check, as the database answers it: the machine refused, or the slug new, the company's live app link
-	 * (on `machine`, default shop-server) or taken; a review for a new link or another machine, unless `needsReview`
-	 * says; the app's link, unless `url` says. */
+	 * (on `machine` and `port`, default shop-server and 3000) or taken; a review for a new link or another machine or
+	 * port, unless `needsReview` says; the app's link, unless `url` says. */
 	share?: {
 		state?: "new" | "update" | "taken";
 		refused?: string;
@@ -91,6 +97,13 @@ interface Database {
 	};
 	/** Fields of the share's answer to replace. */
 	shared?: Record<string, unknown>;
+	/** The run has no machines (share_app's program cannot start). */
+	noMachines?: true;
+	/** The company's machines as machine_list gives them (default: shop-server and old-server, running). */
+	machines?: { name: string; state: string }[];
+	/** How the machine's executor answers the program's start: a running command (default), one that ended at once,
+	 * a refusal, or a failure. */
+	start?: "running" | "failed" | "MACHINE_NOT_RUNNING" | "throw";
 }
 
 /** The site tools behind the boundary, with a review that lets every call run (recording what it read). */
@@ -165,13 +178,26 @@ async function fixture(
 			if (share.refused) return { state: "refused", reason: share.refused, needsReview: false };
 			const state = share.state ?? "new";
 			const live = share.machine ?? "shop-server";
+			const livePort = share.port ?? 3000;
 			return {
 				state,
-				needsReview: share.needsReview ?? (state === "new" || (state === "update" && live !== args.p_machine)),
+				needsReview:
+					share.needsReview ??
+					(state === "new" || (state === "update" && (live !== args.p_machine || livePort !== args.p_port))),
 				url: "url" in share ? share.url : APP_URL_OF(args.p_slug as string),
-				...(state === "update" ? { machine: live, port: share.port ?? 3000 } : {}),
+				...(state === "update" ? { machine: live, port: livePort } : {}),
 			};
 		}
+		if (method === "qorpera_native_machine_manage")
+			return {
+				schema: "qorpera.machine-list/v1",
+				machines: (
+					options.machines ?? [
+						{ name: "shop-server", state: "running" },
+						{ name: "old-server", state: "running" },
+					]
+				).map((machine) => ({ ...machine, machineId: MACHINE_IDS[machine.name] ?? randomUUID() })),
+			};
 		if (method === "qorpera_site_share_app") {
 			const request = args.p_request as { slug: string; machine: string; port: number };
 			return {
@@ -179,7 +205,7 @@ async function fixture(
 				url: APP_URL_OF(request.slug),
 				machine: request.machine,
 				port: request.port,
-				firstShare: (options.share?.state ?? "new") === "new",
+				newPassword: (options.share?.state ?? "new") === "new",
 				claim: CLAIM,
 				claimExpiresAt: "2026-11-04T10:15:00.000Z",
 				clientUrl: `${APP_URL_OF(request.slug)}.qorpera/client.mjs`,
@@ -192,7 +218,41 @@ async function fixture(
 	const reviewed: unknown[] = [];
 	const contents: unknown[] = [];
 	const reviewId = randomUUID();
-	const tools = cloudSiteTools({ binding, identity: run.identity, control: { call }, folder: folder.client });
+	// The machine's executor, behind the run's operations as machine_run uses them (one receipt, then the start).
+	const start = vi.fn<CloudMachineCommandGateway["start"]>(async (scope, input) => {
+		if (options.start === "MACHINE_NOT_RUNNING") throw new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING");
+		if (options.start === "throw") throw new Error("executor unreachable");
+		return {
+			schema: "qorpera.machine-command-result/v1",
+			machineId: scope.machineId,
+			commandId: input.commandId,
+			inputSha256: input.inputSha256,
+			state: options.start === "failed" ? "failed" : "running",
+			exitCode: options.start === "failed" ? 1 : null,
+			output: "",
+			truncated: false,
+			log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 64 * 1024 * 1024, limitReached: false },
+		};
+	});
+	const operations = vi.fn<CloudNativeToolOperations["execute"]>(async ({ operation, authorize, perform, signal }) => {
+		await authorize(operation, run.identity, signal);
+		return (
+			await perform(operation, {
+				identity: run.identity,
+				receiptId: randomUUID(),
+				inputSha256: "c".repeat(64),
+				idempotencyKey: "k",
+				signal,
+			})
+		).content;
+	});
+	const tools = cloudSiteTools({
+		binding,
+		identity: run.identity,
+		control: { call },
+		folder: folder.client,
+		...(options.noMachines ? {} : { machines: { gateway: { start } as never, operations: { execute: operations } } }),
+	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
@@ -219,7 +279,7 @@ async function fixture(
 				}),
 	});
 	const calls = (method: string) => call.mock.calls.filter(([name]) => name === method).map(([, args]) => args);
-	return { binding, boundary, call, calls, folder, reviewed, contents, reviewId, tools };
+	return { binding, boundary, call, calls, folder, reviewed, contents, reviewId, tools, start, operations };
 }
 
 function outcome(response: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) {
@@ -569,15 +629,17 @@ describe("unpublish_site", () => {
 
 describe("share_app", () => {
 	const SHARE = { slug: "saml-shop", title: "SAML shop", machine: "shop-server", port: 3000 };
-	const COMMAND = `curl -fsS https://saml-shop-preview.qorpera.com/.qorpera/client.mjs -o /root/.qorpera-app-link.mjs && exec node /root/.qorpera-app-link.mjs saml-shop 3000 ${CLAIM}`;
+	// One file a link, written whole before it runs; the host suffix the database's link has as the fourth word.
+	const COMMAND = `curl -fsS https://saml-shop-preview.qorpera.com/.qorpera/client.mjs -o /root/.qorpera-app-link-saml-shop.mjs.tmp && mv -f /root/.qorpera-app-link-saml-shop.mjs.tmp /root/.qorpera-app-link-saml-shop.mjs && exec node /root/.qorpera-app-link-saml-shop.mjs saml-shop 3000 ${CLAIM} -preview.qorpera.com`;
 
-	it("shares a new app link: the check, an access check on a card that names the link, machine and port, then the share and the command", async () => {
+	it("shares a new app link: the check, an access check on a card that names the link, machine and port, the share, then its link program on the machine", async () => {
 		const f = await fixture({});
 		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
 		expect(result.status, result.text).toBe("ok");
-		// The check is told the machine too: it refuses one the share would refuse, and says whether a review is needed.
+		// The check is told the machine and port too: it refuses a machine the share would refuse, and says whether a
+		// review is needed.
 		expect(f.calls("qorpera_site_share_check")).toEqual([
-			{ p_binding: f.binding, p_slug: "saml-shop", p_machine: "shop-server" },
+			{ p_binding: f.binding, p_slug: "saml-shop", p_machine: "shop-server", p_port: 3000 },
 		]);
 		// The review read the prepared share, not the bare arguments.
 		expect(f.reviewed).toEqual([
@@ -604,7 +666,7 @@ describe("share_app", () => {
 				"from machine": "shop-server",
 				port: "3000",
 				effect:
-					"Anyone with the link and its password can open the app on this port of the machine while it runs; owners and admins see the password in Settings",
+					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
 			},
 		});
 		// Whatever the reviewer called it, a first share is an access change an owner or admin approves.
@@ -625,26 +687,41 @@ describe("share_app", () => {
 				p_review_id: f.reviewId,
 			},
 		]);
-		expect(result.answer).toMatchObject({
+		// The tool starts the link program itself, as machine_run starts a command: on the named machine, no time limit,
+		// no notify, under a machine_run receipt (the executor's authority for a start).
+		expect(f.operations).toHaveBeenCalledTimes(1);
+		const [{ operation }] = f.operations.mock.calls[0]!;
+		expect(operation).toMatchObject({
+			tool: "machine_run",
+			arguments: { machine: "shop-server", command: COMMAND, notify: false },
+			target: { realm: "company_machine", machineId: MACHINE_IDS["shop-server"] },
+			requiresCompanyRevision: false,
+		});
+		expect(operation.logicalOperationKey).toMatch(/^share-app\.[0-9a-f]{32}$/);
+		expect(f.start).toHaveBeenCalledTimes(1);
+		expect(f.start.mock.calls[0]?.[0]).toEqual({ machineId: MACHINE_IDS["shop-server"] });
+		expect(f.start.mock.calls[0]?.[1]).toMatchObject({ command: COMMAND, timeoutMs: null, notify: false });
+		const commandId = f.start.mock.calls[0]?.[1].commandId;
+		expect(result.answer).toEqual({
 			schema: "qorpera.app-share-result/v1",
-			state: "shared",
+			state: "connecting",
 			url: "https://saml-shop-preview.qorpera.com/",
 			slug: "saml-shop",
+			title: "SAML shop",
 			machine: "shop-server",
 			port: 3000,
-			firstShare: true,
-			command: COMMAND,
-			runBefore: "2026-11-04T10:15:00.000Z",
+			newPassword: true,
+			linkProgram: { commandId, state: "running" },
+			next: expect.stringContaining("The link program runs on shop-server"),
+			password: expect.stringContaining("new password"),
 		});
-		// The next step in plain words: run the command with machine_run and no time limit, then tell the member.
-		expect(result.answer.next).toContain("run command on machine shop-server with machine_run");
-		expect(result.answer.next).toContain("without timeoutMs");
 		expect(result.answer.next).toContain("the password is in Settings → Sites");
-		expect(result.answer.password).toContain("new password");
-		expect(result.text).not.toContain("connectUrl");
+		// The claim never reaches the model.
+		expect(result.text).not.toContain(CLAIM);
+		expect(result.text).not.toContain("curl");
 	});
 
-	it("shares its own live link again without a review, for a new command", async () => {
+	it("shares its own live link again on the same machine and port without a review, for a new link program", async () => {
 		const f = await fixture({}, { share: { state: "update" } });
 		const result = outcome(
 			await f.boundary.invoke("call_2", "qorpera", "share_app", {
@@ -661,8 +738,37 @@ describe("share_app", () => {
 			p_request: { slug: "saml-shop", machine: "shop-server", port: 3000 },
 			p_review_id: null,
 		});
-		expect(result.answer).toMatchObject({ firstShare: false, command: COMMAND });
+		expect(result.answer).toMatchObject({ state: "connecting", newPassword: false });
+		expect(f.start.mock.calls[0]?.[1]).toMatchObject({ command: COMMAND });
 		expect(result.answer.password).toContain("unchanged");
+	});
+
+	it("bases what it says of the password on the database's newPassword, not on whether the link was live", async () => {
+		// A link the agent turned off keeps its password: shared again, it is new as a link, not as a password.
+		const f = await fixture({}, { shared: { newPassword: false } });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(f.reviewed).toHaveLength(1);
+		expect(result.answer).toMatchObject({ newPassword: false });
+		expect(result.answer.password).toContain("unchanged");
+	});
+
+	it("reviews a share of the live link on another port as an access check, naming the port it had", async () => {
+		const f = await fixture({}, { share: { state: "update", port: 8080 } });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed[0]).toMatchObject({
+			mode: "update",
+			needsReview: true,
+			liveMachine: "shop-server",
+			livePort: 8080,
+		});
+		const tool = { name: "share_app", source: "runtime" as const };
+		expect(cloudActionEffect(tool, f.reviewed[0] as JsonValue)).toBe("external");
+		expect(describeCloudAction(tool, f.reviewed[0] as JsonValue)).toMatchObject({
+			title: "Share an app link from another port",
+			details: { "from machine": "shop-server", port: "3000", "until now port": "8080" },
+		});
+		expect(f.calls("qorpera_site_share_app")[0]?.p_review_id).toBe(f.reviewId);
 	});
 
 	it("reviews a share of the live link from another machine as an access check, as the database says", async () => {
@@ -745,6 +851,52 @@ describe("share_app", () => {
 		expect(f.calls("qorpera_site_share_app")).toEqual([]);
 	});
 
+	it.each([
+		[
+			"a machine that is not running",
+			{ machines: [{ name: "shop-server", state: "stopped" }] },
+			"REFUSED: APP_MACHINE_NOT_RUNNING: shop-server is stopped; wake it with machine_start (pass only machine with its name), and call share_app again once it runs",
+		],
+		[
+			"a machine the list does not have",
+			{ machines: [{ name: "old-server", state: "running" }] },
+			"REFUSED: APP_MACHINE_NOT_FOUND: the company has no machine named shop-server; start an always-on one with machine_start (lifetime always-on), or name one from machine_list",
+		],
+		[
+			"a run without machines",
+			{ noMachines: true as const },
+			"REFUSED: APP_MACHINES_UNAVAILABLE: this run cannot start programs on the company's machines, so no link can connect; try again later",
+		],
+	])("refuses %s before the review and the share", async (_label, options, text) => {
+		const f = await fixture({}, options);
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(text);
+		expect(f.reviewed).toEqual([]);
+		expect(f.calls("qorpera_site_share_app")).toEqual([]);
+		expect(f.start).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["the machine stopped", "MACHINE_NOT_RUNNING" as const, "shop-server stopped before the program started"],
+		["the executor could not be reached", "throw" as const, "its start could not be confirmed"],
+	])("tells a share whose link program did not start (%s) as shared but not connected", async (_label, start, why) => {
+		const f = await fixture({}, { start });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.status, result.text).toBe("ok");
+		expect(result.answer).toMatchObject({ state: "not_connected", url: APP_URL_OF("saml-shop"), newPassword: true });
+		expect(result.answer.reason).toBe(`The link is shared, but its link program did not start: ${why}.`);
+		expect(result.answer.next).toContain("call share_app again");
+		expect(result.text).not.toContain(CLAIM);
+	});
+
+	it("tells a link program that ended at once where to read why", async () => {
+		const f = await fixture({}, { start: "failed" });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.answer).toMatchObject({ state: "program_ended", linkProgram: { state: "failed" } });
+		expect(result.answer.next).toContain("machine_read");
+	});
+
 	it("relays the check's refusal in plain words before the review", async () => {
 		const f = await fixture(
 			{},
@@ -794,16 +946,19 @@ describe("share_app", () => {
 
 	it.each([
 		["a claim a shell would split", { claim: "abc def ghi jkl mno pqr" }],
+		["no word on the password", { newPassword: undefined }],
+		["another link than the check's", { url: "https://saml-shop-apps.example.com/" }],
 		["a claim a shell would expand", { claim: "$(touch /tmp/x)aaaaaaaaaaaa" }],
 		["the program from another host", { clientUrl: "https://evil.example/.qorpera/client.mjs" }],
 		["another machine", { machine: "other-server" }],
 		["another port", { port: 8080 }],
 		["a link that is not the app's", { url: "https://sites.qorpera.com/saml-shop/" }],
-	])("never hands the agent a command from an answer with %s", async (_label, shared) => {
+	])("never starts a link program from an answer with %s", async (_label, shared) => {
 		const f = await fixture({}, { shared });
 		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
 		expect(result.status).toBe("unconfirmed");
 		expect(result.text).toBe("TOOL_OUTCOME_UNCONFIRMED");
+		expect(f.start).not.toHaveBeenCalled();
 	});
 
 	it("is registered beside publish_site, with a description that says when to use it", async () => {
@@ -813,7 +968,8 @@ describe("share_app", () => {
 		expect(share.description).toContain("always-on");
 		expect(share.description).toContain("/company/code/<owner>/<name>/worktrees/<workerId>");
 		expect(share.description).toContain("publish_site");
-		expect(share.description).toContain("without timeoutMs");
+		expect(share.description).toContain("share_app starts the link program");
+		expect(share.description).not.toContain("timeoutMs");
 		expect(share.description).toContain("Settings → Sites");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
 	});

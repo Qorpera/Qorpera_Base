@@ -9,19 +9,24 @@
  *    exactly;
  *  - in the qorpera.com zone, a proxied CNAME sites and a proxied CNAME * -> <tunnel id>.cfargotunnel.com, so
  *    Cloudflare's Universal SSL (qorpera.com and *.qorpera.com) covers them. A name with its own record (api, app, ...)
- *    keeps it: a wildcard only answers for names that have none.
+ *    keeps it: a wildcard only answers for names that have none;
+ *  - a Cache Rule (the zone's http_request_cache_settings phase, our rule found by its ref) that never caches an app
+ *    host, made before the DNS records: Cloudflare's cache sits in front of the password, so nothing an app answers may
+ *    be kept there. The relay's own `cdn-cache-control: no-store` on every forwarded answer is the first layer.
  * api-front (envoy-front-sites.yaml) then sends sites.qorpera.com to the site-serve function, *-preview.qorpera.com to
  * the app relay, and answers 404 for every other name under qorpera.com.
  *
  *   node deploy/sites/sites-route.mjs           dry run: reads, prints the plan (names, ids, the ingress before and
- *                                              after), changes nothing
+ *                                              after, the cache rule), changes nothing
  *   node deploy/sites/sites-route.mjs --apply   makes the changes; safe to run again (it changes only what differs)
- *   node deploy/sites/sites-route.mjs --check   read-only: the DNS records, the ingress rules, an HTTPS GET of
- *                                              https://sites.qorpera.com/robots.txt and one of an app host's
- *                                              /.qorpera/health; exit 1 unless all hold
+ *   node deploy/sites/sites-route.mjs --check   read-only: the DNS records, the ingress rules, the cache rule, an
+ *                                              HTTPS GET of https://sites.qorpera.com/robots.txt and one of an app
+ *                                              host's /.qorpera/health; exit 1 unless all hold
  *
  * The token: CF_API_TOKEN, else the Mac Keychain item com.qorpera.dbhome.cf-token (Tunnel, Pages and DNS edit on
- * qorpera.com), read with `security`. It is never printed, never put on a command line and never in an error.
+ * qorpera.com, and Cache Rules edit for the cache rule), read with `security`. It is never printed, never put on a
+ * command line and never in an error. A token without Cache Rules permission: --apply makes everything else and says
+ * plainly that the cache rule was not made (and how to make it by hand); --check says it could not check it, and fails.
  * It refuses, changing nothing, when another rule or record already holds a name (sites, or *). Note: the DB move's
  * `cf.py tunnel-ensure` writes the tunnel's whole ingress (api only); run this again after it. */
 
@@ -37,6 +42,20 @@ export const SERVICE = "http://api-front:8080";
 export const APPS_HOST = "*.qorpera.com";
 /** An app host's health, which the relay answers on every app host (no slug needs to exist). */
 export const APP_HEALTH_URL = "https://qorpera-health-preview.qorpera.com/.qorpera/health";
+export const CACHE_PHASE = "http_request_cache_settings";
+/** The app links' cache rule: every app host bypasses Cloudflare's cache. `contains` (every plan has it) on the
+ * suffix: inside the zone only <slug>-preview.qorpera.com names hold it. */
+export const CACHE_RULE = Object.freeze({
+	ref: "qorpera_app_links_no_cache",
+	description: "App links (*-preview.qorpera.com): never cached (deploy/sites/sites-route.mjs)",
+	expression: '(http.host contains "-preview.qorpera.com")',
+	action: "set_cache_settings",
+	action_parameters: { cache: false },
+	enabled: true,
+});
+const CACHE_DENIED =
+	"the token may not read or write Cache Rules (it needs Zone > Cache Rules: Edit on qorpera.com). Make the rule by " +
+	`hand: Caching > Cache Rules, when ${CACHE_RULE.expression}, Bypass cache`;
 const KEYCHAIN_ITEM = "com.qorpera.dbhome.cf-token";
 
 /** A rule that matches everything: no hostname and no path. */
@@ -98,6 +117,22 @@ export function describeIngress(ingress) {
 	);
 }
 
+/** A refused Cloudflare call: its HTTP status and Cloudflare's error codes ride along. */
+export class CloudflareError extends Error {
+	constructor(message, status, codes) {
+		super(message);
+		this.status = status;
+		this.codes = codes;
+	}
+}
+
+/** Whether a refusal is the token's permissions. */
+function denied(error) {
+	return (
+		error instanceof CloudflareError && (error.status === 401 || error.status === 403 || error.codes.includes(10000))
+	);
+}
+
 /** The Cloudflare API with the token as the bearer. An error names the method, the path and Cloudflare's codes; the
  * token is taken out of anything it says. */
 export class Cloudflare {
@@ -143,9 +178,62 @@ export class Cloudflare {
 			const errors = (answer?.errors ?? [])
 				.map((item) => `${item?.code} ${String(item?.message).slice(0, 120)}`)
 				.join("; ");
-			throw new Error(this.#clean(`${method} ${path.split("?")[0]} failed: ${errors || `HTTP ${response.status}`}`));
+			throw new CloudflareError(
+				this.#clean(`${method} ${path.split("?")[0]} failed: ${errors || `HTTP ${response.status}`}`),
+				response.status,
+				(answer?.errors ?? []).map((item) => item?.code),
+			);
 		}
 		return answer.result;
+	}
+}
+
+/** Whether our cache rule is there as it must be. */
+function cacheRuleHolds(rule) {
+	return (
+		rule.expression === CACHE_RULE.expression &&
+		rule.action === CACHE_RULE.action &&
+		rule.action_parameters?.cache === false &&
+		rule.enabled !== false
+	);
+}
+
+/** What the cache rule needs: nothing, a new entrypoint ruleset holding it, the rule added to the zone's, the rule set
+ * right again, or "unknown" when the token may not read Cache Rules. */
+export async function cachePlan(cf, zoneId) {
+	let ruleset;
+	try {
+		ruleset = await cf.call("GET", `/zones/${zoneId}/rulesets/phases/${CACHE_PHASE}/entrypoint`);
+	} catch (error) {
+		if (error instanceof CloudflareError && error.status === 404) return { action: "create-ruleset" };
+		if (denied(error)) return { action: "unknown", reason: CACHE_DENIED };
+		throw error;
+	}
+	const rules = Array.isArray(ruleset?.rules) ? ruleset.rules : [];
+	const ours = rules.find((rule) => rule?.ref === CACHE_RULE.ref);
+	if (!ours) return { action: "add", rulesetId: ruleset.id };
+	return { action: cacheRuleHolds(ours) ? "none" : "update", rulesetId: ruleset.id, ruleId: ours.id };
+}
+
+/** Makes the cache rule; a token that may not is said plainly, and the rest goes on. */
+export async function applyCache(cf, zoneId, cache) {
+	try {
+		if (cache.action === "create-ruleset")
+			await cf.call("POST", `/zones/${zoneId}/rulesets`, {
+				name: "default",
+				description: "Cache rules",
+				kind: "zone",
+				phase: CACHE_PHASE,
+				rules: [CACHE_RULE],
+			});
+		if (cache.action === "add")
+			await cf.call("POST", `/zones/${zoneId}/rulesets/${cache.rulesetId}/rules`, CACHE_RULE);
+		if (cache.action === "update")
+			await cf.call("PATCH", `/zones/${zoneId}/rulesets/${cache.rulesetId}/rules/${cache.ruleId}`, CACHE_RULE);
+		return { made: cache.action !== "unknown", reason: cache.reason };
+	} catch (error) {
+		if (denied(error)) return { made: false, reason: CACHE_DENIED };
+		throw error;
 	}
 }
 
@@ -175,19 +263,23 @@ export async function plan(cf) {
 		ingressChanged: sites.changed || apps.changed,
 		dns: dnsPlan(records, tunnel.id, HOST),
 		appsDns: dnsPlan(wildcard, tunnel.id, APPS_HOST),
+		cache: await cachePlan(cf, zoneId),
 	};
 }
 
-/** Makes the planned changes: the whole configuration back with the rules added, then the DNS records. */
+/** Makes the planned changes: the whole configuration back with the rules added, the cache rule (before any app host
+ * has a name), then the DNS records. Says whether the cache rule was made. */
 export async function apply(cf, planned) {
 	if (planned.ingressChanged)
 		await cf.call("PUT", `/accounts/${planned.accountId}/cfd_tunnel/${planned.tunnel.id}/configurations`, {
 			config: planned.after,
 		});
+	const cache = await applyCache(cf, planned.zoneId, planned.cache);
 	for (const dns of [planned.dns, planned.appsDns]) {
 		if (dns.action === "create") await cf.call("POST", `/zones/${planned.zoneId}/dns_records`, dns.body);
 		if (dns.action === "proxy") await cf.call("PATCH", `/zones/${planned.zoneId}/dns_records/${dns.id}`, dns.body);
 	}
+	return { cache };
 }
 
 /** The public name answers: robots.txt from the site-serve function, over HTTPS. */
@@ -252,6 +344,14 @@ export async function main(argv, { env = process.env, fetcher = fetch, log = con
 					? `dns ${name}: the CNAME to this tunnel is to be proxied`
 					: `dns ${name}: the proxied CNAME to this tunnel is there already`,
 		);
+	const cache = planned.cache;
+	log(
+		cache.action === "unknown"
+			? `cache rule: not checked: ${cache.reason}`
+			: cache.action === "none"
+				? `cache rule ${CACHE_RULE.ref}: there already (${CACHE_RULE.expression}: bypass)`
+				: `cache rule ${CACHE_RULE.ref}: to be ${cache.action === "update" ? "set right" : "made"}${cache.action === "create-ruleset" ? " (with the zone's cache rules ruleset)" : ""}`,
+	);
 	if (mode === "check") {
 		const robots = await robotsAnswer(fetcher);
 		log(`https://${HOST}/robots.txt: ${robots.status}`);
@@ -261,6 +361,7 @@ export async function main(argv, { env = process.env, fetcher = fetch, log = con
 			!planned.ingressChanged &&
 			planned.dns.action === "none" &&
 			planned.appsDns.action === "none" &&
+			cache.action === "none" &&
 			robots.ok &&
 			health.ok;
 		log(`check: ${ok ? "PASS" : "FAILED"}`);
@@ -270,9 +371,10 @@ export async function main(argv, { env = process.env, fetcher = fetch, log = con
 		log("dry run: nothing changed (--apply makes the changes)");
 		return 0;
 	}
-	await apply(cf, planned);
+	const applied = await apply(cf, planned);
+	if (!applied.cache.made) log(`cache rule: NOT MADE: ${applied.cache.reason}`);
 	log(
-		`applied: ingress ${planned.ingressChanged ? "changed" : "unchanged"}; dns ${HOST} ${planned.dns.action}, ${APPS_HOST} ${planned.appsDns.action}`,
+		`applied: ingress ${planned.ingressChanged ? "changed" : "unchanged"}; cache rule ${applied.cache.made ? cache.action : "not made"}; dns ${HOST} ${planned.dns.action}, ${APPS_HOST} ${planned.appsDns.action}`,
 	);
 	return 0;
 }

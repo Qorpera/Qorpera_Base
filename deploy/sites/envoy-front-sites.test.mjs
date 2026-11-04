@@ -51,6 +51,13 @@ function virtualHost(name) {
 	return lines.slice(start, end === -1 ? undefined : end);
 }
 
+/** The two lines the block's header names for the `front` listener's connection manager (16 spaces). */
+function stripLines() {
+	return BLOCK.split("\n")
+		.filter((line) => /^# {16}strip_/.test(line))
+		.map((line) => line.slice(1));
+}
+
 /** The app relay's cluster as it goes under the kit's `clusters:`: its comment header dropped. */
 function appRelayCluster() {
 	const lines = CLUSTER.split("\n");
@@ -136,6 +143,14 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 		]);
 	});
 
+	it("names the connection manager's two lines that drop a Host's port and trailing dot", () => {
+		assert.deepEqual(stripLines(), [
+			`${" ".repeat(16)}strip_any_host_port: true`,
+			`${" ".repeat(16)}strip_trailing_host_dot: true`,
+		]);
+		assert.match(BLOCK, /right after `use_remote_address: false`/);
+	});
+
 	it("has the app_relay cluster the apps host routes to, as the kit's clusters list takes it", () => {
 		const cluster = appRelayCluster();
 		assert.match(cluster, /^ {4}- name: app_relay\n {6}type: STRICT_DNS\n {6}connect_timeout: 5s\n/);
@@ -205,6 +220,7 @@ function config(frontPort, gatewayPort, echoPort) {
                 merge_slashes: true
                 path_with_escaped_slashes_action: REJECT_REQUEST
                 use_remote_address: false
+${stripLines().join("\n")}
                 upgrade_configs:
                   - upgrade_type: websocket
                 http_filters:
@@ -438,22 +454,29 @@ describe(
 					assert.deepEqual(answer.fromFront, [API], `${path} ${sent.join(",")}`);
 				}
 			}
-			// A Host that only looks like the sites host comes here: its own value, which site-serve refuses. (One under
-			// qorpera.com, as xsites.qorpera.com, gets the others host's 404.)
-			for (const host of [`${SITES}:443`, `${SITES}.`]) {
+			// The api name with a port or a trailing dot is the api name, forwarded bare.
+			for (const host of [`${API}:443`, `${API}:8443`, `${API}.`, "API.Qorpera.com:443"]) {
 				const answer = seen(
 					await raw(front, "/rest/v1/", [
 						["Host", host],
 						["X-Forwarded-Host", SITES],
 					]),
 				);
-				assert.deepEqual(answer.forwardedHost, [host], host);
-				assert.deepEqual(answer.fromFront, [host], host);
+				assert.deepEqual(
+					answer.forwardedHost.map((value) => value.toLowerCase()),
+					[API],
+					host,
+				);
+				assert.deepEqual(
+					answer.fromFront.map((value) => value.toLowerCase()),
+					[API],
+					host,
+				);
 			}
 		});
 
 		it("never passes site-serve on the api name, however the path is spelled", async () => {
-			for (const host of [API, `${SITES}:443`, `${SITES}.`])
+			for (const host of [API, `${API}:443`, `${API}.`])
 				for (const path of [
 					"/functions/v1/site-serve",
 					"/functions/v1/site-serve/shop/",
@@ -475,7 +498,7 @@ describe(
 						// Through to the runtime only under a name that is no function, and with this Host, never the sites host.
 						const reached = JSON.parse(answer.body);
 						assert.notEqual(reached.path.split("/")[1]?.toLowerCase(), "site-serve", `${host} ${path}`);
-						assert.deepEqual(reached.forwardedHost, [host], `${host} ${path}`);
+						assert.deepEqual(reached.forwardedHost, [API], `${host} ${path}`);
 					} else assert.ok([400, 404].includes(answer.status), `${host} ${path}: ${answer.status}`);
 				}
 		});
@@ -531,13 +554,34 @@ describe(
 			assert.match(answer.head, /\r\nx-seen-host: shop-preview\.qorpera\.com(\r\n|$)/i);
 		});
 
-		it("answers 404 itself for every other name under qorpera.com", async () => {
+		it("matches a Host with a port or a trailing dot by its bare name, and forwards that", async () => {
+			for (const suffix of [":443", ":8443", "."]) {
+				const sites = seen(await raw(front, "/shop/", [["Host", `${SITES}${suffix}`]]));
+				assert.deepEqual(
+					{ path: sites.path, forwardedHost: sites.forwardedHost },
+					{ path: "/site-serve/shop/", forwardedHost: [SITES] },
+					`${SITES}${suffix}`,
+				);
+				const app = seen(await raw(front, "/a", [["Host", `${APP}${suffix}`]]));
+				assert.deepEqual(
+					{ path: app.path, forwardedHost: app.forwardedHost },
+					{ path: "/a", forwardedHost: [APP] },
+					`${APP}${suffix}`,
+				);
+			}
+		});
+
+		it("answers 404 itself for every other name under qorpera.com, with a port or a trailing dot too", async () => {
 			for (const host of [
 				`x${SITES}`,
 				"evil.qorpera.com",
 				"-preview.qorpera.com",
 				"a.b.qorpera.com",
 				"EVIL.Qorpera.com",
+				"evil.qorpera.com:8443",
+				"evil.qorpera.com:443",
+				"evil.qorpera.com.",
+				`x${SITES}.`,
 			])
 				for (const path of ["/", "/rest/v1/", "/functions/v1/event-intake/x", "/.qorpera/health"]) {
 					const answer = await raw(front, path, [

@@ -3,21 +3,27 @@
  *
  * An agent shares one port of a company's always-on machine as https://<slug>-preview.qorpera.com/, behind the site's
  * password. The machine runs the link program (client.mjs), which dials out to this relay over a WebSocket and serves
- * each request the relay hands it from 127.0.0.1:<port>. Visitors reach the relay through Cloudflare, the dbhome
- * tunnel and api-front's `apps` virtual host (envoy-front-sites.yaml), which sets x-forwarded-host to the request's
- * own name. The relay never reaches a node or a VM; it holds no company data. The database decides every answer
- * through four RPCs (service role only): qorpera_site_app_connect, qorpera_site_app_session, qorpera_site_unlock.
+ * each request the relay hands it from 127.0.0.1:<port>, the port the database holds for the link. Visitors reach the
+ * relay through Cloudflare, the dbhome tunnel and api-front's `apps` virtual host (envoy-front-sites.yaml), which sets
+ * x-forwarded-host to the request's own name. The relay never reaches a node or a VM; it holds no company data. The
+ * database decides every answer through three RPCs, called as the relay's own role (qorpera_site_relay, which may run
+ * only those): qorpera_site_app_connect, qorpera_site_app_session and qorpera_site_app_unlock.
  *
  * On an app host:
- *  - /.qorpera/connect   the link program's WebSocket (Authorization: Bearer <claim or key>). The relay always
- *                        completes the handshake and refuses with close code 4001, because a WebSocket client sees no
- *                        HTTP status; a newer program for the same link closes the older one with 4002.
+ *  - /.qorpera/connect   the link program's WebSocket (Authorization: Bearer <claim or key>). The database is asked
+ *                        before the handshake completes; a refusal still completes it and closes with 4001, because a
+ *                        WebSocket client sees no HTTP status. A newer program for the same link closes the older one
+ *                        with 4002. Connect attempts are limited per CF-Connecting-IP (429).
  *  - /.qorpera/client.mjs the link program itself, no password.
  *  - /.qorpera/unlock    the password form (POST password, next).
  *  - /.qorpera/health    (on any host, none needed) the container's healthcheck.
- *  - anything else       the gate (cookie __Host-qorpera_app, checked with the database, an open answer kept 30 s),
- *                        then the app through its link program: 503 when none runs, 504 when no response head comes
- *                        in 60 s, 502 when the app does not answer, 413 over 10 MiB, 501 for a visitor's WebSocket.
+ *  - anything else       the gate (cookie __Host-qorpera_app, checked with the database: an open answer kept 30 s, a
+ *                        locked one 5 s), then the app through its link program, when the program serves the very site
+ *                        the session is for: 503 when none does, 504 when no response head comes in 60 s, 502 when the
+ *                        app does not answer, 413 over 10 MiB, 501 for a visitor's WebSocket. Every forwarded answer is
+ *                        `cache-control: private, no-cache` and `cdn-cache-control: no-store` (the app's own cache
+ *                        headers are dropped), so Cloudflare never keeps a copy in front of the password; and it is
+ *                        held to its Content-Length, so a program can never write into the next answer on a connection.
  *
  * Messages on the program's WebSocket (binary frames): one byte type, a 4-byte stream id (big endian), the payload.
  *   1 request head  relay -> program  JSON {method, path, headers: [[name, value], ...]}
@@ -25,11 +31,14 @@
  *   3 body end      either way        empty
  *   4 response head program -> relay  JSON {status, headers: [[name, value], ...]}
  *   5 reset         either way        empty: the stream is over, nothing more of it is sent
- *   6 hello         relay -> program  JSON {key, url} on stream 0, once connected (key null when the program used it)
+ *   6 hello         relay -> program  JSON {key, url, port} on stream 0, once connected: key null when the program
+ *                                     used it; port the one the link is shared for, the only one the program serves
  *   7 keepalive     either way        empty, stream 0: the relay sends one every 25 s and the program answers; either
  *                                     side drops a connection silent for 60 s
+ * Close codes the relay sends: 4001 refused (the program stops), 4002 replaced (stops), 1012 the link's port changed,
+ * 1001 the relay stops, 1008 too many pings (all three: connect again).
  *
- * Never logged: a claim, a key, a session token, a password or a cookie. */
+ * Never logged: a claim, a key, a session token, a password, a cookie or the relay's JWT. */
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -38,27 +47,39 @@ import { pathToFileURL } from "node:url";
 
 export const DEFAULT_HOST_SUFFIX = "-preview.qorpera.com";
 export const GATE_COOKIE = "__Host-qorpera_app";
+/** The database role the relay's JWT names: EXECUTE on its three RPCs and nothing else. */
+export const RELAY_ROLE = "qorpera_site_relay";
 /** The largest request body the relay passes to an app. */
 export const MAX_BODY_BYTES = 10 * 1024 * 1024;
 /** The password form's body: a password and a path, far below this. */
 export const MAX_UNLOCK_BODY_BYTES = 4096;
 /** The largest WebSocket frame, and message, the relay takes from a link program. */
 export const MAX_FRAME_BYTES = 1024 * 1024;
+/** The most bytes the relay queues for one program; a program that lets more pile up is cut off. */
+export const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+export const MAX_PINGS_PER_SECOND = 10;
 /** The largest body chunk one message carries. */
 export const CHUNK_BYTES = 64 * 1024;
 export const RESPONSE_TIMEOUT_MS = 60_000;
 export const SESSION_CACHE_MS = 30_000;
+export const LOCKED_CACHE_MS = 5_000;
 export const KEEPALIVE_MS = 25_000;
 export const SILENT_MS = 60_000;
-/** How often a connected program's key is checked again (a link turned off ends its program). */
+/** The longest one visitor may hold a program's link (reading slower than the app writes) before its answer ends. */
+export const PAUSED_MS = 30_000;
+/** How often a connected program's key, site and port are checked again. */
 export const RECHECK_MS = 5 * 60_000;
+/** Connect attempts: per address a minute, in flight per address, in flight in all. */
+export const CONNECT_LIMIT = Object.freeze({ perMinute: 120, pending: 32, total: 512 });
 export const TYPE = Object.freeze({ head: 1, body: 2, end: 3, response: 4, reset: 5, hello: 6, keepalive: 7 });
-export const CLOSE = Object.freeze({ refused: 4001, replaced: 4002 });
+export const CLOSE = Object.freeze({ refused: 4001, replaced: 4002, portChanged: 1012, tooManyPings: 1008 });
 
 const SLUG = "[a-z0-9][a-z0-9-]{1,46}[a-z0-9]";
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 /** A claim or a key as the database makes them (base64url or hex), and as a Bearer header carries them. */
 const SECRET = /^[A-Za-z0-9._~+/-]{16,512}={0,2}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const JWT = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -94,6 +115,19 @@ const VISITOR_DROPPED = new Set([
 	"x-forwarded-port",
 	"x-forwarded-prefix",
 	"x-real-ip",
+]);
+/** An app's caching headers: never passed on, the relay's own go in their place. */
+const APP_CACHE_HEADERS = new Set([
+	"cache-control",
+	"expires",
+	"cdn-cache-control",
+	"cloudflare-cdn-cache-control",
+	"surrogate-control",
+]);
+/** Every forwarded answer: the visitor's browser may keep it (and ask again each time), no shared cache may. */
+export const FORWARDED_CACHE_HEADERS = Object.freeze([
+	["cache-control", "private, no-cache"],
+	["cdn-cache-control", "no-store"],
 ]);
 
 /** What the platform's own pages are served with: no script, no framing, forms only to this origin. */
@@ -171,8 +205,9 @@ export function headerPairs(raw) {
 
 /** What the app gets: the visitor's headers without the hop-by-hop ones, Envoy's own, the proxy headers a visitor
  * could send and the gate cookie; then Host and X-Forwarded-Host (the app host), X-Forwarded-Proto https and
- * X-Forwarded-For (the visitor's CF-Connecting-IP only, when it holds one address). */
-export function requestHeaders(raw, { host, client }) {
+ * X-Forwarded-For (the visitor's CF-Connecting-IP only, when it holds one address). A body the visitor sent chunked
+ * goes on chunked (`chunked`), so the program frames it for the app whatever the method. */
+export function requestHeaders(raw, { host, client, chunked = false }) {
 	const pairs = headerPairs(raw);
 	const listed = connectionListed(pairs);
 	const headers = [["host", host]];
@@ -187,13 +222,15 @@ export function requestHeaders(raw, { host, client }) {
 		}
 		headers.push([name, value]);
 	}
+	if (chunked) headers.push(["transfer-encoding", "chunked"]);
 	headers.push(["x-forwarded-proto", "https"], ["x-forwarded-host", host]);
 	if (client) headers.push(["x-forwarded-for", client]);
 	return headers;
 }
 
 /** What the visitor gets of an app's response headers: no hop-by-hop ones, every Set-Cookie host-only, none for the gate
- * cookie, and only names and values HTTP allows. Null when the list is not a list of [name, value] strings. */
+ * cookie, only names and values HTTP allows, and the relay's caching headers in place of the app's. Null when the list
+ * is not a list of [name, value] strings. */
 export function responseHeaders(pairs) {
 	if (!Array.isArray(pairs) || pairs.length > 500) return null;
 	if (
@@ -204,7 +241,14 @@ export function responseHeaders(pairs) {
 	const headers = [];
 	for (const [name, value] of pairs) {
 		const lower = name.toLowerCase();
-		if (!HEADER_NAME.test(name) || !HEADER_VALUE.test(value) || HOP_BY_HOP.has(lower) || listed.has(lower)) continue;
+		if (
+			!HEADER_NAME.test(name) ||
+			!HEADER_VALUE.test(value) ||
+			HOP_BY_HOP.has(lower) ||
+			listed.has(lower) ||
+			APP_CACHE_HEADERS.has(lower)
+		)
+			continue;
 		if (lower === "set-cookie") {
 			const cookie = appCookie(value);
 			if (cookie !== null) headers.push([name, cookie]);
@@ -212,6 +256,7 @@ export function responseHeaders(pairs) {
 		}
 		headers.push([name, value]);
 	}
+	headers.push(...FORWARDED_CACHE_HEADERS.map((pair) => [...pair]));
 	return headers;
 }
 
@@ -348,13 +393,18 @@ export function decodeMessage(message) {
 	return { type: message[0], stream: message.readUInt32BE(1), payload: message.subarray(5) };
 }
 
-/** The server's side of one upgraded connection: binary messages in and out, pings answered, a close handshake. */
+/** The server's side of one upgraded connection: binary messages in and out, pings answered (a few a second), a close
+ * handshake. A peer that lets more than `maxQueued` bytes pile up unread is cut off. */
 export class WebSocketConnection {
 	#socket;
 	#buffer = EMPTY;
 	#fragments = null;
 	#fragmentBytes = 0;
 	#maxPayload;
+	#maxQueued;
+	#pingsPerSecond;
+	#pings = 0;
+	#pingSecond = 0;
 	closing = false;
 	closed = false;
 	lastSeen = Date.now();
@@ -362,9 +412,15 @@ export class WebSocketConnection {
 	onClose = () => {};
 	onDrain = () => {};
 
-	constructor(socket, head, { maxPayload = MAX_FRAME_BYTES } = {}) {
+	constructor(
+		socket,
+		head,
+		{ maxPayload = MAX_FRAME_BYTES, maxQueued = MAX_QUEUED_BYTES, pingsPerSecond = MAX_PINGS_PER_SECOND } = {},
+	) {
 		this.#socket = socket;
 		this.#maxPayload = maxPayload;
+		this.#maxQueued = maxQueued;
+		this.#pingsPerSecond = pingsPerSecond;
 		socket.setNoDelay(true);
 		socket.setTimeout(0);
 		socket.setKeepAlive(true, 30_000);
@@ -379,6 +435,16 @@ export class WebSocketConnection {
 			this.onClose();
 		});
 		if (head?.length) this.#read(head);
+		socket.resume();
+	}
+
+	/** Writes a frame unless the peer has let too much pile up: then the connection ends at once. */
+	#write(frame) {
+		if (this.#socket.writableLength + frame.length > this.#maxQueued) {
+			this.terminate();
+			return false;
+		}
+		return this.#socket.write(frame);
 	}
 
 	#read(chunk) {
@@ -403,13 +469,19 @@ export class WebSocketConnection {
 			// The peer's close: answered with its code (when it sent one), then the TCP connection ends.
 			if (!this.closing) {
 				this.closing = true;
-				this.#socket.write(encodeFrame(0x8, payload.length >= 2 ? payload.subarray(0, 2) : EMPTY));
+				this.#write(encodeFrame(0x8, payload.length >= 2 ? payload.subarray(0, 2) : EMPTY));
 			}
 			this.#socket.end();
 			return;
 		}
 		if (opcode === 0x9) {
-			if (!this.closing) this.#socket.write(encodeFrame(0xa, payload));
+			const second = Math.floor(Date.now() / 1000);
+			if (second !== this.#pingSecond) {
+				this.#pingSecond = second;
+				this.#pings = 0;
+			}
+			if (++this.#pings > this.#pingsPerSecond) throw new WebSocketError(CLOSE.tooManyPings, "too many pings");
+			if (!this.closing) this.#write(encodeFrame(0xa, payload));
 			return;
 		}
 		if (opcode === 0xa || this.closing) return;
@@ -435,7 +507,7 @@ export class WebSocketConnection {
 	/** Sends one binary message; false when the socket's buffer is full (onDrain follows). */
 	send(message) {
 		if (this.closing || this.closed) return true;
-		return this.#socket.write(encodeFrame(0x2, message));
+		return this.#write(encodeFrame(0x2, message));
 	}
 
 	close(code = 1000, reason = "") {
@@ -445,7 +517,7 @@ export class WebSocketConnection {
 		const payload = Buffer.alloc(2 + text.length);
 		payload.writeUInt16BE(code, 0);
 		text.copy(payload, 2);
-		this.#socket.write(encodeFrame(0x8, payload));
+		this.#write(encodeFrame(0x8, payload));
 		// The peer answers with its close; a peer that does not is cut off.
 		setTimeout(() => this.#socket.destroy(), 3000).unref();
 	}
@@ -459,7 +531,6 @@ export class WebSocketConnection {
 	}
 
 	resume() {
-		this.lastSeen = Date.now();
 		this.#socket.resume();
 	}
 }
@@ -478,26 +549,33 @@ function closed(value, keys) {
 	return value;
 }
 
+/** qorpera_site_app_connect: {state: 'ok', key, port, siteId} or {state: 'refused'}. */
 export function parseConnectAnswer(value) {
 	if (value?.state === "refused") return closed(value, ["state"]) && { state: "refused" };
 	if (value?.state !== "ok") invalid();
-	const answer = closed(value, ["state", "key", "port"]);
+	const answer = closed(value, ["state", "key", "port", "siteId"]);
 	if (
 		!(answer.key === null || (typeof answer.key === "string" && SECRET.test(answer.key))) ||
 		!Number.isInteger(answer.port) ||
 		answer.port < 1 ||
-		answer.port > 65535
+		answer.port > 65535 ||
+		typeof answer.siteId !== "string" ||
+		!UUID.test(answer.siteId)
 	)
 		invalid();
-	return { state: "ok", key: answer.key, port: answer.port };
+	return { state: "ok", key: answer.key, port: answer.port, siteId: answer.siteId };
 }
 
+/** qorpera_site_app_session: {state: 'open', siteId} or {state: 'locked'}. */
 export function parseSessionAnswer(value) {
-	if (value?.state !== "open" && value?.state !== "locked") invalid();
-	closed(value, ["state"]);
-	return { state: value.state };
+	if (value?.state === "locked") return closed(value, ["state"]) && { state: "locked" };
+	if (value?.state !== "open") invalid();
+	const answer = closed(value, ["state", "siteId"]);
+	if (typeof answer.siteId !== "string" || !UUID.test(answer.siteId)) invalid();
+	return { state: "open", siteId: answer.siteId };
 }
 
+/** qorpera_site_app_unlock: as qorpera_site_unlock. */
 export function parseUnlockAnswer(value) {
 	const state = value?.state;
 	if (state === "wrong") return closed(value, ["state"]) && { state };
@@ -519,11 +597,21 @@ export function parseUnlockAnswer(value) {
 	return { state, retryAfter: Math.max(1, answer.retryAfter) };
 }
 
-/** The headers a Supabase secret key travels in: a service role JWT is also the bearer (as site-serve's). */
-export function serviceHeaders(secretKey) {
-	return /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(secretKey)
-		? { apikey: secretKey, authorization: `Bearer ${secretKey}` }
-		: { apikey: secretKey };
+/** The role a JWT's claims name, or null when it is no JWT. Its signature is the database's to check. */
+export function jwtRole(token) {
+	const claims = JWT.exec(String(token))?.[1];
+	if (!claims) return null;
+	try {
+		const role = JSON.parse(Buffer.from(claims, "base64url").toString("utf8"))?.role;
+		return typeof role === "string" ? role : null;
+	} catch {
+		return null;
+	}
+}
+
+/** The headers every RPC travels with: the stack's anon key for the gateway, the relay's own JWT for the database. */
+export function relayHeaders(apiKey, relayJwt) {
+	return { apikey: apiKey, authorization: `Bearer ${relayJwt}` };
 }
 
 // --- Pages ------------------------------------------------------------------------------------------------------------
@@ -670,10 +758,16 @@ function answer(req, res, status, html, extra = {}, referrer = "no-referrer") {
 	res.end(req.method === "HEAD" ? undefined : body);
 }
 
-/** An answer written on an upgrade's raw socket (no HTTP response object there), then the socket ends. */
-function rawAnswer(socket, status, html) {
+/** An answer written on an upgrade's raw socket (no HTTP response object there), then the socket is closed: it may be
+ * paused, and http.Server's sockets wait half open for the peer's FIN otherwise. */
+function rawAnswer(socket, status, html, extra = {}) {
 	const body = Buffer.from(html);
-	const headers = { ...pageHeaders(), "content-type": "text/html; charset=utf-8", "content-length": body.length };
+	const headers = {
+		...pageHeaders(),
+		"content-type": "text/html; charset=utf-8",
+		"content-length": body.length,
+		...extra,
+	};
 	socket.end(
 		Buffer.concat([
 			Buffer.from(
@@ -683,6 +777,7 @@ function rawAnswer(socket, status, html) {
 			),
 			body,
 		]),
+		() => socket.destroy(),
 	);
 }
 
@@ -734,12 +829,15 @@ async function readLimited(response, limit) {
 
 // --- The relay --------------------------------------------------------------------------------------------------------
 
-/** One connected link program: its WebSocket, its key (in memory only) and its open streams. */
+/** One connected link program: its WebSocket, the site and port it serves, its key (in memory only) and its open
+ * streams. */
 class Program {
-	constructor(slug, ws, key) {
+	constructor(slug, ws, { key, siteId, port }) {
 		this.slug = slug;
 		this.ws = ws;
 		this.key = key;
+		this.siteId = siteId;
+		this.port = port;
 		this.streams = new Map();
 		this.next = 1;
 		this.blocked = 0;
@@ -760,7 +858,8 @@ class Program {
 		return id;
 	}
 
-	/** A visitor reads slower than the app writes: the program's socket is not read until every such visitor drains. */
+	/** A visitor reads slower than the app writes: the program's socket is not read until every such visitor drains
+	 * (at most PAUSED_MS each). */
 	block() {
 		if (this.blocked++ === 0) this.ws.pause();
 	}
@@ -770,18 +869,24 @@ class Program {
 	}
 }
 
-/** The relay as an http.Server (not listening yet). `fetch` reaches the database; the other options are for tests. */
+/** The relay as an http.Server (not listening yet). `apiKey` is the stack's anon key (the gateway's), `relayJwt` the
+ * relay's own JWT (role qorpera_site_relay); `fetch` reaches the database. The other options are for tests. */
 export function createRelay({
 	api,
-	serviceKey,
+	apiKey,
+	relayJwt,
 	hostSuffix = DEFAULT_HOST_SUFFIX,
 	fetch: fetcher = globalThis.fetch,
 	responseTimeoutMs = RESPONSE_TIMEOUT_MS,
 	sessionCacheMs = SESSION_CACHE_MS,
+	lockedCacheMs = LOCKED_CACHE_MS,
 	maxBodyBytes = MAX_BODY_BYTES,
+	maxQueuedBytes = MAX_QUEUED_BYTES,
 	keepaliveMs = KEEPALIVE_MS,
 	silentMs = SILENT_MS,
+	pausedMs = PAUSED_MS,
 	recheckMs = RECHECK_MS,
+	connectLimit = CONNECT_LIMIT,
 	clientSource,
 	log = (line) => console.log(`app-relay: ${line}`),
 } = {}) {
@@ -789,15 +894,20 @@ export function createRelay({
 	if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password)
 		throw new Error("The API must be an http(s) URL without credentials");
 	const base = apiUrl.href.replace(/\/+$/, "");
-	if (typeof serviceKey !== "string" || serviceKey.length < 20) throw new Error("The service key is missing");
+	if (typeof apiKey !== "string" || apiKey.length < 20) throw new Error("The API key is missing");
+	// Never the service role: the relay faces the internet and needs three RPCs only.
+	if (jwtRole(relayJwt) !== RELAY_ROLE) throw new Error(`The relay's JWT must name the role ${RELAY_ROLE}`);
 	if (!/^[-.][a-z0-9.-]*\.[a-z0-9-]+$/.test(hostSuffix)) throw new Error("The host suffix is invalid");
 	const client = Buffer.from(clientSource ?? readFileSync(new URL("./client.mjs", import.meta.url)));
 	/** slug -> Program: the one connected link program of each link. */
 	const programs = new Map();
-	/** "slug token" -> when an open answer stops counting. */
+	/** "slug token" -> {until, siteId}: an open answer (siteId) or a locked one (null), and when it stops counting. */
 	const sessions = new Map();
-	/** Upgraded sockets not yet a program's (the database is being asked). */
-	const pending = new Set();
+	/** Upgrade sockets whose connect the database is answering. */
+	const upgrading = new Set();
+	/** address -> {start, count, pending}: connect attempts in the current minute, and in flight. */
+	const attempts = new Map();
+	let pendingTotal = 0;
 
 	function failure(error) {
 		// The error's kind only: never a secret.
@@ -808,7 +918,7 @@ export function createRelay({
 		const response = await fetcher(`${base}/rest/v1/rpc/${name}`, {
 			method: "POST",
 			redirect: "error",
-			headers: { ...serviceHeaders(serviceKey), "content-type": "application/json" },
+			headers: { ...relayHeaders(apiKey, relayJwt), "content-type": "application/json" },
 			body: JSON.stringify(args),
 			signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
 		});
@@ -819,26 +929,63 @@ export function createRelay({
 		return JSON.parse(await readLimited(response, MAX_RPC_ANSWER_BYTES));
 	}
 
-	async function sessionOpen(slug, token) {
+	/** The site a session token opens on this slug, or null. */
+	async function sessionSite(slug, token) {
 		const id = `${slug} ${token}`;
-		if ((sessions.get(id) ?? 0) > Date.now()) return true;
+		const kept = sessions.get(id);
+		if (kept && kept.until > Date.now()) return kept.siteId;
 		sessions.delete(id);
-		const { state } = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
-		if (state === "open") keep(id);
-		return state === "open";
+		const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
+		const siteId = result.state === "open" ? result.siteId : null;
+		keep(id, siteId, siteId ? sessionCacheMs : lockedCacheMs);
+		return siteId;
 	}
 
-	function keep(id) {
+	function keep(id, siteId, ms) {
 		if (sessions.size >= MAX_SESSIONS_KEPT) {
 			const now = Date.now();
-			for (const [key, until] of sessions) if (until <= now) sessions.delete(key);
+			for (const [key, kept] of sessions) if (kept.until <= now) sessions.delete(key);
 			// Still full: the oldest go first.
 			for (const key of sessions.keys()) {
 				if (sessions.size < MAX_SESSIONS_KEPT) break;
 				sessions.delete(key);
 			}
 		}
-		sessions.set(id, Date.now() + sessionCacheMs);
+		sessions.set(id, { until: Date.now() + ms, siteId });
+	}
+
+	/** One more connect attempt from this address, when its minute and the in-flight limits allow it. */
+	function admit(address) {
+		const now = Date.now();
+		let entry = attempts.get(address);
+		if (!entry || now - entry.start >= 60_000) {
+			entry = { start: now, count: 0, pending: entry?.pending ?? 0 };
+			attempts.set(address, entry);
+		}
+		if (
+			pendingTotal >= connectLimit.total ||
+			entry.pending >= connectLimit.pending ||
+			entry.count >= connectLimit.perMinute
+		)
+			return false;
+		entry.count++;
+		entry.pending++;
+		pendingTotal++;
+		return true;
+	}
+
+	function release(address) {
+		const entry = attempts.get(address);
+		if (entry) entry.pending--;
+		pendingTotal--;
+	}
+
+	/** A program that no longer serves its link's site (or port) ends; the link is free for the right one. */
+	function drop(program, why, code = CLOSE.refused) {
+		if (programs.get(program.slug) === program) programs.delete(program.slug);
+		log(`${program.slug}: the link program ends: ${why}`);
+		program.ws.close(code, code === CLOSE.refused ? "refused" : why);
+		for (const stream of [...program.streams.values()]) stream.gone();
 	}
 
 	async function handle(req, res) {
@@ -867,7 +1014,10 @@ export function createRelay({
 
 		// The gate.
 		const tokens = gateTokens(req.headers.cookie);
-		for (const token of tokens) if (await sessionOpen(site.slug, token)) return forward(req, res, lang, site);
+		for (const token of tokens) {
+			const siteId = await sessionSite(site.slug, token);
+			if (siteId) return forward(req, res, lang, site, siteId);
+		}
 		// A session that ended takes its cookie with it.
 		return answer(
 			req,
@@ -891,6 +1041,7 @@ export function createRelay({
 				"content-type": "text/javascript; charset=utf-8",
 				"content-length": String(client.length),
 				"cache-control": "no-cache",
+				"cdn-cache-control": "no-store",
 				"x-content-type-options": "nosniff",
 				"x-robots-tag": "noindex, nofollow, noarchive",
 			});
@@ -939,8 +1090,9 @@ export function createRelay({
 		const locked = (status, error, extra = {}) =>
 			answer(req, res, status, passwordPage(lang, next, error), extra, "same-origin");
 		if (!password || password.length > MAX_PASSWORD) return locked(401, text.empty);
+		// The app sites' own unlock: never a files site's session.
 		const result = parseUnlockAnswer(
-			await rpc("qorpera_site_unlock", {
+			await rpc("qorpera_site_app_unlock", {
 				p_slug: site.slug,
 				p_password: password,
 				p_client: clientAddress(req.headers["cf-connecting-ip"]),
@@ -951,15 +1103,19 @@ export function createRelay({
 			return locked(429, text.limited(Math.ceil(result.retryAfter / 60)), {
 				"retry-after": String(result.retryAfter),
 			});
-		keep(`${site.slug} ${result.token}`);
 		res.writeHead(303, { ...pageHeaders(), location: next, "set-cookie": gateCookie(result.token, result.maxAge) });
 		res.end();
 	}
 
 	/** One request through the link's program: its head, its body as it comes, the response streamed back. */
-	function forward(req, res, lang, site) {
+	function forward(req, res, lang, site, siteId) {
 		const text = TEXT[lang];
-		const program = programs.get(site.slug);
+		let program = programs.get(site.slug);
+		// A program connected for an earlier site of this slug (unpublished, the name taken again) never serves this one.
+		if (program && program.siteId !== siteId) {
+			drop(program, "its site is gone");
+			program = undefined;
+		}
 		if (!program)
 			return answer(req, res, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
 		const declared = req.headers["content-length"];
@@ -975,11 +1131,18 @@ export function createRelay({
 		const id = program.allocate();
 		let answered = false;
 		let over = false;
-		let blocked = false;
+		let blocked = null;
 		let received = 0;
+		/** The visitor reads slower than the app writes: the program waits, at most `pausedMs`. */
+		const block = () => {
+			if (blocked) return;
+			blocked = setTimeout(() => fail(502, text.notAnswering, text.notAnsweringLead), pausedMs);
+			program.block();
+		};
 		const unblock = () => {
 			if (!blocked) return;
-			blocked = false;
+			clearTimeout(blocked);
+			blocked = null;
 			program.unblock();
 		};
 		const done = () => {
@@ -1000,39 +1163,49 @@ export function createRelay({
 			else answer(req, res, status, messagePage(lang, title, lead), { connection: "close" });
 		};
 		const timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
+		const broken = () => fail(502, text.notAnswering, text.notAnsweringLead);
 		program.streams.set(id, {
 			response(payload) {
-				if (answered) return fail(502, text.notAnswering, text.notAnsweringLead);
+				if (answered) return broken();
 				let head;
 				try {
 					head = JSON.parse(payload.toString("utf8"));
 				} catch {
-					return fail(502, text.notAnswering, text.notAnsweringLead);
+					return broken();
 				}
 				const headers = responseHeaders(head?.headers);
 				const status = head?.status;
-				if (!Number.isInteger(status) || status < 200 || status > 599 || !headers)
-					return fail(502, text.notAnswering, text.notAnsweringLead);
+				if (!Number.isInteger(status) || status < 200 || status > 599 || !headers) return broken();
+				// Never more or fewer bytes than the answer's Content-Length: the visitor's connection, which Envoy shares
+				// between every app host, ends instead.
+				res.strictContentLength = true;
 				try {
 					res.writeHead(status, headers.flat());
 				} catch {
-					return fail(502, text.notAnswering, text.notAnsweringLead);
+					return broken();
 				}
 				answered = true;
 				clearTimeout(timer);
 				res.flushHeaders();
 			},
 			body(payload) {
-				if (!answered) return fail(502, text.notAnswering, text.notAnsweringLead);
-				if (!res.write(payload) && !blocked) {
-					blocked = true;
-					program.block();
+				if (!answered) return broken();
+				let room;
+				try {
+					room = res.write(payload);
+				} catch {
+					return broken();
 				}
+				if (!room) block();
 			},
 			end() {
-				if (!answered) return fail(502, text.notAnswering, text.notAnsweringLead);
+				if (!answered) return broken();
+				try {
+					res.end();
+				} catch {
+					return broken();
+				}
 				done();
-				res.end();
 			},
 			reset() {
 				fail(502, text.notAnswering, text.notAnsweringLead, { tellProgram: false });
@@ -1058,6 +1231,7 @@ export function createRelay({
 					headers: requestHeaders(req.rawHeaders, {
 						host: site.host,
 						client: clientAddress(req.headers["cf-connecting-ip"]),
+						chunked: req.headers["transfer-encoding"] !== undefined,
 					}),
 				}),
 			),
@@ -1102,11 +1276,14 @@ export function createRelay({
 		else stream.reset();
 	}
 
-	function register(site, ws, key, traded) {
+	function register(site, ws, secret, result) {
 		const old = programs.get(site.slug);
-		const program = new Program(site.slug, ws, key);
+		const program = new Program(site.slug, ws, {
+			key: result.key ?? secret,
+			siteId: result.siteId,
+			port: result.port,
+		});
 		programs.set(site.slug, program);
-		pending.delete(ws);
 		ws.onMessage = (message) => programMessage(program, message);
 		ws.onDrain = () => {
 			for (const req of program.waiting) req.resume();
@@ -1124,7 +1301,11 @@ export function createRelay({
 			old.ws.close(CLOSE.replaced, "replaced");
 			for (const stream of [...old.streams.values()]) stream.gone();
 		}
-		program.send(TYPE.hello, 0, Buffer.from(JSON.stringify({ key: traded, url: `https://${site.host}/` })));
+		program.send(
+			TYPE.hello,
+			0,
+			Buffer.from(JSON.stringify({ key: result.key, url: `https://${site.host}/`, port: result.port })),
+		);
 		log(`${site.slug}: a link program connected${old ? ", replacing the one before" : ""}`);
 	}
 
@@ -1138,34 +1319,45 @@ export function createRelay({
 			return rawAnswer(socket, 501, messagePage(lang, text.live, text.liveLead));
 		const accept = req.method === "GET" ? acceptKey(req.headers) : null;
 		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
-		socket.write(
-			`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-		);
-		const ws = new WebSocketConnection(socket, head);
-		pending.add(ws);
-		ws.onClose = () => pending.delete(ws);
-		const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
-		if (!secret || !SECRET.test(secret)) return ws.close(CLOSE.refused, "refused");
-		let result;
+		const address = clientAddress(req.headers["cf-connecting-ip"]);
+		if (!admit(address))
+			return rawAnswer(socket, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
+		// Nothing is read from the socket until the database has answered.
+		socket.pause();
+		upgrading.add(socket);
 		try {
-			result = parseConnectAnswer(await rpc("qorpera_site_app_connect", { p_slug: site.slug, p_secret: secret }));
-		} catch (error) {
-			failure(error);
-			return ws.close(1013, "try again later");
+			const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
+			let result = { state: "refused" };
+			if (secret && SECRET.test(secret)) {
+				try {
+					result = parseConnectAnswer(
+						await rpc("qorpera_site_app_connect", { p_slug: site.slug, p_secret: secret }),
+					);
+				} catch (error) {
+					failure(error);
+					return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "10" });
+				}
+				if (result.state !== "ok") log(`${site.slug}: a link program was refused`);
+			}
+			if (socket.destroyed) return;
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+			);
+			const ws = new WebSocketConnection(socket, head, { maxQueued: maxQueuedBytes });
+			// A refusal is a close code: the program reads it and stops.
+			if (result.state !== "ok") return ws.close(CLOSE.refused, "refused");
+			register(site, ws, secret, result);
+		} finally {
+			upgrading.delete(socket);
+			release(address);
 		}
-		if (result.state !== "ok") {
-			log(`${site.slug}: a link program was refused`);
-			return ws.close(CLOSE.refused, "refused");
-		}
-		if (ws.closing || ws.closed) return;
-		register(site, ws, result.key ?? secret, result.key);
 	}
 
-	/** Keepalives out, silent programs dropped, every key checked again now and then. */
+	/** Keepalives out, silent programs dropped (a paused one too), every key, site and port checked again now and then. */
 	function sweep() {
 		const now = Date.now();
 		for (const program of programs.values()) {
-			if (program.blocked === 0 && now - program.ws.lastSeen > silentMs) {
+			if (now - program.ws.lastSeen > silentMs) {
 				log(`${program.slug}: the link program went silent`);
 				program.ws.terminate();
 				continue;
@@ -1178,15 +1370,19 @@ export function createRelay({
 				program.checkedAt = now;
 				rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key })
 					.then((value) => {
-						if (parseConnectAnswer(value).state === "refused" && programs.get(program.slug) === program) {
-							log(`${program.slug}: the link program's key no longer holds`);
-							program.ws.close(CLOSE.refused, "refused");
-						}
+						const result = parseConnectAnswer(value);
+						if (programs.get(program.slug) !== program) return;
+						if (result.state !== "ok") drop(program, "its key no longer holds");
+						else if (result.siteId !== program.siteId) drop(program, "its site is gone");
+						// The program connects again and learns the port from its hello.
+						else if (result.port !== program.port) drop(program, "the shared port changed", CLOSE.portChanged);
 					})
 					.catch(failure);
 			}
 		}
-		for (const [id, until] of sessions) if (until <= now) sessions.delete(id);
+		for (const [id, kept] of sessions) if (kept.until <= now) sessions.delete(id);
+		for (const [address, entry] of attempts)
+			if (entry.pending <= 0 && now - entry.start >= 60_000) attempts.delete(address);
 	}
 
 	const server = createServer(handle);
@@ -1206,7 +1402,7 @@ export function createRelay({
 	server.close = (callback) => {
 		clearInterval(timer);
 		for (const program of programs.values()) program.ws.close(1001, "going away");
-		for (const ws of pending) ws.close(1001, "going away");
+		for (const socket of upgrading) socket.destroy();
 		close(callback);
 		server.closeAllConnections();
 		return server;
@@ -1225,7 +1421,8 @@ export function main(env = process.env) {
 	};
 	const server = createRelay({
 		api: required("QORPERA_API"),
-		serviceKey: required("QORPERA_SERVICE_KEY"),
+		apiKey: required("QORPERA_API_KEY"),
+		relayJwt: required("QORPERA_RELAY_JWT"),
 		hostSuffix: env.QORPERA_APP_HOST_SUFFIX?.trim() || DEFAULT_HOST_SUFFIX,
 	});
 	const port = Number(env.QORPERA_APP_RELAY_PORT ?? 8090);

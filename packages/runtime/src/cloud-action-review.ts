@@ -270,9 +270,10 @@ export function cloudActionEffect(
 		case "publish_site":
 			return "external";
 		// A private app link (v195, 20260930562000) lets the internet reach a port of a company machine: its first share,
-		// and a share from another machine, is an outside effect and a built-in access check (siteAccessCheck). share_app's
-		// prepare says which (the database's check, told the slug and the machine); sharing the live link again from its
-		// own machine, for a new one-time command, reaches nothing new and is not reviewed. Without a prepared answer it is.
+		// and a share from another machine or port (another service), is an outside effect and a built-in access check
+		// (siteAccessCheck). share_app's prepare says which (the database's check, told the slug, the machine and the
+		// port). Sharing the live link again on the same machine and port, which only starts its link program anew, is
+		// not reviewed. Without a prepared answer it is.
 		case "share_app":
 			return args.needsReview === false ? "internal" : "external";
 		// Taking a website offline deletes its published copy and password for good (its files stay in the folder); an
@@ -330,8 +331,8 @@ export function cloudActionEffect(
  * (company sites, 20260930550000): a built-in access check, whatever the reviewer called it, so the kernel asks an
  * owner or admin unless a company Allow rule the reviewer cited covers it (qorpera_record_action_review), and the
  * database publishes it only on such an approval in the same run. A denial stays one; any other update of a live site
- * is reviewed as the reviewer says. A private app link's first share, and its share from another machine, is the same
- * check (share_app, v195).
+ * is reviewed as the reviewer says. A private app link's first share, and its share from another machine or port, is
+ * the same check (share_app, v195).
  */
 export function siteAccessCheck(
 	call: Pick<CloudActionCall, "tool" | "parsed">,
@@ -339,8 +340,8 @@ export function siteAccessCheck(
 ): CloudActionVerdict {
 	if (call.tool.source !== "runtime" || verdict.builtIn !== "none") return verdict;
 	const args = record(call.parsed);
-	// A private app link (v195) whose prepare said it needs a review: a new one, or one from another machine. The
-	// database shares it only on such an approval in the same run (qorpera_site_share_app).
+	// A private app link (v195) whose prepare said it needs a review: a new one, or one from another machine or port.
+	// The database shares it only on such an approval in the same run (qorpera_site_share_app).
 	if (call.tool.name === "share_app")
 		return args.needsReview === false
 			? verdict
@@ -705,21 +706,25 @@ export function describeCloudAction(
 		);
 	} else if (tool.name === "share_app") {
 		// Its prepared arguments (cloud-site-tools.ts): the database's check, read before the review.
-		const moved = args.mode === "update" && args.machine !== args.liveMachine;
-		title =
-			args.mode === "update"
-				? moved
-					? "Share an app link from another machine"
-					: "Share an app link again"
-				: "Share a private, password-protected app link";
+		const update = args.mode === "update";
+		const moved = update && args.machine !== args.liveMachine;
+		const ported = update && args.port !== args.livePort;
+		title = !update
+			? "Share a private, password-protected app link"
+			: moved
+				? "Share an app link from another machine"
+				: ported
+					? "Share an app link from another port"
+					: "Share an app link again";
 		target = text(args.url) || text(args.slug) || null;
 		add("title", args.title);
 		add("from machine", args.machine);
 		add("port", args.port);
 		if (moved && typeof args.liveMachine === "string") add("until now from machine", args.liveMachine);
+		if (ported && typeof args.livePort === "number") add("until now port", args.livePort);
 		add(
 			"effect",
-			"Anyone with the link and its password can open the app on this port of the machine while it runs; owners and admins see the password in Settings",
+			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
 		);
 	} else if (tool.name === "unpublish_site") {
 		// The call names only the slug, so the card is true for a website and an app link alike (v195).

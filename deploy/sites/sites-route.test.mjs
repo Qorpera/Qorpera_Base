@@ -4,6 +4,7 @@ import {
 	API,
 	APP_HEALTH_URL,
 	APPS_HOST,
+	CACHE_RULE,
 	Cloudflare,
 	describeIngress,
 	dnsPlan,
@@ -26,20 +27,56 @@ const CATCH_ALL = { service: "http_status:404" };
 const SITES_RULE = { hostname: HOST, service: SERVICE };
 const APPS_RULE = { hostname: APPS_HOST, service: SERVICE };
 
-/** A fake Cloudflare: the zone, the tunnel, its configuration and the DNS records (listed by name), as the API answers
- * them; and the two public answers --check reads. */
+/** A fake Cloudflare: the zone, the tunnel, its configuration, the DNS records (listed by name) and the zone's cache
+ * rules ruleset, as the API answers them, for a token that may edit, only read or not touch Cache Rules; and the two
+ * public answers --check reads. */
 function cloudflare({
 	ingress = [API_RULE, CATCH_ALL],
 	records = [],
+	cacheRuleset = null,
+	cacheAccess = "edit",
 	robots = { status: 200, text: "User-agent: *\nDisallow: /\n" },
 	health = { status: 200, text: "ok\n" },
 } = {}) {
 	const state = {
 		config: { ingress, "warp-routing": { enabled: false } },
 		records: records.map((record) => ({ ...record })),
+		cacheRuleset: structuredClone(cacheRuleset),
 	};
 	const sent = [];
 	const ok = (result) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
+	const refused = (status, code, message) =>
+		new Response(JSON.stringify({ success: false, errors: [{ code, message }] }), { status });
+	const cache = (method, path, body) => {
+		const entrypoint = path === "/zones/zone1/rulesets/phases/http_request_cache_settings/entrypoint";
+		const ruleset = state.cacheRuleset;
+		const rules = ruleset && path === `/zones/zone1/rulesets/${ruleset.id}/rules`;
+		const rule = ruleset?.rules.find((item) => path === `/zones/zone1/rulesets/${ruleset.id}/rules/${item.id}`);
+		const create = path === "/zones/zone1/rulesets" && method === "POST";
+		if (!entrypoint && !rules && !rule && !create) return null;
+		if (cacheAccess === "none" || (cacheAccess === "read" && method !== "GET"))
+			return refused(403, 10000, "Authentication error");
+		if (entrypoint && method === "GET")
+			return ruleset ? ok(ruleset) : refused(404, 10003, "could not find entrypoint ruleset in the phase");
+		if (create) {
+			state.cacheRuleset = {
+				id: "rs1",
+				kind: body.kind,
+				phase: body.phase,
+				rules: body.rules.map((item, index) => ({ id: `r${index + 1}`, ...item })),
+			};
+			return ok(state.cacheRuleset);
+		}
+		if (rules && method === "POST") {
+			ruleset.rules.push({ id: `r${ruleset.rules.length + 1}`, ...body });
+			return ok(ruleset);
+		}
+		if (rule && method === "PATCH") {
+			Object.assign(rule, body);
+			return ok(ruleset);
+		}
+		return null;
+	};
 	const fetcher = async (input, init = {}) => {
 		const url = String(input);
 		sent.push({ url, method: init.method ?? "GET", body: init.body, authorization: init.headers?.authorization });
@@ -58,6 +95,8 @@ function cloudflare({
 			}
 			return ok({ tunnel_id: TUNNEL_ID, version: 3, config: state.config, source: "cloudflare" });
 		}
+		const cached = cache(init.method ?? "GET", path, init.body === undefined ? undefined : JSON.parse(init.body));
+		if (cached) return cached;
 		const listed = /^\/zones\/zone1\/dns_records\?name=(.+)$/.exec(path)?.[1];
 		if (listed === HOST || listed === APPS_HOST) return ok(state.records.filter((record) => record.name === listed));
 		if (path === "/zones/zone1/dns_records" && init.method === "POST") {
@@ -201,6 +240,7 @@ describe("sites-route: the script", () => {
 		);
 		assert.match(output, /dns sites\.qorpera\.com: a proxied CNAME to .* is to be made/);
 		assert.match(output, /dns \*\.qorpera\.com: a proxied CNAME to .* is to be made/);
+		assert.match(output, /cache rule qorpera_app_links_no_cache: to be made \(with the zone's cache rules ruleset\)/);
 		assert.match(output, /dry run: nothing changed/);
 		assert.ok(!output.includes(TOKEN));
 		assert.ok(
@@ -220,6 +260,12 @@ describe("sites-route: the script", () => {
 				[APPS_HOST, "CNAME", `${TUNNEL_ID}.cfargotunnel.com`, true],
 			],
 		);
+		// The cache rule, in a ruleset of the cache phase, before any app host has a name.
+		assert.equal(fake.state.cacheRuleset.phase, "http_request_cache_settings");
+		assert.equal(fake.state.cacheRuleset.kind, "zone");
+		assert.deepEqual(fake.state.cacheRuleset.rules, [{ id: "r1", ...CACHE_RULE }]);
+		const order = fake.sent.filter((call) => call.method !== "GET").map((call) => call.url.slice(API.length));
+		assert.ok(order.indexOf("/zones/zone1/rulesets") < order.indexOf("/zones/zone1/dns_records"), order.join(" "));
 		const writes = fake.sent.filter((call) => call.method !== "GET").length;
 		const again = await run(["--apply"], fake);
 		assert.equal(again.code, 0);
@@ -236,19 +282,17 @@ describe("sites-route: the script", () => {
 		assert.equal((await run(["--check"], cloudflare())).code, 1);
 		const fake = cloudflare();
 		await run(["--apply"], fake);
-		const down = cloudflare({
+		const done = {
 			ingress: fake.state.config.ingress,
 			records: fake.state.records,
-			robots: { status: 404, text: "" },
-		});
+			cacheRuleset: fake.state.cacheRuleset,
+		};
+		assert.equal((await run(["--check"], cloudflare(done))).code, 0);
+		const down = cloudflare({ ...done, robots: { status: 404, text: "" } });
 		const result = await run(["--check"], down);
 		assert.equal(result.code, 1);
 		assert.match(result.output, /robots\.txt: 404/);
-		const relayDown = cloudflare({
-			ingress: fake.state.config.ingress,
-			records: fake.state.records,
-			health: { status: 502, text: "" },
-		});
+		const relayDown = cloudflare({ ...done, health: { status: 502, text: "" } });
 		const noRelay = await run(["--check"], relayDown);
 		assert.equal(noRelay.code, 1);
 		assert.match(noRelay.output, /qorpera-health-preview\.qorpera\.com\/\.qorpera\/health: 502/);
@@ -260,9 +304,59 @@ describe("sites-route: the script", () => {
 		const fake = cloudflare({ ingress: [SITES_RULE, API_RULE, CATCH_ALL], records: [sites] });
 		assert.equal((await run(["--apply"], fake)).code, 0);
 		assert.deepEqual(fake.state.config.ingress, [SITES_RULE, API_RULE, APPS_RULE, CATCH_ALL]);
-		const posts = fake.sent.filter((call) => call.method === "POST").map((call) => JSON.parse(call.body).name);
+		const posts = fake.sent
+			.filter((call) => call.method === "POST" && call.url.endsWith("/dns_records"))
+			.map((call) => JSON.parse(call.body).name);
 		assert.deepEqual(posts, [APPS_HOST]);
 		assert.equal((await run(["--check"], fake)).code, 0);
+	});
+
+	it("adds the cache rule to the zone's own cache rules, keeping theirs, and sets a changed one right", async () => {
+		const theirs = {
+			id: "x1",
+			ref: "theirs",
+			expression: '(http.host eq "www.qorpera.com")',
+			action: "set_cache_settings",
+			action_parameters: { cache: true },
+		};
+		const fake = cloudflare({
+			cacheRuleset: { id: "rs9", kind: "zone", phase: "http_request_cache_settings", rules: [theirs] },
+		});
+		const dry = await run([], fake);
+		assert.match(dry.output, /cache rule qorpera_app_links_no_cache: to be made\n/);
+		assert.equal((await run(["--apply"], fake)).code, 0);
+		assert.deepEqual(fake.state.cacheRuleset.rules, [theirs, { id: "r2", ...CACHE_RULE }]);
+		// Someone switched it off, or made it cache: it is set right again, in place.
+		Object.assign(fake.state.cacheRuleset.rules[1], { enabled: false, action_parameters: { cache: true } });
+		const check = await run(["--check"], fake);
+		assert.equal(check.code, 1);
+		assert.match(check.output, /cache rule qorpera_app_links_no_cache: to be set right/);
+		assert.equal((await run(["--apply"], fake)).code, 0);
+		assert.deepEqual(fake.state.cacheRuleset.rules, [theirs, { id: "r2", ...CACHE_RULE }]);
+		assert.ok(fake.sent.some((call) => call.method === "PATCH" && call.url.endsWith("/rulesets/rs9/rules/r2")));
+		const writes = fake.sent.filter((call) => call.method !== "GET").length;
+		assert.equal((await run(["--check"], fake)).code, 0);
+		await run(["--apply"], fake);
+		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes);
+	});
+
+	it("makes everything else, and says so plainly, when the token may not touch Cache Rules; the check fails", async () => {
+		for (const cacheAccess of ["none", "read"]) {
+			const fake = cloudflare({ cacheAccess });
+			const applied = await run(["--apply"], fake);
+			assert.equal(applied.code, 0, cacheAccess);
+			assert.match(
+				applied.output,
+				/cache rule: NOT MADE: the token may not read or write Cache Rules \(it needs Zone > Cache Rules: Edit on qorpera\.com\)\. Make the rule by hand: Caching > Cache Rules, when \(http\.host contains "-preview\.qorpera\.com"\), Bypass cache/,
+			);
+			assert.equal(fake.state.records.length, 2, cacheAccess);
+			assert.deepEqual(fake.state.config.ingress, [SITES_RULE, API_RULE, APPS_RULE, CATCH_ALL]);
+			assert.equal(fake.state.cacheRuleset, null);
+			assert.ok(!applied.output.includes(TOKEN));
+		}
+		const check = await run(["--check"], cloudflare({ cacheAccess: "none" }));
+		assert.equal(check.code, 1);
+		assert.match(check.output, /cache rule: not checked: the token may not read or write Cache Rules/);
 	});
 
 	it("changes nothing when another record holds *", async () => {
