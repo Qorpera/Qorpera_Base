@@ -891,7 +891,7 @@ describe("share_app", () => {
 
 	it.each([
 		["the executor answers unconfirmed", "unconfirmed" as const, "machine_read (machine shop-server, command"],
-		["the executor cannot be reached", "throw" as const, "Check machine_list for a command on shop-server"],
+		["the executor cannot be reached", "throw" as const, "If machine_list shows no running command on shop-server"],
 	])(
 		"tells a link program whose start could not be confirmed (%s) to look before sharing again",
 		async (_label, start, look) => {

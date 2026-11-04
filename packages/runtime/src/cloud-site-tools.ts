@@ -943,7 +943,7 @@ export function cloudSiteTools(options: {
 					reason: "The link is shared, but the start of its link program could not be confirmed.",
 					next: started
 						? `Check it with machine_read (machine ${prepared.machine}, command ${started.commandId}) or machine_list. If it does not run, call share_app again; a new program replaces any earlier one of this link.`
-						: `Check machine_list for a command on ${prepared.machine} that runs the link program. If none runs, call share_app again; a new program replaces any earlier one of this link.`,
+						: `If machine_list shows no running command on ${prepared.machine}, call share_app again; a new program replaces any earlier one of this link.`,
 				});
 			const linkProgram = { commandId: started.commandId, state: started.state };
 			if (started.state !== "running")

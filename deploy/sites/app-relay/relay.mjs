@@ -1506,7 +1506,13 @@ export function main(env = process.env) {
 			.filter(Boolean),
 	});
 	const port = Number(env.QORPERA_APP_RELAY_PORT ?? 8090);
-	server.listen(port, "0.0.0.0", () => console.log(`app-relay: listening on :${port}`));
+	server.listen(port, "0.0.0.0", () => {
+		console.log(`app-relay: listening on :${port}`);
+		// Every company's machines leave through the agent exit's address: without it here, refused connects from one
+		// company count against the links of all the others.
+		if (!env.QORPERA_APP_RELAY_TRUSTED_ADDRESSES?.trim())
+			console.warn("app-relay: QORPERA_APP_RELAY_TRUSTED_ADDRESSES is empty: set the agent exit's public addresses");
+	});
 	for (const signal of ["SIGTERM", "SIGINT"])
 		process.once(signal, () => {
 			server.close(() => process.exit(0));
