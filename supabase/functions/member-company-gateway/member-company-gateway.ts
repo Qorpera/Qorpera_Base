@@ -4,9 +4,13 @@ const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64
 /** A member's change set to a folder-v2 company (folder core C4, P34a). */
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
+/** A chat image: its upload for one pending input, or a canonical input's bytes (the gateway's attachment route). */
+const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
 const MAX_BYTES = 8 * 1024 * 1024;
+/** The gateway's bound for a folder commit and a presence report. */
+const MAX_WRITE_BYTES = 1024 * 1024;
 
 export interface MemberCompanyGatewayOptions {
 	/** Operator-owned origin. Never selected by a request, path, or member token. */
@@ -16,10 +20,18 @@ export interface MemberCompanyGatewayOptions {
 	timeoutMs?: number;
 }
 
-function route(path: string): { method: string; headers: string[] } | undefined {
+function route(path: string): { method: string; headers: string[]; maxBody?: number } | undefined {
 	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"] };
-	if (FOLDER_COMMIT.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
-	if (PRESENCE.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
+	if (FOLDER_COMMIT.test(path))
+		return { method: "POST", headers: ["authorization", "content-type"], maxBody: MAX_WRITE_BYTES };
+	if (PRESENCE.test(path))
+		return { method: "POST", headers: ["authorization", "content-type"], maxBody: MAX_WRITE_BYTES };
+	const attachment = ATTACHMENT.exec(path);
+	// An upload is one image of at most 8 MiB, as the gateway takes it.
+	if (attachment)
+		return attachment[1] === "upload"
+			? { method: "PUT", headers: ["authorization", "content-type"], maxBody: MAX_BYTES }
+			: { method: "GET", headers: ["authorization", "content-type"] };
 	const erase = ERASE.exec(path);
 	if (erase) return { method: erase[1] ? "POST" : "GET", headers: ["authorization"] };
 	return undefined;
@@ -145,8 +157,8 @@ export async function forwardMemberCompanyGateway(
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
 	let body: Uint8Array<ArrayBuffer> | undefined;
 	try {
-		// Match the gateway's bound for both writes, a folder commit and a presence report.
-		if (request.method !== "GET") body = await bytes(request, 1024 * 1024, signal);
+		// Match the gateway's bound for each write: a folder commit, a presence report or a chat image.
+		if (request.method !== "GET") body = await bytes(request, policy.maxBody ?? MAX_WRITE_BYTES, signal);
 	} catch (error) {
 		return fail(error instanceof BodyTooLarge ? 413 : 408, "Member gateway request could not be read");
 	}

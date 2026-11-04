@@ -424,6 +424,54 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(preflight.status, 403);
 	});
+	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
+		const sha = "c".repeat(64);
+		const upload = `/v1/member-session-attachments/upload/${id}/${id}/${sha}`;
+		const input = `/v1/member-session-attachments/input/${id}/${id}/${sha}`;
+		const image = new Uint8Array(8 * 1024 * 1024).fill(7);
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${headers.get("content-type")}`);
+			assert.equal(headers.get("authorization"), "Bearer member.jwt.token");
+			if (init?.method === "PUT") {
+				assert.equal((init.body as Uint8Array).byteLength, image.byteLength);
+				return Response.json({ sha256: sha, bytes: image.byteLength, mediaType: "image/png" });
+			}
+			return new Response(image);
+		};
+		const put = await forwardMemberCompanyGateway(
+			request(upload, { method: "PUT", body: image, headers: { "content-type": "image/png" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(put.status, 200);
+		const get = await forwardMemberCompanyGateway(request(input), { upstreamUrl, fetchImplementation });
+		assert.equal(get.status, 200);
+		assert.equal((await get.arrayBuffer()).byteLength, image.byteLength);
+		assert.deepEqual(seen, [`PUT ${upload} image/png`, `GET ${input} null`]);
+		const oversized = await forwardMemberCompanyGateway(
+			request(upload, { method: "PUT", body: new Uint8Array(8 * 1024 * 1024 + 1) }),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("oversized image forwarded") },
+		);
+		assert.equal(oversized.status, 413);
+		const preflight = await forwardMemberCompanyGateway(
+			request(upload, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "PUT",
+					"access-control-request-headers": "authorization, content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("preflight forwarded") },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "PUT");
+		const wrongMethod = await forwardMemberCompanyGateway(request(input, { method: "PUT", body: "x" }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("wrong method forwarded"),
+		});
+		assert.equal(wrongMethod.status, 405);
+	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;
 		assert.equal(

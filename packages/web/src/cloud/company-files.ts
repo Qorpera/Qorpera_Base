@@ -2,6 +2,7 @@ import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
+import { memberRouteTarget } from "./deployment-config.ts";
 import { createWebMessageErases, type WebMessageErases } from "./message-erases.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
 
@@ -59,13 +60,7 @@ export class WebCompanyFiles {
 				this.current();
 				// Enable the public bridge only after its deployment has been accepted.
 				// This is a configured transport selection, never a fallback after a write.
-				const url = new URL(input instanceof Request ? input.url : input);
-				const target =
-					cloud.config.memberCompanyGatewayUrl &&
-					url.origin === new URL(cloud.config.objectGatewayUrl).origin &&
-					url.pathname.startsWith("/v1/member-")
-						? `${cloud.config.memberCompanyGatewayUrl}${url.pathname}${url.search}`
-						: input;
+				const target = memberRouteTarget(cloud.config, input instanceof Request ? input.url : String(input));
 				const response = await fetch(input instanceof Request ? new Request(target, input) : target, {
 					...init,
 					credentials: "omit",
