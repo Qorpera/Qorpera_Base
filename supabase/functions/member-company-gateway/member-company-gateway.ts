@@ -11,6 +11,13 @@ const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
+const TIMEOUT_MS = 25_000;
+/** An image upload: past the client's own 30 s, so the member's deadline decides (the browser's 8 MiB, the hop and
+ * the gateway's commit). A retry with the same input id is safe: the begin and the commit answer the same file as
+ * saved until the input is posted. */
+const UPLOAD_TIMEOUT_MS = 35_000;
+const FOLDER_UNAVAILABLE = "Company File gateway is unavailable. A submitted change may still apply.";
+const IMAGE_UNAVAILABLE = "Chat images are unavailable just now. An uploaded image may still be saved.";
 
 export interface MemberCompanyGatewayOptions {
 	/** Operator-owned origin. Never selected by a request, path, or member token. */
@@ -18,32 +25,68 @@ export interface MemberCompanyGatewayOptions {
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
 	timeoutMs?: number;
+	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
+	 * signed out can make the bridge hold a body. */
+	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
 }
 
-function route(path: string): { method: string; headers: string[]; maxBody?: number } | undefined {
-	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"] };
+interface RoutePolicy {
+	method: string;
+	headers: string[];
+	maxBody?: number;
+	timeoutMs?: number;
+	unavailable: string;
+}
+
+function route(path: string): RoutePolicy | undefined {
+	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"], unavailable: FOLDER_UNAVAILABLE };
 	if (FOLDER_COMMIT.test(path))
-		return { method: "POST", headers: ["authorization", "content-type"], maxBody: MAX_WRITE_BYTES };
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_WRITE_BYTES,
+			unavailable: FOLDER_UNAVAILABLE,
+		};
 	if (PRESENCE.test(path))
-		return { method: "POST", headers: ["authorization", "content-type"], maxBody: MAX_WRITE_BYTES };
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_WRITE_BYTES,
+			unavailable: "Presence is unavailable just now.",
+		};
 	const attachment = ATTACHMENT.exec(path);
 	// An upload is one image of at most 8 MiB, as the gateway takes it.
 	if (attachment)
 		return attachment[1] === "upload"
-			? { method: "PUT", headers: ["authorization", "content-type"], maxBody: MAX_BYTES }
-			: { method: "GET", headers: ["authorization", "content-type"] };
+			? {
+					method: "PUT",
+					headers: ["authorization", "content-type"],
+					maxBody: MAX_BYTES,
+					timeoutMs: UPLOAD_TIMEOUT_MS,
+					unavailable: IMAGE_UNAVAILABLE,
+				}
+			: { method: "GET", headers: ["authorization"], unavailable: IMAGE_UNAVAILABLE };
 	const erase = ERASE.exec(path);
-	if (erase) return { method: erase[1] ? "POST" : "GET", headers: ["authorization"] };
+	if (erase)
+		return {
+			method: erase[1] ? "POST" : "GET",
+			headers: ["authorization"],
+			unavailable: "Message erase is unavailable just now. A submitted erase may still apply.",
+		};
 	return undefined;
 }
 
 class BodyTooLarge extends Error {}
+class BodyInvalid extends Error {}
 
-/** A deadline bounds request and response streaming, including peers that never close. */
+/** A deadline bounds request and response streaming, including peers that never close. A request is read into one
+ * buffer of its declared length; a reply's chunks are joined once at the end, so nothing is reserved ahead of the
+ * bytes received or copied while it grows. */
 async function bytes(
 	message: Request | Response,
 	limit: number,
 	signal: AbortSignal,
+	declared?: number,
 ): Promise<Uint8Array<ArrayBuffer>> {
 	const reader = message.body?.getReader();
 	const cancel = () => {
@@ -53,25 +96,30 @@ async function bytes(
 	try {
 		signal.throwIfAborted();
 		if (Number(message.headers.get("content-length") ?? "0") > limit) throw new BodyTooLarge();
-		// Grow with received data rather than reserving the full object limit for
-		// every small reply. A single buffer also bounds tiny-chunk metadata.
-		let result = new Uint8Array(0);
+		const exact = declared === undefined ? undefined : new Uint8Array(declared);
+		const chunks: Uint8Array[] = [];
 		let length = 0;
 		while (reader) {
 			const chunk = await reader.read();
 			signal.throwIfAborted();
 			if (chunk.done) break;
-			if (chunk.value.byteLength > limit - length) throw new BodyTooLarge();
-			const needed = length + chunk.value.byteLength;
-			if (needed > result.byteLength) {
-				const grown = new Uint8Array(Math.min(limit, Math.max(needed, result.byteLength * 2)));
-				grown.set(result);
-				result = grown;
-			}
-			result.set(chunk.value, length);
-			length = needed;
+			if (chunk.value.byteLength > (declared ?? limit) - length)
+				throw declared === undefined ? new BodyTooLarge() : new BodyInvalid();
+			if (exact) exact.set(chunk.value, length);
+			else chunks.push(chunk.value);
+			length += chunk.value.byteLength;
 		}
-		return length === result.byteLength ? result : result.slice(0, length);
+		if (exact) {
+			if (length !== exact.byteLength) throw new BodyInvalid();
+			return exact;
+		}
+		const result = new Uint8Array(length);
+		let offset = 0;
+		for (const chunk of chunks) {
+			result.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return result;
 	} catch (error) {
 		cancel();
 		throw error;
@@ -92,6 +140,7 @@ export async function forwardMemberCompanyGateway(
 	const allowed = options.allowedOrigins ?? ["https://app.qorpera.com"];
 	const headers = new Headers({
 		"cache-control": "no-store",
+		"x-content-type-options": "nosniff",
 		vary: "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
 	});
 	const fail = (status: number, error: string) => Response.json({ error }, { status, headers });
@@ -151,16 +200,41 @@ export async function forwardMemberCompanyGateway(
 	} catch {
 		return fail(503, "Member gateway is not configured");
 	}
-	const timeout = options.timeoutMs ?? 25_000;
-	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 30_000)
+	const timeout = options.timeoutMs ?? policy.timeoutMs ?? TIMEOUT_MS;
+	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
 		return fail(503, "Member gateway is not configured");
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
+	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report or a
+	// chat image. A chunked body of unknown length is refused unread.
+	const length = request.headers.get("content-length");
+	const refuse = (status: number, error: string) => {
+		void request.body?.cancel().catch(() => {});
+		return fail(status, error);
+	};
+	if (request.headers.has("transfer-encoding") || (request.body && length === null))
+		return refuse(411, "Member gateway request needs its length");
+	if (length !== null && !/^(0|[1-9][0-9]{0,8})$/.test(length))
+		return refuse(400, "Member gateway request could not be read");
+	const size = Number(length ?? "0");
+	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
+	if (size > 0) {
+		let signedIn: boolean;
+		try {
+			if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");
+			signedIn = await options.memberSignedIn(request.headers.get("authorization") ?? "", signal);
+		} catch {
+			return refuse(503, "Member sign-in could not be checked");
+		}
+		if (!signedIn) return refuse(401, "Member sign-in is required");
+	}
 	let body: Uint8Array<ArrayBuffer> | undefined;
 	try {
-		// Match the gateway's bound for each write: a folder commit, a presence report or a chat image.
-		if (request.method !== "GET") body = await bytes(request, policy.maxBody ?? MAX_WRITE_BYTES, signal);
+		if (request.method !== "GET") body = await bytes(request, size, signal, size);
 	} catch (error) {
-		return fail(error instanceof BodyTooLarge ? 413 : 408, "Member gateway request could not be read");
+		return fail(
+			error instanceof BodyTooLarge ? 413 : error instanceof BodyInvalid ? 400 : 408,
+			"Member gateway request could not be read",
+		);
 	}
 	try {
 		const forwarded = new Headers();
@@ -188,9 +262,6 @@ export async function forwardMemberCompanyGateway(
 			headers,
 		});
 	} catch (error) {
-		return fail(
-			error instanceof BodyTooLarge ? 502 : 503,
-			"Company File gateway is unavailable. A submitted change may still apply.",
-		);
+		return fail(error instanceof BodyTooLarge ? 502 : 503, policy.unavailable);
 	}
 }
