@@ -420,10 +420,11 @@ describe("items that open", () => {
 		expect(detail.querySelector<HTMLButtonElement>(".agent-wall-picture")?.dataset.folderPath).toBe(
 			"sketches/bundles.svg",
 		);
-		// It stays open when the wall is drawn again, and closes on a second click.
+		// It stays open when the wall changes, and closes on a second click.
 		poster.show(AGENT, `${DETAILED}- Writing texts\n`, TODAY);
 		expect(row(poster, 0).classList.contains("is-open")).toBe(true);
-		expect(image).toHaveBeenCalledTimes(1);
+		// The wall changed, so the opened item reads its picture again: an agent may have redrawn the sketch.
+		expect(image).toHaveBeenCalledTimes(2);
 		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
 		expect(row(poster, 0).querySelector<HTMLElement>(".agent-wall-detail")!.hidden).toBe(true);
 		// An app it links opens as the message's app card.
