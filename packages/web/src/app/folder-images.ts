@@ -26,9 +26,14 @@ export function folderImageType(path: string): string | null {
  * blob: URL of the app's origin would, from "Open image in new tab"); any other picture is a blob: URL, which
  * {@link forgetPictureUrl} lets go. */
 export async function pictureUrl(blob: Blob): Promise<string> {
-	if (blob.type === "image/svg+xml")
-		return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(await blob.text())}`;
-	return URL.createObjectURL(blob);
+	if (blob.type !== "image/svg+xml") return URL.createObjectURL(blob);
+	const text = await new Promise<string>((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(String(reader.result ?? ""));
+		reader.onerror = () => reject(reader.error);
+		reader.readAsText(blob);
+	});
+	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
 }
 
 export function forgetPictureUrl(url: string): void {

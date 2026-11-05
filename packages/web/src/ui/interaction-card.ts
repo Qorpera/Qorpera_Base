@@ -81,10 +81,9 @@ function picture(read: NonNullable<InteractionCardContext["image"]>, path: strin
 	}
 	let shown = kept.get(path);
 	if (!shown) {
-		shown = read(path, new AbortController().signal).then(
-			(blob) => (blob ? pictureUrl(blob) : null),
-			() => null,
-		);
+		shown = read(path, new AbortController().signal)
+			.then((blob) => (blob ? pictureUrl(blob) : null))
+			.catch(() => null);
 		kept.set(path, shown);
 		// A picture that could not be read is read again by the next card that shows it.
 		const reading = shown;

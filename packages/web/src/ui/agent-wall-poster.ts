@@ -337,10 +337,9 @@ export class AgentWallPoster {
 		let shown = this.#pictures.get(path);
 		if (!shown) {
 			const signal = this.#pictureLife.signal;
-			shown = read(path, signal).then(
-				async (blob) => (blob && !signal.aborted ? pictureUrl(blob) : null),
-				() => null,
-			);
+			shown = read(path, signal)
+				.then((blob) => (blob && !signal.aborted ? pictureUrl(blob) : null))
+				.catch(() => null);
 			this.#pictures.set(path, shown);
 			// A picture that could not be read is read again next time.
 			void shown.then((url) => {
