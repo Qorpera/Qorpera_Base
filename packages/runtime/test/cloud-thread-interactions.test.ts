@@ -334,12 +334,19 @@ describe("readable cards", () => {
 	});
 
 	it("refuses a body past five lines or 600 bytes, and a button past 40 bytes, saying how to fix it", () => {
-		refused(card("a\nb\nc\nd\ne\nf"), "body must be at most 5 short lines and 600 UTF-8 bytes");
+		refused(
+			card("a\nb\nc\nd\ne\nf"),
+			"body must be at most 5 short lines of at most 280 UTF-8 bytes each, 600 in all",
+		);
 		refused(card("æ".repeat(301)), "link the full draft or file");
+		// One long paragraph is no short line, even under the whole body's bound.
+		refused(card("x".repeat(281)), "short lines of at most 280 UTF-8 bytes each");
 		refused(
 			card("Short.", "Approve the draft direction for the company now"),
 			"an option's label is a button: 1 to 3 words",
 		);
+		// The model is offered the same bound for a question's button.
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("A button of 1 to 3 words");
 		// The kernel's own limits are unchanged, so a card already in a thread still reads.
 		expect(
 			parseCloudInteractionRequestData({
@@ -361,11 +368,25 @@ describe("ask_member card shapes", () => {
 	it.each(CLOUD_ASK_MEMBER_SURFACES)("offers the callable %s workflow", (surface) => {
 		const offered = CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA.oneOf as Schema[];
 		expect(offered).toHaveLength(CLOUD_ASK_MEMBER_SURFACES.length);
-		expect(offered[CLOUD_ASK_MEMBER_SURFACES.indexOf(surface)]).toEqual(
-			branches[CLOUD_INTERACTION_SURFACES.indexOf(surface)],
-		);
-		for (const payload of Object.values(PAYLOADS[surface]))
-			expect(parseCloudAskMemberInput(ask(surface, payload)).data.payload).toEqual(payload);
+		// A new question's buttons are offered at the length a card takes (readable cards); the rest is the kernel's.
+		const kernel = structuredClone(branches[CLOUD_INTERACTION_SURFACES.indexOf(surface)]) as Schema;
+		if (surface === "question")
+			(((kernel.properties as Schema).options as Schema).items as Schema).properties = {
+				...((((kernel.properties as Schema).options as Schema).items as Schema).properties as Schema),
+				label: {
+					type: "string",
+					minLength: 1,
+					maxLength: 40,
+					description: "A button of 1 to 3 words that resolves the pending decision.",
+				},
+			};
+		expect(offered[CLOUD_ASK_MEMBER_SURFACES.indexOf(surface)]).toEqual(kernel);
+		for (const payload of Object.values(PAYLOADS[surface])) {
+			const options = (payload as { options?: { label: string }[] }).options ?? [];
+			if (options.some((option) => Buffer.byteLength(option.label) > 40))
+				expect(() => parseCloudAskMemberInput(ask(surface, payload))).toThrow(/an option's label is a button/);
+			else expect(parseCloudAskMemberInput(ask(surface, payload)).data.payload).toEqual(payload);
+		}
 	});
 
 	it.each(["form", "credential"] as const)("refuses a new %s while preserving stored events", (surface) => {

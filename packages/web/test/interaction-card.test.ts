@@ -285,15 +285,15 @@ describe("who answers a card", () => {
 			"QorperaOS/vision/vision.md",
 		);
 		expect(body.classList.contains("is-folded")).toBe(false);
-		expect(card.querySelector(".interaction-more")).toBeNull();
+		expect(card.querySelector(".card-more")).toBeNull();
 	});
 
 	it("folds a body past about four lines behind Show more, and opens it", () => {
 		const long =
-			"Ambition: the go-to wristband for Danish sports clubs. Product: printed silicone bands in club colours. Promise: delivered in a week. Limits: no custom shapes in the first year. Price: 89 kr a band, 69 kr from 100. Not yet checked: supplier prices and the delivery time. Approval agrees the draft direction only.";
+			"Ambition: the go-to wristband for Danish sports clubs. Product: printed silicone bands in club colours. Promise: delivered in a week. Limits: no custom shapes in the first year. Price: 89 kr a band, 69 kr from 100. Not yet checked: supplier prices and the delivery time. Approval agrees the draft direction only. It does not authorize spending or lift any recorded restriction.";
 		const card = renderInteractionCard(item({ ...question, body: long }), context());
 		const body = card.querySelector(".interaction-body") as HTMLElement;
-		const more = card.querySelector(".interaction-more") as HTMLButtonElement;
+		const more = card.querySelector(".card-more") as HTMLButtonElement;
 		expect(body.classList.contains("is-folded")).toBe(true);
 		expect(more.textContent).toBe("Show more");
 		expect(more.getAttribute("aria-expanded")).toBe("false");
@@ -303,5 +303,21 @@ describe("who answers a card", () => {
 		expect(more.getAttribute("aria-expanded")).toBe("true");
 		more.click();
 		expect(body.classList.contains("is-folded")).toBe(true);
+		expect(more.getAttribute("aria-controls")).toBe(body.id);
+		// Opened, it stays open when the card is drawn again (an answer on its way, a change of language).
+		more.click();
+		const again = renderInteractionCard(item({ ...question, body: long }), context());
+		expect(again.querySelector(".interaction-body")?.classList.contains("is-folded")).toBe(false);
+		expect(again.querySelector(".card-more")?.textContent).toBe("Show less");
+	});
+
+	it("shows whole the five short lines and link a card may have, and keeps a fenced code block as written", () => {
+		const five =
+			"Wristbands in club colours for Danish sports clubs, ordered in five minutes, delivered in a week.\nOur promise: a fair price and no minimum order.\n- 89 kr a band, 69 kr from 100\n- First goal: 200 bands sold by December\n[Read the whole draft](folder:strategy/vision-draft-for-the-founders.md)";
+		const card = renderInteractionCard(item({ ...question, body: five }), context());
+		expect(card.querySelector(".interaction-body")?.classList.contains("is-folded")).toBe(false);
+		expect(card.querySelector(".card-more")).toBeNull();
+		const code = renderInteractionCard(item({ ...question, body: "```\n- a\nb\n```" }), context());
+		expect(code.querySelector("pre")?.textContent).toBe("- a\nb");
 	});
 });

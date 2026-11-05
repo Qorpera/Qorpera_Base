@@ -724,7 +724,9 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("write the whole vision in your own words as a draft in a file of its own");
-	expect(cofounder).toContain("Post it in the thread as a line or two for each part, with a link to the draft");
+	expect(cofounder).toContain(
+		"as its body at most five short lines on what matters most (what the company builds, for whom, and the one or two choices that need them) and the link to the draft",
+	);
 	expect(cofounder).toContain("buttons such as Approve and Change it");
 	expect(cofounder).toContain("Revise the draft and ask again until every founder approves it");
 	expect(cofounder).not.toContain("post the whole vision in your own words in the thread");
@@ -1523,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "98dbaa7b381bf7aecc608aa9cce5518efb0da1ff9b8c2a0062071c4aae5a4763",
+			instructions: "51a249ad44104d66ed0f9f768e381130736458a9db7b224f3265174cbce23596",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1531,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "15f0cae291603661d8e9b14823394ba1741bafd07f2adcc6e55026c0904d8cee",
+			instructions: "545324637f8273cf955ce565caafd49e601603bbca7c94ebfe914fed99612748",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1539,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "98dbaa7b381bf7aecc608aa9cce5518efb0da1ff9b8c2a0062071c4aae5a4763",
+			instructions: "51a249ad44104d66ed0f9f768e381130736458a9db7b224f3265174cbce23596",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1555,7 +1557,7 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 	for (const rule of [
 		"write for someone who had an idea and wants to build it",
 		"Anything longer belongs in a file: link it with two lines on what it says, instead of pasting it.",
-		"such as the vision: post a line or two for each part, with a link to the whole draft",
+		"such as the vision: a few short lines on what matters most, with a link to the whole draft",
 		"How technical you may be follows your place in the company. The Co-Founder writes the plainest",
 		"Only an agent with a narrow technical job, such as one codebase, may use its field's terms",
 		'labels such as "T = 0", or an abbreviation the reader would have to look up',

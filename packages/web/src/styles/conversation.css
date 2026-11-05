@@ -995,15 +995,16 @@
 .interaction-body .message-prose > * + * { margin-top: 6px; }
 .interaction-body .message-prose p, .interaction-body .message-prose ul, .interaction-body .message-prose ol { margin-bottom: 0; }
 .interaction-body .message-prose ul, .interaction-body .message-prose ol { padding-left: 18px; }
-.interaction-body.is-folded {
-	max-height: calc(1.5em * 4 + 6px); overflow: hidden;
-	-webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent); mask-image: linear-gradient(to bottom, #000 60%, transparent);
+/* A card's long text folded behind Show more (ui/card-fold.ts): about five lines, the last one fading out. */
+.card-fold.is-folded {
+	max-height: calc(1.5em * 5 + 8px); overflow: hidden;
+	-webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent);
 }
-.interaction-body-wrap { margin: 0 0 8px; }
-.interaction-body-wrap > .interaction-body { margin-bottom: 2px; }
-.interaction-more { padding: 0; border: 0; background: none; color: var(--blue); font: 600 12px/1.4 var(--font-sans); cursor: pointer; }
-.interaction-more:hover { text-decoration: underline; text-underline-offset: 3px; }
-.interaction-more:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.card-fold-wrap { margin: 0 0 8px; }
+.card-fold-wrap > .card-fold { margin-bottom: 2px; }
+.card-more { padding: 0; border: 0; background: none; color: var(--blue); font: 600 12px/1.4 var(--font-sans); cursor: pointer; }
+.card-more:hover { text-decoration: underline; text-underline-offset: 3px; }
+.card-more:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
 .interaction-subject { font-weight: 600; }
 .interaction-draft { margin: 0 0 8px; padding: 10px 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 13px; line-height: 1.45; border: 1px solid var(--border); border-radius: 12px; }
 .interaction-note { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }

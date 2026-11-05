@@ -164,13 +164,23 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 };
 
 /** The payload for the surface named beside it, one closed object per surface. */
+const ASK_QUESTION_SCHEMA: Schema = (() => {
+	const question = structuredClone(PAYLOAD_SCHEMAS.question) as Schema;
+	const option = ((question.properties as Schema).options as Schema).items as Schema;
+	(option.properties as Schema).label = chars(1, 40, "A button of 1 to 3 words that resolves the pending decision.");
+	return question;
+})();
+
 export const CLOUD_INTERACTION_PAYLOAD_SCHEMA: Schema = {
 	oneOf: CLOUD_INTERACTION_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
 };
 
-/** Only advertise workflows the member can actually complete. */
+/** Only advertise workflows the member can actually complete. A new question's buttons are offered at the length a
+ * card takes (CLOUD_ASK_MEMBER_LABEL_MAX_BYTES, below): the kernel's own bound stays for stored cards. */
 export const CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA: Schema = {
-	oneOf: CLOUD_ASK_MEMBER_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
+	oneOf: CLOUD_ASK_MEMBER_SURFACES.map((surface) =>
+		surface === "question" ? ASK_QUESTION_SCHEMA : PAYLOAD_SCHEMAS[surface],
+	),
 };
 
 /** A schema as a short type sketch for a refusal: {options: [{label, value?}], multiSelect?}. */
@@ -463,12 +473,18 @@ function interactionRequestIssue(data: Record<string, unknown>): string | undefi
 export const CLOUD_ASK_MEMBER_BODY_MAX_BYTES = 600;
 export const CLOUD_ASK_MEMBER_BODY_MAX_LINES = 5;
 export const CLOUD_ASK_MEMBER_LABEL_MAX_BYTES = 40;
+/** One line of a body: a short sentence or a bullet, its link included. */
+export const CLOUD_ASK_MEMBER_LINE_MAX_BYTES = 280;
 
 function cardReadabilityIssue(card: Record<string, unknown>): string | undefined {
 	if (typeof card.body === "string") {
-		const lines = card.body.split("\n").filter((line) => line.trim()).length;
-		if (Buffer.byteLength(card.body) > CLOUD_ASK_MEMBER_BODY_MAX_BYTES || lines > CLOUD_ASK_MEMBER_BODY_MAX_LINES)
-			return `body must be at most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines and ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} UTF-8 bytes: say what is being chosen and the one or two things that matter, and link the full draft or file, such as [Read the draft](folder:path/to/file.md)`;
+		const lines = card.body.split("\n").filter((line) => line.trim());
+		if (
+			Buffer.byteLength(card.body) > CLOUD_ASK_MEMBER_BODY_MAX_BYTES ||
+			lines.length > CLOUD_ASK_MEMBER_BODY_MAX_LINES ||
+			lines.some((line) => Buffer.byteLength(line) > CLOUD_ASK_MEMBER_LINE_MAX_BYTES)
+		)
+			return `body must be at most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines of at most ${CLOUD_ASK_MEMBER_LINE_MAX_BYTES} UTF-8 bytes each, ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} in all: say what is being chosen and the one or two things that matter, and link the full draft or file, such as [Read the draft](folder:path/to/file.md)`;
 	}
 	const options = card.surface === "question" ? record(card.payload)?.options : undefined;
 	if (
@@ -477,7 +493,7 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 			(option) => Buffer.byteLength(String(record(option)?.label ?? "")) > CLOUD_ASK_MEMBER_LABEL_MAX_BYTES,
 		)
 	)
-		return `an option's label is a button: 1 to 3 words, at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} UTF-8 bytes; put anything more in its description`;
+		return `an option's label is a button: 1 to 3 words, at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} UTF-8 bytes; say anything more in the body`;
 	return undefined;
 }
 

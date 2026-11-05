@@ -7,6 +7,7 @@ import {
 	questionOptions,
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
+import { foldLong, shownLength } from "./card-fold.ts";
 import { stoppedCardNote } from "./card-notes.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
 import { renderEmailDraftCard } from "./email-draft-card.ts";
@@ -20,45 +21,28 @@ import { phrase, t } from "./preferences.ts";
  * card stays in the thread, inert, showing what was chosen. Secret inputs go
  * directly to the vault broker through provideSecret, never into an answer. */
 
-/** A body longer than this many lines or characters folds behind Show more (Jonas, 5 November 2026: "approval cards
- * are completely unreadable"). */
-const BODY_LINES = 4;
-const BODY_CHARS = 280;
+/** A body longer than this many lines, or than this many characters as shown, folds behind Show more (ui/card-fold.ts):
+ * past what a card the agent may write holds (5 short lines), so a readable card shows whole. */
+const BODY_LINES = 5;
+const BODY_CHARS = 360;
+/** A list item's line. */
+const LIST = /^\s*(?:[-*+]|\d+[.)])\s/;
 
-/** A card's body drawn as a message draws Markdown (lines, lists, folder links), folded past about four lines. */
-export function cardBody(text: string): HTMLElement {
+/** A card's body drawn as a message draws Markdown (lines, lists, folder links), folded when long. `key`: the card's
+ * id, which keeps it open across redraws. */
+export function cardBody(text: string, key: string): HTMLElement {
 	// A line right after a list that is no item of it starts a paragraph of its own (such as the link under the bullets),
-	// where Markdown would fold it into the last item.
-	const LIST = /^\s*(?:[-*+]|\d+[.)])\s/;
+	// where Markdown would fold it into the last item; never inside a fenced code block.
 	const lines = text.split("\n");
-	const prose = markdown(
-		lines
-			.map((line, index) =>
-				index > 0 && LIST.test(lines[index - 1] ?? "") && line.trim() && !/^\s/.test(line) && !LIST.test(line)
-					? `\n${line}`
-					: line,
-			)
-			.join("\n"),
-	);
-	const long = lines.filter((line) => line.trim()).length > BODY_LINES || [...text].length > BODY_CHARS;
-	const body = h("div", { class: "interaction-body" }, prose);
-	if (!long) return body;
-	body.classList.add("is-folded");
-	const more = h(
-		"button",
-		{
-			type: "button",
-			class: "interaction-more",
-			"aria-expanded": "false",
-			onclick: () => {
-				const open = body.classList.toggle("is-folded") === false;
-				more.setAttribute("aria-expanded", String(open));
-				more.textContent = open ? t("Show less") : t("Show more");
-			},
-		},
-		t("Show more"),
-	);
-	return h("div", { class: "interaction-body-wrap" }, body, more);
+	let fenced = false;
+	const shaped = lines.map((line, index) => {
+		if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+		const after = index > 0 && LIST.test(lines[index - 1] ?? "");
+		return !fenced && after && line.trim() && !/^\s/.test(line) && !LIST.test(line) ? `\n${line}` : line;
+	});
+	const body = h("div", { class: "interaction-body" }, markdown(shaped.join("\n")));
+	const long = lines.filter((line) => line.trim()).length > BODY_LINES || shownLength(text) > BODY_CHARS;
+	return foldLong(body, long, key);
 }
 
 export interface InteractionCardContext {
@@ -375,7 +359,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			badge(t(STATE_LABEL[state]), stateTone),
 		),
 		h("h3", { class: "interaction-title" }, request.title),
-		request.body ? cardBody(request.body) : null,
+		request.body ? cardBody(request.body, item.id) : null,
 		...body,
 		...result,
 		actions.some(Boolean) ? h("div", { class: "interaction-actions" }, ...actions) : null,

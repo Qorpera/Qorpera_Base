@@ -1,5 +1,6 @@
 import { ACTION_REVIEW_SCHEMA, type ActionReviewAnswer, type ActionReviewCard } from "../cloud/review-rules.ts";
 import type { JsonValue } from "../cloud/types.ts";
+import { foldLong } from "./card-fold.ts";
 import { stoppedCardNote } from "./card-notes.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
 import { phrase, t } from "./preferences.ts";
@@ -239,8 +240,13 @@ function reviewChange(card: ActionReviewCard): HTMLElement | null {
 	const parts: (HTMLElement | null)[] = [
 		card.target && !fileTool ? h("p", { class: "review-target" }, card.target) : null,
 		...names.map(([, value]) => h("p", { class: "review-name" }, value)),
+		// A long message or file text folds behind Show more, as a question card's body does (ui/card-fold.ts).
 		...content.map(([key, value]) =>
-			h("blockquote", { class: key === "command" ? "review-quote is-command" : "review-quote" }, value),
+			foldLong(
+				h("blockquote", { class: key === "command" ? "review-quote is-command" : "review-quote" }, value),
+				value.split("\n").filter((line) => line.trim()).length > 5 || [...value].length > 360,
+				`${card.reviewId}:${key}`,
+			),
 		),
 		other.length
 			? h(
