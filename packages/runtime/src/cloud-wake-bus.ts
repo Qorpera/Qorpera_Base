@@ -1,6 +1,11 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import { osRelative } from "@qorpera/cloud-client/company-state-files";
-import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
+import {
+	CloudControlRpcRefused,
+	cloudControlPause,
+	cloudControlRefusalCode,
+	cloudPostgrestError,
+} from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -937,7 +942,38 @@ export interface CloudWakeControl {
 	call(method: CloudWakeRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
+/** A new hire gets its company folder access and its first run from the platform a few seconds after the hire commits
+ * (20260930569000). The database refuses a message to it before then with this text, and the send asks again at this
+ * pace for this long, so the hirer's first message arrives (4 November 2026: two Co-Founders were refused their start
+ * messages "because the new agents couldn't receive this conversation's context", told the founders so, and the hires
+ * then started anyway). */
+export const CLOUD_COWORKER_STARTING = "Coworker recipient is still starting";
+export const CLOUD_COWORKER_STARTING_WAIT_MS = 60_000;
+const STARTING_POLL_MS = 3_000;
+/** What the agent reads when a new hire is still not ready after the wait. */
+const STARTING_TEXT =
+	"This coworker was just hired and is still starting. It begins its first todo on its own; nothing failed. This message was not sent: send it again in a few minutes if it is still needed. Do not tell the member the hire failed or that the coworker has not started.";
+
 async function callCoworkerMessage(
+	binding: CloudNativeToolBinding,
+	control: CloudWakeControl,
+	message: CloudCoworkerMessage,
+	signal: AbortSignal,
+): Promise<CloudCoworkerReceipt> {
+	const until = Date.now() + CLOUD_COWORKER_STARTING_WAIT_MS;
+	for (;;) {
+		try {
+			return await sendCoworkerMessage(binding, control, message, signal);
+		} catch (error) {
+			// The refusal rolled back the whole call, its receipt too: asking again with the same key is the same message.
+			if (!(error instanceof CloudControlRpcRefused) || error.detail !== CLOUD_COWORKER_STARTING) throw error;
+			if (Date.now() >= until) throw new CloudControlRpcRefused(error.code, STARTING_TEXT);
+			await cloudControlPause(Math.min(STARTING_POLL_MS, Math.max(0, until - Date.now())), signal);
+		}
+	}
+}
+
+async function sendCoworkerMessage(
 	binding: CloudNativeToolBinding,
 	control: CloudWakeControl,
 	message: CloudCoworkerMessage,

@@ -11,6 +11,8 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	CLOUD_COWORKER_STARTING,
+	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
 	CloudNativeWakeBus,
 	type CloudWakeControl,
@@ -1087,6 +1089,55 @@ describe("native coworker tool adapter", () => {
 			expect(call).toHaveBeenCalledTimes(3);
 		} finally {
 			boundary.close();
+			run.close();
+		}
+	});
+
+	it("waits for a hire that is still starting, then sends; and says it is starting, never failed (4 November 2026)", async () => {
+		// Two Co-Founders hired and messaged at once; the database refused the new agents as an audience until their
+		// converge gave them their folder grant, a few seconds later, and the Co-Founders told the founders the hires had
+		// not started. The send now asks again while the database says the hire is still starting.
+		const { binding, run, message, receipt, call } = await coworkerFixture();
+		const tool = cloudCoworkerMessageTool(binding, run.identity, { call });
+		const context: CloudToolContext = {
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			callId: "send_1",
+			argumentSha256: "0".repeat(64),
+			signal: run.signal,
+			identity: run.identity,
+		};
+		vi.useFakeTimers();
+		try {
+			call.mockRejectedValueOnce(new CloudControlRpcRefused("55000", CLOUD_COWORKER_STARTING));
+			call.mockRejectedValueOnce(new CloudControlRpcRefused("55000", CLOUD_COWORKER_STARTING));
+			const sent = tool.execute(message, context);
+			await vi.advanceTimersByTimeAsync(6_000);
+			await expect(sent).resolves.toEqual({ kind: "json", value: { ...receipt } });
+			expect(call).toHaveBeenCalledTimes(3);
+			// Every attempt is the same message under the same key.
+			expect(new Set(call.mock.calls.map(([, args]) => JSON.stringify(args))).size).toBe(1);
+
+			// Still starting after the wait: the agent reads that the hire starts on its own and nothing failed.
+			call.mockClear();
+			call.mockRejectedValue(new CloudControlRpcRefused("55000", CLOUD_COWORKER_STARTING));
+			const late = tool.execute({ ...message, operationKey: "handoff-2" }, context);
+			const outcome = expect(late).rejects.toThrow(
+				"NOT_AVAILABLE: This coworker was just hired and is still starting. It begins its first todo on its own; nothing failed.",
+			);
+			await vi.advanceTimersByTimeAsync(CLOUD_COWORKER_STARTING_WAIT_MS + 3_000);
+			await outcome;
+			expect(call.mock.calls.length).toBeGreaterThan(10);
+
+			// Any other refusal is the answer at once.
+			call.mockClear();
+			call.mockRejectedValue(new CloudControlRpcRefused("42501", "Coworker audience cannot receive this context"));
+			await expect(tool.execute({ ...message, operationKey: "handoff-3" }, context)).rejects.toThrow(
+				"NOT_AVAILABLE: Coworker audience cannot receive this context",
+			);
+			expect(call).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
 			run.close();
 		}
 	});

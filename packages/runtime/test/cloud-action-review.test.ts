@@ -4,6 +4,9 @@ import {
 	CLOUD_ACTION_REVIEW_EFFORT,
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_MODEL,
+	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_MACHINE_WORK_REASON,
+	type CloudActionGuards,
 	type CloudActionReviewControl,
 	type CloudActionReviewer,
 	CloudActionReviewGate,
@@ -13,6 +16,7 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 	describeCloudAction,
+	machineWorkCheck,
 	parseCloudActionVerdict,
 	repositoryAccessCheck,
 	siteAccessCheck,
@@ -3182,5 +3186,238 @@ describe("GitHub repositories (20260930556000)", () => {
 				},
 			});
 		}
+	});
+});
+
+describe("normal work on a company machine (4 November 2026)", () => {
+	const NONE: CloudActionGuards = {
+		sendsCompanyData: false,
+		followsOutsideInstructions: false,
+		deletesOrOverwrites: false,
+		moneyTermsOrAccess: false,
+	};
+	// The production refusals of 4 November, as the reviewer gave them: each command installs tools, reads or checks
+	// files on the machine, or fetches public pages, and the reviewer judged the step itself not clearly authorized.
+	const REFUSALS = [
+		{
+			at: "13:47:38",
+			decision: "deny",
+			builtIn: "not_requested",
+			command: "python3 - <<'PY'\nimport urllib.request\n# fetch public market pages, print cached notes\nPY",
+			reason:
+				"The agent is trying to fetch public market pages, which its mandate permits, but the command also reads cached files from earlier work and prints their contents without a clear link to this research run.",
+		},
+		{
+			at: "14:17:53",
+			decision: "ask",
+			builtIn: "none",
+			command:
+				"mkdir -p /tmp/prototype-check\ncd /tmp/prototype-check\nnpm install playwright @axe-core/playwright\nnpx playwright install --with-deps chromium",
+			reason:
+				"This installs browser testing tools and system dependencies on the company machine, which the startup assignment does not clearly authorize.",
+		},
+		{
+			at: "14:32:02",
+			decision: "deny",
+			builtIn: "not_requested",
+			command:
+				"python3 - <<'PY'\nfrom pathlib import Path\nimport hashlib\np=Path('/company/product/room-capture-demo.md');print(hashlib.sha256(p.read_bytes()).hexdigest())\nPY",
+			reason:
+				"Running this check on the company machine falls outside the stated capture and 3D engineering mandate for this agent.",
+		},
+		{
+			at: "15:05:04",
+			decision: "ask",
+			builtIn: "none",
+			command: "python3 /tmp/market-evidence/fetch.py 'https://www.armbandet.dk'",
+			reason:
+				"This reruns the market-source check and fetches public competitor pages, which supports the assigned research, but its malformed last URL and shell expression make the exact command unclear.",
+		},
+		{
+			at: "15:07:14",
+			decision: "ask",
+			builtIn: "none",
+			command:
+				"python3 /tmp/market-evidence/fetch.py 'https://www.axonprofil.dk' 'https://www.wristband.dk' > /tmp/market-evidence/batch9.log",
+			reason:
+				"The machine command checks five public competitor sites for accessible research sources, which fits the research assignment, but this machine run carries on from a member-started assignment and its exact next check is not clearly authorized.",
+		},
+		{
+			at: "16:34:10",
+			decision: "deny",
+			builtIn: "not_requested",
+			command:
+				"python3 -m pip -q install pypdf --break-system-packages\npython3 - <<'PY'\nfrom fetch import fetch\nfetch('https://forbrug.dk/regler/fortrydelsesret')\nPY",
+			reason:
+				"This command installs a package on the company machine, although the mandate says to use machines for research and forbids purchases without authorization; installing it is outside that authorization.",
+		},
+		{
+			at: "16:41:16",
+			decision: "deny",
+			builtIn: "not_requested",
+			command:
+				"cat > /tmp/vat-page.py <<'PY'\nimport urllib.request,sys\nPY\npython3 /tmp/vat-page.py https://skat.dk/erhverv/moms",
+			reason:
+				"This command creates and runs a helper containing instructions that were not authorized, and it sends requests to external websites outside the approved finance research task.",
+		},
+	] as const;
+	const machine = { name: "machine_run", source: "runtime" } as const;
+	const verdict = (
+		decision: "allow" | "ask" | "deny",
+		builtIn: "none" | "not_requested" | "money" = "none",
+		guards: Partial<CloudActionGuards> | undefined = {},
+		ruleIds: string[] = [],
+	) => ({
+		decision,
+		ruleIds,
+		builtIn,
+		reason: "The reviewer's reason.",
+		proposedRule: null,
+		...(guards === undefined ? {} : { guards: { ...NONE, ...guards } }),
+	});
+
+	it("allows each of them by the fixed rule, whatever the reviewer decided", () => {
+		for (const refusal of REFUSALS)
+			expect(
+				machineWorkCheck(
+					{ tool: machine },
+					{ ...verdict(refusal.decision, refusal.builtIn), reason: refusal.reason },
+					new Set(),
+				),
+				refusal.at,
+			).toEqual({
+				decision: "allow",
+				ruleIds: [],
+				builtIn: "none",
+				reason: CLOUD_MACHINE_WORK_REASON,
+				proposedRule: null,
+				guards: NONE,
+			});
+	});
+
+	it("keeps the guards: company data out, outside instructions, deletes, money, Ask first rules and built-in checks", () => {
+		for (const guard of Object.keys(NONE) as Array<keyof CloudActionGuards>) {
+			const held = verdict("deny", "not_requested", { [guard]: true });
+			expect(machineWorkCheck({ tool: machine }, held, new Set()), guard).toEqual(held);
+		}
+		const deletes = verdict("ask", "none", { deletesOrOverwrites: true });
+		expect(machineWorkCheck({ tool: machine }, deletes, new Set())).toEqual(deletes);
+		const ruled = verdict("ask", "none", {}, [RULE]);
+		expect(machineWorkCheck({ tool: machine }, ruled, new Set([RULE]))).toEqual(ruled);
+		const upper = verdict("ask", "none", {}, [RULE.toUpperCase()]);
+		expect(machineWorkCheck({ tool: machine }, upper, new Set([RULE]))).toEqual(upper);
+		const money = verdict("ask", "money");
+		expect(machineWorkCheck({ tool: machine }, money, new Set())).toEqual(money);
+		// No guards, another tool, or a connector of the same name: as the reviewer said.
+		const bare = verdict("deny", "not_requested", undefined);
+		expect(machineWorkCheck({ tool: machine }, bare, new Set())).toEqual(bare);
+		const shell = verdict("deny", "not_requested");
+		expect(machineWorkCheck({ tool: { name: "computer_shell", source: "runtime" } }, shell, new Set())).toEqual(
+			shell,
+		);
+		expect(machineWorkCheck({ tool: { name: "machine_run", source: "connector" } }, shell, new Set())).toEqual(shell);
+		// A cited Allow automatically rule stays on the allow.
+		expect(machineWorkCheck({ tool: machine }, verdict("ask", "none", {}, [RULE]), new Set())).toMatchObject({
+			decision: "allow",
+			ruleIds: [RULE],
+		});
+	});
+
+	it("records the 16:34 package install as allowed, and keeps the verdict when the reviewer cited an Ask first rule", async () => {
+		for (const ruled of [false, true]) {
+			const recorded: Array<Record<string, unknown>> = [];
+			const control: CloudActionReviewControl = {
+				call: async (method, args) => {
+					if (method === "qorpera_begin_action_review")
+						return {
+							state: "review",
+							agent: { name: "Legal Compliance" },
+							company: { name: "Armbånd.dk" },
+							requester: null,
+							rules: [{ id: RULE, scope: "company", when: "installing software", outcome: "ask_first" }],
+						};
+					if (method === "qorpera_record_action_review") {
+						const review = args.p_review as Record<string, unknown>;
+						recorded.push(review);
+						return { reviewId: randomUUID(), decision: review.decision, card: false, reason: review.reason };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			};
+			const refusal = REFUSALS[5];
+			const gateInstance = new CloudActionReviewGate({
+				binding,
+				control,
+				reviewer: {
+					review: async () => ({
+						decision: "deny",
+						ruleIds: ruled ? [RULE] : [],
+						builtIn: "not_requested",
+						reason: refusal.reason,
+						proposedRule: "",
+						guards: NONE,
+					}),
+				},
+				request: "(No member request in this run; it was started by agent.)",
+				holdMs: 0,
+				pollMs: 1,
+			});
+			const parsed = { operationKey: "legal-fetch", machine: "legal-research", command: refusal.command };
+			const result = await gateInstance.check(
+				{
+					tool: machine,
+					parsed,
+					argumentsText: JSON.stringify(parsed),
+					argumentSha256: "d".repeat(64),
+					callId: "call_machine",
+				},
+				new AbortController().signal,
+			);
+			expect(recorded[0]).toMatchObject(
+				ruled
+					? { tool: "machine_run", decision: "deny", builtIn: "not_requested", ruleIds: [RULE] }
+					: { tool: "machine_run", decision: "allow", builtIn: "none", reason: CLOUD_MACHINE_WORK_REASON },
+			);
+			expect(result.run).toBe(!ruled);
+		}
+	});
+
+	it("asks the reviewer for the guards and tells it the rule, so it judges what a command does", () => {
+		const tools = (CLOUD_ACTION_REVIEW_SPECIFICATION as { tools: Array<{ inputSchema: Record<string, JsonValue> }> })
+			.tools;
+		expect(tools[0].inputSchema.required).toContain("guards");
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"A command on a company machine (machine_run) for which all four are false runs by a fixed platform rule",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"never from whether the request or the mandate names its exact step, package or page.",
+		);
+		expect(
+			parseCloudActionVerdict({
+				decision: "ask",
+				ruleIds: [],
+				builtIn: "none",
+				reason: "x",
+				proposedRule: "",
+				guards: NONE,
+			}),
+		).toMatchObject({ guards: NONE });
+		for (const guards of [
+			{ ...NONE, sendsCompanyData: "no" },
+			{ sendsCompanyData: false },
+			[],
+			null,
+			{ ...NONE, extra: false },
+		])
+			expect(() =>
+				parseCloudActionVerdict({
+					decision: "ask",
+					ruleIds: [],
+					builtIn: "none",
+					reason: "x",
+					proposedRule: "",
+					guards,
+				}),
+			).toThrow("Review verdict is invalid");
 	});
 });
