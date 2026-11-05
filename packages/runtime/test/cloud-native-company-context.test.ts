@@ -720,6 +720,7 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	);
 	expect(cofounder).toContain("at the latest once your team's first findings are in");
 	expect(cofounder).toContain("An owner reporting the same blocker twice is stuck: find another way");
+	expect(cofounder).toContain("by you with good_will_mark, then show the members what counted once");
 	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
@@ -1507,30 +1508,31 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
 // Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026), and for overlay v8 (the team
 // grows like a company of employees; Jonas, 4 November 2026), and for listener routines in Standing work ("put out
-// listeners for a task"; Jonas, 4 November 2026). A change to either is a change to every run's bytes.
+// listeners for a task"; Jonas, 4 November 2026), and for overlay v9 (the Co-Founder has last month's payments sorted
+// for the company's good will; 5 November 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "52bc1fba3584ce7b9444fb7f83e7db30a86cf01354bbb6c57a0aef4d72323a4f",
-			prompt: "a8fd997969a8cf2bb8d710dacb7ba2a30a94ae405defeb7eb400dd99db6c7ed5",
+			instructions: "9f1618270064be7e5ef84fc639e895c67661ba9504679b951e5e5cd041d418bd",
+			prompt: "3ff71cfe1fa690762d7370d1a8a9170006c4ea1484553a9aca92717f738a1bec",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "666237940ae206620d52aab4eb76fce0e3b44c580a3a4eaa84cd17486047f17d",
-			prompt: "86c6fd2f75cc4af25c598a06a0edbe8b04a2a2ffcb9fd3313bd997adfb3b5dd0",
+			instructions: "a7cbc40ba5d68ea0e36a26f9581a7aaf5f29acf24972eb95d107a1e3fd82639e",
+			prompt: "72605dd21b42608ebe2e47b21e24efbd4fd9de67b538db57b2223f60b0d07e17",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "52bc1fba3584ce7b9444fb7f83e7db30a86cf01354bbb6c57a0aef4d72323a4f",
-			prompt: "3f234f98017ff2a298b31e834b6ca32c089de6118ccef5cd82eb38cb95335ab9",
+			instructions: "9f1618270064be7e5ef84fc639e895c67661ba9504679b951e5e5cd041d418bd",
+			prompt: "42c958cdbd43bf06644459b6aed1bf1a2a81f75032a3846349551c7924eb99af",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

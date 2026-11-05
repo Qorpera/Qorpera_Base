@@ -98,6 +98,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_company_sites.sql",
 			// Private app links (v195): the share's check before the review, and the share.
 			"_company_app_sites.sql",
+			// Good will (20260930566000): a company agent's list and sort of the company's payments.
+			"_good_will.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -130,7 +132,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(122);
+	expect(rows).toHaveLength(124);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

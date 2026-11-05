@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Good will tools (migrations `20260930566000`, `20260930567000`): `good_will_list` reads a month's payments into the company's bank and what counted for its good will (last month by default), `good_will_mark` sorts 1 to 100 of them at once (sale counts; member money, own transfers, refunds, moms back, loans and grants, other do not; a sale's moms defaults to a fifth). Every company agent has them; the Co-Founder's overlay (v9) has it sort last month in its first planning run of a month until an agent owns the company's money, then show the members what counted on an ask_member card.
 
 ### Breaking Changes
 

@@ -202,6 +202,8 @@ export function cloudActionEffect(
 		case "machine_read":
 		case "machine_list":
 		case "list_hooks":
+		// Good will (20260930566000): the payments the company's bank shows, gathered for the month.
+		case "good_will_list":
 		case "read_event":
 		case "find_mail":
 		// Interfaces (I8): a table, read with the run's own authority.
@@ -221,6 +223,8 @@ export function cloudActionEffect(
 		case "organize_sidebar":
 		// An Ask first rule only makes agents more careful.
 		case "add_review_rule":
+		// Sorting a payment changes only what Qorpera charges the company; members see and can change each one.
+		case "good_will_mark":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
