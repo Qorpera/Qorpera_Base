@@ -25,7 +25,7 @@
 @keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
 .thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-/* Bubbles wrap and tables and code scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
+/* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
 .messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
 /* The live log (what a screen reader hears as new) and, above it, the older items "Show earlier"
    read: each lays its rows out as the thread did before it had two parts. The log fills the
@@ -103,8 +103,9 @@
 .message-prose .folder-link { display: inline; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--blue); text-align: inherit; cursor: pointer; }
 .message-prose .folder-link:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .message-prose .folder-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.message-prose code { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--border); background: rgb(255 255 255 / 4%); border-radius: var(--radius-sm); padding: 1px 5px; }
-.message-prose pre { max-width: 100%; padding: 12px 14px; margin: 0 0 10px; overflow: auto; white-space: pre; word-break: normal; border: 1px solid var(--border); border-radius: 12px; background: rgb(255 255 255 / 4%); scrollbar-width: thin; }
+.message-prose code { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--border); background: rgb(255 255 255 / 4%); border-radius: var(--radius-sm); padding: 1px 5px; overflow-wrap: anywhere; }
+/* Code wraps inside the bubble: a long line (a tool's JSON) never scrolls sideways. */
+.message-prose pre { max-width: 100%; padding: 12px 14px; margin: 0 0 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; border: 1px solid var(--border); border-radius: 12px; background: rgb(255 255 255 / 4%); scrollbar-width: thin; }
 .message-prose pre code { border: 0; background: none; padding: 0; }
 .message-prose blockquote { border-left: 2px solid var(--border-strong); padding-left: 12px; margin: 0 0 10px; color: var(--text-muted); }
 .message-prose hr { border: 0; border-top: 1px solid var(--border-strong); margin: 12px 0; }

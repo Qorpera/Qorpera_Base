@@ -2196,6 +2196,10 @@ describe("safe formatted messages", () => {
 		expect(bubbles[4]?.querySelectorAll("blockquote p")).toHaveLength(2);
 		expect(bubbles[5]?.textContent).toBe("Last.");
 	});
+	it("wraps long code inside the bubble instead of scrolling sideways", () => {
+		expect(conversationCss).toMatch(/\.message-prose pre \{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
+		expect(conversationCss).toMatch(/\.message-prose code \{[^}]*overflow-wrap: anywhere;/);
+	});
 	it("keeps introductions with lists and tables and resolves references across bubbles", () => {
 		const bubbles = markdownBubbles(
 			"See [brief][plan].\n\nTasks:\n\n- one\n- two\n\nStatus:\n\n| Item | State |\n| --- | --- |\n| Brief | Ready |\n\n[plan]: https://example.invalid/brief",
