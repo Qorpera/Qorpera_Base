@@ -2714,8 +2714,11 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(panel.getAttribute("aria-modal")).toBe("true");
 		// Older messages still wait: the count says there are more.
 		f.company.conversation(pairSessionId).set({ hasEarlier: true });
+		await settle();
 		expect(panel.querySelector(".pair-count")?.textContent).toBe("2+ messages");
 		f.company.conversation(pairSessionId).set({ hasEarlier: false });
+		await settle();
+		expect(panel.querySelector(".pair-count")?.textContent).toBe("2 messages");
 		// Tab goes round the sheet's own controls, never out to the rail.
 		const controls = [
 			...panel.querySelectorAll<HTMLElement>(".pair-sheet :is(a[href], button:not(:disabled), [tabindex='0'])"),

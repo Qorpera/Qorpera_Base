@@ -72,12 +72,7 @@ export class PairTranscriptView {
 			h(
 				"footer",
 				{ class: "pair-footer" },
-				h(
-					"span",
-					{ class: "pair-readonly" },
-					icon("lock"),
-					h("span", null, t("Only the two agents write here")),
-				),
+				h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, t("Only the two agents write here"))),
 			),
 		);
 		// Over the thread it is modal: the thread waits dimmed, and Tab goes round the sheet's own controls.
