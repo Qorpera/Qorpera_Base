@@ -59,6 +59,9 @@ export interface WorkspaceActions {
 		/** Shows the agent's wall again, open, on top of its own thread: "Latest notes" on its card. */
 		show?(staffAgentId: string): void;
 	};
+	/** A picture of the company's folder for a preview (a wall item's, a question option's), read with the member's own
+	 * folder client; null when the path names no picture to show (app/folder-images.ts). */
+	folderImage?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;

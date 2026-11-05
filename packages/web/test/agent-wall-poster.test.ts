@@ -51,7 +51,8 @@ describe("an agent's wall on top of its chat", () => {
 		]);
 		expect(texts(poster.el, ".is-working .agent-wall-text")).toEqual([
 			"Checking five shops' prices",
-			"Choosing the shop system, see Launch checklistApp · opens beside the chat",
+			// A link in a headline reads as its words on the row; the link itself is there when the row opens.
+			"Choosing the shop system, see Launch checklist",
 		]);
 		// The two newest done, then the rest of the week behind "more done".
 		expect(texts(poster.el, ".is-done .agent-wall-text")).toEqual(["Two suppliers found", "Shop launch plan"]);
@@ -369,5 +370,116 @@ describe("hiding the wall", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("items that open", () => {
+	const DETAILED = `# Wall
+
+## Waits on you
+- Pick a bundle
+  Two looks, same price. [The sketch](folder:sketches/bundles.svg)
+
+## Working on
+- Building the shop demo
+  See [Shop demo](app:shop-demo)
+- Checking prices
+`;
+	const row = (poster: AgentWallPoster, index: number) =>
+		poster.el.querySelectorAll<HTMLElement>(".agent-wall-item")[index]!;
+
+	it("shows headlines, and a click opens one's detail, links and preview", async () => {
+		const image = vi.fn(async () => new Blob(["<svg/>"], { type: "image/svg+xml" }));
+		const poster = new AgentWallPoster({ image });
+		document.body.append(poster.el);
+		poster.show(AGENT, DETAILED, TODAY);
+		expect(texts(poster.el, ".agent-wall-text")).toEqual([
+			"Pick a bundle",
+			"Building the shop demo",
+			"Checking prices",
+		]);
+		// A headline with nothing more is no button.
+		expect(row(poster, 2).querySelector(".agent-wall-row")).toBeNull();
+		const button = row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!;
+		const detail = row(poster, 0).querySelector<HTMLElement>(".agent-wall-detail")!;
+		expect([button.getAttribute("aria-expanded"), detail.hidden]).toEqual(["false", true]);
+		expect(button.getAttribute("aria-controls")).toBe(detail.id);
+		// The picture is read only when the item opens.
+		expect(image).not.toHaveBeenCalled();
+		button.click();
+		expect([button.getAttribute("aria-expanded"), detail.hidden]).toEqual(["true", false]);
+		expect(detail.querySelector(".agent-wall-detail-text")?.textContent).toBe("Two looks, same price. The sketch");
+		// An SVG shows as a data: URL, never as a blob: page of the app's own origin.
+		await vi.waitFor(() =>
+			expect(detail.querySelector("img")?.getAttribute("src")).toBe(
+				`data:image/svg+xml;charset=utf-8,${encodeURIComponent("<svg/>")}`,
+			),
+		);
+		expect(image).toHaveBeenCalledWith("sketches/bundles.svg", expect.any(AbortSignal));
+		// The picture opens in Storage, as its link does.
+		expect(detail.querySelector<HTMLButtonElement>(".agent-wall-picture")?.dataset.folderPath).toBe(
+			"sketches/bundles.svg",
+		);
+		// It stays open when the wall changes, and closes on a second click.
+		poster.show(AGENT, `${DETAILED}- Writing texts\n`, TODAY);
+		expect(row(poster, 0).classList.contains("is-open")).toBe(true);
+		// The wall changed, so the opened item reads its picture again: an agent may have redrawn the sketch.
+		expect(image).toHaveBeenCalledTimes(2);
+		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		expect(row(poster, 0).querySelector<HTMLElement>(".agent-wall-detail")!.hidden).toBe(true);
+		// An app it links opens as the message's app card.
+		row(poster, 1).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		expect(row(poster, 1).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
+	});
+
+	it("keeps a headline's links out of its row, reads an encoded picture path, and tells twin headlines apart", async () => {
+		const image = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:logo");
+		const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+		const poster = new AgentWallPoster({ image });
+		document.body.append(poster.el);
+		poster.show(
+			AGENT,
+			`## Waits on you
+- Reply to ole@shop.dk, see www.shop.dk
+  [Logo](folder:design/logo%20v2.png)
+- Approve the post
+  The first one.
+- Approve the post
+  The second one.
+`,
+			TODAY,
+		);
+		const buttons = [...poster.el.querySelectorAll<HTMLButtonElement>(".agent-wall-row")];
+		// No link of any kind inside a row's button.
+		expect(buttons.every((button) => !button.querySelector("a, button"))).toBe(true);
+		expect(buttons[0]?.textContent).toContain("Reply to ole@shop.dk, see www.shop.dk");
+		buttons[0]?.click();
+		await vi.waitFor(() => expect(image).toHaveBeenCalledWith("design/logo v2.png", expect.any(AbortSignal)));
+		await vi.waitFor(() =>
+			expect(row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-picture")?.dataset.folderPath).toBe(
+				"design/logo v2.png",
+			),
+		);
+		// Two rows with the same headline open their own detail.
+		const ids = buttons.map((button) => button.getAttribute("aria-controls"));
+		expect(new Set(ids).size).toBe(3);
+		buttons[2]?.click();
+		expect(row(poster, 2).querySelector(".agent-wall-detail-text")?.textContent).toBe("The second one.");
+		expect(row(poster, 1).querySelector<HTMLElement>(".agent-wall-detail")?.hidden).toBe(true);
+		// The thread closes: its pictures go.
+		poster.dispose();
+		await vi.waitFor(() => expect(revoked).toHaveBeenCalledWith("blob:logo"));
+		created.mockRestore();
+		revoked.mockRestore();
+	});
+
+	it("shows no preview when the picture cannot be read", async () => {
+		const poster = new AgentWallPoster({ image: async () => null });
+		document.body.append(poster.el);
+		poster.show(AGENT, DETAILED, TODAY);
+		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		await vi.waitFor(() => expect(row(poster, 0).querySelector(".agent-wall-preview")).toBeNull());
+		expect(row(poster, 0).querySelector(".agent-wall-detail-text")).not.toBeNull();
 	});
 });

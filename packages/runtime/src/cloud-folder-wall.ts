@@ -2,13 +2,16 @@ import {
 	EMPTY_WALL,
 	parseWall,
 	renderWall,
+	WALL_DETAIL_MAX_CHARS,
 	WALL_DONE_MAX,
-	WALL_ITEM_MAX_CHARS,
+	WALL_HEADLINE_MAX_CHARS,
 	WALL_MAX_BYTES,
 	WALL_WAITING_MAX,
 	WALL_WORKING_MAX,
 	type Wall,
 	type WallDone,
+	type WallItem,
+	wallDetailProblem,
 	wallItemProblem,
 	wallItemText,
 	wallPath,
@@ -41,27 +44,58 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  */
 
 interface WallRequest {
-	readonly waiting: readonly string[] | null;
-	readonly working: readonly string[] | null;
-	readonly done: readonly string[];
+	readonly waiting: readonly WallItem[] | null;
+	readonly working: readonly WallItem[] | null;
+	readonly done: readonly WallItem[];
 }
 
 const SCHEMA = "qorpera.agent-wall/v1";
+const ITEM_SCHEMA = {
+	type: "object",
+	additionalProperties: false,
+	required: ["headline"],
+	properties: {
+		headline: { type: "string", maxLength: WALL_HEADLINE_MAX_CHARS * 4 },
+		detail: { type: "string", maxLength: WALL_DETAIL_MAX_CHARS * 4 },
+	},
+};
 /** Finished items an answer shows, newest first. */
 const DONE_SHOWN = 5;
 
-function items(value: JsonValue | undefined, label: string, max: number, nullable: boolean): string[] | null {
+/** A request's items: each {headline, detail?} (a plain line reads as a headline alone). A headline already on the wall
+ * is kept as it stands, even one longer than a new headline may be (written before details existed). */
+function items(value: JsonValue | undefined, label: string, max: number, nullable: boolean): WallItem[] | null {
 	if (value === null && nullable) return null;
 	if (!Array.isArray(value) || value.length > max)
 		throw new CloudToolArgumentRefusal(
 			`${label} must be a list of at most ${max} items${nullable ? ", or null to keep it as it is" : ""}`,
 		);
 	return value.map((item) => {
-		if (typeof item !== "string") throw new CloudToolArgumentRefusal(`each item of ${label} is one line of text`);
-		const problem = wallItemProblem(item);
-		if (problem) throw new CloudToolArgumentRefusal(`${label}: ${problem}`);
-		return wallItemText(item);
+		const object = item !== null && typeof item === "object" && !Array.isArray(item) ? item : null;
+		if (typeof item !== "string" && (!object || typeof object.headline !== "string"))
+			throw new CloudToolArgumentRefusal(`each item of ${label} is {headline, detail?}`);
+		if (object && Object.keys(object).some((key) => key !== "headline" && key !== "detail"))
+			throw new CloudToolArgumentRefusal(`each item of ${label} has only headline and detail`);
+		const headline = typeof item === "string" ? item : (object?.headline as string);
+		const detail = object?.detail;
+		if (detail !== undefined && detail !== null && typeof detail !== "string")
+			throw new CloudToolArgumentRefusal(`${label}: a detail is text`);
+		const headlineProblem = wallItemProblem(headline);
+		if (headlineProblem) throw new CloudToolArgumentRefusal(`${label}: ${headlineProblem}`);
+		const detailProblem = typeof detail === "string" ? wallDetailProblem(detail) : null;
+		if (detailProblem) throw new CloudToolArgumentRefusal(`${label}: ${detailProblem}`);
+		const text = wallItemText(headline);
+		const shown = typeof detail === "string" && detail.trim() ? wallItemText(detail) : undefined;
+		return shown ? { text, detail: shown } : { text };
 	});
+}
+
+/** Headlines past the short limit that are not already on the wall: new ones must be short. */
+function longHeadlines(stored: Wall, request: WallRequest): string[] {
+	const kept = new Set([...stored.waiting, ...stored.working, ...stored.done].map((item) => item.text));
+	return [...(request.waiting ?? []), ...(request.working ?? []), ...request.done]
+		.map((item) => item.text)
+		.filter((text) => [...text].length > WALL_HEADLINE_MAX_CHARS && !kept.has(text));
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -71,9 +105,9 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 export function nextWall(stored: Wall, request: WallRequest, today: string): Wall {
 	const recent = stored.done.filter((item) => item.day > dayBefore(today, 7));
 	const added: WallDone[] = [];
-	for (const text of request.done)
-		if (!recent.some((item) => same(item.text, text)) && !added.some((item) => same(item.text, text)))
-			added.push({ day: today, text });
+	for (const item of request.done)
+		if (!recent.some((had) => same(had.text, item.text)) && !added.some((had) => same(had.text, item.text)))
+			added.push({ day: today, ...item });
 	const done = [...added, ...stored.done]
 		.map((item, index) => ({ item, index }))
 		.sort((a, b) => (a.item.day === b.item.day ? a.index - b.index : a.item.day < b.item.day ? 1 : -1))
@@ -82,13 +116,18 @@ export function nextWall(stored: Wall, request: WallRequest, today: string): Wal
 	return { waiting: request.waiting ?? stored.waiting, working: request.working ?? stored.working, done };
 }
 
+/** An item as the tool's answer shows it, in the words its arguments use. */
+function shownItem(item: WallItem): { headline: string; detail?: string } {
+	return item.detail ? { headline: item.text, detail: item.detail } : { headline: item.text };
+}
+
 function dayBefore(day: string, days: number): string {
 	const date = new Date(`${day}T00:00:00Z`);
 	date.setUTCDate(date.getUTCDate() - days);
 	return date.toISOString().slice(0, 10);
 }
 
-export const CLOUD_WALL_TOOL_DESCRIPTION = `Keep your wall: the card pinned above your thread where members see at a glance what you have done, what you are working on and what waits on them. It replaces status messages: update it instead of writing to say that work started, moved on or finished. waiting: what you need from a member, each a short line that says what to decide or do (a whole list, or null to keep it; at most ${WALL_WAITING_MAX}). working: what you are doing now (a whole list, or null to keep it; at most ${WALL_WORKING_MAX}). done: what you finished since the last update, added on top with today's date ([] for nothing new). Each item is one plain line of at most ${WALL_ITEM_MAX_CHARS} characters, in the company's language and your messages' plain words, with a link to the work: [Name](folder:path/in/the/company/file) or [Title](app:<name>) for an interface app. Move an item, don't repeat it: what you finish leaves working (or waiting) and goes to done in the same call. Fix a wrong item where it stands. It applies at once. When the result says the wall changed since it was read, call again.`;
+export const CLOUD_WALL_TOOL_DESCRIPTION = `Keep your wall: the card pinned above your thread where members see at a glance what you have done, what you are working on and what waits on them. It replaces status messages: update it instead of writing to say that work started, moved on or finished. waiting: what you need from a member (a whole list, or null to keep it; at most ${WALL_WAITING_MAX}). working: what you are doing now (a whole list, or null to keep it; at most ${WALL_WORKING_MAX}). done: what you finished since the last update, added on top with today's date ([] for nothing new). Each item is {headline, detail?} in the company's language and your messages' plain words. The headline is what a member reads at a glance: a few words, at most ${WALL_HEADLINE_MAX_CHARS} characters, such as "Pick a shop name" or "Team hired". The detail opens when they click it: one or two short sentences, at most ${WALL_DETAIL_MAX_CHARS} characters, with a link to the work: [Name](folder:path/in/the/company/file), or [Title](app:<name>) for an interface app. Link what you made to look at (an image such as an SVG sketch, or an app) and the item shows it when it opens. Move an item, don't repeat it: what you finish leaves working (or waiting) and goes to done in the same call. Fix a wrong item where it stands. It applies at once. When the result says the wall changed since it was read, call again.`;
 
 /** Today in the company's time zone (the run's wake time), `YYYY-MM-DD`; UTC when the zone is unknown. */
 export function wallToday(timeZone: string | undefined, now = new Date()): string {
@@ -127,17 +166,9 @@ export function cloudWallTools(options: {
 			additionalProperties: false,
 			required: ["waiting", "working", "done"],
 			properties: {
-				waiting: {
-					type: ["array", "null"],
-					maxItems: WALL_WAITING_MAX,
-					items: { type: "string", maxLength: WALL_ITEM_MAX_CHARS * 4 },
-				},
-				working: {
-					type: ["array", "null"],
-					maxItems: WALL_WORKING_MAX,
-					items: { type: "string", maxLength: WALL_ITEM_MAX_CHARS * 4 },
-				},
-				done: { type: "array", maxItems: 12, items: { type: "string", maxLength: WALL_ITEM_MAX_CHARS * 4 } },
+				waiting: { type: ["array", "null"], maxItems: WALL_WAITING_MAX, items: ITEM_SCHEMA },
+				working: { type: ["array", "null"], maxItems: WALL_WORKING_MAX, items: ITEM_SCHEMA },
+				done: { type: "array", maxItems: 12, items: ITEM_SCHEMA },
 			},
 		},
 		parseArguments(value) {
@@ -177,6 +208,14 @@ export function cloudWallTools(options: {
 						)}. Read it, write it again whole with company_write, keeping what a member wrote as items of the parts, then call again`,
 				);
 			const stored = parsed.wall;
+			const long = longHeadlines(stored, request);
+			if (long.length)
+				throw new CloudToolRefusal(
+					`WALL_HEADLINE_TOO_LONG: nothing was written; a headline is at most ${WALL_HEADLINE_MAX_CHARS} characters, a few words: say the rest in its detail (too long: ${long
+						.slice(0, 3)
+						.map((text) => JSON.stringify(text.slice(0, 60)))
+						.join(", ")})`,
+				);
 			let next = nextWall(stored, request, today());
 			let text = renderWall(next, parsed.head);
 			// The oldest finished items go first when the wall would grow past what a wall may be.
@@ -202,9 +241,9 @@ export function cloudWallTools(options: {
 					saved,
 					...extra,
 					wall: {
-						waiting: [...wall.waiting],
-						working: [...wall.working],
-						done: wall.done.slice(0, DONE_SHOWN).map((item) => ({ ...item })),
+						waiting: wall.waiting.map(shownItem),
+						working: wall.working.map(shownItem),
+						done: wall.done.slice(0, DONE_SHOWN).map((item) => ({ day: item.day, ...shownItem(item) })),
 						...(wall.done.length > DONE_SHOWN ? { moreDone: wall.done.length - DONE_SHOWN } : {}),
 					},
 				});

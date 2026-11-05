@@ -18,6 +18,8 @@ export interface QuestionOption {
 	value: string;
 	description?: string;
 	style?: "default" | "primary" | "danger";
+	/** A picture of the option: a path of the company's folder to an image, or `app:<name>` for an interface app. */
+	preview?: string;
 }
 
 export interface InteractionRequest {
@@ -141,6 +143,7 @@ export function questionOptions(request: InteractionRequest): QuestionOption[] {
 			value: typeof option.value === "string" ? option.value : option.label,
 			...(typeof option.description === "string" ? { description: option.description } : {}),
 			...(option.style === "primary" || option.style === "danger" ? { style: option.style } : {}),
+			...(typeof option.preview === "string" && option.preview ? { preview: option.preview } : {}),
 		});
 	}
 	return options;
