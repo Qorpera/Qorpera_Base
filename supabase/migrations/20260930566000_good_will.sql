@@ -125,9 +125,10 @@ create table public.qorpera_good_will_months (
 	month date not null check (month = date_trunc('month', month)::date),
 	-- open: the month runs; sorting: it ended and its payments are sorted (until the 5th); closed: final, to charge;
 	-- carried: final, under the least charge, added to the next month; zero: final, nothing to pay; charged: paid;
-	-- failed: Stripe could not take the card (it tries again; we post a reminder in chat).
+	-- failed: Stripe could not take the card (it tries again; we post a reminder in chat); waived: closed while payments
+	-- were a dry run, never charged once they went live.
 	status text not null default 'open'
-		check (status in ('open', 'sorting', 'closed', 'carried', 'zero', 'charged', 'failed')),
+		check (status in ('open', 'sorting', 'closed', 'carried', 'zero', 'charged', 'failed', 'waived')),
 	-- What counted: the payments with moms, the moms in them, the sales without moms the steps apply to.
 	sales_ore bigint not null default 0 check (sales_ore >= 0),
 	moms_ore bigint not null default 0 check (moms_ore >= 0 and moms_ore <= sales_ore),
@@ -275,6 +276,16 @@ declare v_row public.qorpera_good_will_months%rowtype; v_sales bigint; v_moms bi
 begin
 	v_row := public.qorpera_good_will_month_row(p_profile_id, p_month, p_today);
 	if v_row.profile_id is null or v_row.status not in ('open', 'sorting') then return v_row; end if;
+	-- Under the month's lock (the order a sort takes: month, then payment): an unsorted payment is checked again for a
+	-- move between the company's accounts, whose other leg can come with a later fetch.
+	update public.qorpera_good_will_items as i
+	set counted = false, reason = 'own_transfer', decided_by = 'rule', decided_at = clock_timestamp()
+	where i.profile_id = p_profile_id and i.month = v_row.month and i.counted is null and i.source = 'bank'
+		and exists (select 1 from public.qorpera_bank_transactions as t
+			join public.qorpera_bank_transactions as leg on leg.profile_id = t.profile_id and leg.account_key <> t.account_key
+				and leg.amount = -t.amount and leg.booked_on between t.booked_on - 3 and t.booked_on + 3
+			where t.profile_id = i.profile_id and t.account_key = split_part(i.source_key, ':', 1)
+				and t.transaction_key = split_part(i.source_key, ':', 2));
 	select coalesce(sum(i.amount_ore) filter (where i.counted), 0), coalesce(sum(i.moms_ore) filter (where i.counted), 0),
 		count(*) filter (where i.counted is null)
 	into v_sales, v_moms, v_unsorted
@@ -325,16 +336,6 @@ begin
 	where t.profile_id = p_profile_id and t.amount > 0 and t.booked_on >= v_since and t.booked_on <= v_today
 	on conflict (profile_id, source, source_key) do nothing;
 	get diagnostics v_kept = row_count;
-	-- The other account's leg can arrive with a later fetch: an unsorted payment of a month not final is checked again.
-	update public.qorpera_good_will_items as i
-	set counted = false, reason = 'own_transfer', decided_by = 'rule', decided_at = clock_timestamp()
-	from public.qorpera_good_will_months as m
-	where i.profile_id = p_profile_id and i.counted is null and i.source = 'bank' and m.profile_id = i.profile_id
-		and m.month = i.month and m.status in ('open', 'sorting')
-		and exists (select 1 from public.qorpera_bank_transactions as t
-			join public.qorpera_bank_transactions as leg on leg.profile_id = t.profile_id and leg.account_key <> t.account_key
-				and leg.amount = -t.amount and leg.booked_on between t.booked_on - 3 and t.booked_on + 3
-			where t.profile_id = i.profile_id and t.account_key || ':' || t.transaction_key = i.source_key);
 	for v_month in
 		select distinct i.month from public.qorpera_good_will_items as i
 		where i.profile_id = p_profile_id and i.month >= v_since
@@ -842,11 +843,12 @@ begin
 		begin
 			perform public.qorpera_good_will_gather(v_profile, v_today);
 			if extract(day from v_today) >= 5 then
+				-- In order, and never past a month still sorting: a later month reads what an earlier one carried.
 				for v_month in select m.month from public.qorpera_good_will_months as m
 					where m.profile_id = v_profile and m.status = 'sorting' and m.month < date_trunc('month', v_today)::date
 					order by m.month
 				loop
-					perform public.qorpera_good_will_finalize(v_profile, v_month, v_today);
+					exit when (public.qorpera_good_will_finalize(v_profile, v_month, v_today)).status = 'sorting';
 					v_final := v_final + 1;
 				end loop;
 			end if;
@@ -856,9 +858,15 @@ begin
 			raise warning 'Good will for % was not gathered: %', v_profile, sqlerrm;
 		end;
 	end loop;
+	-- Once payments are live, a month that closed during the dry run is never charged.
+	if not public.qorpera_computer_hour_dry_run(clock_timestamp()) then
+		update public.qorpera_good_will_months as m set status = 'waived', updated_at = clock_timestamp()
+		where m.status = 'closed' and m.stripe_invoice_id is null and public.qorpera_computer_hour_dry_run(m.final_at);
+	end if;
+	-- Closed months with a card and no finished invoice yet (none, or a draft not finalized).
 	if exists (select 1 from public.qorpera_good_will_months as m
 			join public.qorpera_good_will_payers as payer on payer.profile_id = m.profile_id
-			where m.status = 'closed' and m.stripe_invoice_id is null)
+			where m.status = 'closed' and m.invoice_url is null)
 		and to_regprocedure('net.http_post(text,jsonb,jsonb,jsonb,integer)') is not null
 		and to_regclass('vault.decrypted_secrets') is not null then
 		begin
