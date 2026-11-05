@@ -15,12 +15,12 @@
 -- Older web clients read the table as before: they ignore the new keys, and modelLoginReady now means connected.
 -- Locks: none new; the changed bodies only read. Every new or changed body carries the marker 20260930579000.
 
-create function pg_temp.fl579_patch(p_target regprocedure, p_old text, p_new text)
+create function pg_temp.fl579_patch(p_target regprocedure, p_old text, p_new text, p_again boolean default false)
 returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
 begin
-	if position('20260930579000' in v_definition) > 0 then
-		raise exception '20260930579000 is already in %', p_target; end if;
+	if position('20260930579000' in v_definition) > 0 <> p_again then
+		raise exception '20260930579000 is % in %', case when p_again then 'not yet' else 'already' end, p_target; end if;
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
 		raise exception '20260930579000 anchor differs in %: %', p_target, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
@@ -109,7 +109,7 @@ select pg_temp.fl579_patch('public.qorpera_company_founding_json(uuid)'::regproc
 	$old$'firstRun',public.qorpera_folder_company_first_run_state(p_profile_id)) end);$old$,
 	$new$'firstRun',public.qorpera_folder_company_first_run_state(p_profile_id),
 			-- 20260930579000: when a first run waiting on a used-up login goes on.
-			'firstRunWaitsUntil',public.qorpera_folder_company_first_run_waits_until(p_profile_id)) end);$new$);
+			'firstRunWaitsUntil',public.qorpera_folder_company_first_run_waits_until(p_profile_id)) end);$new$, true);
 -- Ready and Start: a live login of one's own, at any usage.
 select pg_temp.fl579_patch('public.qorpera_set_founder_ready(uuid,bigint,boolean)'::regprocedure,
 	$old$public.qorpera_eligible_member_accounts(p_profile_id,auth.uid())$old$,
@@ -118,4 +118,4 @@ select pg_temp.fl579_patch('public.qorpera_start_company_founding(uuid,bigint,uu
 	$old$public.qorpera_eligible_member_accounts(p_profile_id,seat.user_id)$old$,
 	$new$/* 20260930579000 */ public.qorpera_member_live_accounts(p_profile_id,seat.user_id)$new$);
 
-drop function pg_temp.fl579_patch(regprocedure, text, text);
+drop function pg_temp.fl579_patch(regprocedure, text, text, boolean);
