@@ -549,4 +549,7 @@ export const CONVERSATION: Record<string, string> = {
 	"{n} more done": "Vis {n} mere",
 	"Earlier: {n}": "Tidligere: {n}",
 	"Show fewer": "Vis færre",
+	// A card's long body (ui/interaction-card.ts).
+	"Show more": "Vis mere",
+	"Show less": "Vis mindre",
 };

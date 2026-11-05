@@ -164,13 +164,23 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 };
 
 /** The payload for the surface named beside it, one closed object per surface. */
+const ASK_QUESTION_SCHEMA: Schema = (() => {
+	const question = structuredClone(PAYLOAD_SCHEMAS.question) as Schema;
+	const option = ((question.properties as Schema).options as Schema).items as Schema;
+	(option.properties as Schema).label = chars(1, 40, "A button of 1 to 3 words that resolves the pending decision.");
+	return question;
+})();
+
 export const CLOUD_INTERACTION_PAYLOAD_SCHEMA: Schema = {
 	oneOf: CLOUD_INTERACTION_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
 };
 
-/** Only advertise workflows the member can actually complete. */
+/** Only advertise workflows the member can actually complete. A new question's buttons are offered at the length a
+ * card takes (CLOUD_ASK_MEMBER_LABEL_MAX_BYTES, below): the kernel's own bound stays for stored cards. */
 export const CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA: Schema = {
-	oneOf: CLOUD_ASK_MEMBER_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
+	oneOf: CLOUD_ASK_MEMBER_SURFACES.map((surface) =>
+		surface === "question" ? ASK_QUESTION_SCHEMA : PAYLOAD_SCHEMAS[surface],
+	),
 };
 
 /** A schema as a short type sketch for a refusal: {options: [{label, value?}], multiSelect?}. */
@@ -200,6 +210,7 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text only introduces the card: never answer its question, guess the member's choice or start on one in it. Finish independent work first, never actions depending on an unanswered decision. " +
 	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two actual contact matches or specific available times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
+	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
 	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
 	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
@@ -457,6 +468,35 @@ function interactionRequestIssue(data: Record<string, unknown>): string | undefi
 	return payload && payloadValid(surface, payload) ? undefined : payloadRefusal(surface);
 }
 
+/** A new card's body and buttons as a member reads them in a few seconds (Jonas, 5 November 2026: "approval cards are
+ * completely unreadable"): the kernel's limits stay those above, so cards already in a thread still read. */
+export const CLOUD_ASK_MEMBER_BODY_MAX_BYTES = 600;
+export const CLOUD_ASK_MEMBER_BODY_MAX_LINES = 5;
+export const CLOUD_ASK_MEMBER_LABEL_MAX_BYTES = 40;
+/** One line of a body: a short sentence or a bullet, its link included. */
+export const CLOUD_ASK_MEMBER_LINE_MAX_BYTES = 280;
+
+function cardReadabilityIssue(card: Record<string, unknown>): string | undefined {
+	if (typeof card.body === "string") {
+		const lines = card.body.split("\n").filter((line) => line.trim());
+		if (
+			Buffer.byteLength(card.body) > CLOUD_ASK_MEMBER_BODY_MAX_BYTES ||
+			lines.length > CLOUD_ASK_MEMBER_BODY_MAX_LINES ||
+			lines.some((line) => Buffer.byteLength(line) > CLOUD_ASK_MEMBER_LINE_MAX_BYTES)
+		)
+			return `body must be at most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines of at most ${CLOUD_ASK_MEMBER_LINE_MAX_BYTES} UTF-8 bytes each, ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} in all: say what is being chosen and the one or two things that matter, and link the full draft or file, such as [Read the draft](folder:path/to/file.md)`;
+	}
+	const options = card.surface === "question" ? record(card.payload)?.options : undefined;
+	if (
+		Array.isArray(options) &&
+		options.some(
+			(option) => Buffer.byteLength(String(record(option)?.label ?? "")) > CLOUD_ASK_MEMBER_LABEL_MAX_BYTES,
+		)
+	)
+		return `an option's label is a button: 1 to 3 words, at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} UTF-8 bytes; say anything more in the body`;
+	return undefined;
+}
+
 /** The closed request data, exactly as the kernel validates it. */
 export function parseCloudInteractionRequestData(value: unknown): CloudInteractionRequestData {
 	const data = record(value);
@@ -485,6 +525,8 @@ export function parseCloudAskMemberInput(value: unknown): CloudAskMemberInput {
 		throw new CloudToolArgumentRefusal("text must be the sentence shown above the card, 1 to 4096 UTF-8 bytes");
 	const issue = interactionRequestIssue({ schema: CLOUD_INTERACTION_SCHEMA, ...card });
 	if (issue) throw new CloudToolArgumentRefusal(issue);
+	const unreadable = cardReadabilityIssue(card);
+	if (unreadable) throw new CloudToolArgumentRefusal(unreadable);
 	if (card.surface === "form" || card.surface === "credential")
 		throw new CloudToolArgumentRefusal(
 			"Form entry and vault sign-in cards are unavailable. No card was created and no page was filled or signed in. Use takeover only if a member-controllable computer is available; otherwise explain the limitation in chat. Use a secret card only to save a reusable secret to the vault.",

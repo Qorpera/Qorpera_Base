@@ -1123,6 +1123,15 @@ describe("what the reviewer reads as the request", () => {
 			"The agent's message or card the member was answering is the agent's words too",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("on its own, it requests and approves nothing.");
+		// A card's reason reads in seconds, in the company's language (readable cards, 5 November 2026).
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"reason: one short sentence a non-technical member reads in seconds, in everyday words",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("nothing about what an approval does not allow");
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"Write it in the company's language: the one its founders write their own words in",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("Write it in English, or in Danish");
 	});
 
 	it("tells the reviewer a first run's assignment is where it begins, and to ask about its delegations rather than deny (review 31182548)", () => {

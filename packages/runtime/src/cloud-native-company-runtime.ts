@@ -114,6 +114,7 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
@@ -701,7 +702,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						text: { type: "string", minLength: 1, maxLength: 4096 },
 						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
 						title: { type: "string", minLength: 1, maxLength: 200 },
-						body: { type: "string", maxLength: 2000 },
+						body: { type: "string", maxLength: CLOUD_ASK_MEMBER_BODY_MAX_BYTES },
 						expiresAt: { type: "string" },
 						payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 					},
