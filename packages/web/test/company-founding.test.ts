@@ -623,6 +623,34 @@ describe("founding table", () => {
 		expect(visibleText(container)).toContain("The Co-Founder has not started");
 	});
 
+	it("stays on the table while the Co-Founder's first run waits for a used-up login, and says when it begins", async () => {
+		const opened = vi.fn();
+		mount(
+			() =>
+				wire({
+					phase: "started",
+					vision: "",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-11-05T15:00:00Z",
+						startedByUserId: me,
+						revision: 4,
+						companyReady: true,
+						companySetup: "ready",
+						firstRun: "queued",
+						firstRunWaitsUntil: "2026-11-07T10:12:58Z",
+					},
+				}),
+			opened,
+		);
+		await settle();
+		expect(opened).not.toHaveBeenCalled();
+		const text = visibleText(container);
+		expect(text).toContain("The Co-Founder begins by itself at");
+		expect(text).toContain("Open Nordlys Kaffe");
+	});
+
 	it("says when the company could not be set up, or its Co-Founder could not start, instead of waiting forever", async () => {
 		let start: Wire = { companyReady: false, companySetup: "failed", firstRun: null };
 		mount(() =>
