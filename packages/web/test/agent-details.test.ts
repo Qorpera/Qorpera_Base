@@ -8,6 +8,7 @@ import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
+import { AgentWallPoster, wallNews } from "../src/ui/agent-wall-poster.ts";
 import { FIGURE_IDS, figureFor, nativeColorOf } from "../src/ui/avatar.ts";
 import { deferred, fixture, id, profileA, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
@@ -425,6 +426,41 @@ describe("agent pages", () => {
 		expect(card.computer).toHaveBeenCalledTimes(1);
 		expect(f.dialog.open).toBe(false);
 		expect(f.onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers Latest notes once the agent's wall has something on it, with what is new while it is hidden", async () => {
+		localStorage.clear();
+		const wall = "## Working on\n- Checking prices\n- Finding a supplier\n";
+		const notes = { open: vi.fn(), read: vi.fn(async () => wall) };
+		const f = open({}, staff, undefined, { notes });
+		const rows = () => [...f.dialog.querySelectorAll<HTMLElement>(".agent-card-link")].filter((row) => !row.hidden);
+		// Away until the wall is read.
+		expect(rows().map((row) => row.textContent)).toEqual(["Routines"]);
+		await settle();
+		expect(rows().map((row) => row.textContent)).toEqual(["Latest notes", "Routines"]);
+		named("Latest notes").click();
+		expect(notes.open).toHaveBeenCalledTimes(1);
+		expect(f.dialog.open).toBe(false);
+
+		// Hidden by this member, with one item seen: the other counts as new.
+		expect(wallNews(staff.id, wall)).toEqual({ items: 2, unseen: 0 });
+		localStorage.setItem(`qorpera.agent-wall.hidden.${userA.id}.${staff.id}`, "1");
+		const poster = new AgentWallPoster();
+		poster.show(staff, "## Working on\n- Checking prices\n");
+		const again = open({}, staff, undefined, { notes });
+		await settle();
+		expect(again.dialog.querySelector(".agent-card-count")?.textContent).toBe("1 new");
+
+		// No wall, or one with nothing on it, or one that cannot be read: no row.
+		for (const read of [async () => null, async () => "# Wall\n", async () => Promise.reject(new Error("offline"))]) {
+			const none = open({}, staff, undefined, { notes: { open: vi.fn(), read } });
+			await settle();
+			expect(
+				[...none.dialog.querySelectorAll<HTMLElement>(".agent-card-link")]
+					.filter((row) => !row.hidden)
+					.map((row) => row.textContent),
+			).toEqual(["Routines"]);
+		}
 	});
 
 	it("opens the routines as a page of the card, wider, with a way back to the details", async () => {

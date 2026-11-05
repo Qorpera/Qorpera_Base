@@ -19,7 +19,17 @@
 	font: 600 11.5px/1.2 var(--font-sans); cursor: pointer; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .agent-wall-toggle:hover { background: var(--pane-strong); color: var(--text); }
-.agent-wall-toggle:focus-visible, .agent-wall-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+/* Hide: the member puts the poster away; "Latest notes" on the agent's card brings it back. */
+.agent-wall-hide {
+	display: grid; flex: none; place-items: center; width: 24px; height: 24px; margin-right: -4px; padding: 0; border: 0;
+	border-radius: 50%; background: transparent; color: var(--text-soft); cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.agent-wall-hide:hover { background: var(--hover); color: var(--text); }
+.agent-wall-hide .icon { width: 13px; height: 13px; }
+.agent-wall-toggle:focus-visible, .agent-wall-hide:focus-visible, .agent-wall-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.agent-wall.is-leaving { animation: agent-wall-out var(--motion-base) var(--ease-in) both; }
+@keyframes agent-wall-out { to { opacity: 0; transform: translateY(-8px) scale(0.98); } }
 
 /* The fold: its row grows from nothing to the body's height and back. */
 .agent-wall-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease; }
@@ -71,6 +81,6 @@
 
 @media (max-width: 760px) { .agent-wall { margin: 8px 10px 0; } .agent-wall-body { max-height: 40dvh; } }
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
-	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle { transition: none; }
+	.agent-wall, .agent-wall.is-leaving, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
+	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle, .agent-wall-hide { transition: none; }
 }

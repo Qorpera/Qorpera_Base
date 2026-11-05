@@ -56,6 +56,8 @@ export interface WorkspaceActions {
 		read(staffAgentId: string, signal: AbortSignal): Promise<string | null>;
 		/** Calls `listener` after a change hint of the company's folder; answers the way to stop. */
 		onFolderChange(listener: () => void): () => void;
+		/** Shows the agent's wall again, open, on top of its own thread: "Latest notes" on its card. */
+		show?(staffAgentId: string): void;
 	};
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;

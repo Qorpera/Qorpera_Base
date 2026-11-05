@@ -2,7 +2,7 @@
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentWallReader } from "../src/app/agent-wall.ts";
-import { AgentWallPoster, type WallPosterAgent } from "../src/ui/agent-wall-poster.ts";
+import { AgentWallPoster, type WallPosterAgent, wallHidden, wallNews } from "../src/ui/agent-wall-poster.ts";
 import { markdownInline } from "../src/ui/markdown.ts";
 
 const AGENT: WallPosterAgent = {
@@ -267,5 +267,65 @@ describe("reading an agent's wall", () => {
 		expect(folder.stateFolders).toHaveBeenCalledTimes(2);
 		expect(folder.read).toHaveBeenCalledTimes(3);
 		expect(folder.readFile).not.toHaveBeenCalled();
+	});
+});
+
+describe("hiding the wall", () => {
+	const MEMBER = "u0000000-0000-4000-8000-00000000000a";
+	const hide = (poster: AgentWallPoster) => poster.el.querySelector<HTMLButtonElement>(".agent-wall-hide")!;
+	const CHANGED = WALL.replace(
+		"- Checking five shops' prices\n",
+		"- Checking five shops' prices\n- Writing the shop texts\n",
+	);
+
+	it("hides for this member while the agent keeps the wall up to date, and says how to bring it back", () => {
+		const onHide = vi.fn();
+		const poster = new AgentWallPoster({ member: MEMBER, onHide });
+		poster.show(AGENT, WALL, TODAY);
+		expect(hide(poster).getAttribute("aria-label")).toBe(
+			"Hide. To see it again, click Shop Operations at the top and choose Latest notes.",
+		);
+		hide(poster).click();
+		expect(poster.shown).toBe(false);
+		expect(onHide).toHaveBeenCalledTimes(1);
+		expect(wallHidden(MEMBER, AGENT.id)).toBe(true);
+		// The agent's update does not bring it back, and what it added stays unseen for the card's count.
+		poster.show(AGENT, CHANGED, TODAY);
+		expect(poster.shown).toBe(false);
+		expect(wallNews(AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 1 });
+		// A new thread view of the same agent keeps it hidden; another member on this device still sees it.
+		const again = new AgentWallPoster({ member: MEMBER });
+		again.show(AGENT, CHANGED, TODAY);
+		expect(again.shown).toBe(false);
+		const other = new AgentWallPoster({ member: "someone-else" });
+		other.show(AGENT, CHANGED, TODAY);
+		expect(other.shown).toBe(true);
+	});
+
+	it("comes back open from Latest notes, with what is new marked, and takes focus", () => {
+		const poster = new AgentWallPoster({ member: MEMBER });
+		document.body.append(poster.el);
+		poster.show(AGENT, WALL, TODAY);
+		toggle(poster).click();
+		hide(poster).click();
+		poster.show(AGENT, CHANGED, TODAY);
+		poster.reveal(AGENT.id);
+		expect(poster.shown).toBe(true);
+		expect(wallHidden(MEMBER, AGENT.id)).toBe(false);
+		expect(toggle(poster).textContent).toBe("Fold");
+		expect(texts(poster.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Writing the shop texts"]);
+		expect(document.activeElement).toBe(toggle(poster));
+	});
+
+	it("comes back once its text is read when Latest notes opened the thread first", () => {
+		localStorage.setItem(`qorpera.agent-wall.hidden.${MEMBER}.${AGENT.id}`, "1");
+		const poster = new AgentWallPoster({ member: MEMBER });
+		document.body.append(poster.el);
+		poster.reveal(AGENT.id);
+		expect(poster.shown).toBe(false);
+		poster.show(AGENT, WALL, TODAY);
+		expect(poster.shown).toBe(true);
+		expect(toggle(poster).textContent).toBe("Fold");
+		expect(document.activeElement).toBe(toggle(poster));
 	});
 });

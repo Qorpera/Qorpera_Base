@@ -1,4 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
+import { wallHidden, wallNews } from "../../ui/agent-wall-poster.ts";
 import { figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
@@ -24,14 +25,17 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
+	/** "Latest notes": the agent's wall on top of its thread, shown again and open. The row shows once `read` finds a
+	 * wall with something on it. */
+	notes?: { open: () => void; read: (signal: AbortSignal) => Promise<string | null> };
 }
 
 /** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
  * the conversation title). Name, title and responsibilities are edited where they stand
  * and save on their own; the figure changes from a picker under it, as on the desktop. The
  * responsibilities field is the agent's description in plain prose and what the agent works
- * from. Under it, the agent's computer and routines, then Copy, Hide and Delete. Routines are a page
- * of the card itself, with a way back. */
+ * from. Under it, the agent's computer, latest notes (its wall) and routines, then Copy, Hide and Delete.
+ * Routines are a page of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
 	readonly #company: CompanyController;
@@ -100,7 +104,8 @@ export class AgentDetails {
 			icon("chevron"),
 		) as HTMLButtonElement;
 		this.#routinesLink = routines;
-		const links = [link(t("Computer"), "computer", card.computer), routines];
+		const notes = card.notes ? this.#notesLink(card.notes, then) : null;
+		const links = [link(t("Computer"), "computer", card.computer), notes, routines];
 		const foot = cardFoot(card, {
 			close: () => this.dialog.close(false),
 			copyFailed: () => {
@@ -210,6 +215,36 @@ export class AgentDetails {
 		this.#unsubscribe();
 		this.#unsubscribeEdits();
 		onClose();
+	}
+
+	/** "Latest notes", shown once the agent's wall is read and has an item; while the member has the wall hidden, it
+	 * says how many items are new since they last saw it. A wall that cannot be read leaves the row away. */
+	#notesLink(notes: NonNullable<AgentCardActions["notes"]>, then: (act: () => void) => () => void): HTMLElement {
+		const count = h("span", { class: "agent-card-count", hidden: true });
+		const row = h(
+			"button",
+			{ type: "button", class: "agent-card-link", hidden: true, onclick: then(notes.open) },
+			icon("pin"),
+			h("span", null, t("Latest notes")),
+			count,
+			icon("chevron"),
+		);
+		const signal = this.#lifetime.signal;
+		void notes.read(signal).then(
+			(text) => {
+				if (signal.aborted || text === null) return;
+				const { items, unseen } = wallNews(this.#agent.id, text);
+				if (!items) return;
+				const news = wallHidden(this.#company.userId, this.#agent.id) ? unseen : 0;
+				count.hidden = !news;
+				count.textContent = news ? t("{n} new", { n: news }) : "";
+				row.hidden = false;
+			},
+			() => {
+				/* No row: the wall could not be read. */
+			},
+		);
+		return row;
 	}
 
 	#current(): AgentDraft {

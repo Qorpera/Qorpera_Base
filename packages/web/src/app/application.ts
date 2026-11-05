@@ -350,6 +350,8 @@ export function mountApplication(
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage } | undefined;
+	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
+	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -971,12 +973,17 @@ export function mountApplication(
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
+		// The card's Computer and Latest notes open in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
 			if (conversation?.show(agentId, page)) return;
 			agentPage = { agentId, page };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
 		};
+		let cardWall = cardWalls.get(controller);
+		if (!cardWall) {
+			cardWall = agentWallReader(() => memberFolder(companyCurrent, t("Company access changed.")));
+			cardWalls.set(controller, cardWall);
+		}
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1005,6 +1012,7 @@ export function mountApplication(
 				controller.signal,
 				{
 					computer: () => showAgentPage(agent.id, "computer"),
+					notes: { open: () => showAgentPage(agent.id, "wall"), read: (signal) => cardWall(agent.id, signal) },
 					...card,
 				},
 				"beside",
@@ -1547,6 +1555,7 @@ export function mountApplication(
 									wallListeners.add(listener);
 									return () => wallListeners.delete(listener);
 								},
+								show: (agentId) => showAgentPage(agentId, "wall"),
 							},
 							messageErases: {
 								request: (sessionId, eventId, signal) =>

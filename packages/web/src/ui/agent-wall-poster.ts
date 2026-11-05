@@ -1,9 +1,9 @@
 import { foldWallDone, parseWall, type Wall } from "@qorpera/cloud-client/agent-wall";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
-import { h, replace } from "./dom.ts";
+import { h, icon, replace } from "./dom.ts";
 import { markdownInline } from "./markdown.ts";
-import { playOnce } from "./motion.ts";
+import { leave, playOnce } from "./motion.ts";
 import { phrase, presentationDay, t } from "./preferences.ts";
 
 /* An agent's wall, pinned on top of its chat (Jonas, 5 Nov 2026, direction A): a poster that folds to one line. Its
@@ -14,7 +14,11 @@ import { phrase, presentationDay, t } from "./preferences.ts";
  *
  * Each item is one line of Markdown, drawn as a message draws it, so its folder links and app cards are the same buttons
  * the app answers in a message (app/application.ts). What is new since the member last saw the wall open is marked; what
- * was seen, and whether the poster is folded, is kept per agent on this device. */
+ * was seen, and whether the poster is folded, is kept per agent on this device.
+ *
+ * The member can hide the poster (Jonas, 5 Nov 2026: "it updates itself, but you can then dismiss it"). It stays hidden
+ * for that member and agent on this device while the agent keeps the wall up to date, and "Latest notes" on the agent's
+ * card brings it back open (showWallAgain). */
 
 export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">;
 
@@ -22,6 +26,7 @@ export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "app
 const DONE_SHORT = 2;
 const SEEN_KEY = "qorpera.agent-wall.seen.";
 const FOLD_KEY = "qorpera.agent-wall.folded.";
+const HIDDEN_KEY = "qorpera.agent-wall.hidden.";
 
 type Part = "waiting" | "working" | "done";
 
@@ -80,6 +85,44 @@ function writeFolded(agentId: string, folded: boolean): void {
 	}
 }
 
+/** Whether `member` hid `agentId`'s wall on this device. Storage that throws reads as shown. */
+export function wallHidden(member: string, agentId: string): boolean {
+	try {
+		return localStorage.getItem(`${HIDDEN_KEY}${member}.${agentId}`) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function writeHidden(member: string, agentId: string, hidden: boolean): void {
+	try {
+		if (hidden) localStorage.setItem(`${HIDDEN_KEY}${member}.${agentId}`, "1");
+		else localStorage.removeItem(`${HIDDEN_KEY}${member}.${agentId}`);
+	} catch {
+		/* Not kept: the poster shows again next time. */
+	}
+}
+
+/** Shows `agentId`'s wall to `member` again, open: what "Latest notes" on the agent's card does before the thread opens. */
+export function showWallAgain(member: string, agentId: string): void {
+	writeHidden(member, agentId, false);
+	writeFolded(agentId, false);
+}
+
+/** How many items `text` holds (zero when it is no wall), and how many of them this device has not seen yet. */
+export function wallNews(agentId: string, text: string): { items: number; unseen: number } {
+	const keys = keysOf(parseWall(text).wall);
+	const seen = readSeen(agentId);
+	return { items: keys.length, unseen: seen ? keys.filter((key) => !seen.has(key)).length : 0 };
+}
+
+export interface WallPosterOptions {
+	/** The member who looks: hiding the poster is theirs, per agent. */
+	member?: string;
+	/** After the member hid the poster (and it left), so the view can put focus where they find it again. */
+	onHide?: () => void;
+}
+
 export class AgentWallPoster {
 	readonly el: HTMLElement;
 	readonly #toggle: HTMLButtonElement;
@@ -87,6 +130,9 @@ export class AgentWallPoster {
 	readonly #summary = h("p", { class: "agent-wall-summary" });
 	readonly #body = h("div", { class: "agent-wall-body", id: `agent-wall-${crypto.randomUUID()}` });
 	readonly #fold: HTMLElement;
+	readonly #hide: HTMLButtonElement;
+	readonly #member: string;
+	readonly #onHide: (() => void) | undefined;
 	#agent: WallPosterAgent | undefined;
 	#text: string | null = null;
 	#key = "";
@@ -101,8 +147,17 @@ export class AgentWallPoster {
 	#present = new Set<string>();
 	/** Items drawn so far: one that joins later comes in moving. */
 	#drawn: Set<string> | undefined;
+	/** Brought back from the agent's card: once the poster shows, it takes focus. */
+	#revealed = false;
 
-	constructor() {
+	constructor(options: WallPosterOptions = {}) {
+		this.#member = options.member ?? "";
+		this.#onHide = options.onHide;
+		this.#hide = h(
+			"button",
+			{ type: "button", class: "agent-wall-hide", onclick: () => this.#hideWall() },
+			icon("close"),
+		);
 		this.#toggle = h("button", {
 			type: "button",
 			class: "agent-wall-toggle",
@@ -113,7 +168,7 @@ export class AgentWallPoster {
 		this.el = h(
 			"section",
 			{ class: "agent-wall", hidden: true },
-			h("div", { class: "agent-wall-head" }, this.#figure, this.#summary, this.#toggle),
+			h("div", { class: "agent-wall-head" }, this.#figure, this.#summary, this.#toggle, this.#hide),
 			this.#fold,
 		);
 	}
@@ -144,6 +199,12 @@ export class AgentWallPoster {
 			this.#drawn = undefined;
 			return;
 		}
+		// Hidden by the member, the poster stays away while the wall changes, and what is new stays unseen for the card.
+		if (wallHidden(this.#member, agent.id)) {
+			this.el.hidden = true;
+			this.#drawn = undefined;
+			return;
+		}
 		const seen = readSeen(agent.id);
 		const present = new Set(keys);
 		// Marks stay while the poster shows this agent; a wall seen for the first time has nothing to mark.
@@ -159,6 +220,42 @@ export class AgentWallPoster {
 		this.#syncOpen();
 		// Seen once open; a wall never seen before is the start to mark from, folded or not.
 		if (this.#open || !seen) writeSeen(agent.id, keys);
+		if (this.#revealed) {
+			this.#revealed = false;
+			this.el.scrollIntoView?.({ block: "nearest" });
+			this.#toggle.focus({ preventScroll: true });
+		}
+	}
+
+	/** Shows the wall again, open, after the member hid or folded it ("Latest notes" on the agent's card): now when its
+	 * text is here, else as soon as it is. */
+	reveal(agentId: string): void {
+		showWallAgain(this.#member, agentId);
+		this.#revealed = true;
+		if (this.#agent?.id !== agentId || this.#text === null) return;
+		// Drawn as if first shown: open from the fold state just written, the new items marked.
+		this.#key = "";
+		this.#drawn = undefined;
+		this.show(this.#agent, this.#text, this.#today);
+	}
+
+	/** The member hides the poster: it leaves, and stays away for them until "Latest notes" brings it back. */
+	#hideWall(): void {
+		const agent = this.#agent;
+		if (!agent || this.el.hidden) return;
+		writeHidden(this.#member, agent.id, true);
+		leave(this.el, "is-leaving", () => {
+			this.el.classList.remove("is-leaving");
+			this.el.inert = false;
+			delete this.el.dataset.leaving;
+			this.el.style.removeProperty("pointer-events");
+			// Still hidden by the member: a reveal while it left has shown it already.
+			if (wallHidden(this.#member, agent.id)) {
+				this.el.hidden = true;
+				this.#drawn = undefined;
+			}
+			this.#onHide?.();
+		});
 	}
 
 	#setOpen(open: boolean): void {
@@ -183,6 +280,11 @@ export class AgentWallPoster {
 			replace(this.#figure, agentFigure(agent, agent.displayName, { size: 22 }));
 		}
 		this.el.setAttribute("aria-label", t("{name}'s wall", { name: agent.displayName }));
+		const hide = t("Hide. To see it again, click {name} at the top and choose Latest notes.", {
+			name: agent.displayName,
+		});
+		this.#hide.setAttribute("aria-label", hide);
+		this.#hide.title = hide;
 		const counts: Node[] = [];
 		const count = (n: number, one: string, many = one, className?: string) => {
 			if (!n) return;
