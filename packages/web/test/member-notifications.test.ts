@@ -61,6 +61,41 @@ describe("company notices member read", () => {
 		await f.client.listNotifications();
 		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");
 	});
+	it("reads which login reached its usage limit and where work moved (20260930575000)", async () => {
+		const f = setup();
+		const subject = {
+			schema: "qorpera.member-notification.provider-usage-limit/v1",
+			provider: "openai",
+			resetsAt: null,
+			runId: id(11),
+			connectionId: id(12),
+			accountEmail: "a@example.com",
+			movedTo: { connectionId: id(13), accountEmail: "b@example.com", private: "hidden" },
+		};
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				{ ...full, kind: "provider_usage_limit", subject, notification_id: id(100) },
+				{
+					...full,
+					kind: "provider_usage_limit",
+					subject: { ...subject, accountEmail: 7, movedTo: null },
+					notification_id: id(101),
+				},
+			]),
+		);
+		const result = await f.client.listNotifications();
+		expect(result[0]!.subject).toEqual({
+			schema: "qorpera.member-notification.provider-usage-limit/v1",
+			provider: "openai",
+			resetsAt: null,
+			runId: id(11),
+			connectionId: id(12),
+			accountEmail: "a@example.com",
+			movedTo: { connectionId: id(13), accountEmail: "b@example.com" },
+		});
+		// An email that can't be shown is left out; no login with room is null.
+		expect(result[1]!.subject).toMatchObject({ accountEmail: null, movedTo: null });
+	});
 	it("projects every published notification subject without exposing extra fields", async () => {
 		const f = setup();
 		const subjects = [
@@ -96,6 +131,7 @@ describe("company notices member read", () => {
 		const result = await f.client.listNotifications();
 		expect(result).toHaveLength(3);
 		expect(result[0]!.subject).not.toHaveProperty("private");
+		expect(result[0]!.subject).not.toHaveProperty("movedTo");
 		expect(result[1]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
 		// A run with no progress for 15 minutes (gap 4): its run, agent, thread (none for a worker) and last progress.
 		expect(result[2]!.subject).toEqual({

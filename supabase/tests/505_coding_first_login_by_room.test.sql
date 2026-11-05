@@ -6,8 +6,8 @@
 -- and the dispatched worker agree; a login without consent, of another provider, harness or member, or a company
 -- account, is never chosen, even with more room; no login that may pay gives today's refusals; unknown usage comes after
 -- measured room, and ties keep today's order (the newest, then the id); an existing session keeps its pinned payer
--- through an answer, a follow-up and its turn's wake while another login has more room; the plan rule stays ahead of the
--- room; and the grants.
+-- through an answer and a follow-up while its login is at its limit, and its next turn moves it to the owner's login with
+-- room (20260930575000); the plan rule stays ahead of the room; and the grants.
 
 -- The repository the agents may work in, and executor exec-505 (configured in §0).
 create function pg_temp.f1_repo() returns jsonb language sql immutable as $$
@@ -350,7 +350,8 @@ begin
 	perform pg_temp.f1_pays(pg_temp.f1('b'), pg_temp.f1('bBinding'), 'revoked logins never pay');
 end $$;
 
--- 6. An existing session keeps its payer: session 1 stays on A at its limit while B has all its room ----------------
+-- 6. An existing session at its login's limit: session 1 keeps A through an answer and a follow-up, and its next turn
+-- moves it to B, which has all its room (20260930575000) -------------------------------------------------------------
 -- The owner's coding machine is on exec-505, so the fleet picks it for the owner's sessions (as 928 §8).
 set local session_replication_role = replica;
 insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
@@ -377,22 +378,33 @@ begin
 	w := pg_temp.f1_worker('50500000-0000-4000-8000-0000000000b1');
 	perform pg_temp.base_assert(w.state = 'active' and w.sequence = 3 and w.owner_sponsor_binding_id = pg_temp.f1('aBinding')
 		and (pg_temp.f1_session(w.id)).phase = 'input_ready', 'the follow-up keeps A: ' || to_jsonb(w)::text);
-	-- And its turn's wake pays with A.
+	-- Its turn moves the session to B, and the turn's wake pays with B; the session's events say so.
 	perform pg_temp.base_claims('service_role');
 	v_claim := public.qorpera_claim_coding_session('exec-505', 60);
 	perform pg_temp.base_assert(v_claim ->> 'workerId' = w.id::text, 'the claim: ' || coalesce(v_claim::text, 'none'));
 	v_begin := public.qorpera_begin_coding_turn(w.id, (pg_temp.f1_session(w.id)).lease_token, '{}');
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_begin ->> 'occurrenceId')::uuid;
 	perform pg_temp.base_assert(v_wake.source_kind = 'worker-dispatch' and v_wake.source_id = w.id
-		and v_wake.sponsor_binding_id = pg_temp.f1('aBinding')
-		and (pg_temp.f1_worker(w.id)).owner_sponsor_binding_id = pg_temp.f1('aBinding'), 'the turn''s wake pays with A: ' || to_jsonb(v_wake)::text);
+		and public.qorpera_sponsor_binding_connection(v_wake.sponsor_binding_id) = pg_temp.f1('b')
+		and (pg_temp.f1_worker(w.id)).owner_sponsor_binding_id = v_wake.sponsor_binding_id
+		and v_wake.status = 'queued', 'the turn''s wake pays with B: ' || to_jsonb(v_wake)::text);
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_coding_session_events as event
+		where event.worker_id = w.id and event.kind = 'step' and event.actor = 'kernel'
+			and event.body ->> 'automatic' = 'true' and event.body ->> 'from' = pg_temp.f1('a')::text
+			and event.body ->> 'to' = pg_temp.f1('b')::text), 'the session tells of the move');
+	-- The move is the kernel's own: no API role can call it.
+	perform pg_temp.base_assert(not has_function_privilege('authenticated',
+		'public.qorpera_coding_session_move_at_limit(public.qorpera_runtime_workers,public.qorpera_coding_sessions)', 'execute')
+		and not has_function_privilege('service_role',
+		'public.qorpera_coding_session_move_at_limit(public.qorpera_runtime_workers,public.qorpera_coding_sessions)', 'execute'),
+		'the coding move is internal');
 	-- A new session starts on B.
 	v_result := pg_temp.f1_dispatch(v_alice, 'f1-dispatch-2', 'QorperaOS/agents/alice/todos/fix-login/session-2',
 		pg_temp.f1_brief('50500000-0000-4000-8000-0000000000b3', p_title => 'Fix the logout page'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the second dispatch: ' || v_result::text);
 	perform pg_temp.base_assert((pg_temp.f1_worker('50500000-0000-4000-8000-0000000000b3')).owner_sponsor_binding_id = pg_temp.f1('bBinding')
-		and (pg_temp.f1_worker('50500000-0000-4000-8000-0000000000b1')).owner_sponsor_binding_id = pg_temp.f1('aBinding'),
-		'the new session on B, the first still on A');
+		and public.qorpera_sponsor_binding_connection((pg_temp.f1_worker('50500000-0000-4000-8000-0000000000b1')).owner_sponsor_binding_id)
+			= pg_temp.f1('b'), 'the new session on B, and the first one moved to B');
 end $$;
 
 -- 7. The plan rule stays ahead of the room: B, a ChatGPT plan with all its room, comes after A at its limit -----------

@@ -34,8 +34,9 @@ create function pg_temp.ul_words(p_reset timestamptz) returns text language sql 
 	select 'The login paying for this work reached its usage limit. '
 		|| case when p_reset is null then ''
 			else 'It resets on ' || to_char(p_reset at time zone 'UTC', 'FMDD FMMonth YYYY "at" HH24:MI "UTC"') || '. ' end
-		|| 'The work does not move to another login by itself: the member can choose another of their logins for it '
-		|| '(in the conversation''s Login menu), or wait until the limit resets.'
+		|| 'The work moves by itself to another of the member''s own logins that has room. When none has room, it waits '
+		|| 'and is tried again when the limit resets, at the latest a day later. The member can also choose another of '
+		|| 'their logins for it (in the conversation''s Login menu).'
 $$;
 -- The account's usage as the login's refresh records it: a 5-hour window with room and a weekly window that is full.
 create function pg_temp.ul_usage(p_signal public.qorpera_provider_connection_usage_signals, p_week timestamptz)

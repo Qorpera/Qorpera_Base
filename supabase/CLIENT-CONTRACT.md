@@ -180,8 +180,9 @@ they answer 42501 "native host call is refused".
     with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
   - a plan at its usage limit stays the account of the conversations it pays for
     (`qorpera_select_member_session_account` keeps it; sending then stops at the
-    limit), while a new conversation starts on a login with room; a conversation
-    whose login reached its limit never moves to a plan; a plan pays for
+    limit; a plan is never moved off or onto by itself, 20260930575000), while a
+    new conversation starts on a login with room; a conversation whose login
+    reached its limit never moves to a plan; a plan pays for
     follow-up work only of runs it pays for, so a coding worker asked for by a
     run another login pays for is refused at dispatch with 55000 when the plan
     is the member's only Codex login;
@@ -194,13 +195,15 @@ they answer 42501 "native host call is refused".
     acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
-  p_connection_id)` (20260930059000, the payer never changes without the
-  member): select keeps a conversation's login for every kind of login, also at
-  its usage limit, while it needs a new sign-in, while its computer recovers and
-  while an owner or admin has it disabled (it returns that login; sending waits).
-  It answers `null` for a new conversation with no login that has room, and for a
-  conversation whose login the member disconnected: that conversation waits for
-  the member's own pick ("Choose a login to continue"). Choose saves the member's
+  p_connection_id)`: select keeps a conversation's login while it has room
+  (20260930575000, founder decision 2026-11-05). At its usage limit, or when it
+  cannot pay now (a new sign-in, its computer recovering, an owner or admin's
+  disable, disconnected), select moves the conversation to the member's own
+  login with the most room and returns it; never another member's login, a
+  company account or a ChatGPT plan. With none that has room it keeps the
+  conversation's login and returns it (sending waits until one has room again),
+  or `null` when that login was disconnected. It answers `null` for a new
+  conversation with no login that has room. Choose saves the member's
   pick, one of their own logins that could pay now whatever its usage, and
   returns its connection id; 22023 "This login cannot pay for your conversation"
   for any other login, 42501 when the conversation cannot be read. A new
@@ -212,6 +215,15 @@ they answer 42501 "native host call is refused".
   usage last. `qorpera_list_member_native_execution_connections` reports each
   login's `recent_turns` (`{refused, completed}`), so a client orders its own list
   the same way.
+- The usage-limit notice (`provider_usage_limit`, subject
+  `qorpera.member-notification.provider-usage-limit/v1`) also carries, since
+  20260930575000, `accountEmail` (the login's email, or null) and `movedTo`
+  (`{connectionId, accountEmail}` of the member's own login work moves to, or null
+  when none has room) for the member whose own login it is; a company account's
+  notice carries neither. Its `resetsAt` is the signal's reset: when the provider
+  names none, the latest reset still ahead of a full window in the login's newest
+  usage reading. A usage limit's wall ends at that reset, else 6 hours after the
+  limit, and never later than a day after it.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so

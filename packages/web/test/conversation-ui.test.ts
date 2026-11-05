@@ -1853,7 +1853,7 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// A real usage limit: the bridge's refusal names only a spent budget; the cloud's usage-limit signal decides.
@@ -1861,7 +1861,7 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details(bridge), usageLimit: true } } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (20260928379930).
@@ -1889,7 +1889,7 @@ describe("conversation UI boundaries", () => {
 		});
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.",
 		);
 		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
 		// The member's own Codex login at its limit: the plain sentence, no link.
@@ -1902,7 +1902,7 @@ describe("conversation UI boundaries", () => {
 		});
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.",
 		);
 		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
 		// The member's own plan, stopped for another reason: no limit words, no link.

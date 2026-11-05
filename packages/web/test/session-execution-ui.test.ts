@@ -725,76 +725,69 @@ describe("conversation execution account", () => {
 		next.dispose();
 	});
 
-	it("keeps an exhausted account until it resets and replaces only a disconnected one", async () => {
+	it("moves an exhausted, disabled or disconnected account to the member's own account with room", async () => {
 		const f = setup(true, withUsage([80, 40]));
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		// The payer never changes without the member (20260930059000): no move to the account with room.
+		// At its usage limit the conversation moves to the account with room by itself (20260930575000).
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 		type(f.view, "Hello");
 		await settle();
-		expect(f.send().disabled).toBe(true);
-		expect(f.view.el.textContent).toContain(
-			"This conversation's model account has reached its usage limit. Sending resumes when it resets.",
-		);
+		expect(f.send().disabled).toBe(false);
+		// A login with room is kept, also once the first one has room again.
 		f.listConnections.mockResolvedValue(withUsage([30, 40]));
 		refresh();
 		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.send().disabled).toBe(false);
-		// An owner or admin's disable is not the member's choice: the account stays.
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// An owner or admin's disable: the conversation moves to the member's other account.
 		const disabled = withUsage([30, 40]);
-		disabled.connections[0]!.connectionStatus = "disabled";
+		disabled.connections[1]!.connectionStatus = "disabled";
 		f.listConnections.mockResolvedValue(disabled);
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain(
-			"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
-		);
-		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
-		// An account the member disconnected leaves the conversation waiting for the member's own pick.
+		expect(f.send().disabled).toBe(false);
+		// An account the member disconnected: the same.
 		const disconnected = withUsage([30, 40]);
 		disconnected.connections[0]!.connectionStatus = "revoked";
 		f.listConnections.mockResolvedValue(disconnected);
 		refresh();
 		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.send().disabled).toBe(true);
-		expect(f.view.el.textContent).toContain("Choose a login to continue.");
-		buttonNamed(f.view, "Use Model account 1")!.click();
-		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
+		expect(f.view.el.textContent).not.toContain("Choose a login to continue.");
+		// With no account that has room, the conversation keeps its own and waits.
+		f.listConnections.mockResolvedValue(withUsage([0, 0]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain(
+			"This conversation's model account has reached its usage limit, and your other accounts have no room either. Sending resumes by itself when one has room again.",
+		);
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
 		expect(selector()).toBeNull();
 	});
 
-	it("lets the member move an exhausted conversation to another of their logins, never on its own", async () => {
+	it("moves an exhausted conversation to another of the member's logins by itself, with nothing to press", async () => {
 		const f = setup(true, withUsage([80, 40]));
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		// The conversation keeps its account and waits; the other login is offered, not taken.
-		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 		type(f.view, "Hello");
 		await settle();
-		expect(f.send().disabled).toBe(true);
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
-		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
-		expect(buttonNamed(f.view, "Use Model account 2")).toBeUndefined();
-		buttonNamed(f.view, "Use Model account 1")!.click();
-		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
 		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).not.toContain("reached its usage limit");
 	});
 
-	it("offers the member's other login when the conversation's own login is disabled", async () => {
+	it("moves the conversation off its own login when an owner or admin disabled it", async () => {
 		const f = setup(true, withUsage([80, 40]));
 		await settle();
 		const disabled = withUsage([30, 40]);
@@ -802,12 +795,8 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(disabled);
 		refresh();
 		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account can't be used right now.");
-		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
-		buttonNamed(f.view, "Use Model account 1")!.click();
-		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).not.toContain("This conversation's model account can't be used right now.");
 	});
 
 	it("offers no other login when the member has none that can pay", async () => {
@@ -821,7 +810,7 @@ describe("conversation execution account", () => {
 		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
 	});
 
-	it("moves an exhausted conversation through the cloud's choice only on the member's click", async () => {
+	it("still lets the member pick another login by hand while the cloud keeps the conversation's account", async () => {
 		vi.useFakeTimers();
 		const select = vi.fn(async (): Promise<string | undefined> => id(90));
 		const choose = vi.fn(async (_session: string, connection: string) => connection);
@@ -863,7 +852,7 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.send().disabled).toBe(true);
 		expect(f.view.el.textContent).toContain(
-			"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
+			"Your model accounts have reached their usage limits. Sending resumes by itself when one has room again.",
 		);
 	});
 
@@ -1797,7 +1786,7 @@ describe("the composer's Login page", () => {
 
 describe("a failed run at its login's usage limit", () => {
 	const LIMIT =
-		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account.";
+		"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room.";
 	it("says when the limit resets, from the member's own login that paid for the run", async () => {
 		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
 		const later = new Date(Date.now() + 2 * 86_400_000).toISOString();

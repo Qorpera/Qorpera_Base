@@ -55,8 +55,9 @@ select pg_temp.base_assert(public.qorpera_run_resumes_from_log((current_setting(
 	'a run with a log resumes') \g /dev/null
 
 -- 1. The run starts and acknowledges; its login reaches its usage limit, which resets in 30 hours, and the runner
---    reports the run failed. The run pauses: queued again but held until the reset, on the same sponsor version, with
---    the attempt not counted, nothing waiting for review, and the member told about the limit.
+--    reports the run failed. The run pauses: queued again but held until it tries again a day after the limit, before
+--    the reset (20260930575000: at the latest once a day), on the same sponsor version, with the attempt not counted,
+--    nothing waiting for review, and the member told about the limit.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_run public.qorpera_execution_runs;
 	v_job public.qorpera_runner_jobs; v_event jsonb; v_reset timestamptz := date_trunc('second', clock_timestamp() + interval '30 hours');
@@ -66,6 +67,8 @@ begin
 	perform pg_temp.base_public_send(v_binding, 'progress', 'rp-ack');
 	perform pg_temp.base_assert(pg_temp.rp_signal(v_binding, v_reset) ->> 'replayed' = 'false', 'the usage limit is recorded');
 	perform pg_temp.rp_fail(v_binding, 'Native provider bridge request failed (429) [usage limit]');
+	select signal.observed_at + interval '1 day' into strict v_reset from public.qorpera_provider_connection_usage_signals as signal
+	where signal.run_id = v_run.id and signal.signal_kind = 'usage_limit';
 	select * into strict v_job from public.qorpera_runner_jobs where id = v_run.job_id;
 	perform pg_temp.base_assert(v_job.status = 'queued' and v_job.runner_id is null and v_job.client_lease_id is null
 		and v_job.attempt_count = 0 and v_job.queued_at = v_reset and v_job.dispatch_deferred_until = v_reset

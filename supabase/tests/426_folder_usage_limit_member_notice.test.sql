@@ -133,8 +133,11 @@ begin
 		and (v_subject ->> 'resetsAt')::timestamptz = current_setting('qorpera_test.ul_resets')::timestamptz,
 		'the notice names the login, the run and the reset: ' || v_subject::text);
 	perform pg_temp.base_assert((select array_agg(key order by key) from jsonb_object_keys(v_subject) key)
-		= array['connectionId', 'connectionVersion', 'provider', 'resetsAt', 'runId', 'schema', 'signalId', 'sponsorBindingId',
-			'sponsorVersion'], 'the notice carries identities only: ' || v_subject::text);
+		= array['accountEmail', 'connectionId', 'connectionVersion', 'movedTo', 'provider', 'resetsAt', 'runId', 'schema',
+			'signalId', 'sponsorBindingId', 'sponsorVersion'], 'the notice carries identities only: ' || v_subject::text);
+	-- 20260930575000: the login's email (none recorded here) and the owner's login work moves to (none with room here).
+	perform pg_temp.base_assert(v_subject -> 'accountEmail' = 'null'::jsonb and v_subject -> 'movedTo' = 'null'::jsonb,
+		'the notice names no other login when none has room: ' || v_subject::text);
 	foreach v_user in array array['92400000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000003',
 		'92400000-0000-4000-8000-000000000004']::uuid[] loop
 		perform pg_temp.base_assert(pg_temp.ul_notices(v_user) = '[]'::jsonb, 'another member has no notice: ' || v_user);

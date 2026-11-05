@@ -1,6 +1,6 @@
 -- @fixture 163_member_session_account_selection.test.sql until "set local role authenticated;"
--- Both already-open conversations keep A, also once it is exhausted (20260930059000: the payer never changes without
--- the member) and after it recovers; only a new conversation starts on B, the account with room left.
+-- Both already-open conversations start on A. Once A is exhausted they move to B, the member's own account with room
+-- left (20260930575000), and stay on B after A recovers (a login with room is kept); a new conversation starts on B.
 set local role authenticated;
 do $$
 declare session_id uuid;
@@ -21,8 +21,8 @@ declare session_id uuid;
 begin
     foreach session_id in array array['16300000-0000-4000-8000-000000000030'::uuid,'16300000-0000-4000-8000-000000000032'::uuid] loop
         if public.qorpera_select_member_session_account('16300000-0000-4000-8000-000000000010',session_id)
-          is distinct from current_setting('qorpera_test.selection_connection_1')::uuid then
-            raise exception 'An exhausted saved account was replaced'; end if;
+          is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then
+            raise exception 'An exhausted saved account was not replaced by the account with room'; end if;
     end loop;
     if public.qorpera_select_member_session_account('16300000-0000-4000-8000-000000000010','16300000-0000-4000-8000-000000000034')
       is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then
@@ -38,8 +38,8 @@ declare session_id uuid;
 begin
     foreach session_id in array array['16300000-0000-4000-8000-000000000030'::uuid,'16300000-0000-4000-8000-000000000032'::uuid] loop
         if public.qorpera_select_member_session_account('16300000-0000-4000-8000-000000000010',session_id)
-          is distinct from current_setting('qorpera_test.selection_connection_1')::uuid then
-            raise exception 'Recovery displaced a sticky account'; end if;
+          is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then
+            raise exception 'Recovery moved a conversation off an account with room'; end if;
     end loop;
     if public.qorpera_select_member_session_account('16300000-0000-4000-8000-000000000010','16300000-0000-4000-8000-000000000034')
       is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then
@@ -83,8 +83,8 @@ set provider_account_usage = jsonb_set(provider_account_usage,'{windows,0,usedPe
 set local role authenticated;
 do $$ begin
     if public.qorpera_select_member_session_account('16300000-0000-4000-8000-000000000010',
-        '16300000-0000-4000-8000-000000000030') is distinct from current_setting('qorpera_test.selection_connection_1')::uuid then
-        raise exception 'An exhausted Codex conversation left its account'; end if;
+        '16300000-0000-4000-8000-000000000030') is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then
+        raise exception 'A conversation left its account when no account had room'; end if;
 end $$;
 reset role;
 -- A conversation with no account yet: nothing to start on, and never the Claude login.

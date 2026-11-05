@@ -648,7 +648,8 @@ export class CloudApi {
 			.then(parseCodingSessionLogins);
 	}
 
-	/** The session's owner moves it to another of their logins; nothing moves a session by itself. */
+	/** The session's owner moves it to another of their logins by hand. (Its next turn also moves it by itself when
+	 * its login is at its usage limit and another of the owner's logins has room, 20260930575000.) */
 	chooseCodingSessionLogin(workerId: string, connectionId: string): Promise<CodingSession> {
 		const asked = performance.now();
 		return this.cloud

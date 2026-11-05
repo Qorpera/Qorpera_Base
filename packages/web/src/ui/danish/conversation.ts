@@ -179,10 +179,10 @@ export const CONVERSATION: Record<string, string> = {
 		"ChatGPT · Forbrugsgrænsen er nået. Gennemse dit abonnement eller denne apps grænse i ChatGPT-indstillingerne.",
 	"Manage usage": "Administrer forbrug",
 	"The workspace is kept; a follow-up continues it.": "Arbejdsområdet er gemt; en opfølgning fortsætter sessionen.",
-	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.":
-		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
-	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).":
-		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen nulstilles ({time}).",
+	"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Nyt arbejde flytter selv til et andet af medlemmets logins, som har plads. Dette arbejde kan køre igen, når grænsen er nulstillet.",
+	"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again when the limit resets ({time}).":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Nyt arbejde flytter selv til et andet af medlemmets logins, som har plads. Dette arbejde kan køre igen, når grænsen nulstilles ({time}).",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
 	"The run lost its connection while it was working. This is usually brief.":
@@ -289,14 +289,22 @@ export const CONVERSATION: Record<string, string> = {
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
-	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
-		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
-	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
+	"Your model accounts have reached their usage limits. Sending resumes by itself when one has room again.":
+		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, så snart en af dem har plads igen.",
+	"This conversation's model account has reached its usage limit, and your other accounts have no room either. Sending resumes by itself when one has room again.":
+		"Samtalens modelkonto har nået sin forbrugsgrænse, og dine andre konti har heller ingen plads. Du kan sende igen, så snart en af dem har plads igen.",
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
 	"Or continue with another of your logins.": "Eller fortsæt med et andet af dine logins.",
+	"Your login {from} reached its usage limit, so work moved to {to}.":
+		"Dit login {from} nåede sin forbrugsgrænse, så arbejdet flyttede til {to}.",
+	"Your login reached its usage limit, so work moved to {to}.":
+		"Dit login nåede sin forbrugsgrænse, så arbejdet flyttede til {to}.",
+	"Your login {from} reached its usage limit, so work moved to your other login.":
+		"Dit login {from} nåede sin forbrugsgrænse, så arbejdet flyttede til dit andet login.",
+	"Your login reached its usage limit, so work moved to your other login.":
+		"Dit login nåede sin forbrugsgrænse, så arbejdet flyttede til dit andet login.",
 	"Use {account}": "Brug {account}",
 	"Model account {number}": "Modelkonto {number}",
 

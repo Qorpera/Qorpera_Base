@@ -79,7 +79,8 @@ export const AGENTS: Record<string, string> = {
 		"Dette login har nået sin forbrugsgrænse. Vælg et andet, eller vent til den nulstilles.",
 	"Sign in to this login again in Settings → AI subscriptions, or choose another one.":
 		"Log ind på dette login igen under Indstillinger → AI-abonnementer, eller vælg et andet.",
-	"Runs wait until this login's usage limit resets.": "Kørslerne venter, til loginnets forbrugsgrænse nulstilles.",
+	"Runs wait until one of its member's logins has room again.":
+		"Kørslerne venter, til et af medlemmets logins har plads igen.",
 	"Sign in to this login again in Settings → AI subscriptions to let it run.":
 		"Log ind på dette login igen under Indstillinger → AI-abonnementer, så rutinen kan køre.",
 	"Runs wait until {name} signs in to this login again.":
@@ -243,6 +244,7 @@ export const AGENTS: Record<string, string> = {
 	"Choose another of your logins for it, then send a message to continue.":
 		"Vælg et andet af dine logins til den, og send så en besked for at fortsætte.",
 	"Only {owner} can choose another login for it.": "Kun {owner} kan vælge et andet login til den.",
+	"Moved to another login with room": "Flyttet til et andet login med plads",
 	"You moved the session to another login": "Du flyttede sessionen til et andet login",
 	"{owner} moved the session to another login": "{owner} flyttede sessionen til et andet login",
 	"Allow it to work while you're away again in Settings, AI subscriptions, then choose it here, or choose another of your logins; then send a message to continue.":
@@ -269,8 +271,8 @@ export const AGENTS: Record<string, string> = {
 		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
 		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
-	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
-		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
+	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it on another of its owner's logins that has room, or once the limit resets.":
+		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den på et andet af ejerens logins, som har plads, eller når grænsen er nulstillet.",
 	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
 		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.":

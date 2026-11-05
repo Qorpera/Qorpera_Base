@@ -2453,6 +2453,39 @@ follows a run:
 - The sponsor handoff is removed. Moving work to another login is the member's
   own act; today that is starting a new conversation.
 
+2026-11-05 amendment: work moves to the member's own login with room (founder
+decision: "it should do so automatically. or if there are no accounts with usage
+remaining, it should refresh it once daily to see if usage is back so it can
+continue"; migration 20260930575000). This reverses the 2026-10-04 amendment, and
+the "never moves to another login" of the 2026-10-01 amendment, for a member's
+own logins only. Note for the record: the 2026-10-01 amendment cites OpenAI's
+terms for ChatGPT plan use, which forbid rotating accounts to get round usage
+limits; ChatGPT plan logins stay out of this (never moved off or onto by
+themselves), and the founder chose this for Codex logins.
+
+- When a login of member M reached its usage limit, or cannot pay now (a new
+  sign-in, its credential or computer not usable, an owner or admin's disable,
+  its consent off, disconnected), M's next work takes M's own login of the same
+  kind with the most room (the first-choice order of 20260930559000): a
+  conversation's next message, work that follows a run, each run of a routine M's
+  login pays for (the routine keeps its own login and its runs pay with the other
+  one meanwhile), and a coding session's next turn. A login with room is kept, so
+  a conversation's prompt cache stays warm. A run in progress or paused at its
+  limit keeps its login.
+- Never another member's login, never a company account, and logins are never
+  pooled or proxied: each run pays with one login. A company account at its
+  limit keeps its work as before.
+- With no login of M with room, work waits and does not fail. A usage limit's
+  wall ends at the provider's reset (taken from the login's newest usage reading
+  when the provider names none), else 6 hours after the limit, and never later
+  than a day after it; a paused run comes back then. So waiting work is tried
+  again at the reset and at least once a day. (No server-side usage reading is
+  made yet: the check is the next attempt, and the reading Settings → Refresh or
+  an open conversation makes.)
+- The member is told in one sentence (the usage-limit notice names the login and
+  the one work moved to). Their own pick (a conversation's login menu, a
+  routine's or a coding session's login) stays as an override.
+
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 

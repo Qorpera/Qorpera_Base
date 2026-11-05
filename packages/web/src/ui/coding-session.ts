@@ -1089,6 +1089,8 @@ export class CodingSessionElement {
 				: t("{owner} archived the session", { owner: names.owner });
 		}
 		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// A turn moved the session to another of its owner's logins with room by itself (20260930575000).
+		if (event.actor === "kernel" && body.loginChosen === true) return t("Moved to another login with room");
 		// The owner moved the session to another of their logins (20260930551000).
 		if (event.actor === "member" && body.loginChosen === true)
 			return names.ownerIsViewer
