@@ -183,7 +183,7 @@ A second independent Opus review read the built code (`~/work/interface-apps-sec
 
 1. Format + parser (`cloud-client/interface-apps.ts`) and the page assembler (web `app/interface-apps.ts`).
 2. Agent tools `save_app`, `post_app`, the `company_write`/`company_edit` checks, prompt guidance, re-pinned prompt
-   hashes, migration 20260930571000 (the two tools in the observation list).
+   hashes, migration 20260930572000 (the two tools in the observation list).
 3. Web: side panel (`app/views/app-panel.ts`), chat card (`ui/markdown.ts`), `folder:` `.html` in the panel, posted
    apps in the drawer.
 4. The bridge, read only (`ui/app-frame.ts`, `public/page-preview/index.html`, `AppBridge`).
