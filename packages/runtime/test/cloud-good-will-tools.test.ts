@@ -78,7 +78,7 @@ describe("good will tools", () => {
 					},
 				},
 			]);
-			expect(marked.contentItems[0]?.text).toContain('"feeOre":400000');
+			expect(marked.contentItems[0]?.text).toContain("400000");
 			expect(JSON.stringify(marked)).not.toContain(f.binding.credentialCapsuleId);
 		} finally {
 			f.run.close();

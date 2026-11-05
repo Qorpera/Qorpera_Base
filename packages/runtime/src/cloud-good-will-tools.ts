@@ -1,3 +1,4 @@
+import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeToolBinding,
@@ -19,7 +20,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  * moves between the company's own accounts, refunds, moms back, loans and grants do not. On the 5th the month is final
  * and a payment nobody sorted counts as a sale. */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 export const GOOD_WILL_REASONS = [
 	"sale",
@@ -44,20 +44,14 @@ export const CLOUD_GOOD_WILL_MARK_DESCRIPTION =
 	"In the first days of each month, list last month, sort what is unsorted, then show the members what counted with ask_member (a question card: the month, what it will cost, what counted and what did not, options Looks right and Change something), and change what they say.";
 
 /** One mark: the payment, its reason, and maybe the moms in a sale and a note. */
-interface GoodWillMark {
-	itemId: string;
-	reason: (typeof GOOD_WILL_REASONS)[number];
-	momsOre?: number;
-	note?: string;
-}
+type GoodWillMark = { itemId: string; reason: string; momsOre?: number; note?: string };
 
-function parseMark(value: unknown): GoodWillMark {
+function parseMark(value: unknown): { [key: string]: JsonValue } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid good will mark");
 	const a = value as Record<string, unknown>;
 	if (
 		Object.keys(a).some((key) => !["itemId", "reason", "momsOre", "note"].includes(key)) ||
-		typeof a.itemId !== "string" ||
-		!UUID.test(a.itemId) ||
+		!normalizeUuid(a.itemId) ||
 		typeof a.reason !== "string" ||
 		!(GOOD_WILL_REASONS as readonly string[]).includes(a.reason) ||
 		(a.momsOre !== undefined &&
@@ -67,8 +61,8 @@ function parseMark(value: unknown): GoodWillMark {
 	)
 		throw new Error("Invalid good will mark");
 	return {
-		itemId: a.itemId.toLowerCase(),
-		reason: a.reason as GoodWillMark["reason"],
+		itemId: normalizeUuid(a.itemId)!,
+		reason: a.reason as string,
 		...(a.momsOre !== undefined ? { momsOre: a.momsOre as number } : {}),
 		...(a.note !== undefined ? { note: (a.note as string).trim() } : {}),
 	};
@@ -125,7 +119,8 @@ export function cloudGoodWillTools(
 				(a.month !== undefined && (typeof a.month !== "string" || !MONTH.test(a.month)))
 			)
 				throw new Error("Invalid good will request");
-			return a.month === undefined ? {} : { month: a.month };
+			const request: JsonValue = a.month === undefined ? {} : { month: a.month as string };
+			return request;
 		},
 		async execute(value, context) {
 			assertContext(context);
@@ -166,7 +161,7 @@ export function cloudGoodWillTools(
 						additionalProperties: false,
 						required: ["itemId", "reason"],
 						properties: {
-							itemId: { type: "string", pattern: UUID.source },
+							itemId: { type: "string", format: "uuid" },
 							reason: { type: "string", enum: [...GOOD_WILL_REASONS] },
 							momsOre: { type: "integer", minimum: 0 },
 							note: { type: "string", minLength: 1, maxLength: 200 },
@@ -186,13 +181,13 @@ export function cloudGoodWillTools(
 			)
 				throw new Error("Invalid good will request");
 			const marks = a.marks.map(parseMark);
-			if (new Set(marks.map((each) => each.itemId)).size !== marks.length)
+			if (new Set(marks.map((each) => each.itemId as string)).size !== marks.length)
 				throw new Error("Each payment is marked once a call");
 			return { marks };
 		},
 		async execute(value, context) {
 			assertContext(context);
-			const request = value as { marks: GoodWillMark[] };
+			const request = value as unknown as { marks: GoodWillMark[] };
 			// Marking is the same whatever came before, so a refusal of a retry says nothing of an earlier attempt that
 			// is not true of this one: it is the tool's answer.
 			const result = await refusals.call(undefined, () =>
