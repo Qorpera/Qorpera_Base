@@ -48,6 +48,8 @@ function monthLine(month: GoodWillMonth, card: boolean, minChargeOre: number | n
 				: t("{amount} moves to next month (under {least})", { amount, least: kroner(minChargeOre) });
 		case "zero":
 			return t("Nothing to pay");
+		case "waived":
+			return t("Not charged: payments were not open yet");
 		case "failed":
 			return t("{amount}: the card was declined. Stripe tries again.", { amount });
 		case "charged":

@@ -6,7 +6,16 @@ import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid 
  * good will (qorpera_company_good_will) and each member their companies' (qorpera_my_good_will); a founder saves the
  * company's card on Stripe's own page through the computer-billing function. Amounts are øre. */
 
-export const GOOD_WILL_MONTH_STATUSES = ["open", "sorting", "closed", "carried", "zero", "charged", "failed"] as const;
+export const GOOD_WILL_MONTH_STATUSES = [
+	"open",
+	"sorting",
+	"closed",
+	"carried",
+	"zero",
+	"charged",
+	"failed",
+	"waived",
+] as const;
 export type GoodWillMonthStatus = (typeof GOOD_WILL_MONTH_STATUSES)[number];
 
 export interface GoodWillMonth {

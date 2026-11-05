@@ -84,6 +84,7 @@ export const SETTINGS: Record<string, string> = {
 	"{amount} moves to next month": "{amount} flyttes til næste måned",
 	"{amount} moves to next month (under {least})": "{amount} flyttes til næste måned (under {least})",
 	"Nothing to pay": "Intet at betale",
+	"Not charged: payments were not open yet": "Ikke trukket: betaling var ikke åbnet endnu",
 	"{amount}: the card was declined. Stripe tries again.": "{amount}: kortet blev afvist. Stripe prøver igen.",
 	"{amount} charged {date}": "{amount} trukket {date}",
 	"{amount} charged": "{amount} trukket",
