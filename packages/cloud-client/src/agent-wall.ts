@@ -195,11 +195,12 @@ export function parseWall(text: string): WallParse {
 			return;
 		}
 		if (part === null || !line.trim()) return;
-		const item = /^ ?[-*][ \t]+(.*)$/.exec(line);
-		// An indented line under an item is its detail; more than one join as one.
-		const indented = !item && /^[ \t]+\S/.test(line) ? line.trim() : null;
+		// A line indented two spaces (or a tab) right under an item is its detail; more than one join as one. Anything else
+		// that starts with "- " at any indent is an item, as walls were written before details.
 		const last = (parts[part] as WallItem[]).at(-1);
-		if (indented !== null && last && lastLine === at - 1) {
+		const indented = /^(?: {2,}|\t)\S/.test(line) && last && lastLine === at - 1 ? line.trim() : null;
+		const item = indented === null ? /^[ \t]*[-*][ \t]+(.*)$/.exec(line) : null;
+		if (indented !== null && last) {
 			const detail = wallItemText(last.detail ? `${last.detail} ${indented}` : indented);
 			const problem = wallDetailProblem(detail);
 			if (problem) problems.push({ code: "line", line: at, message: problem });

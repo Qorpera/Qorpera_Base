@@ -1,7 +1,10 @@
 import { foldWallDone, parseWall, type Wall, type WallItem, wallPreview } from "@qorpera/cloud-client/agent-wall";
+import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
+import { forgetPictureUrl, pictureUrl } from "../app/folder-images.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
 import { h, icon, replace } from "./dom.ts";
+import { folderLinkPath } from "./folder-links.ts";
 import { markdownInline } from "./markdown.ts";
 import { leave, playOnce } from "./motion.ts";
 import { phrase, presentationDay, t } from "./preferences.ts";
@@ -50,6 +53,13 @@ function keysOf(wall: Wall): string[] {
 		...wall.working.map((item) => itemKey("working", item.text)),
 		...wall.done.map((item) => itemKey("done", `${item.day}: ${item.text}`)),
 	];
+}
+
+/** A headline as plain words for the row's button, which holds no link: Markdown drawn, then read back as text, so
+ * an emphasis, a link's words or a bare address all read as words. */
+function plainWords(text: string): string {
+	const drawn = h("span", null, markdownInline(text.replace(LINK, "$1")));
+	return drawn.textContent ?? "";
 }
 
 /** Markdown links in a headline: the row is a button, so they show as words there and as links when it opens. */
@@ -220,6 +230,9 @@ export class AgentWallPoster {
 			this.#expanded = new Set();
 			this.#forgetPictures();
 			this.#stopLeaving();
+		} else if (text !== this.#text) {
+			// The wall changed: an opened item reads its picture again, which may have changed with it.
+			this.#forgetPictures();
 		}
 		this.#agent = agent;
 		this.#text = text;
@@ -299,8 +312,13 @@ export class AgentWallPoster {
 	#forgetPictures(): void {
 		this.#pictureLife.abort();
 		this.#pictureLife = new AbortController();
-		for (const url of this.#pictures.values()) void url.then((shown) => shown && URL.revokeObjectURL(shown));
+		for (const url of this.#pictures.values()) void url.then((shown) => shown && forgetPictureUrl(shown));
 		this.#pictures = new Map();
+	}
+
+	/** Lets the pictures go: the thread that shows the poster closed. */
+	dispose(): void {
+		this.#forgetPictures();
 	}
 
 	/** An opened item's preview: the picture it links (read once), or the app it links as a big card. */
@@ -308,22 +326,26 @@ export class AgentWallPoster {
 		const target = wallPreview(item);
 		if (!target) return null;
 		if (target.kind === "app")
-			return h(
-				"div",
-				{ class: "agent-wall-preview is-app" },
-				markdownInline(`[${target.name}](app:${target.name})`),
-			);
+			return isInterfaceName(target.name)
+				? h("div", { class: "agent-wall-preview is-app" }, markdownInline(`[${target.name}](app:${target.name})`))
+				: null;
 		const read = this.#image;
-		if (!read) return null;
+		// The path as the item's folder link names it: percent-decoded, one plain company path.
+		const path = folderLinkPath(`folder:${target.path}`);
+		if (!read || !path) return null;
 		const box = h("div", { class: "agent-wall-preview is-image is-loading" });
-		let shown = this.#pictures.get(target.path);
+		let shown = this.#pictures.get(path);
 		if (!shown) {
 			const signal = this.#pictureLife.signal;
-			shown = read(target.path, signal).then(
-				(blob) => (blob && !signal.aborted ? URL.createObjectURL(blob) : null),
+			shown = read(path, signal).then(
+				async (blob) => (blob && !signal.aborted ? pictureUrl(blob) : null),
 				() => null,
 			);
-			this.#pictures.set(target.path, shown);
+			this.#pictures.set(path, shown);
+			// A picture that could not be read is read again next time.
+			void shown.then((url) => {
+				if (!url && this.#pictures.get(path) === shown) this.#pictures.delete(path);
+			});
 		}
 		void shown.then((url) => {
 			box.classList.remove("is-loading");
@@ -331,13 +353,13 @@ export class AgentWallPoster {
 				box.remove();
 				return;
 			}
-			const name = target.path.slice(target.path.lastIndexOf("/") + 1);
+			const name = path.slice(path.lastIndexOf("/") + 1);
 			// The picture opens in Storage, as its link does.
 			replace(
 				box,
 				h(
 					"button",
-					{ type: "button", class: "folder-link agent-wall-picture", "data-folder-path": target.path },
+					{ type: "button", class: "folder-link agent-wall-picture", "data-folder-path": path },
 					h("img", { src: url, alt: name, decoding: "async" }),
 				),
 			);
@@ -419,7 +441,9 @@ export class AgentWallPoster {
 		const drawn = new Set<string>();
 		this.#items = new Map();
 		const item = (part: Part, entry: WallItem, keyText = entry.text) => {
-			const key = itemKey(part, keyText);
+			// The same headline twice in a part (two "Approve the post"): the second has a key of its own.
+			let key = itemKey(part, keyText);
+			for (let again = 2; drawn.has(key); again++) key = `${itemKey(part, keyText)}-${again}`;
 			drawn.add(key);
 			this.#items.set(key, entry);
 			const fresh = this.#fresh.has(key);
@@ -470,7 +494,7 @@ export class AgentWallPoster {
 							onclick: () => this.#toggleItem(key, row),
 						},
 						mark,
-						h("span", { class: "agent-wall-text" }, markdownInline(entry.text.replace(LINK, "$1"))),
+						h("span", { class: "agent-wall-text" }, plainWords(entry.text)),
 						news,
 						icon("chevron"),
 					),

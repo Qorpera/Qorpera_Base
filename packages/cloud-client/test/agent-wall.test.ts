@@ -162,6 +162,21 @@ it("reads a detail under its item, joined when it runs over two lines, and nothi
 	]);
 });
 
+it("reads a bullet at any indent as an item, as walls were written before details, unless it is right under one", () => {
+	expect(parseWall("## Working on\n  - Indented first\n- Second\n\n  - After a blank line\n").wall.working).toEqual([
+		{ text: "Indented first" },
+		{ text: "Second" },
+		{ text: "After a blank line" },
+	]);
+	// Right under an item, an indented line is its detail, even one that starts with "- ".
+	expect(parseWall("## Working on\n- Second\n  - a detail\n").wall.working).toEqual([
+		{ text: "Second", detail: "- a detail" },
+	]);
+	expect(
+		parseWall(renderWall({ waiting: [], working: [{ text: "A", detail: "- B" }], done: [] })).wall.working,
+	).toEqual([{ text: "A", detail: "- B" }]);
+});
+
 it("finds the picture or app an item shows when it opens", () => {
 	expect(wallPreview({ text: "Logo", detail: "[Plan](folder:a/plan.md) [Logo](folder:a/logo.SVG)" })).toEqual({
 		kind: "image",

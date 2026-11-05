@@ -812,6 +812,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		this.#wall.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();

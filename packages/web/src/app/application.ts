@@ -353,6 +353,7 @@ export function mountApplication(
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
 	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
+	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -981,6 +982,12 @@ export function mountApplication(
 			agentPage = { agentId, page, until: Date.now() + AGENT_PAGE_WAIT_MS };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
 		};
+		// Pictures of the folder for previews, one reader per company, so what a card read is not read again per thread.
+		let cardImage = cardImages.get(controller);
+		if (!cardImage) {
+			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
+			cardImages.set(controller, cardImage);
+		}
 		let cardWall = cardWalls.get(controller);
 		if (!cardWall) {
 			cardWall = agentWallReader(() => memberFolder(companyCurrent, t("Company access changed.")));
@@ -1559,9 +1566,7 @@ export function mountApplication(
 								},
 								show: (agentId) => showAgentPage(agentId, "wall"),
 							},
-							folderImage: folderImageReader(() =>
-								memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
-							),
+							folderImage: cardImage,
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

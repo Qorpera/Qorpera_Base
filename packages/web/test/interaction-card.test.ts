@@ -281,6 +281,19 @@ describe("a visual choice", () => {
 		created.mockRestore();
 	});
 
+	it("lays three boxes out in three columns, set through the style object, and toggles them for a multi-select", () => {
+		const ctx = context({ image: async () => null });
+		const card = renderInteractionCard(item({ ...visual, payload: { ...visual.payload, multiSelect: true } }), ctx);
+		expect((card.querySelector(".interaction-choices") as HTMLElement).style.getPropertyValue("--choices")).toBe("3");
+		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["false", "false", "false"]);
+		boxes[0]?.click();
+		boxes[2]?.click();
+		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["true", "false", "true"]);
+		[...card.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Send")?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["duo", "demo"] });
+	});
+
 	it("keeps the boxes, inert, with the chosen one marked once answered", () => {
 		const card = renderInteractionCard(
 			item(visual, { outcome: "answered", answer: { values: ["duo"] }, answeredBy: userA.id }),

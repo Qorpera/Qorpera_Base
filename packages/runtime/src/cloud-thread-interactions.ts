@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
@@ -516,7 +517,7 @@ const PREVIEW_IMAGE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
 
 /** An option's picture: an interface app, or an image's path in the company's folder (relative, no way up or out). */
 export function optionPreviewValid(preview: string): boolean {
-	if (/^app:[a-z0-9][a-z0-9-]{0,63}$/.test(preview)) return true;
+	if (preview.startsWith("app:")) return isInterfaceName(preview.slice(4));
 	return (
 		PREVIEW_IMAGE.test(preview) &&
 		!/^[a-z][a-z0-9+.-]*:/i.test(preview) &&

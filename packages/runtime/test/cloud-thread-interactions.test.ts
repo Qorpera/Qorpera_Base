@@ -345,7 +345,15 @@ describe("readable cards", () => {
 				{ label: "Matching Pair", preview: "app:pair-demo" },
 			],
 		});
-		for (const bad of ["sketches/duo.md", "https://example.com/a.png", "/abs/a.png", "a/../b.png", "app:Bad Name"])
+		for (const bad of [
+			"sketches/duo.md",
+			"https://example.com/a.png",
+			"/abs/a.png",
+			"a/../b.png",
+			"app:Bad Name",
+			"app:a--b",
+			"app:abc-",
+		])
 			refused(visual(bad), "an option's preview is the company file path of an image you made for it");
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("Options with pictures show as big boxes");
 	});

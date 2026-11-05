@@ -390,10 +390,6 @@ describe("items that open", () => {
 
 	it("shows headlines, and a click opens one's detail, links and preview", async () => {
 		const image = vi.fn(async () => new Blob(["<svg/>"], { type: "image/svg+xml" }));
-		vi.stubGlobal(
-			"URL",
-			Object.assign(URL, { createObjectURL: vi.fn(() => "blob:sketch"), revokeObjectURL: vi.fn() }),
-		);
 		const poster = new AgentWallPoster({ image });
 		document.body.append(poster.el);
 		poster.show(AGENT, DETAILED, TODAY);
@@ -413,7 +409,12 @@ describe("items that open", () => {
 		button.click();
 		expect([button.getAttribute("aria-expanded"), detail.hidden]).toEqual(["true", false]);
 		expect(detail.querySelector(".agent-wall-detail-text")?.textContent).toBe("Two looks, same price. The sketch");
-		await vi.waitFor(() => expect(detail.querySelector("img")?.getAttribute("src")).toBe("blob:sketch"));
+		// An SVG shows as a data: URL, never as a blob: page of the app's own origin.
+		await vi.waitFor(() =>
+			expect(detail.querySelector("img")?.getAttribute("src")).toBe(
+				`data:image/svg+xml;charset=utf-8,${encodeURIComponent("<svg/>")}`,
+			),
+		);
 		expect(image).toHaveBeenCalledWith("sketches/bundles.svg", expect.any(AbortSignal));
 		// The picture opens in Storage, as its link does.
 		expect(detail.querySelector<HTMLButtonElement>(".agent-wall-picture")?.dataset.folderPath).toBe(
@@ -428,7 +429,48 @@ describe("items that open", () => {
 		// An app it links opens as the message's app card.
 		row(poster, 1).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
 		expect(row(poster, 1).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
-		vi.unstubAllGlobals();
+	});
+
+	it("keeps a headline's links out of its row, reads an encoded picture path, and tells twin headlines apart", async () => {
+		const image = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:logo");
+		const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+		const poster = new AgentWallPoster({ image });
+		document.body.append(poster.el);
+		poster.show(
+			AGENT,
+			`## Waits on you
+- Reply to ole@shop.dk, see www.shop.dk
+  [Logo](folder:design/logo%20v2.png)
+- Approve the post
+  The first one.
+- Approve the post
+  The second one.
+`,
+			TODAY,
+		);
+		const buttons = [...poster.el.querySelectorAll<HTMLButtonElement>(".agent-wall-row")];
+		// No link of any kind inside a row's button.
+		expect(buttons.every((button) => !button.querySelector("a, button"))).toBe(true);
+		expect(buttons[0]?.textContent).toContain("Reply to ole@shop.dk, see www.shop.dk");
+		buttons[0]?.click();
+		await vi.waitFor(() => expect(image).toHaveBeenCalledWith("design/logo v2.png", expect.any(AbortSignal)));
+		await vi.waitFor(() =>
+			expect(row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-picture")?.dataset.folderPath).toBe(
+				"design/logo v2.png",
+			),
+		);
+		// Two rows with the same headline open their own detail.
+		const ids = buttons.map((button) => button.getAttribute("aria-controls"));
+		expect(new Set(ids).size).toBe(3);
+		buttons[2]?.click();
+		expect(row(poster, 2).querySelector(".agent-wall-detail-text")?.textContent).toBe("The second one.");
+		expect(row(poster, 1).querySelector<HTMLElement>(".agent-wall-detail")?.hidden).toBe(true);
+		// The thread closes: its pictures go.
+		poster.dispose();
+		await vi.waitFor(() => expect(revoked).toHaveBeenCalledWith("blob:logo"));
+		created.mockRestore();
+		revoked.mockRestore();
 	});
 
 	it("shows no preview when the picture cannot be read", async () => {

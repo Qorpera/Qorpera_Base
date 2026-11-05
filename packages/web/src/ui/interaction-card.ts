@@ -1,3 +1,5 @@
+import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
+import { pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import {
 	type InteractionAnswer,
@@ -67,7 +69,8 @@ export interface InteractionCardContext {
 	now?: number;
 }
 
-/** Pictures read for options, per reader (a company) and path: read once, kept while the page is open. */
+/** Pictures read for options, per reader (one per company, app/application.ts) and path: read once, kept while the
+ * page is open. */
 const PICTURES = new WeakMap<NonNullable<InteractionCardContext["image"]>, Map<string, Promise<string | null>>>();
 
 function picture(read: NonNullable<InteractionCardContext["image"]>, path: string): Promise<string | null> {
@@ -79,18 +82,23 @@ function picture(read: NonNullable<InteractionCardContext["image"]>, path: strin
 	let shown = kept.get(path);
 	if (!shown) {
 		shown = read(path, new AbortController().signal).then(
-			(blob) => (blob ? URL.createObjectURL(blob) : null),
+			(blob) => (blob ? pictureUrl(blob) : null),
 			() => null,
 		);
 		kept.set(path, shown);
+		// A picture that could not be read is read again by the next card that shows it.
+		const reading = shown;
+		void reading.then((url) => {
+			if (!url && kept.get(path) === reading) kept.delete(path);
+		});
 	}
 	return shown;
 }
 
 /** The picture area of a visual choice: the image the agent made, or the app's emblem and name. */
 function choicePicture(preview: string, context: InteractionCardContext): HTMLElement {
-	const app = /^app:([a-z0-9][a-z0-9-]*)$/.exec(preview);
-	if (app)
+	const app = /^app:(.+)$/.exec(preview);
+	if (app && isInterfaceName(app[1] ?? ""))
 		return h(
 			"span",
 			{ class: "choice-picture is-app", "aria-hidden": "true" },
@@ -118,6 +126,7 @@ function visualChoices(
 	pick: ((option: QuestionOption, box: HTMLButtonElement) => void) | null,
 	chosen: ReadonlySet<string>,
 	busy: boolean,
+	multi = false,
 ): HTMLElement {
 	const boxes = options.map((option) => {
 		const box = h(
@@ -126,6 +135,7 @@ function visualChoices(
 				type: "button",
 				class: `choice-box${chosen.has(option.value) ? " is-chosen" : ""}`,
 				...(pick ? {} : { disabled: true }),
+				...(pick && multi ? { "aria-pressed": String(chosen.has(option.value)) } : {}),
 				...(busy ? { "aria-disabled": "true" } : {}),
 			},
 			option.preview ? choicePicture(option.preview, context) : h("span", { class: "choice-picture is-empty" }),
@@ -140,16 +150,19 @@ function visualChoices(
 	});
 	// An app's option opens the app beside the chat from its link: the box itself picks.
 	const apps = options
-		.map((option) => /^app:([a-z0-9][a-z0-9-]*)$/.exec(option.preview ?? "")?.[1])
-		.filter((name): name is string => Boolean(name));
-	return h(
+		.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
+		.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? ""));
+	const grid = h(
 		"div",
-		{ class: "interaction-choices", style: `--choices: ${Math.min(options.length, 3)}` },
+		{ class: "interaction-choices" },
 		...boxes,
 		apps.length
 			? h("div", { class: "choice-apps" }, markdown(apps.map((name) => `[${name}](app:${name})`).join(" ")))
 			: null,
 	);
+	// Set through the style object: the page's CSP takes no inline style attribute.
+	grid.style.setProperty("--choices", String(Math.min(options.length, 3)));
+	return grid;
 }
 
 export interface InteractionCardItem {
@@ -338,6 +351,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 							},
 							chosen,
 							busy,
+							multi,
 						)
 					: h("div", { class: "interaction-options" }, ...optionButtons),
 			);

@@ -22,6 +22,19 @@ export function folderImageType(path: string): string | null {
 	return TYPES[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? null;
 }
 
+/** A URL an <img> shows the picture by. An SVG is a data: URL, which a browser never opens as a page of the app (a
+ * blob: URL of the app's origin would, from "Open image in new tab"); any other picture is a blob: URL, which
+ * {@link forgetPictureUrl} lets go. */
+export async function pictureUrl(blob: Blob): Promise<string> {
+	if (blob.type === "image/svg+xml")
+		return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(await blob.text())}`;
+	return URL.createObjectURL(blob);
+}
+
+export function forgetPictureUrl(url: string): void {
+	if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
 /** Reads the picture at `path`: null when it is no picture, no file, or too large to preview. */
 export function folderImageReader(folder: () => Folder): (path: string, signal: AbortSignal) => Promise<Blob | null> {
 	return async (path, signal) => {
