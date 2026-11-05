@@ -65,8 +65,7 @@ function offerable(
 }
 
 /** What a notice tells the member, in plain words; undefined when it gets no line.
- * A reached usage limit is told by the failed run's card in the thread; its notice gets a line only
- * when the work moved to another of the member's logins. */
+ * A reached usage limit is told by the failed run's card in the thread. */
 function sentence(
 	item: MemberNotification,
 	agentName?: (staffAgentId: string) => string | undefined,
@@ -112,20 +111,8 @@ function sentence(
 				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
 				minutes: subject.minutes,
 			});
-		case "qorpera.member-notification.provider-usage-limit/v1": {
-			// The failed run's card tells of the limit itself. A member whose own login it was is told, in one line,
-			// where the work moved (20260930575000); with no login of theirs with room, the card says it waits.
-			const to = subject.movedTo;
-			if (!to) return undefined;
-			const from = subject.accountEmail;
-			if (to.accountEmail)
-				return from
-					? t("Your login {from} reached its usage limit, so work moved to {to}.", { from, to: to.accountEmail })
-					: t("Your login reached its usage limit, so work moved to {to}.", { to: to.accountEmail });
-			return from
-				? t("Your login {from} reached its usage limit, so work moved to your other login.", { from })
-				: t("Your login reached its usage limit, so work moved to your other login.");
-		}
+		case "qorpera.member-notification.provider-usage-limit/v1":
+			return undefined;
 		case "qorpera.member-notification.good-will-card-failed/v1":
 			// The month's good will invoice could not charge the card (20260930571000); Stripe tries again.
 			return subject.mine

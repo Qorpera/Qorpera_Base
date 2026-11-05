@@ -2768,7 +2768,7 @@ describe("who pays for a routine (20260930095000)", () => {
 
 	it("says on its row why a kept login can't pay now, and offers a choice there", async () => {
 		for (const [update, words] of [
-			[{ waitsFor: "usage_limit" }, "Runs wait until one of its member's logins has room again."],
+			[{ waitsFor: "usage_limit" }, "Runs wait until this login's usage limit resets."],
 			[{ waitsFor: "sign_in" }, "Sign in to this login again in Settings → AI subscriptions to let it run."],
 			[{ waitsFor: "sign_in", payerUserId: OTHER_MEMBER }, "Runs wait until Anna signs in to this login again."],
 			[

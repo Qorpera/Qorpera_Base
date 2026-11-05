@@ -187,11 +187,11 @@ describe("why a run stopped, in the member's words", () => {
 		const budget = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED");
 		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
 		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset })).toBe(
-			`The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again when the limit resets (${fmtTime(reset)}).`,
+			`The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets (${fmtTime(reset)}).`,
 		);
 		// A reset that has passed, or none known: no time.
 		const plain =
-			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.";
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.";
 		const past = new Date(Date.now() - 60_000).toISOString();
 		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: past })).toBe(plain);
 		expect(runFailureReason(budget, "failed", true, { own: true })).toBe(plain);

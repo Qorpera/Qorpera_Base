@@ -9,10 +9,6 @@ export type MemberNotificationSubject =
 			resetsAt: string | null;
 			runId: string;
 			connectionId: string;
-			/** The login's email, for the member whose own login it is (20260930575000); absent on older notices. */
-			accountEmail?: string | null;
-			/** The member's own login work moves to, when one has room; null when none has. */
-			movedTo?: { connectionId: string; accountEmail: string | null } | null;
 	  }
 	| {
 			schema: "qorpera.member-notification.machine-capacity/v1";
@@ -132,17 +128,6 @@ function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) throw invalid();
 	return value;
 }
-/** A login's email as the cloud recorded it, or null: it is only shown, so one that can't be shown is left out. */
-function email(value: unknown): string | null {
-	if (
-		typeof value !== "string" ||
-		value.length < 1 ||
-		value.length > 320 ||
-		[...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
-	)
-		return null;
-	return value;
-}
 function date(value: unknown): string {
 	if (
 		typeof value !== "string" ||
@@ -199,19 +184,6 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			resetsAt: s.resetsAt === null ? null : date(s.resetsAt),
 			runId: uuid(s.runId),
 			connectionId: uuid(s.connectionId),
-			// Which login reached its limit and the member's login work moved to (20260930575000).
-			...(s.accountEmail === undefined ? {} : { accountEmail: email(s.accountEmail) }),
-			...(s.movedTo === undefined
-				? {}
-				: {
-						movedTo:
-							s.movedTo === null
-								? null
-								: {
-										connectionId: uuid(record(s.movedTo).connectionId),
-										accountEmail: email(record(s.movedTo).accountEmail),
-									},
-					}),
 		};
 	} else if (kind === "company_ceiling_tripped" && s.schema === "qorpera.member-notification.machine-capacity/v1") {
 		if (s.dimension !== "machines") throw invalid();

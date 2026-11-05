@@ -90,7 +90,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	computer_hours: phrase("The company is out of computer hours. New work starts again once hours are added."),
 	// A usage limit stops the work: it never moves to another account (founder decision 2026-10-01).
 	usage_limit: phrase(
-		"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again once the limit resets.",
+		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 	),
 	// The member whose login paid checks it or picks another one; the work never moves to another login by itself.
 	provider_refused: phrase(
@@ -167,7 +167,7 @@ export function runFailureReason(
 	const resetsAt = payer.resetsAt;
 	if (kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now())
 		return t(
-			"The model account paying for this work reached its usage limit, so the work stopped. New work moves by itself to another of the member's logins that has room. This work can run again when the limit resets ({time}).",
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).",
 			{ time: fmtTime(resetsAt) },
 		);
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
@@ -188,7 +188,7 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 		"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
 	),
 	usage_limit: phrase(
-		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it on another of its owner's logins that has room, or once the limit resets.",
+		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",

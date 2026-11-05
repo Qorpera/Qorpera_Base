@@ -72,9 +72,8 @@ create function pg_temp.cl_outcome(p_sequence integer) returns jsonb language sq
 $$;
 -- The words a login's reason reports, with the shared tail.
 create function pg_temp.cl_words(p_first text) returns text language sql immutable as $$
-	select p_first || ' The session moves by itself to another of its owner''s logins that has room when its next turn '
-		|| 'begins. The owner can also choose another of their logins for it on the coding session''s card in the '
-		|| 'conversation, then ask for the work again.'
+	select p_first || ' The session does not move to another login by itself: the member who owns it can choose '
+		|| 'another of their logins for it on the coding session''s card in the conversation, then ask for the work again.'
 $$;
 
 -- The owner's coding machine is on exec-928, so the fleet picks it for the owner's sessions (as 928's §8).

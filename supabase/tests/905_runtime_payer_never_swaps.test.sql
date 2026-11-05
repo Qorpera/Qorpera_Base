@@ -1,12 +1,10 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- Work moves to the member's own login with room (20260930575000, founder decision 2026-11-05; it reverses the 4 October
--- rule of 20260930059000 for a member's own logins). The base's owner (…001) pays with login A, on which Alice's run is
--- leased. Their conversation (Alice's thread) starts on A; they connect login B with room left; then A reaches its usage
--- limit. The conversation and work that follows a run move to B, and the usage-limit notice names B; new work (Bob's
--- thread) starts on B. With no login of theirs with room, work stays (and waits) on its login; a company account never
--- stands in for a member's login, and a member never pays with another member's login. A login that cannot pay now
--- (disabled, disconnected, without consent) gives way to the member's other login with room too. A usage limit's wall
--- ends at the provider's reset, and at the latest a day after the limit.
+-- The payer never changes without the member, on folder-v2 (20260930059000, founder decision 2026-10-04). The base's
+-- owner (…001) pays with login A, on which Alice's run is leased. Their conversation (Alice's thread) starts on A; they
+-- connect login B with room left; then A reaches its usage limit. A conversation, and work that follows a run, stay on A;
+-- only new work (Bob's thread) starts on B; a company account never stands in for a login at its limit; work that follows
+-- a run on a login that can no longer pay does not start on another one; and a member cannot pay with another member's
+-- login (ported from snapshot-v1 in the legacy sweep).
 select set_config('qorpera_test.p905_conversation', (select session_id::text from public.qorpera_company_rooms
 	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000030')), true);
 select set_config('qorpera_test.p905_second', (select session_id::text from public.qorpera_company_rooms
@@ -17,7 +15,7 @@ $$;
 select pg_temp.base_assert(pg_temp.p905_session('conversation') is not null and pg_temp.p905_session('second') is not null
 	and pg_temp.p905_session('conversation') <> pg_temp.p905_session('second'), 'Alice''s and Bob''s threads have their sessions');
 
--- 1. The old handoff stays gone; the new helpers are internal.
+-- 1. Nothing can move work to another login any more.
 do $$
 begin
 	if to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is not null
@@ -28,15 +26,10 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE') then
 		raise exception 'API clients can read a member''s logins'; end if;
-	if position('20260930575000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930575000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
+	if position('20260930059000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
+		or position('20260930059000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
 		or position('20260930059000' in pg_get_functiondef('public.qorpera_eligible_member_accounts(uuid,uuid)'::regprocedure)) = 0 then
-		raise exception 'A payer function lacks its 20260930575000 or 20260930059000 body'; end if;
-	if has_function_privilege('authenticated', 'public.qorpera_member_work_logins(uuid,uuid,uuid)', 'EXECUTE')
-		or has_function_privilege('authenticated', 'public.qorpera_member_session_login_with_room(uuid,uuid,uuid)', 'EXECUTE')
-		or has_function_privilege('authenticated', 'public.qorpera_routine_wake_payer(uuid,uuid,uuid,uuid,bigint)', 'EXECUTE')
-		or has_function_privilege('service_role', 'public.qorpera_usage_limit_moved_to(uuid,uuid,uuid)', 'EXECUTE') then
-		raise exception 'API clients can read which login work moves to'; end if;
+		raise exception 'A payer function lacks the 20260930059000 body'; end if;
 end $$;
 
 -- 2. The owner's conversation starts on A, their only login.
@@ -93,34 +86,19 @@ create function pg_temp.p905_payer(p_requester text, p_prefer uuid) returns uuid
 $$;
 select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.p905('a'),2) = 0
 	and public.qorpera_native_account_remaining(pg_temp.p905('b'),2) = 80, 'A is at its limit and B has room');
--- The owner is told, in one notice: A reached its limit, and work moves to B.
-select pg_temp.base_assert((select count(*) from public.qorpera_member_notifications notice
-	where notice.user_id = '92400000-0000-4000-8000-000000000001' and notice.kind = 'provider_usage_limit'
-		and notice.acknowledged_at is null and notice.subject -> 'movedTo' ->> 'connectionId' = pg_temp.p905('b')::text
-		and notice.subject ->> 'connectionId' = pg_temp.p905('a')::text and notice.subject ? 'accountEmail') = 1,
-	'the usage-limit notice does not name the login work moves to');
 
--- 3. The conversation moves from A at its limit to B; a new conversation takes B.
+-- 3. The conversation keeps A at its limit; a new conversation takes B.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('conversation')) = pg_temp.p905('b'), 'the conversation stayed on its login at its limit');
+	pg_temp.p905_session('conversation')) = pg_temp.p905('a'), 'the conversation moved off its login at its limit');
 select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
 	pg_temp.p905_session('second')) = pg_temp.p905('b'), 'a new conversation did not start on the login with room');
--- Another member never gets the owner's login: the contributor has none of their own, so their conversation has none.
 reset role;
-select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000002');
-set local role authenticated;
-select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('second')) is null, 'a member''s conversation took another member''s login');
-reset role;
-select pg_temp.base_assert((select connection_id from public.qorpera_member_session_accounts
-	where session_id = pg_temp.p905_session('conversation') and user_id = '92400000-0000-4000-8000-000000000001')
-	= pg_temp.p905('b'), 'the conversation''s saved login is not B');
 
--- 4. Work that follows the run moves to B; new work starts on B. A coworker message from the run wakes its recipient on B.
-select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('bBinding'),
-	'follow-up work stayed on its run''s login at its limit');
+-- 4. Work that follows the run stays on A; new work starts on B. A coworker message from the run wakes its recipient on A.
+select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('aBinding'),
+	'follow-up work moved off its run''s login at its limit');
 select pg_temp.base_assert(pg_temp.p905_payer('1', null) = pg_temp.p905('bBinding'), 'new work did not start on the login with room');
 select pg_temp.base_assert((public.qorpera_member_first_run_sponsor('92400000-0000-4000-8000-000000000010',
 	'92400000-0000-4000-8000-000000000001') ->> 'sponsorBindingId')::uuid = pg_temp.p905('bBinding'),
@@ -133,23 +111,20 @@ begin
 	v_send := public.qorpera_send_coworker_message(current_setting('qorpera_test.base_binding')::jsonb,
 		'92400000-0000-4000-8000-000000000031','p905-hello','Can you check the numbers?');
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid;
-	if v_wake.sponsor_binding_id is distinct from pg_temp.p905('bBinding') or v_wake.status <> 'queued' then
-		raise exception 'the coworker wake of a run at its limit did not move to the login with room: %', to_jsonb(v_wake); end if;
+	if v_wake.sponsor_binding_id is distinct from pg_temp.p905('aBinding') or v_wake.status <> 'queued' then
+		raise exception 'the coworker wake of a run at its limit moved to another login: %', to_jsonb(v_wake); end if;
 end $$;
 
 -- Unknown usage on B still ranks before A at its limit.
 delete from public.qorpera_native_provider_account_metadata where connection_id = pg_temp.p905('b');
 select pg_temp.base_assert(pg_temp.p905_payer('1', null) = pg_temp.p905('bBinding'),
 	'new work took a login at its limit before one of unknown usage');
-select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('bBinding'),
-	'follow-up work did not move to a login of unknown usage');
 insert into public.qorpera_native_provider_account_metadata(connection_id,connection_version,provider_account_usage)
 values (pg_temp.p905('b'),2,jsonb_build_object('observedAt',statement_timestamp()-interval '1 second','windows',
 	jsonb_build_array(jsonb_build_object('id','primary','label','5 hours','usedPercent',100))));
 
 -- 5. With both logins at their limit, new work stays on the member's own login, never the company account, which pays
--- only for a member with no login of their own. Work that follows a run stays on its login (and waits for it), and work
--- that follows a company-paid run stays on the company account.
+-- only for a member with no login of their own. Work that follows a company-paid run stays on the company account.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.p905_company_connection',public.qorpera_register_provider_connection(
@@ -168,12 +143,7 @@ reset role;
 select pg_temp.base_assert(pg_temp.p905_payer('1', null) in (pg_temp.p905('aBinding'), pg_temp.p905('bBinding')),
 	'new work of a member whose logins are at their limit moved to the company account');
 select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('aBinding'),
-	'follow-up work moved while no login had room, or to the company account');
-select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('conversation')) = pg_temp.p905('b'), 'a conversation moved while no login had room');
-reset role;
+	'follow-up work moved to the company account');
 select pg_temp.base_assert(pg_temp.p905_payer('3', null) = pg_temp.p905('company'),
 	'the company account did not pay for a member without a login');
 select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('company')) = pg_temp.p905('company'),
@@ -229,39 +199,21 @@ update public.qorpera_native_provider_account_metadata
 set provider_account_usage = jsonb_set(provider_account_usage,'{windows,0,usedPercent}','20')
 where connection_id = pg_temp.p905('b');
 
--- 6. The wall of a usage limit ends at the provider's reset, and at the latest a day after the limit. A's reset is
--- three days ahead: a day after its limit, A has room again.
-update public.qorpera_provider_connection_usage_signals set resets_at = statement_timestamp() + interval '3 days',
-	observed_at = statement_timestamp() - interval '1 hour'
-where provider_connection_id = pg_temp.p905('a') and signal_kind = 'usage_limit';
-select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.p905('a'),2) = 0,
-	'a known reset ahead did not hold the wall within the day');
-update public.qorpera_provider_connection_usage_signals set observed_at = statement_timestamp() - interval '25 hours'
-where provider_connection_id = pg_temp.p905('a') and signal_kind = 'usage_limit';
-select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.p905('a'),2) <> 0
-	and public.qorpera_native_account_usage_limit_reset(pg_temp.p905('a')) is null,
-	'a usage limit''s wall held for more than a day');
-
--- 7. The conversation's login B cannot pay now: an owner or admin disabled it. A has room again, so the conversation
--- and work that follows B's runs move to A. Once B can pay again, the conversation stays on A (a login with room is kept).
-update public.qorpera_provider_connections set status = 'disabled' where id = pg_temp.p905('b');
+-- 6. A switches off work while away: work that follows its run does not start, on B or the company account. The
+-- conversation keeps A, which cannot pay right now.
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+	to_jsonb(v) || '{"version":3,"allow_autonomous":false}'::jsonb)).*
+from public.qorpera_provider_connection_versions v where connection_id = pg_temp.p905('a') and version = 2;
+select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) is null,
+	'follow-up work of a login without consent started on another login');
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('conversation')) = pg_temp.p905('a'), 'a conversation stayed on a disabled login');
+	pg_temp.p905_session('conversation')) = pg_temp.p905('a'), 'a conversation left a login that cannot pay right now');
 reset role;
-select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('bBinding')) = pg_temp.p905('aBinding'),
-	'follow-up work of a disabled login did not move to the login with room');
-update public.qorpera_provider_connections set status = 'active' where id = pg_temp.p905('b');
-update public.qorpera_native_provider_account_metadata
-set provider_account_usage = jsonb_set(provider_account_usage,'{windows,0,usedPercent}','20')
-where connection_id = pg_temp.p905('b');
-select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('conversation')) = pg_temp.p905('a'), 'a conversation left a login with room');
-reset role;
--- While the member's computer is recovering, none of their logins can pay: the conversation keeps A and waits.
+-- Nor while the member's computer is recovering, or while an owner or admin has A disabled: neither is the member's
+-- choice. (The recovery mark stands in for a recovery request; its row is not needed here.)
 set local session_replication_role = replica;
 update public.qorpera_member_compute_identities set recovery_pending_id = extensions.gen_random_uuid()
 where id = (current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid;
@@ -275,22 +227,21 @@ set local session_replication_role = replica;
 update public.qorpera_member_compute_identities set recovery_pending_id = null
 where id = (current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid;
 set local session_replication_role = origin;
+update public.qorpera_provider_connections set status = 'disabled' where id = pg_temp.p905('a');
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
+	pg_temp.p905_session('conversation')) = pg_temp.p905('a'), 'an admin''s disable moved a member''s conversation');
+reset role;
+update public.qorpera_provider_connections set status = 'active' where id = pg_temp.p905('a');
 
--- 8. A switches off work while away: work that follows its run moves to B. The conversation needs no consent and keeps A.
-insert into public.qorpera_provider_connection_versions
-select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
-	to_jsonb(v) || '{"version":3,"allow_autonomous":false}'::jsonb)).*
-from public.qorpera_provider_connection_versions v where connection_id = pg_temp.p905('a') and version = 2;
-select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('bBinding'),
-	'follow-up work of a login without consent did not move to the login with room');
-
--- 9. The owner disconnects A: the conversation moves to B, and so does work that follows A's run. The owner's pick by
--- hand still works, never with a disconnected login, and another member cannot pick the owner's login.
+-- 7. The owner disconnects A: work that follows its run does not start, and the conversation has no account until the
+-- owner picks one by hand; ending A is no permission to use B. A new conversation still takes its first choice.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_revoke_native_provider_connection('92400000-0000-4000-8000-000000000010',pg_temp.p905('a'));
 select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
-	pg_temp.p905_session('conversation')) = pg_temp.p905('b'), 'a conversation stayed on a disconnected login');
+	pg_temp.p905_session('conversation')) is null, 'a conversation moved off a disconnected login on its own');
 select pg_temp.base_error($q$select public.qorpera_choose_member_session_account('92400000-0000-4000-8000-000000000010',
 	pg_temp.p905_session('conversation'),(current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid)$q$,
 	'22023','This login cannot pay for your conversation');
@@ -299,18 +250,14 @@ select pg_temp.base_assert(public.qorpera_choose_member_session_account('9240000
 select pg_temp.base_assert(public.qorpera_select_member_session_account('92400000-0000-4000-8000-000000000010',
 	pg_temp.p905_session('conversation')) = pg_temp.p905('b'), 'the conversation did not keep the login picked by hand');
 reset role;
+-- Another member cannot pay with the owner's login: every member reads Bob's thread, and the owner's B is no login of
+-- the contributor's.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.base_error($q$select public.qorpera_choose_member_session_account('92400000-0000-4000-8000-000000000010',
 	pg_temp.p905_session('second'),'$q$ || pg_temp.p905('b') || $q$')$q$,'22023','This login cannot pay for your conversation');
 reset role;
-select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) = pg_temp.p905('bBinding'),
-	'follow-up work of a disconnected login did not move to the login with room');
--- With B at its limit too, follow-up work of the disconnected A has no login to pay with: it does not start.
-update public.qorpera_native_provider_account_metadata
-set provider_account_usage = jsonb_set(provider_account_usage,'{windows,0,usedPercent}','100')
-where connection_id = pg_temp.p905('b');
 select pg_temp.base_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) is null,
-	'follow-up work of a disconnected login started on a login at its limit');
+	'follow-up work of a disconnected login started on another login');
 
 rollback;

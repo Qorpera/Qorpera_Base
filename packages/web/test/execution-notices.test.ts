@@ -252,39 +252,6 @@ describe("company notices", () => {
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
 
-	it("tells the member in one line where work moved when their login reached its usage limit", async () => {
-		const usage = (
-			movedTo: { connectionId: string; accountEmail: string | null } | null,
-			accountEmail: string | null,
-		) => ({
-			...item(77),
-			kind: "provider_usage_limit" as const,
-			subject: {
-				schema: "qorpera.member-notification.provider-usage-limit/v1" as const,
-				provider: "openai",
-				resetsAt: null,
-				runId: id(80),
-				connectionId: id(81),
-				accountEmail,
-				movedTo,
-			},
-		});
-		const moved = setup([usage({ connectionId: id(82), accountEmail: "b@example.com" }, "a@example.com")]);
-		await settle();
-		expect(moved.view.el.querySelector("p")?.textContent).toBe(
-			"Your login a@example.com reached its usage limit, so work moved to b@example.com.",
-		);
-		const unnamed = setup([usage({ connectionId: id(82), accountEmail: null }, null)]);
-		await settle();
-		expect(unnamed.view.el.querySelector("p")?.textContent).toBe(
-			"Your login reached its usage limit, so work moved to your other login.",
-		);
-		// With no login of the member's with room, the run's card tells of the limit and the wait: no line.
-		const waiting = setup([usage(null, "a@example.com")]);
-		await settle();
-		expect(waiting.view.el.hidden).toBe(true);
-	});
-
 	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {
 		const stalled: MemberNotification = {
 			...item(78),

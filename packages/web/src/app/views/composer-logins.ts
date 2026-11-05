@@ -6,8 +6,7 @@ import type { SessionExecutionView } from "./session-execution.ts";
  * composer's menu, drawn and driven as the Model page is (composer-models.ts). The logins, their names
  * and the move are SessionExecutionView's, so the page lists what "Choose a login to continue" lists and
  * a pick moves the conversation as a press there does. The row shows only when there is a choice (two or
- * more logins that can pay). A conversation also moves by itself when its login reaches its usage limit
- * (20260930575000); a pick here is the member's override. */
+ * more logins that can pay), and nothing moves without the member's pick. */
 export class ComposerLogins {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
@@ -123,7 +122,7 @@ export class ComposerLogins {
 		if (!this.el.contains(document.activeElement)) this.#back.focus();
 	}
 
-	/** The member's pick moves the conversation; the login that pays already stays as it is. */
+	/** Only the member's pick moves the conversation; the login that pays already stays as it is. */
 	#pick(connectionId: string): void {
 		const login = this.#execution.logins.find((item) => item.connectionId === connectionId);
 		if (!login || login.current || this.button.disabled) return;

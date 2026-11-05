@@ -3,11 +3,10 @@ import type {
 	NativeMemberConnection,
 	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import {
-	planLogin,
-	type WebExecutionConnections,
-	type WebMemberConnection,
-	type WebNativeSubscription,
+import type {
+	WebExecutionConnections,
+	WebMemberConnection,
+	WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
@@ -95,12 +94,10 @@ export interface SessionLogin {
 	readonly current: boolean;
 }
 
-/** A conversation keeps its own account while it has room, so its prompt cache stays warm. At its
- * usage limit, or when it can't pay now, the conversation moves to the member's own account with the
- * most room, by itself (founder decision 2026-11-05, migration 20260930575000; the cloud's choice where
- * the cloud chooses). With none that has room it keeps its account, and sending waits until one has room
- * again. New conversations choose the member's account that works and has the most room on one scale
- * (loginRank, migration 20260930559000). The member's own pick stays as an override. */
+/** A conversation keeps its own account, also at its usage limit: sending waits until it
+ * resets, and only the member moves a conversation to another account (founder decision
+ * 2026-10-04, migration 20260930059000). New conversations choose the member's account that
+ * works and has the most room on one scale (loginRank, migration 20260930559000). */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -405,9 +402,10 @@ export class SessionExecutionView {
 			return;
 		const available = this.#available();
 		const kept = conversation.executionSponsor;
-		// A conversation keeps an account with room. One at its usage limit, or one that can't
-		// pay now (disabled, a new sign-in, disconnected), gives way to the member's own account
-		// with the most room (20260930575000); with none, it keeps its account and waits.
+		// A conversation keeps its account even when it cannot pay now (also while an
+		// owner or admin has it disabled). One the member disconnected leaves it with no
+		// account until the member picks another by hand (#unchosen); only a new
+		// conversation takes a first choice.
 		const keeps = kept !== undefined && this.#keeps(kept.connectionId);
 		// Follow the conversation's binding to the member's new connection after they
 		// sign in again; never to another account. A retry still keeps its exact
@@ -426,7 +424,8 @@ export class SessionExecutionView {
 			? this.#serverConnectionId && available.includes(this.#serverConnectionId)
 				? this.#serverConnectionId
 				: undefined
-			: (handedOff?.connectionId ?? (kept ? this.#replacement(kept.connectionId, keeps, available) : available[0]));
+			: (handedOff?.connectionId ??
+				(kept ? (keeps && available.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
 		if (!next) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
@@ -434,18 +433,6 @@ export class SessionExecutionView {
 		} catch {
 			// Sending stays off until the member has a usable account and authority.
 		}
-	}
-
-	/** The login a kept conversation pays with next: its own while it has room; else the member's own login with the
-	 * most room, never a ChatGPT plan, and nothing for a conversation on a plan (a login of another kind), as the cloud
-	 * chooses (20260930575000). Undefined: it keeps its login and waits. */
-	#replacement(kept: string, keeps: boolean, available: readonly string[]): string | undefined {
-		if (keeps && available.includes(kept)) return kept;
-		const connections = this.#observed?.connections ?? [];
-		const plan = (connectionId: string) =>
-			connections.some((connection) => connection.connectionId === connectionId && planLogin(connection));
-		if (plan(kept)) return undefined;
-		return available.find((connectionId) => connectionId !== kept && !plan(connectionId));
 	}
 
 	/** What this member's own logins tell of the login behind a sponsor binding (a failed run's payer): whether it is
@@ -664,9 +651,8 @@ export class SessionExecutionView {
 		);
 	}
 
-	/** The conversation's own login can't pay now (its usage limit, or disabled) and it was not moved: the
-	 * member may still move it to another of their logins that can, by hand (an override; a move to a login
-	 * with room happens by itself, 20260930575000). */
+	/** The conversation's own login can't pay now (its usage limit, or disabled): the member may move the
+	 * conversation to another of their logins that can. Only their click moves it; nothing moves on its own. */
 	#otherLogins(observed: NativeExecutionConnections, disabled: boolean): HTMLElement | null {
 		const own = this.#own();
 		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
@@ -690,25 +676,21 @@ export class SessionExecutionView {
 		);
 	}
 
-	/** Why sending is off. A conversation's own account at its limit is named first: none of the
-	 * member's other accounts has room either, so the conversation waits until one has. */
+	/** Why sending is off. A conversation's own account at its limit is named first: the
+	 * conversation waits for it and never moves to another account on its own. */
 	#unavailableReason(observed: NativeExecutionConnections): string {
 		const now = Date.now();
 		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
 		if (own && atLimit.some((connection) => connection.connectionId === own))
-			return t(
-				"This conversation's model account has reached its usage limit, and your other accounts have no room either. Sending resumes by itself when one has room again.",
-			);
+			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
 		if (own && this.#keeps(own))
 			return t(
 				"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
 			);
 		if (atLimit.length)
-			return t(
-				"Your model accounts have reached their usage limits. Sending resumes by itself when one has room again.",
-			);
+			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
 		return t("Connect a model account in Settings → AI subscriptions to send messages.");
 	}
 
