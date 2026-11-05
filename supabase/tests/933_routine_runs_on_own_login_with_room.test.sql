@@ -116,6 +116,14 @@ select pg_temp.base_assert(abs(extract(epoch from (current_setting('qorpera_test
 	and public.qorpera_native_account_remaining(pg_temp.p933('a'), 2) = 0,
 	'the signal takes its reset from the newest usage reading: ' || current_setting('qorpera_test.p933_signal'));
 
+-- A reading older than a day, or of another version, names no reset.
+update public.qorpera_native_provider_account_metadata
+set provider_account_usage = jsonb_set(provider_account_usage, '{observedAt}', to_jsonb(statement_timestamp() - interval '2 days'))
+where connection_id = pg_temp.p933('a') and connection_version = 2;
+select pg_temp.base_assert(public.qorpera_native_account_reading_reset(pg_temp.p933('a'), 2) is null
+	and public.qorpera_native_account_reading_reset(pg_temp.p933('a'), 1) is null,
+	'a stale reading or another version''s named a reset');
+
 -- The next wake pays with B; the routine still pays with A.
 do $$
 declare v_wake public.qorpera_wake_occurrences%rowtype := pg_temp.p933_schedule('p933-1'); v_payer jsonb;
@@ -190,7 +198,7 @@ declare v_fn text;
 begin
 	foreach v_fn in array array['public.qorpera_routine_wake_payer(uuid,uuid,uuid,uuid,bigint)',
 		'public.qorpera_routine_runs_on_own_login(public.qorpera_cloud_routine_versions,uuid,bigint)',
-		'public.qorpera_member_work_login_with_room(uuid,uuid,uuid,uuid)', 'public.qorpera_native_account_reading_reset(uuid)'] loop
+		'public.qorpera_member_work_login_with_room(uuid,uuid,uuid,uuid)', 'public.qorpera_native_account_reading_reset(uuid,bigint)'] loop
 		perform pg_temp.base_assert(not has_function_privilege('anon', v_fn, 'execute')
 			and not has_function_privilege('authenticated', v_fn, 'execute')
 			and not has_function_privilege('service_role', v_fn, 'execute'), v_fn || ' is postgres-only');

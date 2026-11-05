@@ -787,6 +787,18 @@ describe("conversation execution account", () => {
 		expect(f.view.el.textContent).not.toContain("reached its usage limit");
 	});
 
+	it("never moves a conversation onto or off a ChatGPT plan by itself", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		const toPlan = withUsage([0, 40]);
+		Object.assign(toPlan.connections[1]!, { loginKind: "chatgpt_plan" });
+		f.listConnections.mockResolvedValue(toPlan);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
 	it("moves the conversation off its own login when an owner or admin disabled it", async () => {
 		const f = setup(true, withUsage([80, 40]));
 		await settle();

@@ -12,10 +12,13 @@
 --   (qorpera_native_account_rank, 20260930559000). A login with room is kept, so a conversation's prompt cache stays.
 --   - A conversation: qorpera_select_member_session_account (the web asks it on every read, every 30 s at most).
 --   - Work that follows a run (coworker, worker and other agent wakes, a change's review): qorpera_starter_sponsor.
---   - A routine paid by M's login: each run (its wake) pays with M's login with room while the routine's own one cannot
---     (qorpera_routine_wake_payer, from the pin trigger). The routine keeps its own login; the admission and the policy
---     accept a run on another login of the same member (qorpera_routine_runs_on_own_login). The routine editor reads it
---     as able to pay then.
+--   - A routine paid by M's login: each run (its wake) pays with M's login with room while the routine's own one is at
+--     its usage limit or needs a new sign-in (qorpera_routine_wake_payer, from the pin trigger). The routine keeps its
+--     own login; the admission and the policy accept a run on another login of the same member
+--     (qorpera_routine_runs_on_own_login). The routine editor reads it as able to pay then. A routine whose login can't
+--     pay otherwise (disconnected, consent off) is paused for a pick at its save (needs_model_account), as before.
+--   - A run already under way, or paused at its limit, keeps its login (the launch fences pin it); it comes back at the
+--     reset, at the latest a day later.
 --   - A coding session paid by M: a turn that begins moves the session to M's login with room first, as the owner's own
 --     pick does (qorpera_coding_session_move_at_limit, from qorpera_begin_coding_turn).
 -- * Never: another member's login, a company account, or a ChatGPT plan login chosen on its own. A company account at its
@@ -26,9 +29,11 @@
 --     back then too (qorpera_resume_run_from_log). So waiting work is tried again at the reset, and at least once a day.
 --   - Codex's usage-limit error names no reset time (codexErrorInfo is the bare name usageLimitExceeded), so no signal
 --     had one. The signal now takes the reset from the login's newest usage reading (the one Settings → Refresh records):
---     the latest reset still ahead of a window at 100% (qorpera_native_account_reading_reset).
+--     the latest reset still ahead of a window at 100% in the reading of the version the run used, observed in the last
+--     day (qorpera_native_account_reading_reset).
 -- * The member is told: the usage-limit notice now names the login and, when there is one, the login work moved to
---   (accountEmail, movedTo; the web writes one plain sentence). Its kind and schema are unchanged.
+--   (accountEmail, movedTo: the conversation's choice; the web writes one plain sentence). Its kind and schema are
+--   unchanged, so an older web reads it as before.
 -- * The member's own pick (the chat's login menu, a routine's or a coding session's login) still works as an override.
 --
 -- Locks: no new ones. The conversation keeps its one row lock; the coding move runs inside qorpera_begin_coding_turn after
@@ -94,8 +99,8 @@ language sql stable security definer set search_path = '' as $$
 		and (version.authentication_mode <> 'native_subscription' or exists (select 1
 			from public.qorpera_native_credential_capsules as capsule
 			where capsule.id = version.credential_capsule_id and capsule.status = 'active'))
-		and not exists (select 1 from public.qorpera_model_logins as login
-			where login.credential_capsule_id = version.credential_capsule_id and login.status <> 'active')
+		-- No new sign-in needed, also for an account login's link (qorpera_company_state_routine_waits).
+		and public.qorpera_company_state_routine_waits(connection.id) is distinct from 'sign_in'
 		and exists (select 1 from public.qorpera_profile_members as member
 			where member.profile_id = p_profile_id and member.user_id = p_user_id)
 $$;
@@ -551,18 +556,25 @@ $new$		-- 20260930575000: and at the latest a day after the limit, to try again.
 			statement_timestamp() + interval '1 minute');
 $new$);
 
--- The reset of a login at its usage limit by its newest usage reading (its account's, in every company): the latest reset
--- still ahead of a window at 100%. Null when no reading shows a full window.
-create function public.qorpera_native_account_reading_reset(p_connection_id uuid)
+-- The reset of a login at its usage limit by its newest usage reading: the reading of the version the run used (one row
+-- per version, the newest) and of the same account login's current links in the member's other companies, observed in
+-- the last day; the latest reset still ahead of a window at 100%. Null when no such reading shows a full window.
+create function public.qorpera_native_account_reading_reset(p_connection_id uuid, p_connection_version bigint)
 returns timestamptz
 language sql stable security definer set search_path = '' as $$
 	-- 20260930575000
 	select max((w.value ->> 'resetAt')::timestamptz)
-	from public.qorpera_native_account_login_connections(p_connection_id) as login
+	from (select p_connection_id as connection_id, p_connection_version as connection_version
+		union all
+		select sibling.connection_id, sibling.connection_version
+		from public.qorpera_account_login_sibling_connections(p_connection_id) as sibling) as login
 	join public.qorpera_native_provider_account_metadata as m on m.connection_id = login.connection_id
+		and m.connection_version = login.connection_version
 	cross join lateral jsonb_array_elements(case when jsonb_typeof(m.provider_account_usage -> 'windows') = 'array'
 		then m.provider_account_usage -> 'windows' else '[]'::jsonb end) as w
-	where jsonb_typeof(w.value -> 'usedPercent') = 'number' and (w.value ->> 'usedPercent')::numeric >= 100
+	where jsonb_typeof(m.provider_account_usage -> 'observedAt') = 'string'
+		and (m.provider_account_usage ->> 'observedAt')::timestamptz > clock_timestamp() - interval '1 day'
+		and jsonb_typeof(w.value -> 'usedPercent') = 'number' and (w.value ->> 'usedPercent')::numeric >= 100
 		and jsonb_typeof(w.value -> 'resetAt') = 'string'
 		and (w.value ->> 'resetAt')::timestamptz > clock_timestamp()
 		and (w.value ->> 'resetAt')::timestamptz < clock_timestamp() + interval '90 days'
@@ -585,7 +597,7 @@ language sql stable security definer set search_path = '' as $$
 		where connection.id = p_connection_id and connection.owner_user_id = p_user_id), '{}'::jsonb)
 $$;
 
-revoke all on function public.qorpera_native_account_reading_reset(uuid), public.qorpera_usage_limit_moved_to(uuid, uuid, uuid)
+revoke all on function public.qorpera_native_account_reading_reset(uuid, bigint), public.qorpera_usage_limit_moved_to(uuid, uuid, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 select pg_temp.as575_patch('public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)'::regprocedure,
@@ -593,7 +605,8 @@ $old$		p_signal_kind,'native_adapter',p_resets_at,v_lease.assignment_id)
 $old$,
 $new$		-- 20260930575000: the provider names no reset with a usage limit; the login's newest usage reading may.
 		p_signal_kind,'native_adapter',coalesce(p_resets_at, case when p_signal_kind = 'usage_limit'
-			then public.qorpera_native_account_reading_reset(v_lease.provider_connection_id) end),v_lease.assignment_id)
+			then public.qorpera_native_account_reading_reset(v_lease.provider_connection_id, v_lease.provider_connection_version)
+			end),v_lease.assignment_id)
 $new$);
 select pg_temp.as575_patch('public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)'::regprocedure,
 $old$				'sponsorVersion',v_run.sponsor_version,'resetsAt',p_resets_at),
@@ -650,7 +663,7 @@ begin
 		'public.qorpera_runtime_wake_policy_internal(uuid)', 'public.qorpera_get_routine_payer(uuid)',
 		'public.qorpera_coding_session_move_at_limit(public.qorpera_runtime_workers,public.qorpera_coding_sessions)',
 		'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)', 'public.qorpera_native_account_usage_limit_reset_company(uuid)',
-		'public.qorpera_resume_run_from_log(uuid,text,boolean)', 'public.qorpera_native_account_reading_reset(uuid)',
+		'public.qorpera_resume_run_from_log(uuid,text,boolean)', 'public.qorpera_native_account_reading_reset(uuid,bigint)',
 		'public.qorpera_usage_limit_moved_to(uuid,uuid,uuid)',
 		'public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)',
 		'public.qorpera_worker_usage_limit_text(uuid)', 'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'

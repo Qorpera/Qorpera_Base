@@ -3,10 +3,11 @@ import type {
 	NativeMemberConnection,
 	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import type {
-	WebExecutionConnections,
-	WebMemberConnection,
-	WebNativeSubscription,
+import {
+	planLogin,
+	type WebExecutionConnections,
+	type WebMemberConnection,
+	type WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
@@ -425,8 +426,7 @@ export class SessionExecutionView {
 			? this.#serverConnectionId && available.includes(this.#serverConnectionId)
 				? this.#serverConnectionId
 				: undefined
-			: (handedOff?.connectionId ??
-				(kept && keeps && available.includes(kept.connectionId) ? kept.connectionId : available[0]));
+			: (handedOff?.connectionId ?? (kept ? this.#replacement(kept.connectionId, keeps, available) : available[0]));
 		if (!next) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
@@ -434,6 +434,18 @@ export class SessionExecutionView {
 		} catch {
 			// Sending stays off until the member has a usable account and authority.
 		}
+	}
+
+	/** The login a kept conversation pays with next: its own while it has room; else the member's own login with the
+	 * most room, never a ChatGPT plan, and nothing for a conversation on a plan (a login of another kind), as the cloud
+	 * chooses (20260930575000). Undefined: it keeps its login and waits. */
+	#replacement(kept: string, keeps: boolean, available: readonly string[]): string | undefined {
+		if (keeps && available.includes(kept)) return kept;
+		const connections = this.#observed?.connections ?? [];
+		const plan = (connectionId: string) =>
+			connections.some((connection) => connection.connectionId === connectionId && planLogin(connection));
+		if (plan(kept)) return undefined;
+		return available.find((connectionId) => connectionId !== kept && !plan(connectionId));
 	}
 
 	/** What this member's own logins tell of the login behind a sponsor binding (a failed run's payer): whether it is
