@@ -127,8 +127,8 @@ select pg_temp.base_assert(not public.qorpera_repin_waiting_input(pg_temp.p973_i
 -- The new helpers are the database's own.
 select pg_temp.base_assert(not has_function_privilege('authenticated','public.qorpera_repin_waiting_input(uuid)','execute')
 	and not has_function_privilege('service_role','public.qorpera_repin_waiting_input(uuid)','execute')
-	and not has_function_privilege('authenticated','public.qorpera_retry_run_refused_for_retired_bundle(uuid)','execute')
-	and not has_function_privilege('service_role','public.qorpera_retry_run_refused_for_retired_bundle(uuid)','execute'),
+	and not has_function_privilege('authenticated','public.qorpera_retry_run_refused_for_retired_bundle(uuid,boolean)','execute')
+	and not has_function_privilege('service_role','public.qorpera_retry_run_refused_for_retired_bundle(uuid,boolean)','execute'),
 	'API clients can call the re-pin helpers');
 
 rollback;

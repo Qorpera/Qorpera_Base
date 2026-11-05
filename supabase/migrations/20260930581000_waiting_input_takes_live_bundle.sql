@@ -68,8 +68,9 @@ begin
 end $$;
 
 -- A session turn refused because its bundle was no longer active, tried again once, as the member's Try again would.
--- True when it was; false when it is not such a turn, or its conversation or input moved on.
-create function public.qorpera_retry_run_refused_for_retired_bundle(p_run_id uuid)
+-- True when it was; false when it is not such a turn, or its conversation or input moved on. Without p_wait (as the
+-- job's commit calls it) it never waits for a lock: a row another transaction holds leaves the turn failed, as before.
+create function public.qorpera_retry_run_refused_for_retired_bundle(p_run_id uuid, p_wait boolean default true)
 returns boolean
 language plpgsql security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_request public.qorpera_session_turn_requests%rowtype;
@@ -87,14 +88,28 @@ begin
 		and not exists (select 1 from public.qorpera_run_operation_receipts as receipt where receipt.run_id = run.id)
 		and not exists (select 1 from public.qorpera_company_proposals as proposal
 			where proposal.execution_kind = 'run' and proposal.execution_id = run.id and proposal.status = 'open')
-	for update of run, job;
+	for update of run, job skip locked;
 	if not found then return false; end if;
-	select request.* into v_request from public.qorpera_session_turn_requests as request
-	join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
-	where request.id = v_run.source_id and request.run_id = v_run.id and request.status = 'materialized'
-		and request.session_id = v_run.session_id and array[request.input_id] = v_run.input_ids
-	for no key update of session;
+	if p_wait then
+		select request.* into v_request from public.qorpera_session_turn_requests as request
+		join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
+		where request.id = v_run.source_id and request.run_id = v_run.id and request.status = 'materialized'
+			and request.session_id = v_run.session_id and array[request.input_id] = v_run.input_ids
+		for no key update of session;
+	else
+		select request.* into v_request from public.qorpera_session_turn_requests as request
+		join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
+		where request.id = v_run.source_id and request.run_id = v_run.id and request.status = 'materialized'
+			and request.session_id = v_run.session_id and array[request.input_id] = v_run.input_ids
+		for no key update of session skip locked;
+	end if;
 	if not found then return false; end if;
+	if not p_wait and exists (select 1 from public.qorpera_session_inputs as input where input.id = any(v_run.input_ids)
+		and input.execution_run_id = v_run.id and input.completed_at is null
+		and input.id not in (select held.id from public.qorpera_session_inputs as held where held.id = any(v_run.input_ids)
+			for update skip locked)) then
+		return false;
+	end if;
 	update public.qorpera_session_inputs
 	set execution_run_id = null, failed_at = null, failure_reason = null
 	where id = any(v_run.input_ids) and execution_run_id = v_run.id and completed_at is null;
@@ -119,7 +134,7 @@ begin
 	return true;
 end $$;
 
-revoke all on function public.qorpera_repin_waiting_input(uuid), public.qorpera_retry_run_refused_for_retired_bundle(uuid)
+revoke all on function public.qorpera_repin_waiting_input(uuid), public.qorpera_retry_run_refused_for_retired_bundle(uuid, boolean)
 	from public, anon, authenticated, service_role;
 
 -- When such a failure commits, its turn goes again. A failure of the retry leaves the turn failed, as before.
@@ -129,7 +144,7 @@ language plpgsql security definer set search_path = '' as $$
 begin
 	-- 20260930581000
 	begin
-		perform public.qorpera_retry_run_refused_for_retired_bundle(new.run_id);
+		perform public.qorpera_retry_run_refused_for_retired_bundle(new.run_id, false);
 	exception when others then
 		raise warning '20260930581000: the refused run % was not tried again: %', new.run_id, sqlstate;
 	end;
