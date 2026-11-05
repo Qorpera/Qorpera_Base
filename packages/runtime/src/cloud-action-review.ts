@@ -320,7 +320,12 @@ export function cloudActionEffect(
 			return "internal";
 		// Interfaces (I8b): rows of a table the agent may write are the company's records.
 		case "table_write":
+		// An interface app's files are the agent's own work, shown to members only when they open it (5 November 2026).
+		case "save_app":
 			return "internal";
+		// Posting one puts it in every member's apps: delegation, like hiring (RUNTIME-INTERFACE-APPS.md §3).
+		case "post_app":
+			return "delegation";
 		default:
 			return "external";
 	}
@@ -687,6 +692,15 @@ export function describeCloudAction(
 			);
 		if (args.action === "remove")
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
+	} else if (tool.name === "post_app") {
+		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
+		target = text(args.name) || null;
+		add(
+			"effect",
+			args.posted === false
+				? "Members no longer see it in their apps; links to it still open it"
+				: "Every member of the company sees it in their apps and can open it beside the chat",
+		);
 	} else if (tool.name === "publish_site") {
 		// Its prepared arguments (cloud-site-tools.ts): what the files are, read before the review.
 		const moved = args.mode === "update" && sitePublishMoves(args);

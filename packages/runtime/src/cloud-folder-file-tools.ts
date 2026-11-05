@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
+import { isAppManifestPath, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
@@ -308,6 +309,27 @@ export function cloudFolderRefusal(content: CloudToolContent): CloudRuntimeError
 	};
 	const unsaved = [whole?.files, whole?.notSaved].flatMap((rows) => (Array.isArray(rows) ? (rows as Part[]) : []));
 	return [whole, ...unsaved].map(why).find((category) => category !== undefined) ?? "invalid_arguments";
+}
+
+/** An interface app's manifest written as a file (RUNTIME-INTERFACE-APPS.md §3): it must parse, and its `posted` stays
+ * as stored (`before`, null for a new file, which is not posted), since posting an app is post_app's, which the
+ * automatic review sees. Says nothing a file holds but whether the app is posted. */
+export function appManifestCheck(path: string, before: string | null, after: string): void {
+	if (!isAppManifestPath(path)) return;
+	const parsed = parseAppManifest(after);
+	if (!parsed.ok)
+		throw new CloudToolRefusal(
+			`APP_MANIFEST_INVALID: nothing was written; app.toml has problems: ${parsed.problems
+				.slice(0, 5)
+				.map((problem) => `${problem.line === null ? "" : `line ${problem.line}: `}${problem.message}`)
+				.join("; ")}`,
+		);
+	const stored = before === null ? null : parseAppManifest(before);
+	const posted = stored?.ok ? stored.manifest.posted : false;
+	if (parsed.manifest.posted !== posted)
+		throw new CloudToolRefusal(
+			`APP_POSTED_BY_POST_APP: nothing was written; keep posted = ${posted} in app.toml, and post the app or take it away with post_app`,
+		);
 }
 
 /** The five tools for a folder-v2 run. `operations` takes the receipts of its changes. */
@@ -702,6 +724,16 @@ export function cloudFolderFileTools(options: {
 					current?.kind === "file" && current.version === input.expectedVersion
 						? { mediaType: current.file.mediaType, executable: current.file.executable }
 						: {};
+				if (isAppManifestPath(input.path)) {
+					let before: string | null = null;
+					if (current?.kind === "file" && current.file.bytes <= MAX_WRITE_BYTES)
+						try {
+							before = windowText(await folder.readRange(current, 0, current.file.bytes, context.signal), true);
+						} catch (error) {
+							unavailable(error, "written");
+						}
+					appManifestCheck(input.path, before, input.text);
+				}
 				return change(
 					"company_write",
 					input,
@@ -826,6 +858,7 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						`COMPANY_FILE_TOO_LARGE: the edited file would be larger than ${MAX_WRITE_BYTES / 1024} KiB; nothing was written`,
 					);
+				appManifestCheck(input.path, text, edited);
 				return change(
 					"company_edit",
 					input,

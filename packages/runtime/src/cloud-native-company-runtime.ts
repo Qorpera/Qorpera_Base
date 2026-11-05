@@ -33,6 +33,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { cloudAppTools } from "./cloud-folder-app-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
@@ -896,6 +897,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										timeZone: wake.time.timeZone,
 									}),
 									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
+									// Interface apps: pages the agent makes to show members its work (5 November 2026).
+									...cloudAppTools({ folder: folder.client, operations, identity }),
 								].filter(work.companyFile),
 								...(folderSearch
 									? [

@@ -84,6 +84,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"unpublish_site",
 	// Private app links (v195, 20260930562000): one port of an always-on machine at a password-protected link.
 	"share_app",
+	// Interface apps (5 November 2026): making or changing one, and posting it for every member.
+	"save_app",
+	"post_app",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
