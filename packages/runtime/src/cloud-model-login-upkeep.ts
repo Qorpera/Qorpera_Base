@@ -10,7 +10,9 @@ import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
  * - renews its idle logins itself, one at a time, so a login nobody used does not lapse before its
  *   next run. A run's own renewal and this one share the login's one renewal lock;
  * - ends at OpenAI the ChatGPT plan logins nothing uses any longer (their member disconnected or left),
- *   under the same lock.
+ *   under the same lock;
+ * - reads the usage of its logins at their usage limit that are due a reading, once a day and once a reset passed
+ *   (the daily usage check, migration 20260930575000), so work waiting on them goes on when they have room.
  */
 
 /** How often the broker looks for due logins. */
@@ -21,12 +23,21 @@ const RENEWALS_PER_PASS = 12;
 const REVOCATIONS_PER_PASS = 4;
 /** Taking a login gets this long; the renewal then runs to its own budget. */
 const TAKE_DEADLINE_MS = 15_000;
+/** Usage rechecks in one pass at most, each within this long (its reads take 8 s each, its saves 5 s). */
+const RECHECKS_PER_PASS = 4;
+const RECHECK_DEADLINE_MS = 30_000;
+
+/** The daily usage check's one step (CloudModelLoginUsage.recheck, bound to the company). */
+export interface CloudModelLoginRecheck {
+	recheck(signal: AbortSignal): Promise<"read" | "none">;
+}
 
 export class CloudModelLoginUpkeep {
 	readonly #vault: Pick<
 		CloudModelLoginVault,
 		"renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins" | "revokeUnused"
 	>;
+	readonly #usage: CloudModelLoginRecheck | undefined;
 	readonly #passEveryMs: number;
 	readonly #firstPassMs: number;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -39,12 +50,15 @@ export class CloudModelLoginUpkeep {
 			CloudModelLoginVault,
 			"renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins" | "revokeUnused"
 		>;
+		/** The daily usage check; without it the pass reads no usage. */
+		usage?: CloudModelLoginRecheck;
 		passEveryMs?: number;
 		/** The first pass waits this long; by default a random part of a pass, so the brokers that
 		 * share one helper do not all renew at once after a restart. */
 		firstPassMs?: number;
 	}) {
 		this.#vault = options.vault;
+		this.#usage = options.usage;
 		this.#passEveryMs = options.passEveryMs ?? PASS_EVERY_MS;
 		this.#firstPassMs = options.firstPassMs ?? 30_000 + Math.floor(Math.random() * this.#passEveryMs);
 	}
@@ -73,12 +87,28 @@ export class CloudModelLoginUpkeep {
 	 * (cloudVaultFailureClass): an error's text may name a login. */
 	async pass(): Promise<void> {
 		await this.#renewals();
+		await this.#rechecks();
 		for (let ended = 0; ended < REVOCATIONS_PER_PASS && !this.#closed; ended += 1) {
 			try {
 				if ((await this.#vault.revokeUnused(AbortSignal.timeout(TAKE_DEADLINE_MS))) !== "revoked") return;
 			} catch (error) {
 				console.error(
 					`Model login upkeep: ending an unused ChatGPT plan login failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+				);
+				return;
+			}
+		}
+	}
+
+	/** Due usage rechecks, one at a time, until none is due, one fails, or the pass has done enough. */
+	async #rechecks(): Promise<void> {
+		if (!this.#usage) return;
+		for (let read = 0; read < RECHECKS_PER_PASS && !this.#closed; read += 1) {
+			try {
+				if ((await this.#usage.recheck(AbortSignal.timeout(RECHECK_DEADLINE_MS))) === "none") return;
+			} catch (error) {
+				console.error(
+					`Model login upkeep: a usage recheck failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
 				);
 				return;
 			}

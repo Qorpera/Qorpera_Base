@@ -383,13 +383,13 @@ describe("conversation execution account", () => {
 		const f = setup(true, withUsage([80, 40]), select, undefined, choose);
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		// The cloud keeps the conversation's account at its limit (20260930059000).
+		// The cloud keeps the conversation's account at its limit (20260930059000); a message waits on it (20260930575000).
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		type(f.view, "Hello");
 		await settle();
-		expect(f.send().disabled).toBe(true);
+		expect(f.send().disabled).toBe(false);
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
 		expect(f.view.el.textContent).not.toContain("Your model accounts have reached");
 		expect(f.view.el.textContent).not.toContain("Choose a login to continue.");
@@ -734,11 +734,12 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// A message may still be sent: it waits on that account and goes on by itself once it resets (20260930575000).
 		type(f.view, "Hello");
 		await settle();
-		expect(f.send().disabled).toBe(true);
+		expect(f.send().disabled).toBe(false);
 		expect(f.view.el.textContent).toContain(
-			"This conversation's model account has reached its usage limit. Sending resumes when it resets.",
+			"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.",
 		);
 		f.listConnections.mockResolvedValue(withUsage([30, 40]));
 		refresh();
@@ -779,19 +780,19 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		// The conversation keeps its account and waits; the other login is offered, not taken.
+		// The conversation keeps its account, and a message waits on it; the other login is offered, not taken.
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		type(f.view, "Hello");
 		await settle();
-		expect(f.send().disabled).toBe(true);
+		expect(f.send().disabled).toBe(false);
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
-		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
 		expect(buttonNamed(f.view, "Use Model account 2")).toBeUndefined();
 		buttonNamed(f.view, "Use Model account 1")!.click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
 	});
 
 	it("offers the member's other login when the conversation's own login is disabled", async () => {
@@ -804,7 +805,7 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.view.el.textContent).toContain("This conversation's model account can't be used right now.");
-		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
 		buttonNamed(f.view, "Use Model account 1")!.click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
@@ -818,7 +819,7 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
-		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
 	});
 
 	it("moves an exhausted conversation through the cloud's choice only on the member's click", async () => {
@@ -830,7 +831,7 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("Or continue with another of your logins.");
+		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
 		expect(choose).not.toHaveBeenCalled();
 		select.mockResolvedValue(id(91));
 		buttonNamed(f.view, "Use Model account 1")!.click();

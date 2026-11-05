@@ -607,7 +607,7 @@ export class AgentRoutines {
 	/** Why the routine's login can't pay now (20260930095000). The routine keeps the login, and its runs wait until it
 	 * can pay again, or until someone chooses another. */
 	#waitWords(paid: WebRoutinePayer): string {
-		if (paid.waitsFor === "usage_limit") return t("Runs wait until this login's usage limit resets.");
+		if (paid.waitsFor === "usage_limit") return t("Runs go on by themselves when this login's usage limit resets.");
 		if (paid.waitsFor !== "sign_in") return t("Paused: no model account pays for it");
 		if (paid.payerUserId === this.#access?.memberId)
 			return t("Sign in to this login again in Settings → AI subscriptions to let it run.");

@@ -421,7 +421,13 @@ export async function runCloudSecretBrokerServiceMain(
 		});
 		// The vault's upkeep: it renews idle logins itself (Codex logins only with the helper, plan logins
 		// only with the plan client) and ends unused plan logins at OpenAI.
-		const upkeep = new CloudModelLoginUpkeep({ vault: modelLogins });
+		// Usage of vault logins needs no helper: the broker reads it with the pass, also for the daily usage check of the
+		// logins at their usage limit (20260930575000).
+		const modelLoginUsage = new CloudModelLoginUsage({ authority, keyring });
+		const upkeep = new CloudModelLoginUpkeep({
+			vault: modelLogins,
+			usage: { recheck: (signal) => modelLoginUsage.recheck(signal) },
+		});
 		// Disconnected and deleted connections' tokens, cancelled at the provider once a minute (D6).
 		// Without the connectors credential Google's revoke still works; GitHub's waits for its client.
 		const revocations = new CloudConnectorTokenRevocationUpkeep({
@@ -459,8 +465,7 @@ export async function runCloudSecretBrokerServiceMain(
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
 			modelLogins,
 			...(signIns ? { modelLoginSignIns: signIns } : {}),
-			// Usage of vault logins needs no helper: the broker reads it with the pass.
-			modelLoginUsage: new CloudModelLoginUsage({ authority, keyring }),
+			modelLoginUsage,
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();

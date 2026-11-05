@@ -1067,7 +1067,7 @@ describe("the element in the thread", () => {
 			],
 			[
 				"other",
-				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
 			],
 		] as const) {
 			const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), { events, viewer });
@@ -1075,7 +1075,7 @@ describe("the element in the thread", () => {
 			const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
 			expect(notes).toEqual([
 				first,
-				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
 				// Without the kernel's word, a spent budget is not taken for a usage limit.
 				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
 			]);

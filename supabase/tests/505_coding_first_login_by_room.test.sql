@@ -350,7 +350,8 @@ begin
 	perform pg_temp.f1_pays(pg_temp.f1('b'), pg_temp.f1('bBinding'), 'revoked logins never pay');
 end $$;
 
--- 6. An existing session keeps its payer: session 1 stays on A at its limit while B has all its room ----------------
+-- 6. An existing session keeps its payer: session 1 stays on A at its limit while B has all its room, and its next turn
+-- waits for A's room ------------------------------------------------------------------------------------------------
 -- The owner's coding machine is on exec-505, so the fleet picks it for the owner's sessions (as 928 §8).
 set local session_replication_role = replica;
 insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
@@ -377,8 +378,14 @@ begin
 	w := pg_temp.f1_worker('50500000-0000-4000-8000-0000000000b1');
 	perform pg_temp.base_assert(w.state = 'active' and w.sequence = 3 and w.owner_sponsor_binding_id = pg_temp.f1('aBinding')
 		and (pg_temp.f1_session(w.id)).phase = 'input_ready', 'the follow-up keeps A: ' || to_jsonb(w)::text);
-	-- And its turn's wake pays with A.
+	-- While A is at its limit the session's next turn waits: the executor claims nothing (20260930575000).
 	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-505', 60);
+	perform pg_temp.base_assert(v_claim is null and (pg_temp.f1_session(w.id)).phase = 'input_ready'
+		and public.qorpera_coding_session_waits_for_usage_limit(w.id),
+		'a turn was claimed at its login''s usage limit: ' || coalesce(v_claim::text, 'none'));
+	-- Once A has room again, the turn goes on by itself, and its wake pays with A.
+	perform pg_temp.f1_usage(pg_temp.f1('a'), 40);
 	v_claim := public.qorpera_claim_coding_session('exec-505', 60);
 	perform pg_temp.base_assert(v_claim ->> 'workerId' = w.id::text, 'the claim: ' || coalesce(v_claim::text, 'none'));
 	v_begin := public.qorpera_begin_coding_turn(w.id, (pg_temp.f1_session(w.id)).lease_token, '{}');
