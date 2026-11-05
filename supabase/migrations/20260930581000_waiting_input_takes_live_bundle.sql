@@ -5,16 +5,19 @@
 -- node's native host, which runs only the active bundle, refused it at once (NATIVE_BUNDLE_COMPATIBILITY), and the
 -- thread showed "Co-Founder did not finish this run" with Dismiss only. A release drains the runs in flight, but since
 -- 575000 a message or a first run may wait days at a usage limit, across any number of releases.
--- * A session input that has not begun (no run, no turn, not completed or failed) and waits in a queued turn request is
---   re-pinned to the active bundle when its company's materializer pass starts (qorpera_repin_waiting_inputs): it was
---   accepted, nothing has run it, and only the active bundle can. The provenance stays immutable otherwise: the trigger
---   allows only that change, only from that function.
--- * A session turn already refused this way (its run's bundle no longer active, failed with NATIVE_BUNDLE_COMPATIBILITY
---   in the last three days, nothing durable done, its conversation open, not yet resolved) is tried again once, as the
---   member's Try again would (qorpera_resolve_failed_execution_run 'retry'): its input is released and a new request
---   follows its own, on the same payer; the next pass pins it to the active bundle.
--- Locks: the re-pin takes the inputs FOR UPDATE SKIP LOCKED before the pass reads its work; one another transaction
--- holds is re-pinned by a later pass. Every new or changed body carries the marker 20260930581000.
+-- * A session input that has not begun (no run, no turn, not completed or failed) takes the active bundle when the
+--   materializer, holding its lock, is about to make its run, if the active bundle is a newer version of the input's
+--   own (qorpera_repin_waiting_input): it was accepted, nothing has run it, and only the active bundle can. Never
+--   backwards (a roll back leaves newer inputs as they are) and never another bundle key. The provenance stays
+--   immutable otherwise: the trigger allows only that change, only from that function.
+-- * A session turn refused this way (its run's bundle no longer active, its job failed with NATIVE_BUNDLE_COMPATIBILITY,
+--   nothing durable done, its conversation open, not released or discarded) is tried again once, as the member's Try
+--   again would (qorpera_resolve_failed_execution_run 'retry'): its input is released and a new request follows its own,
+--   on the same payer; the materializer then pins it to the active bundle. This runs when such a failure commits (a
+--   deferred trigger on the job) and once now, for the turns refused before (the last three days). A failure here never
+--   undoes the job's failure or this migration: the turn stays failed, as before.
+-- Locks: the re-pin changes a row the materializer already holds. The retry takes the run and job, then the
+-- conversation, then the input, as resolve does. Every new or changed body carries the marker 20260930581000.
 
 set local lock_timeout = '3s';
 
@@ -33,117 +36,147 @@ end $$;
 select pg_temp.lb581_patch('public.qorpera_pin_session_input_provenance()'::regprocedure,
 	$old$is distinct from (old.actor_kind,old.runtime_bundle_id,old.runtime_bundle_sha256) then$old$,
 	$new$is distinct from (old.actor_kind,old.runtime_bundle_id,old.runtime_bundle_sha256)
-		-- 20260930581000: an input that waited across a release takes the active bundle (qorpera_repin_waiting_inputs).
+		-- 20260930581000: an input that waited across a release takes the active bundle (qorpera_repin_waiting_input).
 		and not (current_setting('qorpera.input_bundle_repin', true) = 'on' and new.actor_kind = old.actor_kind
 			and old.completed_at is null and old.failed_at is null and old.execution_run_id is null and old.turn_id is null
 			and (new.runtime_bundle_id, new.runtime_bundle_sha256) = (select active.runtime_bundle_id,
 				active.runtime_bundle_sha256 from public.qorpera_active_runtime_bundle as active where active.singleton)) then$new$);
 
--- A company's inputs that wait in queued turn requests under a bundle that is no longer active take the active one.
-create function public.qorpera_repin_waiting_inputs(p_profile_id uuid)
-returns integer
+-- An unbegun input under an older version of the active bundle's key takes the active bundle. The caller holds its row.
+create function public.qorpera_repin_waiting_input(p_input_id uuid)
+returns boolean
 language plpgsql security definer set search_path = '' as $$
-declare v_bundle public.qorpera_active_runtime_bundle%rowtype; v_count integer;
+declare v_bundle public.qorpera_active_runtime_bundle%rowtype;
 begin
-	-- 20260930581000
-	select * into strict v_bundle from public.qorpera_active_runtime_bundle where singleton;
-	if not exists (select 1 from public.qorpera_session_turn_requests as request
-		join public.qorpera_session_inputs as input on input.id = request.input_id
-		where request.profile_id = p_profile_id and request.status = 'queued'
-			and (input.runtime_bundle_id, input.runtime_bundle_sha256)
-				is distinct from (v_bundle.runtime_bundle_id, v_bundle.runtime_bundle_sha256)) then
-		return 0;
+	-- 20260930581000: the active bundle read FOR SHARE, so an activation waits for this change, not the other way.
+	select * into strict v_bundle from public.qorpera_active_runtime_bundle where singleton for share;
+	if not exists (select 1 from public.qorpera_session_inputs as input
+		join public.qorpera_runtime_bundles as own on own.id = input.runtime_bundle_id
+		join public.qorpera_runtime_bundles as active on active.id = v_bundle.runtime_bundle_id
+		where input.id = p_input_id and input.completed_at is null and input.failed_at is null
+			and input.execution_run_id is null and input.turn_id is null
+			and input.runtime_bundle_id <> v_bundle.runtime_bundle_id
+			and own.bundle_key = active.bundle_key and own.version < active.version) then
+		return false;
 	end if;
 	perform set_config('qorpera.input_bundle_repin', 'on', true);
-	update public.qorpera_session_inputs as input
+	update public.qorpera_session_inputs
 	set runtime_bundle_id = v_bundle.runtime_bundle_id, runtime_bundle_sha256 = v_bundle.runtime_bundle_sha256
-	where input.id in (select waiting.id from public.qorpera_session_inputs as waiting
-		where waiting.id in (select request.input_id from public.qorpera_session_turn_requests as request
-				where request.profile_id = p_profile_id and request.status = 'queued')
-			and waiting.completed_at is null and waiting.failed_at is null and waiting.execution_run_id is null
-			and waiting.turn_id is null
-			and (waiting.runtime_bundle_id, waiting.runtime_bundle_sha256)
-				is distinct from (v_bundle.runtime_bundle_id, v_bundle.runtime_bundle_sha256)
-		for update skip locked);
-	get diagnostics v_count = row_count;
+	where id = p_input_id;
 	perform set_config('qorpera.input_bundle_repin', '', true);
-	return v_count;
+	return true;
 end $$;
 
--- Session turns refused because their bundle was no longer active, tried again once, as the member's Try again would.
-create function public.qorpera_retry_runs_refused_for_retired_bundle()
-returns integer
+-- A session turn refused because its bundle was no longer active, tried again once, as the member's Try again would.
+-- True when it was; false when it is not such a turn, or its conversation or input moved on.
+create function public.qorpera_retry_run_refused_for_retired_bundle(p_run_id uuid)
+returns boolean
 language plpgsql security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_request public.qorpera_session_turn_requests%rowtype;
-	v_retry uuid; v_changed integer; v_count integer := 0;
+	v_retry uuid := extensions.gen_random_uuid(); v_changed integer;
 begin
 	-- 20260930581000
-	for v_run in select run.* from public.qorpera_execution_runs as run
-		join public.qorpera_runner_jobs as job on job.id = run.job_id and job.run_id = run.id and job.status = 'failed'
-		where run.source_kind = 'session_turn'
-			and run.runtime_bundle_sha256 <> (select active.runtime_bundle_sha256
-				from public.qorpera_active_runtime_bundle as active where active.singleton)
-			and exists (select 1 from public.qorpera_execution_run_events as failed
-				where failed.run_id = run.id and failed.event_type = 'failed'
-					and failed.created_at > statement_timestamp() - interval '3 days'
-					and failed.payload ->> 'error' like '%[code=NATIVE_BUNDLE_COMPATIBILITY:%')
-			and not exists (select 1 from public.qorpera_execution_run_events as resolved where resolved.run_id = run.id
-				and resolved.event_type in ('recovery_released', 'recovery_discarded', 'recovery_acknowledged'))
-			and not exists (select 1 from public.qorpera_run_operation_receipts as receipt where receipt.run_id = run.id)
-			and not exists (select 1 from public.qorpera_company_proposals as proposal
-				where proposal.execution_kind = 'run' and proposal.execution_id = run.id and proposal.status = 'open')
-		order by run.created_at, run.id
-		for update of run, job skip locked
-	loop
-		select request.* into v_request from public.qorpera_session_turn_requests as request
-		join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
-		where request.id = v_run.source_id and request.run_id = v_run.id and request.status = 'materialized'
-			and request.session_id = v_run.session_id and array[request.input_id] = v_run.input_ids
-		for no key update of session;
-		continue when not found;
-		if (select count(*) from public.qorpera_session_inputs as input where input.id = any(v_run.input_ids)
-			and input.execution_run_id = v_run.id and input.completed_at is null) <> cardinality(v_run.input_ids) then
-			continue;
-		end if;
-		update public.qorpera_session_inputs
-		set execution_run_id = null, failed_at = null, failure_reason = null
-		where id = any(v_run.input_ids) and execution_run_id = v_run.id and completed_at is null;
-		get diagnostics v_changed = row_count;
-		if v_changed <> cardinality(v_run.input_ids) then
-			raise exception '20260930581000: the refused run''s inputs changed: %', v_run.id; end if;
-		v_retry := extensions.gen_random_uuid();
-		insert into public.qorpera_execution_run_events (run_id, event_type, payload)
-		values (v_run.id, 'recovery_released', jsonb_build_object('action', 'retry', 'resolved_by_user_id', null,
-			'retry_turn_request_id', v_retry, 'reason', 'runtime_bundle_retired'));
-		update public.qorpera_shared_sessions set updated_at = statement_timestamp() where id = v_run.session_id;
-		insert into public.qorpera_session_turn_requests(id, profile_id, session_id, client_request_id, input_id,
-			requested_by_user_id, sponsor_mode, sponsor_binding_id, sponsor_version, sponsored_by_user_id,
-			requested_sponsor_user_id, compute_identity_id, logical_computer_id, worker_class, required_capability, job_type,
-			publication_mode, review_policy_key, reviewer_staff_ids, status, sponsored_at, initial_execution_selection,
-			retry_of_request_id)
-		values (v_retry, v_request.profile_id, v_request.session_id, v_retry, v_request.input_id,
-			v_request.requested_by_user_id, v_request.sponsor_mode, v_request.sponsor_binding_id, v_request.sponsor_version,
-			v_request.sponsored_by_user_id, v_request.requested_sponsor_user_id, v_request.compute_identity_id,
-			v_request.logical_computer_id, v_request.worker_class, v_request.required_capability, v_request.job_type,
-			v_request.publication_mode, v_request.review_policy_key, v_request.reviewer_staff_ids, 'queued',
-			v_request.sponsored_at, v_request.initial_execution_selection, v_request.id);
-		v_count := v_count + 1;
-	end loop;
-	return v_count;
+	select run.* into v_run from public.qorpera_execution_runs as run
+	join public.qorpera_runner_jobs as job on job.id = run.job_id and job.run_id = run.id and job.status = 'failed'
+	where run.id = p_run_id and run.source_kind = 'session_turn'
+		and job.last_error like '%[code=NATIVE_BUNDLE_COMPATIBILITY:%'
+		and run.runtime_bundle_sha256 <> (select active.runtime_bundle_sha256
+			from public.qorpera_active_runtime_bundle as active where active.singleton)
+		and not exists (select 1 from public.qorpera_execution_run_events as resolved where resolved.run_id = run.id
+			and resolved.event_type in ('recovery_released', 'recovery_discarded'))
+		and not exists (select 1 from public.qorpera_run_operation_receipts as receipt where receipt.run_id = run.id)
+		and not exists (select 1 from public.qorpera_company_proposals as proposal
+			where proposal.execution_kind = 'run' and proposal.execution_id = run.id and proposal.status = 'open')
+	for update of run, job;
+	if not found then return false; end if;
+	select request.* into v_request from public.qorpera_session_turn_requests as request
+	join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
+	where request.id = v_run.source_id and request.run_id = v_run.id and request.status = 'materialized'
+		and request.session_id = v_run.session_id and array[request.input_id] = v_run.input_ids
+	for no key update of session;
+	if not found then return false; end if;
+	update public.qorpera_session_inputs
+	set execution_run_id = null, failed_at = null, failure_reason = null
+	where id = any(v_run.input_ids) and execution_run_id = v_run.id and completed_at is null;
+	get diagnostics v_changed = row_count;
+	if v_changed <> cardinality(v_run.input_ids) then
+		raise exception '20260930581000: the refused run''s inputs changed: %', v_run.id; end if;
+	insert into public.qorpera_execution_run_events (run_id, event_type, payload)
+	values (v_run.id, 'recovery_released', jsonb_build_object('action', 'retry', 'resolved_by_user_id', null,
+		'retry_turn_request_id', v_retry, 'reason', 'runtime_bundle_retired'));
+	update public.qorpera_shared_sessions set updated_at = statement_timestamp() where id = v_run.session_id;
+	insert into public.qorpera_session_turn_requests(id, profile_id, session_id, client_request_id, input_id,
+		requested_by_user_id, sponsor_mode, sponsor_binding_id, sponsor_version, sponsored_by_user_id,
+		requested_sponsor_user_id, compute_identity_id, logical_computer_id, worker_class, required_capability, job_type,
+		publication_mode, review_policy_key, reviewer_staff_ids, status, sponsored_at, initial_execution_selection,
+		retry_of_request_id)
+	values (v_retry, v_request.profile_id, v_request.session_id, v_retry, v_request.input_id,
+		v_request.requested_by_user_id, v_request.sponsor_mode, v_request.sponsor_binding_id, v_request.sponsor_version,
+		v_request.sponsored_by_user_id, v_request.requested_sponsor_user_id, v_request.compute_identity_id,
+		v_request.logical_computer_id, v_request.worker_class, v_request.required_capability, v_request.job_type,
+		v_request.publication_mode, v_request.review_policy_key, v_request.reviewer_staff_ids, 'queued',
+		v_request.sponsored_at, v_request.initial_execution_selection, v_request.id);
+	return true;
 end $$;
 
-revoke all on function public.qorpera_repin_waiting_inputs(uuid), public.qorpera_retry_runs_refused_for_retired_bundle()
+revoke all on function public.qorpera_repin_waiting_input(uuid), public.qorpera_retry_run_refused_for_retired_bundle(uuid)
 	from public, anon, authenticated, service_role;
 
--- The materializer's pass re-pins its company's waiting inputs before it reads its work.
+-- When such a failure commits, its turn goes again. A failure of the retry leaves the turn failed, as before.
+create function public.qorpera_retry_refused_run_on_failure()
+returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+	-- 20260930581000
+	begin
+		perform public.qorpera_retry_run_refused_for_retired_bundle(new.run_id);
+	exception when others then
+		raise warning '20260930581000: the refused run % was not tried again: %', new.run_id, sqlstate;
+	end;
+	return null;
+end $$;
+revoke all on function public.qorpera_retry_refused_run_on_failure() from public, anon, authenticated, service_role;
+create constraint trigger qorpera_runner_jobs_retry_refused_for_retired_bundle
+	after update of status on public.qorpera_runner_jobs
+	deferrable initially deferred
+	for each row when (new.status = 'failed' and old.status is distinct from 'failed' and new.run_id is not null
+		and new.last_error like '%[code=NATIVE_BUNDLE_COMPATIBILITY:%')
+	execute function public.qorpera_retry_refused_run_on_failure();
+
+-- The materializer re-pins a waiting input it holds before it makes its run.
 select pg_temp.lb581_patch('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure,
-	$old$-- The work, read without a lock: it names the rows to lock in rank order.$old$,
-	$new$-- 20260930581000: inputs that waited across a release take the active bundle, the only one a node runs.
-	perform public.qorpera_repin_waiting_inputs(p_profile_id);
+	$old$				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			v_reason := null;
+			select * into v_staff$old$,
+	$new$				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			-- 20260930581000: an input that waited across a release takes the active bundle, the only one a node runs.
+			if public.qorpera_repin_waiting_input(v_input.id) then
+				select * into v_input from public.qorpera_session_inputs where id = v_request.input_id;
+			end if;
+			v_reason := null;
+			select * into v_staff$new$);
 
-	-- The work, read without a lock: it names the rows to lock in rank order.$new$);
-
--- The turns already refused this way go again once.
-select public.qorpera_retry_runs_refused_for_retired_bundle();
+-- The turns already refused this way (the last three days) go again once; one that cannot stays failed.
+do $$
+declare v_run uuid;
+begin
+	for v_run in select run.id from public.qorpera_execution_runs as run
+		join public.qorpera_runner_jobs as job on job.id = run.job_id and job.status = 'failed'
+		where run.source_kind = 'session_turn' and job.last_error like '%[code=NATIVE_BUNDLE_COMPATIBILITY:%'
+			and coalesce(job.finished_at, run.created_at) > statement_timestamp() - interval '3 days'
+		order by run.created_at, run.id
+	loop
+		begin
+			if public.qorpera_retry_run_refused_for_retired_bundle(v_run) then
+				raise notice '20260930581000: the refused run % goes again', v_run; end if;
+		exception when others then
+			raise warning '20260930581000: the refused run % was not tried again: %', v_run, sqlstate;
+		end;
+	end loop;
+end $$;
 
 drop function pg_temp.lb581_patch(regprocedure, text, text);

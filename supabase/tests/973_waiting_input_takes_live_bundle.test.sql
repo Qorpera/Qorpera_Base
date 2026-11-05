@@ -6,9 +6,9 @@
 -- it is tried again once, on the same payer, and its next run is pinned to Y. (b) Still waiting when Y is activated,
 -- the kickoff's run is made under Y. An input's bundle stays immutable otherwise.
 
-create function pg_temp.p973_input() returns uuid language sql as $$
+create function pg_temp.p973_input(p_staff uuid default '92400000-0000-4000-8000-000000000034') returns uuid language sql as $$
 	select input_id from public.qorpera_agent_first_runs
-	where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = '92400000-0000-4000-8000-000000000034'
+	where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = p_staff
 $$;
 create function pg_temp.p973_reading(p_used numeric) returns void language sql as $$
 	insert into public.qorpera_native_provider_account_metadata(connection_id,connection_version,provider_account_usage)
@@ -45,25 +45,26 @@ select set_config('qorpera_test.p973_x', (select runtime_bundle_sha256 from publ
 select pg_temp.base_assert((select runtime_bundle_sha256 = current_setting('qorpera_test.p973_x') and execution_run_id is null
 	from public.qorpera_session_inputs where id = pg_temp.p973_input()), 'the kickoff does not wait under X');
 
--- (a) A has room; the kickoff's run is made under X; it fails as the node refuses it after the release to Y.
+-- (a) A has room; the kickoff's run is made under X. After the release to Y the node refuses it; when that failure
+-- commits, the turn goes again once, on the same payer, and its next run is pinned to Y.
 savepoint refused;
 select pg_temp.p973_reading(30);
 select set_config('qorpera_test.p973_run', (pg_temp.base_materialize() -> 'run_ids' ->> 0), true);
 select pg_temp.base_assert((select runtime_bundle_sha256 = current_setting('qorpera_test.p973_x')
 	from public.qorpera_execution_runs where id = current_setting('qorpera_test.p973_run')::uuid), 'the run is not under X');
-update public.qorpera_runner_jobs set status = 'failed', finished_at = statement_timestamp(),
-	last_error = 'Native provider bridge request failed (422) [code=NATIVE_BUNDLE_COMPATIBILITY:UNKNOWN]'
-	where run_id = current_setting('qorpera_test.p973_run')::uuid;
+select set_config('qorpera_test.p973_y', pg_temp.p973_release(), true);
 update public.qorpera_session_inputs set failed_at = statement_timestamp(), failure_reason = 'Native provider bridge request failed'
 	where id = pg_temp.p973_input();
 insert into public.qorpera_execution_run_events(run_id, event_type, payload)
 values (current_setting('qorpera_test.p973_run')::uuid, 'failed',
 	'{"error":"Native provider bridge request failed (422) [code=NATIVE_BUNDLE_COMPATIBILITY:UNKNOWN]","attempt_count":1}');
--- Under X itself it is not retried: X is still the active bundle.
-select pg_temp.base_assert(public.qorpera_retry_runs_refused_for_retired_bundle() = 0, 'a refusal under the active bundle was retried');
-select set_config('qorpera_test.p973_y', pg_temp.p973_release(), true);
-select pg_temp.base_assert(public.qorpera_retry_runs_refused_for_retired_bundle() = 1, 'the refused run was not tried again');
-select pg_temp.base_assert(public.qorpera_retry_runs_refused_for_retired_bundle() = 0, 'the refused run was tried again twice');
+update public.qorpera_runner_jobs set status = 'failed', finished_at = statement_timestamp(),
+	last_error = 'Native provider bridge request failed (422) [code=NATIVE_BUNDLE_COMPATIBILITY:UNKNOWN]'
+	where run_id = current_setting('qorpera_test.p973_run')::uuid;
+-- The failure commits (the deferred trigger runs).
+set constraints public.qorpera_runner_jobs_retry_refused_for_retired_bundle immediate;
+select pg_temp.base_assert(not public.qorpera_retry_run_refused_for_retired_bundle(current_setting('qorpera_test.p973_run')::uuid),
+	'the refused run was tried again twice');
 do $$
 declare v_retry public.qorpera_session_turn_requests%rowtype; v_input public.qorpera_session_inputs%rowtype;
 	v_pass jsonb; v_run public.qorpera_execution_runs%rowtype;
@@ -82,11 +83,24 @@ begin
 	select * into strict v_run from public.qorpera_execution_runs where id = (v_pass -> 'run_ids' ->> 0)::uuid;
 	perform pg_temp.base_assert(v_run.runtime_bundle_sha256 = current_setting('qorpera_test.p973_y')
 		and v_input.execution_run_id = v_run.id, 'the retry''s run is not under Y');
+	perform pg_temp.base_assert(coalesce(current_setting('qorpera.input_bundle_repin', true), '') = '',
+		'the re-pin left its flag on');
 end $$;
 rollback to savepoint refused;
 
--- (b) Still waiting when Y is activated: the kickoff's run is made under Y.
+-- (b) Still waiting when Y is activated: the kickoff's run is made under Y. Before that, its bundle changes neither
+-- outside the re-pin nor, within it, to a bundle that is not the active one.
 select set_config('qorpera_test.p973_y', pg_temp.p973_release(), true);
+select pg_temp.base_error(format($sql$update public.qorpera_session_inputs set runtime_bundle_sha256 = %L where id = %L$sql$,
+	current_setting('qorpera_test.p973_y'), pg_temp.p973_input()), '42501', 'Session input provenance is immutable');
+insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
+select b.bundle_key, b.version + 1, b.manifest || '{"fixtureZ973":true}'::jsonb,
+	encode(extensions.digest(convert_to((b.manifest || '{"fixtureZ973":true}'::jsonb)::text, 'utf8'), 'sha256'), 'hex')
+from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
+select pg_temp.base_error(format($sql$update public.qorpera_session_inputs set runtime_bundle_id = z.id, runtime_bundle_sha256 = z.sha256
+	from public.qorpera_runtime_bundles z where z.manifest ? 'fixtureZ973' and qorpera_session_inputs.id = %L
+		and set_config('qorpera.input_bundle_repin','on',true) = 'on'$sql$, pg_temp.p973_input()),
+	'42501', 'Session input provenance is immutable');
 select pg_temp.p973_reading(30);
 do $$
 declare v_pass jsonb := pg_temp.base_materialize(); v_run public.qorpera_execution_runs%rowtype;
@@ -98,18 +112,23 @@ begin
 			= current_setting('qorpera_test.p973_y'), 'the waiting kickoff''s run is not under Y');
 end $$;
 
--- An input's bundle stays immutable otherwise: outside the re-pin, and within it to any bundle but the active one.
-select pg_temp.base_error(format($sql$update public.qorpera_session_inputs set runtime_bundle_sha256 = %L where id = %L$sql$,
-	current_setting('qorpera_test.p973_x'), pg_temp.p973_input()), '42501', 'Session input provenance is immutable');
-select pg_temp.base_error(format($sql$update public.qorpera_session_inputs set runtime_bundle_sha256 = %L
-	where id = %L and set_config('qorpera.input_bundle_repin','on',true) = 'on'$sql$,
-	current_setting('qorpera_test.p973_x'), pg_temp.p973_input()), '42501', 'Session input provenance is immutable');
+-- (c) Never backwards: Eve's kickoff waits under Y; rolled back to X, it stays Y.
+select pg_temp.p973_reading(100);
+select pg_temp.base_commit(pg_temp.base_owner(), 'p973-hire-eve', jsonb_build_array(
+	pg_temp.base_hire('eve', '92400000-0000-4000-8000-000000000035', 'Eve'))) \g /dev/null
+update public.qorpera_active_runtime_bundle set (runtime_bundle_id, runtime_bundle_sha256) =
+	(select id, sha256 from public.qorpera_runtime_bundles where sha256 = current_setting('qorpera_test.p973_x'))
+where singleton;
+select pg_temp.base_assert(not public.qorpera_repin_waiting_input(pg_temp.p973_input('92400000-0000-4000-8000-000000000035'))
+	and (select runtime_bundle_sha256 from public.qorpera_session_inputs
+		where id = pg_temp.p973_input('92400000-0000-4000-8000-000000000035')) = current_setting('qorpera_test.p973_y'),
+	'a roll back re-pinned a newer input');
 
 -- The new helpers are the database's own.
-select pg_temp.base_assert(not has_function_privilege('authenticated','public.qorpera_repin_waiting_inputs(uuid)','execute')
-	and not has_function_privilege('service_role','public.qorpera_repin_waiting_inputs(uuid)','execute')
-	and not has_function_privilege('authenticated','public.qorpera_retry_runs_refused_for_retired_bundle()','execute')
-	and not has_function_privilege('service_role','public.qorpera_retry_runs_refused_for_retired_bundle()','execute'),
+select pg_temp.base_assert(not has_function_privilege('authenticated','public.qorpera_repin_waiting_input(uuid)','execute')
+	and not has_function_privilege('service_role','public.qorpera_repin_waiting_input(uuid)','execute')
+	and not has_function_privilege('authenticated','public.qorpera_retry_run_refused_for_retired_bundle(uuid)','execute')
+	and not has_function_privilege('service_role','public.qorpera_retry_run_refused_for_retired_bundle(uuid)','execute'),
 	'API clients can call the re-pin helpers');
 
 rollback;
