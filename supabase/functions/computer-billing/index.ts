@@ -57,6 +57,20 @@ const store: BillingStore = {
 	},
 };
 
+const goodWill: BillingStore = {
+	async call(method, args) {
+		const { data, error } = await supabase.rpc("qorpera_good_will_billing", {
+			p_key: billingKey,
+			p_method: method,
+			p_args: args,
+		});
+		if (error) throw new BillingStoreError(error.code ?? undefined, error.message);
+		if (!data || typeof data !== "object" || Array.isArray(data))
+			throw new BillingStoreError(undefined, `Good will ${method} answered without an object`);
+		return data as Record<string, unknown>;
+	},
+};
+
 const auth: MemberAuth = {
 	async member(token) {
 		const { data, error } = await supabase.auth.getUser(token);
@@ -72,7 +86,8 @@ const options = {
 	returnUrl,
 	portalConfiguration: Deno.env.get("QORPERA_STRIPE_PORTAL_CONFIGURATION")?.trim() || undefined,
 	allowedOrigins: allowedOrigins(),
+	billingKey,
 };
 const stripe = createStripeApi(stripeKey);
 
-Deno.serve((request) => handleComputerBilling(request, { store, stripe, auth, options }));
+Deno.serve((request) => handleComputerBilling(request, { store, goodWill, stripe, auth, options }));
