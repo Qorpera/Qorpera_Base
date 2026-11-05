@@ -8,10 +8,12 @@
 -- * A conversation's login is the one the member's own turn waits on there, while it waits at that login's usage limit:
 --   the thread says so and offers the member's other logins ("Or use another of your logins now").
 -- * The member's pick of a login there (qorpera_choose_member_session_account) also takes their own turns waiting at
---   another login's limit in that conversation, when the picked login has room: they go on, on it. That is the member's
---   own permission to pay with it. A wake (a post in a thread, a routine's run) never changes payer (575000), and nothing
---   moves without the pick.
--- Locks: the pick takes the waiting requests FOR UPDATE SKIP LOCKED after the conversation's row, as before; one the
+--   another login's limit in that conversation: they go on, on it, once it has room and nothing earlier in the
+--   conversation holds them. That is the member's own permission to pay with it; so the thread keeps the pick. Never
+--   onto or off a ChatGPT plan (20260928359950: no work another payer started moves to a plan), and never from a login
+--   that may work while the member is away onto one that may not (the run's follow-up work would be refused). A wake (a
+--   post in a thread, a routine's run) never changes payer (575000), and nothing moves without the pick.
+-- Locks: the pick takes only those requests, FOR UPDATE SKIP LOCKED, after the conversation's row, as before; one the
 -- materializer holds stays as it is. Every new or changed body carries the marker 20260930580000.
 
 set local lock_timeout = '3s';
@@ -28,13 +30,15 @@ begin
 end $$;
 
 -- The member's own turns in a conversation that wait at their login's usage limit: queued, not begun, paid by one of
--- their logins, oldest first.
+-- their logins, oldest first, with the login (connection) and whether it may work while they are away.
 create function public.qorpera_member_session_waiting_turns(p_profile_id uuid, p_session_id uuid, p_user_id uuid)
-returns table(request_id uuid, sponsor_binding_id uuid)
+returns table(request_id uuid, connection_id uuid, allow_autonomous boolean, created_at timestamptz)
 language sql stable security definer set search_path = '' as $$
 	-- 20260930580000
-	select request.id, request.sponsor_binding_id
+	select request.id, sponsor.provider_connection_id, sponsor.allow_autonomous, request.created_at
 	from public.qorpera_session_turn_requests as request
+	join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = request.sponsor_binding_id
+		and sponsor.version = request.sponsor_version
 	join public.qorpera_session_inputs as input on input.id = request.input_id and input.session_id = request.session_id
 	where request.profile_id = p_profile_id and request.session_id = p_session_id and request.status = 'queued'
 		and request.sponsor_mode = 'member_connection' and request.sponsored_by_user_id = p_user_id
@@ -53,8 +57,8 @@ select pg_temp.lp580_patch('public.qorpera_select_member_session_account(uuid,uu
     select candidate.* into v_choice
         from public.qorpera_member_session_waiting_turns(p_profile_id,p_session_id,v_user) as waiting
         join public.qorpera_member_live_accounts(p_profile_id,v_user) as candidate
-            on candidate.binding_id = waiting.sponsor_binding_id
-        limit 1;
+            on candidate.connection_id = waiting.connection_id
+        order by waiting.created_at,waiting.request_id,candidate.binding_id limit 1;
     if found then
         insert into public.qorpera_member_session_accounts(profile_id,session_id,user_id,connection_id,sponsor_binding_id)
             values(p_profile_id,p_session_id,v_user,v_choice.connection_id,v_choice.binding_id)
@@ -66,20 +70,26 @@ select pg_temp.lp580_patch('public.qorpera_select_member_session_account(uuid,uu
     end if;
     select * into v_saved from public.qorpera_member_session_accounts$new$);
 
--- The member's pick takes their waiting turns here, when the picked login has room.
+-- The member's pick takes their waiting turns here.
 select pg_temp.lp580_patch('public.qorpera_choose_member_session_account(uuid,uuid,uuid)'::regprocedure,
 	$old$return v_choice.connection_id;$old$,
 	$new$-- 20260930580000: the member's own pick is their permission to pay with it for their turns waiting here at
-    -- another login's usage limit: they go on, on it. One the materializer holds is skipped.
-    if not public.qorpera_sponsor_waits_for_usage_limit(v_choice.binding_id, v_choice.sponsor_version) then
+    -- another login's usage limit: they go on, on it. Never onto or off a ChatGPT plan, never from a login that works
+    -- while they are away onto one that does not; one the materializer holds is skipped.
+    if not public.qorpera_connection_is_chatgpt_plan(v_choice.connection_id) then
         update public.qorpera_session_turn_requests as request
             set sponsor_binding_id = v_choice.binding_id, sponsor_version = v_choice.sponsor_version
-            where request.id in (select waiting.request_id
-                    from public.qorpera_member_session_waiting_turns(p_profile_id,p_session_id,v_user) as waiting
-                    where waiting.sponsor_binding_id <> v_choice.binding_id)
-                and request.compute_identity_id = v_choice.compute_identity_id
-                and request.id in (select locked.id from public.qorpera_session_turn_requests as locked
-                    where locked.session_id = p_session_id and locked.status = 'queued' for update skip locked);
+            where request.id in (select locked.id from public.qorpera_session_turn_requests as locked
+                    where locked.id in (select waiting.request_id
+                        from public.qorpera_member_session_waiting_turns(p_profile_id,p_session_id,v_user) as waiting
+                        where waiting.connection_id <> v_choice.connection_id
+                            and not public.qorpera_connection_is_chatgpt_plan(waiting.connection_id)
+                            and (not waiting.allow_autonomous or coalesce((select sponsor.allow_autonomous
+                                from public.qorpera_execution_sponsor_versions as sponsor
+                                where sponsor.binding_id = v_choice.binding_id
+                                    and sponsor.version = v_choice.sponsor_version), false)))
+                    for update skip locked)
+                and request.compute_identity_id = v_choice.compute_identity_id;
     end if;
     return v_choice.connection_id;$new$);
 

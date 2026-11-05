@@ -3,8 +3,8 @@
 -- on 5 Nov 2026: a company's Co-Founder first run waited on the founder's used-up login; the founder connected a second
 -- login with room, opening the thread saved it as the thread's login, and nothing showed the waiting run or offered to
 -- move it. Here the owner's login A is at its limit when Dana is hired: her kickoff waits on A. The owner connects B with
--- room. Dana's thread says A (the waiting turn's), also over a saved B; picking a login at its limit moves nothing;
--- picking B with room moves the kickoff to B, and it runs there.
+-- room. Dana's thread says A (the waiting turn's), also over a saved B; a pick moves the kickoff to the picked login
+-- and the thread keeps it; picking B with room moves the kickoff to B, and it runs there.
 
 create function pg_temp.p956_row(p_key text) returns uuid language plpgsql as $$
 begin
@@ -107,13 +107,26 @@ select pg_temp.base_assert((select connection_id from public.qorpera_member_sess
 	where session_id = pg_temp.p956('session') and user_id = '92400000-0000-4000-8000-000000000001') = pg_temp.p956('a'),
 	'the thread does not keep the waiting turn''s login');
 
--- 4. A pick of B while B is at its limit too moves nothing.
+-- 4. A pick of B while B is at its limit too moves the kickoff to B, where it waits, and the thread keeps the pick; a
+-- pick of A takes it back.
 select pg_temp.p956_reading(pg_temp.p956('b'), 100);
 select pg_temp.base_assert(pg_temp.p956_as_owner(format(
 		'select public.qorpera_choose_member_session_account(%L,%L,%L)::text', '92400000-0000-4000-8000-000000000010',
 		pg_temp.p956('session'), pg_temp.p956('b'))) = pg_temp.p956('b')::text, 'the owner could not pick B at its limit');
+select pg_temp.base_assert((pg_temp.p956_request()).sponsor_binding_id = pg_temp.p956('bBinding')
+	and public.qorpera_sponsor_waits_for_usage_limit(pg_temp.p956('bBinding'), 1), 'the pick of B did not take the kickoff');
+select pg_temp.base_assert(pg_temp.p956_as_owner(format(
+		'select public.qorpera_select_member_session_account(%L,%L)::text', '92400000-0000-4000-8000-000000000010',
+		pg_temp.p956('session'))) = pg_temp.p956('b')::text, 'the thread did not keep the pick of B');
+select pg_temp.base_assert(pg_temp.p956_as_owner(format(
+		'select public.qorpera_choose_member_session_account(%L,%L,%L)::text', '92400000-0000-4000-8000-000000000010',
+		pg_temp.p956('session'), pg_temp.p956('a'))) = pg_temp.p956('a')::text, 'the owner could not pick A');
 select pg_temp.base_assert((pg_temp.p956_request()).sponsor_binding_id = pg_temp.p956('aBinding'),
-	'a pick of a used-up login moved the kickoff');
+	'the pick of A did not take the kickoff back');
+-- Another member's pick never takes the owner's turn: Bob is no member with a login here, so choose refuses.
+select pg_temp.base_assert(
+	(select count(*) from public.qorpera_member_session_waiting_turns('92400000-0000-4000-8000-000000000010',
+		pg_temp.p956('session'), '92400000-0000-4000-8000-000000000002')) = 0, 'another member sees the owner''s turn as theirs');
 
 -- 5. The owner's pick of B with room moves the kickoff to B, and it runs there.
 select pg_temp.p956_reading(pg_temp.p956('b'), 20);
