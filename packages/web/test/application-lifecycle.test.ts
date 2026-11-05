@@ -545,7 +545,7 @@ describe("account and route ownership", () => {
 	it("loads entitlement and friends afresh for the new account", async () => {
 		const { api, auth, root } = mounted("#/account");
 		await draw();
-		expect(root.textContent).toContain("Account A private plan");
+		expect(api.getAccountEntitlement).toHaveBeenCalledTimes(1);
 		const entitlement: HostedAccountEntitlement = {
 			planKey: "Account B plan",
 			billingMode: "fixture",
@@ -557,8 +557,8 @@ describe("account and route ownership", () => {
 		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
 		auth(userB);
 		await draw();
-		expect(root.textContent).toContain("Account B plan");
-		expect(root.textContent).not.toContain("Account A private plan");
+		// The plan is no longer shown (good will replaced it), but the new account's entitlement is read afresh.
+		expect(api.getAccountEntitlement).toHaveBeenCalledTimes(2);
 		expect(api.listFriends).not.toHaveBeenCalled();
 		const openFriends = () => {
 			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
@@ -576,40 +576,63 @@ describe("account and route ownership", () => {
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
 	});
 
-	it("opens the account page back from Stripe, thanks the member once and reads the plan again", async () => {
-		history.replaceState(null, "", "/#/account?checkout=done");
+	it("opens the account page back from Stripe's card page and says the card is saved, once", async () => {
+		history.replaceState(null, "", "/#/account?good-will=card-saved");
 		const f = fixture();
-		const offers = vi.spyOn(f.api, "listComputerHourOffers").mockResolvedValue([]);
-		const plan = vi.spyOn(f.api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		const mine = vi.spyOn(f.api, "getMyGoodWill").mockResolvedValue({
+			year: 2026,
+			paidByMeOre: 0,
+			companies: [
+				{
+					profileId: profileA.profileId,
+					name: profileA.profileName,
+					netOre: 0,
+					feeOre: 0,
+					rateBp: 1000,
+					payer: "me",
+					brand: "visa",
+					last4: "4242",
+				},
+			],
+		});
 		const root = document.createElement("div");
 		document.body.append(root);
 		dispose = mountApplication(root, f.cloud, f.api);
 		await draw();
 		// The return is read and removed before routing: the account page, not the hub.
 		expect(location.hash).toBe("#/account");
-		expect(root.textContent).toContain("Account A private plan");
-		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
-		expect(root.querySelector(".notice-ok")?.textContent).toBe(thanks);
-		expect(offers).toHaveBeenCalledTimes(1);
-		await vi.advanceTimersByTimeAsync(5000);
-		await draw();
-		expect(plan).toHaveBeenCalledTimes(2);
+		const saved = "Card saved. It pays the company's next invoice.";
+		expect(root.querySelector(".settings-good-will-account .notice-ok")?.textContent).toBe(saved);
+		expect(root.textContent).not.toContain("Plan & usage");
 		// Leaving the page takes the notice with it; the next visit reads afresh.
 		location.hash = "#/";
 		await draw();
 		location.hash = "#/account";
 		await draw();
-		expect(root.textContent).toContain("Account A private plan");
-		expect(root.textContent).not.toContain(thanks);
-		// Once on arrival, once in the refresh, once on the new visit.
-		expect(offers).toHaveBeenCalledTimes(3);
+		expect(root.querySelector(".settings-good-will-account")?.textContent).toContain("Your Visa ending 4242");
+		expect(root.textContent).not.toContain(saved);
+		expect(mine).toHaveBeenCalledTimes(2);
 	});
 
-	it("keeps a return from Stripe for the member who paid, not the next one", async () => {
-		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
-		const { api, auth, root } = mounted("#/?checkout=done");
-		vi.spyOn(api, "listComputerHourOffers").mockResolvedValue([]);
-		vi.spyOn(api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+	it("keeps a return from Stripe for the member who added the card, not the next one", async () => {
+		const saved = "Card saved. It pays the company's next invoice.";
+		const { api, auth, root } = mounted("#/?good-will=card-saved");
+		vi.spyOn(api, "getMyGoodWill").mockResolvedValue({
+			year: 2026,
+			paidByMeOre: 0,
+			companies: [
+				{
+					profileId: profileB.profileId,
+					name: profileB.profileName,
+					netOre: 0,
+					feeOre: 0,
+					rateBp: 1000,
+					payer: "none",
+					brand: null,
+					last4: null,
+				},
+			],
+		});
 		await draw();
 		expect(location.hash).toBe("#/");
 		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
@@ -617,8 +640,11 @@ describe("account and route ownership", () => {
 		await draw();
 		location.hash = "#/account";
 		await draw();
-		expect(root.textContent).toContain("Plan & usage");
-		expect(root.textContent).not.toContain(thanks);
+		// The list shows for the new member, without the other member's note.
+		const mine = root.querySelector<HTMLElement>(".settings-good-will-account")!;
+		expect(mine.hidden).toBe(false);
+		expect(mine.querySelector(".notice-ok")).toBeNull();
+		expect(root.textContent).not.toContain(saved);
 	});
 
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
@@ -661,13 +687,13 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
-	it("opens the drawer on the search field while no page is on: there are no tabs (Interfaces C6a)", async () => {
+	it("opens the drawer on the company's name while no page is on (Interfaces C6a)", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(true);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-search input"));
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(true);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 	});
 
 	it("toggles and closes company navigation without replacing the composer", async () => {
@@ -678,9 +704,9 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
-		// The drawer opens on its chosen tab, never on the folded search field.
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail [role='tab'][aria-selected='true']"));
+		// The drawer opens on the company's name, never on the folded search field.
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
 		await draw();
@@ -692,20 +718,20 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
-	it("reopens the drawer on the search field while a query keeps it open over the tabs", async () => {
+	it("reopens the drawer on the search field while a query keeps it open over the name", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		withInterfacesTab(f);
 		await draw();
 		const toggle = () => f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!;
 		toggle().click();
 		await draw();
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
 		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
 		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
 		input.value = "Fixture";
 		input.dispatchEvent(new Event("input"));
 		await draw();
-		// The tabs are inert under the open field, so the drawer comes back to the field.
+		// The name is inert under the open field, so the drawer comes back to the field.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);

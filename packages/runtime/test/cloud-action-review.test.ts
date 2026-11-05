@@ -164,6 +164,9 @@ describe("which calls are reviewed", () => {
 		["decide_routine", { action: "next", operationKey: "k", title: "Invoices" }, "delegation"],
 		// An Ask first rule only makes agents more careful.
 		["add_review_rule", { operationKey: "k", when: "email a customer" }, "internal"],
+		// Good will: reading the month's payments, and sorting them (members see and can change each).
+		["good_will_list", { month: "2026-11" }, "read"],
+		["good_will_mark", { marks: [] }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],

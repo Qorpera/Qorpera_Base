@@ -238,9 +238,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Loading model…": "Henter model…",
 
 	// Two agents' transcript (app/views/pair-transcript.ts)
-	"Close Chat": "Luk chat",
 	"Conversation between two agents": "Samtale mellem to agenter",
-	"This chat is view-only": "Denne chat kan kun læses",
+	"Only the two agents write here": "Kun de to agenter skriver her",
+	"1 message": "1 besked",
+	"{count}+ messages": "{count}+ beskeder",
 	and: "og",
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",

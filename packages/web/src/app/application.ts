@@ -35,7 +35,6 @@ import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
-import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -61,9 +60,9 @@ import {
 	type Viewer,
 } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
-import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
+import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -205,8 +204,8 @@ export function mountApplication(
 	let connectorReturn = takeConnectorReturn();
 	// "Continue with ChatGPT": OpenAI's callback sends the member back with a one-time confirmation.
 	let planReturn = takeChatGptPlanReturn();
-	// Stripe's checkout page sends the member back to the account page.
-	let checkoutReturn = takeCheckoutReturn();
+	// Stripe's card page sends the member back to the account page.
+	let checkoutReturn = takeGoodWillReturn();
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
@@ -249,7 +248,7 @@ export function mountApplication(
 		holdWebsiteIdea();
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		planReturn = takeChatGptPlanReturn() ?? planReturn;
-		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
+		checkoutReturn = takeGoodWillReturn() ?? checkoutReturn;
 		closeSettings(false);
 		closeFeedback(false);
 		settingsAfterHome = undefined;
@@ -283,8 +282,7 @@ export function mountApplication(
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
-	const accountPlan = h("div");
-	let accountPayments: PlanPayments | undefined;
+	let accountPayments: MyGoodWillView | undefined;
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
@@ -645,7 +643,7 @@ export function mountApplication(
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
 		const route: Route = currentRoute();
-		// The account page's payments live while it shows: its notices go with it, and a failed
+		// The account page's good will lives while it shows: its notice goes with it, and a failed
 		// read is tried again on the next visit.
 		if (route.name !== "account" && accountPayments) {
 			accountPayments.dispose();
@@ -729,32 +727,18 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
-				// The standalone account page shows the plan below the general settings.
-				// One panel across renders keeps an opened plan grid open; the general
-				// panel above already shows the account error.
+				// The standalone account page shows the good will of the member's companies below the general settings.
 				if (checkoutReturn) {
 					accountPayments?.dispose();
 					accountPayments = undefined;
 				}
-				accountPayments ??= new PlanPayments(api, render, checkoutReturn === "done" ? "done" : undefined);
-				checkoutReturn = undefined;
-				accountPayments.load();
-				const payments = accountPayments;
-				renderPlan(
-					accountPlan,
-					accountState,
-					undefined,
-					{
-						payments: {
-							state: payments.state,
-							checkout: (itemKey) => payments.checkout(itemKey),
-							portal: () => payments.portal(),
-							companyName: (profileId) => profiles.find((item) => item.profileId === profileId)?.profileName,
-						},
-					},
-					{ showError: false },
+				accountPayments ??= new MyGoodWillView(
+					() => api.getMyGoodWill(),
+					new AbortController().signal,
+					checkoutReturn === "card-saved" ? t("Card saved. It pays the company's next invoice.") : undefined,
 				);
-				main.append(accountPlan);
+				checkoutReturn = undefined;
+				main.append(accountPayments.el);
 			}
 			return;
 		}
@@ -943,13 +927,12 @@ export function mountApplication(
 				openGroupCard,
 			});
 		if (navigationFocus) {
-			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs
-			// are inert under it) or there are no tabs.
+			// The drawer opens on its first control: the company's name, or the search field when it is open (the
+			// name is inert under it).
 			const target =
 				navigationFocus === "rail"
-					? (rail.querySelector<HTMLElement>(
-							".rail-toolbar:not(.is-searching) .rail-switch:not([hidden]) [role='tab'][aria-selected='true']",
-						) ?? rail.querySelector<HTMLInputElement>(".rail-search input"))
+					? (rail.querySelector<HTMLElement>(".rail-toolbar:not(.is-searching) .rail-company") ??
+						rail.querySelector<HTMLInputElement>(".rail-search input"))
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();

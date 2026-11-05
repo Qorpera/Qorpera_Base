@@ -10,7 +10,7 @@ import {
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
-import { type MenuEntry, menuPoint, openContextMenu } from "../../ui/context-menu.ts";
+import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -278,23 +278,22 @@ export function renderTopbar(
  * the list keeps its scroll position, and a row is rebuilt only when what it shows
  * has changed. */
 interface RailParts {
-	/** The Agents | Interfaces tabs at the start of the top row (contract, 2026-10-02 interfaces amendment, item 8). */
-	readonly switcher: HTMLElement;
-	readonly tabAgents: HTMLButtonElement;
-	readonly tabInterfaces: HTMLButtonElement;
-	/** The Interfaces tab's list, kept like the agents' list, and its line when a search matches none. */
-	readonly interfaces: HTMLElement;
-	readonly interfacesEmpty: HTMLElement;
-	/** The tab shown, and the route it was last decided for: a new route picks its tab, a click picks between. */
-	tab: RailTab;
-	tabRoute: string;
-	/** The tab the last draw showed: a list that takes over from the other one slides in from its side. */
-	shownTab: RailTab | undefined;
+	/** The company's name at the start of the top row; it opens the menu of the member's companies (Jonas, 5 Nov 2026). */
+	readonly company: HTMLButtonElement;
+	readonly companyName: HTMLElement;
+	/** The four-windows button: it opens the company's interfaces as icons under the top row, and stays open until
+	 * pressed again (Jonas, 5 Nov 2026; it replaced the Agents | Interfaces tabs). */
+	readonly apps: HTMLButtonElement;
+	readonly appsDrawer: HTMLElement;
+	readonly appsGrid: HTMLElement;
+	appsOpen: boolean;
+	/** The route the drawer was last opened for: an interface's page opens it once. */
+	appsRoute: string;
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
-	/** The search folds out of its button over the tabs, and folds back on Esc or its close button. */
+	/** The search folds out of its button over the name, and folds back on Esc or its close button. */
 	readonly search: HTMLElement;
 	readonly searchToggle: HTMLButtonElement;
 	readonly searchClose: HTMLButtonElement;
@@ -348,13 +347,12 @@ interface HiddenParts {
 	open: boolean;
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
-type RailTab = "agents" | "interfaces";
-const RAIL_TAB_KEY = "qorpera.web.rail-tab";
-function storedTab(profileId: string): RailTab {
+const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
+function storedAppsOpen(profileId: string): boolean {
 	try {
-		return sessionStorage.getItem(`${RAIL_TAB_KEY}:${profileId}`) === "interfaces" ? "interfaces" : "agents";
+		return localStorage.getItem(`${APPS_OPEN_KEY}:${profileId}`) === "1";
 	} catch {
-		return "agents";
+		return false;
 	}
 }
 function hiddenParts(redraw: () => void): HiddenParts {
@@ -481,38 +479,40 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
-		const tab = (which: RailTab, iconName: string) =>
-			h(
-				"button",
-				{ type: "button", role: "tab", id: `rail-tab-${which}`, class: "rail-switch-tab", "data-tab": which },
-				icon(iconName),
-				h("span", { class: "rail-switch-label" }),
-			);
-		const tabAgents = tab("agents", "friends");
-		const tabInterfaces = tab("interfaces", "interfaces");
-		const switcher = h(
+		const companyName = h("span", { class: "rail-company-name" });
+		const companyButton = h(
+			"button",
+			{ type: "button", class: "rail-company", "aria-haspopup": "menu", "aria-expanded": "false" },
+			companyName,
+			h("span", { class: "rail-company-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+		);
+		const apps = h(
+			"button",
+			{
+				type: "button",
+				class: "rail-apps icon-button",
+				"aria-controls": "rail-apps-drawer",
+				"aria-expanded": "false",
+			},
+			icon("grid"),
+			h("span", { class: "rail-apps-dot", "aria-hidden": "true" }),
+		);
+		const appsGrid = h("div", { class: "rail-apps-grid" });
+		const appsDrawer = h(
 			"div",
-			{ class: "rail-switch", role: "tablist" },
-			h("span", { class: "rail-switch-pill", "aria-hidden": "true" }),
-			tabAgents,
-			tabInterfaces,
+			{ class: "rail-apps-drawer", id: "rail-apps-drawer", role: "group" },
+			h("div", null, appsGrid),
 		);
 		const created: RailParts = {
-			switcher,
-			tabAgents,
-			tabInterfaces,
-			interfaces: h("div", {
-				class: "rail-scroll rail-interfaces",
-				id: "rail-list-interfaces",
-				role: "tabpanel",
-				"aria-labelledby": "rail-tab-interfaces",
-			}),
-			interfacesEmpty: h("p", { class: "rail-empty" }),
-			tab: storedTab(company.profile.profileId),
-			tabRoute: "",
-			shownTab: undefined,
+			company: companyButton,
+			companyName,
+			apps,
+			appsDrawer,
+			appsGrid,
+			appsOpen: storedAppsOpen(company.profile.profileId),
+			appsRoute: "",
 			interfaceRows: new Map(),
-			toolbar: h("div", { class: "rail-toolbar" }, close, switcher, search, add),
+			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
 			add,
 			search,
@@ -547,48 +547,74 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			redraw,
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
-		// A tab shows its list at once; it leaves the page where it is.
-		const choose = (next: RailTab) => {
-			if (created.tab === next) return;
-			created.tab = next;
-			try {
-				sessionStorage.setItem(`${RAIL_TAB_KEY}:${company.profile.profileId}`, next);
-			} catch {
-				/* The choice lasts this view. */
-			}
-			created.redraw();
-		};
-		for (const button of [tabAgents, tabInterfaces]) {
-			button.addEventListener("click", () => choose(button.dataset.tab === "interfaces" ? "interfaces" : "agents"), {
-				signal: company.signal,
-			});
-		}
-		// The arrow keys move between the two tabs and choose the one they reach; Home and End pick the first and last.
-		switcher.addEventListener(
-			"keydown",
-			(event) => {
-				if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-				const other: RailTab = created.tab === "agents" ? "interfaces" : "agents";
-				const next: RailTab | undefined =
-					event.key === "Home"
-						? "agents"
-						: event.key === "End"
-							? "interfaces"
-							: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
-								? other
-								: undefined;
-				if (!next) return;
-				event.preventDefault();
-				choose(next);
-				(next === "interfaces" ? tabInterfaces : tabAgents).focus();
+		// The four windows open or close the interfaces; the choice is kept for this company on this device.
+		apps.addEventListener(
+			"click",
+			() => {
+				setAppsOpen(created, company.profile.profileId, !created.appsOpen);
+				created.redraw();
 			},
 			{ signal: company.signal },
 		);
-		// The search button opens the field over the tabs. Esc or the close button folds it back, clears it and
+		// The name opens the member's companies, this one checked, and New company under them. A press on the name
+		// while its menu is open only closes it: the menu shuts on the press, before the click, so the press is noted
+		// first (this listener is older than the menu's) and its click skipped.
+		let pressClosesMenu = false;
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				pressClosesMenu =
+					companyButton.getAttribute("aria-expanded") === "true" &&
+					event.target instanceof Node &&
+					companyButton.contains(event.target);
+			},
+			{ capture: true, signal: company.signal },
+		);
+		companyButton.addEventListener(
+			"click",
+			() => {
+				if (pressClosesMenu) {
+					pressClosesMenu = false;
+					return;
+				}
+				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
+				const box = companyButton.getBoundingClientRect();
+				const profiles = created.context?.profiles ?? [company.profile];
+				companyButton.setAttribute("aria-expanded", "true");
+				openContextMenu({
+					label: t("Your companies"),
+					x: box.left,
+					y: box.bottom + 4,
+					opener: companyButton,
+					onClose: () => companyButton.setAttribute("aria-expanded", "false"),
+					items: [
+						...profiles.map(
+							(profile): MenuEntry => ({
+								label: profile.profileName,
+								checked: profile.profileId === company.profile.profileId,
+								select: () => {
+									if (profile.profileId !== company.profile.profileId)
+										location.hash = `#/c/${profile.profileId}`;
+								},
+							}),
+						),
+						{ kind: "separator" },
+						{
+							label: t("New company"),
+							icon: "plus",
+							select: () => {
+								location.hash = "#/new";
+							},
+						},
+					],
+				});
+			},
+			{ signal: company.signal },
+		);
+		// The search button opens the field over the name. Esc or the close button folds it back, clears it and
 		// hands focus back to the button; so does leaving it empty.
 		const openSearch = () => {
-			// Without the tabs the field is always open; nothing to unfold.
-			if (!created.searchOpen && !switcher.hidden) {
+			if (!created.searchOpen) {
 				created.searchOpen = true;
 				created.redraw();
 			}
@@ -602,8 +628,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				created.list.scrollTop = 0;
 			}
 			created.redraw();
-			// Without the tabs the field stays open, so focus stays in it.
-			if (refocus) (switcher.hidden ? input : searchToggle).focus();
+			if (refocus) searchToggle.focus();
 		};
 		searchToggle.addEventListener("click", openSearch, { signal: company.signal });
 		searchClose.addEventListener("click", () => closeSearch(true), { signal: company.signal });
@@ -675,11 +700,10 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	const locale = presentationLocale();
 	if (parts.locale !== locale) {
 		parts.locale = locale;
-		parts.tabAgents.querySelector(".rail-switch-label")!.textContent = t("Agents");
-		parts.tabInterfaces.querySelector(".rail-switch-label")!.textContent = t("Interfaces");
-		parts.tabAgents.title = t("Agents");
-		parts.tabInterfaces.title = t("Interfaces");
-		parts.switcher.setAttribute("aria-label", t("Agents or interfaces"));
+		parts.company.title = t("Your companies");
+		parts.apps.setAttribute("aria-label", t("Apps"));
+		parts.apps.title = t("Apps");
+		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
@@ -870,68 +894,45 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
-	// A new route picks its tab: an interface's page shows Interfaces, a conversation or the Co-Founder shows
-	// Agents. Between routes, the member's click decides.
-	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
-	if (routeKey !== parts.tabRoute) {
-		parts.tabRoute = routeKey;
-		if (section === "interface") parts.tab = "interfaces";
-		else if (section === "chat" || section === "staff" || section === "home") parts.tab = "agents";
-	}
 	const interfacesShown = companyInterfaces(company);
-	const tabbed = interfacesShown.length > 0;
-	// Without the tabs the rail shows Agents but keeps the chosen tab: a page's route can open before the pages are
-	// read, and its Interfaces tab shows once its page is listed.
-	const shownTab: RailTab = tabbed ? parts.tab : "agents";
-	const onInterfaces = shownTab === "interfaces";
-	const hadTabs = !parts.switcher.hidden;
-	// Real tabs over the two lists. Only the chosen tab is in the Tab order, and it names the list it shows.
-	for (const [button, chosen, panel] of [
-		[parts.tabAgents, !onInterfaces, parts.list.id],
-		[parts.tabInterfaces, onInterfaces, parts.interfaces.id],
-	] as const) {
-		button.setAttribute("aria-selected", String(chosen));
-		button.tabIndex = chosen ? 0 : -1;
-		if (chosen) button.setAttribute("aria-controls", panel);
-		else button.removeAttribute("aria-controls");
+	const hasApps = interfacesShown.length > 0;
+	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
+	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
+	if (routeKey !== parts.appsRoute) {
+		parts.appsRoute = routeKey;
+		if (section === "interface" && !parts.appsOpen) setAppsOpen(parts, profileId, true);
 	}
-	if (tabbed) {
-		parts.list.setAttribute("role", "tabpanel");
-		parts.list.setAttribute("aria-labelledby", parts.tabAgents.id);
-	} else {
-		parts.list.removeAttribute("role");
-		parts.list.removeAttribute("aria-labelledby");
-	}
-	parts.switcher.hidden = !tabbed;
-	parts.switcher.classList.toggle("on-interfaces", onInterfaces);
-	// Text in the field keeps it open, so a query never filters from a folded field (the tabs can appear while the
-	// always-open field holds one). Without the tabs the field has the row to itself and stays open.
+	const appsOpen = hasApps && parts.appsOpen;
+	parts.apps.hidden = !hasApps;
+	parts.apps.setAttribute("aria-expanded", String(appsOpen));
+	parts.apps.classList.toggle("is-open", appsOpen);
+	parts.appsDrawer.hidden = !hasApps;
+	parts.appsDrawer.classList.toggle("is-open", appsOpen);
+	// Closed, its icons can't be reached.
+	parts.appsDrawer.inert = !appsOpen;
+	if (parts.companyName.textContent !== company.profile.profileName)
+		parts.companyName.textContent = company.profile.profileName;
+	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
-	const searchShown = !tabbed || parts.searchOpen;
-	parts.toolbar.classList.toggle("has-tabs", tabbed);
-	parts.toolbar.classList.toggle("is-searching", tabbed && parts.searchOpen);
-	const searchLabel = onInterfaces ? t("Search interfaces") : t("Search agents");
+	parts.toolbar.classList.toggle("is-searching", parts.searchOpen);
+	const searchLabel = t("Search agents");
 	parts.input.placeholder = searchLabel;
 	parts.input.setAttribute("aria-label", searchLabel);
-	parts.input.tabIndex = searchShown ? 0 : -1;
+	parts.input.tabIndex = parts.searchOpen ? 0 : -1;
 	parts.searchToggle.setAttribute("aria-label", searchLabel);
 	parts.searchToggle.title = searchLabel;
-	parts.searchToggle.setAttribute("aria-expanded", String(searchShown));
+	parts.searchToggle.setAttribute("aria-expanded", String(parts.searchOpen));
 	// Open, the button only points back at the field, so it leaves the Tab order.
-	parts.searchToggle.tabIndex = searchShown ? -1 : 0;
-	parts.searchClose.hidden = !(tabbed && parts.searchOpen);
-	const shownList = onInterfaces ? parts.interfaces : parts.list;
-	const turned = parts.shownTab !== undefined && parts.shownTab !== shownTab && hadTabs && tabbed;
-	parts.shownTab = shownTab;
-	reconcile(container, [parts.toolbar, shownList, parts.foot]);
-	// The list taking over slides in from its tab's side (styles/interfaces.css), when the member sees the tabs turn.
-	if (turned) playOnce(shownList, onInterfaces ? "is-entering-right" : "is-entering-left");
+	parts.searchToggle.tabIndex = parts.searchOpen ? -1 : 0;
+	parts.searchClose.hidden = !parts.searchOpen;
+	reconcile(container, [parts.toolbar, parts.appsDrawer, parts.list, parts.foot]);
 	parts.selection.measure(parts.list);
 	const places = measureRows(parts.list);
 	parts.collapsed = isCollapsed(container);
-	// The open field covers the tabs, so they take no clicks or focus; the collapsed rail shows the tabs, not the field.
-	parts.switcher.inert = tabbed && parts.searchOpen && !parts.collapsed;
-	parts.switcher.setAttribute("aria-orientation", parts.collapsed ? "vertical" : "horizontal");
+	// The open field covers the name and the four windows, so they take no clicks or focus; the collapsed rail shows
+	// the four windows, not the field.
+	parts.company.inert = parts.searchOpen && !parts.collapsed;
+	parts.apps.inert = parts.searchOpen && !parts.collapsed;
 	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
@@ -939,7 +940,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, route, railQuery);
+	drawInterfaces(parts, company, interfacesShown, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1305,39 +1306,50 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	restoreFocus();
 }
 
-/* ---- The Interfaces tab ------------------------------------------------------------- */
+/* ---- The apps drawer --------------------------------------------------------------- */
 
-/** The Interfaces tab: the pages that are on, Mailbox and Members, as rows. Search filters them by name. A row is
- * rebuilt only when what it shows changes. */
+function setAppsOpen(parts: RailParts, profileId: string, open: boolean): void {
+	parts.appsOpen = open;
+	try {
+		localStorage.setItem(`${APPS_OPEN_KEY}:${profileId}`, open ? "1" : "0");
+	} catch {
+		/* The choice lasts this view. */
+	}
+}
+
+/** The drawer under the top row: the pages that are on (Mailbox, Members, Bank and the agents' pages) as icons,
+ * four to a row. An icon is rebuilt only when what it shows changes. The four windows carry a dot while the drawer
+ * is closed and a page has something waiting. */
 function drawInterfaces(
 	parts: RailParts,
 	company: CompanyController,
 	shown: readonly CompanyInterface[],
 	route: Route,
-	query: string,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
-	const elements = shown
-		.filter((entry) => !query || entry.file.name.toLowerCase().includes(query))
-		.map((entry) => {
-			const { name, file } = entry;
-			const count = interfaceBadge(company, file);
-			const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
-			const kept = parts.interfaceRows.get(name);
-			const element =
-				kept?.shown === model ? kept.element : interfaceRailRow(entry, `#/c/${profileId}/i/${name}`, count);
-			rows.set(name, { shown: model, element });
-			element.classList.toggle("active", name === activeName);
-			if (name === activeName) element.setAttribute("aria-current", "page");
-			else element.removeAttribute("aria-current");
-			return element;
-		});
+	let waiting = 0;
+	const elements = shown.map((entry, index) => {
+		const { name, file } = entry;
+		const count = interfaceBadge(company, file);
+		waiting += count;
+		const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
+		const kept = parts.interfaceRows.get(name);
+		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
+		rows.set(name, { shown: model, element });
+		element.style.setProperty("--i", String(index));
+		element.classList.toggle("active", name === activeName);
+		if (name === activeName) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		return element;
+	});
 	parts.interfaceRows = rows;
-	if (parts.interfacesEmpty.textContent !== t("No matching interfaces."))
-		parts.interfacesEmpty.textContent = t("No matching interfaces.");
-	reconcile(parts.interfaces, elements.length ? elements : [parts.interfacesEmpty]);
+	reconcile(parts.appsGrid, elements);
+	const dot = waiting > 0 && !parts.appsOpen;
+	parts.apps.classList.toggle("has-waiting", dot);
+	const label = dot ? `${t("Apps")}, ${t("{count} waiting", { count: waiting })}` : t("Apps");
+	if (parts.apps.getAttribute("aria-label") !== label) parts.apps.setAttribute("aria-label", label);
 }
 
 /** An interface's badge on its emblem (§3 `badge`): how many of its rows wait, said in its label too. */
@@ -1347,32 +1359,26 @@ function countBadge(count: number): HTMLElement | null {
 		: null;
 }
 
-/** A page's row in the tab. */
-function interfaceRailRow(entry: CompanyInterface, href: string, count: number): HTMLElement {
+/** A page's icon in the drawer: its emblem with its name under it. */
+function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElement {
 	const file = entry.file;
 	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
-	const label = waiting ? `${file.name}, ${waiting}` : file.name;
 	return h(
 		"a",
 		{
-			class: "rail-row rail-row-interface",
+			class: "rail-app",
 			href,
 			draggable: "false",
-			title: file.about ?? file.name,
-			...(waiting ? { "aria-label": label } : {}),
+			title: file.about ? `${file.name} · ${file.about}` : file.name,
+			...(waiting ? { "aria-label": `${file.name}, ${waiting}` } : {}),
 		},
 		h(
 			"span",
-			{ class: "rail-row-stand" },
-			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 40),
+			{ class: "rail-app-stand" },
+			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 34),
 			countBadge(count),
 		),
-		h(
-			"span",
-			{ class: "rail-row-copy" },
-			h("strong", null, file.name),
-			file.about ? h("small", null, file.about) : null,
-		),
+		h("span", { class: "rail-app-name" }, file.name),
 	);
 }
 

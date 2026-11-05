@@ -252,14 +252,28 @@ label > input, label > select { font-weight: 400; }
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-/* One top row (rail top option A, 2 Oct): the Agents | Interfaces tabs fill it, then the
- * search button and the add button. The search folds out of its button leftward over the
- * tabs, which share its cell (styles/interfaces.css). Without the tabs the field stays open. */
+/* One top row (Jonas, 5 Nov 2026): the company's name, which opens the member's companies, then
+ * the four windows (the apps drawer, styles/interfaces.css), the search button and the add button.
+ * The search folds out of its button leftward over the name and the four windows. */
 .rail-toolbar {
-	--rail-control: 36px; flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-	align-items: center; padding-top: 14px;
+	--rail-control: 36px; flex: none; display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto var(--rail-control) auto;
+	align-items: center; column-gap: 2px; padding-top: 14px;
 }
-.rail-add { grid-area: 1 / 3; width: var(--rail-control); height: var(--rail-control); margin-left: 6px; border-radius: 10px; color: #676664; }
+.rail-add { grid-area: 1 / 5; width: var(--rail-control); height: var(--rail-control); margin-left: 2px; border-radius: 10px; color: #676664; }
+.rail-company {
+	grid-area: 1 / 2; justify-self: start; display: flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0;
+	height: 32px; margin-left: -6px; padding: 0 7px 0 6px; border: 0; border-radius: 9px; background: transparent;
+	color: var(--text); font: inherit; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, opacity var(--motion-fast) ease 80ms;
+}
+.rail-company:hover, .rail-company[aria-expanded="true"] { background: var(--rail-hover); }
+.rail-company:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-company-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.rail-company-chevron { flex: none; display: grid; color: var(--rail-small); }
+.rail-company-chevron .icon { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-spring); }
+.rail-company[aria-expanded="true"] .rail-company-chevron .icon { transform: rotate(180deg); }
+.rail-toolbar.is-searching :is(.rail-company, .rail-apps) { opacity: 0; pointer-events: none; transition-delay: 0s; }
 .rail-add svg { width: 18px; height: 18px; }
 .rail-mobile-close { display: none; grid-area: 1 / 1; margin-right: 6px; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
@@ -268,11 +282,11 @@ label > input, label > select { font-weight: 400; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-search {
-	grid-area: 1 / 2; justify-self: end; position: relative; z-index: 1; display: flex; align-items: center;
+	grid-area: 1 / 2 / 2 / 5; justify-self: end; position: relative; z-index: 1; display: flex; align-items: center;
 	width: var(--rail-control); min-width: 0; height: var(--rail-control); overflow: hidden;
 	border-radius: 10px; color: var(--rail-search-ink);
 }
-.rail-toolbar:is(:not(.has-tabs), .is-searching) .rail-search {
+.rail-toolbar.is-searching .rail-search {
 	width: 100%; background: var(--overlay); box-shadow: 0 0 0 1px rgb(18 18 17 / 10%);
 }
 .rail-search-toggle, .rail-search-close {
@@ -280,7 +294,7 @@ label > input, label > select { font-weight: 400; }
 }
 .rail-search-toggle { width: var(--rail-control); height: var(--rail-control); border-radius: 10px; }
 .rail-search-toggle svg { width: 16px; height: 16px; }
-.rail-toolbar.has-tabs:not(.is-searching) .rail-search-toggle:hover { background: var(--rail-hover); }
+.rail-toolbar:not(.is-searching) .rail-search-toggle:hover { background: var(--rail-hover); }
 .rail-search-close { width: 30px; height: 30px; margin-right: 3px; border-radius: 8px; }
 .rail-search-close svg { width: 14px; height: 14px; }
 .rail-search-close:hover { background: var(--rail-hover); }
@@ -290,7 +304,7 @@ label > input, label > select { font-weight: 400; }
 	background: transparent; font: inherit; font-size: 13px; font-weight: 400; color: var(--text); outline: 0;
 }
 /* Folded, the field is only its button: the text box can't be seen or reached. */
-.rail-toolbar.has-tabs:not(.is-searching) .rail-search input { visibility: hidden; opacity: 0; }
+.rail-toolbar:not(.is-searching) .rail-search input { visibility: hidden; opacity: 0; }
 /* The open field's ring and caret show where typing goes; the buttons show keyboard focus themselves. */
 .rail-search input::-webkit-search-cancel-button { appearance: none; display: none; }
 .rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
@@ -435,9 +449,8 @@ label > input, label > select { font-weight: 400; }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
-.rail-compact .rail-add { grid-area: 2 / 1; justify-self: center; margin-left: 0; }
-.rail-compact .rail-toolbar:not(.has-tabs) .rail-add { grid-row: 1; }
-.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
+.rail-compact .rail-toolbar > :is(.rail-apps, .rail-add) { grid-area: auto / 1; justify-self: center; margin-left: 0; }
+.rail-compact .rail-company, .rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
 .rail-compact .rail-cofounder { padding: 6px 0 3px; }
 .rail-compact .cofounder-home { height: 64px; padding: 0; }
 .rail-compact .rail { --figure: 48px; }

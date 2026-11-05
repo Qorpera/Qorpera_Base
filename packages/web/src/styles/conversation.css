@@ -901,13 +901,32 @@
 .interface-change-undo:disabled { color: var(--text-muted); cursor: default; }
 .interface-change-status { flex-basis: 100%; }
 .interface-change-status.failed { color: var(--danger); }
-.pair-transcript { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); outline: none; animation: pair-enter 160ms ease both; }
-@keyframes pair-enter { from { opacity: 0; } to { opacity: 1; } }
-.pair-header { padding: 0 14px; }
-.pair-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Two agents' transcript: a sheet that slides in from the right over the thread, which waits dimmed behind it
+ * (Jonas, 5 Nov 2026). A press on the dim area closes it, as Close and Escape do. */
+.pair-transcript { position: absolute; inset: 0; z-index: 30; display: flex; justify-content: flex-end; min-width: 0; min-height: 0; outline: none; }
+.pair-dim { position: absolute; inset: 0; background: rgb(18 18 17 / 14%); animation: pair-dim-in var(--motion-base) ease both; }
+.pair-sheet {
+	position: relative; display: flex; flex-direction: column; width: min(84%, 880px); min-width: min(100%, 360px); min-height: 0;
+	background: var(--bg); border-radius: 16px 0 0 16px; box-shadow: -18px 0 40px rgb(18 18 17 / 14%), -1px 0 0 var(--border);
+	animation: pair-sheet-in var(--motion-slow) var(--ease-spring) both;
+}
+/* Leaving, the sheet slides back out while the dim clears; the section's own hold is what the leave waits for. */
+.pair-transcript.is-leaving { animation: pair-hold var(--motion-base) linear both; }
+.pair-transcript.is-leaving .pair-dim { animation: pair-dim-out var(--motion-base) ease both; }
+.pair-transcript.is-leaving .pair-sheet { animation: pair-sheet-out var(--motion-base) var(--ease-in) both; }
+@keyframes pair-dim-in { from { opacity: 0; } }
+@keyframes pair-dim-out { to { opacity: 0; } }
+@keyframes pair-sheet-in { from { transform: translateX(104%); } }
+@keyframes pair-sheet-out { to { transform: translateX(104%); } }
+@keyframes pair-hold { to { opacity: 1; } }
+.pair-header { flex: none; display: flex; align-items: center; gap: 10px; height: var(--titlebar-height); padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); }
+.pair-identity { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; }
 .pair-identity .figure { flex: none; }
 .pair-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .pair-glyph { margin: 0 4px; color: var(--text-muted); font-size: 13px; }
+.pair-count { flex: none; margin-left: 4px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+@media (max-width: 760px) { .pair-sheet { width: 100%; border-radius: 0; } .pair-count { display: none; } }
+@media (prefers-reduced-motion: reduce) { .pair-dim, .pair-sheet, .pair-transcript.is-leaving { animation: none; } }
 .pair-messages { gap: 10px; }
 .pair-row { display: flex; flex: none; align-items: flex-end; gap: 8px; max-width: 100%; }
 .pair-row .figure { flex: none; margin-bottom: 2px; }
@@ -921,8 +940,9 @@
 .pair-footer { display: flex; flex: none; align-items: center; justify-content: center; gap: 12px; padding: 12px 16px 16px; }
 .pair-readonly { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
 .pair-readonly .icon { width: 12px; height: 12px; }
-.pair-close { padding: 5px 12px; border: 0; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
-.pair-close:hover { background: color-mix(in srgb, var(--text) 16%, transparent); }
+.pair-close { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-muted); cursor: pointer; }
+.pair-close .icon { width: 15px; height: 15px; }
+.pair-close:hover { background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--text); }
 .pair-close:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
 /* Cards an agent raises in its thread: one shell, pills like the failed-run line. */

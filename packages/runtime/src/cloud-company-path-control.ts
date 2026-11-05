@@ -105,6 +105,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_record_action_review",
 			"qorpera_await_action_review",
 			"qorpera_add_agent_review_rule",
+			// Good will (20260930566000).
+			"qorpera_good_will_agent_list",
+			"qorpera_good_will_agent_mark",
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
