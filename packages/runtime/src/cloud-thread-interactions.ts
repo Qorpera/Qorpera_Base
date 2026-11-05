@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
@@ -70,6 +71,11 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 					value: chars(1, 200, "Returned as the answer; defaults to the label."),
 					description: chars(0, 200),
 					style: { type: "string", enum: ["default", "primary", "danger"] },
+					preview: chars(
+						1,
+						512,
+						"A picture of this option for a visual choice: the company file path of an image you made for it (an SVG sketch, a PNG), or app:<name> for an interface app that shows it. Options with pictures show as big boxes the member picks from.",
+					),
 				}),
 			},
 			multiSelect: { type: "boolean" },
@@ -209,12 +215,13 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text only introduces the card: never answer its question, guess the member's choice or start on one in it. Finish independent work first, never actions depending on an unanswered decision. " +
-	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two actual contact matches or specific available times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
+	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two contact matches or open times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
 	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
+	"When the choice is visual (a look, a product, a layout), first make a picture of each option, an SVG sketch in the company file or an interface app, and set its preview: the card shows big pictures to pick from. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
 	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
 	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
-	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
+	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?, preview?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
 	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input, or the request with the card it answers. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
 
 export interface CloudInteractionRequestData {
@@ -293,11 +300,12 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 				const option = record(candidate);
 				return (
 					option !== undefined &&
-					closedKeys(option, ["label", "value", "description", "style"]) &&
+					closedKeys(option, ["label", "value", "description", "style", "preview"]) &&
 					text(option.label, 1, 80) &&
 					optionalText(option, "value", 1, 200) &&
 					optionalText(option, "description", 0, 200) &&
-					optionalEnum(option, "style", ["default", "primary", "danger"])
+					optionalEnum(option, "style", ["default", "primary", "danger"]) &&
+					optionalText(option, "preview", 1, 512)
 				);
 			});
 		}
@@ -494,7 +502,29 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 		)
 	)
 		return `an option's label is a button: 1 to 3 words, at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} UTF-8 bytes; say anything more in the body`;
+	if (
+		Array.isArray(options) &&
+		options.some((option) => {
+			const preview = record(option)?.preview;
+			return typeof preview === "string" && !optionPreviewValid(preview);
+		})
+	)
+		return "an option's preview is the company file path of an image you made for it (.svg, .png, .jpg, .gif or .webp), such as sketches/colour-duo.svg, or app:<name> for an interface app";
 	return undefined;
+}
+
+const PREVIEW_IMAGE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+
+/** An option's picture: an interface app, or an image's path in the company's folder (relative, no way up or out). */
+export function optionPreviewValid(preview: string): boolean {
+	if (preview.startsWith("app:")) return isInterfaceName(preview.slice(4));
+	return (
+		PREVIEW_IMAGE.test(preview) &&
+		!/^[a-z][a-z0-9+.-]*:/i.test(preview) &&
+		!preview.startsWith("/") &&
+		!preview.split("/").some((part) => part === ".." || part === "." || part === "") &&
+		!/[\0-\x1f\x7f\\]/.test(preview)
+	);
 }
 
 /** The closed request data, exactly as the kernel validates it. */

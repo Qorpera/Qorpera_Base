@@ -414,6 +414,7 @@ export class ConversationView {
 		// notes to bring it back; else to the composer, as the thread opens.
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
+			...(actions.folderImage ? { image: actions.folderImage } : {}),
 			onHide: () => {
 				if (this.#disposed || document.activeElement?.closest("input, textarea")) return;
 				if (this.#identity.getClientRects().length) this.#identity.focus({ preventScroll: true });
@@ -811,6 +812,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		this.#wall.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
@@ -2646,6 +2648,7 @@ export class ConversationView {
 								agentName,
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
+								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
 								...(email
 									? {

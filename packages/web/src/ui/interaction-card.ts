@@ -1,9 +1,12 @@
+import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
+import { pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import {
 	type InteractionAnswer,
 	type InteractionOutcome,
 	type InteractionRequest,
 	interactionState,
+	type QuestionOption,
 	questionOptions,
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
@@ -11,6 +14,7 @@ import { foldLong, shownLength } from "./card-fold.ts";
 import { stoppedCardNote } from "./card-notes.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
 import { renderEmailDraftCard } from "./email-draft-card.ts";
+import { interfaceEmblem } from "./interface-emblem.ts";
 import { markdown } from "./markdown.ts";
 import { phrase, t } from "./preferences.ts";
 
@@ -60,7 +64,104 @@ export interface InteractionCardContext {
 	emailDraft?: EmailDraftEditor;
 	loadEmailDraft?: () => Promise<EmailDraftState>;
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
+	/** Reads a picture of the company's folder for an option's preview; null when there is none to show. */
+	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	now?: number;
+}
+
+/** Pictures read for options, per reader (one per company, app/application.ts) and path: read once, kept while the
+ * page is open. */
+const PICTURES = new WeakMap<NonNullable<InteractionCardContext["image"]>, Map<string, Promise<string | null>>>();
+
+function picture(read: NonNullable<InteractionCardContext["image"]>, path: string): Promise<string | null> {
+	let kept = PICTURES.get(read);
+	if (!kept) {
+		kept = new Map();
+		PICTURES.set(read, kept);
+	}
+	let shown = kept.get(path);
+	if (!shown) {
+		shown = read(path, new AbortController().signal)
+			.then((blob) => (blob ? pictureUrl(blob) : null))
+			.catch(() => null);
+		kept.set(path, shown);
+		// A picture that could not be read is read again by the next card that shows it.
+		const reading = shown;
+		void reading.then((url) => {
+			if (!url && kept.get(path) === reading) kept.delete(path);
+		});
+	}
+	return shown;
+}
+
+/** The picture area of a visual choice: the image the agent made, or the app's emblem and name. */
+function choicePicture(preview: string, context: InteractionCardContext): HTMLElement {
+	const app = /^app:(.+)$/.exec(preview);
+	if (app && isInterfaceName(app[1] ?? ""))
+		return h(
+			"span",
+			{ class: "choice-picture is-app", "aria-hidden": "true" },
+			interfaceEmblem(null, null, 40),
+			h("span", { class: "choice-app-name" }, app[1] ?? ""),
+		);
+	const box = h("span", { class: "choice-picture is-loading", "aria-hidden": "true" });
+	const read = context.image;
+	if (!read) {
+		box.classList.remove("is-loading");
+		return box;
+	}
+	void picture(read, preview).then((url) => {
+		box.classList.remove("is-loading");
+		if (url) box.append(h("img", { src: url, alt: "", decoding: "async" }));
+	});
+	return box;
+}
+
+/** A question's options as big pictures to pick from (Jonas, 5 November 2026: a choice between something visual is two
+ * big boxes, not a long text). Answered, the boxes stay, inert, the chosen one marked. */
+function visualChoices(
+	options: readonly QuestionOption[],
+	context: InteractionCardContext,
+	pick: ((option: QuestionOption, box: HTMLButtonElement) => void) | null,
+	chosen: ReadonlySet<string>,
+	busy: boolean,
+	multi = false,
+): HTMLElement {
+	const boxes = options.map((option) => {
+		const box = h(
+			"button",
+			{
+				type: "button",
+				class: `choice-box${chosen.has(option.value) ? " is-chosen" : ""}`,
+				...(pick ? {} : { disabled: true }),
+				...(pick && multi ? { "aria-pressed": String(chosen.has(option.value)) } : {}),
+				...(busy ? { "aria-disabled": "true" } : {}),
+			},
+			option.preview ? choicePicture(option.preview, context) : h("span", { class: "choice-picture is-empty" }),
+			h("strong", { class: "choice-label" }, option.label),
+			option.description ? h("span", { class: "choice-description" }, option.description) : null,
+		) as HTMLButtonElement;
+		if (pick)
+			box.addEventListener("click", () => {
+				if (!busy) pick(option, box);
+			});
+		return box;
+	});
+	// An app's option opens the app beside the chat from its link: the box itself picks.
+	const apps = options
+		.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
+		.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? ""));
+	const grid = h(
+		"div",
+		{ class: "interaction-choices" },
+		...boxes,
+		apps.length
+			? h("div", { class: "choice-apps" }, markdown(apps.map((name) => `[${name}](app:${name})`).join(" ")))
+			: null,
+	);
+	// Set through the style object: the page's CSP takes no inline style attribute.
+	grid.style.setProperty("--choices", String(Math.min(options.length, 3)));
+	return grid;
 }
 
 export interface InteractionCardItem {
@@ -193,6 +294,21 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		const multi = request.payload.multiSelect === true;
 		const custom = request.payload.allowCustom === true;
 		const chosen = new Set<string>();
+		const visual = options.some((option) => option.preview);
+		if (visual && !open && state === "answered" && item.answer?.answer) {
+			const values = item.answer.answer.values;
+			body.push(
+				visualChoices(
+					options,
+					context,
+					null,
+					new Set(
+						Array.isArray(values) ? values.filter((value): value is string => typeof value === "string") : [],
+					),
+					false,
+				),
+			);
+		}
 		if (open) {
 			const send = () => {
 				const values = [...chosen];
@@ -217,7 +333,27 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				if (option.description) element.title = option.description;
 				return element;
 			});
-			body.push(h("div", { class: "interaction-options" }, ...optionButtons));
+			body.push(
+				visual
+					? visualChoices(
+							options,
+							context,
+							(option, box) => {
+								if (!multi) {
+									answer("answered", { values: [option.value] });
+									return;
+								}
+								if (chosen.has(option.value)) chosen.delete(option.value);
+								else chosen.add(option.value);
+								box.setAttribute("aria-pressed", String(chosen.has(option.value)));
+								box.classList.toggle("is-chosen", chosen.has(option.value));
+							},
+							chosen,
+							busy,
+							multi,
+						)
+					: h("div", { class: "interaction-options" }, ...optionButtons),
+			);
 			const field = custom
 				? h("input", {
 						type: "text",
