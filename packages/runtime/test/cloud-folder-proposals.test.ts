@@ -393,7 +393,7 @@ it("records the review of the proposal's units before its receipt, then applies 
 		outcome: "applied",
 		saved: 1,
 		hired: [{ id: AGENT, name: "Mira" }],
-		next: expect.stringContaining("wake it with send_coworker_message"),
+		next: expect.stringContaining("A hired agent starts on its first todo by itself, usually within a minute"),
 	});
 	expect(f.recordings.map((recording) => recording.p_request)).toEqual([
 		{

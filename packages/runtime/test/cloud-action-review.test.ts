@@ -3266,7 +3266,8 @@ describe("normal work on a company machine (4 November 2026)", () => {
 	const verdict = (
 		decision: "allow" | "ask" | "deny",
 		builtIn: "none" | "not_requested" | "money" = "none",
-		guards: Partial<CloudActionGuards> | undefined = {},
+		/** null: the reviewer gave none. */
+		guards: Partial<CloudActionGuards> | null = {},
 		ruleIds: string[] = [],
 	) => ({
 		decision,
@@ -3274,7 +3275,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		builtIn,
 		reason: "The reviewer's reason.",
 		proposedRule: null,
-		...(guards === undefined ? {} : { guards: { ...NONE, ...guards } }),
+		...(guards === null ? {} : { guards: { ...NONE, ...guards } }),
 	});
 
 	it("allows each of them by the fixed rule, whatever the reviewer decided, keeping what the reviewer said", () => {
@@ -3331,7 +3332,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		const money = verdict("ask", "money");
 		expect(machineWorkCheck({ tool: machine }, money, new Set())).toEqual(money);
 		// No guards, another tool, or a connector of the same name: as the reviewer said.
-		const bare = verdict("deny", "not_requested", undefined);
+		const bare = verdict("deny", "not_requested", null);
 		expect(machineWorkCheck({ tool: machine }, bare, new Set())).toEqual(bare);
 		const shell = verdict("deny", "not_requested");
 		expect(machineWorkCheck({ tool: { name: "computer_shell", source: "runtime" } }, shell, new Set())).toEqual(
