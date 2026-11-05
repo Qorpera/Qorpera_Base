@@ -617,7 +617,22 @@ describe("account and route ownership", () => {
 	it("keeps a return from Stripe for the member who added the card, not the next one", async () => {
 		const saved = "Card saved. It pays the company's next invoice.";
 		const { api, auth, root } = mounted("#/?good-will=card-saved");
-		vi.spyOn(api, "getMyGoodWill").mockResolvedValue({ year: 2026, paidByMeOre: 0, companies: [] });
+		vi.spyOn(api, "getMyGoodWill").mockResolvedValue({
+			year: 2026,
+			paidByMeOre: 0,
+			companies: [
+				{
+					profileId: profileB.profileId,
+					name: profileB.profileName,
+					netOre: 0,
+					feeOre: 0,
+					rateBp: 1000,
+					payer: "none",
+					brand: null,
+					last4: null,
+				},
+			],
+		});
 		await draw();
 		expect(location.hash).toBe("#/");
 		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
@@ -625,6 +640,10 @@ describe("account and route ownership", () => {
 		await draw();
 		location.hash = "#/account";
 		await draw();
+		// The list shows for the new member, without the other member's note.
+		const mine = root.querySelector<HTMLElement>(".settings-good-will-account")!;
+		expect(mine.hidden).toBe(false);
+		expect(mine.querySelector(".notice-ok")).toBeNull();
 		expect(root.textContent).not.toContain(saved);
 	});
 

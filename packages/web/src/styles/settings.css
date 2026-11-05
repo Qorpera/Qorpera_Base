@@ -314,6 +314,8 @@
  .settings-nav .settings-back { justify-content: center; margin-top: 8px; }
  .settings-content { padding: 24px 20px; }
  .settings-choices { --appearance-preview-scale: 1; width: 100%; gap: 10px; }
+ .good-will-months > li { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; padding: 6px 0; }
+ .good-will-months > li > small { grid-column: 1; }
  /* The picture takes the room the email needs: Sign out moves under the email. */
  .settings-account { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
  .settings-account > .btn { grid-column: 2; justify-self: start; }

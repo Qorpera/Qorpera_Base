@@ -38,7 +38,8 @@ export interface CompanyGoodWill {
 	/** Newest first: this month so far, then the last twelve. */
 	months: GoodWillMonth[];
 	steps: { fromOre: number; toOre: number | null; rateBp: number }[];
-	minChargeOre: number;
+	/** Null when no steps apply yet. */
+	minChargeOre: number | null;
 }
 
 export interface MyGoodWillCompany {
@@ -126,7 +127,7 @@ export function parseCompanyGoodWill(value: unknown, profileId: string): Company
 				rateBp: boundedInteger(step.rateBp, "good will rate", 0, 10_000),
 			};
 		}),
-		minChargeOre: ore(input.minChargeOre, "good will least charge"),
+		minChargeOre: input.minChargeOre === null ? null : ore(input.minChargeOre, "good will least charge"),
 	};
 }
 

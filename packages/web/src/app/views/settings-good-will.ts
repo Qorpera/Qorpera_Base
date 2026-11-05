@@ -33,7 +33,7 @@ function monthName(month: string): string {
 }
 
 /** What became of a month, in a line. */
-function monthLine(month: GoodWillMonth, card: boolean): string {
+function monthLine(month: GoodWillMonth, card: boolean, minChargeOre: number | null): string {
 	const amount = kroner(month.dueOre);
 	switch (month.status) {
 		case "open":
@@ -43,7 +43,9 @@ function monthLine(month: GoodWillMonth, card: boolean): string {
 		case "closed":
 			return card ? t("{amount} to be charged", { amount }) : t("{amount}, waiting for a card", { amount });
 		case "carried":
-			return t("{amount} moves to next month (under 100 kr)", { amount });
+			return minChargeOre === null
+				? t("{amount} moves to next month", { amount })
+				: t("{amount} moves to next month (under {least})", { amount, least: kroner(minChargeOre) });
 		case "zero":
 			return t("Nothing to pay");
 		case "failed":
@@ -59,6 +61,8 @@ function cardLine(card: { brand: string | null; last4: string | null }): string 
 	const brand = card.brand ? card.brand.charAt(0).toUpperCase() + card.brand.slice(1) : t("Card");
 	return card.last4 ? t("{brand} ending {last4}", { brand, last4: card.last4 }) : brand;
 }
+
+const OPENING_RESET_MS = 10_000;
 
 /** What a founder's card page needs of the cloud. */
 export interface WebGoodWill {
@@ -133,6 +137,13 @@ export class GoodWillView {
 			const url = await this.#client.cardPage();
 			if (this.#lifetime.signal.aborted) return;
 			this.#client.open(url);
+			// A page that did not open (the member stayed when the browser asked, or came back from its cache) frees the
+			// button again.
+			setTimeout(() => {
+				if (this.#lifetime.signal.aborted) return;
+				this.#opening = false;
+				this.#draw();
+			}, OPENING_RESET_MS);
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			this.#cardError = cardRefusal(error);
@@ -143,7 +154,8 @@ export class GoodWillView {
 
 	#draw(): void {
 		const goodWill = this.#goodWill;
-		this.el.hidden = this.#error === "";
+		// Hidden until the first answer, so a cloud without good will never shows it.
+		this.el.hidden = this.#error === "" || (!goodWill && this.#error === undefined);
 		const name = goodWill?.companyName || this.#companyName();
 		const head = [
 			h("h2", null, goodWillName()),
@@ -188,7 +200,7 @@ export class GoodWillView {
 									"li",
 									{ "data-month": month.month, "data-status": month.status },
 									h("span", { class: "good-will-month" }, monthName(month.month)),
-									h("small", null, monthLine(month, Boolean(goodWill.card))),
+									h("small", null, monthLine(month, Boolean(goodWill.card), goodWill.minChargeOre)),
 									month.invoiceUrl
 										? h(
 												"a",
@@ -197,6 +209,9 @@ export class GoodWillView {
 													href: month.invoiceUrl,
 													target: "_blank",
 													rel: "noopener noreferrer",
+													"aria-label": t("Open the invoice for {month}", {
+														month: monthName(month.month),
+													}),
 												},
 												t("Open"),
 											)
@@ -236,20 +251,22 @@ export class GoodWillView {
 				: null,
 		);
 		const first = goodWill.steps[0];
+		const least = goodWill.minChargeOre;
 		replace(
 			this.el,
 			...head,
 			invoices,
 			paidWith,
 			this.#cardError ? notice("danger", this.#cardError) : null,
-			first
+			first && first.toOre !== null
 				? h(
 						"p",
 						{ class: "settings-rule-note" },
-						t(
-							"{rate} of each month's first 100,000 kr from customers, then less. Moms is added on the invoice. Under 100 kr moves to the next month.",
-							{ rate: percent(first.rateBp) },
-						),
+						t("{rate} of each month's first {amount} from customers, then less. Moms is added on the invoice.", {
+							rate: percent(first.rateBp),
+							amount: kroner(first.toOre),
+						}),
+						least ? ` ${t("Under {least} moves to the next month.", { least: kroner(least) })}` : null,
 					)
 				: null,
 		);
@@ -261,6 +278,8 @@ function payerLine(company: MyGoodWillCompany): string {
 	if (company.payer === "other") return t("Paid by another founder");
 	return t("No card yet");
 }
+
+const CARD_REFRESH_MS = 5000;
 
 /**
  * Settings → General with no company open, and the account page: what each of the member's companies sold and paid
@@ -275,6 +294,11 @@ export class MyGoodWillView {
 	constructor(read: () => Promise<MyGoodWill>, signal: AbortSignal, note?: string) {
 		this.#read = read;
 		this.#note = note;
+		// Back from Stripe, the card is saved a moment later (Stripe's word to the cloud): read once more.
+		if (note)
+			setTimeout(() => {
+				if (!this.#lifetime.signal.aborted) void this.refresh();
+			}, CARD_REFRESH_MS);
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		void this.refresh();

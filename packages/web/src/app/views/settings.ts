@@ -42,7 +42,7 @@ const TABS = [
 		label: phrase("General"),
 		icon: "settings",
 		keywords:
-			"account language region time zone timezone rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
+			"account language region time zone timezone good will goodwill rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 	{
 		id: "appearance",

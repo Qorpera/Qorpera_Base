@@ -81,7 +81,8 @@ export const SETTINGS: Record<string, string> = {
 	"{amount} so far. Final on the 5th": "{amount} indtil videre. Endelig den 5.",
 	"{amount} to be charged": "{amount} bliver trukket",
 	"{amount}, waiting for a card": "{amount}, venter på et kort",
-	"{amount} moves to next month (under 100 kr)": "{amount} flyttes til næste måned (under 100 kr)",
+	"{amount} moves to next month": "{amount} flyttes til næste måned",
+	"{amount} moves to next month (under {least})": "{amount} flyttes til næste måned (under {least})",
 	"Nothing to pay": "Intet at betale",
 	"{amount}: the card was declined. Stripe tries again.": "{amount}: kortet blev afvist. Stripe prøver igen.",
 	"{amount} charged {date}": "{amount} trukket {date}",
@@ -101,8 +102,10 @@ export const SETTINGS: Record<string, string> = {
 		"Kort kan ikke tilføjes endnu. Intet bliver trukket indtil da.",
 	"Payments are unavailable right now. Try again in a moment.":
 		"Betaling er ikke tilgængelig lige nu. Prøv igen om lidt.",
-	"{rate} of each month's first 100,000 kr from customers, then less. Moms is added on the invoice. Under 100 kr moves to the next month.":
-		"{rate} af hver måneds første 100.000 kr fra kunder, derefter mindre. Moms lægges på fakturaen. Under 100 kr flyttes til næste måned.",
+	"{rate} of each month's first {amount} from customers, then less. Moms is added on the invoice.":
+		"{rate} af hver måneds første {amount} fra kunder, derefter mindre. Moms lægges på fakturaen.",
+	"Under {least} moves to the next month.": "Under {least} flyttes til næste måned.",
+	"Open the invoice for {month}": "Åbn fakturaen for {month}",
 	"{name} in your companies": "{name} i dine virksomheder",
 	"Each company pays from its own card. Where you only help out, you never pay.":
 		"Hver virksomhed betaler med sit eget kort. Hvor du kun hjælper til, betaler du aldrig.",
