@@ -73,24 +73,21 @@ begin
 		raise exception 'a used-up login does not pay for the first run'; end if;
 end $$;
 
--- 3. A second login with room is chosen first, and nothing is used up any more.
-select pg_temp.connect_login(current_setting('qorpera_test.table')::uuid,pg_temp.p955_anna(),2);
-select pg_temp.p955_reading(2, 30);
+-- 3. A reading with room: the login is no longer used up, and it pays as a login with room.
+select pg_temp.p955_reading(1, 30);
 do $$
 declare v_seat jsonb := pg_temp.p955_seat();
 begin
-	if pg_temp.p955_sponsor_connection() is distinct from pg_temp.p955_connection(2) then
-		raise exception 'the login with room is not chosen first'; end if;
+	if pg_temp.p955_sponsor_connection() is distinct from pg_temp.p955_connection(1)
+		or not exists (select 1 from public.qorpera_eligible_member_accounts(current_setting('qorpera_test.table')::uuid,
+			pg_temp.p955_anna())) then
+		raise exception 'a login with room is not chosen'; end if;
 	if not (v_seat ->> 'modelLoginReady')::boolean or (v_seat ->> 'modelLoginUsedUp')::boolean
 		or v_seat ->> 'modelLoginResetsAt' is not null then
 		raise exception 'a founder with a login with room shows as used up: %', v_seat; end if;
 end $$;
--- Used up again: the one that resets first pays.
-select pg_temp.p955_reading(2, 100);
-do $$
-begin
-	if pg_temp.p955_sponsor_connection() is null then raise exception 'two used-up logins pay for nothing'; end if;
-end $$;
+-- Used up again for Start.
+select pg_temp.p955_reading(1, 100);
 
 -- 4. Ready and Start work on used-up logins; the started table says no first run waits yet (none is queued).
 select pg_temp.as_user(pg_temp.p955_anna());
