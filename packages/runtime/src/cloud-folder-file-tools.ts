@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseWall, wallHandle } from "@qorpera/cloud-client/agent-wall";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
 import {
@@ -344,6 +345,20 @@ export function appManifestCheck(path: string, before: AppManifestParse | null, 
 	if (stored ? owner !== stored.owner : owner !== null && owner !== agent)
 		throw new CloudToolRefusal(
 			`APP_OWNER_FIXED: nothing was written; owner names the agent that made the app and does not change${stored?.owner ? `: keep owner = "${stored.owner}"` : ""}`,
+		);
+}
+
+/** An agent's wall written as a file (packages/cloud-client/src/agent-wall.ts): it must read as a wall, within its
+ * limits, as update_wall keeps it. */
+export function wallCheck(path: string, text: string): void {
+	if (wallHandle(path) === null) return;
+	const { problems } = parseWall(text);
+	if (problems.length)
+		throw new CloudToolRefusal(
+			`WALL_INVALID: nothing was written; wall.md has problems: ${problems
+				.slice(0, 5)
+				.map((problem) => `line ${problem.line}: ${problem.message}`)
+				.join("; ")}. Keep it with update_wall`,
 		);
 }
 
@@ -761,6 +776,7 @@ export function cloudFolderFileTools(options: {
 						? { mediaType: current.file.mediaType, executable: current.file.executable }
 						: {};
 				await appGuard(input.path, isAppManifestPath(input.path) ? input.text : null, context.signal);
+				wallCheck(input.path, input.text);
 				return change(
 					"company_write",
 					input,
@@ -886,6 +902,7 @@ export function cloudFolderFileTools(options: {
 						`COMPANY_FILE_TOO_LARGE: the edited file would be larger than ${MAX_WRITE_BYTES / 1024} KiB; nothing was written`,
 					);
 				await appGuard(input.path, isAppManifestPath(input.path) ? edited : null, context.signal);
+				wallCheck(input.path, edited);
 				return change(
 					"company_edit",
 					input,

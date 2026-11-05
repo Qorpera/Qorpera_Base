@@ -1,0 +1,76 @@
+/* An agent's wall pinned on top of its chat (ui/agent-wall-poster.ts; Jonas, 5 Nov 2026, direction A): a poster that
+ * folds to its header row. Open, it shows what waits on the member (first, tinted), what the agent works on, and what it
+ * has done. Colours are tokens only, so the dark theme follows. */
+.agent-wall {
+	--agent-wall-wait: var(--sidebar-selection);
+	flex: none; position: relative; z-index: 2; display: grid; gap: 4px; margin: 10px 14px 0; padding: 8px 12px 10px;
+	border-radius: var(--radius-lg); background: var(--header-surface);
+	box-shadow: 0 0 0 1px var(--border), 0 6px 18px rgb(18 18 17 / 6%);
+	font-family: var(--font-sans); animation: agent-wall-in var(--motion-slow) var(--ease-out) both;
+}
+.agent-wall[hidden] { display: none; }
+@keyframes agent-wall-in { from { opacity: 0; transform: translateY(-6px); } }
+.agent-wall-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-wall-figure { display: grid; flex: none; place-items: center; }
+.agent-wall-summary { flex: 1; min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.agent-wall-count-waiting { color: var(--agent-wall-wait); font-weight: 600; }
+.agent-wall-toggle {
+	flex: none; padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: var(--hover); color: var(--text-muted);
+	font: 600 11.5px/1.2 var(--font-sans); cursor: pointer; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.agent-wall-toggle:hover { background: var(--pane-strong); color: var(--text); }
+.agent-wall-toggle:focus-visible, .agent-wall-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+/* The fold: its row grows from nothing to the body's height and back. */
+.agent-wall-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease; }
+.agent-wall.is-folded .agent-wall-fold { grid-template-rows: 0fr; opacity: 0; }
+.agent-wall-body { display: grid; gap: 8px; min-height: 0; max-height: min(46dvh, 420px); overflow: hidden auto; overscroll-behavior: contain; padding-top: 6px; scrollbar-width: thin; }
+/* Folded, the poster is its header row: the body's padding and the gap above it fold away too. */
+.agent-wall { transition: gap var(--motion-slow) var(--ease-out), padding-bottom var(--motion-slow) var(--ease-out); }
+.agent-wall.is-folded { gap: 0; padding-bottom: 8px; }
+.agent-wall.is-folded .agent-wall-body { overflow: hidden; padding-top: 0; }
+
+.agent-wall-part { display: grid; gap: 2px; min-width: 0; }
+.agent-wall-heading { display: flex; align-items: center; gap: 6px; margin: 0 0 1px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; line-height: 1.4; text-transform: uppercase; }
+.agent-wall-number { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--pane-strong); color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.agent-wall-part.is-waiting .agent-wall-heading { color: var(--agent-wall-wait); }
+.agent-wall-part.is-waiting .agent-wall-number { background: var(--agent-wall-wait); color: var(--sidebar-selection-text); }
+.agent-wall-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.agent-wall-item {
+	display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; padding: 4px 8px; border-radius: var(--radius);
+	color: var(--text); font-size: 13.5px; line-height: 1.4; overflow-wrap: anywhere;
+	transition: background-color 900ms ease;
+}
+.agent-wall-part.is-waiting .agent-wall-item { background: color-mix(in srgb, var(--agent-wall-wait) 7%, transparent); }
+/* New since the member last looked: a soft highlight that fades in and stays while they are here. */
+.agent-wall-item.is-new { animation: agent-wall-new 900ms ease both; background: var(--warning-soft); }
+.agent-wall-part.is-waiting .agent-wall-item.is-new { background: var(--warning-soft); }
+@keyframes agent-wall-new { from { background-color: transparent; } }
+.agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both, agent-wall-new 900ms ease both; }
+@keyframes agent-wall-enter { from { opacity: 0; transform: translateY(-8px) scale(0.97); } }
+.agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; border-radius: 50%; font-size: 9px; font-weight: 800; line-height: 1; }
+.agent-wall-part.is-done .agent-wall-mark { background: var(--ok-soft); color: var(--ok); }
+.agent-wall-part.is-waiting .agent-wall-mark { background: var(--agent-wall-wait); color: var(--sidebar-selection-text); }
+.agent-wall-part.is-working .agent-wall-mark { border: 1.5px solid var(--border-strong); border-top-color: var(--agent-wall-wait); animation: agent-wall-spin 1.4s linear infinite; }
+@keyframes agent-wall-spin { to { transform: rotate(360deg); } }
+.agent-wall-text { min-width: 0; }
+.agent-wall-text .message-prose { line-height: inherit; }
+.agent-wall-more { margin: 0; padding: 1px 8px 0 30px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.agent-wall-link { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
+.agent-wall-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* An app linked from the wall reads as a small chip in the line, not a message's card. */
+.agent-wall .app-card {
+	display: inline-flex; gap: 5px; width: auto; max-width: 100%; margin: 0 2px; padding: 1px 8px 1px 4px; vertical-align: 1px;
+	border-radius: var(--radius-pill); font-size: 12.5px; line-height: 1.4;
+}
+.agent-wall .app-card:hover { box-shadow: none; transform: none; }
+.agent-wall .app-card-emblem svg { width: 16px; height: 16px; }
+.agent-wall .app-card-title { font-size: inherit; }
+.agent-wall .app-card-note { display: none; }
+
+@media (max-width: 760px) { .agent-wall { margin: 8px 10px 0; } .agent-wall-body { max-height: 40dvh; } }
+@media (prefers-reduced-motion: reduce) {
+	.agent-wall, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
+	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle { transition: none; }
+}

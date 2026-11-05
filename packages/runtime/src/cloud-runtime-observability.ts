@@ -90,6 +90,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Interface apps (5 November 2026): making or changing one, and posting it for every member.
 	"save_app",
 	"post_app",
+	// The agent's wall above its thread (5 November 2026).
+	"update_wall",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

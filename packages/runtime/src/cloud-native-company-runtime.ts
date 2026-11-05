@@ -46,6 +46,7 @@ import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
+import { cloudWallTools } from "./cloud-folder-wall.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -900,6 +901,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 									// Interface apps: pages the agent makes to show members its work (5 November 2026).
 									...cloudAppTools({ folder: folder.client, operations, identity }),
+									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
+									// run of the agent; a worker reports to its agent instead.
+									...(identity.audienceKind === "company" && !work.isWorker
+										? cloudWallTools({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												timeZone: wake.time.timeZone,
+											})
+										: []),
 								].filter(work.companyFile),
 								...(folderSearch
 									? [

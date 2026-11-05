@@ -1016,6 +1016,7 @@ it.each([
 				"send_message",
 				"update_memory",
 				"update_skill",
+				"update_wall",
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -2956,8 +2957,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
 	// links, so they moved again. Good will (20260930566000) adds good_will_list and good_will_mark after add_review_rule,
 	// so they moved again. Interface apps
-	// (5 November 2026) add save_app and post_app after table_write, so they moved again; every other tool is as on
-	// master.
+	// (5 November 2026) add save_app and post_app after table_write, so they moved again. The wall (5 November 2026)
+	// adds update_wall after post_app, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2970,6 +2971,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"update_wall",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -2999,9 +3001,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"3cf617a1e84996fd3794f6876d37b6931577069f3626c8721a2daeb8f46db9aa",
+		"ff6e8f347a7f4eb10257a7fda16e25fc977aecbdf3faa46b939a5b81061d422e",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"0b0f88ec2b9e94f66f7d584454d0a9db04d161c58bce66bbb41344c7dbe889a2",
+		"18e8794937f363a8281b151de44365fdf60edd903f752f2f0a64b28e93e8b088",
 	);
 });
