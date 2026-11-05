@@ -203,8 +203,13 @@ they answer 42501 "native host call is refused".
   the member's own pick ("Choose a login to continue"). Choose saves the member's
   pick, one of their own logins that could pay now whatever its usage, and
   returns its connection id; 22023 "This login cannot pay for your conversation"
-  for any other login, 42501 when the conversation cannot be read. A new
-  conversation's first choice (and new work's, and a new coding session's) orders
+  for any other login, 42501 when the conversation cannot be read. While the
+  member's own turn in the conversation waits at its login's usage limit (an
+  agent's first run, say), select answers that login, also over a login saved
+  before (20260930580000), so the thread shows the limit and offers the member's
+  other logins; choosing one with room also moves those waiting turns to it, and
+  they go on there. A wake (a post in a thread, a routine's run) keeps its payer.
+  A new conversation's first choice (and new work's, and a new coding session's) orders
   the logins best first (20260930559000): a login whose provider refused its last
   three runs, the newest in six hours, last, then one at its limit, then one that completed a
   run this week with at least 20% left first, then the most room on one scale
