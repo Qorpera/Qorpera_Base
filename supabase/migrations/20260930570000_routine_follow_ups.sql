@@ -2,29 +2,36 @@
 -- set its next look for 09:00 the next morning, so all work stopped at 17:16 and nothing ran for 16 hours). Folder-v2
 -- only.
 --
--- When an agent's own open work moved and nothing else will wake it soon, its next dynamic routine run comes early:
+-- When an agent's open work moved outside its routines and nothing else will wake it soon, its next dynamic routine run
+-- comes early:
 -- * Open work: the agent's open todos (not blocked, so no person to wait for) that changed since the routine last ran
---   (or was set up), with no worker still at them (its report wakes the agent) and none a member stopped, and not last
---   saved by a run a member stopped.
--- * Soon: once those todos have been quiet for the wait, while the agent runs nothing and has nothing else queued before
---   that routine's chosen run. The wait is 30 minutes plus the agent's own offset (1 to 20 minutes, as the runtime
---   spreads round start times: qorpera_routine_agent_offset_minutes); after a run brought forward, the next one waits
---   twice as long (1 hour, 2, 4, ...), and a run the agent's own time brought resets it. So a todo that keeps changing
---   comes back less and less often, and a run that changes nothing ends the follow-ups.
+--   (or was set up), last saved outside a routine run (a conversation, a worker's continuation, a member: a routine run
+--   that left a todo open chose its own next run), with no worker still at them (its report wakes the agent), no worker
+--   a member stopped, no open or returned human task (it waits for a person), and not last saved by a run a member
+--   stopped.
+-- * Soon: once those todos have been quiet for the wait, while the agent is active, runs nothing and has nothing else
+--   queued before that routine's chosen run, and outside the routine's quiet hours. The wait is 30 minutes plus the
+--   agent's own offset (1 to 20 minutes, as the runtime spreads round start times: qorpera_routine_agent_offset_minutes);
+--   after a run brought forward, the next one waits twice as long (1 hour, 2, 4, ...). A queued run that is itself
+--   brought forward is never brought forward again.
 -- * Which routine: the agent's dynamic routine (no `after`) whose queued run is its earliest wake, only when that run is
 --   further away than the wait. Routines that are paused, concluded or expired, a paused company, an archived agent, a
---   member's Stop of the routine's latest run, quiet hours and the routine's end keep their rules: the tick's existing
---   checks run first, and the insert's lifecycle trigger holds a run in quiet hours.
+--   member's Stop of the routine's latest run and the routine's end keep their rules.
 -- * How: the folder tick (qorpera_folder_dynamic_routines_due, then qorpera_folder_restore_dynamic_routine_run, every
---   30 s) lists such a routine, and the restore cancels the queued run ('Brought forward: ...') and inserts the next
---   attempt of the same version now, in one subtransaction with the admission (undone together if the kernel refuses
---   it). Its payload says `followUp`: the step and up to 5 todo paths. The run decides next as any dynamic run does.
--- * Reads only, by the indexes the tick already uses: the routine's occurrences, the agent's open todos
---   (qorpera_runtime_agent_todos_open), their workers and commits, the company's queued jobs and wakes.
--- The pre-check refuses unless both bodies are exactly the ones they replace, by md5 (the tick of 20260930009500 with
--- the changes of 20260930027000 and 20260930565000), and each anchor must occur once. The catalog check refuses unless
--- exactly these two public functions changed, only in their bodies, each by its replacements, and the two new functions
--- are the only ones that came.
+--   30 s) lists such a routine, and the restore cancels the queued run ('Brought forward: ...') and inserts the run now,
+--   with the attempt and retry count of the run that gave way (it is no attempt of its own), in one subtransaction with
+--   the admission (undone together if the kernel refuses it). Its payload says `followUp`: the step and up to 5 todo
+--   paths. The run decides next as any dynamic run does.
+-- * Not seen: a member's turn or input still queued for the agent, and a wait on the Company Computer, are not "runs
+--   something"; at most one early run comes then.
+-- * Reads only, by indexes: the routine's occurrences, the agent's open todos (qorpera_runtime_agent_todos_open), their
+--   workers (by todo), commits (by id) and the commits' wakes (by run), the environment's open human tasks, the
+--   company's queued and leased jobs and its queued wakes.
+-- The pre-check refuses unless both bodies are exactly the ones they replace, by md5 (the due list: 20260930009500 with
+-- the changes of 20260930027000 and 20260930565000; the restore: 20260930009500 with the changes of 20260930027000,
+-- P15's 20260930022000 (20260928479140) and 20260930565000), and each anchor must occur once. The catalog check refuses
+-- unless exactly these two public functions changed, only in their bodies, each by its replacements, and the two new
+-- functions are the only ones that came.
 -- Deploy order: either. The runtime's prompt explains wake.payload.followUp; an older runtime reads it as data.
 -- Every inserted text names this migration (20260930570000), for the deploy guard.
 
@@ -79,17 +86,28 @@ revoke all on function public.qorpera_routine_agent_offset_minutes(uuid) from pu
 create function public.qorpera_routine_follow_up(p_routine public.qorpera_cloud_routines, p_trigger jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_pending public.qorpera_wake_occurrences%rowtype; v_last public.qorpera_wake_occurrences%rowtype;
-	v_step integer; v_wait interval; v_since timestamptz; v_changed timestamptz; v_todos jsonb;
+	v_step integer; v_wait interval; v_since timestamptz; v_changed timestamptz; v_todos jsonb; v_now time;
 begin
 	-- 20260930570000.
 	if p_routine.status is distinct from 'active' or p_routine.origin is distinct from 'agent'
 		or p_routine.owner_staff_agent_id is null or p_trigger ->> 'kind' is distinct from 'once' or p_trigger ? 'after' then
 		return null; end if;
-	-- The run the agent chose: queued for the current version.
+	-- Not inside the routine's quiet hours: a run brought forward there would only wait for their end.
+	if p_routine.quiet_start is not null then
+		v_now := (statement_timestamp() at time zone p_routine.quiet_time_zone)::time;
+		if (p_routine.quiet_start < p_routine.quiet_end and v_now >= p_routine.quiet_start and v_now < p_routine.quiet_end)
+			or (p_routine.quiet_start > p_routine.quiet_end and (v_now >= p_routine.quiet_start or v_now < p_routine.quiet_end)) then
+			return null; end if;
+	end if;
+	-- The run the agent chose: queued for the current version. One brought forward already is never brought again.
 	select * into v_pending from public.qorpera_wake_occurrences as wake
 	where wake.routine_id = p_routine.id and wake.routine_version = p_routine.current_version and wake.status = 'queued'
 	order by wake.created_at desc, wake.id desc limit 1;
-	if not found then return null; end if;
+	if not found or v_pending.payload ? 'followUp' then return null; end if;
+	-- The agent is active.
+	if not exists (select 1 from public.qorpera_profile_staff as staff where staff.profile_id = p_routine.profile_id
+		and staff.staff_agent_id = p_routine.owner_staff_agent_id and staff.employment_status = 'active'
+		and staff.folder_retired_at is null) then return null; end if;
 	-- The routine's latest run: a member's Stop of it ends the follow-ups; one brought forward doubles the wait.
 	select * into v_last from public.qorpera_wake_occurrences as wake
 	where wake.routine_id = p_routine.id and wake.run_id is not null
@@ -112,9 +130,15 @@ begin
 			and t.state = 'open' and t.updated_at > v_since and t.folder_path is not null and t.folder_retired_at is null
 			and not exists (select 1 from public.qorpera_runtime_workers as worker where worker.todo_id = t.id
 				and (worker.state = 'active' or worker.result ->> 'reason' = 'member_stopped'))
-			and not exists (select 1 from public.qorpera_folder_commits as c
-				join public.qorpera_runner_jobs as job on job.run_id = c.run_id
-				where c.id = t.folder_commit_id and job.cancelled_by_user_id is not null)
+			and not exists (select 1 from public.qorpera_folder_human_task_index as task
+				where task.environment_id = t.folder_environment_id and task.retired_at is null
+					and task.status in ('open', 'returned') and task.todo_id = t.id)
+			-- Last saved by a routine run (it chose its next run) or by a run a member stopped: not moved.
+			and not exists (select 1 from public.qorpera_folder_commits as c where c.id = t.folder_commit_id
+				and (exists (select 1 from public.qorpera_wake_occurrences as saver where saver.run_id = c.run_id
+						and saver.wake_kind = 'routine')
+					or exists (select 1 from public.qorpera_runner_jobs as job where job.run_id = c.run_id
+						and job.cancelled_by_user_id is not null)))
 		order by t.updated_at desc limit 5) as todo;
 	-- Quiet for the wait since the last change.
 	if v_changed is null or v_changed + v_wait > statement_timestamp() then return null; end if;
@@ -154,8 +178,8 @@ select pg_temp.fu_replace('public.qorpera_folder_dynamic_routines_due(uuid,integ
 select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$	v_session uuid; v_occurrence public.qorpera_wake_occurrences%rowtype; v_owner uuid; v_error text;$old$,
 	$new$	v_session uuid; v_occurrence public.qorpera_wake_occurrences%rowtype; v_owner uuid; v_error text;
-	-- 20260930570000: the queued run a follow-up brings forward, and why.
-	v_queued uuid; v_follow jsonb;$new$);
+	-- 20260930570000: the queued run a follow-up brings forward, and why; the occurrences the key counts.
+	v_queued uuid; v_follow jsonb; v_keyed integer;$new$);
 select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$	if v_id is not null then return jsonb_build_object('status', 'pending', 'occurrence_id', v_id); end if;$old$,
 	$new$	-- 20260930570000: a queued run a follow-up brings forward goes on through the checks below, then gives way to a run
@@ -166,10 +190,22 @@ select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uui
 		v_queued := v_id;
 	end if;$new$);
 select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
+	$old$	select count(*) into v_ended from public.qorpera_wake_occurrences
+	where routine_id = v_routine.id and routine_version = v_routine.current_version;$old$,
+	$new$	-- 20260930570000: a run that gave way to a run brought forward is no attempt; the key still counts it.
+	select count(*) filter (where blocked_reason is distinct from
+			'Brought forward: open todos of the agent changed and are still open'), count(*)
+	into v_ended, v_keyed from public.qorpera_wake_occurrences
+	where routine_id = v_routine.id and routine_version = v_routine.current_version;$new$);
+select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$		else statement_timestamp() + least(interval '15 minutes' * power(2, least(v_ended - 4, 12)), interval '1 day') end;$old$,
 	$new$		else statement_timestamp() + least(interval '15 minutes' * power(2, least(v_ended - 4, 12)), interval '1 day') end;
-	-- 20260930570000: a run brought forward starts now.
-	if v_follow is not null then v_at := statement_timestamp(); end if;$new$);
+	-- 20260930570000: a run brought forward starts now, as the attempt of the run that gives way to it.
+	if v_follow is not null then v_at := statement_timestamp(); v_ended := v_ended - 1; end if;$new$);
+select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
+	$old$			v_trigger ->> 'id', 'once:' || v_routine.current_version || ':' || (v_ended + 1), v_at, v_at,$old$,
+	$new$			-- 20260930570000: the key counts every occurrence of the version.
+			v_trigger ->> 'id', 'once:' || v_routine.current_version || ':' || (v_keyed + 1), v_at, v_at,$new$);
 select pg_temp.fu_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)'::regprocedure,
 	$old$		perform public.qorpera_folder_admit_wakes(v_routine.profile_id);$old$,
 	$new$		perform public.qorpera_folder_admit_wakes(v_routine.profile_id);
@@ -198,12 +234,13 @@ begin
 	for v in select * from (values
 		('public.qorpera_folder_dynamic_routines_due(uuid,integer)', 1, array['qorpera_company_deleting', 'union',
 			'20260930570000', 'qorpera_routine_follow_up', 'page as']),
-		('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)', 5, array['v_error text', '20260930570000',
-			'v_queued uuid; v_follow jsonb', 'qorpera_dynamic_routine_pending_occurrence', '20260930570000', 'qorpera_routine_follow_up',
-			'''pending''', 'v_queued := v_id', 'Runs of one routine never overlap', 'A member''s Stop', 'interval ''1 day'') end',
-			'20260930570000', 'v_at := statement_timestamp()', 'qorpera_folder_admit_wakes', '20260930570000',
-			'Brought forward', 'where id = v_queued', 'insert into public.qorpera_wake_occurrences', '20260930565000', '20260930570000',
-			'''followUp''', 'returning * into v_occurrence'])) as guard(signature, markers, texts)
+		('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)', 7, array['v_error text', '20260930570000',
+			'v_queued uuid; v_follow jsonb; v_keyed integer', 'qorpera_dynamic_routine_pending_occurrence', '20260930570000',
+			'qorpera_routine_follow_up', '''pending''', 'v_queued := v_id', 'Runs of one routine never overlap',
+			'A member''s Stop', '20260930570000', 'into v_ended, v_keyed', 'interval ''1 day'') end', '20260930570000',
+			'v_ended := v_ended - 1', 'qorpera_folder_admit_wakes', '20260930570000', 'Brought forward', 'where id = v_queued',
+			'insert into public.qorpera_wake_occurrences', '20260930570000', '(v_keyed + 1)', '20260930565000',
+			'20260930570000', '''followUp''', 'returning * into v_occurrence'])) as guard(signature, markers, texts)
 	loop
 		v_source := (select prosrc from pg_proc where oid = v.signature::regprocedure);
 		if (length(v_source) - length(replace(v_source, '20260930570000', ''))) / length('20260930570000') <> v.markers then
