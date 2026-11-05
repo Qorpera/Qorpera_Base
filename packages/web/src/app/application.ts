@@ -26,6 +26,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
@@ -1530,6 +1531,14 @@ export function mountApplication(
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
+							// The agent's wall on top of its thread, read with the member's own folder client and again after
+							// each change hint of the company's folder (the apps' hint channel).
+							agentWall: {
+								read: agentWallReader(() =>
+									memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
+								),
+								onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+							},
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

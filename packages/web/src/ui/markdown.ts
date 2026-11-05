@@ -190,6 +190,17 @@ export function markdown(source: string, options: MarkdownOptions = {}): HTMLEle
 	}
 }
 
+/** One line of Markdown as inline content (an agent wall's item, ui/agent-wall-poster.ts): emphasis, code and links,
+ * the links drawn as in a message (folder links and app cards included), no blocks. */
+export function markdownInline(source: string): HTMLElement {
+	try {
+		const tokens = Lexer.lexInline(source, { gfm: true }) as MarkedToken[];
+		return h("span", { class: "message-prose" }, renderTokens(tokens));
+	} catch {
+		return h("span", { class: "text" }, source);
+	}
+}
+
 /** Match the desktop's paragraph bubbles without splitting structured blocks.
  * Lex the whole send once so reference links can resolve across bubbles. This
  * is display grouping only: all admitted text stays in its canonical message. */

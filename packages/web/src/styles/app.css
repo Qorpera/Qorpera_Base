@@ -2,6 +2,7 @@
 @import "../../../member-web/ui/screens.css";
 @import "./settings.css";
 @import "./conversation.css";
+@import "./agent-wall.css";
 @import "./feedback.css";
 @import "./company-folder.css";
 @import "./founding.css";

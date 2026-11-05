@@ -19,6 +19,7 @@ import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
+import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import {
 	type ActionReviewDraft,
@@ -255,6 +256,15 @@ export class ConversationView {
 	/** The first sequence of the live log: the oldest item the thread showed first. */
 	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
+	/** The agent's wall, pinned above the messages of its own thread (ui/agent-wall-poster.ts). */
+	readonly #wall = new AgentWallPoster();
+	/** The agent whose wall is read, its text as last read, and the read on its way. */
+	#wallAgent: string | undefined;
+	#wallText: string | null = null;
+	#wallReading = false;
+	#wallAgain = false;
+	/** The agent was working at the last update: the end of its run reads the wall again. */
+	#wallWorking = false;
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
@@ -733,6 +743,7 @@ export class ConversationView {
 			"div",
 			{ class: "thread-conversation" },
 			this.#header,
+			this.#wall.el,
 			this.#messages,
 			this.#earlierStatus,
 			this.#status,
@@ -773,6 +784,11 @@ export class ConversationView {
 			},
 			{ signal: this.#lifetime.signal },
 		);
+		// The wall is read again after each change hint of the company's folder and when the member comes back to the tab.
+		if (actions.agentWall) {
+			this.#unsubscribe.push(actions.agentWall.onFolderChange(() => void this.#readWall()));
+			window.addEventListener("focus", () => void this.#readWall(), { signal: this.#lifetime.signal });
+		}
 		company.setOpenSession(sessionId);
 		this.#unsubscribe.push(
 			company.conversation(sessionId).subscribe(() => this.update()),
@@ -1809,6 +1825,7 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
+		this.#syncWall(room || company.accessLost || !company.team?.capabilities.read ? undefined : agent);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
@@ -1866,6 +1883,45 @@ export class ConversationView {
 		this.#renderMentionNote();
 		this.#renderQuoteNote();
 		this.#sharedDrafts.update();
+	}
+
+	/** The agent's wall in its own thread: read when the thread knows its agent and again when its run ends. A group
+	 * chat has none. */
+	#syncWall(agent: HostedStaffAgent | undefined): void {
+		const id = this.#actions.agentWall ? agent?.id : undefined;
+		if (id !== this.#wallAgent) {
+			this.#wallAgent = id;
+			this.#wallText = null;
+			if (id) void this.#readWall();
+		} else if (id && this.#wallWorking && !this.#working) void this.#readWall();
+		this.#wallWorking = this.#working;
+		this.#wall.show(id ? agent : undefined, this.#wallText);
+	}
+
+	async #readWall(): Promise<void> {
+		const source = this.#actions.agentWall;
+		if (!source || !this.#wallAgent || this.#disposed) return;
+		// One read at a time; a hint while one is on its way reads once more after it.
+		if (this.#wallReading) {
+			this.#wallAgain = true;
+			return;
+		}
+		this.#wallReading = true;
+		const id = this.#wallAgent;
+		try {
+			const text = await source.read(id, this.#lifetime.signal);
+			if (this.#disposed || id !== this.#wallAgent) return;
+			this.#wallText = text;
+			this.#wall.show(this.#company.staffById(id), text);
+		} catch {
+			/* What the poster shows stands; the next hint reads again. */
+		} finally {
+			this.#wallReading = false;
+			if (this.#wallAgain && !this.#disposed) {
+				this.#wallAgain = false;
+				void this.#readWall();
+			}
+		}
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
