@@ -952,7 +952,7 @@ export const CLOUD_COWORKER_STARTING_WAIT_MS = 60_000;
 const STARTING_POLL_MS = 3_000;
 /** What the agent reads when a new hire is still not ready after the wait. */
 const STARTING_TEXT =
-	"This coworker was just hired and is still starting. It begins its first todo on its own; nothing failed. This message was not sent: send it again in a few minutes if it is still needed. Do not tell the member the hire failed or that the coworker has not started.";
+	"This coworker was hired moments ago and is still starting; the platform starts it on its first todo by itself. This message was not sent: send it again in a few minutes if it is still needed. Only if it still says this then, tell the member the new coworker has not started yet.";
 
 async function callCoworkerMessage(
 	binding: CloudNativeToolBinding,

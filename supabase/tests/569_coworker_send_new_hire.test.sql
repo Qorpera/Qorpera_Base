@@ -43,4 +43,47 @@ begin
 		'42501', 'Coworker audience cannot receive this context');
 end $$;
 
+-- Only such a hire counts as starting: a recipient whose grant was revoked, one with a first run, and the Co-Founder are
+-- refused as before. A message that wakes (priority, the default) waits the same way.
+create function pg_temp.hire569(p_staff uuid) returns void language sql as $$
+	select pg_temp.fx(format($f$insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter,
+		appearance_color, appearance_shape, employment_status, lifecycle_state, created_at, updated_at, updated_by_user_id)
+		values ('63400000-0000-4000-8000-000000000010', %L, 'Agent', 'Ops', 'Test.', 'red', 'round', 'active', 'active',
+			statement_timestamp(), statement_timestamp(), '63400000-0000-4000-8000-000000000001')$f$, p_staff))
+$$;
+do $$
+declare
+	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
+	c_revoked constant uuid := '56900000-0000-4000-8000-0000000000c2'; c_first constant uuid := '56900000-0000-4000-8000-0000000000c3';
+	c_cofounder constant uuid := '56900000-0000-4000-8000-0000000000c4'; c_woken constant uuid := '56900000-0000-4000-8000-0000000000c5';
+	h jsonb := pg_temp.human(); b jsonb := h -> 'binding'; p jsonb := h -> 'actor'; v_grant uuid;
+begin
+	perform pg_temp.release(p, extensions.gen_random_uuid(), jsonb_build_array(pg_temp.read('plan-569.txt', p) -> 'entry'));
+	-- A priority message (the default) to a starting hire: the same refusal.
+	perform pg_temp.hire569(c_woken);
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L)', b, c_woken, 'woken-569', 'Start.'), '55000',
+		'Coworker recipient is still starting');
+	-- Its grant revoked: refused as an audience.
+	perform pg_temp.hire569(c_revoked);
+	v_grant := public.qorpera_folder_grant(c_env, pg_temp.member(1), (pg_temp.root()).id, 'staff_agent', c_revoked,
+		array['read']) ->> 'grantId';
+	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), (pg_temp.root()).id, v_grant);
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L, false)', b, c_revoked, 'revoked-569', 'Hi'), '42501',
+		'Coworker audience cannot receive this context');
+	-- A first run recorded, and no grant: refused as an audience.
+	perform pg_temp.hire569(c_first);
+	perform pg_temp.fx(format($f$insert into public.qorpera_agent_first_runs(profile_id, environment_id, staff_agent_id, session_id,
+		input_id, source_path_version, startup_assignment) values (%L, %L, %L, %L, %L, %L, '{}')$f$, c_profile, c_env, c_first,
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid()));
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L, false)', b, c_first, 'first-569', 'Hi'), '42501',
+		'Coworker audience cannot receive this context');
+	-- The Co-Founder, whose first run comes with its creation: refused as an audience.
+	perform pg_temp.hire569(c_cofounder);
+	perform pg_temp.fx(format($f$insert into public.qorpera_company_cofounders(profile_id, environment_id, staff_agent_id,
+		created_by_user_id, created_at) values (%L, %L, %L, '63400000-0000-4000-8000-000000000001', statement_timestamp())$f$,
+		c_profile, c_env, c_cofounder));
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L, false)', b, c_cofounder, 'cofounder-569', 'Hi'), '42501',
+		'Coworker audience cannot receive this context');
+end $$;
+
 rollback;

@@ -1123,7 +1123,7 @@ describe("native coworker tool adapter", () => {
 			call.mockRejectedValue(new CloudControlRpcRefused("55000", CLOUD_COWORKER_STARTING));
 			const late = tool.execute({ ...message, operationKey: "handoff-2" }, context);
 			const outcome = expect(late).rejects.toThrow(
-				"NOT_AVAILABLE: This coworker was just hired and is still starting. It begins its first todo on its own; nothing failed.",
+				"NOT_AVAILABLE: This coworker was hired moments ago and is still starting; the platform starts it on its first todo by itself.",
 			);
 			await vi.advanceTimersByTimeAsync(CLOUD_COWORKER_STARTING_WAIT_MS + 3_000);
 			await outcome;

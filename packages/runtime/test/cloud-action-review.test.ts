@@ -3195,6 +3195,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		followsOutsideInstructions: false,
 		deletesOrOverwrites: false,
 		moneyTermsOrAccess: false,
+		againstMemberOrVision: false,
 	};
 	// The production refusals of 4 November, as the reviewer gave them: each command installs tools, reads or checks
 	// files on the machine, or fetches public pages, and the reviewer judged the step itself not clearly authorized.
@@ -3276,23 +3277,44 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		...(guards === undefined ? {} : { guards: { ...NONE, ...guards } }),
 	});
 
-	it("allows each of them by the fixed rule, whatever the reviewer decided", () => {
-		for (const refusal of REFUSALS)
-			expect(
-				machineWorkCheck(
-					{ tool: machine },
-					{ ...verdict(refusal.decision, refusal.builtIn), reason: refusal.reason },
-					new Set(),
-				),
-				refusal.at,
-			).toEqual({
+	it("allows each of them by the fixed rule, whatever the reviewer decided, keeping what the reviewer said", () => {
+		for (const refusal of REFUSALS) {
+			const checked = machineWorkCheck(
+				{ tool: machine },
+				{ ...verdict(refusal.decision, refusal.builtIn), reason: refusal.reason },
+				new Set(),
+			);
+			expect(checked, refusal.at).toEqual({
 				decision: "allow",
 				ruleIds: [],
 				builtIn: "none",
-				reason: CLOUD_MACHINE_WORK_REASON,
+				reason: expect.stringMatching(/^Installing tools, building, testing/),
 				proposedRule: null,
 				guards: NONE,
 			});
+			expect(checked.reason.startsWith(`${CLOUD_MACHINE_WORK_REASON} The review said ${refusal.decision}: `)).toBe(
+				true,
+			);
+			expect(Buffer.byteLength(checked.reason)).toBeLessThanOrEqual(500);
+		}
+	});
+
+	it("asks on a card instead when the company has Ask first rules the reviewer did not cite", () => {
+		// A reviewer may name a rule only in its reason; a member then checks the command rather than the rule missing it.
+		// A deny becomes that ask; an ask stays the reviewer's own.
+		for (const refusal of REFUSALS) {
+			const given = { ...verdict(refusal.decision, refusal.builtIn), reason: refusal.reason };
+			const checked = machineWorkCheck({ tool: machine }, given, new Set([RULE]));
+			if (refusal.decision === "ask") expect(checked, refusal.at).toEqual(given);
+			else
+				expect(checked, refusal.at).toMatchObject({
+					decision: "ask",
+					builtIn: "none",
+					reason: expect.stringMatching(
+						/the company has Ask first rules, so a member checks it\. The review said deny: /,
+					),
+				});
+		}
 	});
 
 	it("keeps the guards: company data out, outside instructions, deletes, money, Ask first rules and built-in checks", () => {
@@ -3302,9 +3324,9 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		}
 		const deletes = verdict("ask", "none", { deletesOrOverwrites: true });
 		expect(machineWorkCheck({ tool: machine }, deletes, new Set())).toEqual(deletes);
-		const ruled = verdict("ask", "none", {}, [RULE]);
+		const ruled = verdict("deny", "not_requested", {}, [RULE]);
 		expect(machineWorkCheck({ tool: machine }, ruled, new Set([RULE]))).toEqual(ruled);
-		const upper = verdict("ask", "none", {}, [RULE.toUpperCase()]);
+		const upper = verdict("deny", "not_requested", {}, [RULE.toUpperCase()]);
 		expect(machineWorkCheck({ tool: machine }, upper, new Set([RULE]))).toEqual(upper);
 		const money = verdict("ask", "money");
 		expect(machineWorkCheck({ tool: machine }, money, new Set())).toEqual(money);
@@ -3316,15 +3338,15 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			shell,
 		);
 		expect(machineWorkCheck({ tool: { name: "machine_run", source: "connector" } }, shell, new Set())).toEqual(shell);
-		// A cited Allow automatically rule stays on the allow.
+		// A cited Allow automatically rule (not an Ask first one) stays on the allow.
 		expect(machineWorkCheck({ tool: machine }, verdict("ask", "none", {}, [RULE]), new Set())).toMatchObject({
 			decision: "allow",
 			ruleIds: [RULE],
 		});
 	});
 
-	it("records the 16:34 package install as allowed, and keeps the verdict when the reviewer cited an Ask first rule", async () => {
-		for (const ruled of [false, true]) {
+	it("records the 16:34 package install as allowed, asks with an uncited Ask first rule, keeps a cited one's verdict", async () => {
+		for (const ruled of ["none", "uncited", "cited"] as const) {
 			const recorded: Array<Record<string, unknown>> = [];
 			const control: CloudActionReviewControl = {
 				call: async (method, args) => {
@@ -3334,7 +3356,10 @@ describe("normal work on a company machine (4 November 2026)", () => {
 							agent: { name: "Legal Compliance" },
 							company: { name: "Armbånd.dk" },
 							requester: null,
-							rules: [{ id: RULE, scope: "company", when: "installing software", outcome: "ask_first" }],
+							rules:
+								ruled === "none"
+									? []
+									: [{ id: RULE, scope: "company", when: "installing software", outcome: "ask_first" }],
 						};
 					if (method === "qorpera_record_action_review") {
 						const review = args.p_review as Record<string, unknown>;
@@ -3351,7 +3376,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 				reviewer: {
 					review: async () => ({
 						decision: "deny",
-						ruleIds: ruled ? [RULE] : [],
+						ruleIds: ruled === "cited" ? [RULE] : [],
 						builtIn: "not_requested",
 						reason: refusal.reason,
 						proposedRule: "",
@@ -3374,11 +3399,16 @@ describe("normal work on a company machine (4 November 2026)", () => {
 				new AbortController().signal,
 			);
 			expect(recorded[0]).toMatchObject(
-				ruled
+				ruled === "cited"
 					? { tool: "machine_run", decision: "deny", builtIn: "not_requested", ruleIds: [RULE] }
-					: { tool: "machine_run", decision: "allow", builtIn: "none", reason: CLOUD_MACHINE_WORK_REASON },
+					: {
+							tool: "machine_run",
+							decision: ruled === "none" ? "allow" : "ask",
+							builtIn: "none",
+							reason: expect.stringContaining(`The review said deny: ${refusal.reason.slice(0, 40)}`),
+						},
 			);
-			expect(result.run).toBe(!ruled);
+			expect(result.run).toBe(ruled === "none");
 		}
 	});
 
@@ -3387,7 +3417,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			.tools;
 		expect(tools[0].inputSchema.required).toContain("guards");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"A command on a company machine (machine_run) for which all four are false runs by a fixed platform rule",
+			"A command on a company machine (machine_run) for which all five are false runs by a fixed platform rule",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"never from whether the request or the mandate names its exact step, package or page.",
@@ -3402,6 +3432,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 				guards: NONE,
 			}),
 		).toMatchObject({ guards: NONE });
+		// Guards that are not the five booleans read as none: the verdict stands, and no review ends unavailable for them.
 		for (const guards of [
 			{ ...NONE, sendsCompanyData: "no" },
 			{ sendsCompanyData: false },
@@ -3409,7 +3440,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			null,
 			{ ...NONE, extra: false },
 		])
-			expect(() =>
+			expect(
 				parseCloudActionVerdict({
 					decision: "ask",
 					ruleIds: [],
@@ -3418,6 +3449,6 @@ describe("normal work on a company machine (4 November 2026)", () => {
 					proposedRule: "",
 					guards,
 				}),
-			).toThrow("Review verdict is invalid");
+			).not.toHaveProperty("guards");
 	});
 });

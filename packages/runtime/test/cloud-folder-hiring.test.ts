@@ -55,8 +55,9 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		agent: { name: "Ada Lind", role: "Bookkeeper", folder: "QorperaOS/agents/ada-lind" },
 	});
 	expect(result.next).toContain(
-		"the platform starts Ada Lind on it by itself within a minute: no start message is needed.",
+		"the platform starts Ada Lind on it by itself, usually within a minute: no start message is needed.",
 	);
+	expect(result.next).toContain("if Ada Lind has not begun after a few minutes");
 	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
 	expect(result.next).toContain("a message sent while Ada Lind is still starting waits for it.");
 	expect(result.next).not.toContain("has not started");

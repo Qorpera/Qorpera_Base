@@ -235,7 +235,7 @@ export class CloudFolderHiring {
 					agent: { id: agentId, name: request.name, role: request.role, folder: root },
 					next:
 						saved.outcome === "saved"
-							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, use send_coworker_message (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
+							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself, usually within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, or if ${request.name} has not begun after a few minutes, use send_coworker_message (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
 							: saved.outcome === "conflict"
 								? `${root} is taken: call again with a new operationKey, and if this repeats, choose a slightly different name.`
 								: saved.outcome === "waiting_for_review"
