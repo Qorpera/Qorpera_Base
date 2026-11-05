@@ -4,8 +4,9 @@
  * - POST /good-will-card {profileId}: a founder opens Stripe Checkout in setup mode to save the card that pays the
  *   company's good will. Returns {url}. Card data never passes through here.
  * - POST /good-will-invoices: the database's clock (x-qorpera-billing-key) asks for the closed months' invoices. Each
- *   is a Stripe invoice to the company's card with Stripe Tax (25 % Danish moms, or reverse charge for an EU business
- *   with a VAT number), charged by Stripe, which also tries a failed card again.
+ *   is a Stripe invoice to the company's own Stripe customer and card with Stripe Tax (25 % Danish moms, or reverse
+ *   charge for an EU business with a VAT number), made as a draft and recorded first, then finalized for Stripe to
+ *   collect; Stripe also tries a failed card again.
  * - Stripe's events: a completed setup page saves the card; a paid or failed invoice moves the month.
  * Before the live switch the database invoices nothing with a live key, and test mode is for enrolled testers only. */
 
@@ -22,8 +23,6 @@ export interface GoodWillStripe {
 
 export interface GoodWillDependencies {
 	goodWill: GoodWillStore;
-	/** The computer-billing door, for the member's Stripe customer. */
-	store: GoodWillStore;
 	stripe: GoodWillStripe;
 	livemode: boolean;
 	returnUrl: string;
@@ -54,16 +53,27 @@ function withQuery(base: string, query: string): string {
 	return `${base}${base.includes("?") ? "&" : "?"}${query}`;
 }
 
-/** The member's Stripe customer in this mode, made the first time. */
-async function customerOf(member: { id: string; email: string }, known: string | undefined, deps: GoodWillDependencies) {
+/** The company's own Stripe customer in this mode, made the first time: the invoice's buyer is the company. */
+async function companyCustomer(
+	profileId: string,
+	companyName: string | undefined,
+	member: { email: string },
+	known: string | undefined,
+	deps: GoodWillDependencies,
+): Promise<string> {
 	if (known) return known;
 	const customer = await deps.stripe.post(
 		"/v1/customers",
-		{ email: member.email, "metadata[qorpera_user_id]": member.id },
-		`qorpera-customer-${member.id}-${deps.livemode ? "live" : "test"}`,
+		{
+			email: member.email,
+			...(companyName ? { name: companyName } : {}),
+			"metadata[qorpera_profile_id]": profileId,
+			"metadata[qorpera_kind]": GOOD_WILL_KIND,
+		},
+		`qorpera-good-will-customer-${profileId}-${deps.livemode ? "live" : "test"}`,
 	);
-	const saved = await deps.store.call("customer_set", {
-		userId: member.id,
+	const saved = await deps.goodWill.call("customer_set", {
+		profileId,
 		customerId: string(customer.id),
 		livemode: deps.livemode,
 	});
@@ -84,7 +94,7 @@ export async function startGoodWillCard(
 	if (string(begin.refused)) return { status: 409, body: { refused: begin.refused } };
 	const setupId = string(begin.setupId);
 	if (!setupId) throw new Error("The card page could not begin");
-	const customerId = await customerOf(member, string(begin.customerId), deps);
+	const customerId = await companyCustomer(profileId, string(begin.companyName), member, string(begin.customerId), deps);
 	const metadata: Record<string, string> = {
 		qorpera_kind: GOOD_WILL_KIND,
 		qorpera_setup_id: setupId,
@@ -143,50 +153,72 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			continue;
 		const key = `qorpera-good-will-${profileId}-${period}-${deps.livemode ? "live" : "test"}`;
 		const metadata = { qorpera_kind: GOOD_WILL_KIND, qorpera_profile_id: profileId, qorpera_month: period };
-		try {
-			const invoice = await deps.stripe.post(
-				"/v1/invoices",
-				{
-					customer: customerId,
-					currency: "dkk",
-					collection_method: "charge_automatically",
-					default_payment_method: paymentMethodId,
-					auto_advance: "true",
-					"automatic_tax[enabled]": "true",
-					pending_invoice_items_behavior: "exclude",
-					description: `Goodwill ${period}${string(month?.companyName) ? ` · ${string(month?.companyName)}` : ""}`,
-					...Object.fromEntries(Object.entries(metadata).map(([name, text]) => [`metadata[${name}]`, text])),
-				},
-				`${key}-invoice`,
-			);
-			const invoiceId = string(invoice.id);
-			if (!invoiceId) throw new Error("Stripe returned no invoice");
-			await deps.stripe.post(
-				"/v1/invoiceitems",
-				{
-					customer: customerId,
-					invoice: invoiceId,
-					currency: "dkk",
-					amount: String(dueOre),
-					tax_behavior: "exclusive",
-					description: `Goodwill ${period}`,
-				},
-				`${key}-item`,
-			);
-			const finalized = await deps.stripe.post(
-				`/v1/invoices/${encodeURIComponent(invoiceId)}/finalize`,
-				{ auto_advance: "true" },
-				`${key}-finalize`,
-			);
-			await deps.goodWill.call("invoiced", {
+		const record = (invoiceId: string, invoiceUrl?: string) =>
+			deps.goodWill.call("invoiced", {
 				profileId,
 				month: period,
 				invoiceId,
-				invoiceUrl: string(finalized.hosted_invoice_url) ?? null,
+				invoiceUrl: invoiceUrl ?? null,
 				userId: string(month?.userId) ?? null,
 				livemode: deps.livemode,
 			});
-			invoiced++;
+		try {
+			let invoiceId = string(month?.invoiceId);
+			const created = !invoiceId;
+			let invoice: Json;
+			if (invoiceId) invoice = await deps.stripe.get(`/v1/invoices/${encodeURIComponent(invoiceId)}`);
+			else {
+				// A draft Stripe leaves alone (auto_advance false), recorded before anything is added to it.
+				invoice = await deps.stripe.post(
+					"/v1/invoices",
+					{
+						customer: customerId,
+						currency: "dkk",
+						collection_method: "charge_automatically",
+						default_payment_method: paymentMethodId,
+						auto_advance: "false",
+						"automatic_tax[enabled]": "true",
+						pending_invoice_items_behavior: "exclude",
+						description: `Goodwill ${period}${string(month?.companyName) ? ` · ${string(month?.companyName)}` : ""}`,
+						...Object.fromEntries(Object.entries(metadata).map(([name, text]) => [`metadata[${name}]`, text])),
+					},
+					`${key}-invoice`,
+				);
+				invoiceId = string(invoice.id);
+				if (!invoiceId) throw new Error("Stripe returned no invoice");
+				await record(invoiceId);
+			}
+			if (created || invoice.status === "draft") {
+				const lines = object(invoice.lines)?.data;
+				if (!Array.isArray(lines) || lines.length === 0)
+					await deps.stripe.post(
+						"/v1/invoiceitems",
+						{
+							customer: customerId,
+							invoice: invoiceId,
+							currency: "dkk",
+							amount: String(dueOre),
+							tax_behavior: "exclusive",
+							description: `Goodwill ${period}`,
+						},
+						`${key}-item`,
+					);
+				// Finalized, Stripe collects it from the card and tries a failed card again (auto_advance).
+				invoice = await deps.stripe.post(
+					`/v1/invoices/${encodeURIComponent(invoiceId)}/finalize`,
+					{ auto_advance: "true" },
+					`${key}-finalize`,
+				);
+				await record(invoiceId, string(invoice.hosted_invoice_url));
+				invoiced++;
+			} else if (invoice.status === "paid") {
+				// Paid while its word was lost: the month is charged now.
+				await deps.goodWill.call("invoice_paid", {
+					invoiceId,
+					invoiceUrl: string(invoice.hosted_invoice_url) ?? null,
+					livemode: deps.livemode,
+				});
+			}
 		} catch (error) {
 			// One company's failure leaves the others; the next tick asks again.
 			failed.push(`${profileId} ${period}: ${error instanceof Error ? error.message : String(error)}`);
@@ -215,6 +247,7 @@ export async function applyGoodWillCard(session: Json, deps: GoodWillDependencie
 	const card = object(method.card);
 	const saved = await deps.goodWill.call("card_saved", {
 		sessionId: id,
+		setupId: string(object(session.metadata)?.qorpera_setup_id) ?? string(session.client_reference_id) ?? null,
 		livemode: deps.livemode,
 		customerId,
 		paymentMethodId,
@@ -235,8 +268,11 @@ export async function applyGoodWillInvoice(
 	if (type === "invoice.paid" && invoice.status !== "paid") return { outcome: "ignored", detail: "invoice not paid" };
 	if (type !== "invoice.paid" && type !== "invoice.payment_failed")
 		return { outcome: "ignored", detail: `good will ${type}` };
+	const metadata = object(invoice.metadata);
 	const result = await deps.goodWill.call(type === "invoice.paid" ? "invoice_paid" : "invoice_failed", {
 		invoiceId: string(invoice.id),
+		profileId: string(metadata?.qorpera_profile_id) ?? null,
+		month: string(metadata?.qorpera_month) ?? null,
 		invoiceUrl: string(invoice.hosted_invoice_url) ?? null,
 		livemode: deps.livemode,
 	});

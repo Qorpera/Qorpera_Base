@@ -229,7 +229,6 @@ function goodWillDeps(deps: BillingDependencies): GoodWillDependencies | undefin
 	return deps.goodWill
 		? {
 				goodWill: deps.goodWill,
-				store: deps.store,
 				stripe: deps.stripe,
 				livemode: deps.options.livemode,
 				returnUrl: deps.options.returnUrl,
