@@ -146,6 +146,10 @@
 :root[data-theme="dark"] .settings-content .btn-primary { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] .settings-content .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .settings-card { background: #333332; }
+:root[data-theme="dark"] .good-will-months > li + li { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] :is(.good-will-month, .good-will-total small) { color: #a3a29d; }
+:root[data-theme="dark"] .good-will-months > li[data-status=charged] small { color: #7fc79c; }
+:root[data-theme="dark"] .good-will-months > li[data-status=failed] small { color: #e39a7c; }
 :root[data-theme="dark"] .account-picture-badge { box-shadow: 0 0 0 2px #333332, 0 1px 3px rgba(0, 0, 0, 0.4); }
 :root[data-theme="dark"] .account-picture-menu { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 :root[data-theme="dark"] .picture-crop { border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
@@ -174,15 +178,6 @@
 :root[data-theme="dark"] .preference-picker-search-input::placeholder { color: #8f8e89; }
 :root[data-theme="dark"] .preference-picker-clear:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
 :root[data-theme="dark"] .preference-picker-option.is-active { background: rgba(255, 255, 255, 0.07); }
-:root[data-theme="dark"] .settings-plan-offer { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
-:root[data-theme="dark"] .settings-plan-current { background: var(--primary); color: var(--on-primary); }
-:root[data-theme="dark"] :is(.settings-plan-price, .settings-plan-tagline, .settings-plan-includes-label, .billing-label, .settings-period) { color: #a3a29d; }
-:root[data-theme="dark"] .settings-plan-price strong { color: var(--text); }
-:root[data-theme="dark"] .settings-plan-discount { color: #7fb39f; }
-:root[data-theme="dark"] .billing-row + .billing-row { border-color: rgba(255, 255, 255, 0.1); }
-:root[data-theme="dark"] .settings-usage progress::-webkit-progress-bar { background: #4a4a48; }
-:root[data-theme="dark"] .settings-usage progress::-webkit-progress-value { background: #a9a8a3; }
-:root[data-theme="dark"] .settings-usage progress::-moz-progress-bar { background: #a9a8a3; }
 :root[data-theme="dark"] .invite-plus { border-color: #5f5e5a; color: #a9a8a3; }
 :root[data-theme="dark"] .invite-picker { background: #313130; box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
 :root[data-theme="dark"] .invite-picker > input { background: #262625; }

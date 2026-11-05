@@ -247,16 +247,13 @@ export function fixture() {
 	vi.spyOn(api, "listAgentProposals").mockResolvedValue({ proposals: [], moreProposals: 0 });
 	vi.spyOn(api, "discardProposal").mockRejectedValue(new Error("No proposal in this fixture"));
 	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
-	vi.spyOn(api, "getCompanyComputerHours").mockResolvedValue({
-		profileId: file.profileId,
-		month: "2026-09",
-		timeZone: "Europe/Copenhagen",
-		usedSeconds: 7_200,
-		byKind: { companyMachines: 3_600, agentMachines: 0, codingMachines: 0, runs: 3_600 },
-		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
-		meteredUntil: "2026-09-28T18:00:00Z",
-		waitingForHours: false,
-	});
+	// A cloud before good will (20260930566000): Settings and the account page show no good will.
+	vi.spyOn(api, "getCompanyGoodWill").mockRejectedValue(
+		new CloudRpcError("qorpera_company_good_will", { message: "missing", code: "PGRST202" }, 404),
+	);
+	vi.spyOn(api, "getMyGoodWill").mockRejectedValue(
+		new CloudRpcError("qorpera_my_good_will", { message: "missing", code: "PGRST202" }, 404),
+	);
 	return {
 		api,
 		cloud,
