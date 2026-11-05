@@ -19,7 +19,7 @@ create function pg_temp.fl579_patch(p_target regprocedure, p_old text, p_new tex
 returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
 begin
-	if position('20260930579000' in v_definition) > 0 <> p_again then
+	if (position('20260930579000' in v_definition) > 0) <> p_again then
 		raise exception '20260930579000 is % in %', case when p_again then 'not yet' else 'already' end, p_target; end if;
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
 		raise exception '20260930579000 anchor differs in %: %', p_target, left(p_old, 80); end if;
