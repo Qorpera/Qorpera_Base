@@ -36,7 +36,11 @@
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
-.rail-app.active { background: var(--rail-selection); color: #fff; }
+/* The open page: its name in the selection blue and a dot under it, as a dock marks a running app; no tile behind
+ * the emblem. */
+.rail-app::after { content: ""; width: 4px; height: 4px; margin-top: -1px; border-radius: 50%; background: transparent; transition: background-color var(--motion-fast) ease; }
+.rail-app.active { color: var(--rail-selection); }
+.rail-app.active::after { background: var(--rail-selection); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-app-stand { position: relative; display: grid; }
 .rail-app .interface-emblem { width: 34px; height: 34px; transition: transform var(--motion-base) var(--ease-spring); }
