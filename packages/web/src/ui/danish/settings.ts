@@ -353,6 +353,22 @@ export const SETTINGS: Record<string, string> = {
 	"Your code:": "Din kode:",
 	"Open {provider} sign-in": "Åbn login hos {provider}",
 	"This page updates by itself when you are done.": "Siden opdaterer sig selv, når du er færdig.",
+	// Claude sign-in (coding only, 20260930564000)
+	"Open Claude sign-in": "Åbn login hos Claude",
+	"Sign in on Claude's page, then paste the code it shows you here.":
+		"Log ind på Claudes side, og sæt så den kode, du får vist, ind her.",
+	"Paste the code from Claude": "Sæt koden fra Claude ind",
+	"Paste the code from Claude first.": "Sæt koden fra Claude ind først.",
+	"Connecting Claude…": "Forbinder Claude…",
+	"Used only for coding sessions you start. Agents never use it for chats or routines.":
+		"Bruges kun til kodesessioner, du starter. Agenter bruger det aldrig til chat eller rutiner.",
+	"Used only for coding sessions you start, in all your companies. Agents never use it for chats or routines.":
+		"Bruges kun til kodesessioner, du starter, i alle dine virksomheder. Agenter bruger det aldrig til chat eller rutiner.",
+	"Claude is connected. It is used only for coding sessions you start.":
+		"Claude er forbundet. Det bruges kun til kodesessioner, du starter.",
+	"That code did not work. Start the sign-in again.": "Koden virkede ikke. Start login forfra.",
+	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
+	"Claude · coding only": "Claude · kun kode",
 
 	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
 	Services: "Tjenester",

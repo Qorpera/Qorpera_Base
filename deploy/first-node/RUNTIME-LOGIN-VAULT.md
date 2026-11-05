@@ -779,3 +779,54 @@ member's Codex login is kept once by the shared vault and used in every company 
   rule in placement and claim, exec-host identity devices and inventory `identityVolumes`, the login
   and refresh machines for Codex, login key backups and recovery, then the volumes (renamed
   `retired-identity-<uuid>`, deleted after 14 days).
+
+## Claude sign-in in the vault (20260930564000)
+
+A member's Claude sign-in (Pro/Max, coding sessions only) runs in the shared vault's helper like a Codex sign-in, and
+no longer takes a login machine (that path never finished: a login machine is refused while any run of the member's
+identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
+
+- **Who:** the members on `qorpera_claude_sign_in_members` (empty after the migration), while account logins are on
+  and the company is served by the shared vault. Until Anthropic confirms in writing, the list holds the founder only.
+  A Claude sign-in any other way is refused when it begins (`42501`), and the web offers no Claude button then.
+- **Flow:** begin as before (`anthropic`, `claude-code`); the scope trigger marks it `model_login_kind = 'claude'`,
+  scope `account`; the chooser sends it to the vault; the helper runs the pinned, unmodified Claude Code
+  (`claude auth login --claudeai`) in its isolation with `CLAUDE_CONFIG_DIR` as its auth directory and Anthropic's
+  sign-in hosts alone (`platform.claude.com`, `api.anthropic.com`). The page shows Anthropic's sign-in link; the
+  member signs in there and pastes the code Anthropic shows into Qorpera's page. The web client posts it once to the
+  edge function's `claude-code` path (`{"schema": "qorpera.claude-sign-in-code/v1", "login_id", "code"}`, the
+  sign-in's capability as bearer), which forwards it to `<vault>/v1/model-logins/<company>/claude/code`. The helper
+  writes it once to Claude Code's input; Claude Code exchanges it itself.
+- **Keep:** the vault seals Claude Code's `.credentials.json` and `.claude.json`, unread
+  (`qorpera.claude-login-files/v1`, field `claude_login_files`), under the member's key, and completes the sign-in
+  with `qorpera_complete_claude_login_sign_in` into `qorpera_claude_logins` (one active per member; a newer sign-in
+  replaces it). No provider connection, capsule, model login or sponsor is made, and nothing that runs agents reads
+  the table. Members list and sign out their own (`qorpera_list_claude_logins`, `qorpera_sign_out_claude_login`).
+- **Deploy (in this order):**
+  1. Apply migration `20260930564000` (with the release). Until step 7 nobody can begin a Claude sign-in: the
+     allow-list is empty and the web offers no Claude button.
+  2. On both vault hosts, the pinned Claude Code binary: `@anthropic-ai/claude-code-linux-x64@2.1.231` (npm integrity
+     `sha512-ou1X+6JWOgbY5pUerfdOmeyPwKwEN515sx9it2sxsYEqKRTvOOHkiN94enRxge9/Z1J2Iqhd4VdkQIl6UoUvYw==`, the guest
+     image's pin), its `package/claude` installed root-owned 0555 as `/opt/qorpera-model-login-helper/claude`.
+  3. On both vault hosts, the release's vault and helper build (`npm run pack:model-login-helper`, and the shared
+     vault's broker build); the helper's `config.json` gains `"claudePath": "/opt/qorpera-model-login-helper/claude"`
+     and `"claudeSha256": "<its sha256>"` (both or neither). Restart the helper, then the broker, and look for
+     `Model login helper: Claude sign-ins on (pinned Claude Code).` A helper restart ends every sign-in in flight,
+     Codex ones too: do it when no member is signing in, or tell them to sign in again.
+  4. Node 1's mux (and node 2's standby copy): the path map `$qorpera_model_login_broker` keeps every route it has
+     and adds `claude/code`, on the vault's line and on every company's own line:
+     `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh|chatgpt-plan/callback|chatgpt-plan/confirm|claude/code)$" 127.0.0.1:18660;`.
+     Widen the matching `location ~ ^/v1/model-logins/<uuid>/(…)$` the same way (POST only, no query, 64k body), or
+     `claude/code` answers 404. `nginx -t`, then reload; check that a plan callback and a sign-in still reach the
+     vault.
+  5. The edge function `native-provider-login` (the `claude-code` path).
+  6. The web build.
+  7. `insert into public.qorpera_claude_sign_in_members(user_id) values ('<founder user id>');`
+- **Rollback:** delete the member's row from `qorpera_claude_sign_in_members`. That stops new Claude sign-ins and
+  those in flight: the vault's read refuses them, so their code is never taken and nothing is saved. Kept Claude
+  logins stay until their member signs out (or delete their rows). Removing `claudePath`/`claudeSha256` from the
+  helper's config and restarting it does the same on the host.
+- **Sign-out** wipes Qorpera's sealed copy only. Anthropic's tokens in it stay valid until they expire; a member who
+  wants them ended at once revokes Qorpera's access in their Claude account settings.
+- **Later (the coding harness):** it opens a Claude login only for a coding session its member started, and checks
+  the allow-list again when it does.

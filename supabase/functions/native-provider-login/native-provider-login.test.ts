@@ -183,6 +183,24 @@ describe("native provider login proxy", () => {
 		// longer, and the web client (45 s) longer still.
 		assert.ok(CHATGPT_PLAN_CONFIRM_TIMEOUT_MS >= 30_000 + 5_000 && CHATGPT_PLAN_CONFIRM_TIMEOUT_MS < 45_000);
 	});
+	it("routes a Claude sign-in's code to the sign-in's own gateway, the company's vault", async () => {
+		let purpose: string | undefined = "unset";
+		const vault = "https://vault.example/v1/model-logins/3d2c6a1e-7b4f-4c55-9a1e-2f6b8c9d0e1f/";
+		const result = await forwardNativeProviderLogin(new Request("https://edge.example/native-provider-login/claude-code", {
+			method: "POST", headers: { authorization: `Bearer ${capability}` }, body: '{"schema":"qorpera.claude-sign-in-code/v1"}',
+		}), {
+			upstreamResolver: async (_hash, kind) => { purpose = kind; return vault; },
+			fetchImplementation: async (input, init) => {
+				assert.equal(String(input), `${vault}claude/code`);
+				assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${capability}`);
+				assert.equal(new TextDecoder().decode(init?.body as ArrayBuffer), '{"schema":"qorpera.claude-sign-in-code/v1"}');
+				return Response.json({ status: "failed" }, { status: 403 });
+			},
+		});
+		// A refused code's answer reaches the page as the vault gave it.
+		assert.equal(result.status, 403);
+		assert.equal(purpose, undefined);
+	});
 	it("forwards only the opaque login envelope and its one-time capability", async () => {
 		let forwardedBody = "";
 		const response = await forwardNativeProviderLogin(

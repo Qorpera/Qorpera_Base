@@ -1,7 +1,12 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isChatGptPlanHostId } from "./cloud-chatgpt-plan.ts";
 import type { ChatGptPlanSignInAuthority, ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
-import type { ModelLoginSignInHelper, ModelLoginSignInState } from "./cloud-model-login-sign-in.ts";
+import {
+	CLAUDE_LOGIN_FILES,
+	CLAUDE_LOGIN_FILES_SCHEMA,
+	type ModelLoginSignInHelper,
+	type ModelLoginSignInState,
+} from "./cloud-model-login-sign-in.ts";
 import { MODEL_LOGIN_FIELD, parseCodexLogin } from "./cloud-model-login-vault.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
@@ -23,6 +28,12 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * An account sign-in (20260930548000; the v2 read names "scope": "account") is a member's Codex sign-in in a company
  * the shared vault serves: the vault seals it under the member's own key and completes it as the member's account
  * login, which the database links into every company of the member that this vault serves.
+ *
+ * A Claude sign-in (20260930564000; loginKind "claude", always an account sign-in in the shared vault) runs the
+ * official Claude Code in the helper. Its poll answers with Anthropic's sign-in page; the member then pastes the code
+ * Anthropic shows them, which the web client posts once to `claude/code` with the same capability. The helper writes it
+ * to Claude Code, and once Claude Code has its login the vault seals its login files, unread, under the member's key and
+ * completes the sign-in as the member's Claude login (coding sessions only; nothing that runs agents reads it).
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -30,6 +41,10 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SIGN_IN_SCHEMA = "qorpera.native-provider-login/v1";
 const RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
+const CLAUDE_CODE_SCHEMA = "qorpera.claude-sign-in-code/v1";
+/** The sealed field of a Claude login: Claude Code's login files (`qorpera.claude-login-files/v1`). */
+export const CLAUDE_LOGIN_FIELD = "claude_login_files";
+const CLAUDE_CODE = /^[\x21-\x7e]{8,512}$/;
 const SAVE_DEADLINE_MS = 15_000;
 /** Refused lookups in a row (about 6 s of collections) before a finished login is dropped. */
 const REFUSALS_BEFORE_END = 3;
@@ -85,6 +100,20 @@ export interface ModelLoginSignInAuthority extends ChatGptPlanSignInAuthority {
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** Completes a Claude sign-in (the shared vault only): Claude Code's login files, sealed under the member's key. */
+	completeClaudeLoginSignIn?(
+		completion: {
+			loginId: string;
+			capabilitySha256: string;
+			claudeLoginId: string;
+			keyId: string;
+			encryptedEnvelope: Uint8Array;
+			envelopeSha256: string;
+			providerAccountReference: string | null;
+			providerAccountEmail: string | null;
+		},
+		signal: AbortSignal,
+	): Promise<unknown>;
 	/** Completes an account sign-in (the shared vault only): the same fields, sealed under the member's key. */
 	completeAccountModelLoginSignIn?(
 		completion: Parameters<ModelLoginSignInAuthority["completeModelLoginSignIn"]>[0],
@@ -111,6 +140,7 @@ interface Ownership {
 
 interface SignInRequest extends Ownership {
 	loginId: string;
+	claude: boolean;
 	clientConnectionId: string;
 	computeIdentityId: string;
 	expiresAt: number;
@@ -118,7 +148,7 @@ interface SignInRequest extends Ownership {
 
 interface SignInDescription extends Ownership {
 	loginId: string;
-	loginKind: "codex" | "chatgpt_plan";
+	loginKind: "codex" | "chatgpt_plan" | "claude";
 	/** An account sign-in: the member's own login, kept once for every company of theirs this vault serves. */
 	account: boolean;
 	hostId: string | null;
@@ -128,6 +158,8 @@ interface SignInDescription extends Ownership {
 	status: "pending" | "completed" | "cancelled" | "expired";
 	expiresAt: string;
 	keyId: string;
+	/** The login a completed sign-in made, if any. */
+	modelLoginId: string | null;
 }
 
 function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
@@ -151,10 +183,10 @@ function nullableText(value: unknown, label: string): string | null {
 
 function parseRequest(value: unknown, capability: string): SignInRequest {
 	const input = record(value, REQUEST_KEYS, "Vault sign-in request");
+	const claude = input.provider === "anthropic" && input.native_harness === "claude-code";
 	if (
 		input.schema !== SIGN_IN_SCHEMA ||
-		input.provider !== "openai" ||
-		input.native_harness !== "codex-cli" ||
+		!(claude || (input.provider === "openai" && input.native_harness === "codex-cli")) ||
 		typeof input.login_capability !== "string" ||
 		!TOKEN.test(input.login_capability) ||
 		!timingSafeEqual(Buffer.from(input.login_capability), Buffer.from(capability)) ||
@@ -165,6 +197,7 @@ function parseRequest(value: unknown, capability: string): SignInRequest {
 	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error("Vault sign-in request has expired");
 	return {
 		loginId: uuid(input.login_id, "Vault sign-in id"),
+		claude,
 		clientConnectionId: uuid(input.client_connection_id, "Vault sign-in connection id"),
 		computeIdentityId: uuid(input.compute_identity_id, "Vault sign-in Compute Identity id"),
 		kind: nullableText(input.compute_identity_ownership_kind, "Vault sign-in ownership") ?? "",
@@ -188,15 +221,17 @@ function parseDescription(value: unknown): SignInDescription {
 	if (
 		account &&
 		(input.scope !== "account" ||
-			input.loginKind !== "codex" ||
+			(input.loginKind !== "codex" && input.loginKind !== "claude") ||
 			input.computeIdentityOwnershipKind !== "member" ||
 			input.computeIdentityOwnerUserId === null)
 	)
 		throw new Error("Vault sign-in description is invalid");
+	// A Claude sign-in is always a member's account sign-in.
+	if (input.loginKind === "claude" && !account) throw new Error("Vault sign-in description is invalid");
 	if (
 		input.schema !== "qorpera.model-login-sign-in/v2" ||
-		(input.loginKind !== "codex" && input.loginKind !== "chatgpt_plan") ||
-		(input.loginKind === "codex" ? input.hostId !== null : !isChatGptPlanHostId(input.hostId)) ||
+		(input.loginKind !== "codex" && input.loginKind !== "chatgpt_plan" && input.loginKind !== "claude") ||
+		(input.loginKind === "chatgpt_plan" ? !isChatGptPlanHostId(input.hostId) : input.hostId !== null) ||
 		!["pending", "completed", "cancelled", "expired"].includes(String(input.status)) ||
 		typeof input.expiresAt !== "string" ||
 		!Number.isFinite(Date.parse(input.expiresAt)) ||
@@ -222,6 +257,7 @@ function parseDescription(value: unknown): SignInDescription {
 		status: input.status as SignInDescription["status"],
 		expiresAt: input.expiresAt,
 		keyId: input.keyId,
+		modelLoginId: input.modelLoginId as string | null,
 	};
 }
 
@@ -237,6 +273,33 @@ function answer(
 		interaction_url: prompt.interactionUrl ?? null,
 		user_code: prompt.userCode ?? null,
 	};
+}
+
+/** A Claude code the helper did not take, or that Claude Code refused: the member starts again. */
+export class ClaudeCodeRefused extends Error {
+	constructor() {
+		super("Claude sign-in code was not accepted");
+	}
+}
+
+/** Claude Code's login files as the helper read them: their shape only, never their contents. */
+function checkClaudeLoginFiles(text: string): void {
+	const value: unknown = JSON.parse(text);
+	const input = record(value, ["schema", "files"], "Claude login files");
+	const files = input.files;
+	if (input.schema !== CLAUDE_LOGIN_FILES_SCHEMA || !files || typeof files !== "object" || Array.isArray(files))
+		throw new Error("Claude login files are invalid");
+	const names = Object.keys(files);
+	if (
+		!names.includes(".credentials.json") ||
+		names.some(
+			(name) =>
+				!(CLAUDE_LOGIN_FILES as readonly string[]).includes(name) ||
+				typeof (files as Record<string, unknown>)[name] !== "string" ||
+				!/^[A-Za-z0-9+/]+={0,2}$/.test((files as Record<string, string>)[name] as string),
+		)
+	)
+		throw new Error("Claude login files are invalid");
 }
 
 /** The database answered, and it was not a sign-in this broker may complete. */
@@ -346,7 +409,8 @@ export class CloudModelLoginSignIns {
 			description.kind !== login.kind ||
 			description.userId !== login.userId ||
 			description.scopeKey !== login.scopeKey ||
-			Date.parse(description.expiresAt) !== login.expiresAt
+			Date.parse(description.expiresAt) !== login.expiresAt ||
+			(description.loginKind === "claude") !== login.claude
 		)
 			throw new Error("Vault sign-in request crossed its authority");
 		if (description.loginKind === "chatgpt_plan") return this.#planSignIn(description, capabilitySha256, signal);
@@ -367,6 +431,7 @@ export class CloudModelLoginSignIns {
 					computeIdentityId: description.computeIdentityId,
 					capabilitySha256,
 					expiresAt: description.expiresAt,
+					...(description.loginKind === "claude" ? { harness: "claude-code" as const } : {}),
 				},
 				signal,
 			);
@@ -385,6 +450,61 @@ export class CloudModelLoginSignIns {
 			login.loginId,
 			(await this.#complete(description.companyId, login.loginId, capabilitySha256)) ? "completed" : "preparing",
 		);
+	}
+
+	/** The code Anthropic showed the member for a Claude sign-in, posted once by the web client with the sign-in's
+	 * capability: the helper gives it to Claude Code, and the vault keeps the login Claude Code ends with. */
+	async submitClaudeCode(
+		request: { companyId: string; capability: string; body: unknown },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInAnswer> {
+		const helper = this.#helper;
+		if (!helper?.submitCode) throw new Error("Vault Claude sign-ins are not served here");
+		if (!TOKEN.test(request.capability)) throw new Error("Vault sign-in capability is invalid");
+		const body = record(request.body, ["schema", "login_id", "code"], "Claude sign-in code");
+		if (body.schema !== CLAUDE_CODE_SCHEMA || typeof body.code !== "string")
+			throw new Error("Claude sign-in code is invalid");
+		// Pasted text may carry spaces or a line end around the code; nothing else is changed.
+		const code = body.code.trim();
+		if (!CLAUDE_CODE.test(code)) throw new ClaudeCodeRefused();
+		const loginId = uuid(body.login_id, "Claude sign-in id");
+		const capabilitySha256 = createHash("sha256").update(request.capability).digest("hex");
+		const description = parseDescription(
+			await this.#authority.describeModelLoginSignIn({ loginId, capabilitySha256 }, signal),
+		);
+		if (
+			description.loginId !== loginId ||
+			description.companyId !== request.companyId.toLowerCase() ||
+			description.loginKind !== "claude"
+		)
+			throw new Error("Claude sign-in code crossed its authority");
+		if (description.status === "completed") return answer(loginId, "completed");
+		if (description.status !== "pending") throw new Error("Vault sign-in has ended");
+		const target = { signInId: loginId, companyId: description.companyId };
+		let state: Awaited<ReturnType<NonNullable<ModelLoginSignInHelper["submitCode"]>>>;
+		try {
+			state = await helper.submitCode({ ...target, code }, signal);
+		} catch {
+			// The helper takes a code once, while Claude Code waits for it.
+			throw new ClaudeCodeRefused();
+		}
+		if (state.status === "failed") {
+			await helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+			throw new ClaudeCodeRefused();
+		}
+		if (state.status === "completed") {
+			// The save goes on whatever the route's budget (and the collection completes it too); the answer waits for it
+			// only inside that budget, so the edge function never times out on a login that was saved.
+			const saved = this.#complete(description.companyId, loginId, capabilitySha256).catch(() => false);
+			const outOfTime = new Promise<false>((resolveTime) => {
+				if (signal.aborted) resolveTime(false);
+				else signal.addEventListener("abort", () => resolveTime(false), { once: true });
+			});
+			return answer(loginId, (await Promise.race([saved, outOfTime])) ? "completed" : "preparing");
+		}
+		// Claude Code is still exchanging the code: the collection completes it, and the web client's next read sees it.
+		if (state.status === "awaiting_member") return answer(loginId, "preparing");
+		throw new Error("Vault sign-in has ended");
 	}
 
 	/** A plan sign-in's poll: OpenAI's authorization address while it waits for the member. */
@@ -442,6 +562,54 @@ export class CloudModelLoginSignIns {
 		return answer(loginId, "completed");
 	}
 
+	/** Seals a finished Claude sign-in's login files under the member's key and completes it as their Claude login. */
+	async #completeClaude(
+		description: SignInDescription,
+		capabilitySha256: string,
+		state: Extract<ModelLoginSignInState, { status: "completed" }>,
+		finish: () => Promise<void>,
+		describe: () => Promise<SignInDescription>,
+	): Promise<boolean> {
+		try {
+			checkClaudeLoginFiles(state.authJson);
+		} catch (error) {
+			await finish();
+			throw error;
+		}
+		const completeClaude = this.#authority.completeClaudeLoginSignIn?.bind(this.#authority);
+		if (!completeClaude || description.userId === null || !this.#keys.hasMemberKey(description.keyId)) {
+			await finish();
+			throw new Error("The vault does not keep Claude logins");
+		}
+		const claudeLoginId = description.modelLoginId ?? randomUUID();
+		const envelope = this.#keys.sealMember(
+			{ [CLAUDE_LOGIN_FIELD]: state.authJson },
+			{ memberId: description.userId, loginId: claudeLoginId, version: 1, keyId: description.keyId },
+		);
+		try {
+			await completeClaude(
+				{
+					loginId: description.loginId,
+					capabilitySha256,
+					claudeLoginId,
+					keyId: description.keyId,
+					encryptedEnvelope: envelope,
+					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+					providerAccountReference: state.providerAccountReference ?? null,
+					providerAccountEmail: state.providerAccountEmail ?? null,
+				},
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			);
+		} catch {
+			// As for Codex: the database decides whether a lost answer saved it.
+			if ((await describe().catch(() => undefined))?.status !== "completed") return false;
+		} finally {
+			envelope.fill(0);
+		}
+		await finish();
+		return true;
+	}
+
 	/** Seals a finished sign-in's login as version 1 and completes it in the database. True when
 	 * the sign-in is complete; the helper's copy is ended once the sign-in is settled either way. */
 	async #complete(companyId: string, signInId: string, capabilitySha256: string): Promise<boolean> {
@@ -480,7 +648,7 @@ export class CloudModelLoginSignIns {
 			}
 			if (description.companyId !== companyId || description.loginId !== signInId) return false;
 			// A plan sign-in never completes through the Codex helper.
-			if (description.loginKind !== "codex") {
+			if (description.loginKind === "chatgpt_plan") {
 				await finish();
 				return false;
 			}
@@ -491,6 +659,8 @@ export class CloudModelLoginSignIns {
 			const state = await helper.readSignIn(target, AbortSignal.timeout(10_000));
 			if (state.status === "failed") await finish();
 			if (state.status !== "completed") return false;
+			if (description.loginKind === "claude")
+				return await this.#completeClaude(description, capabilitySha256, state, finish, describe);
 			let codex: ReturnType<typeof parseCodexLogin>;
 			try {
 				codex = parseCodexLogin(state.authJson);

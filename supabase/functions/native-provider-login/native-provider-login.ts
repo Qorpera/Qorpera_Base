@@ -131,7 +131,12 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 		// hop waits 40 s, inside the web client's 45 s, so a member never sees a failure for a login the
 		// vault saved.
 		const planConfirm = path.endsWith("/chatgpt-plan-confirm");
-		const timeoutMs = options.timeoutMs ?? (planConfirm ? CHATGPT_PLAN_CONFIRM_TIMEOUT_MS : 30_000);
+		// A Claude sign-in's code (20260930564000): the same capability, the same gateway (the company's vault), whose
+		// route answers once Claude Code has exchanged the code (34 s at most). This hop waits as long as a plan
+		// confirmation does.
+		const claudeCode = path.endsWith("/claude-code");
+		const timeoutMs =
+			options.timeoutMs ?? (planConfirm || claudeCode ? CHATGPT_PLAN_CONFIRM_TIMEOUT_MS : 30_000);
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
@@ -141,6 +146,7 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			: options, signal, await sha256Hex(capability));
 		if (refresh) target.url = new URL("account-refresh", target.url).href;
 		if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
+		if (claudeCode) target.url = new URL("claude/code", target.url).href;
 		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {
