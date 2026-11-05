@@ -138,3 +138,32 @@ it("ends unused ChatGPT plan logins after the renewals, at most four a pass, and
 	);
 	log.mockRestore();
 });
+
+it("reads due usage rechecks in a pass until none is due, and stops on a failure with only its class logged", async () => {
+	const logins = vault(["none"]);
+	const outcomes: Array<"read" | "none" | Error> = ["read", "read", "none"];
+	const usage = {
+		recheck: vi.fn(async (_signal: AbortSignal): Promise<"read" | "none"> => {
+			const outcome = outcomes.shift() ?? "none";
+			if (outcome instanceof Error) throw outcome;
+			return outcome;
+		}),
+	};
+	await new CloudModelLoginUpkeep({ vault: logins, usage }).pass();
+	expect(usage.recheck).toHaveBeenCalledTimes(3);
+	expect(usage.recheck).toHaveBeenCalledWith(expect.any(AbortSignal));
+	// At most four in one pass.
+	usage.recheck.mockClear();
+	outcomes.push("read", "read", "read", "read", "read");
+	await new CloudModelLoginUpkeep({ vault: logins, usage }).pass();
+	expect(usage.recheck).toHaveBeenCalledTimes(4);
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	usage.recheck.mockClear();
+	outcomes.splice(0, outcomes.length, new Error("login 6f0c private detail"), "read");
+	await new CloudModelLoginUpkeep({ vault: logins, usage }).pass();
+	expect(usage.recheck).toHaveBeenCalledTimes(1);
+	expect(log).toHaveBeenCalledExactlyOnceWith(
+		"Model login upkeep: a usage recheck failed (class: other); the next pass tries again.",
+	);
+	log.mockRestore();
+});

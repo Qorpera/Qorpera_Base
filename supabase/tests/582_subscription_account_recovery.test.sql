@@ -43,8 +43,10 @@ begin
 		raise exception 'Fresh same-account quota failed to supersede the fallback wall'; end if;
 	update public.qorpera_provider_connection_usage_signals set resets_at = observed + interval '1 hour'
 	where provider_connection_id = original_id;
-	if public.qorpera_native_account_remaining(duplicate_id,1) <> 0 then
-		raise exception 'Positive metadata bypassed an explicit future provider reset'; end if;
+	-- 20260930575000: a reading with room after the limit ends the wall also before a reset the provider named (the
+	-- daily usage check reads it so waiting work goes on).
+	if public.qorpera_native_account_remaining(duplicate_id,1) <> 80 then
+		raise exception 'Positive metadata after the limit did not end a wall with a provider reset'; end if;
 	update public.qorpera_provider_connection_usage_signals set resets_at = observed - interval '1 second'
 	where provider_connection_id = original_id;
 	if public.qorpera_native_account_remaining(duplicate_id,1) <> 80 then

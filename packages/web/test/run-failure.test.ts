@@ -353,7 +353,9 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		const said = codingFailureReason(reason);
 		expect(said).toMatch(expected);
 		// What happens to the work is always said.
-		expect(said).toMatch(/ The workspace is kept; a follow-up (continues|starts it again|tries again)/);
+		expect(said).toMatch(
+			/ The workspace is kept; a follow-up (continues|starts it again|tries again|waits and goes on)/,
+		);
 		// Plain words only: no status codes, no codes, no machinery names.
 		expect(said).not.toMatch(/\d{3}|\[|code|runner|provider|bridge|lease|dispatch|native|submission|executor/i);
 	});
@@ -407,7 +409,9 @@ describe("a coding session's failed turn, by its code (20260930560000)", () => {
 	] as const)("%s", (code, expected) => {
 		const said = codingFailureReason(WORDS, {}, code);
 		expect(said).toMatch(expected);
-		expect(said).toMatch(/ The workspace is kept; a follow-up (continues|starts it again|tries again)/);
+		expect(said).toMatch(
+			/ The workspace is kept; a follow-up (continues|starts it again|tries again|waits and goes on)/,
+		);
 		expect(said).not.toMatch(/\d{3}|\[|code|runner|provider|bridge|lease|dispatch|native|submission|executor/i);
 	});
 

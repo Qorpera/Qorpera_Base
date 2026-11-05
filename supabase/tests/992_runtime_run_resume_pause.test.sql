@@ -95,6 +95,26 @@ begin
 end
 $$;
 
+-- A usage reading of the login after its limit that shows room (the vault's daily check, or Settings → Refresh, through the
+-- refresh's completion) brings the paused run back at once (20260930575000); while the wall stands, nothing comes back.
+savepoint rp_release;
+do $$
+declare v_job uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
+	v_identity uuid := (current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid;
+begin
+	perform pg_temp.base_assert(public.qorpera_release_paused_runs_with_room(v_identity) = 0, 'a run came back at its limit');
+	insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
+	values ((current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid, 2,
+		jsonb_build_object('observedAt', statement_timestamp(), 'windows', jsonb_build_array(
+			jsonb_build_object('id', 'primary', 'label', '5 hours', 'usedPercent', 10))))
+	on conflict (connection_id, connection_version) do update set provider_account_usage = excluded.provider_account_usage;
+	perform pg_temp.base_assert(public.qorpera_release_paused_runs_with_room(v_identity) = 1, 'the paused run did not come back');
+	perform pg_temp.base_assert((select status = 'queued' and dispatch_deferred_until <= clock_timestamp()
+		and queued_at <= clock_timestamp() from public.qorpera_runner_jobs where id = v_job), 'the paused run is still held');
+end
+$$;
+rollback to savepoint rp_release;
+
 -- No orchestrator takes a paused run before the reset.
 savepoint rp_no_claim;
 do $$

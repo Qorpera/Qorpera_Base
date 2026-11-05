@@ -1,6 +1,8 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
+	nativeAccountRefreshBody,
+	parseNativeAccountRefreshDescription,
 	parseNativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
 import { MODEL_LOGIN_FIELD, parseCodexLogin } from "./cloud-model-login-vault.ts";
@@ -17,6 +19,11 @@ import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from 
  * of the refresh and the current version of each vault login of that identity, opens each one,
  * reads its usage with the pass (the same `wham/usage` call a node makes, no machine), records the
  * display metadata, and completes the refresh. The pass is never renewed here.
+ *
+ * The daily usage check (migration 20260930575000) is the same refresh, which the vault asks for itself: the database
+ * names one login at its usage limit that is due a reading (once a day, and once a reset it named has passed) and makes
+ * a refresh of its member's identity under a capability the vault made for that one refresh. A reading with room ends
+ * the login's wall, and the refresh's completion brings the runs paused on it back.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -51,7 +58,11 @@ export interface ModelLoginUsageAuthority {
 		request: { requestId: string; capabilitySha256: string },
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** The daily usage check's refresh, if a login is due one (qorpera_begin_model_login_usage_recheck). */
+	beginModelLoginUsageRecheck?(request: { capabilitySha256: string }, signal: AbortSignal): Promise<unknown>;
 }
+
+const RECHECK_SCHEMA = "qorpera.model-login-usage-recheck/v1";
 
 export interface ModelLoginUsageAnswer {
 	readonly schema: typeof NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA;
@@ -195,6 +206,41 @@ export class CloudModelLoginUsage {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#fetch = options.fetch ?? fetch;
+	}
+
+	/** The daily usage check: the refresh of a login at its usage limit that is due a reading, run as a member's refresh
+	 * is. "none" when nothing is due, or the database has no such call. */
+	async recheck(signal: AbortSignal, companyId?: string): Promise<"read" | "none"> {
+		if (!this.#authority.beginModelLoginUsageRecheck) return "none";
+		// A capability for this one refresh; only its digest reaches the database.
+		const capability = randomBytes(32).toString("base64url");
+		const capabilitySha256 = createHash("sha256").update(capability).digest("hex");
+		const answer = record(
+			await this.#authority.beginModelLoginUsageRecheck({ capabilitySha256 }, signal),
+			["schema", "request"],
+			"Vault usage recheck",
+		);
+		if (answer.schema !== RECHECK_SCHEMA) throw new Error("Vault usage recheck is invalid");
+		if (answer.request === null) return "none";
+		const due = parseNativeAccountRefreshDescription(answer.request);
+		// The database names the broker's own company (a single-company broker has no other); a shared vault checks it.
+		if ((companyId !== undefined && due.profileId !== companyId.toLowerCase()) || due.status !== "pending")
+			throw new Error("Vault usage recheck crossed its authority");
+		await this.refresh(
+			{
+				companyId: due.profileId,
+				capability,
+				body: nativeAccountRefreshBody({
+					requestId: due.requestId,
+					computeIdentityId: due.computeIdentityId,
+					requestedByUserId: due.requestedByUserId,
+					expiresAt: due.expiresAt,
+					capability,
+				}),
+			},
+			signal,
+		);
+		return "read";
 	}
 
 	/** One account refresh: reads and records each vault login's usage, then completes. */

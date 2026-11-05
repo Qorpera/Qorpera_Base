@@ -277,3 +277,52 @@ it("serves the account refresh route to the refresh's own capability, uncached, 
 		expect(await response.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
 	}
 });
+
+it("runs the daily usage check's refresh under a capability of its own, and does nothing when none is due", async () => {
+	const w = world();
+	let asked: string | undefined;
+	const begin = vi.fn(async (request: { capabilitySha256: string }, _signal: AbortSignal): Promise<unknown> => {
+		asked = request.capabilitySha256;
+		return {
+			schema: "qorpera.model-login-usage-recheck/v1",
+			request: {
+				request_id: w.requestId,
+				profile_id: w.companyId,
+				compute_identity_id: w.request.body.compute_identity_id,
+				requested_by_user_id: w.request.body.requested_by_user_id,
+				expires_at: w.request.body.expires_at,
+				status: "pending",
+			},
+		};
+	});
+	const usage = new CloudModelLoginUsage({
+		authority: { ...w.authority, beginModelLoginUsageRecheck: begin },
+		keyring: w.keyring,
+		fetch: w.usageFetch as typeof fetch,
+	});
+	expect(await usage.recheck(signal(), w.companyId)).toBe("read");
+	expect(asked).toMatch(/^[0-9a-f]{64}$/);
+	// The refresh is read and completed under the digest of the capability the vault made, never another one.
+	expect(asked).not.toBe(w.capabilitySha256);
+	expect(w.authority.describeModelLoginAccountRefresh).toHaveBeenCalledWith(
+		{ requestId: w.requestId, capabilitySha256: asked },
+		expect.any(AbortSignal),
+	);
+	expect(w.authority.recordModelLoginAccountMetadata).toHaveBeenCalledOnce();
+	expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledWith(
+		{ requestId: w.requestId, capabilitySha256: asked },
+		expect.any(AbortSignal),
+	);
+	// Another company's answer is refused; nothing due, or no such call, reads nothing.
+	await expect(usage.recheck(signal(), "00000000-0000-4000-8000-000000000000")).rejects.toThrow(
+		"crossed its authority",
+	);
+	begin.mockResolvedValueOnce({ schema: "qorpera.model-login-usage-recheck/v1", request: null });
+	expect(await usage.recheck(signal(), w.companyId)).toBe("none");
+	const without = new CloudModelLoginUsage({
+		authority: w.authority,
+		keyring: w.keyring,
+		fetch: w.usageFetch as typeof fetch,
+	});
+	expect(await without.recheck(signal())).toBe("none");
+});

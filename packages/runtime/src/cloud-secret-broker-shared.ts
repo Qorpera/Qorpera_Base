@@ -352,6 +352,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			...(helper ? { renewer: helper } : {}),
 			...(plan ? { chatGptPlan: plan } : {}),
 		});
+		const usage = new CloudModelLoginUsage({ authority, keyring: this.#keyring });
 		return {
 			authorityId: entry.authorityId,
 			keyId: entry.keyId,
@@ -370,10 +371,14 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 									: {}),
 							})
 						: undefined,
-				modelLoginUsage: new CloudModelLoginUsage({ authority, keyring: this.#keyring }),
+				modelLoginUsage: usage,
 			},
-			// Its timer never runs: the shared upkeep loop runs each company's pass in turn.
-			upkeep: new CloudModelLoginUpkeep({ vault: modelLogins }),
+			// Its timer never runs: the shared upkeep loop runs each company's pass in turn. It also reads the usage of the
+			// company's logins at their usage limit that are due a reading (20260930575000).
+			upkeep: new CloudModelLoginUpkeep({
+				vault: modelLogins,
+				usage: { recheck: (signal) => usage.recheck(signal, entry.companyId) },
+			}),
 			revocations: new CloudConnectorTokenRevocations({ authority, keyring: this.#keyring, revoker: this.#revoker }),
 			verifications: new CloudEventVerifications({ authority, keyring: this.#keyring }),
 			bankSyncs: this.#bank
