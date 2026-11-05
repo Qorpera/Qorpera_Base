@@ -18,14 +18,14 @@
     "constitution": "c5882388b40c32bbb74f6043a448f7006991e5729d8d01c481bf21964fa7c7e2",
     "toolCatalog": "d1a400416c8bb1b6dc3103cb5bfb75b5973cb3794533d362d4d0be3c2806952c",
     "wakeAndSilence": "6d914b444e3ccef7384651e46253ec4668c13b0c6d125c11c2cac1f5faf93846",
-    "contextComposer": "2072652e852cc04dc3acc152103b6ac65be13cae7e29c5ffdfa1e33b715be654",
-    "providerBootstrap": "e1febb2d379d5d47d580b8f790dcecf5e27ccab7ecac0c98c1c3d7316d5a154c",
+    "contextComposer": "c29de8a192ee4eb970f0965f72c5bcb4fefcdb7ef61b05db3dc8200a5e8e4e94",
+    "providerBootstrap": "93b00e4ec50ac17bab8453713f4e6a85f6b27accac47b41fa67b19e0b407acbe",
     "authorization": "c3d11f50404ffec20033d4a918beea1686a9df348e78917f1904ec98aa870f96",
     "inboundSafety": "bb6a90ac1a1e9aaa65037947f8499b60fd4326257ecee64630ab0fa7a99b78bf",
     "outboundSafety": "6ddd5d14fb32a2e47c1909e78bec37ceedd229d57299a51fa2664ddb089f5fb3",
     "interactionSurfaces": "0b18f6a9c50c7f873a36c01e19107e71c8b85a9462e23e40678fcc523e096a05",
     "workerLifecycle": "9f46dcc76704291da9840ed9982f70a8c6062bced819ac35c97fb86ed9f3f49a",
-    "memoryAndSkills": "05d54a513ce98fd81b1459cea165dbcb85041f224bc8b34ab9756e2820eb5abd"
+    "memoryAndSkills": "8b020e5f3019d1615237e6ba51c45b18061df49692f5b2c53715c110ea10cfcc"
   },
   "implementation": {
     "deploy/coding-worker/coding-environment.ts": "7a1a9cae041efd403e64e62e618306bdcd3ff6e70a33dce71a6fbb386651e804",
@@ -687,7 +687,7 @@
     "packages/runtime/src/cloud-model-login-vault.ts": "9e3c8f84f61e333509161e8cf6f79d58bf1f839009b4fe6e9d075597a9fa07b6",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
     "packages/runtime/src/cloud-native-coding-runtime.ts": "f9312ca966cf686a550994098ac4361d49db022ea9ced557924f9b7aa9e980cb",
-    "packages/runtime/src/cloud-native-company-context.ts": "a36b19a4d609af58385a65d6991aa840499e21a923a1a1d55f09f58b7e598dc6",
+    "packages/runtime/src/cloud-native-company-context.ts": "d05b8a51322cc1bf6e0617dcfe0cfc5c4bbbb850882f4157ae31ae571575a341",
     "packages/runtime/src/cloud-native-company-runner.ts": "ebb0eba266926089470ec0dfe4be5708cf1e906fc6dcca6b721c0834d069e701",
     "packages/runtime/src/cloud-native-company-runtime.ts": "6759c1465b8859de2601bf3e61b51b4e256547eb1d1ddba2aa68e9c0ed32a0ba",
     "packages/runtime/src/cloud-native-context-composition.ts": "7d40f9bc757301aa8b62ed18c5e53f246a3b1e8480b5415fdfe3a56ef5f2fedf",
