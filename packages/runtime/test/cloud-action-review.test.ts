@@ -2318,7 +2318,8 @@ describe("the review step", () => {
 			text: expect.stringMatching(/^APPROVAL_PENDING: .*from Jonas on a card in the agent's own thread/),
 		});
 		const text = result.run ? "" : result.text;
-		expect(text).toContain("woken in its thread to make the identical call");
+		expect(text).toContain("the agent makes this one call in its own thread");
+		expect(text).toContain("what you could not do");
 		expect(text).not.toContain("this conversation");
 	});
 

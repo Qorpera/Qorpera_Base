@@ -8,23 +8,30 @@
 -- worker APPROVAL_UNAVAILABLE_HERE.
 --
 -- 1. qorpera_record_action_review: an ask that gets no card in the run's own conversation (a worker's, a run with none,
---    a group chat's, an owners' and admins' card in a member's private conversation) puts its card in the agent's own
---    thread: the active room bound to the agent, its session open, company-wide and pinned as the run's own would be
---    (the transcript append's check), and only when everything the run read may be read there (as for a coworker's
---    message into that thread). The card is the same transcript entry, written into that session with the run's
---    execution, and card_session_id names the thread. decide_routine still raises no card. Folder-v2 only (the native
---    tool path is folder-v2 only since 20260930246000).
+--    a group chat's) puts its card in the agent's own thread: the active room bound to the agent, its session open,
+--    company-wide and pinned as the run's own would be (the transcript append's check), and only when everything the
+--    run read may be read there (as for a coworker's message into that thread). The card is the same transcript entry,
+--    written into that session with the run's execution, and card_session_id names the thread. decide_routine still
+--    raises no card. Folder-v2 only (the native tool path is folder-v2 only since 20260930246000).
+--    A member's private conversation keeps its content (decided for this fix, conservatively; a product question for
+--    later): a run there, a run whose audience is private, or a worker a private conversation's run started raises no
+--    card anywhere else, as before, so an owners' and admins' card asked there is still refused.
+--    A denial on a card in a conversation counts in it, wherever the call was asked from: the retry check (an earlier
+--    denial of the same call makes a new try ask) reads card_session_id too, and for a run with no conversation, a
+--    card a run with none raised.
 -- 2. The answer needs no change: qorpera_answer_action_review wakes the thread's agent (the card's agent) in that thread
 --    on the answering member's account, once no call holds the card. That run's identical call (tool and argument
 --    digest) uses the approval through qorpera_begin_action_review's first check (20260930489000), and its review
 --    reads the request of the card's run's chain (qorpera_wake_origin, 20260930518000). A call still holding the card
 --    reads the answer as before.
 -- 3. qorpera_begin_action_review: a card raised from this run's conversation (or by a run with none, for a run with
---    none) waits for the same call wherever the card is, so a repeat holds on it instead of raising a second card. Its
---    'pending' answer says whether the card is elsewhere (cardElsewhere), and so does the record's receipt
+--    none) waits for the same call wherever the card is, while the card's conversation is open, so a repeat holds on
+--    it instead of raising a second card. A denial stands where its card is: for a run in that conversation (the run
+--    the answer woke included) until a member writes there again, and for a run with none when a run with none asked.
+--    Its 'pending' answer says whether the card is elsewhere (cardElsewhere), and so does the record's receipt
 --    (qorpera_action_review_receipt), so the runtime can say the card waits in the agent's thread.
--- 4. qorpera_list_member_waiting_approvals(p_profile_id), for the web rail: the cards that wait for the caller's answer,
---    by agent and conversation. A partial index keeps the read on waiting cards only.
+-- 4. qorpera_list_member_waiting_approvals(p_profile_id), for the web rail: the cards that wait for the caller's answer
+--    in their agent's own thread (where the rail's link goes), by agent. A partial index keeps the read on waiting cards.
 --
 -- The pre-check refuses unless each changed body is the one master's migrations give (by md5) and each anchor occurs
 -- once. The catalog check refuses unless exactly these three functions changed, only in their bodies, and the one new
@@ -80,6 +87,15 @@ $old$,
 	v_card_session uuid; v_card_run public.qorpera_execution_runs%rowtype; v_audience public.qorpera_wake_occurrences%rowtype;
 $new$);
 select pg_temp.v199_cards_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
+	$old$		and prior.requester_user_id = v_run.requested_by_user_id and prior.session_id = v_run.session_id;
+$old$,
+	$new$		and prior.requester_user_id = v_run.requested_by_user_id
+		-- 20260930568000: a denial on a card in this conversation counts too, wherever its call was asked; for a run with
+		-- none, one on a card a run with none raised.
+		and (prior.session_id = v_run.session_id or prior.card_session_id = v_run.session_id
+			or (v_run.session_id is null and prior.session_id is null and prior.card_session_id is not null));
+$new$);
+select pg_temp.v199_cards_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
 	$old$		and not (v_scope = 'owners_admins' and exists (select 1 from public.qorpera_shared_sessions as session
 			where session.id = v_run.session_id and session.audience_kind = 'member_private'
 				and session.audience_user_id is distinct from null));
@@ -88,12 +104,21 @@ $old$,
 			where session.id = v_run.session_id and session.audience_kind = 'member_private'
 				and session.audience_user_id is distinct from null));
 	if v_card then v_card_session := v_run.session_id; end if;
-	-- 20260930568000: an ask that gets no card here (a worker's, a run with no conversation, a group chat's, an owners'
-	-- and admins' card in a member's private conversation) waits in the agent's own thread, where every member reads it
-	-- and the answer wakes the agent. Only an open, company-wide thread pinned as the transcript append checks, and only
-	-- when everything the run read may be read there, as for a coworker's message into it. Reads only, no lock.
+	-- 20260930568000: an ask that gets no card here (a worker's, a run with no conversation, a group chat's) waits in the
+	-- agent's own thread, where every member reads it and the answer wakes the agent. Only an open, company-wide thread
+	-- pinned as the transcript append checks, and only when everything the run read may be read there, as for a
+	-- coworker's message into it. A member's private conversation keeps its content: a run there, a run whose audience is
+	-- private, or a worker such a run started raises no card elsewhere. Reads only, no lock.
 	if not v_card and v_decision = 'ask' and p_review ->> 'tool' <> 'decide_routine'
-		and public.qorpera_environment_is_folder_v2(v_run.environment_id) then
+		and public.qorpera_environment_is_folder_v2(v_run.environment_id)
+		and v_run.audience_kind = 'company'
+		and not exists (select 1 from public.qorpera_shared_sessions as session
+			where session.id = v_run.session_id and session.audience_kind <> 'company')
+		and not exists (select 1 from public.qorpera_wake_occurrences as wake
+			join public.qorpera_execution_runs as parent on parent.id = wake.parent_run_id
+			left join public.qorpera_shared_sessions as session on session.id = parent.session_id
+			where wake.run_id = v_run.id
+				and (parent.audience_kind is distinct from 'company' or session.audience_kind <> 'company')) then
 		select session.id into v_card_session from public.qorpera_company_rooms as room
 		join public.qorpera_shared_sessions as session on session.id = room.session_id
 		where room.profile_id = v_run.profile_id and room.bound_staff_agent_id = v_run.staff_agent_id and room.status = 'active'
@@ -143,16 +168,33 @@ $old$,
 		'cardElsewhere', p_review.card_session_id is not null and p_review.card_session_id is distinct from p_review.session_id,
 $new$);
 
--- 3. Begin: a card raised from this conversation waits for the same call wherever it is --------------------------------
+-- 3. Begin: a denial stands where its card is; a card raised from this conversation waits for the same call ----------
+
+select pg_temp.v199_cards_replace('public.qorpera_begin_action_review(jsonb,jsonb)'::regprocedure,
+	$old$				or (review.session_id = v_run.session_id and not exists (
+					select 1 from public.qorpera_session_inputs as input
+					where input.session_id = v_run.session_id and input.kind = 'user_message'
+$old$,
+	$new$				-- 20260930568000: a denial on a card in this conversation stands here too, wherever its call was asked (a
+				-- worker's card in the agent's thread), and for a run with none, one on a card a run with none raised, until
+				-- a member writes where the card is.
+				or ((review.session_id = v_run.session_id or review.card_session_id = v_run.session_id
+						or (v_run.session_id is null and review.session_id is null and review.card_session_id is not null))
+					and not exists (
+					select 1 from public.qorpera_session_inputs as input
+					where input.session_id = coalesce(v_run.session_id, review.card_session_id) and input.kind = 'user_message'
+$new$);
 
 select pg_temp.v199_cards_replace('public.qorpera_begin_action_review(jsonb,jsonb)'::regprocedure,
 	$old$		or (review.decision = 'ask' and review.answer is null and review.card_session_id = v_run.session_id))
 $old$,
 	$new$		or (review.decision = 'ask' and review.answer is null and review.card_session_id = v_run.session_id)
-		-- 20260930568000: a card a run of this conversation (or, for a run with none, a run with none) raised in the
-		-- agent's thread: a repeat holds on it rather than raising a second card there.
-		or (review.decision = 'ask' and review.answer is null and review.card_session_id is not null
-			and review.session_id is not distinct from v_run.session_id))
+			-- 20260930568000: a card a run of this conversation (or, for a run with none, a run with none) raised in the
+			-- agent's thread, while that thread is open: a repeat holds on it rather than raising a second card there.
+			or (review.decision = 'ask' and review.answer is null and review.card_session_id is not null
+				and review.session_id is not distinct from v_run.session_id
+				and exists (select 1 from public.qorpera_shared_sessions as card_session
+					where card_session.id = review.card_session_id and card_session.status = 'open')))
 $new$);
 select pg_temp.v199_cards_replace('public.qorpera_begin_action_review(jsonb,jsonb)'::regprocedure,
 	$old$			'approverScope', v_review.approver_scope,
@@ -166,8 +208,9 @@ $new$);
 create index qorpera_action_reviews_waiting_cards on public.qorpera_action_reviews(profile_id, created_at desc)
 	where decision = 'ask' and answer is null and card_session_id is not null;
 
--- 20260930568000: the approval cards that wait for the caller's answer, by agent and conversation: their own
--- (approverScope member) and, for an owner or admin, the company's. Only open conversations the caller may read.
+-- 20260930568000: the approval cards that wait for the caller's answer, by agent: their own (approverScope member)
+-- and, for an owner or admin, the company's. Only cards in their agent's own open thread (where every card of a
+-- folder-v2 company is, and where the rail's link goes) that the caller may read.
 create function public.qorpera_list_member_waiting_approvals(p_profile_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 begin
@@ -180,6 +223,8 @@ begin
 			select review.staff_agent_id, review.card_session_id, count(*)::integer as count, max(review.created_at) as latest
 			from public.qorpera_action_reviews as review
 			join public.qorpera_shared_sessions as session on session.id = review.card_session_id and session.status = 'open'
+			join public.qorpera_company_rooms as room on room.session_id = review.card_session_id
+				and room.bound_staff_agent_id = review.staff_agent_id and room.profile_id = review.profile_id
 			where review.profile_id = p_profile_id and review.decision = 'ask' and review.answer is null
 				and review.card_session_id is not null
 				and ((review.approver_scope = 'member' and review.approver_user_id = auth.uid())
@@ -201,16 +246,19 @@ do $guard$
 declare v record; v_source text; v_at integer; v_next integer;
 begin
 	for v in select * from (values
-		('public.qorpera_record_action_review(jsonb,jsonb)', 6, array['v_card_session uuid', 'v_card := v_decision = ''ask''',
-			'20260930568000', 'qorpera_folder_parent_reads_allowed(v_audience)', '20260930546000',
+		('public.qorpera_record_action_review(jsonb,jsonb)', 7, array['v_card_session uuid', '20260930568000',
+			'prior.card_session_id = v_run.session_id', 'v_card := v_decision = ''ask''', '20260930568000',
+			'v_run.audience_kind = ''company''', 'qorpera_folder_parent_reads_allowed(v_audience)', '20260930546000',
 			'where id = v_card_session for update', 'case when v_card then v_card_session end',
 			'where event.session_id = v_card_session', 'v_card_run.session_id := v_card_session',
 			'qorpera_folder_append_transcript_event(v_card_run']),
 		('public.qorpera_action_review_receipt(public.qorpera_action_reviews)', 1, array['''card'', p_review.card_session_id',
 			'20260930568000', '''cardElsewhere''']),
-		('public.qorpera_begin_action_review(jsonb,jsonb)', 2, array['review.answer is null and review.card_session_id = v_run.session_id)',
-			'20260930568000', 'review.session_id is not distinct from v_run.session_id))', '''state'', ''pending''',
-			'''cardElsewhere''', '20260930568000'])) as guard(signature, markers, texts)
+		('public.qorpera_begin_action_review(jsonb,jsonb)', 3, array['20260930568000', 'review.card_session_id = v_run.session_id',
+			'coalesce(v_run.session_id, review.card_session_id)',
+			'review.answer is null and review.card_session_id = v_run.session_id)', '20260930568000',
+			'review.session_id is not distinct from v_run.session_id', 'card_session.status = ''open''',
+			'''state'', ''pending''', '''cardElsewhere''', '20260930568000'])) as guard(signature, markers, texts)
 	loop
 		v_source := (select prosrc from pg_proc where oid = v.signature::regprocedure);
 		if (length(v_source) - length(replace(v_source, '20260930568000', ''))) / length('20260930568000') <> v.markers then
