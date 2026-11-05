@@ -488,7 +488,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		);
 		const apps = h(
 			"button",
-			{ type: "button", class: "rail-apps icon-button", "aria-controls": "rail-apps-drawer", "aria-expanded": "false" },
+			{
+				type: "button",
+				class: "rail-apps icon-button",
+				"aria-controls": "rail-apps-drawer",
+				"aria-expanded": "false",
+			},
 			icon("grid"),
 			h("span", { class: "rail-apps-dot", "aria-hidden": "true" }),
 		);
@@ -567,12 +572,19 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 								label: profile.profileName,
 								checked: profile.profileId === company.profile.profileId,
 								select: () => {
-									if (profile.profileId !== company.profile.profileId) location.hash = `#/c/${profile.profileId}`;
+									if (profile.profileId !== company.profile.profileId)
+										location.hash = `#/c/${profile.profileId}`;
 								},
 							}),
 						),
 						{ kind: "separator" },
-						{ label: t("New company"), icon: "plus", select: () => (location.hash = "#/new") },
+						{
+							label: t("New company"),
+							icon: "plus",
+							select: () => {
+								location.hash = "#/new";
+							},
+						},
 					],
 				});
 			},

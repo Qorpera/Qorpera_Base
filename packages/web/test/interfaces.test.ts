@@ -46,6 +46,8 @@ afterEach(() => {
 	for (const dispose of cleanup.splice(0).reverse()) dispose();
 	document.body.replaceChildren();
 	sessionStorage.clear();
+	localStorage.clear();
+	location.hash = "";
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -214,16 +216,17 @@ describe("the shipped pages (C6a)", () => {
 	});
 });
 
-describe("the rail's Agents | Interfaces switch", () => {
-	/** A company that shows Members, so the rail has both tabs; unless `read` is false and its pages aren't read yet. */
+describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 Nov 2026)", () => {
+	/** A company that shows Members, so the rail has the four windows; unless `read` is false and its pages aren't read yet. */
 	function rail(route: Route, read = true) {
 		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
 		const auth = new AuthController(f.cloud);
 		cleanup.push(() => auth.dispose());
+		const other = { ...profileA, profileId: id(90), profileName: "Armbånd.dk" };
 		const context = {
-			profiles: [profileA],
+			profiles: [profileA, other],
 			user: userA,
 			route,
 			auth,
@@ -234,104 +237,109 @@ describe("the rail's Agents | Interfaces switch", () => {
 		};
 		const draw = (next: Route = route) => renderRail(element, controller, { ...context, route: next });
 		draw();
-		return { element, draw, controller };
+		return { element, draw, controller, other };
 	}
-	const tabs = (element: HTMLElement) =>
-		[...element.querySelectorAll<HTMLButtonElement>("[role=tablist] [role=tab]")].map((tab) => [
-			tab.textContent,
-			tab.getAttribute("aria-selected"),
-		]);
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
-	/** Lets the lists play their slide, as in a browser that has motion. */
-	const motion = () => {
-		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-		const getAnimations = vi.fn(() => []);
-		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
-		cleanup.push(() => {
-			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
-		});
-	};
-
-	it("starts on Agents and switches lists without leaving the page", () => {
-		const { element } = rail(home);
-		expect(tabs(element)).toEqual([
-			["Agents", "true"],
-			["Interfaces", "false"],
+	const membersPage: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
+	const apps = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-apps")!;
+	const drawer = (element: HTMLElement) => element.querySelector<HTMLElement>(".rail-apps-drawer")!;
+	const icons = (element: HTMLElement) =>
+		[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-drawer a.rail-app")].map((icon) => [
+			icon.querySelector(".rail-app-name")?.textContent,
+			icon.getAttribute("href"),
 		]);
-		expect(element.querySelector(".rail-scroll:not(.rail-interfaces)")).not.toBeNull();
-		expect(element.querySelector(".rail-interfaces")).toBeNull();
+	const menuItems = () =>
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => [
+			item.textContent,
+			item.getAttribute("aria-checked"),
+		]);
+
+	it("names the company and opens the member's companies from the name, this one checked, then New company", () => {
+		const { element, other } = rail(home);
+		const name = element.querySelector<HTMLButtonElement>(".rail-company")!;
+		expect(name.textContent).toBe(profileA.profileName);
+		expect(name.getAttribute("aria-haspopup")).toBe("menu");
+		// No figure stands beside the name.
+		expect(element.querySelector(".rail-toolbar .figure, .rail-toolbar .company-logo")).toBeNull();
+		name.click();
+		expect(name.getAttribute("aria-expanded")).toBe("true");
+		expect(menuItems()).toEqual([
+			[profileA.profileName, "true"],
+			["Armbånd.dk", "false"],
+			["New company", null],
+		]);
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")][1]!.click();
+		expect(location.hash).toBe(`#/c/${other.profileId}`);
+		expect(name.getAttribute("aria-expanded")).toBe("false");
+		name.click();
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")][2]!.click();
+		expect(location.hash).toBe("#/new");
+	});
+
+	it("opens the pages as icons under the top row and keeps the choice until pressed again", () => {
+		const { element } = rail(home);
+		const button = apps(element);
+		expect(button.hidden).toBe(false);
+		expect(button.getAttribute("aria-label")).toBe("Apps");
+		// Closed at first: the icons are drawn but can't be reached.
+		expect(button.getAttribute("aria-expanded")).toBe("false");
+		expect(drawer(element).classList.contains("is-open")).toBe(false);
+		expect(drawer(element).inert).toBe(true);
+		expect(icons(element)).toEqual([["Members", `#/c/${profileA.profileId}/i/members`]]);
 		const before = location.hash;
-		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
-		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
+		button.click();
 		expect(location.hash).toBe(before);
-		const rows = element.querySelectorAll<HTMLAnchorElement>(".rail-interfaces a.rail-row-interface");
-		expect([...rows].map((row) => row.querySelector("strong")?.textContent)).toEqual(["Members"]);
-		expect(rows[0]?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/i/members`);
-		// The add button keeps its place at the end of the row on both tabs.
-		expect(element.querySelector(".rail-add")?.hasAttribute("hidden")).toBe(false);
-		expect(sessionStorage.getItem(`qorpera.web.rail-tab:${profileA.profileId}`)).toBe("interfaces");
+		expect(button.getAttribute("aria-expanded")).toBe("true");
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(drawer(element).inert).toBe(false);
+		expect(localStorage.getItem(`qorpera.web.rail-apps-open:${profileA.profileId}`)).toBe("1");
+		// The drawer stands between the top row and the agents.
+		const order = [...element.children].map((child) => child.className.split(" ")[0]);
+		expect(order.slice(0, 3)).toEqual(["rail-toolbar", "rail-apps-drawer", "rail-scroll"]);
+		button.click();
+		expect(drawer(element).classList.contains("is-open")).toBe(false);
+		expect(localStorage.getItem(`qorpera.web.rail-apps-open:${profileA.profileId}`)).toBe("0");
 	});
 
-	it("is a real tab list: one tab in the Tab order, its list labelled by it, arrows and Home/End choose", () => {
-		const { element } = rail(home);
-		const [agentsTab, interfacesTab] = element.querySelectorAll<HTMLButtonElement>("[role=tablist] [role=tab]");
-		expect([agentsTab!.tabIndex, interfacesTab!.tabIndex]).toEqual([0, -1]);
-		expect(agentsTab!.getAttribute("aria-controls")).toBe("rail-list-agents");
-		expect(interfacesTab!.hasAttribute("aria-controls")).toBe(false);
-		const panel = element.querySelector("#rail-list-agents");
-		expect(panel?.getAttribute("role")).toBe("tabpanel");
-		expect(panel?.getAttribute("aria-labelledby")).toBe(agentsTab!.id);
-		agentsTab!.focus();
-		agentsTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
-		expect(document.activeElement).toBe(interfacesTab);
-		expect([agentsTab!.tabIndex, interfacesTab!.tabIndex]).toEqual([-1, 0]);
-		expect(element.querySelector("#rail-list-interfaces")?.getAttribute("aria-labelledby")).toBe(interfacesTab!.id);
-		interfacesTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
-		expect(tabs(element)[0]).toEqual(["Agents", "true"]);
-		expect(document.activeElement).toBe(agentsTab);
-		agentsTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
+	it("opens the drawer once for a page's route, marks the open page, and leaves the member's choice after", () => {
+		const { element, draw } = rail(membersPage);
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(element.querySelector(".rail-app")?.getAttribute("aria-current")).toBe("page");
+		apps(element).click();
+		draw(membersPage);
+		expect(drawer(element).classList.contains("is-open")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "staff", id: ada.id });
+		expect(element.querySelector(".rail-app")?.hasAttribute("aria-current")).toBe(false);
 	});
 
-	it("slides the list that takes over in from its tab's side, and nothing on the first draw", () => {
-		motion();
-		const { element } = rail(home);
-		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
-		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
-		expect(element.querySelector(".rail-interfaces")?.classList.contains("is-entering-right")).toBe(true);
-		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[0]!.click();
-		expect(element.querySelector("#rail-list-agents")?.classList.contains("is-entering-left")).toBe(true);
-	});
-
-	it("shows Interfaces for a page's route once its page is read, though the route didn't change (C6a)", () => {
-		motion();
+	it("shows the four windows for a page's route once its page is read (C6a)", () => {
 		// A reload of the Members page: the route opens before the pages are read.
-		const members: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
-		const { element, draw, controller } = rail(members, false);
-		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(true);
-		expect(element.querySelector("#rail-list-agents")).not.toBeNull();
-		expect(element.querySelector(".rail-interfaces")).toBeNull();
+		const { element, draw, controller } = rail(membersPage, false);
+		expect(apps(element).hidden).toBe(true);
+		expect(drawer(element).hidden).toBe(true);
 		controller.store.set({ interfacePages: pages(false, true) });
 		draw();
-		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(false);
-		expect(tabs(element)).toEqual([
-			["Agents", "false"],
-			["Interfaces", "true"],
-		]);
-		const rows = element.querySelectorAll(".rail-interfaces a.rail-row-interface");
-		expect([...rows].map((row) => row.querySelector("strong")?.textContent)).toEqual(["Members"]);
-		// The tabs appear on the list the route chose: nothing slides.
-		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
+		expect(apps(element).hidden).toBe(false);
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
 	});
 
-	it("folds the search out over the tabs and back on Esc or its close button, clearing it", () => {
+	it("has no four windows while no page is on (C6a)", () => {
+		const { element, draw, controller } = rail(home);
+		controller.store.set({ interfacePages: pages(false, false) });
+		draw(membersPage);
+		expect(apps(element).hidden).toBe(true);
+		expect(drawer(element).hidden).toBe(true);
+		expect(element.querySelector(".rail-app")).toBeNull();
+	});
+
+	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {
 		const { element } = rail(home);
 		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
 		const toggle = element.querySelector<HTMLButtonElement>(".rail-search-toggle")!;
 		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
 		const closeButton = element.querySelector<HTMLButtonElement>(".rail-search-close")!;
-		const switcher = element.querySelector<HTMLElement>("[role=tablist]")!;
+		const name = element.querySelector<HTMLButtonElement>(".rail-company")!;
 		// Folded: only the button, which names what it searches; the text box is out of the Tab order.
 		expect(toolbar.classList.contains("is-searching")).toBe(false);
 		expect(toggle.getAttribute("aria-label")).toBe("Search agents");
@@ -344,7 +352,8 @@ describe("the rail's Agents | Interfaces switch", () => {
 		expect(document.activeElement).toBe(input);
 		expect(input.placeholder).toBe("Search agents");
 		expect(closeButton.hidden).toBe(false);
-		expect(switcher.inert).toBe(true);
+		expect(name.inert).toBe(true);
+		expect(apps(element).inert).toBe(true);
 		input.value = "zzz";
 		input.dispatchEvent(new Event("input"));
 		expect(element.textContent).toContain("No matching conversations.");
@@ -353,7 +362,7 @@ describe("the rail's Agents | Interfaces switch", () => {
 		expect(input.value).toBe("");
 		expect(element.textContent).not.toContain("No matching conversations.");
 		expect(document.activeElement).toBe(toggle);
-		expect(switcher.inert).toBe(false);
+		expect(name.inert).toBe(false);
 		// The close button does the same.
 		toggle.click();
 		input.value = "ada";
@@ -391,50 +400,11 @@ describe("the rail's Agents | Interfaces switch", () => {
 		const { element, draw } = rail(home);
 		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
 		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
-		// As when the tabs appear while the always-open field holds a query.
 		input.value = "zzz";
 		draw();
 		expect(toolbar.classList.contains("is-searching")).toBe(true);
 		expect(input.tabIndex).toBe(0);
 		expect(element.textContent).toContain("No matching conversations.");
-	});
-
-	it("lets the route pick the tab, and marks the open interface", () => {
-		const { element, draw } = rail({
-			name: "company",
-			profileId: profileA.profileId,
-			section: "interface",
-			id: "members",
-		});
-		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
-		expect(element.querySelector(".rail-row-interface")?.getAttribute("aria-current")).toBe("page");
-		draw({ name: "company", profileId: profileA.profileId, section: "staff", id: ada.id });
-		expect(tabs(element)[0]).toEqual(["Agents", "true"]);
-		draw({ name: "company", profileId: profileA.profileId, section: "file" });
-		expect(tabs(element)[0]).toEqual(["Agents", "true"]);
-	});
-
-	it("filters interfaces by the search field", () => {
-		const { element, draw } = rail({
-			name: "company",
-			profileId: profileA.profileId,
-			section: "interface",
-			id: "members",
-		});
-		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
-		input.value = "mail";
-		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
-		expect(element.querySelector(".rail-interfaces")?.textContent).toBe("No matching interfaces.");
-	});
-
-	it("has no Interfaces tab while no page is on (C6a)", () => {
-		const { element, draw, controller } = rail(home);
-		expect(tabs(element)).toHaveLength(2);
-		controller.store.set({ interfacePages: pages(false, false) });
-		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
-		expect(element.querySelector<HTMLElement>(".rail-switch")?.hidden).toBe(true);
-		expect(element.querySelector(".rail-interfaces")).toBeNull();
-		expect(element.querySelector(".rail-row-interface")).toBeNull();
 	});
 });
 
@@ -506,7 +476,7 @@ figure = "agent"
 		expect(waiting.map(({ row }) => row.kind)).toEqual(["review", "mention"]);
 	});
 
-	it("labels the search for the list it searches", () => {
+	it("labels the search and names each page's icon with what it is for", () => {
 		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
@@ -523,13 +493,13 @@ figure = "agent"
 			openFeedback: () => {},
 			agentActions: {},
 		});
-		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search interfaces");
-		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search interfaces");
-		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search interfaces");
-		expect(element.querySelector(".rail-switch")?.getAttribute("role")).toBe("tablist");
-		expect(element.querySelectorAll("[role=tab]")).toHaveLength(2);
-		expect(element.querySelector(".rail-row-interface")?.getAttribute("title")).toBe(
-			"Who owns, supervises and does what.",
+		// The search looks through the agents only; the pages have their own icons.
+		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search agents");
+		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search agents");
+		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search agents");
+		expect(element.querySelector("[role=tablist], [role=tab]")).toBeNull();
+		expect(element.querySelector(".rail-app")?.getAttribute("title")).toBe(
+			"Members · Who owns, supervises and does what.",
 		);
 	});
 });

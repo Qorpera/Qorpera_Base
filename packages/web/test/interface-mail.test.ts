@@ -1050,12 +1050,16 @@ describe("the Mailbox's badge (§3 badge)", () => {
 		expect(file).toBeTruthy();
 		expect(interfaceBadge(controller, file!)).toBe(2);
 		const element = rail(controller, f);
-		const row = [...element.querySelectorAll<HTMLElement>(".rail-row-interface")].find(
-			(candidate) => candidate.querySelector("strong")?.textContent === "Mailbox",
+		const row = [...element.querySelectorAll<HTMLElement>(".rail-app")].find(
+			(candidate) => candidate.querySelector(".rail-app-name")?.textContent === "Mailbox",
 		)!;
 		expect(row.querySelector(".rail-count")?.textContent).toBe("2");
 		expect(row.querySelector(".rail-count")?.getAttribute("aria-hidden")).toBe("true");
 		expect(row.getAttribute("aria-label")).toBe("Mailbox, 2 waiting");
+		// The four windows carry a dot while the drawer is closed, and say what waits.
+		const apps = element.querySelector<HTMLButtonElement>(".rail-apps")!;
+		expect(apps.classList.contains("has-waiting")).toBe(true);
+		expect(apps.getAttribute("aria-label")).toBe("Apps, 2 waiting");
 		// Answered sends leave the count.
 		fake.waiting = [];
 		window.dispatchEvent(new Event("focus"));

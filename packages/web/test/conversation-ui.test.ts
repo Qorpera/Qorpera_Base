@@ -2705,7 +2705,10 @@ describe("messages between two agents (contract 14.6)", () => {
 		await settle();
 		const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
 		expect(panel).not.toBeNull();
-		expect(panel.querySelector(".pair-header")?.textContent).toBe(`${staff.displayName}⇄Helper`);
+		const pairNames = (sheet: HTMLElement) =>
+			[...sheet.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")].map((part) => part.textContent).join("");
+		expect(pairNames(panel)).toBe(`${staff.displayName}⇄Helper`);
+		expect(panel.querySelector(".pair-count")?.textContent).toBe("2 messages");
 		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
 		// The coworker speaks from the left, this thread's own agent from the right.
 		const rows = panel.querySelectorAll<HTMLElement>(".pair-row");
@@ -2714,12 +2717,18 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(rows[1]?.querySelector(".message-author")?.textContent).toBe(staff.displayName);
 		expect(panel.textContent).toContain("he approves of you");
 		expect(panel.querySelector(".message-caption")?.textContent).toBe("Left for Helper's next turn");
-		expect(panel.textContent).toContain("This chat is view-only");
+		expect(panel.textContent).toContain("Only the two agents write here");
 		expect(panel.querySelector("textarea")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		button(panel, "Close Chat").click();
+		button(panel, "Close").click();
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(document.activeElement).toBe(chip);
+		// A press on the dimmed thread behind the sheet closes it too.
+		chip.click();
+		await settle();
+		f.view.el.querySelector<HTMLElement>(".pair-transcript .pair-dim")!.click();
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		expect(document.activeElement).toBe(chip);
 	});
 
@@ -2784,8 +2793,10 @@ describe("messages between two agents (contract 14.6)", () => {
 			chip.click();
 			await settle();
 			const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
-			expect(panel.querySelector(".pair-header")?.textContent).toBe(`${staff.displayName}⇄Nova`);
-			button(panel, "Close Chat").click();
+			expect(
+				[...panel.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")].map((part) => part.textContent).join(""),
+			).toBe(`${staff.displayName}⇄Nova`);
+			button(panel, "Close").click();
 			expect(document.activeElement).toBe(chip);
 		});
 
@@ -2958,7 +2969,7 @@ describe("messages between two agents (contract 14.6)", () => {
 			sessions([coding]);
 			expect(f.lines().map((line) => line.classList.contains("coding-line"))).toEqual([false, true, false]);
 			// Closing Nova's transcript goes back to Nova, now on a line of its own.
-			button(f.view.el.querySelector<HTMLElement>(".pair-transcript")!, "Close Chat").click();
+			button(f.view.el.querySelector<HTMLElement>(".pair-transcript")!, "Close").click();
 			expect(document.activeElement).toBe(novaChip());
 			expect(novaChip().getAttribute("aria-label")).toBe("Messaged Nova. Open the conversation");
 			// And a keyboard user on Nova's chip stays on it as the line splits.

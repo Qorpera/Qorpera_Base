@@ -79,7 +79,12 @@ export class PairTranscriptView {
 				h(
 					"footer",
 					{ class: "pair-footer" },
-					h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, t("Only the two agents write here"))),
+					h(
+						"span",
+						{ class: "pair-readonly" },
+						icon("lock"),
+						h("span", null, t("Only the two agents write here")),
+					),
 				),
 			),
 		);

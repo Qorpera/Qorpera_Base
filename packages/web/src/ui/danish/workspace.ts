@@ -67,7 +67,6 @@ export const WORKSPACE: Record<string, string> = {
 		"Denne samtale har en usendt kladde. Åbn den, og gør kladden færdig eller ryd den, før du sender en ny.",
 
 	// app/views/shell.ts: the four windows and the apps drawer
-	Interfaces: "Interfaces",
 	Apps: "Apps",
 	"Close search": "Luk søgning",
 	Views: "Visninger",
