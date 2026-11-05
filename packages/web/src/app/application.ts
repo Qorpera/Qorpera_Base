@@ -26,6 +26,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
@@ -334,6 +335,9 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
+	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
+	 * the open company has now (it is made again when the company opens again). */
+	const wallListeners = new Set<() => void>();
 	/** Makes the side panel of an app or page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
 	/** An app or page asked for while no chat was open: shown beside the chat once it is. */
@@ -1218,6 +1222,9 @@ export function mountApplication(
 				decorateAppCards();
 			});
 			companyApps = apps;
+			apps.onChange(() => {
+				for (const listener of [...wallListeners]) listener();
+			});
 			apps.open();
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
@@ -1530,6 +1537,17 @@ export function mountApplication(
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
+							// The agent's wall on top of its thread, read with the member's own folder client and again after
+							// each change hint of the company's folder (the apps' hint channel).
+							agentWall: {
+								read: agentWallReader(() =>
+									memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
+								),
+								onFolderChange: (listener) => {
+									wallListeners.add(listener);
+									return () => wallListeners.delete(listener);
+								},
+							},
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

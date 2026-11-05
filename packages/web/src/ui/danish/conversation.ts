@@ -537,4 +537,16 @@ export const CONVERSATION: Record<string, string> = {
 	"Undone in part. {reason}": "Delvist fortrudt. {reason}",
 	"Not undone. {reason}": "Ikke fortrudt. {reason}",
 	"Could not undo. Try again.": "Kunne ikke fortryde. Prøv igen.",
+	// An agent's wall on top of its chat (ui/agent-wall-poster.ts)
+	"{name}'s wall": "{name}s opslagstavle",
+	"{n} waits on you": "{n} venter på dig",
+	"{n} wait on you": "{n} venter på dig",
+	"{n} working on": "{n} i gang",
+	"{n} done": "{n} gjort",
+	"Waits on you": "Venter på dig",
+	"Working on": "Arbejder på",
+	Fold: "Fold sammen",
+	"{n} more done": "Vis {n} mere",
+	"Earlier: {n}": "Tidligere: {n}",
+	"Show fewer": "Vis færre",
 };
