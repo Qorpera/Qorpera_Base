@@ -97,7 +97,8 @@ export function parseCompanyFounding(value: unknown): CompanyFounding {
 			ready: flag(seat.ready, "founder ready"),
 			modelLoginReady: flag(seat.modelLoginReady, "founder login"),
 			// An older cloud sends neither (20260930579000).
-			modelLoginUsedUp: seat.modelLoginUsedUp === undefined ? false : flag(seat.modelLoginUsedUp, "founder login used up"),
+			modelLoginUsedUp:
+				seat.modelLoginUsedUp === undefined ? false : flag(seat.modelLoginUsedUp, "founder login used up"),
 			modelLoginResetsAt:
 				seat.modelLoginResetsAt === undefined || seat.modelLoginResetsAt === null
 					? null

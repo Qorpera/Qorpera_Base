@@ -96,10 +96,17 @@ do $$ begin
         raise exception 'Exhausted Codex accounts caused a fallback to Claude'; end if;
 end $$;
 reset role;
-do $$ begin
-    if public.qorpera_member_first_run_sponsor('16300000-0000-4000-8000-000000000010',
-        '16300000-0000-4000-8000-000000000001') is not null then
-        raise exception 'First run selected an unsupported governed harness'; end if;
+-- A first run never takes the Claude login either; with every Codex login used up it waits on one of them
+-- (20260930579000).
+do $$
+declare v_sponsor jsonb := public.qorpera_member_first_run_sponsor('16300000-0000-4000-8000-000000000010',
+    '16300000-0000-4000-8000-000000000001');
+begin
+    if v_sponsor is null or (select connection.provider from public.qorpera_execution_sponsor_versions as sponsor
+            join public.qorpera_provider_connections as connection on connection.id = sponsor.provider_connection_id
+            where sponsor.binding_id = (v_sponsor ->> 'sponsorBindingId')::uuid
+                and sponsor.version = (v_sponsor ->> 'sponsorVersion')::bigint) is distinct from 'openai' then
+        raise exception 'First run did not wait on a used-up Codex login: %', v_sponsor; end if;
 end $$;
 set constraints all immediate;
 rollback;

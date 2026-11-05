@@ -99,7 +99,12 @@ describe("founding table wire shape", () => {
 			firstRun: "waiting_for_login",
 		});
 		expect(
-			started({ companyReady: true, companySetup: "ready", firstRun: "queued", firstRunWaitsUntil: "2026-11-07T10:12:58Z" }),
+			started({
+				companyReady: true,
+				companySetup: "ready",
+				firstRun: "queued",
+				firstRunWaitsUntil: "2026-11-07T10:12:58Z",
+			}),
 		).toMatchObject({ firstRun: "queued", firstRunWaitsUntil: "2026-11-07T10:12:58Z" });
 		expect(started({ companyReady: true })).toMatchObject({ firstRunWaitsUntil: null });
 		expect(() => started({ companyReady: true, companySetup: "done" })).toThrow();

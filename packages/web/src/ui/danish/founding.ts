@@ -30,9 +30,12 @@ export const FOUNDING: Record<string, string> = {
 	"Opening a table for {name}": "Åbner et bord til {name}",
 	"Opening the table": "Åbner bordet",
 	"Preparing {name}": "Gør {name} klar",
-	"The Co-Founder begins by itself at {time}, when your ChatGPT resets.": "Co-Founderen går i gang af sig selv {time}, når din ChatGPT nulstilles.",
-	"Your ChatGPT is used up until {time}. You can start now: the Co-Founder begins by itself then.": "Din ChatGPT er brugt op til {time}. Du kan starte nu: Co-Founderen går i gang af sig selv til den tid.",
-	"Your ChatGPT is used up. You can start now: the Co-Founder begins by itself once it resets.": "Din ChatGPT er brugt op. Du kan starte nu: Co-Founderen går i gang af sig selv, når den nulstilles.",
+	"The Co-Founder begins by itself at {time}, when your ChatGPT resets.":
+		"Co-Founderen går i gang af sig selv {time}, når din ChatGPT nulstilles.",
+	"Your ChatGPT is used up until {time}. You can start now: the Co-Founder begins by itself then.":
+		"Din ChatGPT er brugt op til {time}. Du kan starte nu: Co-Founderen går i gang af sig selv til den tid.",
+	"Your ChatGPT is used up. You can start now: the Co-Founder begins by itself once it resets.":
+		"Din ChatGPT er brugt op. Du kan starte nu: Co-Founderen går i gang af sig selv, når den nulstilles.",
 	"{name} could not be set up": "{name} kunne ikke sættes op",
 	"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.":
 		"Opsætningen af {name} mislykkedes. Den venter på, at vi sætter den op igen; det skyldes ikke noget, du har gjort.",
