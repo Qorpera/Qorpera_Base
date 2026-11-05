@@ -212,6 +212,13 @@ they answer 42501 "native host call is refused".
   usage last. `qorpera_list_member_native_execution_connections` reports each
   login's `recent_turns` (`{refused, completed}`), so a client orders its own list
   the same way.
+- At a usage limit (20260930575000) the conversation still keeps its login, and a
+  client may send on it: the message waits queued and goes on by itself, on the
+  same login, once the limit resets or a usage reading shows room. The usage-limit notice (`provider_usage_limit`) also
+  carries `accountEmail` (the login's email, or null) for the member whose own login
+  it is; a company account's notice does not. Its `resetsAt` is the signal's reset:
+  when the provider names none, the latest reset still ahead of a full window in
+  the login's newest usage reading.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so

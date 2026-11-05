@@ -296,7 +296,20 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
-	"Or continue with another of your logins.": "Eller fortsæt med et andet af dine logins.",
+	"Or use another of your logins now.": "Eller brug et andet af dine logins nu.",
+	"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.":
+		"Samtalens modelkonto har nået sin forbrugsgrænse. En besked, du sender nu, venter og fortsætter af sig selv, når grænsen nulstilles.",
+	"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).":
+		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
+	"Your login reached its usage limit. Work will go on by itself when it resets (about {time}).":
+		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
+	"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
+		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
+	"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
+		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
+	"{count} min": "{count} min.",
+	"{count} h": "{count} t.",
+	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
 	"Model account {number}": "Modelkonto {number}",
 
@@ -549,4 +562,7 @@ export const CONVERSATION: Record<string, string> = {
 	"{n} more done": "Vis {n} mere",
 	"Earlier: {n}": "Tidligere: {n}",
 	"Show fewer": "Vis færre",
+	// A card's long body (ui/interaction-card.ts).
+	"Show more": "Vis mere",
+	"Show less": "Vis mindre",
 };

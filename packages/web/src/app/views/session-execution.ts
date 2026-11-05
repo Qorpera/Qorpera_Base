@@ -94,9 +94,10 @@ export interface SessionLogin {
 	readonly current: boolean;
 }
 
-/** A conversation keeps its own account, also at its usage limit: sending waits until it
- * resets, and only the member moves a conversation to another account (founder decision
- * 2026-10-04, migration 20260930059000). New conversations choose the member's account that
+/** A conversation keeps its own account, also at its usage limit, and only the member moves a
+ * conversation to another account (founder decision 2026-10-04, migration 20260930059000). At
+ * the limit a message may still be sent: it waits in the cloud and goes on by itself, on the
+ * same account, once the limit resets (2026-11-05, migration 20260930575000). New conversations choose the member's account that
  * works and has the most room on one scale (loginRank, migration 20260930559000). */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
@@ -161,7 +162,7 @@ export class SessionExecutionView {
 		if (!conversation.executionSponsor || !this.#observed || this.#busy) return false;
 		if (this.#serverSelection && conversation.executionSponsor.connectionId !== this.#serverConnectionId)
 			return false;
-		if (!this.#available().includes(conversation.executionSponsor.connectionId)) return false;
+		if (!this.#sendable().includes(conversation.executionSponsor.connectionId)) return false;
 		try {
 			const current = selectSessionExecutionSponsor(
 				this.#observed,
@@ -392,15 +393,42 @@ export class SessionExecutionView {
 			.map((connection) => connection.connectionId);
 	}
 
+	/** The conversation's own login while it is at its usage limit, still the member's and able to pay otherwise: a
+	 * message sent on it waits in the cloud and goes on by itself, on the same login, once the limit resets
+	 * (20260930575000). Undefined otherwise. */
+	#waiting(): string | undefined {
+		const observed = this.#observed;
+		const own = this.#own();
+		if (!observed || !own || !this.#keeps(own)) return undefined;
+		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
+		if (!connection || remainingAllowance(connection, Date.now()) !== 0) return undefined;
+		try {
+			selectSessionExecutionSponsor(observed, own, this.#company.userId);
+			return own;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** The logins a message may be sent on: those that can pay now, and the conversation's own at its usage limit. */
+	#sendable(): string[] {
+		const available = this.#available();
+		const waiting = this.#waiting();
+		return waiting && !available.includes(waiting) ? [...available, waiting] : available;
+	}
+
 	#choose(): void {
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		if (!this.#observed || conversation.sending || conversation.retrySend) return;
+		// A conversation waiting at its limit still follows its binding to the member's new connection (below).
 		if (
 			this.canSend &&
-			(!this.#serverSelection || conversation.executionSponsor?.connectionId === this.#serverConnectionId)
+			(!this.#serverSelection || conversation.executionSponsor?.connectionId === this.#serverConnectionId) &&
+			(this.#serverSelection || this.#waiting() === undefined)
 		)
 			return;
 		const available = this.#available();
+		const sendable = this.#sendable();
 		const kept = conversation.executionSponsor;
 		// A conversation keeps its account even when it cannot pay now (also while an
 		// owner or admin has it disabled). One the member disconnected leaves it with no
@@ -421,12 +449,13 @@ export class SessionExecutionView {
 				)
 				.sort((a, b) => (b.sponsorVersion ?? 0) - (a.sponsorVersion ?? 0))[0];
 		const next = this.#serverSelection
-			? this.#serverConnectionId && available.includes(this.#serverConnectionId)
+			? this.#serverConnectionId && sendable.includes(this.#serverConnectionId)
 				? this.#serverConnectionId
 				: undefined
 			: (handedOff?.connectionId ??
-				(kept ? (keeps && available.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
-		if (!next) return;
+				(kept ? (keeps && sendable.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
+		// A conversation waiting at its limit on the login it already has keeps everything as it is.
+		if (!next || (next === kept?.connectionId && !handedOff && this.canSend)) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
 			this.#error = undefined;
@@ -621,16 +650,29 @@ export class SessionExecutionView {
 							{ small: true, disabled: conversation.sending || !canWrite },
 						),
 					)
-				: this.#observed && !this.#error && !this.canSend && !this.#busy
-					? this.#unchosen(this.#available())
-						? this.#choice(this.#observed, !canWrite)
-						: h(
-								"div",
-								null,
-								h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
-								this.#otherLogins(this.#observed, locked),
-							)
-					: null,
+				: this.#observed && !this.#error && this.canSend && !this.#busy && this.#waiting() !== undefined
+					? h(
+							"div",
+							null,
+							h(
+								"p",
+								{ class: "muted" },
+								t(
+									"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.",
+								),
+							),
+							this.#otherLogins(this.#observed, locked),
+						)
+					: this.#observed && !this.#error && !this.canSend && !this.#busy
+						? this.#unchosen(this.#available())
+							? this.#choice(this.#observed, !canWrite)
+							: h(
+									"div",
+									null,
+									h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
+									this.#otherLogins(this.#observed, locked),
+								)
+						: null,
 		);
 	}
 
@@ -664,7 +706,7 @@ export class SessionExecutionView {
 		return h(
 			"div",
 			{ class: "session-execution-choice" },
-			h("p", { class: "muted" }, t("Or continue with another of your logins.")),
+			h("p", { class: "muted" }, t("Or use another of your logins now.")),
 			// Numbered as "Choose a login to continue" numbers them.
 			...others.map((connectionId) =>
 				button(

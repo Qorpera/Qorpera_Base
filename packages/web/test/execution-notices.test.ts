@@ -252,6 +252,32 @@ describe("company notices", () => {
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
 
+	it("tells the member whose own login reached its usage limit that work goes on by itself, naming no other login", async () => {
+		const usage = (accountEmail: string | null, resetsAt: string | null) => ({
+			...item(77),
+			kind: "provider_usage_limit" as const,
+			subject: {
+				schema: "qorpera.member-notification.provider-usage-limit/v1" as const,
+				provider: "openai",
+				resetsAt,
+				runId: id(80),
+				connectionId: id(81),
+				accountEmail,
+			},
+		});
+		const soon = new Date(Date.now() + 4 * 3_600_000 - 60_000).toISOString();
+		const named = setup([usage("a@example.com", soon)]);
+		await settle();
+		expect(named.view.el.querySelector("p")?.textContent).toBe(
+			"Your login a@example.com reached its usage limit. Work will go on by itself when it resets (about 4 h).",
+		);
+		const unknown = setup([usage(null, null)]);
+		await settle();
+		expect(unknown.view.el.querySelector("p")?.textContent).toBe(
+			"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
+		);
+	});
+
 	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {
 		const stalled: MemberNotification = {
 			...item(78),

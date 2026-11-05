@@ -34,8 +34,9 @@ create function pg_temp.ul_words(p_reset timestamptz) returns text language sql 
 	select 'The login paying for this work reached its usage limit. '
 		|| case when p_reset is null then ''
 			else 'It resets on ' || to_char(p_reset at time zone 'UTC', 'FMDD FMMonth YYYY "at" HH24:MI "UTC"') || '. ' end
-		|| 'The work does not move to another login by itself: the member can choose another of their logins for it '
-		|| '(in the conversation''s Login menu), or wait until the limit resets.'
+		|| 'The work does not move to another login by itself. It waits and goes on by itself on this login once the limit '
+		|| 'resets (its usage is checked at least once a day). The member can also choose another of their logins for it '
+		|| '(in the conversation''s Login menu).'
 $$;
 -- The account's usage as the login's refresh records it: a 5-hour window with room and a weekly window that is full.
 create function pg_temp.ul_usage(p_signal public.qorpera_provider_connection_usage_signals, p_week timestamptz)
@@ -178,6 +179,10 @@ begin
 end $$;
 
 -- 3. An in-house worker stopped at the login's usage limit ---------------------------------------------------------------
+-- The earlier limits have ended (20260930575000: while the login is at its limit, a worker's run waits and never starts).
+update public.qorpera_provider_connection_usage_signals set observed_at = observed_at - interval '2 days',
+	resets_at = null where signal_kind = 'usage_limit';
+delete from public.qorpera_native_provider_account_metadata;
 do $$
 declare v_alice jsonb := pg_temp.c3_alice(); v_result jsonb; v_drain jsonb; v_pass jsonb; v_research jsonb; v_words text;
 	w public.qorpera_runtime_workers%rowtype;

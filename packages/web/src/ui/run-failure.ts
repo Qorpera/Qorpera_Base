@@ -188,7 +188,7 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 		"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
 	),
 	usage_limit: phrase(
-		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",

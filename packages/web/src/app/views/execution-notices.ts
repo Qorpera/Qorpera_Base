@@ -65,7 +65,8 @@ function offerable(
 }
 
 /** What a notice tells the member, in plain words; undefined when it gets no line.
- * A reached usage limit is told by the failed run's card in the thread. */
+ * A reached usage limit is told by the failed run's card in the thread, and to the member whose
+ * own login it is in one line: the work waits and goes on by itself. */
 function sentence(
 	item: MemberNotification,
 	agentName?: (staffAgentId: string) => string | undefined,
@@ -111,8 +112,42 @@ function sentence(
 				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
 				minutes: subject.minutes,
 			});
-		case "qorpera.member-notification.provider-usage-limit/v1":
-			return undefined;
+		case "qorpera.member-notification.provider-usage-limit/v1": {
+			// The member whose own login it is reads one line: the work waits on that login and goes on by itself
+			// (20260930575000). Older notices, and a company account's, get none: the run's card tells of the limit.
+			if (subject.accountEmail === undefined) return undefined;
+			const account = subject.accountEmail;
+			const reset = Date.parse(subject.resetsAt ?? "");
+			const left = reset - Date.now();
+			if (Number.isFinite(reset) && left > 0) {
+				const minutes = Math.ceil(left / 60_000);
+				const time =
+					minutes < 60
+						? t("{count} min", { count: minutes })
+						: minutes < 48 * 60
+							? t("{count} h", { count: Math.round(minutes / 60) })
+							: t("{count} days", { count: Math.round(minutes / 1440) });
+				return account
+					? t(
+							"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).",
+							{
+								account,
+								time,
+							},
+						)
+					: t("Your login reached its usage limit. Work will go on by itself when it resets (about {time}).", {
+							time,
+						});
+			}
+			return account
+				? t(
+						"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
+						{ account },
+					)
+				: t(
+						"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
+					);
+		}
 		case "qorpera.member-notification.good-will-card-failed/v1":
 			// The month's good will invoice could not charge the card (20260930571000); Stripe tries again.
 			return subject.mine

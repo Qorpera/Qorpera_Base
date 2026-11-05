@@ -1029,7 +1029,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v9",
+			schema: "qorpera.hire-overlay/v10",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2958,7 +2958,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// links, so they moved again. Good will (20260930566000) adds good_will_list and good_will_mark after add_review_rule,
 	// so they moved again. Interface apps
 	// (5 November 2026) add save_app and post_app after table_write, so they moved again. The wall (5 November 2026)
-	// adds update_wall after post_app, so they moved again; every other tool is as on master.
+	// adds update_wall after post_app, so they moved again. Readable cards (5 November 2026) shorten ask_member's body
+	// and say how a card reads; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3001,9 +3002,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ff6e8f347a7f4eb10257a7fda16e25fc977aecbdf3faa46b939a5b81061d422e",
+		"b27cbefb891860d52168ba3df9d514d727b01d287ce7ac82a013681c28da39f0",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"18e8794937f363a8281b151de44365fdf60edd903f752f2f0a64b28e93e8b088",
+		"9896fea5e926de1053d94ed5dcc00da51ab023fcb0b9c6020cc46127596a7671",
 	);
 });

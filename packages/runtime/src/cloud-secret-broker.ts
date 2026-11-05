@@ -2561,6 +2561,15 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** The daily usage check's refresh, if a login at its usage limit is due a reading (20260930575000). */
+	beginModelLoginUsageRecheck(request: { capabilitySha256: string }, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_begin_model_login_usage_recheck($1::uuid,$2::text,$3::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.capabilitySha256],
+			signal,
+		);
+	}
+
 	#rpc(text: string, values: readonly unknown[], signal: AbortSignal): Promise<unknown> {
 		return oneCloudSecretRpc(this.#database, text, values, signal);
 	}

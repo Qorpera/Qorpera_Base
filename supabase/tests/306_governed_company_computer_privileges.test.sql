@@ -68,6 +68,7 @@ begin
 		'qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',
+		'qorpera_begin_model_login_usage_recheck(uuid,text,text)',
 		'qorpera_broker_principal_bank_syncs_due(uuid,text)',
 		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_broker_principal_digital_post_syncs_due(uuid,text)',
