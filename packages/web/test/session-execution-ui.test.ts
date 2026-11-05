@@ -818,7 +818,7 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
+		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit, and");
 		expect(f.view.el.textContent).not.toContain("Or continue with another of your logins.");
 	});
 
@@ -1021,13 +1021,13 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorBindingId: id(100), sponsorVersion: 2 });
-		// At its limit the conversation keeps that connection, though the other account's block has expired.
+		// At its limit the conversation moves to the other account, whose block has expired (20260930575000).
 		const reset = withUsage([undefined, 0]);
 		reset.connections[0]!.usageLimitResetAt = "2020-01-01T00:00:00.000Z";
 		f.listConnections.mockResolvedValue(reset);
 		refresh();
 		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.sponsor()?.connectionId).toBe(id(90));
 		// An expired authoritative block no longer prevents a new choice after all quota windows reset.
 		f.company.setExecutionSponsor(session.sessionId, reset, undefined);
 		refresh();
@@ -1363,9 +1363,10 @@ describe("conversation execution account", () => {
 		expect(state.draft).toBe("Keep this draft");
 		expect(state.attachments?.[0]).toBe(image);
 		expect(selector()).toBeNull();
-		// Releasing the request is not a choice of another account: the exhausted account stays (20260930059000).
-		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
+		// Released, the request no longer pins the exhausted account: the conversation moves to the account with room
+		// (20260930575000).
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).not.toContain("This conversation's model account has reached its usage limit");
 		expect(f.sendMessage).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
@@ -1838,18 +1839,18 @@ describe("a failed run at its login's usage limit", () => {
 		// The first login paid (its sponsor binding): its full window's reset.
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(100) } } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again when the limit resets (${fmtTime(reset)}).`);
+		expect(reason()).toBe(`${LIMIT} This work can run again when the limit resets (${fmtTime(reset)}).`);
 		// The second login has no full window: no time is known.
 		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(101) } } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		expect(reason()).toBe(`${LIMIT} This work can run again once the limit resets.`);
 		// Another member's login, which this member's list does not hold, or a cloud that names no binding: no time.
 		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(199) } } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		expect(reason()).toBe(`${LIMIT} This work can run again once the limit resets.`);
 		f.company.store.set({ recoveries: { [run.runId]: recovery } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again once the limit resets.`);
+		expect(reason()).toBe(`${LIMIT} This work can run again once the limit resets.`);
 		// This member's own login refused by ChatGPT: they check it or pick another, and no reset is said.
 		f.company.store.set({
 			recoveries: {
