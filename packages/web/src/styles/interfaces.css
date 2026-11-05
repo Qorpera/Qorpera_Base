@@ -22,6 +22,9 @@
 }
 .rail-apps.has-waiting .rail-apps-dot { transform: scale(1); }
 .rail-apps-drawer { flex: none; display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--motion-slow) var(--ease-out); }
+/* The rail's list reaches 16px up under the row above it (app.css, .rail-scroll): an empty 16px foot keeps that
+ * band off the apps, open or shut. */
+.rail-apps-drawer { padding-bottom: 16px; }
 .rail-apps-drawer[hidden] { display: none; }
 .rail-apps-drawer.is-open { grid-template-rows: 1fr; }
 .rail-apps-drawer > div { min-height: 0; overflow: hidden; }

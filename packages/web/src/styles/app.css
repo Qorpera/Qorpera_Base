@@ -260,6 +260,8 @@ label > input, label > select { font-weight: 400; }
 	--rail-control: 36px; flex: none; display: grid;
 	grid-template-columns: auto minmax(0, 1fr) auto var(--rail-control) auto;
 	align-items: center; column-gap: 2px; padding-top: 14px;
+	/* Above the list, which reaches 16px up under it for the Co-Founder's figure. */
+	position: relative; z-index: 1;
 }
 .rail-add { grid-area: 1 / 5; width: var(--rail-control); height: var(--rail-control); margin-left: 2px; border-radius: 10px; color: #676664; }
 .rail-company {
@@ -310,14 +312,23 @@ label > input, label > select { font-weight: 400; }
 .rail-search input::-webkit-search-cancel-button { appearance: none; display: none; }
 .rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-search input::placeholder { color: #777772; }
-.rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 0; }
+.rail-scroll { flex: 1; min-height: 0; overflow-y: auto; margin-top: -16px; padding-top: 16px; }
+/* The list reaches 16px up under the top row (Jonas, 5 Nov 2026: half the space above the Co-Founder),
+ * so the figure may stand into that band. Scrolled, the band hides the list and the 8px fade follows it. */
+.rail-scroll.scroll-quiet {
+	-webkit-mask-image: linear-gradient(to bottom, transparent 16px, #000 24px); mask-image: linear-gradient(to bottom, transparent 16px, #000 24px);
+	-webkit-mask-size: 100% calc(100% + 24px); mask-size: 100% calc(100% + 24px);
+	-webkit-mask-position: 0 -24px; mask-position: 0 -24px;
+}
+.rail-scroll.scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
  * is the trailer's card at 1x, its top lowered 10px: an 82px figure standing
  * 37px proud of a low card, a 13px name with no line under it, a soft shadow
- * under the figure. The figure and the name keep their place in the rail. */
-.rail-cofounder { padding: calc(var(--lift) + 16px) 9px 18.5px; }
+ * under the figure. The figure and the name keep their place in the rail. Half the space above
+ * the card (Jonas, 5 Nov 2026): the figure stands into the list's band under the top row. */
+.rail-cofounder { padding: calc(var(--lift) / 2 + 8px) 9px 18.5px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
 	width: 100%; padding: calc(var(--figure) - var(--lift) + 8px) 12px 5px; border-radius: 12px;
@@ -473,7 +484,7 @@ label > input, label > select { font-weight: 400; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
  * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */
 .skeleton-rail-search { grid-area: 1 / 2; height: var(--rail-control); margin-right: calc(2 * var(--rail-control) + 12px); border-radius: 11px; }
-.skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 19px 0 24.5px; }
+.skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: -7.5px; padding: 0 0 24.5px; }
 .skeleton-cofounder-figure { width: 76px; height: 76px; }
 .skeleton-cofounder-name { width: 72px; height: 13px; }
 .skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
@@ -482,7 +493,7 @@ label > input, label > select { font-weight: 400; }
 .skeleton-account-chip { width: 45px; height: 45px; }
 .skeleton-account-name { width: 150px; max-width: 60%; height: 18px; }
 .rail-compact .skeleton-rail-search, .rail-compact .skeleton-cofounder-name, .rail-compact .skeleton-rail-row .skeleton-stack, .rail-compact .skeleton-account-name { display: none; }
-.rail-compact .skeleton-rail-cofounder { padding: 10px 0 9px; }
+.rail-compact .skeleton-rail-cofounder { margin-top: 0; padding: 10px 0 9px; }
 .rail-compact .skeleton-cofounder-figure { width: 44px; height: 44px; }
 .rail-compact .skeleton-rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; min-height: 0; }
 .rail-compact .skeleton-rail-account { justify-content: center; padding-inline: 0; }
