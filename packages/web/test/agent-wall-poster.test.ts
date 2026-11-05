@@ -283,7 +283,7 @@ describe("hiding the wall", () => {
 		const poster = new AgentWallPoster({ member: MEMBER, onHide });
 		poster.show(AGENT, WALL, TODAY);
 		expect(hide(poster).getAttribute("aria-label")).toBe(
-			"Hide. To see it again, click Shop Operations at the top and choose Latest notes.",
+			"Hide. Latest notes on Shop Operations's card brings it back.",
 		);
 		hide(poster).click();
 		expect(poster.shown).toBe(false);
