@@ -443,9 +443,9 @@ describe("agent pages", () => {
 		expect(f.dialog.open).toBe(false);
 
 		// Hidden by this member, with one item seen: the other counts as new.
-		expect(wallNews(staff.id, wall)).toEqual({ items: 2, unseen: 0 });
+		expect(wallNews(userA.id, staff.id, wall)).toEqual({ items: 2, unseen: 0 });
 		localStorage.setItem(`qorpera.agent-wall.hidden.${userA.id}.${staff.id}`, "1");
-		const poster = new AgentWallPoster();
+		const poster = new AgentWallPoster({ member: userA.id });
 		poster.show(staff, "## Working on\n- Checking prices\n");
 		const again = open({}, staff, undefined, { notes });
 		await settle();

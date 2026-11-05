@@ -349,7 +349,7 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
-	let agentPage: { agentId: string; page: AgentPage } | undefined;
+	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
 	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
 	let newConversation: NewConversationView | undefined;
@@ -976,7 +976,8 @@ export function mountApplication(
 		// The card's Computer and Latest notes open in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
 			if (conversation?.show(agentId, page)) return;
-			agentPage = { agentId, page };
+			// It waits a little while for the chat; a request the member moved away from does not come back later.
+			agentPage = { agentId, page, until: Date.now() + AGENT_PAGE_WAIT_MS };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
 		};
 		let cardWall = cardWalls.get(controller);
@@ -1577,7 +1578,8 @@ export function mountApplication(
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
-				if (agentPage && conversation.show(agentPage.agentId, agentPage.page)) agentPage = undefined;
+				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
+					agentPage = undefined;
 				// An app asked for from the apps drawer while no chat was open: beside the chat it opened.
 				if (pendingSide && sidePanel) {
 					const target = pendingSide;
@@ -1695,6 +1697,8 @@ export function mountApplication(
 /** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
  * "kind", not "type": the sign-in callback takes a type parameter. */
 const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
+/** How long a card's request for its agent's computer or wall waits for that agent's chat to open. */
+const AGENT_PAGE_WAIT_MS = 20_000;
 
 /** qorpera.com's arrow opens `app.qorpera.com/?ide=…&kind=…`; a link may also say `#/new?idea=…`. What it carries
  * is kept for the new-company box (a sign-in may come first), the page goes to that box, and the words leave the

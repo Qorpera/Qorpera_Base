@@ -233,11 +233,12 @@ export class AgentDetails {
 		void notes.read(signal).then(
 			(text) => {
 				if (signal.aborted || text === null) return;
-				const { items, unseen } = wallNews(this.#agent.id, text);
+				const member = this.#company.userId;
+				const { items, unseen } = wallNews(member, this.#agent.id, text);
 				if (!items) return;
-				const news = wallHidden(this.#company.userId, this.#agent.id) ? unseen : 0;
+				const news = wallHidden(member, this.#agent.id) ? unseen : 0;
 				count.hidden = !news;
-				count.textContent = news ? t("{n} new", { n: news }) : "";
+				count.textContent = news === 1 ? t("1 new") : news ? t("{n} new", { n: news }) : "";
 				row.hidden = false;
 			},
 			() => {

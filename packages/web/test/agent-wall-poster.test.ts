@@ -292,7 +292,9 @@ describe("hiding the wall", () => {
 		// The agent's update does not bring it back, and what it added stays unseen for the card's count.
 		poster.show(AGENT, CHANGED, TODAY);
 		expect(poster.shown).toBe(false);
-		expect(wallNews(AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 1 });
+		expect(wallNews(MEMBER, AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 1 });
+		// What another member saw on this device is theirs.
+		expect(wallNews("someone-else", AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 0 });
 		// A new thread view of the same agent keeps it hidden; another member on this device still sees it.
 		const again = new AgentWallPoster({ member: MEMBER });
 		again.show(AGENT, CHANGED, TODAY);
@@ -327,5 +329,45 @@ describe("hiding the wall", () => {
 		expect(poster.shown).toBe(true);
 		expect(toggle(poster).textContent).toBe("Fold");
 		expect(document.activeElement).toBe(toggle(poster));
+	});
+
+	it("stays hidden while on screen when storage keeps nothing", () => {
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("blocked");
+		});
+		const poster = new AgentWallPoster({ member: MEMBER });
+		poster.show(AGENT, WALL, TODAY);
+		hide(poster).click();
+		expect(poster.shown).toBe(false);
+		poster.show(AGENT, CHANGED, TODAY);
+		expect(poster.shown).toBe(false);
+		poster.reveal(AGENT.id);
+		expect(poster.shown).toBe(true);
+		vi.restoreAllMocks();
+	});
+
+	it("takes no focus from a reveal long past, nor from a member typing", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const poster = new AgentWallPoster({ member: MEMBER });
+			const field = document.createElement("textarea");
+			document.body.append(poster.el, field);
+			// The thread's read failed: the wall comes much later, on a folder hint.
+			poster.reveal(AGENT.id);
+			vi.setSystemTime(Date.now() + 60_000);
+			poster.show(AGENT, WALL, TODAY);
+			expect(poster.shown).toBe(true);
+			expect(document.activeElement).toBe(document.body);
+			// A reveal in time, while the member types: the wall shows open, the focus stays.
+			const other = new AgentWallPoster({ member: MEMBER });
+			document.body.append(other.el);
+			field.focus();
+			other.reveal(AGENT.id);
+			other.show(AGENT, WALL, TODAY);
+			expect(other.shown).toBe(true);
+			expect(document.activeElement).toBe(field);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

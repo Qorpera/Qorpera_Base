@@ -410,12 +410,14 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
-		// Hidden, the poster gives focus to the agent's name, whose card has Latest notes to bring it back.
+		// Hidden, the poster gives focus to the agent's name where the thread shows it (a phone), whose card has Latest
+		// notes to bring it back; else to the composer, as the thread opens.
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
 			onHide: () => {
-				if (!this.#disposed && !document.activeElement?.closest("input, textarea"))
-					this.#identity.focus({ preventScroll: true });
+				if (this.#disposed || document.activeElement?.closest("input, textarea")) return;
+				if (this.#identity.getClientRects().length) this.#identity.focus({ preventScroll: true });
+				else if (!this.#composer.disabled) this.#composer.focus({ preventScroll: true });
 			},
 		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
@@ -987,17 +989,12 @@ export class ConversationView {
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
 		// The wall is on top of the agent's company thread only: from its private chat the app opens that thread.
-		if (page === "wall") {
-			if (this.#wallAgent !== agentId) return false;
-			this.#wall.reveal(agentId);
-			return true;
-		}
-		if (page === "computer") {
-			// The computer sits under the pages laid over the thread: they close for it.
-			this.#closePair(false);
-			this.#closeCodingSession();
-			(this.#panel ?? this.#showPanel(agent))?.focus();
-		}
+		if (page === "wall" && this.#wallAgent !== agentId) return false;
+		// The computer and the wall sit under the pages laid over the thread: they close for them.
+		this.#closePair(false);
+		this.#closeCodingSession();
+		if (page === "wall") this.#wall.reveal(agentId);
+		else (this.#panel ?? this.#showPanel(agent))?.focus();
 		return true;
 	}
 
