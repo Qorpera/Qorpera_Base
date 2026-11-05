@@ -13,8 +13,9 @@
 -- - qorpera_good_will_payers: the card that pays a company's good will (an owner's, saved through Stripe's own page).
 --
 -- A month is open while it runs. On the 1st it is sorting: the finance agent sorts its payments and shows the members
--- what counted; anyone may change one. On the 5th it is final: a payment nobody sorted counts as a sale, and the month
--- is closed (to charge), carried (under 100 kr, added to the next month) or zero. The computer-billing Edge Function
+-- what counted; anyone may change one, and the agent never changes what a member decided. On the 5th, and at least four
+-- days after it began sorting (a bank connected late gives the agent those days too), it is final: a payment nobody
+-- sorted counts as a sale, and the month is closed (to charge), carried (under 100 kr, added to the next month) or zero. The computer-billing Edge Function
 -- charges a closed month through Stripe (25 % moms on the invoice, or reverse charge), only through the billing door
 -- below and only as Stripe test mode until the live switch (qorpera_computer_hour_dry_run). A month's payments booked
 -- after it is final count in the next month that is not.
@@ -140,8 +141,8 @@ create table public.qorpera_good_will_months (
 	carried_out_ore bigint not null default 0 check (carried_out_ore >= 0),
 	-- How many payments wait to be sorted.
 	unsorted integer not null default 0 check (unsorted >= 0),
-	-- The finance agent has been asked to sort it (once, on the 1st).
-	sort_asked_at timestamptz,
+	-- The day (Danish time) the month began sorting: it is final no sooner than four days later.
+	sorting_since date,
 	payer_user_id uuid,
 	stripe_invoice_id text check (stripe_invoice_id is null or stripe_invoice_id ~ '^in_[A-Za-z0-9]{1,250}$'),
 	invoice_url text check (invoice_url is null or (invoice_url ~ '^https://' and char_length(invoice_url) <= 2000)),
@@ -152,6 +153,7 @@ create table public.qorpera_good_will_months (
 	primary key (profile_id, month),
 	check (net_ore = sales_ore - moms_ore and due_ore = fee_ore + carried_in_ore),
 	check ((status in ('open', 'sorting')) = (final_at is null)),
+	check ((status = 'open') = (sorting_since is null)),
 	check ((status = 'carried') = (carried_out_ore > 0)),
 	check (status <> 'zero' or due_ore = 0),
 	check ((status = 'charged') = (charged_at is not null)),
@@ -183,14 +185,25 @@ create table public.qorpera_good_will_card_setups (
 	created_at timestamptz not null default clock_timestamp(),
 	completed_at timestamptz
 );
+
+-- The company's own Stripe customer per mode (its name and address on the invoice, so Stripe Tax uses the company's),
+-- never a member's.
+create table public.qorpera_good_will_customers (
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	livemode boolean not null,
+	stripe_customer_id text not null unique check (stripe_customer_id ~ '^cus_[A-Za-z0-9]{1,250}$'),
+	created_at timestamptz not null default clock_timestamp(),
+	primary key (profile_id, livemode)
+);
 create index qorpera_good_will_card_setups_profile on public.qorpera_good_will_card_setups (profile_id, created_at);
 
 alter table public.qorpera_good_will_items enable row level security;
 alter table public.qorpera_good_will_months enable row level security;
 alter table public.qorpera_good_will_payers enable row level security;
 alter table public.qorpera_good_will_card_setups enable row level security;
+alter table public.qorpera_good_will_customers enable row level security;
 revoke all on public.qorpera_good_will_items, public.qorpera_good_will_months, public.qorpera_good_will_payers,
-	public.qorpera_good_will_card_setups from public, anon, authenticated, service_role;
+	public.qorpera_good_will_card_setups, public.qorpera_good_will_customers from public, anon, authenticated, service_role;
 
 -- 3. Months -------------------------------------------------------------------------------------------------------------
 
@@ -232,14 +245,15 @@ declare v_row public.qorpera_good_will_months%rowtype;
 	v_month date := date_trunc('month', p_month)::date;
 begin
 	if v_month < public.qorpera_good_will_first_month(p_profile_id) then return null; end if;
-	insert into public.qorpera_good_will_months (profile_id, month, status)
-	values (p_profile_id, v_month,
-		case when v_month < date_trunc('month', p_today)::date then 'sorting' else 'open' end)
+	insert into public.qorpera_good_will_months (profile_id, month, status, sorting_since)
+	select p_profile_id, v_month, case when ended then 'sorting' else 'open' end, case when ended then p_today end
+	from (select v_month < date_trunc('month', p_today)::date as ended) as month_state
 	on conflict (profile_id, month) do nothing;
 	select * into v_row from public.qorpera_good_will_months as m
 	where m.profile_id = p_profile_id and m.month = v_month for update;
 	if v_row.status = 'open' and v_month < date_trunc('month', p_today)::date then
-		update public.qorpera_good_will_months as m set status = 'sorting', updated_at = clock_timestamp()
+		update public.qorpera_good_will_months as m
+		set status = 'sorting', sorting_since = p_today, updated_at = clock_timestamp()
 		where m.profile_id = p_profile_id and m.month = v_month
 		returning * into v_row;
 	end if;
@@ -311,6 +325,16 @@ begin
 	where t.profile_id = p_profile_id and t.amount > 0 and t.booked_on >= v_since and t.booked_on <= v_today
 	on conflict (profile_id, source, source_key) do nothing;
 	get diagnostics v_kept = row_count;
+	-- The other account's leg can arrive with a later fetch: an unsorted payment of a month not final is checked again.
+	update public.qorpera_good_will_items as i
+	set counted = false, reason = 'own_transfer', decided_by = 'rule', decided_at = clock_timestamp()
+	from public.qorpera_good_will_months as m
+	where i.profile_id = p_profile_id and i.counted is null and i.source = 'bank' and m.profile_id = i.profile_id
+		and m.month = i.month and m.status in ('open', 'sorting')
+		and exists (select 1 from public.qorpera_bank_transactions as t
+			join public.qorpera_bank_transactions as leg on leg.profile_id = t.profile_id and leg.account_key <> t.account_key
+				and leg.amount = -t.amount and leg.booked_on between t.booked_on - 3 and t.booked_on + 3
+			where t.profile_id = i.profile_id and t.account_key || ':' || t.transaction_key = i.source_key);
 	for v_month in
 		select distinct i.month from public.qorpera_good_will_items as i
 		where i.profile_id = p_profile_id and i.month >= v_since
@@ -326,8 +350,8 @@ end
 $$;
 revoke all on function public.qorpera_good_will_gather(uuid, date) from public, anon, authenticated, service_role;
 
--- The month's last word (on the 5th): a payment nobody sorted counts as a sale (with a Danish sale's moms), then the
--- month is closed, carried or zero.
+-- The month's last word (on the 5th, after four days of sorting): a payment nobody sorted counts as a sale (with a
+-- Danish sale's moms), then the month is closed, carried or zero.
 create function public.qorpera_good_will_finalize(p_profile_id uuid, p_month date, p_today date)
 returns public.qorpera_good_will_months
 language plpgsql
@@ -339,6 +363,8 @@ begin
 	perform pg_advisory_xact_lock(hashtextextended('qorpera.good-will:' || p_profile_id::text, 0));
 	v_row := public.qorpera_good_will_month_row(p_profile_id, p_month, p_today);
 	if v_row.profile_id is null or v_row.status <> 'sorting' then return v_row; end if;
+	-- Four days to sort, also for a month that began sorting late (a bank connected after the 1st).
+	if p_today < v_row.sorting_since + 4 then return v_row; end if;
 	update public.qorpera_good_will_items as i
 	set counted = (i.currency = 'DKK'), reason = case when i.currency = 'DKK' then 'sale' else 'other' end,
 		moms_ore = case when i.currency = 'DKK' then round(i.amount_ore / 5.0)::bigint else 0 end,
@@ -386,17 +412,21 @@ begin
 		raise exception 'Good will: a note is 1 to 200 characters' using errcode = '22023'; end if;
 	select * into v_item from public.qorpera_good_will_items as i where i.id = p_item_id and i.profile_id = p_profile_id;
 	if v_item.id is null then
-		raise exception 'Good will: no such payment in this company' using errcode = '22023'; end if;
+		raise exception 'Good will: no payment % in this company', p_item_id using errcode = '22023'; end if;
 	-- The month first, then the payment: the order the close takes.
 	v_month := public.qorpera_good_will_month_row(p_profile_id, v_item.month, public.qorpera_good_will_today());
 	if v_month.status not in ('open', 'sorting') then
 		raise exception 'Good will: % is final; its payments can no longer change', to_char(v_item.month, 'YYYY-MM')
 			using errcode = '55000'; end if;
 	select * into v_item from public.qorpera_good_will_items as i where i.id = p_item_id for update;
+	-- A member's decision stands: an agent never changes it (a member may).
+	if p_by = 'agent' and v_item.decided_by = 'member' then
+		raise exception 'Good will: a member sorted payment %; leave it as they decided', p_item_id using errcode = '55000'; end if;
 	if p_reason = 'sale' and v_item.currency <> 'DKK' then
-		raise exception 'Good will: only payments in kroner count for now' using errcode = '22023'; end if;
+		raise exception 'Good will: payment % is in %; only payments in kroner count for now', p_item_id, v_item.currency
+			using errcode = '22023'; end if;
 	if p_reason = 'sale' and p_moms_ore is not null and p_moms_ore not between 0 and v_item.amount_ore then
-		raise exception 'Good will: the moms is between 0 and the payment''s amount' using errcode = '22023'; end if;
+		raise exception 'Good will: the moms of payment % is between 0 and its amount', p_item_id using errcode = '22023'; end if;
 	update public.qorpera_good_will_items as i
 	set counted = (p_reason = 'sale'), reason = p_reason,
 		moms_ore = case when p_reason = 'sale' then coalesce(p_moms_ore, round(i.amount_ore / 5.0)::bigint) else 0 end,
@@ -476,15 +506,18 @@ begin
 	v_run := public.qorpera_good_will_agent_run(p_binding);
 	if p_month is null then
 		v_month := (date_trunc('month', public.qorpera_good_will_today()) - interval '1 month')::date;
-	elsif p_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then
+	elsif p_month !~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' then
 		raise exception 'Good will: the month is YYYY-MM' using errcode = '22023';
 	else
 		v_month := (p_month || '-01')::date;
 	end if;
+	if v_month > date_trunc('month', public.qorpera_good_will_today())::date then
+		raise exception 'Good will: % has not begun', to_char(v_month, 'YYYY-MM') using errcode = '22023'; end if;
 	perform public.qorpera_good_will_gather(v_run.profile_id, public.qorpera_good_will_today());
 	v_row := public.qorpera_good_will_recompute(v_run.profile_id, v_month, public.qorpera_good_will_today());
 	if v_row.profile_id is null then
-		raise exception 'Good will: % is before the company''s good will began', p_month using errcode = '22023'; end if;
+		raise exception 'Good will: % is before the company''s good will began', to_char(v_month, 'YYYY-MM')
+			using errcode = '22023'; end if;
 	-- The unsorted first when there are more than 300.
 	select count(*), coalesce(jsonb_agg(public.qorpera_good_will_item_json(listed.item)
 		order by (listed.item).booked_on, (listed.item).id) filter (where listed.rank <= 300), '[]'::jsonb)
@@ -514,7 +547,14 @@ begin
 	if jsonb_typeof(p_request) is distinct from 'object' or jsonb_typeof(p_request -> 'marks') is distinct from 'array'
 		or jsonb_array_length(p_request -> 'marks') not between 1 and 100 then
 		raise exception 'Good will: marks is a list of 1 to 100 payments' using errcode = '22023'; end if;
-	for v_mark in select value from jsonb_array_elements(p_request -> 'marks') loop
+	-- Months in ascending order, as a gather locks them, so two calls never wait on each other.
+	for v_mark in
+		select mark.value from jsonb_array_elements(p_request -> 'marks') with ordinality as mark(value, n)
+		left join public.qorpera_good_will_items as i on i.profile_id = v_run.profile_id
+			and i.id = case when mark.value ->> 'itemId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+				then (mark.value ->> 'itemId')::uuid end
+		order by i.month nulls first, mark.n
+	loop
 		begin
 			v_item := (v_mark ->> 'itemId')::uuid;
 			v_moms := (v_mark ->> 'momsOre')::bigint;
@@ -674,8 +714,17 @@ begin
 		returning * into v_setup;
 		return jsonb_build_object('setupId', v_setup.id,
 			'companyName', (select p.name from public.qorpera_profiles as p where p.id = v_profile),
-			'customerId', (select customer.stripe_customer_id from public.qorpera_computer_hour_customers as customer
-				where customer.user_id = v_user and customer.livemode = v_livemode));
+			'customerId', (select customer.stripe_customer_id from public.qorpera_good_will_customers as customer
+				where customer.profile_id = v_profile and customer.livemode = v_livemode));
+
+	elsif p_method = 'customer_set' then
+		-- The company's own Stripe customer; the first one saved stays.
+		v_profile := (p_args ->> 'profileId')::uuid;
+		insert into public.qorpera_good_will_customers (profile_id, livemode, stripe_customer_id)
+		values (v_profile, v_livemode, p_args ->> 'customerId')
+		on conflict (profile_id, livemode) do nothing;
+		return jsonb_build_object('customerId', (select customer.stripe_customer_id from public.qorpera_good_will_customers as customer
+			where customer.profile_id = v_profile and customer.livemode = v_livemode));
 
 	elsif p_method = 'card_attach' then
 		update public.qorpera_good_will_card_setups set stripe_session_id = p_args ->> 'sessionId'
@@ -686,8 +735,12 @@ begin
 	elsif p_method = 'card_saved' then
 		-- Stripe's completed setup page (re-read from Stripe): the card pays the company's good will from now on, while
 		-- the member who saved it is still a founder.
+		-- Found by its session, or by the page's own id when its session was never attached (Stripe made the page, the
+		-- attach failed).
 		select * into v_setup from public.qorpera_good_will_card_setups as setup
-		where setup.stripe_session_id = p_args ->> 'sessionId' and setup.livemode = v_livemode for update;
+		where setup.livemode = v_livemode and (setup.stripe_session_id = p_args ->> 'sessionId'
+			or (setup.stripe_session_id is null and setup.id::text = p_args ->> 'setupId'))
+		for update;
 		if v_setup.id is null then
 			return jsonb_build_object('outcome', 'ignored', 'detail', 'no such card page');
 		end if;
@@ -706,34 +759,40 @@ begin
 		set user_id = excluded.user_id, livemode = excluded.livemode, stripe_customer_id = excluded.stripe_customer_id,
 			payment_method_id = excluded.payment_method_id, brand = excluded.brand, last4 = excluded.last4,
 			saved_at = clock_timestamp();
-		update public.qorpera_good_will_card_setups set completed_at = clock_timestamp() where id = v_setup.id;
+		update public.qorpera_good_will_card_setups
+		set completed_at = clock_timestamp(), stripe_session_id = coalesce(stripe_session_id, p_args ->> 'sessionId')
+		where id = v_setup.id;
 		return jsonb_build_object('outcome', 'applied', 'profileId', v_setup.profile_id);
 
 	elsif p_method = 'due' then
-		-- Closed months not invoiced yet whose company has a card in this mode, paid by a founder. Live: none before the
-		-- live switch. Test mode: only enrolled testers' cards.
+		-- Closed months whose company has a card in this mode, paid by a founder, with their invoice once one is made
+		-- (a draft is finished on the next call). Live: none before the live switch, and never a month that turned final
+		-- before it (those were dry runs). Test mode: only enrolled testers' cards.
 		if v_livemode and public.qorpera_computer_hour_dry_run(clock_timestamp()) then
 			return jsonb_build_object('months', '[]'::jsonb, 'held', 'dry_run');
 		end if;
 		return jsonb_build_object('months', coalesce((select jsonb_agg(jsonb_build_object('profileId', m.profile_id,
 			'month', to_char(m.month, 'YYYY-MM'), 'dueOre', m.due_ore, 'netOre', m.net_ore,
 			'companyName', p.name, 'userId', payer.user_id, 'customerId', payer.stripe_customer_id,
-			'paymentMethodId', payer.payment_method_id) order by m.month, m.profile_id)
+			'paymentMethodId', payer.payment_method_id, 'invoiceId', m.stripe_invoice_id) order by m.month, m.profile_id)
 			from public.qorpera_good_will_months as m
 			join public.qorpera_good_will_payers as payer on payer.profile_id = m.profile_id and payer.livemode = v_livemode
 			join public.qorpera_profiles as p on p.id = m.profile_id
-			where m.status = 'closed' and m.stripe_invoice_id is null
+			where m.status = 'closed' and (m.stripe_invoice_id is null or m.livemode = v_livemode)
+				and (not v_livemode or not public.qorpera_computer_hour_dry_run(m.final_at))
 				and exists (select 1 from public.qorpera_company_founders(m.profile_id) as founder
 					where founder.user_id = payer.user_id)
 				and (v_livemode or public.qorpera_computer_billing_tester(payer.user_id))), '[]'::jsonb));
 
 	elsif p_method = 'invoiced' then
-		-- The month's invoice was made and finalized at Stripe; it is charged when Stripe says it is paid.
+		-- The month's invoice, recorded as a draft first (so a retry finishes it, never makes a second), then again with
+		-- its page once finalized; it is charged when Stripe says it is paid.
 		update public.qorpera_good_will_months as m
-		set stripe_invoice_id = p_args ->> 'invoiceId', invoice_url = nullif(p_args ->> 'invoiceUrl', ''), livemode = v_livemode,
-			payer_user_id = (p_args ->> 'userId')::uuid, updated_at = clock_timestamp()
+		set stripe_invoice_id = p_args ->> 'invoiceId', invoice_url = coalesce(nullif(p_args ->> 'invoiceUrl', ''), m.invoice_url),
+			livemode = v_livemode, payer_user_id = (p_args ->> 'userId')::uuid, updated_at = clock_timestamp()
 		where m.profile_id = (p_args ->> 'profileId')::uuid and m.month = ((p_args ->> 'month') || '-01')::date
-			and m.status = 'closed' and m.stripe_invoice_id is null;
+			and m.status = 'closed' and (m.stripe_invoice_id is null
+				or (m.stripe_invoice_id = p_args ->> 'invoiceId' and m.livemode = v_livemode));
 		get diagnostics v_rows = row_count;
 		return jsonb_build_object('recorded', v_rows = 1);
 
@@ -742,9 +801,13 @@ begin
 		update public.qorpera_good_will_months as m
 		set status = case when p_method = 'invoice_paid' then 'charged' else 'failed' end,
 			charged_at = case when p_method = 'invoice_paid' then clock_timestamp() end,
+			stripe_invoice_id = p_args ->> 'invoiceId', livemode = v_livemode,
 			invoice_url = coalesce(nullif(p_args ->> 'invoiceUrl', ''), m.invoice_url), updated_at = clock_timestamp()
-		where m.stripe_invoice_id = p_args ->> 'invoiceId' and m.livemode = v_livemode
-			and m.status = any (case when p_method = 'invoice_paid' then array['closed', 'failed'] else array['closed'] end)
+		where m.status = any (case when p_method = 'invoice_paid' then array['closed', 'failed'] else array['closed'] end)
+			and ((m.stripe_invoice_id = p_args ->> 'invoiceId' and m.livemode = v_livemode)
+				-- Stripe's word before the invoice was recorded: the month its metadata names.
+				or (m.stripe_invoice_id is null and m.profile_id::text = p_args ->> 'profileId'
+					and to_char(m.month, 'YYYY-MM') = p_args ->> 'month'))
 		returning * into v_row;
 		if v_row.profile_id is null then
 			return jsonb_build_object('outcome', 'ignored', 'detail', 'no good will month waits on this invoice');

@@ -1,11 +1,14 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- 20260930566000 (good will), on the folder-v2 runtime base: the company pays a falling-step share of each month's
 -- sales without moms (Jonas's examples), counted from its bank's payments in. The months turn on given days: a month is
--- open, sorting from the 1st and final on the 5th; a payment nobody sorted counts as a sale; a payment a final month
--- missed counts in the next one; under 100 kr rolls over and no sales is zero. Alice (a company agent) lists and sorts
--- a month's payments through the host's calls; members who may write sort one too, viewers never; a final month never
--- changes. A founder's card (Stripe test mode, testers only before the live switch) pays a closed month through the
--- billing door. Members read the Company tab's good will, and each member their companies' good will.
+-- open, sorting from the 1st and final on the 5th, never before four days of sorting (a bank connected late); a payment
+-- nobody sorted counts as a sale; a move between the company's accounts is its own money, also when its other leg comes
+-- later; a payment a final month missed counts in the next one; under 100 kr rolls over and no sales is zero. Alice (a
+-- company agent) lists and sorts a month's payments through the host's calls, never a month ahead and never a payment a
+-- member sorted; members who may write sort one too, viewers never; a final month never changes. A founder's card
+-- (Stripe test mode, testers only before the live switch) pays a closed month through the billing door, on the
+-- company's own Stripe customer; a month final before the live switch is never charged live. Members read the Company
+-- tab's good will, and each member their companies' good will.
 
 select pg_temp.base_claims('service_role');
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'gw-ack') \g /dev/null
@@ -54,7 +57,8 @@ declare v_role text; v_name text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		foreach v_name in array array['qorpera_good_will_step_versions', 'qorpera_good_will_steps', 'qorpera_good_will_items',
-			'qorpera_good_will_months', 'qorpera_good_will_payers', 'qorpera_good_will_card_setups'] loop
+			'qorpera_good_will_months', 'qorpera_good_will_payers', 'qorpera_good_will_card_setups',
+			'qorpera_good_will_customers'] loop
 			perform pg_temp.base_assert(not has_table_privilege(v_role, 'public.' || v_name, 'SELECT, INSERT, UPDATE, DELETE'),
 				format('%s is open to %s', v_name, v_role));
 			perform pg_temp.base_assert((select relrowsecurity from pg_class where oid = ('public.' || v_name)::regclass),
@@ -136,6 +140,19 @@ begin
 		'kept once');
 end
 $$;
+-- A move whose other leg the bank shows a day later is the company's own money once it shows.
+select pg_temp.gw_bank('a', '2026-11-15', 700.00, 'Late move');
+do $$
+begin
+	perform public.qorpera_good_will_gather('92400000-0000-4000-8000-000000000010', '2026-11-28');
+	perform pg_temp.base_assert((select counted is null from public.qorpera_good_will_items where id = pg_temp.gw_item('Late move')),
+		'the late move waits for its other leg');
+	perform pg_temp.gw_bank('b', '2026-11-16', -700.00, 'Late move out');
+	perform public.qorpera_good_will_gather('92400000-0000-4000-8000-000000000010', '2026-11-28');
+	perform pg_temp.base_assert((select counted is false and reason = 'own_transfer' and decided_by = 'rule'
+		from public.qorpera_good_will_items where id = pg_temp.gw_item('Late move')), 'the late move is the company''s own money');
+end
+$$;
 
 -- 4. Alice lists November and sorts it: the customer's payment is a sale (a Danish sale's moms, a fifth), the owner's
 --    money is not. Only kroner count; reasons and marks are checked; the call is the company agent's only.
@@ -143,8 +160,8 @@ do $$
 declare v_list jsonb; v_marks jsonb;
 begin
 	v_list := pg_temp.gw_list('2026-11');
-	perform pg_temp.base_assert(v_list ->> 'schema' = 'qorpera.good-will-month/v1' and (v_list ->> 'itemCount')::integer = 5
-		and jsonb_array_length(v_list -> 'items') = 5 and v_list -> 'month' ->> 'month' = '2026-11'
+	perform pg_temp.base_assert(v_list ->> 'schema' = 'qorpera.good-will-month/v1' and (v_list ->> 'itemCount')::integer = 6
+		and jsonb_array_length(v_list -> 'items') = 6 and v_list -> 'month' ->> 'month' = '2026-11'
 		and v_list ->> 'runId' = current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', 'Alice lists November: ' || v_list::text);
 	v_marks := pg_temp.gw_mark(jsonb_build_array(
 		jsonb_build_object('itemId', pg_temp.gw_item('Customer ApS'), 'reason', 'sale'),
@@ -154,7 +171,8 @@ begin
 	perform pg_temp.base_assert((select decided_by = 'agent' and decided_by_staff_id = '92400000-0000-4000-8000-000000000030'
 		and moms_ore = 1000000 from public.qorpera_good_will_items where id = pg_temp.gw_item('Customer ApS')), 'Alice decided');
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
-		pg_temp.gw_item('Euro customer'), 'reason', 'sale'))), '22023', 'Good will: only payments in kroner count for now');
+		pg_temp.gw_item('Euro customer'), 'reason', 'sale'))), '22023',
+		format('Good will: payment %s is in EUR; only payments in kroner count for now', pg_temp.gw_item('Euro customer')));
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
 		pg_temp.gw_item('Customer ApS'), 'reason', 'gift'))), '22023');
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
@@ -163,7 +181,8 @@ begin
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
 		'not-a-uuid', 'reason', 'sale'))), '22023');
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
-		extensions.gen_random_uuid(), 'reason', 'sale'))), '22023', 'Good will: no such payment in this company');
+		'56600000-0000-4000-8000-0000000000ff', 'reason', 'sale'))), '22023',
+		'Good will: no payment 56600000-0000-4000-8000-0000000000ff in this company');
 	-- All or none: a bad mark after a good one changes nothing.
 	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(
 		jsonb_build_object('itemId', pg_temp.gw_item('Small customer'), 'reason', 'sale'),
@@ -171,7 +190,10 @@ begin
 	perform pg_temp.base_assert((select counted is null from public.qorpera_good_will_items where id = pg_temp.gw_item('Small customer')),
 		'nothing of a refused list is kept');
 	perform pg_temp.base_error('select pg_temp.gw_list(''2026-13'')', '22023');
-	perform pg_temp.base_error('select pg_temp.gw_list(''2026-09'')', '22023');
+	perform pg_temp.base_error('select pg_temp.gw_list(''0000-01'')', '22023');
+	perform pg_temp.base_error('select pg_temp.gw_list(''2026-09'')', '22023',
+		'Good will: 2026-09 is before the company''s good will began');
+	perform pg_temp.base_error('select pg_temp.gw_list(''2099-01'')', '22023', 'Good will: 2099-01 has not begun');
 end
 $$;
 
@@ -186,6 +208,10 @@ begin
 		and v -> 'item' ->> 'decidedBy' = 'member', 'the contributor''s sort: ' || v::text);
 	perform pg_temp.base_assert((select decided_by_user_id = '92400000-0000-4000-8000-000000000002' and decided_by_staff_id is null
 		from public.qorpera_good_will_items where id = pg_temp.gw_item('Customer ApS')), 'the member decided');
+	-- The member's word stands: Alice never changes it.
+	perform pg_temp.base_error(format('select pg_temp.gw_mark(%L)', jsonb_build_array(jsonb_build_object('itemId',
+		pg_temp.gw_item('Customer ApS'), 'reason', 'sale'))), '55000',
+		format('Good will: a member sorted payment %s; leave it as they decided', pg_temp.gw_item('Customer ApS')));
 	foreach v in array array['"92400000-0000-4000-8000-000000000003"', '"92400000-0000-4000-8000-000000000005"']::jsonb[] loop
 		perform pg_temp.base_error(format('select pg_temp.gw_call(%L, %L)', v #>> '{}', format(
 			'select public.qorpera_mark_good_will_item(%L, %L, ''refund'', null, null)',
@@ -194,12 +220,12 @@ begin
 end
 $$;
 
--- 6. On 2 December November is sorting; on the 5th it is final: the payment nobody sorted counts as a sale with its moms,
+-- 6. On 1 December November is sorting; on the 5th it is final: the payment nobody sorted counts as a sale with its moms,
 --    the euros do not, and the month is closed to charge. A final month's payments never change.
 do $$
 declare v_month public.qorpera_good_will_months; v_tick jsonb;
 begin
-	v_tick := public.qorpera_good_will_tick('2026-12-02');
+	v_tick := public.qorpera_good_will_tick('2026-12-01');
 	perform pg_temp.base_assert((v_tick ->> 'failed')::integer = 0, 'the tick: ' || v_tick::text);
 	perform pg_temp.base_assert((pg_temp.gw_month('2026-11-01')).status = 'sorting', 'November is sorting');
 	perform pg_temp.base_assert((pg_temp.gw_month('2026-12-01')).status = 'open', 'December runs');
@@ -222,23 +248,38 @@ $$;
 
 -- 7. A November payment the bank books after November is final counts in December. December's 400 kr without moms pays
 --    40 kr, under 100 kr: it rolls over to January, which sells nothing and rolls it on. A company that never sells has
---    nothing to pay.
+--    nothing to pay. A company whose bank shows November only on 10 December gets four days to sort it.
 insert into public.qorpera_profiles(id, name, created_by_user_id, created_at)
-values ('56600000-0000-4000-8000-000000000010', 'Quiet company', '92400000-0000-4000-8000-000000000001', '2026-11-02');
+values ('56600000-0000-4000-8000-000000000010', 'Quiet company', '92400000-0000-4000-8000-000000000001', '2026-11-02'),
+	('56600000-0000-4000-8000-000000000020', 'Late bank', '92400000-0000-4000-8000-000000000001', '2026-11-02');
+insert into public.qorpera_bank_transactions (profile_id, account_key, transaction_key, booked_on, amount, currency, counterparty)
+values ('56600000-0000-4000-8000-000000000020', repeat('c', 64), repeat('d', 64), '2026-11-20', 10000.00, 'DKK', 'First customer');
 select pg_temp.gw_bank('a', '2026-11-29', 500.00, 'Late customer');
 do $$
 declare v_month public.qorpera_good_will_months;
 begin
 	perform public.qorpera_good_will_gather('56600000-0000-4000-8000-000000000010', '2026-12-10');
+	perform public.qorpera_good_will_gather('56600000-0000-4000-8000-000000000020', '2026-12-10');
 	perform public.qorpera_good_will_tick('2026-12-10');
+	perform pg_temp.base_assert((pg_temp.gw_month('2026-11-01', '56600000-0000-4000-8000-000000000020')).status = 'sorting',
+		'the late bank''s November sorts');
+	perform public.qorpera_good_will_tick('2026-12-13');
+	perform pg_temp.base_assert((pg_temp.gw_month('2026-11-01', '56600000-0000-4000-8000-000000000020')).status = 'sorting',
+		'still three days in');
+	perform public.qorpera_good_will_tick('2026-12-14');
+	v_month := pg_temp.gw_month('2026-11-01', '56600000-0000-4000-8000-000000000020');
+	perform pg_temp.base_assert(v_month.status = 'closed' and v_month.net_ore = 800000 and v_month.fee_ore = 80000,
+		'four days later it is final: ' || row_to_json(v_month)::text);
 	perform pg_temp.base_assert((select month = '2026-12-01' from public.qorpera_good_will_items where id = pg_temp.gw_item('Late customer')),
 		'the late payment counts in December');
+	perform public.qorpera_good_will_tick('2027-01-01');
 	perform public.qorpera_good_will_tick('2027-01-05');
 	v_month := pg_temp.gw_month('2026-12-01');
 	perform pg_temp.base_assert(v_month.status = 'carried' and v_month.fee_ore = 4000 and v_month.carried_out_ore = 4000,
 		'December rolls over 40 kr: ' || row_to_json(v_month)::text);
 	perform pg_temp.base_assert((pg_temp.gw_month('2026-12-01', '56600000-0000-4000-8000-000000000010')).status = 'zero',
 		'nothing sold, nothing to pay');
+	perform public.qorpera_good_will_tick('2027-02-01');
 	perform public.qorpera_good_will_tick('2027-02-05');
 	v_month := pg_temp.gw_month('2027-01-01');
 	perform pg_temp.base_assert(v_month.status = 'carried' and v_month.fee_ore = 0 and v_month.carried_in_ore = 4000
@@ -265,7 +306,15 @@ begin
 	v := pg_temp.gw_bill('card_begin', jsonb_build_object('userId', '92400000-0000-4000-8000-000000000001',
 		'profileId', '92400000-0000-4000-8000-000000000010', 'livemode', false));
 	v_setup := (v ->> 'setupId')::uuid;
-	perform pg_temp.base_assert(v_setup is not null and v ->> 'companyName' = 'Folder runtime base', 'the founder''s page: ' || v::text);
+	perform pg_temp.base_assert(v_setup is not null and v ->> 'companyName' = 'Folder runtime base' and v -> 'customerId' = 'null',
+		'the founder''s page, no company customer yet: ' || v::text);
+	-- The company's own Stripe customer: the first saved stays.
+	perform pg_temp.base_assert(pg_temp.gw_bill('customer_set', jsonb_build_object('profileId', '92400000-0000-4000-8000-000000000010',
+		'customerId', 'cus_gw1', 'livemode', false)) ->> 'customerId' = 'cus_gw1', 'the company''s customer');
+	perform pg_temp.base_assert(pg_temp.gw_bill('customer_set', jsonb_build_object('profileId', '92400000-0000-4000-8000-000000000010',
+		'customerId', 'cus_other', 'livemode', false)) ->> 'customerId' = 'cus_gw1', 'the first stays');
+	perform pg_temp.base_assert(pg_temp.gw_bill('card_begin', jsonb_build_object('userId', '92400000-0000-4000-8000-000000000001',
+		'profileId', '92400000-0000-4000-8000-000000000010', 'livemode', false)) ->> 'customerId' = 'cus_gw1', 'the next page uses it');
 	perform pg_temp.base_assert((pg_temp.gw_bill('card_attach', jsonb_build_object('setupId', v_setup,
 		'sessionId', 'cs_test_gw1')) ->> 'attached')::boolean, 'the page is Stripe''s session');
 	perform pg_temp.base_assert(pg_temp.gw_bill('card_saved', jsonb_build_object('sessionId', 'cs_test_gw1', 'livemode', true,
@@ -277,6 +326,13 @@ begin
 		'customerId', 'cus_gw1', 'paymentMethodId', 'pm_gw1')) ->> 'detail' = 'already saved', 'saved once');
 	v := pg_temp.gw_bill('due', '{"livemode": true}');
 	perform pg_temp.base_assert(v ->> 'held' = 'dry_run' and v -> 'months' = '[]', 'live invoices nothing before the switch');
+	-- After the switch, a live card is never charged for a month that turned final before it.
+	update public.qorpera_good_will_payers set livemode = true where profile_id = '92400000-0000-4000-8000-000000000010';
+	update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
+	v := pg_temp.gw_bill('due', '{"livemode": true}');
+	perform pg_temp.base_assert(v ->> 'held' is null and v -> 'months' = '[]', 'dry-run months stay dry runs: ' || v::text);
+	update public.qorpera_computer_hour_billing set live_since = null;
+	update public.qorpera_good_will_payers set livemode = false where profile_id = '92400000-0000-4000-8000-000000000010';
 	v := pg_temp.gw_bill('due', '{"livemode": false}');
 	perform pg_temp.base_assert(jsonb_array_length(v -> 'months') = 1 and v -> 'months' -> 0 ->> 'month' = '2026-11'
 		and v -> 'months' -> 0 ->> 'dueOre' = '510000' and v -> 'months' -> 0 ->> 'customerId' = 'cus_gw1'
@@ -284,9 +340,14 @@ begin
 	perform pg_temp.base_assert((pg_temp.gw_bill('invoiced', jsonb_build_object('profileId', '92400000-0000-4000-8000-000000000010',
 		'month', '2026-11', 'invoiceId', 'in_gw1', 'invoiceUrl', 'https://invoice.stripe.com/i/gw1', 'livemode', false,
 		'userId', '92400000-0000-4000-8000-000000000001')) ->> 'recorded')::boolean, 'invoiced');
-	perform pg_temp.base_assert(pg_temp.gw_bill('due', '{"livemode": false}') -> 'months' = '[]', 'invoiced once');
+	-- Recorded, the month comes again with its invoice (a draft is finished, never made twice), until Stripe's word.
+	perform pg_temp.base_assert(pg_temp.gw_bill('due', '{"livemode": false}') -> 'months' -> 0 ->> 'invoiceId' = 'in_gw1',
+		'the month comes with its invoice');
+	perform pg_temp.base_assert(not (pg_temp.gw_bill('invoiced', jsonb_build_object('profileId', '92400000-0000-4000-8000-000000000010',
+		'month', '2026-11', 'invoiceId', 'in_other', 'livemode', false)) ->> 'recorded')::boolean, 'never a second invoice');
 	perform pg_temp.base_assert(pg_temp.gw_bill('invoice_failed', '{"invoiceId": "in_gw1", "livemode": false}') ->> 'status' = 'failed',
 		'the card failed');
+	perform pg_temp.base_assert(pg_temp.gw_bill('due', '{"livemode": false}') -> 'months' = '[]', 'a failed month waits on Stripe');
 	perform pg_temp.base_assert(pg_temp.gw_bill('invoice_paid', '{"invoiceId": "in_gw1", "livemode": false}') ->> 'status' = 'charged',
 		'Stripe''s retry paid it');
 	perform pg_temp.base_assert(pg_temp.gw_bill('invoice_paid', '{"invoiceId": "in_gw1", "livemode": false}') ->> 'outcome' = 'ignored',

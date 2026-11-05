@@ -669,7 +669,12 @@ describe("Good will", () => {
 		const f = fixture(stripe);
 		const doorCalls: { method: string; args: Json }[] = [];
 		const defaults: Record<string, (args: Json) => Json> = {
-			card_begin: () => ({ setupId: "5e700000-0000-4000-8000-000000000001", customerId: "cus_A1" }),
+			card_begin: () => ({
+				setupId: "5e700000-0000-4000-8000-000000000001",
+				customerId: "cus_A1",
+				companyName: "The shop",
+			}),
+			customer_set: (args) => ({ customerId: args.customerId }),
 			card_attach: () => ({ attached: true }),
 			card_saved: () => ({ outcome: "applied" }),
 			due: () => ({ months: [] }),
@@ -721,6 +726,24 @@ describe("Good will", () => {
 		assert.equal(answer.status, 409);
 		assert.deepEqual(await answer.json(), { refused: "not_a_founder" });
 		assert.equal((await handleComputerBilling(request("good-will-card", { profileId: "x" }), f.deps)).status, 400);
+		// The company's first card page makes the company's own Stripe customer, never the member's.
+		const first = goodWill(
+			{
+				"POST /v1/customers": { id: "cus_company" },
+				"POST /v1/checkout/sessions": { id: "cs_gw2", url: "https://checkout.stripe.com/c/pay/cs_gw2" },
+			},
+			{ card_begin: () => ({ setupId: "5e700000-0000-4000-8000-000000000002", customerId: null, companyName: "The shop" }) },
+		);
+		await handleComputerBilling(request("good-will-card", { profileId: COMPANY }), first.deps);
+		assert.equal(first.posts[0]?.form.name, "The shop");
+		assert.equal(first.posts[0]?.form["metadata[qorpera_profile_id]"], COMPANY);
+		assert.equal(first.posts[0]?.idempotencyKey, `qorpera-good-will-customer-${COMPANY}-test`);
+		assert.deepEqual(first.doorCalls[1], {
+			method: "customer_set",
+			args: { profileId: COMPANY, customerId: "cus_company", livemode: false },
+		});
+		assert.equal(first.posts[1]?.form.customer, "cus_company");
+		assert.ok(!first.calls.some((call) => call.method === "customer_set"));
 		assert.equal(
 			(
 				await handleComputerBilling(
@@ -744,7 +767,7 @@ describe("Good will", () => {
 		};
 		const f = goodWill(
 			{
-				"POST /v1/invoices": { id: "in_gw1" },
+				"POST /v1/invoices": { id: "in_gw1", status: "draft", lines: { data: [] } },
 				"POST /v1/invoiceitems": { id: "ii_1" },
 				"POST /v1/invoices/in_gw1/finalize": { id: "in_gw1", hosted_invoice_url: "https://invoice.stripe.com/i/1" },
 			},
@@ -763,6 +786,13 @@ describe("Good will", () => {
 		assert.deepEqual(await response.json(), { invoiced: 1, failed: 0 });
 		const [invoice, item, finalize] = f.posts;
 		assert.equal(invoice?.idempotencyKey, `qorpera-good-will-${COMPANY}-2026-11-test-invoice`);
+		// A draft Stripe leaves alone until it is finalized, recorded before anything is added to it.
+		assert.equal(invoice?.form.auto_advance, "false");
+		assert.equal(finalize?.form.auto_advance, "true");
+		assert.deepEqual(
+			f.doorCalls.filter((call) => call.method === "invoiced").map((call) => call.args.invoiceUrl),
+			[null, "https://invoice.stripe.com/i/1"],
+		);
 		assert.equal(invoice?.form["automatic_tax[enabled]"], "true");
 		assert.equal(invoice?.form.default_payment_method, "pm_1");
 		assert.equal(invoice?.form.collection_method, "charge_automatically");
@@ -784,6 +814,39 @@ describe("Good will", () => {
 		});
 	});
 
+	it("finishes a recorded draft on the next call, never making a second invoice", async () => {
+		const f = goodWill(
+			{
+				"/v1/invoices/in_gw1": { id: "in_gw1", status: "draft", lines: { data: [{ amount: 510000 }] } },
+				"POST /v1/invoices/in_gw1/finalize": { id: "in_gw1", hosted_invoice_url: "https://invoice.stripe.com/i/1" },
+			},
+			{
+				due: () => ({
+					months: [
+						{
+							profileId: COMPANY,
+							month: "2026-11",
+							dueOre: 510000,
+							userId: MEMBER.id,
+							customerId: "cus_A1",
+							paymentMethodId: "pm_1",
+							invoiceId: "in_gw1",
+						},
+					],
+				}),
+			},
+		);
+		const response = await handleComputerBilling(
+			request("good-will-invoices", {}, { "x-qorpera-billing-key": BILLING_KEY }),
+			f.deps,
+		);
+		assert.deepEqual(await response.json(), { invoiced: 1, failed: 0 });
+		assert.deepEqual(
+			f.posts.map((post) => post.path),
+			["/v1/invoices/in_gw1/finalize"],
+		);
+	});
+
 	it("saves the card from a completed setup page and moves the month when its invoice is paid or fails", async () => {
 		const f = goodWill({
 			"/v1/checkout/sessions/cs_gw": {
@@ -791,7 +854,7 @@ describe("Good will", () => {
 				mode: "setup",
 				customer: "cus_A1",
 				setup_intent: "seti_1",
-				metadata: { qorpera_kind: "good_will" },
+				metadata: { qorpera_kind: "good_will", qorpera_setup_id: "5e700000-0000-4000-8000-000000000001" },
 			},
 			"/v1/setup_intents/seti_1": { id: "seti_1", status: "succeeded", payment_method: "pm_1" },
 			"/v1/payment_methods/pm_1": { id: "pm_1", card: { brand: "visa", last4: "4242" } },
@@ -801,6 +864,7 @@ describe("Good will", () => {
 			method: "card_saved",
 			args: {
 				sessionId: "cs_gw",
+				setupId: "5e700000-0000-4000-8000-000000000001",
 				livemode: false,
 				customerId: "cus_A1",
 				paymentMethodId: "pm_1",
@@ -809,10 +873,18 @@ describe("Good will", () => {
 			},
 		});
 		assert.equal(finished(f)?.outcome, "applied");
-		const invoice = { id: "in_gw1", status: "paid", metadata: { qorpera_kind: "good_will" } };
+		const invoice = {
+			id: "in_gw1",
+			status: "paid",
+			metadata: { qorpera_kind: "good_will", qorpera_profile_id: COMPANY, qorpera_month: "2026-11" },
+		};
 		const paid = goodWill({ "/v1/invoices/in_gw1": invoice });
 		await webhook(paid, event("invoice.paid", { id: "in_gw1" }));
-		assert.equal(paid.doorCalls[0]?.method, "invoice_paid");
+		// The month its metadata names, also when Stripe's word comes before the invoice was recorded.
+		assert.deepEqual(paid.doorCalls[0], {
+			method: "invoice_paid",
+			args: { invoiceId: "in_gw1", profileId: COMPANY, month: "2026-11", invoiceUrl: null, livemode: false },
+		});
 		assert.equal(finished(paid)?.detail, "good will charged");
 		const failed = goodWill({ "/v1/invoices/in_gw1": { ...invoice, status: "open" } });
 		await webhook(failed, event("invoice.payment_failed", { id: "in_gw1" }));
