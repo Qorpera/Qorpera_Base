@@ -2706,7 +2706,9 @@ describe("messages between two agents (contract 14.6)", () => {
 		const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
 		expect(panel).not.toBeNull();
 		const pairNames = (sheet: HTMLElement) =>
-			[...sheet.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")].map((part) => part.textContent).join("");
+			[...sheet.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")]
+				.map((part) => part.textContent)
+				.join("");
 		expect(pairNames(panel)).toBe(`${staff.displayName}⇄Helper`);
 		expect(panel.querySelector(".pair-count")?.textContent).toBe("2 messages");
 		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
@@ -2794,7 +2796,9 @@ describe("messages between two agents (contract 14.6)", () => {
 			await settle();
 			const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
 			expect(
-				[...panel.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")].map((part) => part.textContent).join(""),
+				[...panel.querySelectorAll(".pair-identity :is(.pair-name, .pair-glyph)")]
+					.map((part) => part.textContent)
+					.join(""),
 			).toBe(`${staff.displayName}⇄Nova`);
 			button(panel, "Close").click();
 			expect(document.activeElement).toBe(chip);
