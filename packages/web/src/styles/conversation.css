@@ -488,6 +488,9 @@
 .agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
+.agent-card-link[hidden], .agent-card-count[hidden] { display: none; }
+/* How many of the agent's latest notes are new while the member has its wall hidden. */
+.agent-card-count { padding: 1px 7px; border-radius: var(--radius-pill); background: var(--warning-soft); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1.5; }
 /* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
 .agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
 .agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }

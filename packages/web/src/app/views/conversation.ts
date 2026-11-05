@@ -235,7 +235,7 @@ function placeChildren(parent: Element, children: readonly Node[]): void {
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /** What an agent's card can open in the agent's chat. */
-export type AgentPage = "computer";
+export type AgentPage = "computer" | "wall";
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -257,7 +257,7 @@ export class ConversationView {
 	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
 	/** The agent's wall, pinned above the messages of its own thread (ui/agent-wall-poster.ts). */
-	readonly #wall = new AgentWallPoster();
+	readonly #wall: AgentWallPoster;
 	/** The agent whose wall is read, its text as last read, and the read on its way. */
 	#wallAgent: string | undefined;
 	#wallText: string | null = null;
@@ -410,6 +410,16 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
+		// Hidden, the poster gives focus to the agent's name where the thread shows it (a phone), whose card has Latest
+		// notes to bring it back; else to the composer, as the thread opens.
+		this.#wall = new AgentWallPoster({
+			member: company.userId,
+			onHide: () => {
+				if (this.#disposed || document.activeElement?.closest("input, textarea")) return;
+				if (this.#identity.getClientRects().length) this.#identity.focus({ preventScroll: true });
+				else if (!this.#composer.disabled) this.#composer.focus({ preventScroll: true });
+			},
+		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
@@ -949,9 +959,14 @@ export class ConversationView {
 			this.#details = undefined;
 			this.#identity.setAttribute("aria-expanded", "false");
 		};
+		const wall = this.#actions.agentWall;
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
+					// From the member's private chat too: the wall is on top of the agent's company thread.
+					notes: wall?.show
+						? { open: () => wall.show?.(agent.id), read: (signal) => wall.read(agent.id, signal) }
+						: undefined,
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -965,20 +980,21 @@ export class ConversationView {
 				);
 	}
 
-	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does
-	 * not know its agent yet: the card's request then waits for it. */
+	/** Opens this agent's computer, or shows its wall again, here, as its card asks. False while the thread is not
+	 * that agent's (for the wall: its company thread), or does not know its agent yet: the card's request then waits. */
 	show(agentId: string, page: AgentPage): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
-		if (page === "computer") {
-			// The computer sits under the pages laid over the thread: they close for it.
-			this.#closePair(false);
-			this.#closeCodingSession();
-			(this.#panel ?? this.#showPanel(agent))?.focus();
-		}
+		// The wall is on top of the agent's company thread only: from its private chat the app opens that thread.
+		if (page === "wall" && this.#wallAgent !== agentId) return false;
+		// The computer and the wall sit under the pages laid over the thread: they close for them.
+		this.#closePair(false);
+		this.#closeCodingSession();
+		if (page === "wall") this.#wall.reveal(agentId);
+		else (this.#panel ?? this.#showPanel(agent))?.focus();
 		return true;
 	}
 

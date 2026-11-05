@@ -562,6 +562,11 @@ export const CONVERSATION: Record<string, string> = {
 	"{n} more done": "Vis {n} mere",
 	"Earlier: {n}": "Tidligere: {n}",
 	"Show fewer": "Vis færre",
+	"Hide. Latest notes on {name}'s card brings it back.": "Skjul. Seneste noter på {name}s kort viser den igen.",
+	// The agent's card brings the wall back (app/views/agent-details.ts).
+	"Latest notes": "Seneste noter",
+	"1 new": "1 ny",
+	"{n} new": "{n} nye",
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",
