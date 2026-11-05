@@ -335,6 +335,9 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
+	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
+	 * the open company has now (it is made again when the company opens again). */
+	const wallListeners = new Set<() => void>();
 	/** Makes the side panel of an app or page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
 	/** An app or page asked for while no chat was open: shown beside the chat once it is. */
@@ -1219,6 +1222,9 @@ export function mountApplication(
 				decorateAppCards();
 			});
 			companyApps = apps;
+			apps.onChange(() => {
+				for (const listener of [...wallListeners]) listener();
+			});
 			apps.open();
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
@@ -1537,7 +1543,10 @@ export function mountApplication(
 								read: agentWallReader(() =>
 									memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 								),
-								onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+								onFolderChange: (listener) => {
+									wallListeners.add(listener);
+									return () => wallListeners.delete(listener);
+								},
 							},
 							messageErases: {
 								request: (sessionId, eventId, signal) =>

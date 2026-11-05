@@ -27,6 +27,13 @@ it("names an agent's wall in its folder, and only there", () => {
 	expect(wallHandle("notes/wall.md")).toBeNull();
 });
 
+it("keeps the file's own head as written", () => {
+	const text = renderWall(WALL, "# Our wall\n\nAsk Nora about anything here.\n\n");
+	expect(text.startsWith("# Our wall\n\nAsk Nora about anything here.\n\n## Waits on you\n")).toBe(true);
+	expect(parseWall(text).head).toBe("# Our wall\n\nAsk Nora about anything here.");
+	expect(renderWall(WALL, "").startsWith("# Wall\n\n## Waits on you")).toBe(true);
+});
+
 it("writes the kept form and reads it back", () => {
 	const text = renderWall(WALL);
 	expect(text).toBe(
@@ -46,7 +53,7 @@ it("writes the kept form and reads it back", () => {
 			"",
 		].join("\n"),
 	);
-	expect(parseWall(text)).toEqual({ wall: WALL, problems: [] });
+	expect(parseWall(text)).toEqual({ wall: WALL, problems: [], head: "# Wall" });
 });
 
 it("reads a member's edit in any case, and leaves out text outside the parts", () => {
@@ -57,6 +64,7 @@ it("reads a member's edit in any case, and leaves out text outside the parts", (
 	).toEqual({
 		wall: { waiting: [], working: ["Finding a supplier"], done: [{ day: "2026-11-05", text: "Team hired" }] },
 		problems: [],
+		head: "# Wall\n\nOur notes.",
 	});
 });
 
@@ -86,6 +94,15 @@ it("names each problem with its line, and keeps every item that reads", () => {
 			{ day: "2026-11-04", text: "Newer" },
 		],
 	});
+	expect(parsed.problems.map((problem) => problem.code)).toEqual([
+		"line",
+		"line",
+		"line",
+		"line",
+		"line",
+		"shape",
+		"shape",
+	]);
 	expect(parsed.problems.map((problem) => [problem.line, problem.message.slice(0, 40)])).toEqual([
 		[3, "each line under a part is an item, start"],
 		[4, 'a wall has the parts "## Waits on you", '],
@@ -99,7 +116,9 @@ it("names each problem with its line, and keeps every item that reads", () => {
 
 it("refuses more items than a part holds", () => {
 	const text = renderWall({ waiting: ["1", "2", "3", "4", "5", "6", "7"], working: [], done: [] });
-	expect(parseWall(text).problems).toEqual([{ line: 1, message: '"Waits on you" holds at most 6 items' }]);
+	expect(parseWall(text).problems).toEqual([
+		{ code: "limit", line: 1, message: '"Waits on you" holds at most 6 items' },
+	]);
 });
 
 it("folds done items older than a week into Earlier", () => {

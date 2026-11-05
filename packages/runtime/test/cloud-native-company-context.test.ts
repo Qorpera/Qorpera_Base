@@ -1519,7 +1519,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "f1f3fbceb9055d4a58f385d5220f86e97e1e9361e5a5ae9b68ca87c182b04f49",
+			instructions: "fce1910f714f5d58dc9bd6f26dcffb1f6311a30dff1b80492cee4d85c3df867a",
 			prompt: "3ff71cfe1fa690762d7370d1a8a9170006c4ea1484553a9aca92717f738a1bec",
 		},
 	],
@@ -1535,7 +1535,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "f1f3fbceb9055d4a58f385d5220f86e97e1e9361e5a5ae9b68ca87c182b04f49",
+			instructions: "fce1910f714f5d58dc9bd6f26dcffb1f6311a30dff1b80492cee4d85c3df867a",
 			prompt: "42c958cdbd43bf06644459b6aed1bf1a2a81f75032a3846349551c7924eb99af",
 		},
 	],
@@ -1579,7 +1579,8 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 	for (const rule of [
 		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
-		"so it takes the place of status messages: write a message only for what the wall cannot carry",
+		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
+		"a decision that waits for a member goes on the wall and in one line of your message",
 	])
 		expect(instructions).toContain(rule);
 });

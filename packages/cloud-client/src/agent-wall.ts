@@ -60,6 +60,10 @@ export interface Wall {
 }
 
 export interface WallProblem {
+	/** `line`: a line that reads as no item, so a writer that rewrites the wall would drop it; `size`: the file is too
+	 * large; `limit`: a part holds too many items; `shape`: a part written twice, or done items out of order, which the
+	 * writer puts right without losing anything. */
+	readonly code: "line" | "size" | "limit" | "shape";
 	readonly line: number;
 	readonly message: string;
 }
@@ -68,6 +72,8 @@ export interface WallProblem {
 export interface WallParse {
 	readonly wall: Wall;
 	readonly problems: readonly WallProblem[];
+	/** The file's own text before its first part (its title and any note under it), as written; the writer keeps it. */
+	readonly head: string;
 }
 
 export const EMPTY_WALL: Wall = Object.freeze({ waiting: [], working: [], done: [] });
@@ -111,16 +117,20 @@ export function wallItemText(text: string): string {
 	return text.trim().replace(/ {2,}/g, " ");
 }
 
-/** Reads a wall. Text outside the three parts (the title, a note under it) is the file's own and is not read. */
+/** Reads a wall. The text before the first part (the title, a note under it) is the file's own: kept, not read.
+ * Anything else that is no item of a part is a problem. */
 export function parseWall(text: string): WallParse {
 	const problems: WallProblem[] = [];
 	const parts: { waiting: string[]; working: string[]; done: WallDone[] } = { waiting: [], working: [], done: [] };
 	if (new TextEncoder().encode(text).length > WALL_MAX_BYTES)
-		problems.push({ line: 1, message: `a wall is at most ${WALL_MAX_BYTES / 1024} KiB` });
+		problems.push({ code: "size", line: 1, message: `a wall is at most ${WALL_MAX_BYTES / 1024} KiB` });
 	let part: WallPart | null = null;
 	const headings = Object.entries(WALL_HEADINGS) as [WallPart, string][];
 	const seen = new Set<WallPart>();
-	text.split("\n").forEach((raw, index) => {
+	const lines = text.split("\n");
+	const first = lines.findIndex((line) => /^##[ \t]/.test(line));
+	const head = (first < 0 ? lines : lines.slice(0, first)).join("\n").replace(/\s+$/, "");
+	lines.forEach((raw, index) => {
 		const line = raw.replace(/\r$/, "");
 		const at = index + 1;
 		const heading = /^##[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
@@ -129,13 +139,15 @@ export function parseWall(text: string): WallParse {
 			const found = headings.find(([, words]) => words.toLowerCase() === name);
 			if (!found) {
 				problems.push({
+					code: "line",
 					line: at,
 					message: `a wall has the parts ${headings.map(([, words]) => `"## ${words}"`).join(", ")} (found "${line.trim()}")`,
 				});
 				part = null;
 				return;
 			}
-			if (seen.has(found[0])) problems.push({ line: at, message: `"## ${found[1]}" is written twice` });
+			if (seen.has(found[0]))
+				problems.push({ code: "shape", line: at, message: `"## ${found[1]}" is written twice` });
 			seen.add(found[0]);
 			part = found[0];
 			return;
@@ -143,7 +155,7 @@ export function parseWall(text: string): WallParse {
 		if (part === null || !line.trim()) return;
 		const item = /^[ \t]*[-*][ \t]+(.*)$/.exec(line);
 		if (!item) {
-			problems.push({ line: at, message: 'each line under a part is an item, starting with "- "' });
+			problems.push({ code: "line", line: at, message: 'each line under a part is an item, starting with "- "' });
 			return;
 		}
 		let words = item[1] ?? "";
@@ -152,6 +164,7 @@ export function parseWall(text: string): WallParse {
 			const dated = /^(\d{4}-\d{2}-\d{2}):[ \t]+(.*)$/.exec(words);
 			if (!dated || !isWallDay(dated[1] ?? "")) {
 				problems.push({
+					code: "line",
 					line: at,
 					message: 'a done item starts with the day it was done, as "- 2026-11-05: Team hired"',
 				});
@@ -162,7 +175,7 @@ export function parseWall(text: string): WallParse {
 		}
 		const problem = wallItemProblem(words);
 		if (problem) {
-			problems.push({ line: at, message: problem });
+			problems.push({ code: "line", line: at, message: problem });
 			return;
 		}
 		if (part === "done") parts.done.push({ day: day as string, text: wallItemText(words) });
@@ -170,18 +183,19 @@ export function parseWall(text: string): WallParse {
 	});
 	for (const [name, words] of headings)
 		if (parts[name].length > LIMITS[name])
-			problems.push({ line: 1, message: `"${words}" holds at most ${LIMITS[name]} items` });
+			problems.push({ code: "limit", line: 1, message: `"${words}" holds at most ${LIMITS[name]} items` });
 	for (let index = 1; index < parts.done.length; index++)
 		if ((parts.done[index]?.day ?? "") > (parts.done[index - 1]?.day ?? "")) {
-			problems.push({ line: 1, message: "done items go newest first" });
+			problems.push({ code: "shape", line: 1, message: "done items go newest first" });
 			break;
 		}
-	return { wall: parts, problems };
+	return { wall: parts, problems, head };
 }
 
-/** The wall as the writer keeps it: the three parts in order, every item on its own line. */
-export function renderWall(wall: Wall): string {
-	const out = ["# Wall"];
+/** The wall as the writer keeps it: the file's own head (the title and a note, as written), then the three parts in
+ * order, every item on its own line. */
+export function renderWall(wall: Wall, head = "# Wall"): string {
+	const out = [head.replace(/\s+$/, "") || "# Wall"];
 	const part = (name: WallPart, lines: readonly string[]) => {
 		out.push("", `## ${WALL_HEADINGS[name]}`);
 		for (const line of lines) out.push(`- ${line}`);

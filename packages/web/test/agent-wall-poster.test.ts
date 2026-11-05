@@ -261,6 +261,11 @@ describe("reading an agent's wall", () => {
 		};
 		const read = agentWallReader(() => folder as never);
 		expect(await read(AGENT.id, new AbortController().signal)).toBeNull();
+		// Each hint after that reads the file only: the agent's folder is looked up again at most once a minute.
+		expect(await read(AGENT.id, new AbortController().signal)).toBeNull();
+		expect(await read(AGENT.id, new AbortController().signal)).toBeNull();
+		expect(folder.stateFolders).toHaveBeenCalledTimes(2);
+		expect(folder.read).toHaveBeenCalledTimes(3);
 		expect(folder.readFile).not.toHaveBeenCalled();
 	});
 });

@@ -904,7 +904,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
 									// run of the agent; a worker reports to its agent instead.
 									...(identity.audienceKind === "company" && !work.isWorker
-										? cloudWallTools({ folder: folder.client, operations, identity, handle: folder.handle })
+										? cloudWallTools({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												timeZone: wake.time.timeZone,
+											})
 										: []),
 								].filter(work.companyFile),
 								...(folderSearch

@@ -8,12 +8,16 @@ import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member
 type Folder = Pick<CloudMemberFolderClient, "read" | "readFile" | "stateFolders">;
 
 const TEXT = new TextDecoder("utf-8", { fatal: true });
+const RELOOK_MS = 60_000;
 
 /** Reads one thread's agent walls: the text, or null when the agent has no wall (or it is no text, or too large). */
 export function agentWallReader(
 	folder: () => Folder,
 ): (staffAgentId: string, signal: AbortSignal) => Promise<string | null> {
 	const handles = new Map<string, string>();
+	/** When each agent's handle was last looked up again for a missing wall: at most once a minute, so an agent with no
+	 * wall yet (every agent at first) costs one file read per hint, not a list of the company's agents too. */
+	const relooked = new Map<string, number>();
 	const last = new Map<string, { version: string; text: string }>();
 	const handleOf = async (from: Folder, staffAgentId: string, signal: AbortSignal, fresh: boolean) => {
 		const known = fresh ? undefined : handles.get(staffAgentId);
@@ -32,8 +36,9 @@ export function agentWallReader(
 		let handle = await handleOf(from, staffAgentId, signal, false);
 		if (handle === null) return null;
 		let entry = (await from.read(wallPath(handle), signal)).entry;
-		// The agent's folder may have moved (a rename): its handle is read again once.
-		if (!entry) {
+		// The agent's folder may have moved (a rename): its handle is read again, at most once a minute.
+		if (!entry && Date.now() - (relooked.get(staffAgentId) ?? 0) >= RELOOK_MS) {
+			relooked.set(staffAgentId, Date.now());
 			const again = await handleOf(from, staffAgentId, signal, true);
 			if (again === null) return null;
 			if (again !== handle) {

@@ -1825,7 +1825,12 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
-		this.#syncWall(room || company.accessLost || !company.team?.capabilities.read ? undefined : agent);
+		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
+		this.#syncWall(
+			room || session?.audience.kind !== "company" || company.accessLost || !company.team?.capabilities.read
+				? undefined
+				: agent,
+		);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
@@ -1885,8 +1890,8 @@ export class ConversationView {
 		this.#sharedDrafts.update();
 	}
 
-	/** The agent's wall in its own thread: read when the thread knows its agent and again when its run ends. A group
-	 * chat has none. */
+	/** The agent's wall in its own company thread: read when the thread knows its agent and again when its run ends. A
+	 * group chat and a member's private chat have none. */
 	#syncWall(agent: HostedStaffAgent | undefined): void {
 		const id = this.#actions.agentWall ? agent?.id : undefined;
 		if (id !== this.#wallAgent) {

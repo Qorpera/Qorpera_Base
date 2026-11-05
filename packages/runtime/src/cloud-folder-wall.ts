@@ -2,12 +2,12 @@ import {
 	EMPTY_WALL,
 	parseWall,
 	renderWall,
-	type Wall,
 	WALL_DONE_MAX,
 	WALL_ITEM_MAX_CHARS,
 	WALL_MAX_BYTES,
 	WALL_WAITING_MAX,
 	WALL_WORKING_MAX,
+	type Wall,
 	type WallDone,
 	wallItemProblem,
 	wallItemText,
@@ -47,6 +47,8 @@ interface WallRequest {
 }
 
 const SCHEMA = "qorpera.agent-wall/v1";
+/** Finished items an answer shows, newest first. */
+const DONE_SHOWN = 5;
 
 function items(value: JsonValue | undefined, label: string, max: number, nullable: boolean): string[] | null {
 	if (value === null && nullable) return null;
@@ -64,10 +66,10 @@ function items(value: JsonValue | undefined, label: string, max: number, nullabl
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/** The wall after a request on `today` (`YYYY-MM-DD`): a finished item already on the wall since its last week is not
- * added again, so a retried call does not repeat it. */
+/** The wall after a request on `today` (`YYYY-MM-DD`): a finished item already on the wall in the week the poster shows
+ * (the days `foldWallDone` keeps) is not added again, so a retried call does not repeat it. */
 export function nextWall(stored: Wall, request: WallRequest, today: string): Wall {
-	const recent = stored.done.filter((item) => item.day >= dayBefore(today, 7));
+	const recent = stored.done.filter((item) => item.day > dayBefore(today, 7));
 	const added: WallDone[] = [];
 	for (const text of request.done)
 		if (!recent.some((item) => same(item.text, text)) && !added.some((item) => same(item.text, text)))
@@ -88,18 +90,34 @@ function dayBefore(day: string, days: number): string {
 
 export const CLOUD_WALL_TOOL_DESCRIPTION = `Keep your wall: the card pinned above your thread where members see at a glance what you have done, what you are working on and what waits on them. It replaces status messages: update it instead of writing to say that work started, moved on or finished. waiting: what you need from a member, each a short line that says what to decide or do (a whole list, or null to keep it; at most ${WALL_WAITING_MAX}). working: what you are doing now (a whole list, or null to keep it; at most ${WALL_WORKING_MAX}). done: what you finished since the last update, added on top with today's date ([] for nothing new). Each item is one plain line of at most ${WALL_ITEM_MAX_CHARS} characters, in the company's language and your messages' plain words, with a link to the work: [Name](folder:path/in/the/company/file) or [Title](app:<name>) for an interface app. Move an item, don't repeat it: what you finish leaves working (or waiting) and goes to done in the same call. Fix a wrong item where it stands. It applies at once. When the result says the wall changed since it was read, call again.`;
 
+/** Today in the company's time zone (the run's wake time), `YYYY-MM-DD`; UTC when the zone is unknown. */
+export function wallToday(timeZone: string | undefined, now = new Date()): string {
+	try {
+		return new Intl.DateTimeFormat("en-CA", {
+			timeZone: timeZone || "UTC",
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+		}).format(now);
+	} catch {
+		return now.toISOString().slice(0, 10);
+	}
+}
+
 /** The wall tool of a folder-v2 run, for the agent whose folder is `handle`. */
 export function cloudWallTools(options: {
 	folder: CloudCompanyFolderClient;
 	operations: CloudNativeToolOperations;
 	identity: CloudNativeToolIdentity;
 	handle: string;
+	/** The company's time zone, which dates finished items. */
+	timeZone?: string;
 	/** Today, `YYYY-MM-DD`; tests set it. */
 	today?: () => string;
 }): CloudNativeTool[] {
 	const { folder, operations, identity } = options;
 	const path = wallPath(options.handle);
-	const today = options.today ?? (() => new Date().toISOString().slice(0, 10));
+	const today = options.today ?? (() => wallToday(options.timeZone));
 	const tool: CloudNativeTool = {
 		name: "update_wall" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
@@ -145,12 +163,51 @@ export function cloudWallTools(options: {
 					);
 				return unavailable(error, "read");
 			}
-			// A wall someone wrote out of shape is kept in shape from what reads.
-			const stored = found ? parseWall(found.text).wall : EMPTY_WALL;
-			const next = nextWall(stored, request, today());
-			const text = renderWall(next);
+			// A wall someone wrote out of shape is never rewritten from what reads, which would drop what did not: the agent
+			// puts it in shape with company_edit first, keeping what a member wrote. The head (title, a note) is kept.
+			const parsed = found ? parseWall(found.text) : { wall: EMPTY_WALL, problems: [], head: "# Wall" };
+			const losing = parsed.problems.filter((problem) => problem.code === "line" || problem.code === "size");
+			if (losing.length)
+				throw new CloudToolRefusal(
+					`WALL_OUT_OF_SHAPE: nothing was written; ${path} has lines that read as no item: ${losing
+						.slice(0, 5)
+						.map((problem) => `line ${problem.line}: ${problem.message}`)
+						.join(
+							"; ",
+						)}. Read it, write it again whole with company_write, keeping what a member wrote as items of the parts, then call again`,
+				);
+			const stored = parsed.wall;
+			let next = nextWall(stored, request, today());
+			let text = renderWall(next, parsed.head);
+			// The oldest finished items go first when the wall would grow past what a wall may be.
+			while (Buffer.byteLength(text) > WALL_MAX_BYTES && next.done.length > 0) {
+				next = { ...next, done: next.done.slice(0, -1) };
+				text = renderWall(next, parsed.head);
+			}
+			if (Buffer.byteLength(text) > WALL_MAX_BYTES)
+				throw new CloudToolRefusal(
+					`WALL_TOO_LARGE: nothing was written; a wall is at most ${WALL_MAX_BYTES / 1024} KiB: make its note or items shorter`,
+				);
+			// A part someone filled past its limit, kept by null: the agent gives that list whole.
+			const over = parseWall(text).problems;
+			if (over.length)
+				throw new CloudToolRefusal(
+					`WALL_TOO_MANY: nothing was written; ${over.map((problem) => problem.message).join("; ")}: give that list whole, with what still matters`,
+				);
+			// The wall as it stands, with its newest finished items: all of them would not fit one tool result.
 			const answer = (saved: boolean, wall: Wall, extra: Record<string, unknown> = {}) =>
-				cloudToolJsonText({ schema: SCHEMA, path, saved, ...extra, wall: wall as unknown as JsonValue });
+				cloudToolJsonText({
+					schema: SCHEMA,
+					path,
+					saved,
+					...extra,
+					wall: {
+						waiting: [...wall.waiting],
+						working: [...wall.working],
+						done: wall.done.slice(0, DONE_SHOWN).map((item) => ({ ...item })),
+						...(wall.done.length > DONE_SHOWN ? { moreDone: wall.done.length - DONE_SHOWN } : {}),
+					},
+				});
 			const reads = found ? [cloudCompanyFolderRelease(found.entry)] : [];
 			if (found?.text === text)
 				return released(
@@ -208,7 +265,8 @@ export function cloudWallTools(options: {
 			});
 			if (content.kind !== "text") throw new Error("A wall change answered no text");
 			// After the receipt the change is made or settled, so an answer that cannot be released is unconfirmed, never
-			// a refusal (which says nothing happened): the replay of the same call answers.
+			// a refusal (which says nothing happened): the agent reads its wall and calls again, and a finished item already
+			// there is not added twice.
 			return released(folder, identity.runId, context, content.value, reads).catch((error) => {
 				if (error instanceof CloudToolRefusal)
 					throw new Error("A committed answer could not be released", { cause: error });
