@@ -226,6 +226,10 @@ export function fixture() {
 	vi.spyOn(api, "listMemberMentions").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_mentions", { message: "missing", code: "PGRST202" }, 404),
 	);
+	// A cloud before 20260930568000: it lists no approval cards waiting for the member.
+	vi.spyOn(api, "listWaitingApprovals").mockRejectedValue(
+		new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
+	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	// A cloud before the memory choice (C5): Settings show no Memory section.
 	vi.spyOn(api, "getCompanyMemory").mockRejectedValue(

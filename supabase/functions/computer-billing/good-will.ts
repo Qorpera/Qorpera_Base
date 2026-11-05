@@ -109,7 +109,9 @@ export async function startGoodWillCard(
 		// Stripe Tax needs the address on the invoice: 25 % moms in Denmark, reverse charge for an EU business.
 		billing_address_collection: "required",
 		"customer_update[address]": "auto",
+		// The business name and VAT number when the company has one: Stripe Tax reverse-charges an EU business.
 		"customer_update[name]": "auto",
+		"tax_id_collection[enabled]": "true",
 		client_reference_id: setupId,
 		success_url: withQuery(deps.returnUrl, "good-will=card-saved"),
 		cancel_url: withQuery(deps.returnUrl, "good-will=card-cancelled"),

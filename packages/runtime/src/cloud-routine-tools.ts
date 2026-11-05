@@ -13,6 +13,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, CloudToolArgumentRefusal, type CloudToolContext } from "./cloud-native-tool-boundary.ts";
+import {
+	cloudRoutineAgentOffsetMinutes,
+	cloudRoutineSpreadInstant,
+	cloudRoutineSpreadLocalTime,
+} from "./cloud-routine-pace.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 import { CURSOR, fitsOneResult } from "./cloud-worker-tools.ts";
@@ -273,15 +278,28 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 	);
 }
 
+/** The compiled trigger's start times, spread for the agent (cloud-routine-pace.ts): a weekly time of day, a first run,
+ * a dynamic routine's next run or a listener's latest time, never to or past the routine's end. */
+function spreadTrigger(trigger: Record<string, unknown>, offsetMinutes: number, end: unknown): Record<string, unknown> {
+	const before = typeof end === "string" ? end : null;
+	const spread = { ...trigger };
+	if (typeof spread.localTime === "string")
+		spread.localTime = cloudRoutineSpreadLocalTime(spread.localTime, offsetMinutes);
+	if (typeof spread.startAt === "string")
+		spread.startAt = cloudRoutineSpreadInstant(spread.startAt, offsetMinutes, before);
+	if (typeof spread.at === "string") spread.at = cloudRoutineSpreadInstant(spread.at, offsetMinutes, before);
+	return spread;
+}
+
 export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
 	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or an existing dynamic routine's next run if still ahead; the member's IANA timeZone), when_done (path of a todo or human task file, latestAt, IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, watching a situation; when_done to follow up a todo or human task, not a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.state says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
-	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new, to learn what it needs; never leave new standing work idle for days. " +
+	"Prefer dynamic when the time of the next look depends on what you find: a new responsibility, a situation to watch; when_done to follow up a todo or human task, not a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.state says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
+	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new: while you can move it without a member, the next run is minutes to a few hours away, not the next morning. Times on the hour or half hour move a few minutes later per agent. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
-	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
+	"effort is each run's thinking depth: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check. " +
 	"Give a finite watch an expiresAt, or for every or weekly a maxOccurrences, so it ends by itself. quietHours holds non-urgent runs until the window ends. " +
 	"conclude ends a routine with a one-sentence summary of why, and keeps it in the list as concluded; saving it again restarts it. remove deletes it from the list for good. " +
 	"For a routine paused with pauseReason needs_model_account or authorization_failed, list says what it waits for and what to tell the member. " +
@@ -296,7 +314,7 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 )
 	.replace(
 		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. ",
-		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: it is the file routines/<routineKey>.md in your folder (routineKey: lowercase letters, digits and single hyphens, at most 64 characters). ",
+		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: it is the file routines/<routineKey>.md in your folder (routineKey: lowercase letters, digits and single hyphens). ",
 	)
 	.replace(
 		"list first when unsure. ",
@@ -321,7 +339,7 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 
 export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
-	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time (within 30 days). " +
+	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: minutes to a few hours ahead while you can move the work without a member or a reply is due; the next day only when it all waits for someone or is quiet. A time on the hour or half hour moves a few minutes later per agent. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time (within 30 days). " +
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
 	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
 	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
@@ -386,6 +404,7 @@ export function cloudRoutineTools(
 	folderRoutines: CloudFolderRoutines,
 ): readonly CloudNativeTool[] {
 	const assertContext = routineAuthority(binding, identity);
+	const offsetMinutes = cloudRoutineAgentOffsetMinutes(identity.staffAgentId);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
@@ -621,6 +640,7 @@ export function cloudRoutineTools(
 				trigger: compileTrigger(a.trigger),
 			};
 			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");
+			request.trigger = spreadTrigger(request.trigger as Record<string, unknown>, offsetMinutes, request.expiresAt);
 			// A dynamic routine's run after its end would never happen.
 			const firstRunAt = (request.trigger as { kind: string; at?: string }).at;
 			if (

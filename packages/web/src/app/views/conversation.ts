@@ -337,6 +337,8 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
+	/** What stands beside the thread: an interface app or a page (views/app-panel.ts). */
+	#beside: { readonly el: HTMLElement; dispose(): void; focus(): void } | undefined;
 	/** The chip that opened the transcript; focus returns there when it closes. */
 	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
@@ -788,6 +790,7 @@ export class ConversationView {
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#closePair(false);
+		this.closeBeside(false);
 		// The computer stays open, and connected, for the next thread that shows it.
 		if (this.#ownPanels) this.#panels.dispose();
 		else this.#panel?.detach();
@@ -961,6 +964,38 @@ export class ConversationView {
 			(this.#panel ?? this.#showPanel(agent))?.focus();
 		}
 		return true;
+	}
+
+	/** What stands beside the thread now, if anything. */
+	get beside(): object | undefined {
+		return this.#beside;
+	}
+
+	/** Stands `panel` beside the thread, in place of what stood there: the thread stays as it is, and usable (Jonas,
+	 * 5 November 2026: an agent's app sits in the chat and pops out beside it). */
+	showBeside(panel: { readonly el: HTMLElement; dispose(): void; focus(): void }): void {
+		if (this.#disposed) {
+			panel.dispose();
+			return;
+		}
+		this.#beside?.dispose();
+		this.#beside = panel;
+		this.#body.insertBefore(panel.el, this.#conversationPane.nextSibling);
+		this.#body.classList.add("has-beside");
+		this.#autosize();
+		panel.focus();
+	}
+
+	closeBeside(refocus: boolean): void {
+		const panel = this.#beside;
+		if (!panel) return;
+		this.#beside = undefined;
+		panel.dispose();
+		this.#body.classList.remove("has-beside");
+		if (this.#disposed) return;
+		this.#autosize();
+		if (refocus && !this.#composer.disabled && !this.#composerWrap.hidden)
+			this.#composer.focus({ preventScroll: true });
 	}
 
 	/** Lay the two agents' transcript over this thread; the thread waits underneath.

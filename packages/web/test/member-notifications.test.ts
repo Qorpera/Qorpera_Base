@@ -292,6 +292,44 @@ describe("company notices member read", () => {
 			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
 		}
 	});
+	it("reads a good will card that failed (20260930571000), links only Stripe's invoice page, and fails a bad one", async () => {
+		const failed = (subject: Record<string, unknown> = {}, n = 110) => ({
+			...full,
+			notification_id: id(n),
+			kind: "good_will_card_failed",
+			subject: {
+				schema: "qorpera.member-notification.good-will-card-failed/v1",
+				month: "2026-11",
+				dueOre: 510000,
+				invoiceUrl: "https://invoice.stripe.com/i/1",
+				mine: true,
+				...subject,
+			},
+		});
+		let f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json([failed(), failed({ invoiceUrl: "https://evil.example/i", mine: false }, 111)]),
+		);
+		const [own, other] = await f.client.listNotifications();
+		expect(own!.subject).toEqual({
+			schema: "qorpera.member-notification.good-will-card-failed/v1",
+			month: "2026-11",
+			dueOre: 510000,
+			invoiceUrl: "https://invoice.stripe.com/i/1",
+			mine: true,
+		});
+		expect(other!.subject).toMatchObject({ invoiceUrl: null, mine: false });
+		for (const bad of [
+			failed({ month: "2026-13" }),
+			failed({ dueOre: -1 }),
+			failed({ mine: "yes" }),
+			failed({ invoiceUrl: 1 }),
+		]) {
+			f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad]));
+			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
+		}
+	});
 	it("reads an area's supervision that ended (20260930371000), and fails the read for a bad one", async () => {
 		const ended = (subject: Record<string, unknown> = {}, n = 100) => ({
 			...full,

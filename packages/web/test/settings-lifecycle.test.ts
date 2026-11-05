@@ -804,6 +804,15 @@ describe("settings session lifecycle", () => {
 		const [dashboard, operations] = prose.querySelectorAll<HTMLButtonElement>(".folder-link");
 		return { prose, dashboard: dashboard!, operations: operations! };
 	}
+	/** The dashboard's link opens the page beside the chat (interface apps, 5 Nov 2026); its Show in Storage opens it
+	 * in Storage, over the conversation, as a folder link to any other file does. */
+	async function dashboardInStorage(root: Element) {
+		const links = linksInMessage(root);
+		links.dashboard.click();
+		await draw();
+		root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Storage"]')!.click();
+		return links;
+	}
 	it("opens Storage at a folder link's file or folder, over the conversation", async () => {
 		const folder = linkedFolder();
 		const f = await setup();
@@ -811,6 +820,13 @@ describe("settings session lifecycle", () => {
 		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
 		dashboard.dispatchEvent(followed);
 		expect(followed.defaultPrevented).toBe(true);
+		await draw();
+		// An HTML page opens beside the chat, which stays as it is; its Show in Storage opens Storage there.
+		expect(f.root.querySelector(".thread-body.has-beside .side-panel .side-panel-title")?.textContent).toBe(
+			"dashboard.html",
+		);
+		expect(f.root.querySelector(".settings-dialog")).toBeNull();
+		f.root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Storage"]')!.click();
 		await draw();
 		await draw();
 		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
@@ -840,10 +856,10 @@ describe("settings session lifecycle", () => {
 		const folder = linkedFolder();
 		folder.list.mockRejectedValueOnce(new Error("The cloud is away"));
 		const f = await setup();
-		linksInMessage(f.root).dashboard.click();
+		await dashboardInStorage(f.root);
 		await draw();
 		await draw();
-		expect(folder.read).not.toHaveBeenCalled();
+		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")).toBeNull();
 		const retry = [...f.root.querySelectorAll<HTMLButtonElement>(".settings-storage-content button")].find(
 			(control) => control.textContent === "Retry opening Company File",
 		);
@@ -874,7 +890,7 @@ describe("settings session lifecycle", () => {
 		try {
 			linkedFolder();
 			const f = await setup();
-			linksInMessage(f.root).dashboard.click();
+			await dashboardInStorage(f.root);
 			await draw();
 			await draw();
 			f.root
@@ -922,7 +938,7 @@ describe("settings session lifecycle", () => {
 			await draw();
 			const composer = f.root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
 			expect(composer).not.toBeNull();
-			linksInMessage(f.root).dashboard.click();
+			await dashboardInStorage(f.root);
 			await draw();
 			await draw();
 			const expand = f.root.querySelector<HTMLButtonElement>(

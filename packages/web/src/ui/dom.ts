@@ -278,6 +278,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	],
 	download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3"],
 	// Lucide maximize-2: show something large.
+	reload: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
 	expand: ["M15 3h6v6", "M9 21H3v-6", "m21 3-7 7", "m3 21 7-7"],
 	trash: [
 		"M3 6h18",

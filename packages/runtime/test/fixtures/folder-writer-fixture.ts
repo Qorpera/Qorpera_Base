@@ -378,7 +378,8 @@ export async function folderWriterFixture(
 						const taken = (candidate: string) => candidate === path || candidate.startsWith(`${path}/`);
 						if ([...files.keys(), ...folders].some(taken))
 							return { ...base, outcome: "conflict", reason: "exists" };
-						if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
+						if (parent !== "" && !folders.has(parent))
+							return { ...base, outcome: "refused", reason: "parent_missing" };
 						// As SQL: the unit's own shape, then the hook decides each file, then the review is consulted.
 						const contents = unit.contents as { path: string; kind?: string; file?: CloudCompanyFolderFile }[];
 						const inner = new Set(contents.filter((item) => !item.file).map((item) => item.path));
@@ -663,9 +664,11 @@ export async function folderWriterFixture(
 				const after = args.p_after as string | null;
 				const children = [...files.keys(), ...folders, ...links.keys()]
 					.filter((path) =>
-						parent === ""
-							? !path.includes("/")
-							: path.startsWith(`${parent}/`) && !path.slice(parent.length + 1).includes("/"),
+						args.p_recursive === true
+							? parent === "" || path.startsWith(`${parent}/`)
+							: parent === ""
+								? !path.includes("/")
+								: path.startsWith(`${parent}/`) && !path.slice(parent.length + 1).includes("/"),
 					)
 					.sort()
 					.filter((path) => after === null || path > after);

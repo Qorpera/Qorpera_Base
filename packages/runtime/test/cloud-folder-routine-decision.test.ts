@@ -9,6 +9,7 @@ import {
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
+import { cloudRoutineAgentOffsetMinutes } from "@qorpera/runtime/cloud-routine-pace";
 import { afterEach, expect, it, vi } from "vitest";
 import { type FolderWriterHookAnswer, folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
@@ -163,6 +164,32 @@ it("concludes the routine with its conclusion on one line", async () => {
 	expect(f.text(PATH)).toBe(
 		writeRoutineFile({ ...BASE, status: "concluded", conclusion: "Prices are stable. No need to keep checking." }),
 	);
+});
+
+it("moves a next run on the hour or half hour by the agent's offset, never to the routine's end", async () => {
+	// Tomorrow at 09:00 UTC, as agents like to choose; the file's instants have no milliseconds.
+	const nine = Math.floor(Date.now() / 86_400_000) * 86_400_000 + 86_400_000 + 9 * 3_600_000;
+	const instant = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
+	const ends = instant(nine + 2 * 86_400_000);
+	const f = await fixture(writeRoutineFile({ ...BASE, ends }));
+	const moved = instant(nine + cloudRoutineAgentOffsetMinutes(f.identity.staffAgentId) * 60_000);
+	const { result, decided } = await f.decide({
+		action: "next",
+		operationKey: "decide-1",
+		at: new Date(nine).toISOString(),
+	});
+	expect(decided).toBe(true);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-routine-receipt/v1",
+		routine: { status: "active", at: moved },
+	});
+	expect(f.text(PATH)).toBe(writeRoutineFile({ ...BASE, ends, trigger: { when: "once", at: moved } }));
+	// A routine that ends before any moved time (the offset is at least a minute) keeps the time the agent chose.
+	const soon = instant(nine + 60_000);
+	const g = await fixture(writeRoutineFile({ ...BASE, ends: soon }));
+	const kept = await g.decide({ action: "next", operationKey: "decide-2", at: new Date(nine).toISOString() });
+	expect(kept.result).toMatchObject({ routine: { at: instant(nine) } });
+	expect(g.text(PATH)).toBe(writeRoutineFile({ ...BASE, ends: soon, trigger: { when: "once", at: instant(nine) } }));
 });
 
 it("rewrites the title and instructions with the decision, on the review's approval recorded for the change set", async () => {

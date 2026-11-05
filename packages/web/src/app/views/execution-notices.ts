@@ -10,6 +10,7 @@ import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
+import { goodWillName, kroner, monthName } from "./settings-good-will.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
 /** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */
@@ -112,6 +113,25 @@ function sentence(
 			});
 		case "qorpera.member-notification.provider-usage-limit/v1":
 			return undefined;
+		case "qorpera.member-notification.good-will-card-failed/v1":
+			// The month's good will invoice could not charge the card (20260930571000); Stripe tries again.
+			return subject.mine
+				? t(
+						"Your card could not pay {month}'s {name} of {amount}. Stripe tries again, or open the invoice to pay it another way.",
+						{
+							month: monthName(subject.month),
+							name: goodWillName().toLocaleLowerCase(),
+							amount: kroner(subject.dueOre),
+						},
+					)
+				: t(
+						"The company's card could not pay {month}'s {name} of {amount}. Stripe tries again, or open the invoice to pay it another way.",
+						{
+							month: monthName(subject.month),
+							name: goodWillName().toLocaleLowerCase(),
+							amount: kroner(subject.dueOre),
+						},
+					);
 		case "qorpera.member-notification.machine-capacity/v1":
 			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
 		case "routine-needs-model-account":
@@ -471,6 +491,19 @@ export class ExecutionNotices {
 						},
 					},
 					h("p", null, text),
+					item?.subject.schema === "qorpera.member-notification.good-will-card-failed/v1" &&
+						item.subject.invoiceUrl
+						? h(
+								"a",
+								{
+									class: "btn btn-small",
+									href: item.subject.invoiceUrl,
+									target: "_blank",
+									rel: "noopener noreferrer",
+								},
+								t("Open the invoice"),
+							)
+						: null,
 					stopFailed
 						? h("p", { class: "company-notice-error" }, t("The work could not be stopped. Try again."))
 						: null,

@@ -6,7 +6,8 @@
      page runs its WebRTC interfaces go, and a frame put into the page goes before it loads (a frame would be a window of
      its own, with them). The frame waits for its page from the app that framed it, then becomes that page. Escape
      pressed in the page (and not taken by it) is passed to the app, which has no other way to hear a key pressed in
-     here: it closes what the page is shown in, as Escape does everywhere else. -->
+     here: it closes what the page is shown in, as Escape does everywhere else. An interface app's page is handed one
+     message port with it, which only this document holds: its `qorpera` object reads the company's data through it. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -101,11 +102,71 @@
 	});
 	define(Document.prototype, "close", function closeRefused() {});
 
+	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
+	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
+	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
+	// it; the app checks each.
+	const send = MessagePort.prototype.postMessage;
+	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
+	// through it the port.
+	const dataOf = getter(MessageEvent.prototype, "data");
+	const startPort = MessagePort.prototype.start;
+	const freeze = Object.freeze;
+	const PromiseOf = Promise;
+	const bridge = (port) => {
+		const pending = new Map();
+		const changes = [];
+		let next = 0;
+		const get = Map.prototype.get;
+		const set = Map.prototype.set;
+		const drop = Map.prototype.delete;
+		const push = Array.prototype.push;
+		apply(listen, port, [
+			"message",
+			function answer(event) {
+				const data = apply(dataOf, event, []);
+				if (!data || typeof data !== "object") return;
+				if (data.type === "qorpera-app-change") {
+					for (let index = 0; index < changes.length; index++)
+						try {
+							changes[index]();
+						} catch {}
+					return;
+				}
+				if (data.type !== "qorpera-app-answer") return;
+				const waiting = apply(get, pending, [data.id]);
+				if (!waiting) return;
+				apply(drop, pending, [data.id]);
+				if (data.ok === true) waiting[0](data.value);
+				else waiting[1](new Error(typeof data.error === "string" ? data.error : "The app could not read that"));
+			},
+		]);
+		apply(startPort, port, []);
+		const call = (method, params) =>
+			new PromiseOf((resolve, reject) => {
+				const id = ++next;
+				apply(set, pending, [id, [resolve, reject]]);
+				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
+			});
+		return freeze({
+			read: freeze((path) => call("read", { path: String(path) })),
+			list: freeze((path) => call("list", { path: path === undefined ? "" : String(path) })),
+			table: freeze((name) => call("table", { name: String(name) })),
+			todos: freeze(() => call("todos", {})),
+			agents: freeze(() => call("agents", {})),
+			onChange: freeze((listener) => {
+				if (typeof listener === "function") apply(push, changes, [listener]);
+			}),
+		});
+	};
+
 	addEventListener("message", function take(event) {
 		const data = event.data;
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
+		const port = event.ports && event.ports.length === 1 ? event.ports[0] : null;
 		apply(open, document, []);
+		if (port) define(window, "qorpera", bridge(port));
 		apply(write, document, [data.html]);
 		apply(close, document, []);
 		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every

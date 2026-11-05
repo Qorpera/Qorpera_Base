@@ -36,6 +36,8 @@
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
+/* An agent's posted app is a button (it opens beside the chat), drawn as the pages' links are. */
+button.rail-app { border: 0; background: none; color: inherit; font: inherit; text-align: center; cursor: pointer; }
 /* The open page: its name in the selection blue and a dot under it, as a dock marks a running app; no tile behind
  * the emblem. */
 .rail-app::after { content: ""; width: 4px; height: 4px; margin-top: -1px; border-radius: 50%; background: transparent; transition: background-color var(--motion-fast) ease; }

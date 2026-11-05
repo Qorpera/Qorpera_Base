@@ -23,7 +23,7 @@ const percent = (rateBp: number) =>
 	`${new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }).format(rateBp / 100)} %`;
 
 /** "November 2026" for "2026-11". */
-function monthName(month: string): string {
+export function monthName(month: string): string {
 	const [year, number] = month.split("-").map(Number);
 	return new Date(Date.UTC(year!, number! - 1, 1)).toLocaleDateString(locale(), {
 		month: "long",

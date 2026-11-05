@@ -580,7 +580,7 @@ function applied(proposal: CloudCompanyFolderProposal, receiptId: string, commit
 				: "The changes in notSaved were not applied: a path that changed since you saved it keeps its current version (where a file's text differed, your version is kept beside it as a conflict copy). Read the current files and make a change that is still wanted again with the tool made for it.",
 			...(hired.length
 				? [
-						"A hired agent has not started yet: wake it with send_coworker_message (recipientStaffId is its id), asking it to start on its first todo.",
+						"A hired agent starts on its first todo by itself, usually within a minute; message it only if it has not begun after a few minutes.",
 					]
 				: []),
 			"Tell the member what was applied, in plain words.",
