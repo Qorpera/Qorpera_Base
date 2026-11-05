@@ -21,6 +21,13 @@ section 19 of `QORPERA-RUNTIME-CONTRACT.md`. Where this document and the contrac
 >   marketplace), a larger table store and the arrival animation.
 > - Stored files, rows, offers and consent records are kept. Nothing is deleted or migrated because of this.
 >
+> **Interface apps, 2026-11-05.** Jonas: "the interfaces is where you see the company, not just talk to its
+> workers … we should let the agent build interface apps into the company file that are posted as an interface."
+> This overrides the scope reset for **agent-built apps only**: agents make small web pages in `apps/<name>/` of the
+> Company File, which members open beside the chat and, once posted, in the apps drawer. They run in the Company
+> File's locked frame, not on a Qorpera origin, and are not interface TOML files: the rules above for
+> `QorperaOS/interfaces/` and the platform's pages stand. See [RUNTIME-INTERFACE-APPS.md](RUNTIME-INTERFACE-APPS.md).
+>
 > In this rebuild the format of §§3–6 is needed only as far as the two pages need it. The text below stays as the
 > record of what was approved on 2 October; §§1–2 and 7–10 carry a mark. This note records scope; it says
 > nothing about what is built.

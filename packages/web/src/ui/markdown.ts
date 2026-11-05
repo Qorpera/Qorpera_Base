@@ -1,6 +1,8 @@
+import { appLinkName } from "@qorpera/cloud-client/interface-apps";
 import { Lexer, type MarkedToken } from "marked";
 import { h } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
+import { interfaceEmblem } from "./interface-emblem.ts";
 import { t } from "./preferences.ts";
 
 // Parse only a single validated character reference, never source markup.
@@ -112,6 +114,28 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
 						: children();
+				// An agent's interface app (`app:<name>`): a card the app answers by opening the app beside the chat
+				// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
+				if (app !== undefined)
+					return [
+						h(
+							"button",
+							{
+								type: "button",
+								class: "app-card",
+								"data-app-name": app,
+								title: t("Open {name} beside the chat", { name: app }),
+							},
+							h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", null, 30)),
+							h(
+								"span",
+								{ class: "app-card-copy" },
+								h("strong", { class: "app-card-title" }, content),
+								h("small", { class: "app-card-note" }, t("App · opens beside the chat")),
+							),
+						),
+					];
 				// A file or folder of the company's own Company File: a button the app answers by opening Storage there.
 				const path = folderLinkPath(decodeEntities(token.href));
 				if (path !== undefined)

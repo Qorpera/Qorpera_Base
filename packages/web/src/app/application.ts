@@ -20,6 +20,7 @@ import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { nativeColorOf } from "../ui/avatar.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
+import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
@@ -29,6 +30,7 @@ import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
+import { CompanyApps, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -43,6 +45,7 @@ import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
+import { AppPanel, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -184,19 +187,79 @@ export function mountApplication(
 		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
+	/** Shows an app or a page beside the open chat; with none open, opens the app's owner's chat (or the Co-Founder's)
+	 * and shows it there. Again on what is shown already, it reads it again. */
+	function openSide(target: SidePanelTarget): void {
+		const controller = company;
+		if (!controller || !sidePanel) return;
+		if (conversation?.el.isConnected) {
+			const shown = conversation.beside;
+			if (shown instanceof AppPanel && sameTarget(shown.target, target)) {
+				void shown.reload(true);
+				shown.focus();
+				return;
+			}
+			conversation.showBeside(sidePanel(target));
+			return;
+		}
+		pendingSide = target;
+		const owner =
+			target.kind === "app" ? companyApps?.apps.find((app) => app.name === target.name)?.manifest?.owner : undefined;
+		const agent = owner ? controller.staffById(owner) : undefined;
+		navigate(
+			agent && agent.id !== controller.cofounderId()
+				? { name: "company", profileId: controller.profile.profileId, section: "staff", id: agent.id }
+				: { name: "company", profileId: controller.profile.profileId, section: "home" },
+		);
+	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself.
 	function onFolderLink(event: MouseEvent): void {
+		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
+		if (app?.dataset.appName && !event.defaultPrevented) {
+			event.preventDefault();
+			openSide({ kind: "app", name: app.dataset.appName });
+			return;
+		}
 		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
 		const path = link?.dataset.folderPath;
 		if (path === undefined || event.defaultPrevented) return;
 		event.preventDefault();
 		const fromConversation = conversation !== undefined && main.contains(link);
+		// An HTML page in an agent's message opens beside the chat, live, as an app does.
+		if (fromConversation && sidePanel && /\.html?$/i.test(path)) {
+			openSide({ kind: "page", path });
+			return;
+		}
 		const open = settings;
 		openSettings("storage", path);
 		if (settings && settings !== open) settingsFromConversation = fromConversation;
 	}
 	root.addEventListener("click", onFolderLink);
+	// An app's card in a message names it by its folder; once the company's apps are read it shows the app's own emblem
+	// and line (ui/markdown.ts draws it plain, as it has no company).
+	const decorateAppCards = () => {
+		const apps = company?.store.get().apps;
+		if (!apps) return;
+		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
+			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
+			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.colour, manifest.about]) : "";
+			if (!manifest || card.dataset.shown === shown) continue;
+			card.dataset.shown = shown;
+			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, manifest.colour, 30));
+			const note = card.querySelector(".app-card-note");
+			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
+		}
+	};
+	let decorating = false;
+	new MutationObserver(() => {
+		if (decorating) return;
+		decorating = true;
+		queueMicrotask(() => {
+			decorating = false;
+			decorateAppCards();
+		});
+	}).observe(main, { childList: true, subtree: true });
 	let routeRevision = 0;
 	let accountRevision = 0;
 	holdWebsiteIdea();
@@ -270,6 +333,12 @@ export function mountApplication(
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
+	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
+	let companyApps: CompanyApps | undefined;
+	/** Makes the side panel of an app or page for the open company: set while one is drawn. */
+	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
+	/** An app or page asked for while no chat was open: shown beside the chat once it is. */
+	let pendingSide: SidePanelTarget | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
@@ -414,6 +483,10 @@ export function mountApplication(
 		interfaceFolder = undefined;
 		interfaceOffers?.dispose();
 		interfaceOffers = undefined;
+		companyApps?.dispose();
+		companyApps = undefined;
+		sidePanel = undefined;
+		pendingSide = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
@@ -854,6 +927,33 @@ export function mountApplication(
 				current,
 			).folder();
 		};
+		// An agent's app or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with the member's
+		// own folder client, under the company's checks.
+		sidePanel = (target) =>
+			new AppPanel(
+				{
+					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+					agents: () =>
+						controller.store
+							.get()
+							.staff.filter((agent) => agent.employmentStatus === "active")
+							.map((agent) => {
+								const now = controller.agentState(agent.id);
+								return {
+									name: agent.displayName,
+									role: agent.role,
+									working: now === "working" || now === "writing",
+								};
+							}),
+					readApps: () => companyApps?.read() ?? Promise.resolve([]),
+					agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
+					onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+					openInStorage: (path) => openSettings("storage", path),
+					budgetKey: controller.profile.profileId,
+				},
+				target,
+				() => conversation?.closeBeside(true),
+			);
 		// The member's erases of single messages under a caller's checks (summary trees M3c).
 		const messageErases = (current: () => void) => {
 			current();
@@ -964,6 +1064,8 @@ export function mountApplication(
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
 			interfaceOffers = undefined;
+			companyApps?.dispose();
+			companyApps = undefined;
 			mail?.dispose();
 			mail = undefined;
 			closeSettings(false);
@@ -1058,6 +1160,8 @@ export function mountApplication(
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
 			interfaceOffers = undefined;
+			companyApps?.dispose();
+			companyApps = undefined;
 		}
 		if (!interfaceFolder && state.team?.capabilities.read) {
 			const files = new WebCompanyFiles(
@@ -1088,7 +1192,15 @@ export function mountApplication(
 				},
 				controller.signal,
 			);
-			const reader = new CompanyInterfaceFolder(files, (folder) => {
+			// The pages' reader and the apps' share one hint channel.
+			const hints = sharedFolderHints(files);
+			const shared = {
+				signal: files.signal,
+				current: () => files.current(),
+				folder: () => files.folder(),
+				folderHints: hints,
+			};
+			const reader = new CompanyInterfaceFolder(shared, (folder) => {
 				if (interfaceFolder !== reader) return;
 				controller.store.set({ interfaceFolder: folder });
 				void offers.refresh();
@@ -1109,6 +1221,14 @@ export function mountApplication(
 			offers.open();
 			pages.open();
 			void reader.open();
+			// The agents' apps, for the apps drawer and the panel beside the chat (RUNTIME-INTERFACE-APPS.md §4).
+			const apps = new CompanyApps(shared, (next) => {
+				if (companyApps !== apps) return;
+				controller.store.set({ apps: next });
+				decorateAppCards();
+			});
+			companyApps = apps;
+			apps.open();
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
@@ -1165,6 +1285,7 @@ export function mountApplication(
 		}
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
+		if (route.section !== "chat" && route.section !== "staff" && route.section !== "home") pendingSide = undefined;
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1440,6 +1561,12 @@ export function mountApplication(
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (agentPage && conversation.show(agentPage.agentId, agentPage.page)) agentPage = undefined;
+				// An app asked for from the apps drawer while no chat was open: beside the chat it opened.
+				if (pendingSide && sidePanel) {
+					const target = pendingSide;
+					pendingSide = undefined;
+					conversation.showBeside(sidePanel(target));
+				}
 				return;
 			}
 			case "staff": {

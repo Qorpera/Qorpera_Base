@@ -40,9 +40,9 @@ import {
 	type CloudCompanyFolderNewEntry,
 	type CloudCompanyFolderUnit,
 	type CloudCompanyFolderUnitResult,
-	CloudCompanyPathNotText,
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
+import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
 	args,
 	cloudFolderRefusal,
