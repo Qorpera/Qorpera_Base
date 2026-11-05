@@ -1,9 +1,12 @@
 -- Good will follow-ups (20260930566000):
--- 1. A card the good will invoice could not charge tells the company's founders, and the member whose card it is, with
---    a line above the composer (member notification good_will_card_failed); the line goes once Stripe's retry pays.
+-- 1. A card the good will invoice could not charge (Stripe's invoice.payment_failed) tells the company's founders, and
+--    the member whose card it is, with a line above the composer (member notification good_will_card_failed); the line
+--    goes once Stripe's retry pays. A draft deleted, voided or uncollectible fails the month without a line: that is no
+--    card's failure, and no retry follows it.
 -- 2. The computer-hours zero rule stays off: under good will nothing is switched off for want of sales, and hours can
---    no longer be bought. Its switch is cleared and retired (the runbook no longer sets it at the live switch); the
---    dormant checks stay, so nothing waits while it is null.
+--    no longer be bought. Its switches are cleared and retired (the runbook no longer sets them at the live switch);
+--    the dormant checks stay, so nothing waits while they are null. The hour emails stay off too: their sender's
+--    schedule is removed (its "running low" and "out of hours" rows may still be queued; nothing sends them).
 
 -- 1. The notification -------------------------------------------------------------------------------------------------
 
@@ -70,8 +73,11 @@ end $$;
 
 select pg_temp.good_will_follow_ups_replace('public.qorpera_good_will_billing(text,text,jsonb)'::regprocedure,
 	$old$		return jsonb_build_object('outcome', 'applied', 'profileId', v_row.profile_id, 'status', v_row.status);$old$,
-	$new$		-- 20260930571000: the founders and the card's member hear of a failed card; a paid one takes it away.
-		perform public.qorpera_good_will_card_notice(v_row);
+	$new$		-- 20260930571000: the founders and the card's member hear of a card Stripe could not charge (its webhook; the
+		-- tick's own failures name why); a paid one takes the line away.
+		if p_method = 'invoice_paid' or p_args ->> 'why' is null then
+			perform public.qorpera_good_will_card_notice(v_row);
+		end if;
 		return jsonb_build_object('outcome', 'applied', 'profileId', v_row.profile_id, 'status', v_row.status);$new$);
 
 drop function pg_temp.good_will_follow_ups_replace(regprocedure, text, text);
@@ -86,3 +92,14 @@ comment on column public.qorpera_computer_hour_billing.zero_rule_since is
 	'computer hours can no longer be bought; the live switch sets live_since only.';
 comment on column public.qorpera_computer_hour_billing.coding_zero_rule_since is
 	'Retired by good will (20260930571000): leave null, as zero_rule_since.';
+
+-- The hour emails' sender, when an operator scheduled it (RUNTIME-COMPUTER-HOURS.md, "Turning the notices on").
+do $unschedule$
+begin
+	if to_regnamespace('cron') is not null and to_regclass('cron.job') is not null then
+		perform cron.unschedule(job.jobid) from cron.job as job where job.jobname = 'qorpera-computer-hour-notices';
+	end if;
+exception when others then
+	raise warning 'The hour emails were not unscheduled (%): run select cron.unschedule(''qorpera-computer-hour-notices'')',
+		sqlerrm;
+end $unschedule$;

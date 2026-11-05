@@ -378,7 +378,7 @@ describe("company notices", () => {
 		};
 		const own = await show(failed(91, true, "https://invoice.stripe.com/i/1"));
 		expect(own.querySelector("p")?.textContent).toBe(
-			"Your card could not pay November 2026's good will of 5,100 kr. Stripe tries again; change the card in Settings → Company.",
+			"Your card could not pay November 2026's good will of 5,100 kr. Stripe tries again, or open the invoice to pay it another way.",
 		);
 		expect(own.querySelector("a")?.getAttribute("href")).toBe("https://invoice.stripe.com/i/1");
 		const founder = await show(failed(92, false, null));

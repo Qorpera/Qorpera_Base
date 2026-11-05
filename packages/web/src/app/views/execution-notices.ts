@@ -117,7 +117,7 @@ function sentence(
 			// The month's good will invoice could not charge the card (20260930571000); Stripe tries again.
 			return subject.mine
 				? t(
-						"Your card could not pay {month}'s {name} of {amount}. Stripe tries again; change the card in Settings → Company.",
+						"Your card could not pay {month}'s {name} of {amount}. Stripe tries again, or open the invoice to pay it another way.",
 						{
 							month: monthName(subject.month),
 							name: goodWillName().toLocaleLowerCase(),
@@ -125,7 +125,7 @@ function sentence(
 						},
 					)
 				: t(
-						"The company's card could not pay {month}'s {name} of {amount}. Stripe tries again; a founder can change the card in Settings → Company.",
+						"The company's card could not pay {month}'s {name} of {amount}. Stripe tries again, or open the invoice to pay it another way.",
 						{
 							month: monthName(subject.month),
 							name: goodWillName().toLocaleLowerCase(),

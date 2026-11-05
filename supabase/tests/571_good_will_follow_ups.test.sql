@@ -1,7 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- 20260930571000 (good will follow-ups), on the folder-v2 runtime base: a good will invoice that could not charge the
--- card tells the company's founders and the card's member once (a line above the composer), and its paid retry takes
--- the line away; the computer-hours zero rule stays off (its switches cleared, nobody at zero).
+-- 20260930571000 (good will follow-ups), on the folder-v2 runtime base: a good will invoice Stripe could not charge
+-- tells the company's founders and the card's member once (a line above the composer), never a member who left, and
+-- its paid retry takes the line away; a draft the tick fails itself (deleted, void) tells no one. The computer-hours
+-- zero rule stays off: its switches are cleared, and even a company recorded at zero holds nothing.
 
 select pg_temp.base_claims('service_role');
 insert into public.qorpera_computer_hour_billing_keys (key_sha256)
@@ -47,14 +48,30 @@ begin
 		from pg_temp.fu_notices() where user_id = '92400000-0000-4000-8000-000000000004'), 'the card''s member reads it is theirs');
 	perform pg_temp.base_assert((select not (subject ->> 'mine')::boolean from pg_temp.fu_notices()
 		where user_id = '92400000-0000-4000-8000-000000000001'), 'the founder reads it is the company''s card');
-	-- Stripe says it again: still once.
-	perform pg_temp.fu_bill('invoice_failed');
+	-- Stripe says it again: the month is failed already, so it is ignored; and the notice itself tells each once.
+	perform pg_temp.base_assert(pg_temp.fu_bill('invoice_failed') ->> 'outcome' = 'ignored', 'a second failure is ignored');
+	perform public.qorpera_good_will_card_notice((select m from public.qorpera_good_will_months m
+		where m.stripe_invoice_id = 'in_follow1'));
 	perform pg_temp.base_assert((select count(*) from pg_temp.fu_notices()) = 2, 'told once');
 
 	-- 2. Stripe's retry pays it: the lines go.
 	v := pg_temp.fu_bill('invoice_paid');
 	perform pg_temp.base_assert(v ->> 'status' = 'charged', 'charged: ' || v::text);
 	perform pg_temp.base_assert(not exists (select 1 from pg_temp.fu_notices() where open), 'paid takes the lines away');
+
+	-- A draft the tick fails itself (deleted at Stripe) tells no one; nor is a card's member who left the company told.
+	insert into public.qorpera_good_will_months (profile_id, month, status, sorting_since, final_at, payer_user_id,
+		stripe_invoice_id, livemode)
+	values ('92400000-0000-4000-8000-000000000010', '2026-10-01', 'closed', '2026-11-01', clock_timestamp(),
+		'92400000-0000-4000-8000-000000000005', 'in_follow2', false);
+	v := public.qorpera_good_will_billing('gw-follow-up-key', 'invoice_failed',
+		'{"invoiceId": "in_follow2", "livemode": false, "why": "deleted"}');
+	perform pg_temp.base_assert(v ->> 'status' = 'failed' and not exists (select 1 from public.qorpera_member_notifications
+		where dedupe_key = 'in_follow2'), 'the tick''s own failure tells no one: ' || v::text);
+	perform public.qorpera_good_will_card_notice((select m from public.qorpera_good_will_months m
+		where m.stripe_invoice_id = 'in_follow2'));
+	perform pg_temp.base_assert((select array_agg(user_id) from public.qorpera_member_notifications where dedupe_key = 'in_follow2')
+		= array['92400000-0000-4000-8000-000000000001']::uuid[], 'only the founder, not the card''s member who left');
 
 	-- 3. The zero rule stays off.
 	perform pg_temp.base_assert((select zero_rule_since is null and coding_zero_rule_since is null
@@ -63,10 +80,15 @@ begin
 	perform pg_temp.base_assert(col_description('public.qorpera_computer_hour_billing'::regclass,
 		(select attnum from pg_attribute where attrelid = 'public.qorpera_computer_hour_billing'::regclass
 			and attname = 'zero_rule_since')) like 'Retired by good will%', 'the switch says it is retired');
-	-- The live switch alone holds no company's work.
+	-- Live payments, and the company even recorded at zero: nothing is held while the switch is retired.
 	update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 minute';
+	insert into public.qorpera_computer_hour_zero_state (profile_id, ran_out_at)
+	values ('92400000-0000-4000-8000-000000000010', clock_timestamp() - interval '1 hour');
 	perform pg_temp.base_assert(not public.qorpera_company_at_zero('92400000-0000-4000-8000-000000000010', clock_timestamp()),
 		'live payments hold nothing');
+	perform pg_temp.base_assert(not public.qorpera_company_coding_at_zero('92400000-0000-4000-8000-000000000010',
+		clock_timestamp()), 'nor coding');
+	delete from public.qorpera_computer_hour_zero_state;
 	update public.qorpera_computer_hour_billing set live_since = null;
 end
 $$;

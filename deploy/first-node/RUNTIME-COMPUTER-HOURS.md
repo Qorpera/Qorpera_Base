@@ -719,129 +719,45 @@ Coordinator (nothing secret):
 
 ## Going live (build step 7)
 
-One switch turns on real payments, the hour emails and the zero rule together. Nothing before it
-charges a card for real hours or holds work back. Secrets never pass through a session: Jonas
-creates and stores every key himself; the coordinator writes only what is not secret.
+**Superseded by good will (Jonas, 5 Nov 2026; migrations 20260930566000, 20260930571000).** Companies no longer buy
+computer hours: they pay a monthly share of their customer sales, charged on the 5th to the company's card. The hours
+are still metered (they show our costs), but nothing is sold or held for them:
 
-Before the switch (all of these hold):
+- The zero rule stays off for good: never set `qorpera_computer_hour_billing.zero_rule_since` or
+  `coding_zero_rule_since` (20260930571000 cleared them and marks them retired). A company without sales keeps
+  working, and it could not buy hours anyway.
+- The hour emails stay off: never schedule `qorpera-computer-hour-notices` (20260930571000 unschedules it). Their
+  "running low" and "out of hours" rows may still be queued by the usage trigger; nothing sends them.
+- Plans and packs are no longer offered (the web's Plan & usage tab is gone).
 
-- Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
-  (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
-  checks (#520), and 6b (machines not starting, waking or staying up at zero). 6b part 1, the node
-  refusal, is built; its reason must be known on both nodes before it can be returned, by every
-  program that holds the node admission (`runtime-node-admission.ts`: the LXD provider host, the
-  office provider and the office fleet) and by the coding executor host. An older one throws on
-  the reason instead of waiting. The coding executor rollout (K1) was done on 2026-10-01: both
-  nodes run `9fef1f70` with config v7 and coding image `ffae8371`, proven on a real session. So
-  coding's own switch (6b part 4) can follow the zero rule in the same minute (step 2b). Part 1
-  alone is not enough: the later 6b parts are required too: Company Computers (part 2, built; the
-  web deployed first), agents' machines (part 3, built) and coding (part 4, built, with its own
-  switch).
-- Members see their hours left, by source, on Plan & usage from the switch on
-  (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
-  and the company card (migration `20260928259330`) are live first.
-- The meter job runs every minute (`qorpera-computer-hour-meter`), and
-  `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
-  shows a recent `swept_at` and no fresh failure.
-- The notice worker is scheduled ("Turning the notices on").
-- Test mode was accepted end to end with an enrolled tester (contract section 21, item 31): a plan,
-  a pack, an upgrade, a refund, a failed payment, Stripe's receipts and invoices, and the Plan &
-  usage page. Qorpera's own hour emails come only from live charges, so they are accepted after
-  the switch.
-- The reviews' "Before the live switch" list under "Zero" is settled, and the orchestrator
-  reconcile and the sweep were measured on production-sized data.
+The good will live switch, in this order:
 
-In advance (nothing secret):
-
-- Jonas, in Stripe's live mode: repeat test-mode steps 2 to 6 (tax, the five prices, the customer
-  portal, failed payments, the webhook endpoint with the same address and events), and send the
-  five live `price_...` ids to the coordinator.
-- The coordinator writes them into `qorpera_computer_hour_catalog.stripe_price_live`, by
-  `item_key` (harmless before the switch: live checkout stays closed until `live_since`).
-
-At the agreed minute, in this order:
-
-1. Jonas sets both function secrets in one command, from a file so the live key stays out of the
-   shell's history: a file with the lines `QORPERA_STRIPE_SECRET_KEY=sk_live_...` and
-   `QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...` (the live endpoint's secret), then
-   `supabase secrets set --env-file <file>`, then deleting the file. He also replaces
-   `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal configuration's id, or unsets it, if
-   it was set in test mode. One command, because a live webhook secret with the test key drops live
-   events for good. From here until step 2 nobody can
-   buy (checkout answers "unavailable"), and test purchases stop working, as intended.
-2. The coordinator switches payments on (good will, 5 Nov 2026: the zero rule stays off; never set
-   `zero_rule_since` or `coding_zero_rule_since`, since hours can no longer be bought and a company
-   without sales keeps working, migration 20260930571000):
+1. Jonas, in Stripe's live mode: Stripe Tax on (Danish moms, EU reverse charge), Qorpera's CVR and address on
+   invoices, the webhook endpoint (`/functions/v1/computer-billing/webhook`, events `checkout.session.completed`,
+   `invoice.paid`, `invoice.payment_failed`), and the new terms members accept.
+2. Jonas sets both function secrets in one command, from a file so the live key stays out of the shell's history:
+   `QORPERA_STRIPE_SECRET_KEY=sk_live_...` and `QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...` (the live endpoint's
+   secret), then `supabase secrets set --env-file <file>`, then deleting the file. One command, because a live webhook
+   secret with the test key drops live events for good. He also stores `qorpera_computer_billing_key` in the Vault
+   (the same value as `QORPERA_COMPUTER_BILLING_KEY`), so the hourly good will tick can ask for invoices.
+3. The coordinator switches payments on:
 
    ```sql
    update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
    ```
 
-   From then, use is charged live (every company starts with its five free hours; dry-run
-   balances stay as they were and never count). Plans can be bought by every signed-in account,
-   packs by a company's founders. The hour emails are queued, and a company that runs out is
-   recorded by the next sweep.
+   A month that closed before this is never charged: the next tick marks it `waived`. Founders add the company's
+   card in Settings → Company; the first live month is invoiced on the next 5th.
+4. Within the first day, a founder of a test company saves a live card: Stripe's dashboard shows
+   `checkout.session.completed` answered 2xx, and `select profile_id, livemode, brand, last4 from
+   public.qorpera_good_will_payers` shows it. A wrong webhook secret is answered 400 before anything is recorded, so
+   only the dashboard shows it.
+5. On the 5th, watch the tick and the invoices: `select status, livemode, count(*) from
+   public.qorpera_good_will_months group by 1, 2`, and webhook events left for review: `select type, count(*) from
+   public.qorpera_computer_hour_stripe_events where outcome = 'needs_review' and livemode group by 1`.
 
-   2b. Retired (good will): coding's zero rule (`coding_zero_rule_since`) stays off too.
-3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
-   other than step 5's test company (or refunded before step 5, which also proves a live refund),
-   refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
-   `select type, outcome from public.qorpera_computer_hour_stripe_events where livemode order by
-   received_at desc limit 5` shows it applied. A wrong webhook secret is answered 400 before
-   anything is recorded, so only the dashboard shows it.
-4. Watch for 30 minutes, then daily for the first week:
-   - `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`;
-   - `select count(*) from public.qorpera_computer_hour_zero_state` (companies at zero);
-   - `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2`;
-   - webhook events left for review: `select type, count(*) from
-     public.qorpera_computer_hour_stripe_events where outcome = 'needs_review' and livemode group by 1`;
-   - the meter's lag: `select clock_timestamp() - metered_until from public.qorpera_computer_hour_meter`
-     (about a minute).
-5. Acceptance on a test company with no founder on an internal account (one such founder makes
-   the company complimentary): after its first live use has created its free hours, withdraw them
-   (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where kind =
-   'free' and profile_id = '<test company>' and not dry_run`). Within a minute it is recorded at
-   zero: a new message waits with the notice above the composer, Plan & usage says it is out of
-   hours, its founders get "out of hours" ten minutes later, and a machine does not start or wake.
-   An hour on, work that was still running ends with "out of computer hours" (start work that runs
-   longer than an hour to see it) and its awake machines stop. Buying a pack (a real charge,
-   refunded afterwards) releases the waiting work by itself.
-6. Afterwards, Jonas switches off the sandbox webhook endpoint in Stripe, then cancels the testers'
-   test subscriptions.
-
-Rollback:
-
-- Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`
-  (coding follows, since its switch needs the zero rule too). To go back to holding coding only at
-  the run's wake step (step 2b's "Without this step"):
-  `update public.qorpera_computer_hour_billing set coding_zero_rule_since = null`.
-  Held work is released at once (routines with the next sweep), and the next sweep empties the
-  zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
-  the usage trigger, once per time of owing.
-- Stop the hour emails: `select cron.unschedule('qorpera-computer-hour-notices')`.
-- Stop selling is not a clean undo once real money has moved, so it is for emergencies only.
-  While `live_since` is null every Stripe event is recorded as dry run, even with the live key:
-  a refund or dispute of a live purchase goes to review and takes no hours back, a live renewal
-  whose payment finally fails is not withdrawn, and a checkout page opened before the stop can
-  still be paid (a pack for an hour, a plan for a day), for dry-run hours. So, in this order:
-  1. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
-     zero_rule_since = null`. New checkouts close at once and balances go back to the dry run;
-     live purchases already made stay in the ledger and count again when live mode is next on.
-  2. Jonas expires the checkout sessions still open (the coordinator lists them:
-     `select stripe_session_id from public.qorpera_computer_hour_checkouts where livemode and
-     completed_at is null and created_at > clock_timestamp() - interval '1 day'`; only packs set
-     `completed_at`, so paid plan sessions show up too and are skipped in Stripe), pauses the
-     live subscriptions, and keeps the live keys in place (so Stripe's events are still verified).
-  3. When live mode is on again, the coordinator resends from Stripe's dashboard the live events
-     left for review while it was off (refunds and disputes), so they are applied; an event
-     already handled is not run again. A live plan whose final payment failed while it was off
-     was recorded without taking its hours back (its event is a live one from that window with
-     the detail "renewal withdrawn: 0"): the coordinator withdraws that period by hand
-     (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where
-     reference = '<sub_…>:<period start in Unix seconds>' and not dry_run`). A pack or plan paid
-     while it was off is only dry-run hours (pausing, in step 2, prevents renewals); Jonas refunds
-     any. Stripe keeps events for a limited time (about 30 days), so a long stop may leave some
-     that can no longer be resent: those are then handled by hand from Stripe's dashboard.
+Rollback: `update public.qorpera_computer_hour_billing set live_since = null` stops live invoices at once (a month
+already invoiced stays with Stripe; Jonas voids it there if needed). The meter keeps running either way.
 
 ## Plan & usage (web)
 
