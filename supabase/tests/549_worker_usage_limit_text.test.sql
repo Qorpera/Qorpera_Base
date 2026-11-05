@@ -35,7 +35,7 @@ create function pg_temp.ul_words(p_reset timestamptz) returns text language sql 
 		|| case when p_reset is null then ''
 			else 'It resets on ' || to_char(p_reset at time zone 'UTC', 'FMDD FMMonth YYYY "at" HH24:MI "UTC"') || '. ' end
 		|| 'The work does not move to another login by itself. It waits and goes on by itself on this login once the limit '
-		|| 'resets (it is tried again at least once a day). The member can also choose another of their logins for it '
+		|| 'resets (its usage is checked at least once a day). The member can also choose another of their logins for it '
 		|| '(in the conversation''s Login menu).'
 $$;
 -- The account's usage as the login's refresh records it: a 5-hour window with room and a weekly window that is full.

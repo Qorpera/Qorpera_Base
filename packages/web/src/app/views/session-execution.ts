@@ -454,7 +454,8 @@ export class SessionExecutionView {
 				: undefined
 			: (handedOff?.connectionId ??
 				(kept ? (keeps && sendable.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
-		if (!next) return;
+		// A conversation waiting at its limit on the login it already has keeps everything as it is.
+		if (!next || (next === kept?.connectionId && !handedOff && this.canSend)) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
 			this.#error = undefined;

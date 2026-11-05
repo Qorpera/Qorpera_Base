@@ -214,8 +214,7 @@ they answer 42501 "native host call is refused".
   the same way.
 - At a usage limit (20260930575000) the conversation still keeps its login, and a
   client may send on it: the message waits queued and goes on by itself, on the
-  same login, once the limit resets or a usage reading shows room (a wall ends at
-  most a day after the limit). The usage-limit notice (`provider_usage_limit`) also
+  same login, once the limit resets or a usage reading shows room. The usage-limit notice (`provider_usage_limit`) also
   carries `accountEmail` (the login's email, or null) for the member whose own login
   it is; a company account's notice does not. Its `resetsAt` is the signal's reset:
   when the provider names none, the latest reset still ahead of a full window in

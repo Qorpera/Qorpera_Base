@@ -6,23 +6,25 @@
 -- amendment), the founder chose "wait + resume only": nothing moves to another login by itself. The 4 October rule
 -- (20260930059000, 20260930095000) stands: work stays on its login, also at its limit; only the member's own pick moves
 -- it. What changes is that waiting work no longer needs that pick to go on:
--- * The wall a usage limit puts on a login ends at the provider's reset, else 6 hours after the limit, and never later
---   than a day after it; and a usage reading taken after the limit that shows room ends it at once
---   (qorpera_native_account_usage_limit_reset_company). Before, a reading lifted it only for five minutes, and never one
---   with a reset time.
+-- * The wall a usage limit puts on a login ends at the provider's reset (else 6 hours after the limit, as before), and a
+--   usage reading taken after the limit that shows room ends it at once (qorpera_native_account_usage_limit_reset_company).
+--   Before, a reading lifted it only for five minutes, and never one with a reset time.
 -- * Codex's usage-limit error names no reset (codexErrorInfo is the bare name usageLimitExceeded), so no signal had one.
 --   A signal now takes it from the login's newest usage reading, the one Settings → Refresh records: the latest reset
 --   still ahead of a full window, in the reading of the version the run used (and the same account login's current links
 --   in the member's other companies), observed in the last day (qorpera_native_account_reading_reset).
 -- * What waits, on the same login, while that login is at its limit, and then goes on with nothing to press:
---   - a paused run (W5a): it comes back at the reset, at the latest a day after the limit (qorpera_resume_run_from_log),
---     or as soon as a usage reading shows room (qorpera_release_paused_runs_with_room, from the refresh's completion);
+--   - a paused run (W5a): it comes back at the reset (6 hours without one), or as soon as a usage reading shows room
+--     (qorpera_release_paused_runs_with_room, from the refresh's completion);
 --   - a conversation's message and every wake (follow-up work, a routine's run, a coding turn's run): the materializer
 --     leaves them queued until the login has room (qorpera_sponsor_waits_for_usage_limit);
 --   - a coding session's next turn: the executor does not claim it until its login has room.
 -- * The daily usage check: the shared vault's upkeep pass asks for one login at its limit that is due a reading
 --   (qorpera_begin_model_login_usage_recheck): one whose newest reading is older than its limit, more than a day old, or
---   older than a reset it named that has passed; at most one per member's identity an hour. The call makes an account
+--   older than a reset it named that has passed; at most one refresh per member's identity in three hours, so a limit the
+--   readings do not show is not lifted and hit again more often than that.
+-- * The member's own pick of another login (the chat's Login menu) applies to their next message: in an agent thread (a
+--   room) it runs at once, while a message already waiting stays on its login (an admitted wake never changes payer). The call makes an account
 --   refresh for that member's identity, which the vault runs as Settings → Refresh's (its describe, record and complete).
 --   Only vault logins are read this way; a login on a node is read when its member refreshes.
 -- * The usage-limit notice names the login (accountEmail) for the member whose login it is; its kind and schema are
@@ -57,12 +59,8 @@ end $$;
 
 -- 1. The wall of a usage limit ------------------------------------------------------------------------------------------
 
--- It ends at the provider's reset, else 6 hours after the limit, never later than a day after it; and a reading after the
--- limit that shows room in every window ends it at once.
-select pg_temp.as575_patch('public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,
-	$old$coalesce(blocked.resets_at, blocked.observed_at + interval '6 hours')$old$,
-	$new$least(coalesce(blocked.resets_at, blocked.observed_at + interval '6 hours'), blocked.observed_at + interval '1 day' /* 20260930575000 */)$new$,
-	2);
+-- It ends at the provider's reset (else 6 hours after the limit, as before); and a reading after the limit that shows room
+-- in every window ends it at once.
 select pg_temp.as575_patch('public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,
 	$old$      and (blocked.resets_at is not null or not exists ($old$,
 	$new$      -- 20260930575000: a later reading with room ends it, with or without a reset time, however old the reading.
@@ -129,17 +127,6 @@ $new$				'sponsorVersion',v_run.sponsor_version,'resetsAt',v_signal.resets_at)
 $new$);
 
 -- 2. What waits, on the same login ----------------------------------------------------------------------------------------
-
--- A paused run comes back at the reset, at the latest a day after the limit.
-select pg_temp.as575_patch('public.qorpera_resume_run_from_log(uuid,text,boolean)'::regprocedure,
-$old$		v_until := greatest(case when v_signal.resets_at > statement_timestamp() then v_signal.resets_at
-			else v_signal.observed_at + interval '6 hours' end, statement_timestamp() + interval '1 minute');
-$old$,
-$new$		-- 20260930575000: and at the latest a day after the limit, to try again.
-		v_until := greatest(least(case when v_signal.resets_at > statement_timestamp() then v_signal.resets_at
-			else v_signal.observed_at + interval '6 hours' end, v_signal.observed_at + interval '1 day'),
-			statement_timestamp() + interval '1 minute');
-$new$);
 
 -- Whether work paid by this sponsor version waits for its login's usage limit: the login has no room now (a usage-limit
 -- wall, or a fresh reading with a full window). Unknown usage is room.
@@ -276,7 +263,7 @@ revoke all on function public.qorpera_native_account_usage_recheck_due(uuid, big
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- The vault's daily check: one member identity of this broker's company with a vault login (a company login, or an account
--- login's link) at its usage limit and due a reading, with no refresh of its own in the last hour. Makes a pending account
+-- login's link) at its usage limit and due a reading, with no refresh of its own in the last three hours. Makes a pending account
 -- refresh for that identity under p_capability_sha256 (the vault's own, made for this one refresh), as
 -- qorpera_begin_native_account_refresh makes the member's; answers it, or null when nothing is due. The vault then runs it
 -- as Settings → Refresh's.
@@ -315,14 +302,18 @@ begin
 		and (exists (select 1 from public.qorpera_model_logins as login
 				where login.credential_capsule_id = capsule.id and login.broker_authority_id = v_authority.id
 					and login.status = 'active')
+			-- As qorpera_describe_model_login_account_refresh lists an account login (20260930548000).
 			or exists (select 1 from public.qorpera_model_login_links as link
 				join public.qorpera_model_logins as login on login.id = link.login_id
 				where link.credential_capsule_id = capsule.id and link.profile_id = v_authority.profile_id
-					and login.status = 'active'))
+					and link.compute_identity_id = identity.id and link.owner_user_id = identity.owner_user_id
+					and login.owner_user_id = link.owner_user_id and login.status = 'active'
+					and login.principal_id = v_authority.principal_id
+					and public.qorpera_account_model_logins_enabled()))
 		and public.qorpera_native_account_usage_recheck_due(connection.id, version.version)
 		and not exists (select 1 from public.qorpera_native_account_refresh_requests as recent
 			where recent.compute_identity_id = identity.id
-				and (recent.created_at > clock_timestamp() - interval '1 hour'
+				and (recent.created_at > clock_timestamp() - interval '3 hours'
 					or (recent.status = 'pending' and recent.expires_at > clock_timestamp())))
 	order by connection.id
 	limit 1;
@@ -334,7 +325,7 @@ begin
 	where compute_identity_id = v_identity.id and status = 'pending' and expires_at <= clock_timestamp();
 	if exists (select 1 from public.qorpera_native_account_refresh_requests as recent
 		where recent.compute_identity_id = v_identity.id
-			and (recent.created_at > clock_timestamp() - interval '1 hour' or recent.status = 'pending')) then
+			and (recent.created_at > clock_timestamp() - interval '3 hours' or recent.status = 'pending')) then
 		return jsonb_build_object('schema', 'qorpera.model-login-usage-recheck/v1', 'request', null); end if;
 	v_created := clock_timestamp();
 	insert into public.qorpera_native_account_refresh_requests(profile_id, client_request_id, compute_identity_id,
@@ -366,7 +357,7 @@ $new$	-- 20260930549300. 20260930575000: the work waits and goes on by itself on
 		|| case when limit_reset.resets is null then ''
 			else 'It resets on ' || to_char(limit_reset.resets at time zone 'UTC', 'FMDD FMMonth YYYY "at" HH24:MI "UTC"') || '. ' end
 		|| 'The work does not move to another login by itself. It waits and goes on by itself on this login once the limit '
-		|| 'resets (it is tried again at least once a day). The member can also choose another of their logins for it '
+		|| 'resets (its usage is checked at least once a day). The member can also choose another of their logins for it '
 		|| '(in the conversation''s Login menu).'
 $new$);
 
@@ -379,7 +370,7 @@ begin
 		'public.qorpera_native_account_usage_limit_reset_company(uuid)', 'public.qorpera_native_account_reading_reset(uuid,bigint)',
 		'public.qorpera_usage_limit_account(uuid,uuid)',
 		'public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)',
-		'public.qorpera_resume_run_from_log(uuid,text,boolean)', 'public.qorpera_sponsor_waits_for_usage_limit(uuid,bigint)',
+		'public.qorpera_sponsor_waits_for_usage_limit(uuid,bigint)',
 		'public.qorpera_coding_session_waits_for_usage_limit(uuid)', 'public.qorpera_folder_materialize_company(uuid,integer)',
 		'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_release_paused_runs_with_room(uuid)',
 		'public.qorpera_complete_model_login_account_refresh(uuid,text,uuid,text)',

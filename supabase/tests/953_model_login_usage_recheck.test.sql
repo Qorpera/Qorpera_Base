@@ -3,7 +3,7 @@
 -- passed, the broker's upkeep asks for a login at its usage limit that is due a reading
 -- (qorpera_begin_model_login_usage_recheck): it gets an account refresh of that member's identity, under its own
 -- capability, and runs it as Settings → Refresh's (describe, record, complete). A login with room, or one read in the last
--- hour, is not due; another company's broker gets nothing; only the broker may ask. A reading with room ends the login's
+-- three hours, is not due; another company's broker gets nothing; only the broker may ask. A reading with room ends the login's
 -- wall. The fixture is 693's: a vault login (connection mu_connection, version 1) of 924's owner's identity, and a
 -- pending refresh of that identity that has not ended.
 
@@ -40,8 +40,8 @@ select pg_temp.mu_expect(pg_temp.rc_begin('69300000-0000-4000-8000-000000000040'
 -- The fixture's refresh of the identity ended long ago (so it is no refresh of the last hour); its row's guard is off
 -- while it is moved back.
 set local session_replication_role = replica;
-update public.qorpera_native_account_refresh_requests set status = 'completed', created_at = clock_timestamp() - interval '2 hours',
-	expires_at = clock_timestamp() - interval '2 hours' + interval '4 minutes', completed_at = clock_timestamp() - interval '2 hours'
+update public.qorpera_native_account_refresh_requests set status = 'completed', created_at = clock_timestamp() - interval '4 hours',
+	expires_at = clock_timestamp() - interval '4 hours' + interval '4 minutes', completed_at = clock_timestamp() - interval '4 hours'
 where id = '69300000-0000-4000-8000-000000000201';
 set local session_replication_role = origin;
 
@@ -63,7 +63,7 @@ select pg_temp.mu_expect(pg_temp.rc_begin('69300000-0000-4000-8000-000000000041'
 select pg_temp.mu_expect(pg_temp.rc_begin('69300000-0000-4000-8000-000000000040', repeat('e', 64), 'recheck-4'),
 	'42501:cloud secret broker authority is unavailable', 'a wrong broker capability');
 select pg_temp.mu_expect(pg_temp.rc_begin('69300000-0000-4000-8000-000000000040', repeat('c', 64), 'recheck-5')::jsonb ->> 'request',
-	null, 'asked again within the hour');
+	null, 'asked again while it is pending');
 reset session authorization;
 do $$
 declare v_request jsonb := current_setting('qorpera_test.rc_request')::jsonb -> 'request';
@@ -98,9 +98,14 @@ select pg_temp.mu_expect(pg_temp.mu_call(format($q$select public.qorpera_complet
 reset session authorization;
 select pg_temp.mu_expect(public.qorpera_native_account_usage_recheck_due(current_setting('qorpera_test.mu_connection')::uuid, 1)::text,
 	'false', 'a login read with room is still due');
+-- At its limit again within three hours of that refresh: due, but the broker gets nothing yet.
+select pg_temp.rc_usage(100, interval '2 days', interval '3 days');
+set local session authorization qorpera_secret_broker;
+select pg_temp.mu_expect(pg_temp.rc_begin('69300000-0000-4000-8000-000000000040', repeat('c', 64), 'recheck-6')::jsonb ->> 'request',
+	null, 'a recheck within three hours of the last refresh');
+reset session authorization;
 
--- 4. At its limit with a fresh reading whose reset has not come: not due. Once that reset passed: due (an hour after the
--- last refresh).
+-- 4. At its limit with a fresh reading whose reset has not come: not due. Once that reset passed: due.
 select pg_temp.rc_usage(100, interval '1 minute', interval '2 hours');
 select pg_temp.mu_expect(public.qorpera_native_account_usage_recheck_due(current_setting('qorpera_test.mu_connection')::uuid, 1)::text,
 	'false', 'a fresh full reading before its reset');

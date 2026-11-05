@@ -2459,17 +2459,18 @@ same login (founder decision "wait + resume only"; migration 20260930575000). Th
 itself. What changed:
 
 - A usage limit's wall ends at the provider's reset, else 6 hours after the
-  limit, never later than a day after it, and at once when a usage reading taken
-  after the limit shows room. A signal without a provider reset takes it from the
+  limit, and at once when a usage reading taken after the limit shows room. A signal without a provider reset takes it from the
   login's newest usage reading.
 - While a login is at its limit, a conversation's message (it may be sent),
   every wake that login pays for (follow-up work, a routine's run, a coding
   turn's run) and a coding session's next turn wait queued; a paused run waits
   for its reset. They go on by themselves once the login has room, with nothing
-  to press.
+  to press. The member's own pick of another login applies to their next message;
+  one already waiting stays on its login.
 - Once a day, and once a known reset has passed, the shared vault reads the
-  usage of each of its logins at their limit, as Settings → Refresh does; a
-  reading with room brings waiting work back at once.
+  usage of each of its logins at their limit, as Settings → Refresh does (at most
+  once in three hours per member); a reading with room brings waiting work back
+  at once.
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 

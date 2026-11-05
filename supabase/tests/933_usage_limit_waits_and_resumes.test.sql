@@ -3,9 +3,9 @@
 -- + resume only"). The base's owner pays with login A. Bob's routine file, saved by the owner, pays with A too; the owner
 -- also connects login B with room. A reaches its usage limit during the base run: the signal takes its reset from A's
 -- newest usage reading, and the owner's notice names A and no other login. Then the owner's post in Bob's thread and the
--- routine's next wake stay on A and wait: the materializer leaves them queued, never moving them to B. A usage reading
--- after the limit that shows room ends the wall at once, and the materializer starts the post's run, on A. A wall with a
--- reset days ahead ends a day after the limit at the latest.
+-- routine's next wake stay on A and wait: the materializer leaves them queued, never moving them to B. After the owner's
+-- own pick of B for that thread, their next post runs on B. A usage reading after the limit that shows room ends A's
+-- wall at once, though it had a reset time, and the routine's wake may go on, on A.
 
 create function pg_temp.p933_routine_parse(p_id uuid, p_title text) returns jsonb language sql as $$
 	select jsonb_build_object('kind','routine','id',p_id,'title',p_title,'status','active',
@@ -33,7 +33,8 @@ create function pg_temp.p933(p_key text) returns uuid language sql as $$
 	select case p_key
 		when 'a' then (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid
 		when 'aBinding' then (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid
-		when 'b' then (current_setting('qorpera_test.p933_connection')::jsonb ->> 'connection_id')::uuid end
+		when 'b' then (current_setting('qorpera_test.p933_connection')::jsonb ->> 'connection_id')::uuid
+		when 'bBinding' then (current_setting('qorpera_test.p933_sponsor')::jsonb ->> 'binding_id')::uuid end
 $$;
 create function pg_temp.p933_wake(p_id uuid) returns public.qorpera_wake_occurrences language sql as $$
 	select * from public.qorpera_wake_occurrences where id = p_id
@@ -69,8 +70,8 @@ from public.qorpera_provider_connection_versions v
 where connection_id = pg_temp.p933('b') and version = 1;
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_create_member_execution_sponsor('92400000-0000-4000-8000-000000000010',
-	'93300000-0000-4000-8000-000000000061',pg_temp.p933('b'),2,true) \g /dev/null
+select set_config('qorpera_test.p933_sponsor', public.qorpera_create_member_execution_sponsor('92400000-0000-4000-8000-000000000010',
+	'93300000-0000-4000-8000-000000000061',pg_temp.p933('b'),2,true)::text, true) \g /dev/null
 reset role;
 insert into public.qorpera_native_provider_account_metadata(connection_id,connection_version,provider_account_usage)
 values (pg_temp.p933('b'),2,jsonb_build_object('observedAt',statement_timestamp()-interval '1 second','windows',jsonb_build_array(
@@ -105,18 +106,9 @@ where connection_id = pg_temp.p933('a') and connection_version = 2;
 select pg_temp.base_assert(public.qorpera_native_account_reading_reset(pg_temp.p933('a'), 2) is null,
 	'a reading older than a day named a reset');
 
--- 2. A wall with a reset three days ahead ends a day after the limit at the latest.
-savepoint p933_day;
-update public.qorpera_provider_connection_usage_signals set resets_at = statement_timestamp() + interval '3 days',
-	observed_at = statement_timestamp() - interval '1 hour'
-where provider_connection_id = pg_temp.p933('a') and signal_kind = 'usage_limit';
-select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.p933('a')) is not null,
-	'a known reset ahead did not hold the wall within the day');
-update public.qorpera_provider_connection_usage_signals set observed_at = statement_timestamp() - interval '25 hours'
-where provider_connection_id = pg_temp.p933('a') and signal_kind = 'usage_limit';
-select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.p933('a')) is null,
-	'a usage limit''s wall held for more than a day');
-rollback to savepoint p933_day;
+-- 2. A known reset holds the wall until then; no reading has shown room yet.
+select pg_temp.base_assert(abs(extract(epoch from public.qorpera_native_account_usage_limit_reset(pg_temp.p933('a'))
+	- (statement_timestamp() + interval '3 hours'))) < 2, 'the wall does not end at the known reset');
 
 -- 3. The owner's post in Bob's thread, paid by A, and the routine's next wake wait on A: never moved to B.
 select set_config('qorpera_test.p933_post', pg_temp.base_post('92400000-0000-4000-8000-000000000001',
@@ -139,8 +131,35 @@ begin
 			where sponsor.provider_connection_id = pg_temp.p933('b')), 'work moved to B');
 end $$;
 
+-- 3b. The owner picks B for Bob's thread by hand (the member's own pick): their next post runs on B at once, while the
+-- waiting one stays on A (an admitted wake never changes payer), and so does the routine's wake.
+select set_config('qorpera_test.p933_thread', (select session_id::text from public.qorpera_company_rooms
+	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000031')), true) \g /dev/null
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.base_assert(public.qorpera_choose_member_session_account('92400000-0000-4000-8000-000000000010',
+	current_setting('qorpera_test.p933_thread')::uuid, pg_temp.p933('b')) = pg_temp.p933('b'), 'the owner could not pick B');
+reset role;
+select set_config('qorpera_test.p933_post_b', pg_temp.base_post('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000031', 'And now?', pg_temp.p933('bBinding'), 1) ->> 0, true) \g /dev/null
+select pg_temp.base_materialize() \g /dev/null
+do $$
+declare v_post public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_post')::uuid);
+	v_post_b public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_post_b')::uuid);
+	v_routine public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_routine_wake')::uuid);
+	v_run public.qorpera_execution_runs%rowtype;
+begin
+	perform pg_temp.base_assert(v_post_b.status = 'materialized', 'the post on B did not go on: ' || to_jsonb(v_post_b)::text);
+	select * into strict v_run from public.qorpera_execution_runs where id = v_post_b.run_id;
+	perform pg_temp.base_assert(v_run.sponsor_binding_id = pg_temp.p933('bBinding'), 'the post on B did not run on B');
+	perform pg_temp.base_assert(v_post.status = 'queued' and v_post.sponsor_binding_id = pg_temp.p933('aBinding'),
+		'the waiting post left A: ' || to_jsonb(v_post)::text);
+	perform pg_temp.base_assert(v_routine.status = 'queued' and v_routine.sponsor_binding_id = pg_temp.p933('aBinding'),
+		'the routine''s wake left A: ' || to_jsonb(v_routine)::text);
+end $$;
+
 -- 4. A usage reading of A after its limit shows room (as Settings → Refresh or the vault's daily check records it): the
--- wall ends at once, though the signal named a reset, and the post goes on, on A.
+-- wall ends at once, though the signal named a reset, and the waiting post and the routine's wake may go on, on A.
 update public.qorpera_native_provider_account_metadata
 set provider_account_usage = jsonb_build_object('observedAt', statement_timestamp(),
 	'windows', jsonb_build_array(jsonb_build_object('id','primary','label','5 hours','usedPercent',35)))
@@ -148,14 +167,11 @@ where connection_id = pg_temp.p933('a') and connection_version = 2;
 select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.p933('a')) is null
 	and not public.qorpera_sponsor_waits_for_usage_limit(pg_temp.p933('aBinding'), 1),
 	'a reading with room did not end the wall');
-select pg_temp.base_materialize() \g /dev/null
 do $$
-declare v_post public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_post')::uuid);
-	v_run public.qorpera_execution_runs%rowtype;
+declare v_routine public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_routine_wake')::uuid);
 begin
-	perform pg_temp.base_assert(v_post.status = 'materialized', 'the post did not go on: ' || to_jsonb(v_post)::text);
-	select * into strict v_run from public.qorpera_execution_runs where id = v_post.run_id;
-	perform pg_temp.base_assert(v_run.sponsor_binding_id = pg_temp.p933('aBinding'), 'the post''s run left A');
+	perform pg_temp.base_assert(not public.qorpera_sponsor_waits_for_usage_limit(v_routine.sponsor_binding_id, v_routine.sponsor_version)
+		and v_routine.sponsor_binding_id = pg_temp.p933('aBinding'), 'the routine''s wake still waits, or left A');
 end $$;
 
 -- The helpers are the database's own.
