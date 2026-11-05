@@ -248,6 +248,7 @@ create temporary table p13_deferred(relname text, conname text, reason text not 
 insert into p13_deferred values
 	('qorpera_profile_staff', 'qorpera_profile_staff_source_entry', 'A foreign key to the old path entries; a folder-v2 agent row has a folder path and so no source path (the table''s folder check), so it checks nothing.'),
 	('qorpera_runner_jobs', 'qorpera_native_presence_end', 'Deletes the native presence device of a job that left leased, SKIP LOCKED: it never waits (20260928419960).'),
+	('qorpera_runner_jobs', 'qorpera_runner_jobs_retry_refused_for_retired_bundle', 'Only for a job that fails with NATIVE_BUNDLE_COMPATIBILITY: tries its turn again, every lock SKIP LOCKED and any error caught: it never waits (20260930581000).'),
 	('qorpera_runtime_workers', 'qorpera_runtime_workers_coding_turn_recorded', 'One indexed read of the coding turn; no lock.'),
 	('qorpera_runtime_workers', 'qorpera_runtime_workers_coding_turn_sequence', 'One indexed read of the coding turn; no lock.'),
 	('qorpera_session_inputs', 'qorpera_session_inputs_turn_id_fkey', 'A foreign key to session turns; a plain RI check.');
