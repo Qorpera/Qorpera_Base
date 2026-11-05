@@ -332,7 +332,11 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - inputs accepted before the switch run on N, on B;
    - a sponsorship request approved later, or a retried run, also stays on N.
 
-   B still serves N, so let such work run there. Never relabel an input's bundle.
+   B still serves N, so let such work run there. Never relabel an input's bundle by hand. The one
+   exception is the materializer's own (20260930581000): an input that has not begun takes the
+   active bundle when its run is made, if that is a newer version of the input's own. That is work
+   that waited at a usage limit across releases. After the switch, N inputs that have not begun
+   move to N+1 this way. A turn the N+1 node refused for its bundle is tried again once by itself.
 8. **Empty and update node B.**
    - Empty B of runs as in step 4 (A now must serve runs, be observed ready, with every orchestrator
      live) and wait for `readyForNodeRelease`.
@@ -451,7 +455,8 @@ back twice: right after the switch, and after the finish. No company is paused d
 
   Runs and pending inputs already bound to N+1 fail with their reason.
 - **N work left over** (an input that can never run, or a session held on a sponsorship): see steps
-  7 and 8. Never relabel it.
+  7 and 8. Never relabel it by hand. A roll back never moves N+1 inputs to N: the materializer's
+  re-pin only moves forward.
 
 ## What members notice
 
