@@ -267,4 +267,41 @@ describe("who answers a card", () => {
 		const group: HostedSession = { ...session, executionScope: { roomId: "55555555-5555-4555-8555-555555555556" } };
 		expect(answersInteraction(group, userA.id, userA.id)).toBe(false);
 	});
+
+	it("draws a card's body as Markdown, with its lines, list and folder link", () => {
+		const card = renderInteractionCard(
+			item({
+				...question,
+				title: "Approve the draft vision?",
+				body: "We sell sports wristbands to Danish clubs.\n- Price: 89 kr\n- First test: 200 bands\n[Read the draft](folder:QorperaOS/vision/vision.md)",
+			}),
+			context(),
+		);
+		const body = card.querySelector(".interaction-body") as HTMLElement;
+		expect(body.querySelectorAll("li")).toHaveLength(2);
+		// The link under the bullets is a line of its own, not part of the last bullet.
+		expect(body.querySelector("li:last-child button.folder-link")).toBeNull();
+		expect(body.querySelector("button.folder-link")?.getAttribute("data-folder-path")).toBe(
+			"QorperaOS/vision/vision.md",
+		);
+		expect(body.classList.contains("is-folded")).toBe(false);
+		expect(card.querySelector(".interaction-more")).toBeNull();
+	});
+
+	it("folds a body past about four lines behind Show more, and opens it", () => {
+		const long =
+			"Ambition: the go-to wristband for Danish sports clubs. Product: printed silicone bands in club colours. Promise: delivered in a week. Limits: no custom shapes in the first year. Price: 89 kr a band, 69 kr from 100. Not yet checked: supplier prices and the delivery time. Approval agrees the draft direction only.";
+		const card = renderInteractionCard(item({ ...question, body: long }), context());
+		const body = card.querySelector(".interaction-body") as HTMLElement;
+		const more = card.querySelector(".interaction-more") as HTMLButtonElement;
+		expect(body.classList.contains("is-folded")).toBe(true);
+		expect(more.textContent).toBe("Show more");
+		expect(more.getAttribute("aria-expanded")).toBe("false");
+		more.click();
+		expect(body.classList.contains("is-folded")).toBe(false);
+		expect(more.textContent).toBe("Show less");
+		expect(more.getAttribute("aria-expanded")).toBe("true");
+		more.click();
+		expect(body.classList.contains("is-folded")).toBe(true);
+	});
 });

@@ -723,8 +723,11 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("by you with good_will_mark, then show the members what counted once");
 	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
-	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
-	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
+	expect(cofounder).toContain("write the whole vision in your own words as a draft in a file of its own");
+	expect(cofounder).toContain("Post it in the thread as a line or two for each part, with a link to the draft");
+	expect(cofounder).toContain("buttons such as Approve and Change it");
+	expect(cofounder).toContain("Revise the draft and ask again until every founder approves it");
+	expect(cofounder).not.toContain("post the whole vision in your own words in the thread");
 	expect(cofounder).toContain(
 		"When every founder has approved, in that same run and without asking again: write the vision to QorperaOS/vision/vision.md, with the company's name as its first line and a last line \"Agreed by",
 	);
@@ -1512,31 +1515,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // for the company's good will; 5 November 2026), and for brief plain messages in one company language whose technical
 // level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
-// the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026). A change to
+// the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
+// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026). A change to
 // either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "fce1910f714f5d58dc9bd6f26dcffb1f6311a30dff1b80492cee4d85c3df867a",
-			prompt: "3ff71cfe1fa690762d7370d1a8a9170006c4ea1484553a9aca92717f738a1bec",
+			instructions: "98dbaa7b381bf7aecc608aa9cce5518efb0da1ff9b8c2a0062071c4aae5a4763",
+			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "659bafa46f8a598ba43ec70d4fef5e5052105df6cffbe49441394efb360dcd24",
-			prompt: "72605dd21b42608ebe2e47b21e24efbd4fd9de67b538db57b2223f60b0d07e17",
+			instructions: "15f0cae291603661d8e9b14823394ba1741bafd07f2adcc6e55026c0904d8cee",
+			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "fce1910f714f5d58dc9bd6f26dcffb1f6311a30dff1b80492cee4d85c3df867a",
-			prompt: "42c958cdbd43bf06644459b6aed1bf1a2a81f75032a3846349551c7924eb99af",
+			instructions: "98dbaa7b381bf7aecc608aa9cce5518efb0da1ff9b8c2a0062071c4aae5a4763",
+			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

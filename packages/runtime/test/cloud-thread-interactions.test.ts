@@ -313,6 +313,46 @@ const ask = (surface: string, payload: unknown) => ({
 	payload,
 });
 
+describe("readable cards", () => {
+	const card = (body: string, label = "Approve") => ({
+		idempotencyKey: "vision",
+		text: "Here is the draft.",
+		surface: "question",
+		title: "Approve the draft vision?",
+		body,
+		payload: { options: [{ label, style: "primary" }, { label: "Change it" }] },
+	});
+	const refused = (value: unknown, words: string) => {
+		expect(() => parseCloudAskMemberInput(value)).toThrow(CloudToolArgumentRefusal);
+		expect(() => parseCloudAskMemberInput(value)).toThrow(words);
+	};
+
+	it("takes a short body of a few lines with a link", () => {
+		const body =
+			"Sports wristbands for Danish clubs, 89 kr a band.\n- First test: 200 bands\n[Read the draft](folder:strategy/vision-draft.md)";
+		expect(parseCloudAskMemberInput(card(body)).data.body).toBe(body);
+	});
+
+	it("refuses a body past five lines or 600 bytes, and a button past 40 bytes, saying how to fix it", () => {
+		refused(card("a\nb\nc\nd\ne\nf"), "body must be at most 5 short lines and 600 UTF-8 bytes");
+		refused(card("æ".repeat(301)), "link the full draft or file");
+		refused(
+			card("Short.", "Approve the draft direction for the company now"),
+			"an option's label is a button: 1 to 3 words",
+		);
+		// The kernel's own limits are unchanged, so a card already in a thread still reads.
+		expect(
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: "Old card",
+				body: "x".repeat(2000),
+				payload: { options: [{ label: "Approve the draft direction for the company now" }] },
+			}).body,
+		).toHaveLength(2000);
+	});
+});
+
 describe("ask_member card shapes", () => {
 	const branches = CLOUD_INTERACTION_PAYLOAD_SCHEMA.oneOf as Schema[];
 	const stored = (surface: string, payload: unknown) =>
@@ -401,9 +441,21 @@ describe("ask_member card shapes", () => {
 		expect(() => parseCloudAskMemberInput(ask("question", { options: [{ label }] }))).toThrow(
 			/Text limits count UTF-8 bytes \(æ, ø and å take 2, an emoji 4\)/,
 		);
-		expect(parseCloudAskMemberInput(ask("question", { options: [{ label: "æ".repeat(40) }] })).data.payload).toEqual({
-			options: [{ label: "æ".repeat(40) }],
+		// The kernel takes 80 bytes; a new card's button takes 40 (readable cards, above).
+		expect(
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: "T",
+				payload: { options: [{ label: "æ".repeat(40) }] },
+			}).payload,
+		).toEqual({ options: [{ label: "æ".repeat(40) }] });
+		expect(parseCloudAskMemberInput(ask("question", { options: [{ label: "æ".repeat(20) }] })).data.payload).toEqual({
+			options: [{ label: "æ".repeat(20) }],
 		});
+		expect(() => parseCloudAskMemberInput(ask("question", { options: [{ label: "æ".repeat(21) }] }))).toThrow(
+			/an option's label is a button/,
+		);
 	});
 
 	// Walk each schema: every string bound, enum value and nested required key the model
