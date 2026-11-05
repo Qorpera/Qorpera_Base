@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
-import { isAppManifestPath, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
+import {
+	APP_MANIFEST,
+	APP_MANIFEST_MAX_BYTES,
+	APPS_FOLDER,
+	type AppManifestParse,
+	appPath,
+	isAppManifestPath,
+	parseAppManifest,
+} from "@qorpera/cloud-client/interface-apps";
 import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
@@ -13,6 +21,7 @@ import {
 	type CloudCompanyFolderUnitResult,
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
+import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
 	FolderImageRefusal,
 	folderImageFormat,
@@ -311,10 +320,11 @@ export function cloudFolderRefusal(content: CloudToolContent): CloudRuntimeError
 	return [whole, ...unsaved].map(why).find((category) => category !== undefined) ?? "invalid_arguments";
 }
 
-/** An interface app's manifest written as a file (RUNTIME-INTERFACE-APPS.md §3): it must parse, and its `posted` stays
- * as stored (`before`, null for a new file, which is not posted), since posting an app is post_app's, which the
- * automatic review sees. Says nothing a file holds but whether the app is posted. */
-export function appManifestCheck(path: string, before: string | null, after: string): void {
+/** An interface app's manifest written as a file (RUNTIME-INTERFACE-APPS.md §3): it must parse; its `posted` stays as
+ * stored (`before`, null for a new file, which is not posted), since posting an app is post_app's, which the automatic
+ * review sees; and its `owner` stays as stored, or is the writing agent (`agent`) or none on a new one, since the panel
+ * names the owner to members. Says nothing a file holds but whether the app is posted and whose it is. */
+export function appManifestCheck(path: string, before: AppManifestParse | null, after: string, agent: string): void {
 	if (!isAppManifestPath(path)) return;
 	const parsed = parseAppManifest(after);
 	if (!parsed.ok)
@@ -324,11 +334,16 @@ export function appManifestCheck(path: string, before: string | null, after: str
 				.map((problem) => `${problem.line === null ? "" : `line ${problem.line}: `}${problem.message}`)
 				.join("; ")}`,
 		);
-	const stored = before === null ? null : parseAppManifest(before);
-	const posted = stored?.ok ? stored.manifest.posted : false;
+	const stored = before?.ok ? before.manifest : null;
+	const posted = stored?.posted ?? false;
 	if (parsed.manifest.posted !== posted)
 		throw new CloudToolRefusal(
 			`APP_POSTED_BY_POST_APP: nothing was written; keep posted = ${posted} in app.toml, and post the app or take it away with post_app`,
+		);
+	const owner = parsed.manifest.owner;
+	if (stored ? owner !== stored.owner : owner !== null && owner !== agent)
+		throw new CloudToolRefusal(
+			`APP_OWNER_FIXED: nothing was written; owner names the agent that made the app and does not change${stored?.owner ? `: keep owner = "${stored.owner}"` : ""}`,
 		);
 }
 
@@ -341,6 +356,27 @@ export function cloudFolderFileTools(options: {
 	const { folder, operations, identity } = options;
 	const pathSchema = { type: "string", maxLength: 4096 };
 	const nullableVersion = { type: ["string", "null"], pattern: UUID_PATTERN.source };
+
+	const agent = identity.staffAgentId.toLowerCase();
+	// An interface app's files are its owner's (RUNTIME-INTERFACE-APPS.md §3): another agent changes them with save_app,
+	// which the automatic review sees, so the owner the panel names is the one who made what members see. A manifest
+	// that doesn't read names no owner, and anyone may write it whole again.
+	const appGuard = async (path: string, text: string | null, signal: AbortSignal): Promise<void> => {
+		const app = appPath(path);
+		if (!app || app.inner === "") return;
+		let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
+		try {
+			stored = await folder.readText(`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`, APP_MANIFEST_MAX_BYTES, signal);
+		} catch (error) {
+			if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "written");
+		}
+		const before = stored ? parseAppManifest(stored.text) : null;
+		if (before?.ok && before.manifest.owner !== agent)
+			throw new CloudToolRefusal(
+				"APP_NOT_YOURS: nothing was written; this app is another agent's or a member's: change it with save_app, which asks first",
+			);
+		if (text !== null) appManifestCheck(path, before, text, agent);
+	};
 
 	const read = async (path: string, what: string, signal: AbortSignal): Promise<CloudCompanyFolderEntry | null> => {
 		try {
@@ -724,16 +760,7 @@ export function cloudFolderFileTools(options: {
 					current?.kind === "file" && current.version === input.expectedVersion
 						? { mediaType: current.file.mediaType, executable: current.file.executable }
 						: {};
-				if (isAppManifestPath(input.path)) {
-					let before: string | null = null;
-					if (current?.kind === "file" && current.file.bytes <= MAX_WRITE_BYTES)
-						try {
-							before = windowText(await folder.readRange(current, 0, current.file.bytes, context.signal), true);
-						} catch (error) {
-							unavailable(error, "written");
-						}
-					appManifestCheck(input.path, before, input.text);
-				}
+				await appGuard(input.path, isAppManifestPath(input.path) ? input.text : null, context.signal);
 				return change(
 					"company_write",
 					input,
@@ -858,7 +885,7 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						`COMPANY_FILE_TOO_LARGE: the edited file would be larger than ${MAX_WRITE_BYTES / 1024} KiB; nothing was written`,
 					);
-				appManifestCheck(input.path, text, edited);
+				await appGuard(input.path, isAppManifestPath(input.path) ? edited : null, context.signal);
 				return change(
 					"company_edit",
 					input,
@@ -923,6 +950,17 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
+				// An app comes into apps/ only through save_app, so its manifest is checked (who owns it, whether it is
+				// posted): a folder or a manifest moved in from elsewhere is refused. Files moved into an app are its files.
+				const into = appPath(input.to);
+				if (into && appPath(input.from) === null) {
+					const moving = await read(input.from, "moved", context.signal);
+					if (into.inner === "" || moving?.kind === "folder" || isAppManifestPath(input.to))
+						throw new CloudToolRefusal(
+							"APP_MOVE_REFUSED: nothing was moved; make an app with save_app, which checks its manifest, and copy its files in there",
+						);
+					await appGuard(input.to, null, context.signal);
+				}
 				// A folder moves as of the model's own listing of it, which its call and review carry: the core refuses a
 				// change under it since. Checked before the receipt, and passed once this call's own move is saved (the path
 				// is then gone), so a replay of the call reaches its receipt.

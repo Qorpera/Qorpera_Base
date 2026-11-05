@@ -910,11 +910,12 @@
 	background: var(--bg); border-left: 1px solid var(--border); box-shadow: -14px 0 32px rgb(18 18 17 / 6%); outline: none;
 	animation: pair-sheet-in var(--motion-slow) var(--ease-spring) both;
 }
-.side-panel-header { flex: none; display: flex; align-items: center; gap: 10px; height: var(--titlebar-height); padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); }
+.side-panel-header { flex: none; display: flex; align-items: center; gap: 10px; min-height: var(--titlebar-height); padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--border); }
 .side-panel-emblem { display: grid; flex: none; place-items: center; }
 .side-panel-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.25; }
 .side-panel-title { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.side-panel-by { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+/* Whose app it is and the password line are the panel's own words: they wrap rather than be cut (review r1, H2). */
+.side-panel-by { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .side-panel-button { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; }
 .side-panel-button .icon { width: 15px; height: 15px; }
 .side-panel-button:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }

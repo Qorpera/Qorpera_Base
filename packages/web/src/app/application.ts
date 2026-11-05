@@ -946,9 +946,15 @@ export function mountApplication(
 								};
 							}),
 					readApps: () => companyApps?.read() ?? Promise.resolve([]),
+					apps: () => companyApps?.apps ?? [],
 					agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
 					onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
-					openInStorage: (path) => openSettings("storage", path),
+					// As a folder link in the chat: closing Storage gives the composer focus again.
+					openInStorage: (path) => {
+						const open = settings;
+						openSettings("storage", path);
+						if (settings && settings !== open) settingsFromConversation = conversation !== undefined;
+					},
 					budgetKey: controller.profile.profileId,
 				},
 				target,

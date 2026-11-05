@@ -25,6 +25,8 @@ export type SidePanelTarget =
 export interface AppPanelHost extends AppBridgeHost {
 	/** The company's apps, read now. */
 	readonly readApps: (signal: AbortSignal) => Promise<readonly CompanyApp[]>;
+	/** The company's apps as last read: after a folder change they are read before the panel hears of it. */
+	readonly apps: () => readonly CompanyApp[];
 	/** An agent's name by its id. */
 	readonly agentName: (agentId: string | null) => string | null;
 	/** Calls `listener` after each change in the company's folder; answers the call that stops it. */
@@ -142,9 +144,13 @@ export class AppPanel {
 		return this.#loading;
 	}
 
+	/** At most once each CHANGE_MS, however often the folder changes (a busy company changes it every second). */
 	#changed(): void {
-		clearTimeout(this.#timer);
-		this.#timer = setTimeout(() => void this.reload(false), CHANGE_MS);
+		if (this.#timer !== undefined) return;
+		this.#timer = setTimeout(() => {
+			this.#timer = undefined;
+			void this.reload(false);
+		}, CHANGE_MS);
 	}
 
 	#heading(title: string, manifest: AppManifest | null, owner: string | null): void {
@@ -174,7 +180,9 @@ export class AppPanel {
 		let name: string;
 		if (this.target.kind === "app") {
 			const target = this.target;
-			const app = (await this.#host.readApps(signal)).find((entry) => entry.name === target.name);
+			// Read afresh when opened or asked to; after a change, as the company's reader just read them.
+			const apps = fresh || !this.#frame ? await this.#host.readApps(signal) : this.#host.apps();
+			const app = apps.find((entry) => entry.name === target.name);
 			if (signal.aborted) return;
 			if (!app) return this.#status(t("No app is called {name}.", { name: target.name }));
 			this.#path = app.path;

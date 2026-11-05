@@ -24,6 +24,8 @@ export type AppCallHandler = (call: AppCall) => Promise<AppAnswer>;
 
 /** A call's id the frame document makes: a counter. */
 const MAX_ID = 2 ** 31;
+/** Calls a frame may have refused before it is stopped. */
+const MAX_REFUSED = 300;
 
 export class AppFrame {
 	readonly frame: HTMLIFrameElement;
@@ -33,7 +35,10 @@ export class AppFrame {
 	readonly #lifetime = new AbortController();
 	#port: MessagePort | undefined;
 	#handed = false;
+	#ready = false;
 	#loads = 0;
+	/** Calls refused: a page that keeps asking for what it may not have is stopped. */
+	#refused = 0;
 
 	constructor(page: string, title: string, className: string, handle: AppCallHandler, left: () => void) {
 		this.#page = page;
@@ -49,12 +54,14 @@ export class AppFrame {
 		const signal = this.#lifetime.signal;
 		window.addEventListener("message", (event) => this.#message(event), { signal });
 		// The frame document's load, then the page's own (written into it, it loads once more): any load after the page's
-		// own means another document.
+		// own means another document. The page is handed over only once the frame document has said it is ready and has
+		// loaded, so the two loads never run together.
 		frame.addEventListener(
 			"load",
 			() => {
 				this.#loads++;
 				if (this.#loads > 2) this.#leave();
+				else if (this.#loads === 1 && this.#ready) this.#handOver();
 			},
 			{ signal },
 		);
@@ -87,10 +94,16 @@ export class AppFrame {
 			return;
 		}
 		if (data.type !== PAGE_READY) return;
-		if (this.#handed) {
+		if (this.#ready) {
 			this.#leave();
 			return;
 		}
+		this.#ready = true;
+		if (this.#loads >= 1) this.#handOver();
+	}
+
+	#handOver(): void {
+		if (this.#handed) return;
 		this.#handed = true;
 		const channel = new MessageChannel();
 		this.#port = channel.port1;
@@ -119,6 +132,10 @@ export class AppFrame {
 			}
 		// A frame that left while the call ran gets nothing.
 		if (this.#port !== port) return;
+		if (!answer.ok && ++this.#refused > MAX_REFUSED) {
+			this.#leave();
+			return;
+		}
 		port.postMessage({ type: "qorpera-app-answer", id, ...answer });
 	}
 }

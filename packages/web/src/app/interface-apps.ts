@@ -354,7 +354,8 @@ export class AppBridge {
 		const spent = budget(this.#key);
 		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		spent.calls++;
+		// todos reads every agent's todos folder: it costs as ten calls.
+		spent.calls += call.method === "todos" ? 10 : 1;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -568,8 +569,9 @@ export class CompanyApps {
 		if (this.#timer !== undefined || this.#stop.signal.aborted) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
-			void this.read();
-			for (const listener of [...this.#listeners]) listener();
+			void this.read().then(() => {
+				for (const listener of [...this.#listeners]) listener();
+			});
 		}, APPS_HINT_MS);
 	}
 }

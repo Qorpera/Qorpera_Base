@@ -167,14 +167,14 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 });
 
 it("posts an app by its one line, and refuses posted through company_write", async () => {
-	const text = 'name = "Sales" # shown\nposted = false\nemblem = "chart"\n';
-	const f = await fixture({
-		folders: ["apps"],
-		files: { "apps/sales/app.toml": text, "apps/sales/index.html": PAGE },
-	});
+	const f = await fixture({ folders: ["apps"], files: { "apps/sales/index.html": PAGE } });
+	const me = f.identity.staffAgentId.toLowerCase();
+	f.seed("apps/sales/app.toml", `name = "Sales" # shown\nposted = false\nemblem = "chart"\nowner = "${me}"\n`);
 	const posted = read(await f.call("post_app", { name: "sales", operationKey: "post-1", posted: true }));
 	expect(posted).toMatchObject({ schema: "qorpera.app-post/v1", state: "applied", posted: true });
-	expect(f.text("apps/sales/app.toml")).toBe('name = "Sales" # shown\nposted = true\nemblem = "chart"\n');
+	expect(f.text("apps/sales/app.toml")).toBe(
+		`name = "Sales" # shown\nposted = true\nemblem = "chart"\nowner = "${me}"\n`,
+	);
 	expect(read(await f.call("post_app", { name: "sales", operationKey: "post-2", posted: true }))).toMatchObject({
 		state: "unchanged",
 	});
@@ -185,9 +185,18 @@ it("posts an app by its one line, and refuses posted through company_write", asy
 			path: "apps/sales/app.toml",
 			operationKey: "w-1",
 			expectedVersion: versionOf,
-			text: 'name = "Sales"\nposted = false\n',
+			text: `name = "Sales"\nposted = false\nowner = "${me}"\n`,
 		}),
 		"APP_POSTED_BY_POST_APP",
+	);
+	await refuses(
+		f.call("company_write", {
+			path: "apps/sales/app.toml",
+			operationKey: "w-3",
+			expectedVersion: versionOf,
+			text: 'name = "Sales"\nposted = true\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\n',
+		}),
+		"APP_OWNER_FIXED",
 	);
 	await refuses(
 		f.call("company_edit", {
@@ -219,4 +228,62 @@ it("posts an app by its one line, and refuses posted through company_write", asy
 		}),
 	);
 	expect(edited.state).toBe("applied");
+});
+
+it("leaves another agent's app to save_app, which asks first, and lets no app move in from elsewhere", async () => {
+	const OTHER = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f";
+	const f = await fixture({
+		folders: ["apps", "drafts"],
+		files: {
+			"apps/sales/app.toml": `name = "Sales"\nowner = "${OTHER}"\nposted = true\n`,
+			"apps/sales/index.html": PAGE,
+			"drafts/x/app.toml": 'name = "X"\nposted = true\n',
+			"drafts/x/index.html": PAGE,
+			"drafts/note.md": "hi",
+		},
+	});
+	const version = f.files.get("apps/sales/index.html")?.version as string;
+	await refuses(
+		f.call("company_write", {
+			path: "apps/sales/index.html",
+			operationKey: "w-1",
+			expectedVersion: version,
+			text: "<p>",
+		}),
+		"APP_NOT_YOURS",
+	);
+	// save_app reads the app before its review: another's app is delegation, the agent's own is not.
+	const tool = f.tool("save_app");
+	const prepare = (value: JsonValue) => tool.prepare?.(tool.parseArguments(value), f.context);
+	expect(await prepare(save("sales", "s-1", null, [{ path: "index.html", text: "<p>new" }]))).toMatchObject({
+		foreignOwner: true,
+	});
+	expect(
+		await prepare(save("new-one", "s-2", manifest("New"), [{ path: "index.html", text: "<p>" }])),
+	).not.toHaveProperty("foreignOwner");
+	const move = (from: string, to: string) =>
+		f.call("company_move", {
+			from,
+			to,
+			operationKey: `m-${to.replaceAll("/", "-")}`,
+			expectedVersion: f.files.get(from)?.version ?? "00000000-0000-4000-8000-000000000000",
+			asOfSeq: f.files.has(from) ? null : 1,
+		});
+	await refuses(move("drafts/x", "apps/x"), "APP_MOVE_REFUSED");
+	await refuses(move("drafts/x/app.toml", "apps/sales/app.toml"), "APP_MOVE_REFUSED");
+	await refuses(move("drafts/note.md", "apps/sales/note.md"), "APP_NOT_YOURS");
+});
+
+it("reviews posting, and changing another's app, as delegation", async () => {
+	const { cloudActionEffect, describeCloudAction } = await import("@qorpera/runtime/cloud-action-review");
+	const runtime = (name: string) => ({ name, source: "runtime" as const });
+	expect(cloudActionEffect(runtime("save_app"), { name: "sales" })).toBe("internal");
+	expect(cloudActionEffect(runtime("save_app"), { name: "sales", foreignOwner: true })).toBe("delegation");
+	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true })).toBe("delegation");
+	expect(describeCloudAction(runtime("post_app"), { name: "sales", posted: true }).title).toBe(
+		"Post an app for every member",
+	);
+	expect(describeCloudAction(runtime("save_app"), { name: "sales", foreignOwner: true }).title).toBe(
+		"Change another agent's app",
+	);
 });

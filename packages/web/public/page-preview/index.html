@@ -107,6 +107,9 @@
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
 	// it; the app checks each.
 	const send = MessagePort.prototype.postMessage;
+	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
+	// through it the port.
+	const dataOf = getter(MessageEvent.prototype, "data");
 	const startPort = MessagePort.prototype.start;
 	const freeze = Object.freeze;
 	const PromiseOf = Promise;
@@ -121,7 +124,7 @@
 		apply(listen, port, [
 			"message",
 			function answer(event) {
-				const data = event.data;
+				const data = apply(dataOf, event, []);
 				if (!data || typeof data !== "object") return;
 				if (data.type === "qorpera-app-change") {
 					for (let index = 0; index < changes.length; index++)

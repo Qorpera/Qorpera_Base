@@ -77,7 +77,8 @@ Module scripts may not `import` other files in v1 (inline them or use classic sc
   later it never changes `posted` or `owner`. A changed file that another call changed meanwhile is a conflict.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
 - `company_write` / `company_edit` of an `apps/<name>/app.toml` check the manifest the same way and refuse a change of
-  `posted` (pointing to `post_app`). `company_delete` / `company_move` of a posted app's folder is a deletion and is
+  `posted` (pointing to `post_app`) or of `owner`. An app's files are its owner's: another agent changes them with
+  `save_app`, reviewed as delegation (review r2, H-1). `company_move` brings no folder or manifest into `apps/`. `company_delete` / `company_move` of a posted app's folder is a deletion and is
   reviewed as one already is.
 - **Known gap, accepted for v1:** a write from a machine's mounted folder (a shell, a coding session) is not checked
   here, so a machine could flip `posted` without the review. Closing it is a folder-core rule (park a view's change of
@@ -165,6 +166,18 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | M4 budgets survive Reload; request size; host-side limits | budget per app per tab; 4 KiB params; 64 files / 4 MiB enforced when the host reads |
 | L1 path resolution, fixed data: types | URL-style resolution inside the app folder, escapes refused, type by extension |
 | L2 freeze `qorpera` | frozen, with the frame document's own copies of the port methods |
+
+A second independent Opus review read the built code (`~/work/interface-apps-security-review-r2.md`):
+
+| Finding | Done |
+| --- | --- |
+| H-1 any agent could rewrite an app while the header names its owner | an app's files are its owner's: `company_write`/`company_edit` under another's app refuse (`APP_NOT_YOURS`), `owner` never changes (`APP_OWNER_FIXED`), and `save_app` on another's app is delegation (its prepare reads the owner before the review) |
+| M-1 an app could be posted by moving a folder or manifest into `apps/` | `company_move` refuses a folder or an `app.toml` moved into `apps/` from elsewhere (`APP_MOVE_REFUSED`); a file moved into another's app is `APP_NOT_YOURS` |
+| M-2 the panel's debounce never fired in a busy company | throttled: at most once each 1.5 s |
+| M-3 load on the database | the panel uses the reader's just-read apps after a change; `todos` costs ten calls |
+| M-4 the page could reach the port through a redefined `MessageEvent.data` | the frame document reads it with the browser's own getter |
+| L-1 the load count depended on timing | the page is handed over only after "ready" and the frame's first load |
+| L-2 a page could flood the tab with refused calls | after 300 refused calls the frame is stopped |
 
 ## 7. Steps
 

@@ -362,6 +362,15 @@ export function cloudAppTools(options: {
 				throw new CloudToolArgumentRefusal("give a manifest, files, or both");
 			return request as unknown as JsonValue;
 		},
+		// Another agent's app, or a member's, is changed only after the automatic review (review r2, H-1): the panel names
+		// its owner to members. Read before the review, so its effect class is the one that runs.
+		async prepare(value, context) {
+			const request = value as unknown as SaveRequest;
+			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
+			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
+			return foreign ? ({ ...request, foreignOwner: true } as unknown as JsonValue) : value;
+		},
 		refused: cloudFolderRefusal,
 		async execute(value, context) {
 			const request = value as unknown as SaveRequest;

@@ -987,6 +987,8 @@ it.each([
 				"company_write",
 				"table_read",
 				"table_write",
+				"save_app",
+				"post_app",
 				"company_account",
 				"ask_member",
 				"create_group_chat",
@@ -2950,7 +2952,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// table_read's, table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there,
 	// so they moved again. Company sites (20260930550000) add publish_site and unpublish_site after manage_hook, so
 	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
-	// links, so they moved again; every other tool is as on master.
+	// links, so they moved again. Interface apps (5 November 2026) add save_app and post_app after table_write, so they
+	// moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2961,6 +2964,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"company_delete",
 		"table_read",
 		"table_write",
+		"save_app",
+		"post_app",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -2988,9 +2993,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"198fa356662f97a756e5bc0cb70154676875be4fdab3bee095c1d85861689637",
+		"ed33efb7bfc340a1c8431a14e4c6347b1c30f742153c926972a325cd2e4f4f84",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"5055360aab87164c07a75a25a1e56b895f9903986ad72695ac9ee703dce34127",
+		"4adbf4db446c77636b8d95dd5bd85d420acfebd9ada7052b69c784242672b3e5",
 	);
 });
