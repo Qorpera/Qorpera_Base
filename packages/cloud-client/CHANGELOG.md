@@ -4,6 +4,7 @@
 
 ### Added
 
+- `agent-wall`: an agent's wall, `QorperaOS/agents/<handle>/wall.md` (Jonas, 5 November 2026): `wallPath`, `wallHandle`, the limits, `WALL_HEADINGS`, `parseWall` (every item that reads, and every problem with its line), `renderWall` (the kept form), `foldWallDone` (the last week, and Earlier), `wallItemProblem`, `wallItemText` and `isWallDay`.
 - `interface-apps`: the interface app format (deploy/first-node/RUNTIME-INTERFACE-APPS.md): `APPS_FOLDER`, the limits and file kinds, `parseAppManifest` (every problem with its line), `writeAppManifest`, `setAppPosted` (that one line changed in place), `appPath`, `isAppManifestPath`, `appRelativePath`, `appFileKind` and `appLinkName` (`app:<name>`).
 
 ### Breaking Changes

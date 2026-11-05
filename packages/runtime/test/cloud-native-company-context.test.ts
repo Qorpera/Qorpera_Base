@@ -1511,14 +1511,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // listeners for a task"; Jonas, 4 November 2026), for overlay v9 (the Co-Founder has last month's payments sorted
 // for the company's good will; 5 November 2026), and for brief plain messages in one company language whose technical
 // level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
-// interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026). A change to
+// interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
+// the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026). A change to
 // either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "98053be6cf24da8a8a482f240eee4e1e3866a0fad1884cf324ff62055344ae29",
+			instructions: "f1f3fbceb9055d4a58f385d5220f86e97e1e9361e5a5ae9b68ca87c182b04f49",
 			prompt: "3ff71cfe1fa690762d7370d1a8a9170006c4ea1484553a9aca92717f738a1bec",
 		},
 	],
@@ -1534,7 +1535,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "98053be6cf24da8a8a482f240eee4e1e3866a0fad1884cf324ff62055344ae29",
+			instructions: "f1f3fbceb9055d4a58f385d5220f86e97e1e9361e5a5ae9b68ca87c182b04f49",
 			prompt: "42c958cdbd43bf06644459b6aed1bf1a2a81f75032a3846349551c7924eb99af",
 		},
 	],
@@ -1571,6 +1572,16 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 	);
 	expect(worker).not.toContain("# Writing to people");
 	expect(worker).toContain("Write a file for the team, such as a plan or research, in the company's language");
+});
+
+it("tells an agent to keep its wall instead of sending status messages", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
+		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
+		"so it takes the place of status messages: write a message only for what the wall cannot carry",
+	])
+		expect(instructions).toContain(rule);
 });
 
 // The 21 October 2026 amendment "how agents start work and use the company folder"; the platform's folders are in

@@ -364,6 +364,9 @@ export function cloudActionEffect(
 		// Posting one puts it in every member's apps: delegation, like hiring (RUNTIME-INTERFACE-APPS.md §3).
 		case "post_app":
 			return "delegation";
+		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
+		case "update_wall":
+			return "internal";
 		default:
 			return "external";
 	}
