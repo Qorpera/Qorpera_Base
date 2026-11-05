@@ -38,6 +38,7 @@ import {
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
+import { cloudRoutineAgentOffsetMinutes } from "@qorpera/runtime/cloud-routine-pace";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
@@ -681,11 +682,13 @@ describe("what the card shows for delegation", () => {
 				folderGroupChats: new CloudFolderGroupChats(writer),
 			}),
 		];
-		return (name: string, value: Record<string, unknown>) => {
+		const parse = (name: string, value: Record<string, unknown>) => {
 			const found = tools.find((item) => item.name === name);
 			if (!found) throw new Error(`No ${name} tool`);
 			return found.parseArguments(value as JsonValue) as JsonValue;
 		};
+		// The agent's start offset: a start on the hour or half hour moves by it (cloud-routine-pace.ts).
+		return Object.assign(parse, { offset: cloudRoutineAgentOffsetMinutes(run.identity.staffAgentId) });
 	}
 
 	afterEach(() => {
@@ -696,6 +699,7 @@ describe("what the card shows for delegation", () => {
 		// The routine file's check refuses an end that has passed: the card is read on a fixed day before it.
 		vi.useFakeTimers({ now: Date.parse("2026-10-01T08:00:00Z"), toFake: ["Date"] });
 		const parse = await parser();
+		const late = (hour: string, minute = 0) => `${hour}:${String(minute + parse.offset).padStart(2, "0")}`;
 		const routine = (trigger: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
 			parse("manage_routine", {
 				action: "upsert",
@@ -718,8 +722,7 @@ describe("what the card shows for delegation", () => {
 			title: "Set up or change a routine",
 			target: "Weekly sales report",
 			details: {
-				schedule:
-					"Weekdays at 09:00 (Europe/Copenhagen), starting 6 Oct 2026 at 09:00, until 1 Jan 2027 at 00:00, at most 10 runs",
+				schedule: `Weekdays at ${late("09")} (Europe/Copenhagen), starting 6 Oct 2026 at ${late("09")}, until 1 Jan 2027 at 00:00, at most 10 runs`,
 				intent: "Read the pipeline.\n\nTell Jonas when a deal slips.",
 			},
 		});
@@ -727,24 +730,27 @@ describe("what the card shows for delegation", () => {
 			describeCloudAction(tool("manage_routine"), routine(trigger), timeZone ? { timeZone } : {}).details.schedule;
 		expect(
 			schedule({ kind: "weekly", weekdays: ["friday", "monday"], localTime: "17:30", timeZone: COPENHAGEN }),
-		).toBe("Mondays and Fridays at 17:30 (Europe/Copenhagen)");
+		).toBe(`Mondays and Fridays at ${late("17", 30)} (Europe/Copenhagen)`);
 		expect(schedule({ kind: "weekly", weekdays: ["sunday", "saturday"], localTime: "08:00", timeZone: "UTC" })).toBe(
-			"Weekends at 08:00 (UTC)",
+			`Weekends at ${late("08")} (UTC)`,
 		);
 		expect(schedule({ kind: "every", minutes: 120 })).toBe("Every 2 hours");
 		expect(schedule({ kind: "every", minutes: 45 })).toBe("Every 45 minutes");
 		// A time without a zone of its own reads on the wake's clock (a routine run's own zone), else in UTC.
 		expect(schedule({ kind: "every", minutes: 1440, firstRunAt: "2026-10-02T05:00:00Z" }, COPENHAGEN)).toBe(
-			"Every day, starting 2 Oct 2026 at 07:00 (Europe/Copenhagen)",
+			`Every day, starting 2 Oct 2026 at ${late("07")} (Europe/Copenhagen)`,
 		);
 		expect(schedule({ kind: "every", minutes: 2880, firstRunAt: "2026-10-02T05:00:00Z" }, "Not/AZone")).toBe(
-			"Every 2 days, starting 2 Oct 2026 at 05:00 (UTC)",
+			`Every 2 days, starting 2 Oct 2026 at ${late("05")} (UTC)`,
 		);
+		// A first run already passed stays as it is.
 		expect(schedule({ kind: "dynamic", timeZone: COPENHAGEN, firstRunAt: "2026-10-01T09:00:00+02:00" })).toBe(
 			"The agent picks each next run, starting 1 Oct 2026 at 09:00 (Europe/Copenhagen)",
 		);
-		// A listener names what it waits for, never its path, and its time is the latest one (ahead, within 30 days).
+		// A listener names what it waits for, never its path, and its time is the latest one (ahead, within 30 days),
+		// moved by the agent's offset.
 		const soon = new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 2 * 86_400_000).toISOString();
+		const minute = String(parse.offset).padStart(2, "0");
 		expect(
 			schedule({
 				kind: "when_done",
@@ -753,7 +759,9 @@ describe("what the card shows for delegation", () => {
 				timeZone: COPENHAGEN,
 			}),
 		).toMatch(
-			/^When the todo “Landing page” of product-builder is done, at the latest \d+ \w{3} \d{4} at \d\d:00 \(Europe\/Copenhagen\)$/,
+			new RegExp(
+				`^When the todo “Landing page” of product-builder is done, at the latest \\d+ \\w{3} \\d{4} at \\d\\d:${minute} \\(Europe/Copenhagen\\)$`,
+			),
 		);
 		expect(
 			schedule({
@@ -762,7 +770,11 @@ describe("what the card shows for delegation", () => {
 				latestAt: soon,
 				timeZone: "UTC",
 			}),
-		).toMatch(/^When the human task “Sign contract” is done, at the latest \d+ \w{3} \d{4} at \d\d:00 \(UTC\)$/);
+		).toMatch(
+			new RegExp(
+				`^When the human task “Sign contract” is done, at the latest \\d+ \\w{3} \\d{4} at \\d\\d:${minute} \\(UTC\\)$`,
+			),
+		);
 		// A decision that waits again names what it waits for.
 		expect(
 			describeCloudAction(

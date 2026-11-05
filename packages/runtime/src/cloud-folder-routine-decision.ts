@@ -24,6 +24,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import { cloudRoutineAgentOffsetMinutes, cloudRoutineSpreadInstant } from "./cloud-routine-pace.ts";
 
 /*
  * `decide_routine` as a thin writer of a folder-v2 dynamic routine's own file (deploy/first-node/
@@ -234,12 +235,18 @@ export class CloudFolderRoutineDecision {
 				"New instructions or a new title need the automatic review's approval of this call, and it has none: decide next without intent or title, or call again",
 			);
 		let text: string;
+		// The next run, spread for the agent (cloud-routine-pace.ts) while it stays before the routine's end.
+		const spread = cloudRoutineSpreadInstant(
+			request.at ?? "",
+			cloudRoutineAgentOffsetMinutes(this.#identity.staffAgentId),
+			routine.ends,
+		);
+		const at = canonicalCompanyStateInstant(spread) ?? spread;
 		if (request.action === "conclude") {
 			// The file's conclusion is one line: line breaks and tabs in the summary become spaces.
 			const conclusion = (request.summary ?? "").replace(/\s+/g, " ").trim();
 			text = setCompanyStateSettings(found.text, { status: "concluded", conclusion });
 		} else {
-			const at = canonicalCompanyStateInstant(request.at ?? "") ?? request.at ?? "";
 			if (routine.ends && Date.parse(at) >= Date.parse(routine.ends))
 				throw new CloudToolRefusal(`The routine ends at ${routine.ends}. Choose an earlier time or conclude it.`);
 			if (rewrite) {
@@ -321,7 +328,7 @@ export class CloudFolderRoutineDecision {
 									version: written.version,
 									status: request.action === "next" ? "active" : "concluded",
 									...(request.action === "next"
-										? { at: canonicalCompanyStateInstant(request.at ?? "") ?? request.at }
+										? { at }
 										: { conclusion: (request.summary ?? "").replace(/\s+/g, " ").trim() }),
 									...(title !== undefined ? { title } : {}),
 									...(instructions !== undefined ? { instructionsChanged: true } : {}),

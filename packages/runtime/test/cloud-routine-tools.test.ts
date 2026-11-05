@@ -7,6 +7,7 @@ import {
 	CloudToolArgumentRefusal,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRoutineAgentOffsetMinutes, cloudRoutineSpreadInstant } from "@qorpera/runtime/cloud-routine-pace";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
@@ -40,7 +41,10 @@ async function fixture(ownDynamicRoutine?: Parameters<typeof cloudRoutineTools>[
 	});
 	// What the writer was asked to save, in order.
 	const saved = () => writer.change.mock.calls.map(([request]) => request as unknown as Record<string, unknown>);
-	return { binding, run, writer, boundary, saved };
+	// The agent's start offset: a time on the hour or half hour moves by it (cloud-routine-pace.ts).
+	const offset = cloudRoutineAgentOffsetMinutes(run.identity.staffAgentId);
+	const late = (hour: string) => `${hour}:${String(offset).padStart(2, "0")}`;
+	return { binding, run, writer, boundary, saved, offset, late };
 }
 const weekly = {
 	action: "upsert",
@@ -65,7 +69,7 @@ describe("agent routine tool", () => {
 					kind: "schedule",
 					intervalMinutes: 1440,
 					weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
-					localTime: "08:00",
+					localTime: f.late("08"),
 					timeZone: "Europe/Copenhagen",
 					replyPolicy: "optional",
 				},
@@ -109,12 +113,80 @@ describe("agent routine tool", () => {
 			expect(f.saved()[0]?.trigger).toEqual({
 				kind: "schedule",
 				intervalMinutes: 1440,
+				// A first run already passed stays as it is.
 				startAt: "2026-09-28T07:00:00.000Z",
 				weekdays: ["monday"],
-				localTime: "08:00",
+				localTime: f.late("08"),
 				timeZone: "Europe/Copenhagen",
 				replyPolicy: "optional",
 			});
+		} finally {
+			f.run.close();
+		}
+	});
+	it("moves a start on the hour or half hour by the agent's offset, never to the routine's end", async () => {
+		const f = await fixture();
+		// Tomorrow at 09:00 UTC, as agents like to choose.
+		const nine = Math.floor(Date.now() / 86_400_000) * 86_400_000 + 86_400_000 + 9 * 3_600_000;
+		const at = (minutes: number) => new Date(nine + minutes * 60_000).toISOString();
+		try {
+			for (const [key, trigger, end] of [
+				["s1", { kind: "dynamic", firstRunAt: at(0), timeZone: "UTC" }, {}],
+				["s2", { kind: "every", minutes: 120, firstRunAt: at(30) }, {}],
+				["s3", { kind: "weekly", localTime: "09:30", timeZone: "UTC", firstRunAt: at(0) }, {}],
+				["s4", { kind: "when_done", path: "QorperaOS/human-tasks/sign.md", latestAt: at(0), timeZone: "UTC" }, {}],
+				// Not on the hour or half hour, or the move would reach the routine's end: kept.
+				["s5", { kind: "dynamic", firstRunAt: at(10), timeZone: "UTC" }, {}],
+				["s6", { kind: "dynamic", firstRunAt: at(0), timeZone: "UTC" }, { expiresAt: at(f.offset) }],
+				["s7", { kind: "weekly", localTime: "09:45", timeZone: "UTC" }, {}],
+			] as const) {
+				const result = await f.boundary.invoke(key, "qorpera", "manage_routine", {
+					...weekly,
+					operationKey: key,
+					trigger,
+					...end,
+				});
+				expect(result.success, JSON.stringify(result)).toBe(true);
+			}
+			const days = ["monday", "tuesday", "wednesday", "thursday", "friday"];
+			expect(f.saved().map((request) => request.trigger)).toEqual([
+				{ kind: "once", at: at(f.offset), timeZone: "UTC", replyPolicy: "optional" },
+				{ kind: "schedule", intervalMinutes: 120, startAt: at(30 + f.offset), replyPolicy: "optional" },
+				{
+					kind: "schedule",
+					intervalMinutes: 1440,
+					startAt: at(f.offset),
+					weekdays: days,
+					localTime: `09:${30 + f.offset}`,
+					timeZone: "UTC",
+					replyPolicy: "optional",
+				},
+				{
+					kind: "once",
+					at: at(f.offset),
+					after: "QorperaOS/human-tasks/sign.md",
+					timeZone: "UTC",
+					replyPolicy: "optional",
+				},
+				{ kind: "once", at: at(10), timeZone: "UTC", replyPolicy: "optional" },
+				{ kind: "once", at: at(0), timeZone: "UTC", replyPolicy: "optional" },
+				{
+					kind: "schedule",
+					intervalMinutes: 1440,
+					weekdays: days,
+					localTime: "09:45",
+					timeZone: "UTC",
+					replyPolicy: "optional",
+				},
+			]);
+			// The same save again is the same request.
+			const again = await f.boundary.invoke("s1", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "s1",
+				trigger: { kind: "dynamic", firstRunAt: at(0), timeZone: "UTC" },
+			});
+			expect(again.success, JSON.stringify(again)).toBe(true);
+			expect(f.writer.change).toHaveBeenCalledTimes(7);
 		} finally {
 			f.run.close();
 		}
@@ -489,24 +561,27 @@ describe("agent routine tool", () => {
 				},
 			});
 			expect(bare.success && task.success, JSON.stringify([bare, task])).toBe(true);
+			// The latest time is on the hour, so it moves by the agent's offset.
+			const spread = cloudRoutineSpreadInstant(latest, f.offset);
+			expect(spread).not.toBe(latest);
 			expect(f.saved().map((request) => request.trigger)).toEqual([
 				{
 					kind: "once",
-					at: latest,
+					at: spread,
 					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
 					timeZone: "Europe/Copenhagen",
 					replyPolicy: "optional",
 				},
 				{
 					kind: "once",
-					at: latest,
+					at: spread,
 					after: "QorperaOS/agents/product-builder/todos/landing-page.md",
 					timeZone: "UTC",
 					replyPolicy: "optional",
 				},
 				{
 					kind: "once",
-					at: latest,
+					at: spread,
 					after: "QorperaOS/human-tasks/sign-contract.md",
 					timeZone: "UTC",
 					replyPolicy: "required",
