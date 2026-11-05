@@ -244,6 +244,54 @@ describe("interaction cards", () => {
 	});
 });
 
+describe("a visual choice", () => {
+	const visual: InteractionRequest = {
+		surface: "question",
+		title: "Which bundle first?",
+		payload: {
+			options: [
+				{ label: "Colour Duo", value: "duo", description: "Charcoal and blue", preview: "sketches/duo.svg" },
+				{ label: "Matching Pair", value: "pair", preview: "sketches/pair.svg" },
+				{ label: "The demo", value: "demo", preview: "app:bundle-demo" },
+			],
+		},
+	};
+
+	it("shows options with pictures as big boxes; a click picks one", async () => {
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/svg+xml" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:shown");
+		const ctx = context({ image });
+		const card = renderInteractionCard(item(visual), ctx);
+		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		expect(boxes.map((box) => box.querySelector(".choice-label")?.textContent)).toEqual([
+			"Colour Duo",
+			"Matching Pair",
+			"The demo",
+		]);
+		expect(boxes[0]?.querySelector(".choice-description")?.textContent).toBe("Charcoal and blue");
+		// No pill row beside the boxes.
+		expect(card.querySelector(".interaction-options")).toBeNull();
+		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture img")).toHaveLength(2));
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["sketches/duo.svg", "sketches/pair.svg"]);
+		// An app's option shows its name, and its link opens it beside the chat.
+		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("bundle-demo");
+		expect(card.querySelector(".choice-apps .app-card")).not.toBeNull();
+		boxes[1]?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["pair"] });
+		created.mockRestore();
+	});
+
+	it("keeps the boxes, inert, with the chosen one marked once answered", () => {
+		const card = renderInteractionCard(
+			item(visual, { outcome: "answered", answer: { values: ["duo"] }, answeredBy: userA.id }),
+			context({ image: async () => null }),
+		);
+		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		expect(boxes.every((box) => box.disabled)).toBe(true);
+		expect(boxes.map((box) => box.classList.contains("is-chosen"))).toEqual([true, false, false]);
+	});
+});
+
 describe("who answers a card", () => {
 	const thread: HostedSession = {
 		...session,

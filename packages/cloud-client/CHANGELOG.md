@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `agent-wall`: an item is `{text, detail?}`: a headline, and under it, indented, an optional detail (lines join as one, at most 240 characters). `wallPreview(item)` names the picture (`folder:` image) or app an item links, `WALL_HEADLINE_MAX_CHARS` (80) and `WALL_DETAIL_MAX_CHARS` (240) are exported; a headline written before details existed still reads up to 240.
 
 ### Added
 

@@ -30,6 +30,7 @@ import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
+import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import { CompanyApps, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
@@ -1558,6 +1559,9 @@ export function mountApplication(
 								},
 								show: (agentId) => showAgentPage(agentId, "wall"),
 							},
+							folderImage: folderImageReader(() =>
+								memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
+							),
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

@@ -61,6 +61,10 @@ it("refuses items it cannot keep before anything is read", async () => {
 	refuses(wall(["x".repeat(241)], null), "put the rest in a file and link it");
 	refuses(wall(["1", "2", "3", "4", "5", "6", "7"], null), "waiting must be a list of at most 6 items");
 	refuses(wall(null, null, null), "done must be a list");
+	refuses(wall([{ headline: "A", note: "B" }], null), "has only headline and detail");
+	refuses(wall([{ detail: "B" }], null), "is {headline, detail?}");
+	refuses(wall([{ headline: "A", detail: "x".repeat(241) }], null), "a detail is at most 240 characters");
+	refuses(wall([{ headline: "A", detail: "one\ntwo" }], null), "a detail is one or two sentences on one line");
 	expect(f.commits).toEqual([]);
 });
 
@@ -97,7 +101,7 @@ it("makes the wall in the agent's folder, then keeps it in place", async () => {
 	expect(second.saved).toBe(true);
 	expect(parseWall(f.text(WALL) ?? "")).toMatchObject({
 		wall: {
-			waiting: ["Pick a shop name. My pick is Båndklar. [Names](folder:research/names.md)"],
+			waiting: [{ text: "Pick a shop name. My pick is Båndklar. [Names](folder:research/names.md)" }],
 			working: [],
 			done: [
 				{ day: "2026-11-05", text: "Prices checked: most sell at 89–129 kr" },
@@ -111,6 +115,58 @@ it("makes the wall in the agent's folder, then keeps it in place", async () => {
 	const again = read(await f.call("update_wall", wall(null, null, ["team hired"])));
 	expect(again).toMatchObject({ saved: false, note: "Already so: nothing changed" });
 	expect(f.commits).toHaveLength(2);
+});
+
+it("keeps a short headline with its detail, refuses a new long headline, and keeps one already there", async () => {
+	const long = `${"An old item from before details, written as one long line ".repeat(2)}[Plan](folder:plan.md)`;
+	const f = await fixture({ files: { [WALL]: `# Wall\n\n## Working on\n- ${long}\n` } });
+	const answer = read(
+		await f.call(
+			"update_wall",
+			wall(
+				[
+					{
+						headline: "Pick a bundle",
+						detail: "Two looks to choose from. [Sketches](folder:sketches/bundles.svg)",
+					},
+				],
+				null,
+				[{ headline: "Prices checked", detail: "Most sell at 89–129 kr." }],
+			),
+		),
+	);
+	expect(answer.wall).toEqual({
+		waiting: [
+			{ headline: "Pick a bundle", detail: "Two looks to choose from. [Sketches](folder:sketches/bundles.svg)" },
+		],
+		working: [{ headline: long }],
+		done: [{ day: "2026-11-05", headline: "Prices checked", detail: "Most sell at 89–129 kr." }],
+	});
+	expect(f.text(WALL)).toBe(
+		[
+			"# Wall",
+			"",
+			"## Waits on you",
+			"- Pick a bundle",
+			"  Two looks to choose from. [Sketches](folder:sketches/bundles.svg)",
+			"",
+			"## Working on",
+			`- ${long}`,
+			"",
+			"## Done",
+			"- 2026-11-05: Prices checked",
+			"  Most sell at 89–129 kr.",
+			"",
+		].join("\n"),
+	);
+	// The long one given back as it stands is kept; a new long one is refused, saying where the rest goes.
+	expect(read(await f.call("update_wall", wall(null, [long]))).saved).toBe(false);
+	const error = await f.call("update_wall", wall(null, [`${long} more`])).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect((error as Error).message).toContain("WALL_HEADLINE_TOO_LONG: nothing was written");
+	expect((error as Error).message).toContain("say the rest in its detail");
 });
 
 it("never rewrites a wall with lines that read as no item, and keeps the file's own note", async () => {
@@ -156,7 +212,11 @@ it("never rewrites a wall with lines that read as no item, and keeps the file's 
 });
 
 it("refuses to keep a part filled past its limit, and drops the oldest done items past the file's size", async () => {
-	const full = renderWall({ waiting: ["1", "2", "3", "4", "5", "6", "7"], working: [], done: [] });
+	const full = renderWall({
+		waiting: ["1", "2", "3", "4", "5", "6", "7"].map((text) => ({ text })),
+		working: [],
+		done: [],
+	});
 	const f = await fixture({ files: { [WALL]: full } });
 	const error = await f.call("update_wall", wall(null, ["Pricing"])).then(
 		() => null,
@@ -166,11 +226,14 @@ it("refuses to keep a part filled past its limit, and drops the oldest done item
 		'WALL_TOO_MANY: nothing was written; "Waits on you" holds at most 6 items',
 	);
 	expect(read(await f.call("update_wall", wall(["1"], ["Pricing"]))).saved).toBe(true);
-	const long = (index: number) => `${index} ${"æ".repeat(230)}`;
 	const big = {
 		waiting: [],
 		working: [],
-		done: Array.from({ length: 40 }, (_, index) => ({ day: "2026-11-01", text: long(index) })),
+		done: Array.from({ length: 40 }, (_, index) => ({
+			day: "2026-11-01",
+			text: `Item ${index}`,
+			detail: "æ".repeat(230),
+		})),
 	};
 	const g = await fixture({ files: { [WALL]: renderWall({ ...big, done: big.done.slice(0, 30) }) } });
 	expect(
@@ -180,7 +243,7 @@ it("refuses to keep a part filled past its limit, and drops the oldest done item
 				wall(
 					null,
 					null,
-					big.done.slice(30, 42).map((item) => item.text),
+					big.done.slice(30, 42).map((item) => ({ headline: item.text, detail: item.detail })),
 				),
 			),
 		).saved,
@@ -200,20 +263,20 @@ it("dates finished items in the company's time zone", () => {
 });
 
 it("says the wall changed since it was read when the save meets a newer version", async () => {
-	const f = await fixture({ files: { [WALL]: renderWall({ waiting: [], working: ["A"], done: [] }) } });
+	const f = await fixture({ files: { [WALL]: renderWall({ waiting: [], working: [{ text: "A" }], done: [] }) } });
 	const tool = f.tool("update_wall");
 	const parsed = tool.parseArguments(wall(null, ["B"]));
 	// A member's edit lands between the read and the save.
 	const readText = f.folder.readText.bind(f.folder);
 	f.folder.readText = async (...args: Parameters<typeof readText>) => {
 		const found = await readText(...args);
-		f.seed(WALL, renderWall({ waiting: [], working: ["C"], done: [] }));
+		f.seed(WALL, renderWall({ waiting: [], working: [{ text: "C" }], done: [] }));
 		return found;
 	};
 	const answer = read(await tool.execute(parsed, { ...f.context, callId: "race" }));
 	expect(answer).toMatchObject({ saved: false, outcome: "not_applied", reason: "version_changed" });
 	expect(answer.refused).toContain("call again");
-	expect(parseWall(f.text(WALL) ?? "").wall.working).toEqual(["C"]);
+	expect(parseWall(f.text(WALL) ?? "").wall.working).toEqual([{ text: "C" }]);
 });
 
 it("keeps done newest first and at most 40 items", () => {
@@ -222,7 +285,7 @@ it("keeps done newest first and at most 40 items", () => {
 		working: [],
 		done: Array.from({ length: 40 }, (_, index) => ({ day: "2026-10-01", text: `Old ${index}` })),
 	};
-	const next = nextWall(stored, { waiting: null, working: null, done: ["New"] }, "2026-11-05");
+	const next = nextWall(stored, { waiting: null, working: null, done: [{ text: "New" }] }, "2026-11-05");
 	expect(next.done).toHaveLength(40);
 	expect(next.done[0]).toEqual({ day: "2026-11-05", text: "New" });
 	expect(next.done.at(-1)?.text).toBe("Old 38");
@@ -230,12 +293,12 @@ it("keeps done newest first and at most 40 items", () => {
 	expect(
 		nextWall(
 			{ waiting: [], working: [], done: [{ day: "2026-11-02", text: "Sent the weekly report" }] },
-			{ waiting: null, working: null, done: ["Sent the weekly report"] },
+			{ waiting: null, working: null, done: [{ text: "Sent the weekly report" }] },
 			"2026-11-09",
 		).done,
 	).toHaveLength(2);
 	// An item done more than a week ago may be done again.
-	expect(nextWall(stored, { waiting: null, working: null, done: ["Old 0"] }, "2026-11-05").done[0]).toEqual({
+	expect(nextWall(stored, { waiting: null, working: null, done: [{ text: "Old 0" }] }, "2026-11-05").done[0]).toEqual({
 		day: "2026-11-05",
 		text: "Old 0",
 	});

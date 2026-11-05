@@ -1023,6 +1023,27 @@
 .interaction-field { flex: 1 1 160px; min-width: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 999px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); }
 .interaction-card [aria-disabled="true"] { opacity: .6; cursor: default; }
 .interaction-options .btn[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A visual choice: each option a big box with the picture the agent made, its name and a short line; a click picks it. */
+.interaction-choices { display: grid; grid-template-columns: repeat(var(--choices, 2), minmax(0, 1fr)); gap: 10px; margin: 8px 0 10px; }
+.choice-box {
+	display: grid; grid-template-rows: auto auto auto; gap: 4px; align-content: start; min-width: 0; padding: 8px 8px 10px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
+}
+.choice-box:hover:not(:disabled) { border-color: var(--border-strong); box-shadow: 0 8px 22px rgb(18 18 17 / 8%); transform: translateY(-2px); }
+.choice-box:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.choice-box:disabled { cursor: default; opacity: 0.6; }
+.choice-box.is-chosen { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); opacity: 1; }
+.choice-picture { display: grid; place-items: center; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 10px; background: var(--pane-strong); }
+.choice-picture img { width: 100%; height: 100%; object-fit: contain; }
+.choice-picture.is-loading { animation: choice-wait 1.2s ease-in-out infinite alternate; }
+@keyframes choice-wait { to { opacity: 0.5; } }
+.choice-picture.is-app { gap: 6px; align-content: center; color: var(--text-muted); font-size: 12.5px; font-weight: 600; }
+.choice-label { padding: 2px 2px 0; font-size: 14px; font-weight: 600; line-height: 1.3; }
+.choice-description { padding: 0 2px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.choice-apps { grid-column: 1 / -1; }
+@media (max-width: 520px) { .interaction-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .choice-box { transition: none; } .choice-box:hover:not(:disabled) { transform: none; } .choice-picture.is-loading { animation: none; } }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }

@@ -9,7 +9,8 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
  *     # Wall
  *
  *     ## Waits on you
- *     - Pick a shop name. My pick is Båndklar. [The names](folder:research/shop-names.md)
+ *     - Pick a shop name
+ *       My pick is Båndklar, and baandklar.dk is free. [The names](folder:research/shop-names.md)
  *
  *     ## Working on
  *     - Checking five shops' prices
@@ -17,12 +18,19 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
  *     ## Done
  *     - 2026-11-05: Team hired
  *
- * An item is one line of Markdown, links included (`folder:` for a file, `app:` for an interface app). A done item
- * starts with the day it was done, newest first. */
+ * An item is a short headline (Jonas, 5 November 2026: no more text per headline than a glance takes), and under it,
+ * indented, an optional detail of a sentence or two in Markdown, links included (`folder:` for a file, `app:` for an
+ * interface app). The web shows the headlines and opens an item's detail on a click, with a preview of a picture or app
+ * it links. A done item starts with the day it was done, newest first. */
 
 export const WALL_FILE = "wall.md";
 export const WALL_MAX_BYTES = 16 * 1024;
-/** One item, in characters. */
+/** An item's headline, in characters, as `update_wall` writes it. A headline written before details existed may be as
+ * long as {@link WALL_ITEM_MAX_CHARS}: it still reads. */
+export const WALL_HEADLINE_MAX_CHARS = 80;
+/** An item's detail, in characters. */
+export const WALL_DETAIL_MAX_CHARS = 240;
+/** The most a headline in the file may hold. */
 export const WALL_ITEM_MAX_CHARS = 240;
 export const WALL_WAITING_MAX = 6;
 export const WALL_WORKING_MAX = 6;
@@ -46,15 +54,21 @@ const LIMITS: Readonly<Record<WallPart, number>> = {
 	done: WALL_DONE_MAX,
 };
 
-export interface WallDone {
+export interface WallItem {
+	/** The headline. */
+	readonly text: string;
+	/** A sentence or two under it, shown when the item opens. */
+	readonly detail?: string;
+}
+
+export interface WallDone extends WallItem {
 	/** `YYYY-MM-DD`. */
 	readonly day: string;
-	readonly text: string;
 }
 
 export interface Wall {
-	readonly waiting: readonly string[];
-	readonly working: readonly string[];
+	readonly waiting: readonly WallItem[];
+	readonly working: readonly WallItem[];
 	/** Newest first. */
 	readonly done: readonly WallDone[];
 }
@@ -103,14 +117,40 @@ export function isWallDay(value: string): boolean {
 	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-/** An item's text as kept: one line, runs of spaces as one, or a problem in plain words. */
-export function wallItemProblem(text: string): string | null {
+/** An item's headline as kept: one line, runs of spaces as one, or a problem in plain words. `max` is the most it may
+ * hold: what the file holds by default, a shorter headline for what `update_wall` writes. */
+export function wallItemProblem(text: string, max = WALL_ITEM_MAX_CHARS): string | null {
 	if (/[\0-\x1f\x7f]/.test(text)) return "an item is one line, with no tabs or control characters";
 	const trimmed = text.trim();
 	if (!trimmed) return "an item is empty";
-	if ([...trimmed].length > WALL_ITEM_MAX_CHARS)
-		return `an item is at most ${WALL_ITEM_MAX_CHARS} characters: put the rest in a file and link it`;
+	if ([...trimmed].length > max)
+		return max < WALL_ITEM_MAX_CHARS
+			? `a headline is at most ${max} characters, a few words: say the rest in its detail`
+			: `an item is at most ${max} characters: put the rest in a file and link it`;
 	return null;
+}
+
+/** An item's detail as kept, or a problem in plain words. */
+export function wallDetailProblem(text: string): string | null {
+	if (/[\0-\x1f\x7f]/.test(text))
+		return "a detail is one or two sentences on one line, with no tabs or control characters";
+	if ([...text.trim()].length > WALL_DETAIL_MAX_CHARS)
+		return `a detail is at most ${WALL_DETAIL_MAX_CHARS} characters, a sentence or two: put the rest in a file and link it`;
+	return null;
+}
+
+const IMAGE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+
+/** What an item links that has a picture to show when it opens: the first image of the company's folder it links, else
+ * the first interface app. */
+export function wallPreview(item: WallItem): { kind: "image"; path: string } | { kind: "app"; name: string } | null {
+	let app: string | null = null;
+	for (const match of `${item.text} ${item.detail ?? ""}`.matchAll(/\]\((folder|app):([^)\s]+)\)/g)) {
+		const target = match[2] ?? "";
+		if (match[1] === "folder" && IMAGE.test(target)) return { kind: "image", path: target };
+		if (match[1] === "app" && app === null) app = target;
+	}
+	return app === null ? null : { kind: "app", name: app };
 }
 
 export function wallItemText(text: string): string {
@@ -121,7 +161,7 @@ export function wallItemText(text: string): string {
  * Anything else that is no item of a part is a problem. */
 export function parseWall(text: string): WallParse {
 	const problems: WallProblem[] = [];
-	const parts: { waiting: string[]; working: string[]; done: WallDone[] } = { waiting: [], working: [], done: [] };
+	const parts: { waiting: WallItem[]; working: WallItem[]; done: WallDone[] } = { waiting: [], working: [], done: [] };
 	if (new TextEncoder().encode(text).length > WALL_MAX_BYTES)
 		problems.push({ code: "size", line: 1, message: `a wall is at most ${WALL_MAX_BYTES / 1024} KiB` });
 	let part: WallPart | null = null;
@@ -130,6 +170,8 @@ export function parseWall(text: string): WallParse {
 	const lines = text.split("\n");
 	const first = lines.findIndex((line) => /^##[ \t]/.test(line));
 	const head = (first < 0 ? lines : lines.slice(0, first)).join("\n").replace(/\s+$/, "");
+	/** The line the last item (or its detail) ended on: a detail follows right under it. */
+	let lastLine = 0;
 	lines.forEach((raw, index) => {
 		const line = raw.replace(/\r$/, "");
 		const at = index + 1;
@@ -153,7 +195,18 @@ export function parseWall(text: string): WallParse {
 			return;
 		}
 		if (part === null || !line.trim()) return;
-		const item = /^[ \t]*[-*][ \t]+(.*)$/.exec(line);
+		const item = /^ ?[-*][ \t]+(.*)$/.exec(line);
+		// An indented line under an item is its detail; more than one join as one.
+		const indented = !item && /^[ \t]+\S/.test(line) ? line.trim() : null;
+		const last = (parts[part] as WallItem[]).at(-1);
+		if (indented !== null && last && lastLine === at - 1) {
+			const detail = wallItemText(last.detail ? `${last.detail} ${indented}` : indented);
+			const problem = wallDetailProblem(detail);
+			if (problem) problems.push({ code: "line", line: at, message: problem });
+			else (parts[part] as WallItem[]).splice(-1, 1, { ...last, detail });
+			lastLine = at;
+			return;
+		}
 		if (!item) {
 			problems.push({ code: "line", line: at, message: 'each line under a part is an item, starting with "- "' });
 			return;
@@ -179,7 +232,8 @@ export function parseWall(text: string): WallParse {
 			return;
 		}
 		if (part === "done") parts.done.push({ day: day as string, text: wallItemText(words) });
-		else parts[part].push(wallItemText(words));
+		else parts[part].push({ text: wallItemText(words) });
+		lastLine = at;
 	});
 	for (const [name, words] of headings)
 		if (parts[name].length > LIMITS[name])
@@ -196,16 +250,16 @@ export function parseWall(text: string): WallParse {
  * order, every item on its own line. */
 export function renderWall(wall: Wall, head = "# Wall"): string {
 	const out = [head.replace(/\s+$/, "") || "# Wall"];
-	const part = (name: WallPart, lines: readonly string[]) => {
+	const part = (name: WallPart, items: readonly WallItem[]) => {
 		out.push("", `## ${WALL_HEADINGS[name]}`);
-		for (const line of lines) out.push(`- ${line}`);
+		for (const item of items) {
+			out.push(`- ${"day" in item ? `${(item as WallDone).day}: ` : ""}${item.text}`);
+			if (item.detail) out.push(`  ${item.detail}`);
+		}
 	};
 	part("waiting", wall.waiting);
 	part("working", wall.working);
-	part(
-		"done",
-		wall.done.map((item) => `${item.day}: ${item.text}`),
-	);
+	part("done", wall.done);
 	return `${out.join("\n")}\n`;
 }
 

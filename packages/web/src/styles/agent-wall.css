@@ -64,6 +64,27 @@
 .agent-wall-part.is-working .agent-wall-mark { border: 1.5px solid var(--border-strong); border-top-color: var(--agent-wall-wait); animation: agent-wall-spin 1.4s linear infinite; }
 @keyframes agent-wall-spin { to { transform: rotate(360deg); } }
 .agent-wall-text { min-width: 0; }
+/* An item with more to it is a row that opens: the headline is its button, the detail and a preview show under it. */
+.agent-wall-item.is-expandable { display: block; padding: 0; }
+.agent-wall-row {
+	display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: start; width: 100%;
+	padding: 4px 8px; border: 0; border-radius: var(--radius); background: transparent; color: inherit; font: inherit;
+	text-align: left; cursor: pointer; transition: background-color var(--motion-fast) ease;
+}
+.agent-wall-row:hover { background: var(--hover); }
+.agent-wall-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.agent-wall-row > .icon { width: 11px; height: 11px; margin-top: 4px; color: var(--text-soft); transform: rotate(90deg); transition: transform var(--motion-base) var(--ease-out); }
+.agent-wall-item.is-open > .agent-wall-row > .icon { transform: rotate(-90deg); }
+.agent-wall-detail { display: grid; gap: 6px; padding: 0 8px 8px 30px; color: var(--text-muted); font-size: 13px; line-height: 1.45; animation: agent-wall-open var(--motion-base) var(--ease-out) both; }
+.agent-wall-detail[hidden] { display: none; }
+@keyframes agent-wall-open { from { opacity: 0; transform: translateY(-3px); } }
+.agent-wall-detail p { margin: 0; }
+.agent-wall-preview { min-width: 0; }
+.agent-wall-preview.is-loading { height: 120px; border-radius: var(--radius); background: var(--pane-strong); animation: agent-wall-wait 1.2s ease-in-out infinite alternate; }
+@keyframes agent-wall-wait { to { opacity: 0.5; } }
+/* A button shrinks to what it holds: it gets the width, the picture fills it at its own shape. */
+.agent-wall-picture { display: block; width: min(100%, 260px); padding: 0; border: 0; border-radius: var(--radius); background: none; cursor: zoom-in; }
+.agent-wall-picture img { display: block; width: 100%; height: auto; max-height: 180px; border-radius: var(--radius); object-fit: contain; object-position: left center; }
 .agent-wall-text .message-prose { line-height: inherit; }
 .agent-wall-more { margin: 0; padding: 1px 8px 0 30px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .agent-wall-link { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
@@ -78,9 +99,13 @@
 .agent-wall .app-card-emblem svg { width: 16px; height: 16px; }
 .agent-wall .app-card-title { font-size: inherit; }
 .agent-wall .app-card-note { display: none; }
+/* An app an item links, opened: the message's own app card, whole. */
+.agent-wall-preview.is-app .app-card { display: flex; width: 100%; margin: 0; padding: 10px 12px; border-radius: var(--radius-lg); font-size: 13.5px; }
+.agent-wall-preview.is-app .app-card-emblem svg { width: 28px; height: 28px; }
+.agent-wall-preview.is-app .app-card-note { display: block; }
 
 @media (max-width: 760px) { .agent-wall { margin: 8px 10px 0; } .agent-wall-body { max-height: 40dvh; } }
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall.is-leaving, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
-	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle, .agent-wall-hide { transition: none; }
+	.agent-wall, .agent-wall.is-leaving, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
+	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle, .agent-wall-hide, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
 }

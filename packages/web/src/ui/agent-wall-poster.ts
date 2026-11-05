@@ -1,4 +1,4 @@
-import { foldWallDone, parseWall, type Wall } from "@qorpera/cloud-client/agent-wall";
+import { foldWallDone, parseWall, type Wall, type WallItem, wallPreview } from "@qorpera/cloud-client/agent-wall";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
 import { h, icon, replace } from "./dom.ts";
@@ -12,8 +12,10 @@ import { phrase, presentationDay, t } from "./preferences.ts";
  * done", which shows the rest of the week and how many are earlier). The wall is the file
  * QorperaOS/agents/<handle>/wall.md (@qorpera/cloud-client/agent-wall); the view reads it and hands its text here.
  *
- * Each item is one line of Markdown, drawn as a message draws it, so its folder links and app cards are the same buttons
- * the app answers in a message (app/application.ts). What is new since the member last saw the wall open is marked; what
+ * Each item is a headline (Jonas, 5 November 2026: no more text per headline than a glance takes). One with more to it
+ * (a detail, a link) is a row that opens on a click: its detail and links, drawn as a message draws them, so its folder
+ * links and app cards are the same buttons the app answers in a message (app/application.ts), and a preview of the
+ * picture or app it links. What is new since the member last saw the wall open is marked; what
  * was seen, and whether the poster is folded, is kept per member and agent on this device.
  *
  * The member can hide the poster (Jonas, 5 Nov 2026: "it updates itself, but you can then dismiss it"). It stays hidden
@@ -44,11 +46,14 @@ function itemKey(part: Part, text: string): string {
 
 function keysOf(wall: Wall): string[] {
 	return [
-		...wall.waiting.map((text) => itemKey("waiting", text)),
-		...wall.working.map((text) => itemKey("working", text)),
+		...wall.waiting.map((item) => itemKey("waiting", item.text)),
+		...wall.working.map((item) => itemKey("working", item.text)),
 		...wall.done.map((item) => itemKey("done", `${item.day}: ${item.text}`)),
 	];
 }
+
+/** Markdown links in a headline: the row is a button, so they show as words there and as links when it opens. */
+const LINK = /\[([^\]]*)\]\(((?:folder|app):[^)\s]+|https?:\/\/[^)\s]+)\)/g;
 
 /** Where one member's view of one agent's wall is kept on this device (no member: the agent alone). */
 function slot(member: string, agentId: string): string {
@@ -126,6 +131,8 @@ export function wallNews(member: string, agentId: string, text: string): { items
 export interface WallPosterOptions {
 	/** The member who looks: hiding the poster is theirs, per agent. */
 	member?: string;
+	/** Reads a picture of the company's folder an item links, for its preview; null when there is none to show. */
+	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** After the member hid the poster (and it left), so the view can put focus where they find it again. */
 	onHide?: () => void;
 }
@@ -140,6 +147,12 @@ export class AgentWallPoster {
 	readonly #hide: HTMLButtonElement;
 	readonly #member: string;
 	readonly #onHide: (() => void) | undefined;
+	readonly #image: WallPosterOptions["image"];
+	/** Previews read for this agent, by path: a picture is read once while the poster shows the agent. */
+	#pictures = new Map<string, Promise<string | null>>();
+	#pictureLife = new AbortController();
+	/** Items opened, by key, while the poster shows this agent. */
+	#expanded = new Set<string>();
 	#agent: WallPosterAgent | undefined;
 	#text: string | null = null;
 	#key = "";
@@ -154,6 +167,10 @@ export class AgentWallPoster {
 	#present = new Set<string>();
 	/** Items drawn so far: one that joins later comes in moving. */
 	#drawn: Set<string> | undefined;
+	/** The items drawn, by key, for an item that opens later. */
+	#items = new Map<string, WallItem>();
+	/** Tells this poster's detail ids apart from another poster's on the page. */
+	readonly #serial = Math.random().toString(36).slice(2, 8);
 	/** Brought back from the agent's card: if the poster shows before this time, it takes focus. */
 	#revealUntil = 0;
 	/** Agents this poster hid: hidden while it is on screen even when storage keeps nothing. */
@@ -164,6 +181,7 @@ export class AgentWallPoster {
 	constructor(options: WallPosterOptions = {}) {
 		this.#member = options.member ?? "";
 		this.#onHide = options.onHide;
+		this.#image = options.image;
 		this.#hide = h(
 			"button",
 			{ type: "button", class: "agent-wall-hide", onclick: () => this.#hideWall() },
@@ -199,6 +217,8 @@ export class AgentWallPoster {
 			this.#fresh = new Set();
 			this.#drawn = undefined;
 			this.#moreDone = false;
+			this.#expanded = new Set();
+			this.#forgetPictures();
 			this.#stopLeaving();
 		}
 		this.#agent = agent;
@@ -275,6 +295,76 @@ export class AgentWallPoster {
 		});
 	}
 
+	/** Lets the pictures read for the agent shown so far go. */
+	#forgetPictures(): void {
+		this.#pictureLife.abort();
+		this.#pictureLife = new AbortController();
+		for (const url of this.#pictures.values()) void url.then((shown) => shown && URL.revokeObjectURL(shown));
+		this.#pictures = new Map();
+	}
+
+	/** An opened item's preview: the picture it links (read once), or the app it links as a big card. */
+	#preview(item: WallItem): HTMLElement | null {
+		const target = wallPreview(item);
+		if (!target) return null;
+		if (target.kind === "app")
+			return h(
+				"div",
+				{ class: "agent-wall-preview is-app" },
+				markdownInline(`[${target.name}](app:${target.name})`),
+			);
+		const read = this.#image;
+		if (!read) return null;
+		const box = h("div", { class: "agent-wall-preview is-image is-loading" });
+		let shown = this.#pictures.get(target.path);
+		if (!shown) {
+			const signal = this.#pictureLife.signal;
+			shown = read(target.path, signal).then(
+				(blob) => (blob && !signal.aborted ? URL.createObjectURL(blob) : null),
+				() => null,
+			);
+			this.#pictures.set(target.path, shown);
+		}
+		void shown.then((url) => {
+			box.classList.remove("is-loading");
+			if (!url) {
+				box.remove();
+				return;
+			}
+			const name = target.path.slice(target.path.lastIndexOf("/") + 1);
+			// The picture opens in Storage, as its link does.
+			replace(
+				box,
+				h(
+					"button",
+					{ type: "button", class: "folder-link agent-wall-picture", "data-folder-path": target.path },
+					h("img", { src: url, alt: name, decoding: "async" }),
+				),
+			);
+		});
+		return box;
+	}
+
+	#toggleItem(key: string, row: HTMLElement): void {
+		const open = !this.#expanded.has(key);
+		if (open) this.#expanded.add(key);
+		else this.#expanded.delete(key);
+		const button = row.querySelector<HTMLButtonElement>(".agent-wall-row");
+		const detail = row.querySelector<HTMLElement>(".agent-wall-detail");
+		button?.setAttribute("aria-expanded", String(open));
+		row.classList.toggle("is-open", open);
+		if (detail) {
+			detail.hidden = !open;
+			// The preview is read only when the item first opens.
+			if (open && detail.dataset.preview === "later") {
+				delete detail.dataset.preview;
+				const item = this.#items.get(key);
+				const preview = item ? this.#preview(item) : null;
+				if (preview) detail.append(preview);
+			}
+		}
+	}
+
 	#isHidden(agentId: string): boolean {
 		return this.#hiddenHere.has(agentId) || wallHidden(this.#member, agentId);
 	}
@@ -327,21 +417,66 @@ export class AgentWallPoster {
 		replace(this.#summary, ...counts);
 
 		const drawn = new Set<string>();
-		const item = (part: Part, text: string, keyText = text) => {
+		this.#items = new Map();
+		const item = (part: Part, entry: WallItem, keyText = entry.text) => {
 			const key = itemKey(part, keyText);
 			drawn.add(key);
+			this.#items.set(key, entry);
 			const fresh = this.#fresh.has(key);
-			const row = h(
-				"li",
-				{ class: `agent-wall-item${fresh ? " is-new" : ""}`, "data-wall-item": key },
-				h(
-					"span",
-					{ class: "agent-wall-mark", "aria-hidden": "true" },
-					part === "done" ? "✓" : part === "waiting" ? "!" : "",
-				),
-				h("span", { class: "agent-wall-text" }, markdownInline(text)),
-				fresh ? h("span", { class: "visually-hidden" }, ` (${t("New")})`) : null,
+			const mark = h(
+				"span",
+				{ class: "agent-wall-mark", "aria-hidden": "true" },
+				part === "done" ? "✓" : part === "waiting" ? "!" : "",
 			);
+			const news = fresh ? h("span", { class: "visually-hidden" }, ` (${t("New")})`) : null;
+			const links = [...entry.text.matchAll(LINK)].map((match) => match[0]);
+			const opens = Boolean(entry.detail || links.length || wallPreview(entry));
+			let row: HTMLElement;
+			if (!opens)
+				row = h(
+					"li",
+					{ class: `agent-wall-item${fresh ? " is-new" : ""}`, "data-wall-item": key },
+					mark,
+					h("span", { class: "agent-wall-text" }, markdownInline(entry.text)),
+					news,
+				);
+			else {
+				// The headline is the row's button: its links read as words there, and as links when it opens.
+				const open = this.#expanded.has(key);
+				const id = `agent-wall-detail-${key}-${this.#serial}`;
+				const detail = h(
+					"div",
+					{ class: "agent-wall-detail", id, hidden: !open },
+					entry.detail ? h("p", { class: "agent-wall-detail-text" }, markdownInline(entry.detail)) : null,
+					links.length ? h("p", { class: "agent-wall-detail-links" }, markdownInline(links.join(" · "))) : null,
+				);
+				if (open) {
+					const preview = this.#preview(entry);
+					if (preview) detail.append(preview);
+				} else detail.dataset.preview = "later";
+				row = h(
+					"li",
+					{
+						class: `agent-wall-item is-expandable${fresh ? " is-new" : ""}${open ? " is-open" : ""}`,
+						"data-wall-item": key,
+					},
+					h(
+						"button",
+						{
+							type: "button",
+							class: "agent-wall-row",
+							"aria-expanded": String(open),
+							"aria-controls": id,
+							onclick: () => this.#toggleItem(key, row),
+						},
+						mark,
+						h("span", { class: "agent-wall-text" }, markdownInline(entry.text.replace(LINK, "$1"))),
+						news,
+						icon("chevron"),
+					),
+					detail,
+				);
+			}
 			// What joins the wall while it is on screen comes in moving; a highlight fades in on what is new.
 			if (this.#drawn && !this.#drawn.has(key)) playOnce(row, "is-entering");
 			return row;
@@ -401,17 +536,17 @@ export class AgentWallPoster {
 			part(
 				"waiting",
 				t("Waits on you"),
-				wall.waiting.map((text) => item("waiting", text)),
+				wall.waiting.map((entry) => item("waiting", entry)),
 			),
 			part(
 				"working",
 				t("Working on"),
-				wall.working.map((text) => item("working", text)),
+				wall.working.map((entry) => item("working", entry)),
 			),
 			part(
 				"done",
 				t("Done"),
-				shownDone.map((done) => item("done", done.text, `${done.day}: ${done.text}`)),
+				shownDone.map((done) => item("done", done, `${done.day}: ${done.text}`)),
 				foot,
 			),
 		);

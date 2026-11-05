@@ -113,7 +113,9 @@ const PAYLOADS = {
 	question: {
 		minimal: { options: [{ label: "Apples" }] },
 		maximal: {
-			options: [{ label: "Apples", value: "apples", description: "Crisp.", style: "primary" }],
+			options: [
+				{ label: "Apples", value: "apples", description: "Crisp.", style: "primary", preview: "fruit/apples.svg" },
+			],
 			multiSelect: false,
 			allowCustom: true,
 			dismissOnMoveOn: false,
@@ -327,6 +329,27 @@ describe("readable cards", () => {
 		expect(() => parseCloudAskMemberInput(value)).toThrow(words);
 	};
 
+	it("takes a picture per option for a visual choice, and refuses one that is no image or app", () => {
+		const visual = (preview: string) => ({
+			...card("Two looks, same price."),
+			payload: {
+				options: [
+					{ label: "Colour Duo", preview },
+					{ label: "Matching Pair", preview: "app:pair-demo" },
+				],
+			},
+		});
+		expect(parseCloudAskMemberInput(visual("sketches/duo.svg")).data.payload).toEqual({
+			options: [
+				{ label: "Colour Duo", preview: "sketches/duo.svg" },
+				{ label: "Matching Pair", preview: "app:pair-demo" },
+			],
+		});
+		for (const bad of ["sketches/duo.md", "https://example.com/a.png", "/abs/a.png", "a/../b.png", "app:Bad Name"])
+			refused(visual(bad), "an option's preview is the company file path of an image you made for it");
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("Options with pictures show as big boxes");
+	});
+
 	it("takes a short body of a few lines with a link", () => {
 		const body =
 			"Sports wristbands for Danish clubs, 89 kr a band.\n- First test: 200 bands\n[Read the draft](folder:strategy/vision-draft.md)";
@@ -419,7 +442,7 @@ describe("ask_member card shapes", () => {
 		}
 		expect(refusal).toBeInstanceOf(CloudToolArgumentRefusal);
 		expect((refusal as Error).message).toBe(
-			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger}], multiSelect?, allowCustom?, dismissOnMoveOn?}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
+			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
 		);
 	});
 
