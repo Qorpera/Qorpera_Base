@@ -9,6 +9,7 @@ import {
 } from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { leave } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { messagesSkeleton } from "../../ui/skeleton.ts";
@@ -23,17 +24,23 @@ export type PairTranscriptHost = Pick<
 const REFRESH_MS = 5_000;
 
 /** The view-only transcript of two agents' messages to each other (contract
- * 14.6). Opened from a chip in either agent's thread and laid over it, as the
- * reference product does: both figures and names in the header, each message
- * as a bubble under the speaking agent's name, the coworker on the left and
- * the thread's own agent on the right, a lock line and one Close button.
- * Nothing here can send: members steer by writing in either agent's thread. */
+ * 14.6). Opened from a chip in either agent's thread as a sheet that slides in
+ * from the right over it, the thread dimmed behind (Jonas, 5 Nov 2026): both
+ * figures and names in the sheet's header with a close button, each message as
+ * a bubble under the speaking agent's name, the coworker on the left and the
+ * thread's own agent on the right, and a lock line at the foot. Close, Escape
+ * or a press on the dimmed thread slides it away. Nothing here can send:
+ * members steer by writing in either agent's thread. */
 export class PairTranscriptView {
 	readonly el: HTMLElement;
 	readonly #host: PairTranscriptHost;
 	readonly #sessionId: string;
 	readonly #agentIds: readonly [string, string];
-	readonly #header = h("header", { class: "thread-header pair-header" });
+	readonly #identity = h("div", { class: "pair-identity" });
+	readonly #header: HTMLElement;
+	/** The panel itself: header, messages and lock line. It is whole without the dim and the focus trap around it, so
+	 * it can also stand beside a thread. */
+	readonly sheet: HTMLElement;
 	readonly #messages = h("div", { class: "messages pair-messages", role: "log", "aria-live": "polite" });
 	readonly #close: HTMLButtonElement;
 	readonly #lifetime = new AbortController();
@@ -53,26 +60,33 @@ export class PairTranscriptView {
 		this.#agentIds = agentIds;
 		this.#close = h(
 			"button",
-			{ type: "button", class: "pair-close", onclick: () => onClose() },
-			t("Close Chat"),
+			{ type: "button", class: "pair-close", title: t("Close"), "aria-label": t("Close"), onclick: () => onClose() },
+			icon("close"),
 		) as HTMLButtonElement;
-		this.el = h(
-			"section",
-			{
-				class: "pair-transcript",
-				role: "dialog",
-				"aria-modal": "false",
-				"aria-label": t("Conversation between two agents"),
-				tabindex: "-1",
-			},
+		this.#header = h("header", { class: "pair-header" }, this.#identity, this.#close);
+		this.sheet = h(
+			"div",
+			{ class: "pair-sheet" },
 			this.#header,
 			this.#messages,
 			h(
 				"footer",
 				{ class: "pair-footer" },
-				h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, t("This chat is view-only"))),
-				this.#close,
+				h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, t("Only the two agents write here"))),
 			),
+		);
+		// Over the thread it is modal: the thread waits dimmed, and Tab goes round the sheet's own controls.
+		this.el = h(
+			"section",
+			{
+				class: "pair-transcript",
+				role: "dialog",
+				"aria-modal": "true",
+				"aria-label": t("Conversation between two agents"),
+				tabindex: "-1",
+			},
+			h("div", { class: "pair-dim", "aria-hidden": "true", onclick: () => onClose() }),
+			this.sheet,
 		);
 		this.el.addEventListener(
 			"keydown",
@@ -80,6 +94,18 @@ export class PairTranscriptView {
 				if (event.key === "Escape") {
 					event.preventDefault();
 					onClose();
+				}
+				if (event.key !== "Tab") return;
+				const controls = [
+					...this.sheet.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), [tabindex='0']"),
+				];
+				const first = controls[0];
+				const last = controls[controls.length - 1];
+				const active = document.activeElement;
+				if (!first || !last) return;
+				if (!this.sheet.contains(active) || active === (event.shiftKey ? first : last)) {
+					event.preventDefault();
+					(event.shiftKey ? last : first).focus();
 				}
 			},
 			{ signal: this.#lifetime.signal },
@@ -134,18 +160,24 @@ export class PairTranscriptView {
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
+		// Only what is read so far is counted: while older messages wait, the count says there are more.
+		const messages = items.filter((item) => item.kind === "agent").length;
+		const count = !messages
+			? null
+			: conversation.hasEarlier
+				? t("{count}+ messages", { count: messages })
+				: messages === 1
+					? t("1 message")
+					: t("{count} messages", { count: messages });
 		replace(
-			this.#header,
+			this.#identity,
 			// The header names this thread's own agent first, as the reference product does.
-			h(
-				"div",
-				{ class: "pair-identity" },
-				agentFigure(second.agent, second.name, { size: 24 }),
-				h("span", { class: "pair-name" }, second.name),
-				h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
-				agentFigure(first.agent, first.name, { size: 24 }),
-				h("span", { class: "pair-name" }, first.name),
-			),
+			agentFigure(second.agent, second.name, { size: 24 }),
+			h("span", { class: "pair-name" }, second.name),
+			h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
+			agentFigure(first.agent, first.name, { size: 24 }),
+			h("span", { class: "pair-name" }, first.name),
+			count ? h("span", { class: "pair-count" }, count) : null,
 		);
 		const nodes: HTMLElement[] = [];
 		if (conversation.hasEarlier && !conversation.loading) {
@@ -258,6 +290,7 @@ export class PairTranscriptView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timer);
-		this.el.remove();
+		// The sheet slides back out to the right while the dimmed thread clears.
+		leave(this.el, "is-leaving", () => this.el.remove());
 	}
 }

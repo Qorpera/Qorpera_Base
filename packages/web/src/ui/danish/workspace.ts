@@ -66,11 +66,8 @@ export const WORKSPACE: Record<string, string> = {
 	"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.":
 		"Denne samtale har en usendt kladde. Åbn den, og gør kladden færdig eller ryd den, før du sender en ny.",
 
-	// app/views/shell.ts: the Agents | Interfaces switch and the Interfaces tab
-	Interfaces: "Interfaces",
-	"Agents or interfaces": "Agenter eller interfaces",
-	"No matching interfaces.": "Ingen interfaces passer.",
-	"Search interfaces": "Søg i interfaces",
+	// app/views/shell.ts: the four windows and the apps drawer
+	Apps: "Apps",
 	"Close search": "Luk søgning",
 	Views: "Visninger",
 	Kind: "Slags",

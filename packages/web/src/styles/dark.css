@@ -24,8 +24,8 @@
 /* ---- rail ------------------------------------------------------------------ */
 :root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; }
 :root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; }
-:root[data-theme="dark"] .rail-add { color: #a9a8a3; }
-:root[data-theme="dark"] .rail-toolbar:is(:not(.has-tabs), .is-searching) .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
+:root[data-theme="dark"] .rail-add, :root[data-theme="dark"] .rail-apps { color: #a9a8a3; }
+:root[data-theme="dark"] .rail-toolbar.is-searching .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
 :root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
 :root[data-theme="dark"] .rail-row-copy small { color: #adaca7; }

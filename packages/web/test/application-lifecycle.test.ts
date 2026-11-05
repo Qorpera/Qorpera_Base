@@ -661,13 +661,13 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
-	it("opens the drawer on the search field while no page is on: there are no tabs (Interfaces C6a)", async () => {
+	it("opens the drawer on the company's name while no page is on (Interfaces C6a)", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(true);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-search input"));
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(true);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 	});
 
 	it("toggles and closes company navigation without replacing the composer", async () => {
@@ -678,9 +678,9 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
-		// The drawer opens on its chosen tab, never on the folded search field.
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail [role='tab'][aria-selected='true']"));
+		// The drawer opens on the company's name, never on the folded search field.
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
 		await draw();
@@ -692,20 +692,20 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
-	it("reopens the drawer on the search field while a query keeps it open over the tabs", async () => {
+	it("reopens the drawer on the search field while a query keeps it open over the name", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		withInterfacesTab(f);
 		await draw();
 		const toggle = () => f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!;
 		toggle().click();
 		await draw();
-		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
 		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
 		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
 		input.value = "Fixture";
 		input.dispatchEvent(new Event("input"));
 		await draw();
-		// The tabs are inert under the open field, so the drawer comes back to the field.
+		// The name is inert under the open field, so the drawer comes back to the field.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
