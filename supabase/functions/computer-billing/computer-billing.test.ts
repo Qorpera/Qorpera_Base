@@ -817,7 +817,13 @@ describe("Good will", () => {
 	it("finishes a recorded draft on the next call, never making a second invoice", async () => {
 		const f = goodWill(
 			{
-				"/v1/invoices/in_gw1": { id: "in_gw1", status: "draft", lines: { data: [{ amount: 510000 }] } },
+				"/v1/invoices/in_gw1": {
+					id: "in_gw1",
+					status: "draft",
+					default_payment_method: "pm_old",
+					lines: { data: [{ amount: 510000 }] },
+				},
+				"POST /v1/invoices/in_gw1": { id: "in_gw1", status: "draft" },
 				"POST /v1/invoices/in_gw1/finalize": { id: "in_gw1", hosted_invoice_url: "https://invoice.stripe.com/i/1" },
 			},
 			{
@@ -841,9 +847,39 @@ describe("Good will", () => {
 			f.deps,
 		);
 		assert.deepEqual(await response.json(), { invoiced: 1, failed: 0 });
+		// The company's card now (another founder saved one after the draft), then finalized; no second invoice or item.
 		assert.deepEqual(
 			f.posts.map((post) => post.path),
-			["/v1/invoices/in_gw1/finalize"],
+			["/v1/invoices/in_gw1", "/v1/invoices/in_gw1/finalize"],
+		);
+		assert.equal(f.posts[0]?.form.default_payment_method, "pm_1");
+		// A draft deleted at Stripe fails the month instead of being asked for every hour; an unrecorded draft goes no further.
+		const month = {
+			profileId: COMPANY,
+			month: "2026-11",
+			dueOre: 510000,
+			userId: MEMBER.id,
+			customerId: "cus_A1",
+			paymentMethodId: "pm_1",
+		};
+		const deleted = goodWill({}, { due: () => ({ months: [{ ...month, invoiceId: "in_gone" }] }) });
+		await handleComputerBilling(
+			request("good-will-invoices", {}, { "x-qorpera-billing-key": BILLING_KEY }),
+			deleted.deps,
+		);
+		assert.equal(deleted.doorCalls.at(-1)?.method, "invoice_failed");
+		const unrecorded = goodWill(
+			{ "POST /v1/invoices": { id: "in_new", status: "draft", lines: { data: [] } } },
+			{ due: () => ({ months: [month] }), invoiced: () => ({ recorded: false }) },
+		);
+		const answer = await handleComputerBilling(
+			request("good-will-invoices", {}, { "x-qorpera-billing-key": BILLING_KEY }),
+			unrecorded.deps,
+		);
+		assert.deepEqual(await answer.json(), { invoiced: 0, failed: 1 });
+		assert.deepEqual(
+			unrecorded.posts.map((post) => post.path),
+			["/v1/invoices"],
 		);
 	});
 
