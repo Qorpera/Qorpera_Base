@@ -498,7 +498,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			h("span", { class: "rail-apps-dot", "aria-hidden": "true" }),
 		);
 		const appsGrid = h("div", { class: "rail-apps-grid" });
-		const appsDrawer = h("div", { class: "rail-apps-drawer", id: "rail-apps-drawer" }, h("div", null, appsGrid));
+		const appsDrawer = h(
+			"div",
+			{ class: "rail-apps-drawer", id: "rail-apps-drawer", role: "group" },
+			h("div", null, appsGrid),
+		);
 		const created: RailParts = {
 			company: companyButton,
 			companyName,
@@ -552,11 +556,28 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
-		// The name opens the member's companies, this one checked, and New company under them.
+		// The name opens the member's companies, this one checked, and New company under them. A press on the name
+		// while its menu is open only closes it: the menu shuts on the press, before the click, so the press is noted
+		// first (this listener is older than the menu's) and its click skipped.
+		let pressClosesMenu = false;
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				pressClosesMenu =
+					companyButton.getAttribute("aria-expanded") === "true" &&
+					event.target instanceof Node &&
+					companyButton.contains(event.target);
+			},
+			{ capture: true, signal: company.signal },
+		);
 		companyButton.addEventListener(
 			"click",
 			() => {
-				if (openMenu()?.el.isConnected && companyButton.classList.contains("is-menu-open")) return;
+				if (pressClosesMenu) {
+					pressClosesMenu = false;
+					return;
+				}
+				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
 				const box = companyButton.getBoundingClientRect();
 				const profiles = created.context?.profiles ?? [company.profile];
 				companyButton.setAttribute("aria-expanded", "true");

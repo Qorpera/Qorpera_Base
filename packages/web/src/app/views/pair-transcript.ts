@@ -38,6 +38,9 @@ export class PairTranscriptView {
 	readonly #agentIds: readonly [string, string];
 	readonly #identity = h("div", { class: "pair-identity" });
 	readonly #header: HTMLElement;
+	/** The panel itself: header, messages and lock line. It is whole without the dim and the focus trap around it, so
+	 * it can also stand beside a thread. */
+	readonly sheet: HTMLElement;
 	readonly #messages = h("div", { class: "messages pair-messages", role: "log", "aria-live": "polite" });
 	readonly #close: HTMLButtonElement;
 	readonly #lifetime = new AbortController();
@@ -61,32 +64,34 @@ export class PairTranscriptView {
 			icon("close"),
 		) as HTMLButtonElement;
 		this.#header = h("header", { class: "pair-header" }, this.#identity, this.#close);
+		this.sheet = h(
+			"div",
+			{ class: "pair-sheet" },
+			this.#header,
+			this.#messages,
+			h(
+				"footer",
+				{ class: "pair-footer" },
+				h(
+					"span",
+					{ class: "pair-readonly" },
+					icon("lock"),
+					h("span", null, t("Only the two agents write here")),
+				),
+			),
+		);
+		// Over the thread it is modal: the thread waits dimmed, and Tab goes round the sheet's own controls.
 		this.el = h(
 			"section",
 			{
 				class: "pair-transcript",
 				role: "dialog",
-				"aria-modal": "false",
+				"aria-modal": "true",
 				"aria-label": t("Conversation between two agents"),
 				tabindex: "-1",
 			},
 			h("div", { class: "pair-dim", "aria-hidden": "true", onclick: () => onClose() }),
-			h(
-				"div",
-				{ class: "pair-sheet" },
-				this.#header,
-				this.#messages,
-				h(
-					"footer",
-					{ class: "pair-footer" },
-					h(
-						"span",
-						{ class: "pair-readonly" },
-						icon("lock"),
-						h("span", null, t("Only the two agents write here")),
-					),
-				),
-			),
+			this.sheet,
 		);
 		this.el.addEventListener(
 			"keydown",
@@ -94,6 +99,18 @@ export class PairTranscriptView {
 				if (event.key === "Escape") {
 					event.preventDefault();
 					onClose();
+				}
+				if (event.key !== "Tab") return;
+				const controls = [
+					...this.sheet.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), [tabindex='0']"),
+				];
+				const first = controls[0];
+				const last = controls[controls.length - 1];
+				const active = document.activeElement;
+				if (!first || !last) return;
+				if (!this.sheet.contains(active) || active === (event.shiftKey ? first : last)) {
+					event.preventDefault();
+					(event.shiftKey ? last : first).focus();
 				}
 			},
 			{ signal: this.#lifetime.signal },
@@ -148,7 +165,15 @@ export class PairTranscriptView {
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
+		// Only what is read so far is counted: while older messages wait, the count says there are more.
 		const messages = items.filter((item) => item.kind === "agent").length;
+		const count = !messages
+			? null
+			: conversation.hasEarlier
+				? t("{count}+ messages", { count: messages })
+				: messages === 1
+					? t("1 message")
+					: t("{count} messages", { count: messages });
 		replace(
 			this.#identity,
 			// The header names this thread's own agent first, as the reference product does.
@@ -157,7 +182,7 @@ export class PairTranscriptView {
 			h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
 			agentFigure(first.agent, first.name, { size: 24 }),
 			h("span", { class: "pair-name" }, first.name),
-			messages ? h("span", { class: "pair-count" }, t("{count} messages", { count: messages })) : null,
+			count ? h("span", { class: "pair-count" }, count) : null,
 		);
 		const nodes: HTMLElement[] = [];
 		if (conversation.hasEarlier && !conversation.loading) {

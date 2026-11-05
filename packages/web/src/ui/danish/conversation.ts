@@ -240,6 +240,8 @@ export const CONVERSATION: Record<string, string> = {
 	// Two agents' transcript (app/views/pair-transcript.ts)
 	"Conversation between two agents": "Samtale mellem to agenter",
 	"Only the two agents write here": "Kun de to agenter skriver her",
+	"1 message": "1 besked",
+	"{count}+ messages": "{count}+ beskeder",
 	and: "og",
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",

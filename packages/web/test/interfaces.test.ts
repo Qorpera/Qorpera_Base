@@ -274,6 +274,17 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		name.click();
 		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")][2]!.click();
 		expect(location.hash).toBe("#/new");
+		// A press on the name while its menu is open only closes it.
+		name.click();
+		expect(document.querySelector(".context-menu")).not.toBeNull();
+		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		name.click();
+		expect(document.querySelector(".context-menu")).toBeNull();
+		expect(name.getAttribute("aria-expanded")).toBe("false");
+		// The next press opens it again.
+		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		name.click();
+		expect(document.querySelector(".context-menu")).not.toBeNull();
 	});
 
 	it("opens the pages as icons under the top row and keeps the choice until pressed again", () => {
@@ -281,6 +292,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		const button = apps(element);
 		expect(button.hidden).toBe(false);
 		expect(button.getAttribute("aria-label")).toBe("Apps");
+		expect(drawer(element).getAttribute("role")).toBe("group");
+		expect(drawer(element).getAttribute("aria-label")).toBe("Apps");
 		// Closed at first: the icons are drawn but can't be reached.
 		expect(button.getAttribute("aria-expanded")).toBe("false");
 		expect(drawer(element).classList.contains("is-open")).toBe(false);

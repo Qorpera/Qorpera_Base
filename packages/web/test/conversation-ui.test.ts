@@ -2711,6 +2711,20 @@ describe("messages between two agents (contract 14.6)", () => {
 				.join("");
 		expect(pairNames(panel)).toBe(`${staff.displayName}⇄Helper`);
 		expect(panel.querySelector(".pair-count")?.textContent).toBe("2 messages");
+		expect(panel.getAttribute("aria-modal")).toBe("true");
+		// Older messages still wait: the count says there are more.
+		f.company.conversation(pairSessionId).set({ hasEarlier: true });
+		expect(panel.querySelector(".pair-count")?.textContent).toBe("2+ messages");
+		f.company.conversation(pairSessionId).set({ hasEarlier: false });
+		// Tab goes round the sheet's own controls, never out to the rail.
+		const controls = [
+			...panel.querySelectorAll<HTMLElement>(".pair-sheet :is(a[href], button:not(:disabled), [tabindex='0'])"),
+		];
+		controls.at(-1)!.focus();
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+		expect(document.activeElement).toBe(controls[0]);
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+		expect(document.activeElement).toBe(controls.at(-1));
 		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
 		// The coworker speaks from the left, this thread's own agent from the right.
 		const rows = panel.querySelectorAll<HTMLElement>(".pair-row");
