@@ -8,13 +8,13 @@ import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
+import { GoodWillCardError } from "../src/cloud/good-will.ts";
 import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
 import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
-	file,
 	fixture,
 	id,
 	profileA,
@@ -85,17 +85,8 @@ function navTabs(root: Element): string[] {
 function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
-const ACCOUNT_TABS = ["general", "appearance", "friends", "plan", "ai-subscriptions"];
-const ALL_TABS = [
-	"general",
-	"appearance",
-	"company",
-	"friends",
-	"plan",
-	"ai-subscriptions",
-	"company-connections",
-	"sites",
-];
+const ACCOUNT_TABS = ["general", "appearance", "friends", "ai-subscriptions"];
+const ALL_TABS = ["general", "appearance", "company", "friends", "ai-subscriptions", "company-connections", "sites"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -592,16 +583,7 @@ describe("settings session lifecycle", () => {
 			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
 				(tab) => tab.textContent,
 			),
-		).toEqual([
-			"General",
-			"Appearance",
-			"Company",
-			"Friends",
-			"Plan & usage",
-			"AI subscriptions",
-			"Company connections",
-			"Sites",
-		]);
+		).toEqual(["General", "Appearance", "Company", "Friends", "AI subscriptions", "Company connections", "Sites"]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Rules live on General, under the account's settings, for the chosen company.
@@ -1591,95 +1573,126 @@ describe("settings session lifecycle", () => {
 		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
 		expect(document.querySelector(".settings-overlay")).toBeNull();
 	});
-	it("shows the plan and the open company's storage on the Plan & usage tab", async () => {
+	it("shows the company's good will under Staff at work: its invoices and the card that pays them", async () => {
 		const f = await setup();
-		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
-		vi.mocked(f.api.getCompanyFile).mockReturnValueOnce(loading.promise);
+		vi.mocked(f.api.getCompanyGoodWill).mockResolvedValue({
+			profileId: profileA.profileId,
+			companyName: profileA.profileName,
+			canAddCard: true,
+			card: { mine: true, payerName: "Ada", brand: "visa", last4: "4242" },
+			months: [
+				{ month: "2026-12", status: "open", netOre: 0, feeOre: 0, dueOre: 0, chargedAt: null, invoiceUrl: null },
+				{
+					month: "2026-11",
+					status: "charged",
+					netOre: 5_100_000,
+					feeOre: 510_000,
+					dueOre: 510_000,
+					chargedAt: "2026-12-05T09:00:00Z",
+					invoiceUrl: "https://invoice.stripe.com/i/1",
+				},
+			],
+			steps: [{ fromOre: 0, toOre: 10_000_000, rateBp: 1000 }],
+			minChargeOre: 10_000,
+		});
+		vi.spyOn(f.api, "startGoodWillCard").mockRejectedValue(new GoodWillCardError("not_open"));
 		open(f.root);
-		expect(f.root.querySelector("#settings-content")?.textContent).not.toContain("Current plan");
-		click(f.root, "#settings-tab-plan");
-		await draw();
-		const content = () => f.root.querySelector("#settings-content")!;
-		expect(content().querySelector("h1")?.textContent).toBe("Plan & usage");
-		expect(content().textContent).toContain("Current plan");
-		expect(content().textContent).toContain("Loading storage…");
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
-		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
-		await draw();
-		expect(content().querySelector(".settings-storage strong")?.textContent).toMatch(/^1\.9 MiB used of /);
-		expect(content().querySelector(".settings-storage small:not(.settings-eyebrow)")?.textContent).toBe(
-			profileA.profileName,
-		);
-		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
-		// The company's measured computer hours sit beside its storage.
-		expect(f.api.getCompanyComputerHours).toHaveBeenCalledWith(profileA.profileId);
-		expect(content().querySelector(".settings-company-hours strong")?.textContent).toBe("2 h used");
-		expect(content().querySelector(".settings-company-hours .settings-hours-kinds")?.textContent).toBe(
-			"Company machines 1 h · Agent runs 1 h",
-		);
-		// The Company tab reuses what the Plan tab loaded.
 		click(f.root, "#settings-tab-company");
 		await draw();
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
-	});
-	it("says computer hours are not measured yet while the cloud has no meter", async () => {
-		const f = await setup();
-		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValueOnce(
-			new CloudRpcError("qorpera_read_company_computer_hours", { code: "PGRST202", message: "Could not find" }, 404),
+		const section = f.root.querySelector<HTMLElement>("#settings-content .settings-good-will")!;
+		expect(section.hidden).toBe(false);
+		// Under Staff at work.
+		expect(section.parentElement?.previousElementSibling?.classList.contains("settings-staff-group")).toBe(true);
+		expect(section.querySelector("h2")?.textContent).toBe("Good will");
+		expect(section.querySelector(".settings-lead")?.textContent).toContain(
+			`${profileA.profileName} pays a good will tax`,
 		);
-		open(f.root);
-		click(f.root, "#settings-tab-plan");
+		expect(f.api.getCompanyGoodWill).toHaveBeenCalledWith(profileA.profileId);
+		const november = section.querySelector('[data-month="2026-11"]')!;
+		expect(november.textContent).toContain("November 2026");
+		expect(november.textContent).toContain("5,100 kr charged");
+		expect(november.querySelector("a")?.getAttribute("href")).toBe("https://invoice.stripe.com/i/1");
+		expect(section.querySelector('[data-month="2026-12"]')?.textContent).toContain("0 kr so far this month");
+		expect(section.querySelector(".good-will-card")?.textContent).toContain("Your Visa ending 4242");
+		[...section.querySelectorAll("button")].find((button) => button.textContent === "Change card")!.click();
 		await draw();
-		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
-		expect(card.querySelector("strong")?.textContent).toBe("Not measured yet");
-		expect(card.textContent).not.toContain("Could not find");
-		// It is not asked again on every redraw.
+		expect(f.api.startGoodWillCard).toHaveBeenCalledWith(profileA.profileId);
+		expect(section.querySelector(".notice-danger")?.textContent).toBe(
+			"Cards can't be added yet. Nothing is charged until then.",
+		);
+		// The tab is read once, and the Plan & usage tab is gone.
+		click(f.root, "#settings-tab-general");
 		click(f.root, "#settings-tab-company");
-		click(f.root, "#settings-tab-plan");
 		await draw();
-		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
+		expect(f.api.getCompanyGoodWill).toHaveBeenCalledTimes(1);
+		expect(f.root.querySelector("#settings-tab-plan")).toBeNull();
 	});
-	it("asks for a company's computer hours once when the lookup fails, whatever the error says", async () => {
-		const f = await setup();
-		// A gateway error can arrive with an empty message.
-		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValue(new Error(""));
-		open(f.root);
-		click(f.root, "#settings-tab-plan");
-		await draw();
-		await draw();
-		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
-		expect(card.querySelector("strong")?.textContent).toBe("Computer hours unavailable");
-		click(f.root, "#settings-tab-company");
-		click(f.root, "#settings-tab-plan");
-		await draw();
-		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
-	});
-	it("asks to open a company for usage and retries a failed storage lookup", async () => {
+	it("hides good will on a cloud without it, and shows the member's companies in General with none open", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
 		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		expect(f.root.querySelector<HTMLElement>("#settings-content .settings-good-will")?.hidden).toBe(true);
+		expect(f.api.getMyGoodWill).not.toHaveBeenCalled();
+		click(f.root, ".settings-close");
+		location.hash = "#/";
+		await draw();
+		vi.mocked(f.api.getMyGoodWill).mockResolvedValue({
+			year: 2026,
+			paidByMeOre: 1_425_000,
+			companies: [
+				{
+					profileId: profileA.profileId,
+					name: profileA.profileName,
+					netOre: 14_250_000,
+					feeOre: 1_425_000,
+					rateBp: 1000,
+					payer: "me",
+					brand: "visa",
+					last4: "4242",
+				},
+				{
+					profileId: profileB.profileId,
+					name: profileB.profileName,
+					netOre: 0,
+					feeOre: 0,
+					rateBp: 1000,
+					payer: "none",
+					brand: null,
+					last4: null,
+				},
+			],
+		});
+		open(f.root);
+		await draw();
+		const mine = f.root.querySelector<HTMLElement>("#settings-content .settings-good-will-account")!;
+		expect(mine.hidden).toBe(false);
+		expect(mine.querySelector("h2")?.textContent).toBe("Good will in your companies");
+		expect(mine.querySelector(".good-will-total")?.textContent).toBe("14,250 krpaid on your card in 2026");
+		const rows = [...mine.querySelectorAll(".good-will-companies li")];
+		expect(rows.map((row) => row.getAttribute("data-profile-id"))).toEqual([profileA.profileId, profileB.profileId]);
+		expect(rows[0]?.textContent).toContain("142,500 kr from customers");
+		expect(rows[0]?.textContent).toContain("Your Visa ending 4242");
+		expect(rows[1]?.textContent).toContain("No sales yet");
+		expect(rows[1]?.textContent).toContain("No card yet");
+	});
+	it("retries a failed storage lookup from the Company tab's storage card", async () => {
+		const f = await setup();
 		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
 		open(f.root);
-		click(f.root, "#settings-tab-plan");
+		click(f.root, "#settings-tab-company");
 		await draw();
-		const content = () => f.root.querySelector("#settings-content")!;
-		expect(content().textContent).toContain("Storage information unavailable");
-		const retry = () => [...content().querySelectorAll("button")].find((button) => button.textContent === "Retry");
+		const file = () => f.root.querySelector("#settings-content .settings-file")!;
+		expect(file().textContent).toContain("Storage information unavailable");
+		const retry = () => [...file().querySelectorAll("button")].find((button) => button.textContent === "Retry");
 		retry()!.click();
 		// The button disables at once while the retry runs.
 		expect(retry()?.disabled).toBe(true);
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
-		expect(content().textContent).not.toContain("Storage information unavailable");
-		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
-		click(f.root, ".settings-close");
-		location.hash = "#/";
-		await draw();
-		open(f.root);
-		click(f.root, "#settings-tab-plan");
-		await draw();
-		expect(content().textContent).toContain("Open a company to see its storage.");
-		expect(content().querySelector(".settings-storage")).toBeNull();
+		expect(file().textContent).not.toContain("Storage information unavailable");
 	});
 	it("shows the open company's rules in General, and asks to open a company when none is open", async () => {
 		const fixtureState = fixture();

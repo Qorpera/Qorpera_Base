@@ -131,7 +131,6 @@
 .settings-account .account-name-input[aria-busy=true] { opacity: .6; }
 .account-name-error { margin-top: 8px; }
 .account-name-error[hidden] { display: none; }
-.settings-plan { min-height: 82px; }
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
 /* Appearance: each choice is a picture of the result under a native radio.
@@ -179,40 +178,28 @@
 .swatch-bubble-member { width: 46%; justify-self: end; background: var(--swatch-accent); }
 .swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 100%; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
 .swatch-send { display: block; height: 70%; aspect-ratio: 1; border-radius: 50%; background: var(--swatch-accent); }
-.settings-plan > .btn { align-self: center; }
-/* Plans: the three cards qorpera.com sells, opened under the current plan. */
-.settings-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
-/* An author `display` beats the browser's [hidden] rule; the account page is outside Settings' own reset. */
-.settings-plan-grid[hidden], .settings-hours-packs[hidden] { display: none; }
-.settings-plan-offer { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 16px; border: 1px solid #e3e3e0; border-radius: 13px; background: #fff; }
-.settings-plan-offer-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
-.settings-content .settings-plan-offer h3 { margin: 0; font-size: 13px; font-weight: 600; }
-.settings-plan-current { padding: 2px 8px; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: 10px; font-weight: 600; }
-.settings-plan-price { margin: 4px 0 0; font-size: 12px; color: #73736f; }
-.settings-plan-price strong { font-size: 20px; font-weight: 600; color: #1d1d1b; letter-spacing: -.01em; }
-.settings-plan-tagline { margin: 0 0 6px; font-size: 12px; color: #73736f; }
-.settings-plan-includes-label { margin: 0; font-size: 11px; font-weight: 600; color: #73736f; }
-.settings-plan-includes { margin: 0; padding: 0 0 0 16px; font-size: 11.5px; line-height: 1.5; }
-.settings-plan-discount { margin: 2px 0 0; font-size: 11px; color: #608878; font-weight: 500; }
-.settings-plan-offer > .btn { margin-top: auto; align-self: start; }
-.settings-content .settings-plan-offer > .btn:disabled { opacity: .55; cursor: default; }
-.settings-usage + .settings-usage { margin-top: 10px; }
-.settings-period { align-self: end; font-size: 11px; color: #797975; white-space: nowrap; }
-/* Packs of hours a founder can buy for the company, under its hours this month. */
-.settings-hours-packs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
-.settings-hours-packs > small { flex-basis: 100%; }
-/* Billing: one card of label/value rows; actions wait for the billing work. */
-.settings-billing { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 4px 13px; }
-.billing-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 42px; padding: 6px 0; font-size: 12.5px; }
-.billing-row + .billing-row { border-top: 1px solid #dededb; }
-.billing-label { color: #73736f; }
-.billing-value { min-width: 0; overflow-wrap: anywhere; }
-.settings-invoices { margin: 0; padding: 0; list-style: none; }
-.settings-usage progress { width: 100%; height: 3px; margin-top: 8px; border: 0; border-radius: 3px; overflow: hidden; appearance: none; }
-.settings-usage progress::-webkit-progress-bar { background: #dcdcd8; }
-.settings-usage progress::-webkit-progress-value { background: #93938e; }
-.settings-usage progress::-moz-progress-bar { background: #93938e; }
 .settings-staff-group { border-top: 1px solid var(--border); padding-top: 18px; }
+/* Good will (settings-good-will.ts): the company's invoices and card under Staff at work, and the account's companies. */
+.settings-good-will[hidden], .settings-good-will-account[hidden] { display: none; }
+.settings-content .settings-good-will > .settings-lead, .settings-content .settings-good-will-account > .settings-lead { margin: 4px 0 16px; }
+.settings-good-will > .settings-card + .settings-card { margin-top: 8px; }
+.good-will-invoices { grid-template-columns: minmax(0, 1fr); }
+.good-will-months { display: grid; gap: 0; margin: 6px 0 0; padding: 0; list-style: none; }
+.good-will-months > li { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 40px; font-size: 12.5px; animation: good-will-in .4s cubic-bezier(.3, 1.25, .5, 1) both; }
+.good-will-months > li + li { border-top: 1px solid #dededb; }
+.good-will-months > li[data-status=charged] small { color: #1f7a45; }
+.good-will-months > li[data-status=failed] small { color: #b4532c; }
+.good-will-month { color: #73736f; }
+.good-will-total { display: flex; align-items: baseline; gap: 12px; margin: 8px 0 16px; }
+.good-will-total strong { font-size: 32px; font-weight: 700; letter-spacing: -.02em; }
+.good-will-total small { color: #73736f; font-size: 12.5px; }
+.good-will-companies { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.good-will-companies > li { animation: good-will-in .45s cubic-bezier(.3, 1.25, .5, 1) both; }
+.good-will-companies > li:nth-child(2) { animation-delay: 80ms; }
+.good-will-companies > li:nth-child(n+3) { animation-delay: 160ms; }
+.good-will-fee { font-size: 15px; font-weight: 600; white-space: nowrap; }
+@keyframes good-will-in { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .good-will-months > li, .good-will-companies > li { animation: none; } }
 .settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; text-align: center; }
 .settings-file-card { min-height: 92px; grid-template-columns: 38px minmax(0, 1fr) 18px; gap: 16px; }
 .settings-file-card > .icon:first-child { width: 36px; height: 44px; color: #8c8c87; }
@@ -220,7 +207,6 @@
 .settings-file-card progress::-webkit-progress-bar { background: #dcdcd8; }
 .settings-file-card progress::-webkit-progress-value { background: #93938e; }
 .settings-file-card progress::-moz-progress-bar { background: #93938e; }
-.settings-copy .settings-eyebrow { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; }
 .settings-link { color: inherit; text-decoration: none; margin-top: 12px; }
 .settings-link:hover { background: #e8e8e5; }
 .company-people { display: grid; gap: 6px; }
@@ -328,12 +314,9 @@
  .settings-nav .settings-back { justify-content: center; margin-top: 8px; }
  .settings-content { padding: 24px 20px; }
  .settings-choices { --appearance-preview-scale: 1; width: 100%; gap: 10px; }
- .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }
- .billing-row { grid-template-columns: minmax(0, 1fr) auto; }
  /* The picture takes the room the email needs: Sign out moves under the email. */
  .settings-account { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
  .settings-account > .btn { grid-column: 2; justify-self: start; }
- .billing-value { grid-column: 1 / -1; }
  .swatch-window { gap: 3px; padding-top: 14%; }
  .swatch-bar { height: 4px; }
  .swatch-bar-sub { height: 3px; }

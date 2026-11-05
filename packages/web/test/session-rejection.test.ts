@@ -4,7 +4,7 @@ import { AuthError } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { type Cloud, CloudRpcError, createCloud, sessionRejection } from "../src/cloud/client.ts";
-import { startComputerCheckout } from "../src/cloud/computer-billing.ts";
+import { startGoodWillCard } from "../src/cloud/good-will.ts";
 import { fixture, settle, userA } from "./fixtures.ts";
 
 /* After the database move (new Auth signing keys) a browser kept its old session: the
@@ -45,7 +45,7 @@ describe("which cloud answers refuse the session itself", () => {
 			401,
 			{ code: "PGRST301", message: "JWSError JWSInvalidSignature" },
 		],
-		["functions gateway", "/functions/v1/computer-billing/plan", 401, { msg: "Invalid JWT" }],
+		["functions gateway", "/functions/v1/computer-billing/good-will-card", 401, { msg: "Invalid JWT" }],
 		[
 			"functions gateway code",
 			"/functions/v1/x",
@@ -188,7 +188,7 @@ describe("a refused session signs the member out", () => {
 		const { cloud, auth, requests } = await start(async (url) =>
 			url.pathname.startsWith("/functions/v1/") ? refusal(401, { msg: "Invalid JWT" }) : Response.json([]),
 		);
-		await expect(startComputerCheckout(cloud, "plan-basic")).rejects.toThrow();
+		await expect(startGoodWillCard(cloud, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).rejects.toThrow();
 		await vi.waitFor(() => expect(auth.store.get().session).toBeNull());
 		expect(auth.store.get().message).toBe("You were signed out. Sign in again.");
 		expect(requests.filter((request) => request.startsWith("POST /auth/v1/logout"))).toHaveLength(1);

@@ -10,19 +10,17 @@ import {
 } from "./coding-session.ts";
 import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
 import {
-	type ComputerHourOffer,
-	listComputerHourOffers,
-	type MyComputerPlan,
-	openComputerBillingPortal,
-	readMyComputerPlan,
-	startComputerCheckout,
-} from "./computer-billing.ts";
-import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
-import {
 	type FoundingPresenceHandle,
 	type FoundingPresenceListener,
 	joinFoundingPresence,
 } from "./founding-presence.ts";
+import {
+	type CompanyGoodWill,
+	type MyGoodWill,
+	readCompanyGoodWill,
+	readMyGoodWill,
+	startGoodWillCard,
+} from "./good-will.ts";
 import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
@@ -129,14 +127,24 @@ export class CloudApi {
 		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
 	}
 
-	/** The company's computer hours this month, measured (not charged yet). */
-	getCompanyComputerHours(profileId: string): Promise<CompanyComputerHours> {
-		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
-	}
-
 	/** The company's memory: Agent notebooks or the Shared context beta (C5). Any member may read it. */
 	getCompanyMemory(profileId: string): Promise<CompanyMemory> {
 		return readCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The company's good will: its months, invoices and the card that pays them. Any member may read it. */
+	getCompanyGoodWill(profileId: string): Promise<CompanyGoodWill> {
+		return readCompanyGoodWill(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The good will of each of the member's companies this year, and what the member's own card paid. */
+	getMyGoodWill(): Promise<MyGoodWill> {
+		return readMyGoodWill(this.cloud);
+	}
+
+	/** Stripe's page where a founder saves the card that pays the company's good will. */
+	startGoodWillCard(profileId: string): Promise<string> {
+		return startGoodWillCard(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** Owners and admins choose the memory of runs that start from now on. */
@@ -166,26 +174,6 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_cancel_worker_run", { p_run_id: id })
 			.then((value) => parseWorkerRunControl(value, id));
-	}
-
-	/** The plans and packs of hours this member can buy. */
-	listComputerHourOffers(): Promise<ComputerHourOffer[]> {
-		return listComputerHourOffers(this.cloud);
-	}
-
-	/** The member's own plan: its period, its hours and what each company used of them. */
-	getMyComputerPlan(): Promise<MyComputerPlan> {
-		return readMyComputerPlan(this.cloud);
-	}
-
-	/** Stripe's checkout page for a plan, or for a pack of hours for a company (founders only). */
-	startComputerCheckout(itemKey: string, profileId?: string): Promise<string> {
-		return startComputerCheckout(this.cloud, itemKey, profileId ? requiredUuid(profileId, "Profile id") : undefined);
-	}
-
-	/** Stripe's billing page for the member's cards, invoices and plan. */
-	openComputerBillingPortal(): Promise<string> {
-		return openComputerBillingPortal(this.cloud);
 	}
 
 	listIncomingInvitations(): Promise<HostedIncomingProfileInvitation[]> {
