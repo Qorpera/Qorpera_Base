@@ -20,7 +20,7 @@
     "wakeAndSilence": "f70f63f6fee9c4f7faf082be071c6fdabcc4a0de09646044f613b87b2182842e",
     "contextComposer": "3ca621d9f2ffedf66c355ea19b3e8719814380063151f5d7af88d4e29872a065",
     "providerBootstrap": "4e4b734d71a5b6a622e797938ea2d1e3cc7e0637bf60e9965bafdd3751c79074",
-    "authorization": "e80f559bbbfe576f794dc01139e38e6ee820c29d0284e4ff0bb98cbaee6f30e2",
+    "authorization": "3d37238e4754f7db668d03ccb8d5bbef07ad84370d70af54f001016f54797507",
     "inboundSafety": "bb6a90ac1a1e9aaa65037947f8499b60fd4326257ecee64630ab0fa7a99b78bf",
     "outboundSafety": "6ddd5d14fb32a2e47c1909e78bec37ceedd229d57299a51fa2664ddb089f5fb3",
     "interactionSurfaces": "a1b87079f57be5a717002bf6018770aa3956bda624e2b9e7d1e88ac42f0497e9",
@@ -770,7 +770,7 @@
     "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "cd2664c94845690d7989f248665db745915a46b0aa3829efa3024234b324082d",
+    "scripts/generate-cloud-runtime-bundle.mjs": "613678f18e0c4787d958fe3b74f52223d556c9ff38bec0d22c199eb430a9c730",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "51263597763a7a79dbe96d77bd2b4c29fd95a8a451b0f21e8e1802e29a3eaf60",
     "scripts/package-coding-guest-agent.mjs": "5950b5d0fd1c7295fcc5eec53866bccc9b04d3afc0ad5e6a2a1375f272c88978",
@@ -1613,6 +1613,7 @@
     "supabase/migrations/20260929020299_runtime_bundle_activation_v202.sql": "ab12d19def3f956eb435e26b796f09a14cf50ffeec5364f0d7c3168736132cf6",
     "supabase/migrations/20260929020399_runtime_bundle_activation_v203.sql": "fcab957bc2cc6cd9ee74a07e708da31bfc3577d76b0b95d08641c040e17fb934",
     "supabase/migrations/20260929020499_runtime_bundle_activation_v204.sql": "33f7ad9bdf67b0843276a05ff5c941726c698184d92bc138c12c085cd9f1bf97",
+    "supabase/migrations/20260929020599_runtime_bundle_activation_v205.sql": "f98eadf81667902a300d7a14170e7dec3aa4da3fb95cd2ca4c5c72c160541182",
     "supabase/migrations/20260930481000_runtime_fence_three_checks.sql": "4d4ca72b23486d9b0a5e5ef39d2c258bfe9454e18a020082dfc577eb0fbbfe22",
     "supabase/migrations/20260930482000_claim_without_reconcile.sql": "c5a7ddd3339e7e48031d8aeb709009f89de46b16f9fa88105eb46d5093fdf26d",
     "supabase/migrations/20260930483000_pg_cron_quieter.sql": "70a88b8a834ed1f66bcf65b9f1c1fb201fd3d802b2c8502e540447d70bdb7ade",
@@ -1695,6 +1696,7 @@
     "supabase/migrations/20260930575000_usage_limit_waits_and_resumes.sql": "b789d689ed634916eab1ff42071eb1829a8faa324cfe65975954b9b768a73525",
     "supabase/migrations/20260930577000_usage_wall_holds_to_reading_reset.sql": "847514c7ef2973f5e6ac07715c90fe41f0b1af9a25b8f342cc1e413eab9c5d58",
     "supabase/migrations/20260930578000_question_option_previews.sql": "2913693fa8f1a2d9b7e592852793399120953c052369d123cea0c9e18f9f313c",
-    "supabase/migrations/20260930579000_founding_login_used_up_waits.sql": "c03977c42b5bd7655602dcac3904789958169dd65f4aabecad0f1c5c9796928e"
+    "supabase/migrations/20260930579000_founding_login_used_up_waits.sql": "c03977c42b5bd7655602dcac3904789958169dd65f4aabecad0f1c5c9796928e",
+    "supabase/migrations/20260930580000_login_pick_takes_waiting_turn.sql": "fe072cab25b2b1cd6f507b4151473c78c086d326aee67fd1e3e11f2480e86311"
   }
 }
