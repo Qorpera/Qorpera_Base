@@ -505,7 +505,7 @@ charged before it (20260930010000).
 - `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
   `companyName`, `vision` (the description draft), `phase` (`open`,
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
-  `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
+  `joined`, `role`, `ready`, `modelLoginReady`, `modelLoginUsedUp`, `modelLoginResetsAt`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
   `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
   `companySetup`, `firstRun`) once started. `companySetup` is `pending` while
@@ -518,6 +518,14 @@ charged before it (20260930010000).
   starter could pay when the company was made, so nothing was queued), `failed`
   (the request or the kickoff failed, or the request was cancelled), or null
   before the company is made.
+  20260930579000: `modelLoginReady` is true when the founder has a live login
+  of their own in the company, at any usage; `modelLoginUsedUp` when every one
+  of them is at its usage limit, with `modelLoginResetsAt` the first reset
+  (null when unknown). Ready and Start accept a used-up login: the first run's
+  payer is then the starter's own used-up login (one with room comes first),
+  and its turn request waits queued until that login has room.
+  `start.firstRunWaitsUntil` is when such a waiting first run goes on (null
+  when it does not wait).
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and

@@ -18,8 +18,12 @@ export interface FounderSeat {
 	invitedByUserId: string | null;
 	/** Ready for the table as it is now. */
 	ready: boolean;
-	/** Their own ChatGPT account can pay for their work in this company. */
+	/** Their own ChatGPT account is connected to this company, at any usage. */
 	modelLoginReady: boolean;
+	/** Every login of theirs is used up (at its usage limit): work they start waits for the reset (20260930579000). */
+	modelLoginUsedUp: boolean;
+	/** When the first of those used-up logins resets; null when none is used up or no reset is known. */
+	modelLoginResetsAt: string | null;
 	creator: boolean;
 }
 
@@ -50,6 +54,8 @@ export interface CompanyFounding {
 		/** How the Co-Founder's first run stands once the company is made (null before, or on a cloud that does not
 		 * say): waiting for its run, started, never queued because no login of the starter could pay, or failed. */
 		firstRun: "queued" | "started" | "waiting_for_login" | "failed" | null;
+		/** When a first run queued on a used-up login goes on by itself; null when it does not wait. */
+		firstRunWaitsUntil: string | null;
 	} | null;
 }
 
@@ -90,6 +96,13 @@ export function parseCompanyFounding(value: unknown): CompanyFounding {
 			invitedByUserId: seat.invitedByUserId === null ? null : uuid(seat.invitedByUserId, "inviter"),
 			ready: flag(seat.ready, "founder ready"),
 			modelLoginReady: flag(seat.modelLoginReady, "founder login"),
+			// An older cloud sends neither (20260930579000).
+			modelLoginUsedUp:
+				seat.modelLoginUsedUp === undefined ? false : flag(seat.modelLoginUsedUp, "founder login used up"),
+			modelLoginResetsAt:
+				seat.modelLoginResetsAt === undefined || seat.modelLoginResetsAt === null
+					? null
+					: timestamp(seat.modelLoginResetsAt, "founder login reset"),
 			creator: flag(seat.creator, "table creator"),
 		};
 	});
@@ -134,6 +147,10 @@ export function parseCompanyFounding(value: unknown): CompanyFounding {
 									["queued", "started", "waiting_for_login", "failed"] as const,
 									"first run",
 								),
+					firstRunWaitsUntil:
+						start.firstRunWaitsUntil === undefined || start.firstRunWaitsUntil === null
+							? null
+							: timestamp(start.firstRunWaitsUntil, "first run wait"),
 				}
 			: null,
 	};
