@@ -390,4 +390,18 @@ begin
 end
 $$;
 
+-- 10. Once payments are live, a month that closed during the dry run (the late bank's November, no card) is never
+--     charged: it is waived.
+do $$
+begin
+	perform pg_temp.base_assert((pg_temp.gw_month('2026-11-01', '56600000-0000-4000-8000-000000000020')).status = 'closed',
+		'the late bank''s November waits for a card');
+	update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
+	perform public.qorpera_good_will_tick('2026-12-20');
+	perform pg_temp.base_assert((pg_temp.gw_month('2026-11-01', '56600000-0000-4000-8000-000000000020')).status = 'waived',
+		'a dry-run month is waived once live');
+	update public.qorpera_computer_hour_billing set live_since = null;
+end
+$$;
+
 rollback;

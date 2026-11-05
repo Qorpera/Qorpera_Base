@@ -131,7 +131,7 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
 	const months = Array.isArray(due.months) ? due.months : [];
 	let invoiced = 0;
-	const failed: string[] = [];
+	const problems: string[] = [];
 	for (const value of months) {
 		const month = object(value);
 		const profileId = string(month?.profileId);
@@ -153,8 +153,9 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			continue;
 		const key = `qorpera-good-will-${profileId}-${period}-${deps.livemode ? "live" : "test"}`;
 		const metadata = { qorpera_kind: GOOD_WILL_KIND, qorpera_profile_id: profileId, qorpera_month: period };
-		const record = (invoiceId: string, invoiceUrl?: string) =>
-			deps.goodWill.call("invoiced", {
+		// Nothing goes on at Stripe that the database did not record.
+		const record = async (invoiceId: string, invoiceUrl?: string) => {
+			const recorded = await deps.goodWill.call("invoiced", {
 				profileId,
 				month: period,
 				invoiceId,
@@ -162,12 +163,24 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				userId: string(month?.userId) ?? null,
 				livemode: deps.livemode,
 			});
+			if (recorded.recorded !== true) throw new Error(`invoice ${invoiceId} was not recorded`);
+		};
+		const failed = (invoiceId: string, why: string) =>
+			deps.goodWill.call("invoice_failed", { invoiceId, profileId, month: period, livemode: deps.livemode, why });
 		try {
 			let invoiceId = string(month?.invoiceId);
 			const created = !invoiceId;
 			let invoice: Json;
-			if (invoiceId) invoice = await deps.stripe.get(`/v1/invoices/${encodeURIComponent(invoiceId)}`);
-			else {
+			if (invoiceId) {
+				try {
+					invoice = await deps.stripe.get(`/v1/invoices/${encodeURIComponent(invoiceId)}`);
+				} catch (error) {
+					// A draft deleted at Stripe: the month fails (for review) instead of asking for it every hour.
+					if (!(error instanceof Error && "status" in error && error.status === 404)) throw error;
+					await failed(invoiceId, "deleted");
+					continue;
+				}
+			} else {
 				// A draft Stripe leaves alone (auto_advance false), recorded before anything is added to it.
 				invoice = await deps.stripe.post(
 					"/v1/invoices",
@@ -189,6 +202,11 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId);
 			}
 			if (created || invoice.status === "draft") {
+				// The company's card now, also when a founder saved another one after the draft was made.
+				if (!created && invoice.default_payment_method !== paymentMethodId)
+					await deps.stripe.post(`/v1/invoices/${encodeURIComponent(invoiceId)}`, {
+						default_payment_method: paymentMethodId,
+					});
 				const lines = object(invoice.lines)?.data;
 				if (!Array.isArray(lines) || lines.length === 0)
 					await deps.stripe.post(
@@ -211,6 +229,8 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				);
 				await record(invoiceId, string(invoice.hosted_invoice_url));
 				invoiced++;
+			} else if (invoice.status === "void" || invoice.status === "uncollectible") {
+				await failed(invoiceId, String(invoice.status));
 			} else if (invoice.status === "paid") {
 				// Paid while its word was lost: the month is charged now.
 				await deps.goodWill.call("invoice_paid", {
@@ -221,11 +241,11 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			}
 		} catch (error) {
 			// One company's failure leaves the others; the next tick asks again.
-			failed.push(`${profileId} ${period}: ${error instanceof Error ? error.message : String(error)}`);
+			problems.push(`${profileId} ${period}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
-	if (failed.length) console.error(`good-will invoices: ${failed.join("; ")}`);
-	return { invoiced, failed: failed.length };
+	if (problems.length) console.error(`good-will invoices: ${problems.join("; ")}`);
+	return { invoiced, failed: problems.length };
 }
 
 /** Whether a Stripe object (a setup page, an invoice) is good will's. */
