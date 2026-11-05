@@ -10,7 +10,19 @@
  *   recorded (ignored, or for review) and still answered 2xx; only a passing failure (Stripe or the
  *   database unreachable, or Stripe refusing our key) answers 5xx, so Stripe retries. An event left
  *   for review runs again when it is resent from Stripe's dashboard.
- * Card data never passes through here: Stripe's own pages take it. */
+ * Card data never passes through here: Stripe's own pages take it.
+ *
+ * Good will (good-will.ts) shares the function: POST /good-will-card for a founder's card page, POST
+ * /good-will-invoices for the database's clock, and its events on /webhook. */
+
+import {
+	applyGoodWillCard,
+	applyGoodWillInvoice,
+	type GoodWillDependencies,
+	isGoodWill,
+	sendGoodWillInvoices,
+	startGoodWillCard,
+} from "./good-will.ts";
 
 export const STRIPE_API_VERSION = "2026-08-26.dahlia";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
@@ -42,11 +54,15 @@ export interface BillingOptions {
 	returnUrl: string;
 	portalConfiguration?: string;
 	allowedOrigins: readonly string[];
+	/** The key the database's clock presents (x-qorpera-billing-key) to ask for good will invoices. */
+	billingKey?: string;
 	nowSeconds?: () => number;
 }
 
 export interface BillingDependencies {
 	store: BillingStore;
+	/** The database's good will door: qorpera_good_will_billing(key, method, args). */
+	goodWill?: BillingStore;
 	stripe: StripeApi;
 	auth: MemberAuth;
 	options: BillingOptions;
@@ -207,6 +223,17 @@ function isPassing(error: unknown): boolean {
 	if (error instanceof BillingStoreError)
 		return error.code === undefined || !["22023", "22P02", "23514"].includes(error.code);
 	return true;
+}
+
+function goodWillDeps(deps: BillingDependencies): GoodWillDependencies | undefined {
+	return deps.goodWill
+		? {
+				goodWill: deps.goodWill,
+				stripe: deps.stripe,
+				livemode: deps.options.livemode,
+				returnUrl: deps.options.returnUrl,
+			}
+		: undefined;
 }
 
 /** The return URL with a query appended. The web app's return is a hash route
@@ -445,10 +472,12 @@ async function applyInvoice(
 ): Promise<Outcome> {
 	const { livemode } = deps.options;
 	const invoice = await deps.stripe.get(`/v1/invoices/${encodeURIComponent(invoiceId)}`);
+	const type = string(event.type);
+	const goodWill = goodWillDeps(deps);
+	if (isGoodWill(invoice) && goodWill) return applyGoodWillInvoice(type ?? "", invoice, goodWill);
 	const subscriptionId = invoiceSubscription(invoice);
 	if (!subscriptionId) return ignored("not a subscription invoice");
 	const reason = string(invoice.billing_reason);
-	const type = string(event.type);
 	if (type === "invoice.created" && reason !== "subscription_cycle") return ignored(`created ${reason}`);
 	const facts = await syncSubscription(subscriptionId, created, deps);
 	if ("outcome" in facts) return facts;
@@ -566,6 +595,8 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 		case "checkout.session.completed":
 		case "checkout.session.async_payment_succeeded": {
 			const session = await deps.stripe.get(`/v1/checkout/sessions/${encodeURIComponent(id)}`);
+			const goodWill = goodWillDeps(deps);
+			if (session.mode === "setup" && isGoodWill(session) && goodWill) return applyGoodWillCard(session, goodWill);
 			if (session.mode !== "payment") return ignored("plan checkouts are paid through invoices");
 			if (session.payment_status !== "paid" && session.payment_status !== "no_payment_required")
 				return ignored(`payment ${String(session.payment_status)}`);
@@ -582,6 +613,12 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 		case "invoice.created":
 		case "invoice.paid":
 			return applyInvoice(event, id, created, deps);
+		case "invoice.payment_failed": {
+			// Only good will's: a plan's failed renewal is withdrawn when Stripe gives up on it.
+			const invoice = await deps.stripe.get(`/v1/invoices/${encodeURIComponent(id)}`);
+			const goodWill = goodWillDeps(deps);
+			return isGoodWill(invoice) && goodWill ? applyGoodWillInvoice(type, invoice, goodWill) : ignored("payment failed");
+		}
 		case "invoice.marked_uncollectible":
 			return withdrawFailedRenewal(id, deps);
 		case "customer.subscription.created":
@@ -666,21 +703,52 @@ async function receiveWebhook(request: Request, deps: BillingDependencies): Prom
 	return json({ received: true, outcome: outcome.outcome }, 200);
 }
 
-/** The Edge Function: /checkout, /portal and /webhook. */
+/** The database's clock asks for good will invoices with the billing key. */
+async function goodWillInvoices(request: Request, deps: BillingDependencies): Promise<Response> {
+	const key = request.headers.get("x-qorpera-billing-key") ?? "";
+	const goodWill = goodWillDeps(deps);
+	if (!deps.options.billingKey || !goodWill || !constantTimeEqual(key, deps.options.billingKey))
+		return json({ error: "Not allowed" }, 403);
+	return json(await sendGoodWillInvoices(goodWill), 200);
+}
+
+async function goodWillCard(request: Request, deps: BillingDependencies, cors: Record<string, string>): Promise<Response> {
+	const goodWill = goodWillDeps(deps);
+	if (!goodWill) return json({ error: "Not found" }, 404, cors);
+	const token = bearer(request);
+	const member = token ? await deps.auth.member(token) : null;
+	if (!member) return json({ error: "Sign in to add a card" }, 401, cors);
+	let body: Json | undefined;
+	try {
+		body = object(await request.json());
+	} catch {
+		body = undefined;
+	}
+	const answer = await startGoodWillCard(member, body, goodWill);
+	return json(answer.body, answer.status, cors);
+}
+
+/** The Edge Function: /checkout, /portal, /good-will-card, /good-will-invoices and /webhook. */
 export async function handleComputerBilling(request: Request, deps: BillingDependencies): Promise<Response> {
 	const route = new URL(request.url).pathname.replace(/\/+$/, "").split("/").pop();
 	// The member's routes answer every outcome, errors too, with the headers the browser needs to read it.
-	const cors = route === "webhook" ? {} : corsHeaders(request, deps.options);
+	const server = route === "webhook" || route === "good-will-invoices";
+	const cors = server ? {} : corsHeaders(request, deps.options);
 	try {
 		if (route === "webhook") {
 			if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 			return await receiveWebhook(request, deps);
+		}
+		if (route === "good-will-invoices") {
+			if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+			return await goodWillInvoices(request, deps);
 		}
 		if (!cors) return json({ error: "Origin not allowed" }, 403);
 		if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 		if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, cors);
 		if (route === "checkout") return await startCheckout(request, deps, cors);
 		if (route === "portal") return await openPortal(request, deps, cors);
+		if (route === "good-will-card") return await goodWillCard(request, deps, cors);
 		return json({ error: "Not found" }, 404, cors);
 	} catch (error) {
 		// Passing failures answer 5xx: a webhook is retried by Stripe, a member can try again.

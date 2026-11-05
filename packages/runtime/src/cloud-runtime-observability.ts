@@ -44,6 +44,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"organize_sidebar",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
+	// Good will (20260930566000): a company agent lists and sorts the payments the company's good will counts.
+	"good_will_list",
+	"good_will_mark",
 	// Machines agents start for tests and long jobs (2026-09-28).
 	"machine_start",
 	"machine_run",

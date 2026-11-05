@@ -998,6 +998,8 @@ it.each([
 				"manage_worker",
 				"organize_sidebar",
 				"add_review_rule",
+				"good_will_list",
+				"good_will_mark",
 				"list_hooks",
 				"read_event",
 				"send_mail",
@@ -1026,7 +1028,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v8",
+			schema: "qorpera.hire-overlay/v9",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2952,8 +2954,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// table_read's, table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there,
 	// so they moved again. Company sites (20260930550000) add publish_site and unpublish_site after manage_hook, so
 	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
-	// links, so they moved again. Interface apps (5 November 2026) add save_app and post_app after table_write, so they
-	// moved again; every other tool is as on master.
+	// links, so they moved again. Good will (20260930566000) adds good_will_list and good_will_mark after add_review_rule,
+	// so they moved again. Interface apps
+	// (5 November 2026) add save_app and post_app after table_write, so they moved again; every other tool is as on
+	// master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2972,6 +2976,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_routine",
 		"organize_sidebar",
 		"add_review_rule",
+		"good_will_list",
+		"good_will_mark",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -2993,9 +2999,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ed33efb7bfc340a1c8431a14e4c6347b1c30f742153c926972a325cd2e4f4f84",
+		"6c51f8f3400634624f6cd0b6eac12ecc041db8d707d2ad762aead720f4d85f75",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"4adbf4db446c77636b8d95dd5bd85d420acfebd9ada7052b69c784242672b3e5",
+		"ef3064bbbf14f8b4b364e6c3927c27591b7eebb6874668a7b78be6c2eee559c2",
 	);
 });

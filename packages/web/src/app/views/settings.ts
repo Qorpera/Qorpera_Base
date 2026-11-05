@@ -1,8 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import { describeError } from "../../cloud/client.ts";
 import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
-import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../../cloud/digital-post.ts";
 import { createWebEventHooks } from "../../cloud/event-hooks.ts";
@@ -17,18 +16,17 @@ import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
-import { PlanPayments } from "../plan-payments.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { CompanyFolderBrowser } from "./company-folder.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
-import { renderPlan } from "./plan.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { DigitalPostView } from "./settings-digital-post.ts";
+import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
 import { HooksView } from "./settings-hooks.ts";
 import { MemoryView } from "./settings-memory.ts";
 import { PagesView } from "./settings-pages.ts";
@@ -44,7 +42,7 @@ const TABS = [
 		label: phrase("General"),
 		icon: "settings",
 		keywords:
-			"account language region time zone timezone rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
+			"account language region time zone timezone good will goodwill rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 	{
 		id: "appearance",
@@ -58,7 +56,7 @@ const TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff memory notebooks shared context beta file delete leave pages mailbox interfaces virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst virksomhedsfilen roller slet forlad sider postkasse grænseflader",
+			"people team members invitations staff memory notebooks shared context beta file delete leave pages mailbox interfaces good will goodwill tax invoices card payment sales virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst virksomhedsfilen roller slet forlad sider postkasse grænseflader skat fakturaer kort betaling salg",
 	},
 	{
 		id: "friends",
@@ -66,13 +64,6 @@ const TABS = [
 		icon: "friends",
 		keywords:
 			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
-	},
-	{
-		id: "plan",
-		label: phrase("Plan & usage"),
-		icon: "plan",
-		keywords:
-			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
 		id: "ai-subscriptions",
@@ -110,12 +101,6 @@ const subscriptionsLead = () =>
 /** A connections tab: its title, the rule that sorts a connection into it, then its lists. */
 function connectionsPage(title: string, rule: string, ...content: HTMLElement[]): HTMLElement {
 	return h("div", null, h("h1", null, title), h("p", { class: "settings-lead" }, rule), ...content);
-}
-
-/** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
-function founderOf(company: CompanyController): boolean | undefined {
-	const role = company.store.get().team?.role;
-	return role === undefined ? undefined : role === "owner";
 }
 
 /** A settings session owns its async work; the conversation stays mounted below it. */
@@ -203,9 +188,14 @@ export class SettingsView {
 	#memory: MemoryView | undefined;
 	/** The company's pages, on the Company tab. */
 	#pages: PagesView | undefined;
+	/** The company's good will, on the Company tab. */
+	#goodWill: GoodWillView | undefined;
+	/** General with no company open: the good will of the member's companies. */
+	#myGoodWill: MyGoodWillView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
 	readonly #accountPanel = h("div");
 	readonly #rulesSlot = h("div");
+	readonly #myGoodWillSlot = h("div");
 	/** In the rules' place when Settings show no company (opened from the company list with several,
 	 * or over a company page whose company is not available). */
 	readonly #noCompanyRules = h(
@@ -217,14 +207,6 @@ export class SettingsView {
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
-	#hours: CompanyComputerHours | undefined;
-	#hoursLoading = false;
-	#hoursMissing = false;
-	/** Set once a lookup failed: the hours are not asked again until the company changes. */
-	#hoursFailed = false;
-	/** Offers, the member's own plan, and Stripe's pages; loaded when Plan & usage first shows. */
-	readonly #payments: PlanPayments;
-	#planFounder: boolean | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -245,9 +227,6 @@ export class SettingsView {
 		this.#companyRemoved = companyRemoved;
 		this.#pagesChanged = pagesChanged;
 		this.#borrowedCompany = company;
-		this.#payments = new PlanPayments(api, () => {
-			if (!this.#lifetime.signal.aborted && this.#panels.has("plan")) this.#plan();
-		});
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
@@ -501,8 +480,9 @@ export class SettingsView {
 		this.#rules?.dispose();
 		this.#memory?.dispose();
 		this.#pages?.dispose();
+		this.#goodWill?.dispose();
+		this.#myGoodWill?.dispose();
 		this.#friends.dispose();
-		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		leave(this.el, "is-leaving", () => this.el.remove());
 	}
@@ -734,7 +714,7 @@ export class SettingsView {
 		if (browser.opened) this.#folderPath = undefined;
 	}
 
-	/** The company's storage under Storage's navigation: what is used of what the plan includes. */
+	/** The company's storage under Storage's navigation: what is used of what it may hold. */
 	#drawStorageUsage(): void {
 		if (!this.#company) {
 			replace(this.#storageUsage);
@@ -753,7 +733,6 @@ export class SettingsView {
 		}
 		if (tab === "general") this.#general();
 		else if (tab === "appearance") this.#panels.set(tab, renderAppearance());
-		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (tab === "ai-subscriptions" && !this.#company) this.#drawAccountSubscriptions();
@@ -933,18 +912,17 @@ export class SettingsView {
 	}
 
 	/** General shows only the account's error and message, so it is redrawn only
-	 * when those change: a control in use keeps focus when the plan arrives. */
+	 * when those change: a control in use keeps focus when the entitlement arrives. */
 	#loadedAccount(next: AccountViewState): void {
 		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
 		this.#account = next;
 		if (redraw) this.#general();
-		if (this.#panels.has("plan")) this.#plan();
 	}
 
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (!this.#panels.has("general"))
-			this.#panels.set("general", h("div", null, this.#accountPanel, this.#rulesSlot));
+			this.#panels.set("general", h("div", null, this.#accountPanel, this.#myGoodWillSlot, this.#rulesSlot));
 		renderAccount(this.#auth, this.#accountPanel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };
@@ -958,6 +936,14 @@ export class SettingsView {
 				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
 				() => company.store.get().team?.role,
 			);
+		// With no company open, the good will of the member's companies, read once General shows.
+		if (!company && !this.#myGoodWill && this.#tab === "general")
+			this.#myGoodWill = new MyGoodWillView(
+				() => this.#api.getMyGoodWill(),
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]),
+			);
+		const mine = company ? undefined : this.#myGoodWill?.el;
+		if (this.#myGoodWillSlot.firstChild !== (mine ?? null)) replace(this.#myGoodWillSlot, mine);
 		// Moved only when it changes: moving it would take the focus out of a field in use.
 		const rules = company ? this.#rules?.el : this.#noCompanyRules;
 		if (this.#rulesSlot.firstChild !== (rules ?? null)) {
@@ -966,61 +952,6 @@ export class SettingsView {
 			// A field in the old company's rules had the keyboard: keep it in Settings.
 			if (focused) this.#content.focus({ preventScroll: true });
 		}
-	}
-
-	/** The plan is the account's; the usage shown is the open company's computer hours and storage. */
-	#plan(): void {
-		if (this.#lifetime.signal.aborted) return;
-		let panel = this.#panels.get("plan");
-		if (!panel) {
-			panel = h("div");
-			this.#panels.set("plan", panel);
-		}
-		const company = this.#company;
-		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
-			void this.#loadFile();
-		if (this.#tab === "plan") this.#payments.load();
-		this.#planFounder = company ? founderOf(company) : undefined;
-		if (
-			this.#tab === "plan" &&
-			company &&
-			!this.#hours &&
-			!this.#hoursLoading &&
-			!this.#hoursMissing &&
-			!this.#hoursFailed
-		)
-			void this.#loadHours();
-		renderPlan(
-			panel,
-			this.#account,
-			company
-				? {
-						companyName: company.profile.profileName,
-						file: this.#file,
-						loading: this.#fileLoading,
-						error: this.#fileError,
-						retry: () => void this.#loadFile(true),
-						hours: {
-							value: this.#hours,
-							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursFailed),
-							missing: this.#hoursMissing,
-							failed: this.#hoursFailed,
-						},
-						profileId: company.profile.profileId,
-						founder: this.#planFounder,
-						memberName: (userId) =>
-							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
-					}
-				: undefined,
-			{
-				payments: {
-					state: this.#payments.state,
-					checkout: (itemKey, profileId) => this.#payments.checkout(itemKey, profileId),
-					portal: () => this.#payments.portal(),
-					companyName: (profileId) => this.#profiles.find((item) => item.profileId === profileId)?.profileName,
-				},
-			},
-		);
 	}
 
 	#drawFriends(): void {
@@ -1072,6 +1003,10 @@ export class SettingsView {
 		this.#memory = undefined;
 		this.#pages?.dispose();
 		this.#pages = undefined;
+		this.#goodWill?.dispose();
+		this.#goodWill = undefined;
+		this.#myGoodWill?.dispose();
+		this.#myGoodWill = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -1079,10 +1014,6 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		this.#hours = undefined;
-		this.#hoursLoading = false;
-		this.#hoursMissing = false;
-		this.#hoursFailed = false;
 		for (const tab of ["company", "ai-subscriptions", "company-connections", "sites"] as const)
 			this.#panels.delete(tab);
 		if (company) {
@@ -1102,8 +1033,6 @@ export class SettingsView {
 				this.#pages?.update();
 				this.#drawCompany();
 				if (this.#folder || this.#mode === "storage") this.#drawStorage();
-				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
-				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
 			});
 			if (owned) void company.start();
 		}
@@ -1132,6 +1061,7 @@ export class SettingsView {
 					h("h2", null, uiText("Staff at work")),
 					h("div", { class: "settings-staff" }),
 				),
+				h("div", { class: "settings-good-will-slot" }),
 				h("div", { class: "settings-memory-slot" }),
 				h("div", { class: "settings-pages-slot" }),
 				h("div", { class: "settings-file" }),
@@ -1149,6 +1079,21 @@ export class SettingsView {
 				() => company.store.get().team?.role,
 			);
 		}
+		// Good will, under Staff at work (design A): read once the Company tab shows, kept until the company changes.
+		if (this.#tab === "company" && !this.#goodWill) {
+			const profileId = company.profile.profileId;
+			this.#goodWill = new GoodWillView(
+				{
+					read: () => this.#api.getCompanyGoodWill(profileId),
+					cardPage: () => this.#api.startGoodWillCard(profileId),
+					open: (url) => window.location.assign(url),
+				},
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				() => company.profile.profileName,
+			);
+		}
+		const goodWillSlot = panel.querySelector<HTMLElement>(".settings-good-will-slot")!;
+		if (this.#goodWill && goodWillSlot.firstChild !== this.#goodWill.el) replace(goodWillSlot, this.#goodWill.el);
 		const memorySlot = panel.querySelector<HTMLElement>(".settings-memory-slot")!;
 		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
 		// The pages are read once the Company tab shows, and kept until the company changes.
@@ -1242,38 +1187,13 @@ export class SettingsView {
 		);
 	}
 
-	/** This month's computer hours of the open company. A cloud without the meter shows "Not measured yet". */
-	async #loadHours(): Promise<void> {
-		const company = this.#company;
-		if (!company || this.#hoursLoading) return;
-		const signal = this.#companyLifetime.signal;
-		this.#hoursLoading = true;
-		try {
-			const hours = await this.#api.getCompanyComputerHours(company.profile.profileId);
-			if (signal.aborted || this.#lifetime.signal.aborted) return;
-			this.#hours = hours;
-		} catch (error) {
-			if (signal.aborted || this.#lifetime.signal.aborted) return;
-			if (error instanceof CloudRpcError && error.missing) this.#hoursMissing = true;
-			else this.#hoursFailed = true;
-		} finally {
-			if (!signal.aborted && !this.#lifetime.signal.aborted) {
-				this.#hoursLoading = false;
-				if (this.#panels.has("plan")) this.#plan();
-			}
-		}
-	}
-
 	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
 	async #loadFile(redraw = false): Promise<void> {
 		const company = this.#company;
 		if (!company || this.#fileLoading) return;
 		const signal = this.#companyLifetime.signal;
 		this.#fileLoading = true;
-		if (redraw) {
-			this.#drawCompany();
-			if (this.#panels.has("plan")) this.#plan();
-		}
+		if (redraw) this.#drawCompany();
 		try {
 			const file = await this.#api.getCompanyFile(company.profile.environmentId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
@@ -1287,7 +1207,6 @@ export class SettingsView {
 				this.#fileLoading = false;
 				this.#drawCompany();
 				if (this.#mode === "storage") this.#drawStorageUsage();
-				if (this.#panels.has("plan")) this.#plan();
 			}
 		}
 	}

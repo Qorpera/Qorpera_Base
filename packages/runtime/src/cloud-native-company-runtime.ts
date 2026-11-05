@@ -47,6 +47,7 @@ import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
+import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { cloudMachineTools } from "./cloud-machine-tools.ts";
@@ -997,6 +998,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												}),
 											}),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
+											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
+											// an agent owns the company's money.
+											...cloudGoodWillTools(binding, identity, this.#paths),
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
 											// Company sites (20260930550000): a static website from the company folder at a
