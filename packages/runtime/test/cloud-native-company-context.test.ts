@@ -720,9 +720,7 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	);
 	expect(cofounder).toContain("at the latest once your team's first findings are in");
 	expect(cofounder).toContain("An owner reporting the same blocker twice is stuck: find another way");
-	expect(cofounder).toContain(
-		"sort them yourself with good_will_list and good_will_mark and show the members what counted",
-	);
+	expect(cofounder).toContain("by you with good_will_mark, then show the members what counted once");
 	expect(cofounder).toContain("Read QorperaOS/vision/vision.md first");
 	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
 	expect(cofounder).toContain("post the whole vision in your own words in the thread as a draft");
