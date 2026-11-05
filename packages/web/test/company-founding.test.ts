@@ -72,6 +72,10 @@ describe("founding table wire shape", () => {
 		const parsed = parseCompanyFounding(wire());
 		expect(parsed.seats.map((seat) => seat.displayName)).toEqual(["Anna", "Bo"]);
 		expect(parsed.waitingFor).toEqual([me]);
+		expect(parsed.seats[0]).toMatchObject({ modelLoginUsedUp: false, modelLoginResetsAt: null });
+		expect(
+			parseCompanyFounding(mine({ modelLoginUsedUp: true, modelLoginResetsAt: "2026-11-07T10:12:58Z" })).seats[0],
+		).toMatchObject({ modelLoginUsedUp: true });
 		expect(() => parseCompanyFounding(wire({ phase: "started" }))).toThrow();
 		const seats = wire().seats as unknown[];
 		expect(() => parseCompanyFounding(wire({ seats: [seats[0], seats[0]] }))).toThrow();
@@ -94,6 +98,10 @@ describe("founding table wire shape", () => {
 		expect(started({ companyReady: true, companySetup: "ready", firstRun: "waiting_for_login" })).toMatchObject({
 			firstRun: "waiting_for_login",
 		});
+		expect(
+			started({ companyReady: true, companySetup: "ready", firstRun: "queued", firstRunWaitsUntil: "2026-11-07T10:12:58Z" }),
+		).toMatchObject({ firstRun: "queued", firstRunWaitsUntil: "2026-11-07T10:12:58Z" });
+		expect(started({ companyReady: true })).toMatchObject({ firstRunWaitsUntil: null });
 		expect(() => started({ companyReady: true, companySetup: "done" })).toThrow();
 		expect(() => started({ companyReady: true, companySetup: "ready", firstRun: "later" })).toThrow();
 	});
@@ -289,6 +297,20 @@ describe("founding table", () => {
 		expect(container.querySelector(".founding-role-mine")).toBe(field);
 		expect(document.activeElement).toBe(field);
 		expect(named("qorpera_set_founder_role")).toEqual([]);
+	});
+
+	it("says a used-up login is used up and when it resets, and Start still works alone", async () => {
+		const resets = "2026-11-07T10:12:58Z";
+		mount(() => {
+			const alone = mine({ modelLoginReady: true, modelLoginUsedUp: true, modelLoginResetsAt: resets });
+			return { ...alone, seats: (alone.seats as Wire[]).slice(0, 1), waitingFor: [me] };
+		});
+		await settle();
+		const text = visibleText(container);
+		expect(text).toContain("ChatGPT used up · resets");
+		expect(text).not.toContain("ChatGPT not connected");
+		expect(text).toContain("Your ChatGPT is used up until");
+		expect(container.querySelector<HTMLButtonElement>(".founding-start")!.disabled).toBe(false);
 	});
 
 	it("asks for the Ready that was shown, so a double click does not undo it", async () => {
