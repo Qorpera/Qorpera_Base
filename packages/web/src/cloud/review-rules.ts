@@ -1,4 +1,5 @@
 import type { Cloud } from "./client.ts";
+import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
 import type { JsonValue } from "./types.ts";
 
 /**
@@ -171,6 +172,32 @@ export function actionReviewCard(data: Record<string, JsonValue>): ActionReviewC
 /** Whether this member answers the card, as qorpera_answer_action_review checks it. */
 export function answersActionReview(card: ActionReviewCard, userId: string, role: string): boolean {
 	return card.approverScope === "member" ? card.approverUserId === userId : role === "owner" || role === "admin";
+}
+
+/** Approval cards that wait for the signed-in member's answer, by agent and conversation
+ * (migration 20260930568000): their own, and the company's for an owner or admin. */
+export interface WaitingApproval {
+	staffAgentId: string;
+	sessionId: string;
+	count: number;
+	latestAt: string;
+}
+
+export async function listWaitingApprovals(cloud: Cloud, profileId: string): Promise<WaitingApproval[]> {
+	const input = record(
+		await cloud.rpc("qorpera_list_member_waiting_approvals", { p_profile_id: profileId }),
+		"waiting approvals",
+	);
+	if (input.schema !== "qorpera.member-waiting-approvals/v1") throw new CloudShapeError("waiting approvals");
+	return array(input.approvals, "waiting approvals").map((value) => {
+		const item = record(value, "waiting approval");
+		return {
+			staffAgentId: uuid(item.staffAgentId, "waiting approval agent"),
+			sessionId: uuid(item.sessionId, "waiting approval conversation"),
+			count: boundedInteger(item.count, "waiting approval count", 1, 1_000_000),
+			latestAt: timestamp(item.latestAt, "waiting approval time"),
+		};
+	});
 }
 
 export interface ActionReviewReceipt {

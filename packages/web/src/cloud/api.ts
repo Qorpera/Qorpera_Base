@@ -70,7 +70,13 @@ import {
 } from "./proposals.ts";
 import type { MessageQuote } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
-import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
+import {
+	type ActionReviewAnswer,
+	type ActionReviewReceipt,
+	listWaitingApprovals,
+	parseActionReviewReceipt,
+	type WaitingApproval,
+} from "./review-rules.ts";
 import {
 	listRoomDrafts,
 	putRoomDraft,
@@ -423,6 +429,11 @@ export class CloudApi {
 
 	markMentionsSeen(sessionId: string): Promise<void> {
 		return markMentionsSeen(this.cloud, requiredUuid(sessionId, "Session id"));
+	}
+
+	/** The approval cards that wait for the signed-in member's answer, by agent. */
+	listWaitingApprovals(profileId: string): Promise<WaitingApproval[]> {
+		return listWaitingApprovals(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */

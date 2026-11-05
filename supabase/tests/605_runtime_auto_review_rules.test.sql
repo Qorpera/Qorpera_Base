@@ -259,8 +259,8 @@ begin
 end
 $$;
 
--- A group chat carries no card: the ask is recorded and the call is refused. (Here, before any answer wakes Bob, the
--- chat's runs are the only ones queued.)
+-- A group chat carries no card: since 20260930568000 its run's ask waits on a card in the agent's own thread, and a
+-- repeat in the chat holds on that card. (Here, before any answer wakes Bob, the chat's runs are the only ones queued.)
 savepoint rv_group_chat;
 do $$
 declare v_text text := E'---\nid: 60500000-0000-4000-8000-0000000000c1\nname: Acme\nagents:\n  - 92400000-0000-4000-8000-000000000031\n'
@@ -285,10 +285,18 @@ begin
 	perform pg_temp.base_assert((select session_id from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid)
 		= (select session_id from public.qorpera_company_rooms where id = '60500000-0000-4000-8000-0000000000c1'), 'The run is in the group chat');
 	v_record := pg_temp.rv_record(v_binding, 'call-g', repeat('8', 64), 'ask', array['60500000-0000-4000-8000-000000000a01']::uuid[]);
-	perform pg_temp.base_assert(v_record ->> 'decision' = 'ask' and (v_record ->> 'card')::boolean = false,
-		'A group chat carries no approval card');
-	perform pg_temp.base_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
-		'argumentSha256', repeat('8', 64))) ->> 'state' = 'review', 'A cardless ask is never waited on');
+	perform pg_temp.base_assert(v_record ->> 'decision' = 'ask' and (v_record ->> 'card')::boolean
+		and (v_record ->> 'cardElsewhere')::boolean
+		and (select review.card_session_id from public.qorpera_action_reviews as review
+			where review.id = (v_record ->> 'reviewId')::uuid) = (select room.session_id
+			from public.qorpera_company_rooms as room join public.qorpera_execution_runs as run
+				on run.id = (v_binding ->> 'runId')::uuid and room.bound_staff_agent_id = run.staff_agent_id
+			where room.profile_id = run.profile_id),
+		'A group chat''s ask waits on a card in the agent''s own thread');
+	v_record := public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+		'argumentSha256', repeat('8', 64)));
+	perform pg_temp.base_assert(v_record ->> 'state' = 'pending' and (v_record ->> 'cardElsewhere')::boolean,
+		'A repeat in the chat holds on the card in the thread');
 end
 $$;
 rollback to savepoint rv_group_chat;

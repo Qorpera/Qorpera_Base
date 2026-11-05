@@ -2305,6 +2305,37 @@ describe("the review step", () => {
 		expect(calls.at(-1)).toMatchObject({ args: { p_review_id: "review-3", p_park: true } });
 	});
 
+	it("says a card raised in the agent's thread waits there, not here", async () => {
+		// A worker's ask (20260930568000): its card goes to the agent's own thread.
+		const { check } = gate({
+			holdMs: 0,
+			record: { decision: "ask", card: true, cardElsewhere: true, reviewId: "review-20", approverName: "Jonas" },
+			waits: [{ state: "parked" }],
+		});
+		const result = await check();
+		expect(result).toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_PENDING: .*from Jonas on a card in the agent's own thread/),
+		});
+		const text = result.run ? "" : result.text;
+		expect(text).toContain("woken in its thread to make the identical call");
+		expect(text).not.toContain("this conversation");
+	});
+
+	it("holds a repeat on the card in the agent's thread and says where it waits", async () => {
+		const { check, calls } = gate({
+			holdMs: 0,
+			begin: { state: "pending", reviewId: "review-21", approverName: "Jonas", cardElsewhere: true },
+			waits: [{ state: "parked" }],
+		});
+		expect(await check()).toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_PENDING: .*a card in the agent's own thread/),
+		});
+		expect(calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review", "qorpera_await_action_review"]);
+		expect(calls.at(-1)).toMatchObject({ args: { p_review_id: "review-21", p_park: true } });
+	});
+
 	it("parks a held call when its hold runs out", async () => {
 		const { check, calls } = gate({
 			holdMs: 5,

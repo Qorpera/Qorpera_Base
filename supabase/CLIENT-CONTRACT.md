@@ -368,6 +368,17 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
+  Since 20260930568000 a worker's card (and one from any run whose own
+  conversation cannot hold it) is in the agent's own thread; the answer wakes
+  the agent there as for any card.
+- `qorpera_list_member_waiting_approvals(p_profile_id)` →
+  `qorpera.member-waiting-approvals/v1` (20260930568000): the approval cards
+  that wait for the caller's answer, `approvals` of `{staffAgentId, sessionId,
+  count, latestAt}`, newest first: the caller's own (`approverScope` `member`)
+  and, for an owner or admin, the company's, in open conversations the caller
+  may read. The web shows such an agent as "Needs you" while it has no work of
+  its own. Members only (42501 otherwise).
+
 ### Company memory (2) — C5, `20260930508000_memory_mode.sql`
 
 - `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
