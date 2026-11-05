@@ -353,6 +353,41 @@ describe("company notices", () => {
 		expect(shown.view.el.hidden).toBe(true);
 	});
 
+	it("tells a founder and the card's member that the good will card failed, with Stripe's invoice (20260930571000)", async () => {
+		const failed = (n: number, mine: boolean, invoiceUrl: string | null): MemberNotification => ({
+			...item(n),
+			kind: "good_will_card_failed",
+			subject: {
+				schema: "qorpera.member-notification.good-will-card-failed/v1",
+				month: "2026-11",
+				dueOre: 510000,
+				invoiceUrl,
+				mine,
+			},
+		});
+		const show = async (notice: MemberNotification) => {
+			const client = {
+				listNotifications: vi.fn(async () => [notice]),
+				acknowledgeNotification: vi.fn(async () => ({ ...notice, acknowledgedAt: timestamp })),
+			};
+			const view = new ExecutionNotices(client, new AbortController().signal);
+			document.body.append(view.el);
+			cleanup.push(() => view.dispose());
+			await settle();
+			return view.el;
+		};
+		const own = await show(failed(91, true, "https://invoice.stripe.com/i/1"));
+		expect(own.querySelector("p")?.textContent).toBe(
+			"Your card could not pay November 2026's good will of 5,100 kr. Stripe tries again; change the card in Settings → Company.",
+		);
+		expect(own.querySelector("a")?.getAttribute("href")).toBe("https://invoice.stripe.com/i/1");
+		const founder = await show(failed(92, false, null));
+		expect(founder.querySelector("p")?.textContent).toContain(
+			"The company's card could not pay November 2026's good will",
+		);
+		expect(founder.querySelector("a")).toBeNull();
+	});
+
 	it("says whose supervision of an area's agents ended and why, and dismisses it like any line (20260930371000)", async () => {
 		type Ended = Extract<
 			MemberNotification["subject"],

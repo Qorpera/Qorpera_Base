@@ -769,39 +769,20 @@ At the agreed minute, in this order:
    it was set in test mode. One command, because a live webhook secret with the test key drops live
    events for good. From here until step 2 nobody can
    buy (checkout answers "unavailable"), and test purchases stop working, as intended.
-2. The coordinator switches payments and the zero rule on together, with one time for both:
+2. The coordinator switches payments on (good will, 5 Nov 2026: the zero rule stays off; never set
+   `zero_rule_since` or `coding_zero_rule_since`, since hours can no longer be bought and a company
+   without sales keeps working, migration 20260930571000):
 
    ```sql
-   update public.qorpera_computer_hour_billing
-   set live_since = now.at, zero_rule_since = now.at
-   from (select clock_timestamp() as at) now;
+   update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
    ```
-
-   Never the other way round: with the test key still in place and `live_since` set, the zero rule
-   would hold work while nothing can be bought.
 
    From then, use is charged live (every company starts with its five free hours; dry-run
    balances stay as they were and never count). Plans can be bought by every signed-in account,
    packs by a company's founders. The hour emails are queued, and a company that runs out is
    recorded by the next sweep.
 
-   2b. In the same minute, the coordinator switches coding on. Its precondition holds since K1
-   (2026-10-01): every coding node runs executor `9fef1f70` (or a later build with 6b part 4),
-   whose `coding-executor.ts` defers a turn whose begin answers
-   `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`. First check each node with
-   `systemctl show -p ExecStart --value qorpera-coding-executor`: it must name
-   `/opt/qorpera-coding-executor/9fef1f70…/` (or the later build), never `036e3617…`; otherwise
-   skip 2b. Then run `outputs/k1-coding-v7-v156/coding-switch.sql`, which sets the switch only when
-   the zero rule is on and prints the values before and after. It does the same as:
-
-   ```sql
-   update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
-   ```
-
-   Never with an older executor on a node: it fails a coding turn on the reason instead of
-   waiting. Without this step, a company at zero still has its coding turns held, but only at the
-   run's wake step: the turn shows as running, its machine starts or stays awake, and that
-   machine's time is owed until hours are added (part 4's known limits).
+   2b. Retired (good will): coding's zero rule (`coding_zero_rule_since`) stays off too.
 3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
    other than step 5's test company (or refunded before step 5, which also proves a live refund),
    refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and

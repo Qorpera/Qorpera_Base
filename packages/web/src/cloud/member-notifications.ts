@@ -64,6 +64,18 @@ export type MemberNotificationSubject =
 			/** The member whose save or call ended it; null when no member did (a leaving, the platform's or an agent's save). */
 			byUserId: string | null;
 			at: string;
+	  }
+	| {
+			/** The good will invoice of a month could not charge the company's card (20260930571000). Stripe tries again;
+			 * the line goes once it is paid. */
+			schema: "qorpera.member-notification.good-will-card-failed/v1";
+			/** YYYY-MM. */
+			month: string;
+			dueOre: number;
+			/** Stripe's invoice page, only on invoice.stripe.com. */
+			invoiceUrl: string | null;
+			/** The card is this member's. */
+			mine: boolean;
 	  };
 export interface MemberNotification {
 	notificationId: string;
@@ -74,7 +86,8 @@ export interface MemberNotification {
 		| "routine_needs_model_account"
 		| "run_no_progress"
 		| "routine_payer_changed"
-		| "interface_supervision_ended";
+		| "interface_supervision_ended"
+		| "good_will_card_failed";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -230,6 +243,24 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			reason,
 			byUserId: s.byUserId === null ? null : uuid(s.byUserId),
 			at: date(s.at),
+		};
+	} else if (kind === "good_will_card_failed" && s.schema === "qorpera.member-notification.good-will-card-failed/v1") {
+		if (typeof s.month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(s.month) || typeof s.mine !== "boolean")
+			throw invalid();
+		let invoiceUrl: string | null = null;
+		if (typeof s.invoiceUrl === "string") {
+			try {
+				if (new URL(s.invoiceUrl).origin === "https://invoice.stripe.com") invoiceUrl = s.invoiceUrl;
+			} catch {
+				invoiceUrl = null;
+			}
+		} else if (s.invoiceUrl !== null) throw invalid();
+		subject = {
+			schema: s.schema,
+			month: s.month,
+			dueOre: integer(s.dueOre),
+			invoiceUrl,
+			mine: s.mine,
 		};
 	} else throw invalid();
 	return {

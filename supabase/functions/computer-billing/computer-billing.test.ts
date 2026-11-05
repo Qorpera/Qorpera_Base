@@ -714,6 +714,7 @@ describe("Good will", () => {
 		assert.equal(session?.form.mode, "setup");
 		assert.equal(session?.form.customer, "cus_A1");
 		assert.equal(session?.form.billing_address_collection, "required");
+		assert.equal(session?.form["tax_id_collection[enabled]"], "true");
 		assert.equal(session?.form["metadata[qorpera_kind]"], "good_will");
 		assert.equal(session?.form["setup_intent_data[metadata][qorpera_profile_id]"], COMPANY);
 		assert.equal(session?.form.success_url, "https://app.qorpera.com/#/account?good-will=card-saved");

@@ -116,6 +116,11 @@ export const SETTINGS: Record<string, string> = {
 	"Paid by another founder": "Betales af en anden stifter",
 	"No card yet": "Intet kort endnu",
 	"Card saved. It pays the company's next invoice.": "Kortet er gemt. Det betaler virksomhedens næste faktura.",
+	"Your card could not pay {month}'s {name} of {amount}. Stripe tries again; change the card in Settings → Company.":
+		"Dit kort kunne ikke betale {name} for {month} på {amount}. Stripe prøver igen; skift kortet under Indstillinger → Virksomhed.",
+	"The company's card could not pay {month}'s {name} of {amount}. Stripe tries again; a founder can change the card in Settings → Company.":
+		"Virksomhedens kort kunne ikke betale {name} for {month} på {amount}. Stripe prøver igen; en stifter kan skifte kortet under Indstillinger → Virksomhed.",
+	"Open the invoice": "Åbn fakturaen",
 	// Shared with other settings pages (agent-routines.ts, settings-hooks.ts, team.ts, settings-connections.ts).
 	Paused: "Sat på pause",
 	Team: "Team",
