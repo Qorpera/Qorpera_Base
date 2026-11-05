@@ -75,6 +75,9 @@ export interface CloudRoutineOnceTrigger extends TriggerBase {
 	kind: "once";
 	at: string;
 	timeZone: string;
+	/** A listener: the folder key of a todo or human task; the run comes as soon as nothing open is left there, and at
+	 * `at` at the latest. */
+	after?: string;
 }
 export type CloudRoutineTrigger =
 	| CloudRoutineOnceTrigger
@@ -254,16 +257,24 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 		};
 	}
 	if (input.kind === "once") {
-		only(input, ["id", "kind", "at", "timeZone", "replyPolicy"], "routine next run");
+		only(input, ["id", "kind", "at", "timeZone", "replyPolicy", "after"], "routine next run");
 		if (
 			typeof input.id !== "string" ||
 			!LISTENER_ID.test(input.id) ||
 			typeof input.at !== "string" ||
 			!ONCE_INSTANT.test(input.at) ||
-			!Number.isFinite(Date.parse(input.at))
+			!Number.isFinite(Date.parse(input.at)) ||
+			(input.after !== undefined && (typeof input.after !== "string" || !input.after || input.after.length > 4096))
 		)
 			invalid("routine next run");
-		return { id: input.id, kind: "once", at: input.at, timeZone: zone(input.timeZone), ...replyPolicy };
+		return {
+			id: input.id,
+			kind: "once",
+			at: input.at,
+			timeZone: zone(input.timeZone),
+			...(input.after === undefined ? {} : { after: input.after as string }),
+			...replyPolicy,
+		};
 	}
 	if (input.kind !== "schedule") invalid("routine trigger kind");
 	const id = text(input.id, "routine trigger id", 160);

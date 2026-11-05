@@ -1956,6 +1956,42 @@ Go through new leads in sales/leads/.
 			).toBeGreaterThan(0);
 	});
 
+	it("reads a listener: a dynamic routine that waits for a todo or a human task, and writes it back", () => {
+		const todo = "QorperaOS/agents/otto/todos/landing-page.md";
+		const file = ok(
+			"QorperaOS/agents/a/routines/r.md",
+			routine(`when: once\nat: 2026-11-06T09:00:00Z\nafter: ${todo}\ntimezone: UTC`),
+		);
+		expect(file).toMatchObject({ trigger: { when: "once", at: "2026-11-06T09:00:00Z", after: todo } });
+		expect(
+			ok(
+				"QorperaOS/agents/a/routines/r.md",
+				routine("when: once\nat: 2026-11-06T09:00:00Z\nafter: QorperaOS/human-tasks/sign.md\ntimezone: UTC"),
+			),
+		).toMatchObject({ trigger: { after: "QorperaOS/human-tasks/sign.md" } });
+		// A plain dynamic routine has no after at all, so its parse is as before.
+		expect(
+			(
+				ok(
+					"QorperaOS/agents/a/routines/r.md",
+					routine("when: once\nat: 2026-11-06T09:00:00Z\ntimezone: UTC"),
+				) as RoutineFile
+			).trigger,
+		).toEqual({ when: "once", at: "2026-11-06T09:00:00Z" });
+		expect(
+			keys(
+				refused(
+					"QorperaOS/agents/a/routines/r.md",
+					routine("when: once\nat: 2026-11-06T09:00:00Z\nafter: product/plan.md\ntimezone: UTC"),
+				),
+			),
+		).toEqual([["after", "value"]]);
+		expect(
+			keys(refused("QorperaOS/agents/a/routines/r.md", routine(`when: every\nminutes: 60\nafter: ${todo}`))),
+		).toEqual([["after", "unknown_key"]]);
+		const { kind: _kind, ...written } = file as RoutineFile;
+		expect(ok("QorperaOS/agents/a/routines/r.md", writeRoutineFile(written))).toEqual(file);
+	});
 	it("reads an event routine: its hook, and the types it takes or every type", () => {
 		expect(
 			ok(

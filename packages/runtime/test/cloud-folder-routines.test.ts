@@ -758,7 +758,7 @@ it("is manage_routine: its description, its list arguments, the checks before re
 		(
 			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
 		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
-	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
+	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "when_done", "every", "weekly", "file_change", "event"]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);
 	// The run's own dynamic routine, concluded here, owes no decision.

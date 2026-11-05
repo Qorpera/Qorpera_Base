@@ -94,7 +94,14 @@ export type CloudFolderRoutineTrigger =
 			readonly timeZone?: string;
 			readonly replyPolicy: Reply;
 	  }
-	| { readonly kind: "once"; readonly at?: string; readonly timeZone: string; readonly replyPolicy: Reply }
+	| {
+			readonly kind: "once";
+			readonly at?: string;
+			/** A listener (when_done): the todo's or human task's path; the run comes once nothing open is left there. */
+			readonly after?: string;
+			readonly timeZone: string;
+			readonly replyPolicy: Reply;
+	  }
 	| {
 			readonly kind: "listener";
 			readonly source: "company-file";
@@ -159,7 +166,8 @@ function upsertFile(request: CloudFolderRoutineUpsert, id: string, current: Rout
 	if (given.kind === "once") {
 		const kept =
 			current?.trigger.when === "once" && Date.parse(current.trigger.at) > now ? current.trigger.at : undefined;
-		trigger = { when: "once", at: instant(given.at ?? kept ?? new Date(now).toISOString()) };
+		const at = instant(given.at ?? kept ?? new Date(now).toISOString());
+		trigger = given.after === undefined ? { when: "once", at } : { when: "once", at, after: given.after };
 		timezone = given.timeZone;
 	} else if (given.kind === "listener") {
 		trigger =

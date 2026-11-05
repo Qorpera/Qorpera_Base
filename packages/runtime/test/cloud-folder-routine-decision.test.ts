@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { parseCompanyStateFile, writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import {
@@ -128,6 +128,24 @@ it("decides the next run as a new at, effort and reply, changing nothing else", 
 	expect(f.commits[0]).toMatchObject({ key: "decide-file:decide-1", receiptId: result.receiptId });
 	expect(f.commits[0]?.units[0]).toMatchObject({ op: "write", path: PATH, expectedVersion: expect.any(String) });
 	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(1);
+});
+
+it("drops a heard listener's after on a plain next run, and waits again with whenDone", async () => {
+	const todo = "QorperaOS/agents/otto/todos/landing-page.md";
+	const listener = { ...BASE, trigger: { when: "once", at: "2026-10-02T09:00:00Z", after: todo } } as const;
+	const f = await fixture(writeRoutineFile(listener));
+	const { decided } = await f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00.000Z" });
+	expect(decided).toBe(true);
+	// A next run without whenDone is a plain time, so the done todo never wakes the routine again.
+	expect(f.text(PATH)).toBe(writeRoutineFile({ ...BASE, trigger: { when: "once", at: "2026-10-03T07:30:00Z" } }));
+	const g = await fixture();
+	await g.decide({ action: "next", operationKey: "decide-2", at: "2026-10-04T07:30:00.000Z", after: todo });
+	const parsed = parseCompanyStateFile(PATH, g.text(PATH) ?? "");
+	expect(parsed?.ok && parsed.file.kind === "routine" ? parsed.file.trigger : null).toEqual({
+		when: "once",
+		at: "2026-10-04T07:30:00Z",
+		after: todo,
+	});
 });
 
 it("concludes the routine with its conclusion on one line", async () => {
