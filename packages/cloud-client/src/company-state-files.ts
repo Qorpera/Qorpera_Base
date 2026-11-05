@@ -295,7 +295,9 @@ export type RoutineTrigger =
 			readonly days: readonly RoutineDay[] | null;
 			readonly months: readonly number[] | null;
 	  }
-	| { readonly when: "once"; readonly at: string }
+	/** A dynamic routine's next run. `after`, when present, is the path of a todo or a human task: the run comes as soon
+	 * as nothing open is left there (done, cancelled, declined or deleted), and at `at` at the latest. */
+	| { readonly when: "once"; readonly at: string; readonly after?: string }
 	| { readonly when: "file-change"; readonly watch: string; readonly match: "exact" | "subtree" }
 	/** A delivery to one of the company's hooks or mailboxes (E2): `only` keeps the listed event types. */
 	| { readonly when: "event"; readonly hook: string; readonly only: readonly string[] | null };
@@ -1354,7 +1356,7 @@ const TRIGGER_KEYS = {
 	every: ["minutes", "starts"],
 	weekly: ["days", "time", "starts"],
 	window: ["minutes", "from", "to", "days", "months"],
-	once: ["at"],
+	once: ["at", "after"],
 	"file-change": ["watch", "match"],
 	event: ["hook", "only"],
 } as const;
@@ -1406,7 +1408,16 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 		if (minutes !== null && from && to) trigger = { when, minutes, from, to, days, months };
 	} else if (when === "once") {
 		const at = fields.instant("at", true);
-		if (at) trigger = { when, at };
+		const after = fields.text("after", false, 4096);
+		const listened = after === null ? null : companyStatePath(after);
+		if (after !== null && listened?.kind !== "todo" && listened?.kind !== "human-task")
+			problems.add(
+				"value",
+				fields.line("after"),
+				"after",
+				"after is the path of a todo or a human task, like QorperaOS/agents/product-builder/todos/landing-page.md",
+			);
+		else if (at) trigger = after === null ? { when, at } : { when, at, after };
 	} else if (when === "file-change") {
 		const watch = fields.text("watch", true, 4096)?.replace(/\/+$/, "") ?? null;
 		if (
@@ -2485,7 +2496,8 @@ export function writeRoutineFile(file: Omit<RoutineFile, "kind">): string {
 			["days", trigger.days ? listValue(trigger.days) : null],
 			["months", trigger.months ? `[${trigger.months.join(", ")}]` : null],
 		);
-	if (trigger.when === "once") lines.push(["at", trigger.at]);
+	if (trigger.when === "once")
+		lines.push(["at", trigger.at], ["after", trigger.after === undefined ? null : companyStateValue(trigger.after)]);
 	if (trigger.when === "file-change")
 		lines.push(["watch", companyStateValue(trigger.watch)], ["match", trigger.match]);
 	if (trigger.when === "event")

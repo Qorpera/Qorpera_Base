@@ -2,6 +2,7 @@ import type { CloudRoutineReplyPolicy, CloudRoutineTrigger, CloudRoutineWeekday 
 import {
 	type CompanyStateSetting,
 	canonicalCompanyStateInstant,
+	companyPathKey,
 	type RoutineDay,
 	type RoutineFile,
 	type RoutineTrigger,
@@ -74,7 +75,14 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 			};
 		case "once":
 			if (file.timezone === null) return null;
-			return { ...base, kind: "once", at: trigger.at, timeZone: file.timezone };
+			return {
+				...base,
+				kind: "once",
+				at: trigger.at,
+				timeZone: file.timezone,
+				// The listened path's folded key, as the index keeps it.
+				...(trigger.after === undefined ? {} : { after: companyPathKey(trigger.after) }),
+			};
 		case "file-change":
 			return null;
 		case "event":
@@ -118,6 +126,7 @@ type FlatTrigger = Partial<
 		| "to"
 		| "months"
 		| "at"
+		| "after"
 		| "watch"
 		| "match"
 		| "hook"
@@ -142,7 +151,7 @@ function flat(trigger: RoutineTrigger): FlatTrigger {
 				months: trigger.months === null ? null : trigger.months.map(String),
 			};
 		case "once":
-			return { when: "once", at: trigger.at };
+			return { when: "once", at: trigger.at, after: trigger.after ?? null };
 		case "file-change":
 			return { when: "file-change", watch: trigger.watch, match: trigger.match };
 		case "event":

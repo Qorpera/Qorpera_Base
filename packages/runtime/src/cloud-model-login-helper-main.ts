@@ -87,17 +87,17 @@ async function fileSha256(path: string): Promise<string> {
 	return hash.digest("hex");
 }
 
-/** The pinned official Codex: exactly the bytes the configuration names. Its identity at start
+/** A pinned official binary (Codex, or Claude Code): exactly the bytes the configuration names. Its identity at start
  * (device, inode, size, times) is checked again before every launch. */
-async function pinnedCodex(path: string, sha256: string): Promise<() => Promise<void>> {
+async function pinnedBinary(path: string, sha256: string, name: string): Promise<() => Promise<void>> {
 	const identity = async (): Promise<string> => {
 		const metadata = await lstat(path);
 		return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeMs, metadata.ctimeMs].join(":");
 	};
 	const pinned = await identity();
-	if ((await fileSha256(path)) !== sha256) throw new Error("Login helper Codex binary differs from its pin");
+	if ((await fileSha256(path)) !== sha256) throw new Error(`Login helper ${name} binary differs from its pin`);
 	return async () => {
-		if ((await identity()) !== pinned) throw new Error("Login helper Codex binary changed since start");
+		if ((await identity()) !== pinned) throw new Error(`Login helper ${name} binary changed since start`);
 	};
 }
 
@@ -119,6 +119,10 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	// (Vault By Default) serves every new company from one helper and needs more than the defaults (6, 2).
 	for (const optional of ["signInLimit", "signInCompanyLimit"])
 		if (Object.hasOwn(config, optional)) keys.push(optional);
+	// Optional, together: the pinned official Claude Code for members' Claude sign-ins (20260930564000). Without it a
+	// Claude sign-in fails at once and nothing else changes.
+	const claudeConfigured = Object.hasOwn(config, "claudePath") || Object.hasOwn(config, "claudeSha256");
+	if (claudeConfigured) keys.push("claudePath", "claudeSha256");
 	const limit = (name: string, fallback: number): number => {
 		const configured = config[name];
 		if (configured === undefined) return fallback;
@@ -130,14 +134,29 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		Object.keys(config).sort().join() !== [...keys].sort().join() ||
 		config.schema !== "qorpera.model-login-helper/v1" ||
 		typeof config.codexSha256 !== "string" ||
-		!SHA256.test(config.codexSha256)
+		!SHA256.test(config.codexSha256) ||
+		(claudeConfigured && (typeof config.claudeSha256 !== "string" || !SHA256.test(config.claudeSha256)))
 	)
 		throw new Error("Login helper configuration is invalid");
 	const codexPath = absolute(config.codexPath, "Login helper Codex path");
 	const isolationEntryPoint = absolute(config.isolationEntryPoint, "Login helper isolation entry point");
-	for (const artifact of ["/usr/bin/bwrap", "/usr/bin/node", isolationEntryPoint, codexPath])
+	const claudePath = claudeConfigured ? absolute(config.claudePath, "Login helper Claude Code path") : undefined;
+	for (const artifact of [
+		"/usr/bin/bwrap",
+		"/usr/bin/node",
+		isolationEntryPoint,
+		codexPath,
+		...(claudePath ? [claudePath] : []),
+	])
 		await rootOwnedArtifact(artifact);
-	const pinned = await pinnedCodex(codexPath, config.codexSha256);
+	const pinnedCodex = await pinnedBinary(codexPath, config.codexSha256, "Codex");
+	const pinnedClaude = claudePath
+		? await pinnedBinary(claudePath, config.claudeSha256 as string, "Claude Code")
+		: undefined;
+	const pinned = async (): Promise<void> => {
+		await pinnedCodex();
+		await pinnedClaude?.();
+	};
 	const stop = new AbortController();
 	// A binary that changed since start stops the helper, so systemd restarts it and the pin
 	// check at start decides again, instead of every renewal failing quietly.
@@ -145,7 +164,7 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		try {
 			await pinned();
 		} catch (error) {
-			console.error("Model login helper: its Codex binary changed since start; stopping for a checked restart.");
+			console.error("Model login helper: a pinned binary changed since start; stopping for a checked restart.");
 			process.exitCode = 1;
 			stop.abort();
 			throw error;
@@ -171,15 +190,19 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	const signInLimit = limit("signInLimit", 6);
 	const signInCompanyLimit = limit("signInCompanyLimit", 2);
 	if (signInCompanyLimit > signInLimit) throw new Error("Login helper configuration is invalid");
+	// A member's Claude sign-in runs the official `claude auth login --claudeai` in the same isolation (Anthropic's
+	// sign-in hosts only), with the pinned Claude Code checked the same way.
 	const signIns = new CodexSignIns({
-		driver: new OfficialCliNativeHarnessDriver(codexPath, "/nonexistent/claude", isolation, {
+		driver: new OfficialCliNativeHarnessDriver(codexPath, claudePath ?? "/nonexistent/claude", isolation, {
 			scratchParent: temporaryRoot,
 			beforeLaunch,
 		}),
 		temporaryRoot,
 		limit: signInLimit,
 		companyLimit: signInCompanyLimit,
+		claude: claudePath !== undefined,
 	});
+	if (claudePath) console.error("Model login helper: Claude sign-ins on (pinned Claude Code).");
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,

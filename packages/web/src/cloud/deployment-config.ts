@@ -94,6 +94,19 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 	};
 }
 
+/** Where a request to one of the object gateway's member routes (`/v1/member-…`) goes: the public bridge when the
+ * build names one, else the gateway itself. The bridge spares a member on a tailnet the browser's local-network check,
+ * since the gateway's name resolves to a private address there (4 Nov 2026). A configured transport, never a fallback:
+ * a bridged request never retries against the gateway. Anything else is returned as given. */
+export function memberRouteTarget(config: CloudConfig, input: string): string {
+	const url = new URL(input);
+	return config.memberCompanyGatewayUrl &&
+		url.origin === new URL(config.objectGatewayUrl).origin &&
+		url.pathname.startsWith("/v1/member-")
+		? `${config.memberCompanyGatewayUrl}${url.pathname}${url.search}`
+		: input;
+}
+
 export function cloudConnectSources(config: CloudConfig): string {
 	const checked = parseCloudConfig(config);
 	return [

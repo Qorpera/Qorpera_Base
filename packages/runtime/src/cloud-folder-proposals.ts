@@ -1,6 +1,6 @@
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { isUuid, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
-import { cloudActionEventWhen, cloudActionFileName } from "./cloud-action-review.ts";
+import { cloudActionEventWhen, cloudActionFileName, cloudActionListened } from "./cloud-action-review.ts";
 import type {
 	CloudCompanyFolderClient,
 	CloudCompanyFolderCommitResult,
@@ -129,15 +129,17 @@ function routineWhen(parse: Readonly<Record<string, unknown>>): string {
 				? `${days(trigger.days)} at ${String(trigger.time ?? "")}`
 				: trigger.when === "window"
 					? `${every(trigger.minutes)} from ${String(trigger.from ?? "")} to ${String(trigger.to ?? "")}`
-					: trigger.when === "once"
-						? `Once, at ${String(trigger.at ?? "")}`
-						: trigger.when === "file-change" && typeof trigger.watch === "string"
-							? trigger.match === "subtree"
-								? `When anything in “${cloudActionFileName(trigger.watch)}” changes`
-								: `When “${cloudActionFileName(trigger.watch)}” changes`
-							: trigger.when === "event"
-								? cloudActionEventWhen(trigger.only)
-								: "";
+					: trigger.when === "once" && typeof trigger.after === "string"
+						? `When ${cloudActionListened(trigger.after)} is done, at the latest ${String(trigger.at ?? "")}`
+						: trigger.when === "once"
+							? `Once, at ${String(trigger.at ?? "")}`
+							: trigger.when === "file-change" && typeof trigger.watch === "string"
+								? trigger.match === "subtree"
+									? `When anything in “${cloudActionFileName(trigger.watch)}” changes`
+									: `When “${cloudActionFileName(trigger.watch)}” changes`
+								: trigger.when === "event"
+									? cloudActionEventWhen(trigger.only)
+									: "";
 	return words && typeof parse.timezone === "string" ? `${words} (${parse.timezone})` : words;
 }
 

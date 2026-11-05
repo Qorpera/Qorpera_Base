@@ -2,6 +2,7 @@ import type { RequestSponsoredSessionTurnInput } from "@qorpera/cloud-client/clo
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import {
+	ClaudeCodeError,
 	createWebNativeSubscription,
 	PlanSwitchBusyError,
 	type WebNativeProviderLoginInput,
@@ -786,6 +787,8 @@ describe("native provider onboarding browser adapter", () => {
 		f.input.provider = "anthropic";
 		f.responses.authorization.provider = "anthropic";
 		f.responses.authorization.native_harness = "claude-code";
+		f.responses.prompt.interaction_url = "https://claude.com/cai/oauth/authorize?code=true&state=fixture";
+		(f.responses.prompt as Record<string, unknown>).user_code = null;
 		const pending = f.client.beginProviderLogin(f.input);
 		f.input.provider = "openai";
 		f.input.clientLoginId = id(999);
@@ -796,6 +799,45 @@ describe("native provider onboarding browser adapter", () => {
 			p_native_harness: "claude-code",
 			p_client_login_id: id(102),
 		});
+	});
+	it("refuses a Claude sign-in whose page is not Anthropic's, and sends its code once with the capability alone", async () => {
+		const f = loginSetup();
+		f.input.provider = "anthropic";
+		f.responses.authorization.provider = "anthropic";
+		f.responses.authorization.native_harness = "claude-code";
+		await expect(f.client.beginProviderLogin(f.input)).rejects.toThrow("Refresh connections");
+		f.input.clientLoginId = id(106);
+		f.responses.prompt.interaction_url = "https://claude.com/cai/oauth/authorize?code=true&state=fixture";
+		(f.responses.prompt as Record<string, unknown>).user_code = null;
+		const login = await f.client.beginProviderLogin(f.input);
+		expect(login).toMatchObject({ status: "awaiting_member", interactionUrl: f.responses.prompt.interaction_url });
+		const capability = JSON.parse(
+			[...f.fetch.mock.calls].reverse().find((call) => String(call[0]).endsWith("/native-provider-login/login"))![1]!
+				.body as string,
+		).login_capability as string;
+		const answers = [
+			Response.json(
+				{ schema: "qorpera.claude-sign-in-code-failed/v1", reason: "code_not_accepted" },
+				{ status: 403 },
+			),
+		];
+		f.fetch.mockImplementation(async (url) => {
+			if (String(url).endsWith("/native-provider-login/claude-code")) return answers.shift()!;
+			throw new Error("Unexpected request");
+		});
+		await expect(login.submitCode!("anthropic-code#state")).rejects.toBeInstanceOf(ClaudeCodeError);
+		const [url, init] = f.fetch.mock.calls.at(-1)!;
+		expect(String(url)).toBe("https://fixture.invalid/functions/v1/native-provider-login/claude-code");
+		expect(new Headers(init!.headers).get("authorization")).toBe(`Bearer ${capability}`);
+		expect(JSON.parse(init!.body as string)).toEqual({
+			schema: "qorpera.claude-sign-in-code/v1",
+			login_id: id(105),
+			code: "anthropic-code#state",
+		});
+		// Once: a second code is not sent.
+		const sent = f.fetch.mock.calls.length;
+		await expect(login.submitCode!("anthropic-code#state")).rejects.toBeInstanceOf(ClaudeCodeError);
+		expect(f.fetch.mock.calls.length).toBe(sent);
 	});
 	it("rechecks preparation after one second using the same admitted capability", async () => {
 		vi.useFakeTimers();

@@ -1,5 +1,6 @@
 import { CloudSessionAttachments } from "@qorpera/cloud-client/cloud-session-attachments";
 import type { Cloud } from "./client.ts";
+import { memberRouteTarget } from "./deployment-config.ts";
 
 export const SESSION_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
@@ -51,7 +52,9 @@ export function createWebSessionAttachments(
 		},
 		fetch: async (input, init) => {
 			check();
-			const response = await fetch(input, {
+			// The chat image routes take the public bridge as Company File does, when the build names one.
+			const target = memberRouteTarget(cloud.config, input instanceof Request ? input.url : String(input));
+			const response = await fetch(input instanceof Request ? new Request(target, input) : target, {
 				...init,
 				signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
 			});

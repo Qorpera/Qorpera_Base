@@ -1,4 +1,4 @@
-import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { companyStatePath, osPath } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudConnectorOperation } from "./cloud-connector-catalog.ts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
@@ -450,6 +450,16 @@ function fileName(path: string): string {
 /** The same for other cards' facts (cloud-folder-proposals.ts). */
 export const cloudActionFileName = fileName;
 
+/** What a listener (when_done) waits for, without its path: "the todo “landing-page” of product-builder". */
+function listened(path: string): string {
+	const where = companyStatePath(path);
+	if (where?.kind === "todo" && where.agent) return `the todo “${fileName(path)}” of ${where.agent}`;
+	if (where?.kind === "human-task") return `the human task “${fileName(path)}”`;
+	return `“${fileName(path)}”`;
+}
+/** The same for a routine file's `after` (cloud-folder-proposals.ts). */
+export const cloudActionListened = listened;
+
 /** An event routine's trigger, from its `only` types: "When a hook receives “a” and “b” events". */
 function eventWhen(only: unknown): string {
 	const types = Array.isArray(only) ? only.filter((type): type is string => typeof type === "string") : [];
@@ -497,7 +507,10 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const trigger = record(args.trigger ?? null);
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
-	if (trigger.kind === "once") words = "The agent picks each next run";
+	// A listener's at is its latest time; a plain dynamic routine's is its first run.
+	const latest = trigger.kind === "once" && typeof trigger.after === "string";
+	if (trigger.kind === "once" && typeof trigger.after === "string") words = `When ${listened(trigger.after)} is done`;
+	else if (trigger.kind === "once") words = "The agent picks each next run";
 	else if (trigger.kind === "listener" && trigger.source === "event") words = eventWhen(trigger.only);
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
@@ -537,7 +550,7 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const zone = ` (${timeZone})`;
 	return [
 		weekly ? `${words}${zone}` : words,
-		starting && `starting ${starting}${weekly ? "" : zone}`,
+		starting && `${latest ? "at the latest" : "starting"} ${starting}${weekly ? "" : zone}`,
 		until && `until ${until}${weekly || starting ? "" : zone}`,
 		runs === undefined ? "" : `at most ${runs} ${runs === 1 ? "run" : "runs"}`,
 	]
@@ -817,7 +830,14 @@ export function describeCloudAction(
 		title = "Change what a routine does";
 		target = text(args.title) || null;
 		const next = clock(args.at, timeZone);
-		add("schedule", next && `Next run ${next} (${timeZone})`);
+		// whenDone (compiled to after): the time is the latest one.
+		add(
+			"schedule",
+			next &&
+				(typeof args.after === "string"
+					? `When ${listened(args.after)} is done, at the latest ${next} (${timeZone})`
+					: `Next run ${next} (${timeZone})`),
+		);
 		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "manage_worker") {
 		const repository = record(args.repository ?? null);
