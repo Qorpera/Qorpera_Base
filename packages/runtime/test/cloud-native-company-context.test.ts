@@ -1508,8 +1508,10 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
 // Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026), and for overlay v8 (the team
 // grows like a company of employees; Jonas, 4 November 2026), and for listener routines in Standing work ("put out
-// listeners for a task"; Jonas, 4 November 2026), and for overlay v9 (the Co-Founder has last month's payments sorted
-// for the company's good will; 5 November 2026). A change to either is a change to every run's bytes.
+// listeners for a task"; Jonas, 4 November 2026), for overlay v9 (the Co-Founder has last month's payments sorted
+// for the company's good will; 5 November 2026), and for brief plain messages in one company language whose technical
+// level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026). A change
+// to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
@@ -1537,6 +1539,37 @@ it.each([
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
+});
+
+// Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
+// message is brief and plain, as technical as the agent's place allows, in the founders' language, and never a status
+// note or a correction of one.
+it("tells every agent to write to members briefly, plainly and in the founders' language", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"write for someone who had an idea and wants to build it",
+		"Anything longer belongs in a file: link it with two lines on what it says, instead of pasting it.",
+		"such as the vision: post a line or two for each part, with a link to the whole draft",
+		"How technical you may be follows your place in the company. The Co-Founder writes the plainest",
+		"Only an agent with a narrow technical job, such as one codebase, may use its field's terms",
+		'labels such as "T = 0", or an abbreviation the reader would have to look up',
+		"The company speaks one language: the one its founders write their own words in",
+		"never by the company's name, your job description or other files",
+		"A member who writes to you in another language gets that answer in theirs.",
+		"never only to say that work started, still runs or has not changed",
+		"Report a status only after you checked it. Never send a message only to correct an earlier one",
+		"A message to a coworker coordinates work",
+		"Pass on a member's request in their own words.",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("Use the language the member wrote in");
+	// A worker writes most of the company's files and receives no "Writing to people", so the file rule is in the core.
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	expect(worker).not.toContain("# Writing to people");
+	expect(worker).toContain("Write a file for the team, such as a plan or research, in the company's language");
 });
 
 // The 21 October 2026 amendment "how agents start work and use the company folder"; the platform's folders are in
