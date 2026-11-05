@@ -211,6 +211,10 @@ export interface CompanyState {
 	mentionsUnavailable?: boolean;
 	/** The cloud answered a mentions read: it reads mentions, so names are offered. */
 	mentionsReady?: boolean;
+	/** Approval cards that wait for this member's answer, by agent (staff agent id → count). */
+	approvals?: Readonly<Record<string, number>>;
+	/** The cloud does not list waiting approval cards yet (before 20260930568000). */
+	approvalsUnavailable?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
 	/** The company is out of computer hours: new work waits until hours are added (the zero rule). */
@@ -548,6 +552,7 @@ export class CompanyController {
 	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
 	#mentionReads = 0;
+	#approvalReads = 0;
 	#hoursWaitReads = 0;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
@@ -694,6 +699,8 @@ export class CompanyController {
 
 	/** Re-read where this member was mentioned and has not looked yet. */
 	async refreshMentions(): Promise<void> {
+		// A card waiting for this member changes where a mention does (an agent's thread), so both are read together.
+		void this.refreshApprovals();
 		if (this.#stopped || this.store.get().mentionsUnavailable || !this.store.get().team?.capabilities.read) return;
 		const version = ++this.#mentionReads;
 		try {
@@ -708,6 +715,23 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#mentionReads) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ mentionsUnavailable: true, mentions: {} });
+		}
+	}
+
+	/** Re-read which agents have an approval card waiting for this member's answer. */
+	async refreshApprovals(): Promise<void> {
+		if (this.#stopped || this.store.get().approvalsUnavailable || !this.store.get().team?.capabilities.read) return;
+		const version = ++this.#approvalReads;
+		try {
+			const waiting = await this.#api.listWaitingApprovals(this.profile.profileId);
+			if (this.#stopped || version !== this.#approvalReads) return;
+			const approvals: Record<string, number> = {};
+			for (const item of waiting) approvals[item.staffAgentId] = (approvals[item.staffAgentId] ?? 0) + item.count;
+			this.store.set({ approvals });
+		} catch (error) {
+			if (this.#stopped || version !== this.#approvalReads) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ approvalsUnavailable: true, approvals: {} });
 		}
 	}
 
@@ -1400,10 +1424,12 @@ export class CompanyController {
 	 * it, or until the agent has newer work: a failure from before that is listed
 	 * apart (20260930542000) and never sets the state. A run a member stopped (every
 	 * cancelled job is one) is never "failed": the server lists it only while its
-	 * proposal waits, below all of the agent's work. */
+	 * proposal waits, below all of the agent's work. An agent with no work of its own
+	 * and an approval card waiting for this member's answer (its own or a worker's, in
+	 * its thread) needs them too. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
-		if (!row) return "idle";
+		if (!row) return staffAgentId && this.store.get().approvals?.[staffAgentId] ? "decision" : "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";

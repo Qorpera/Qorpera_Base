@@ -4,6 +4,7 @@ import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseStaffExecutionActivity } from "../src/cloud/parse.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { AGENT_LOOK, activityCaption, stateLine, statusCaption, syncCaption } from "../src/ui/agent-activity.ts";
@@ -124,6 +125,36 @@ describe("shared agent activity", () => {
 		}
 		await settle();
 		expect(f.view.el.querySelector(".thread-activity")).toBeNull();
+	});
+
+	it("shows an agent with an approval card waiting for the member as needing them, once it is not working", async () => {
+		const f = setup();
+		const waiting = vi
+			.mocked(f.api.listWaitingApprovals)
+			.mockReset()
+			.mockResolvedValue([{ staffAgentId: staff.id, sessionId: session.sessionId, count: 1, latestAt: timestamp }]);
+		await f.company.refreshMentions();
+		await settle();
+		f.draw();
+		expect(waiting).toHaveBeenCalledWith(profileA.profileId);
+		expect(f.company.agentState(staff.id)).toBe("decision");
+		expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe("Needs you");
+		expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain("Needs you");
+		// Work of its own comes first; the card shows again once the agent is idle, and goes once it is answered.
+		f.company.store.set({ activity: [working] });
+		expect(f.company.agentState(staff.id)).toBe("working");
+		f.company.store.set({ activity: [] });
+		waiting.mockResolvedValue([]);
+		await f.company.refreshApprovals();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		// A cloud without the read: nothing waits, and it is not asked again.
+		waiting.mockRejectedValue(
+			new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
+		);
+		await f.company.refreshApprovals();
+		await f.company.refreshApprovals();
+		expect(waiting).toHaveBeenCalledTimes(3);
+		expect(f.company.store.get().approvalsUnavailable).toBe(true);
 	});
 
 	it("reads optional writing hints while keeping older or unknown hints on the working fallback", () => {

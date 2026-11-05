@@ -1497,7 +1497,12 @@ export class CloudActionReviewGate {
 				text: "APPROVAL_USED: The approved action already ran, before you were woken. Do not run it again; carry on from its result.",
 			};
 		if (begin.state === "pending")
-			return this.#hold(String(begin.reviewId), name(begin.approverName, "an owner or admin"), signal);
+			return this.#hold(
+				String(begin.reviewId),
+				name(begin.approverName, "an owner or admin"),
+				signal,
+				begin.cardElsewhere === true,
+			);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
 		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
 		const description = describeCloudAction(call.tool, call.parsed, {
@@ -1590,17 +1595,30 @@ export class CloudActionReviewGate {
 				recorded.reviewId,
 			);
 		if (recorded.decision !== "ask") throw new Error("Action review response is invalid");
+		// A card waits in the run's own conversation or, for a worker or a run whose conversation cannot hold one, in the
+		// agent's own thread, where a member answers it (20260930568000). Rarely in neither, as when that thread is closed.
 		if (recorded.card !== true)
 			return {
 				run: false,
-				text: `APPROVAL_UNAVAILABLE_HERE: ${reason} This action needs approval, and approval cards are raised only where the member they wait for can see them (your own thread or a shared conversation), not here. The action did not happen. Do not retry it here; tell the member, or do it from your own thread where it can be approved.`,
+				text: `APPROVAL_UNAVAILABLE_HERE: ${reason} This action needs approval, but no approval card could be raised for it, so it did not happen. Do not retry it; say in your reply or report what needed approval and why.`,
 			};
-		return this.#hold(String(recorded.reviewId), name(recorded.approverName, "an owner or admin"), signal);
+		return this.#hold(
+			String(recorded.reviewId),
+			name(recorded.approverName, "an owner or admin"),
+			signal,
+			recorded.cardElsewhere === true,
+		);
 	}
 
-	async #hold(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
+	/** `elsewhere`: the card waits in the agent's own thread, not in this run's conversation. */
+	async #hold(
+		reviewId: string,
+		approver: string,
+		signal: AbortSignal,
+		elsewhere = false,
+	): Promise<CloudActionGateResult> {
 		try {
-			return await this.#poll(reviewId, approver, signal);
+			return await this.#poll(reviewId, approver, signal, elsewhere);
 		} catch (error) {
 			// The hold ended early (the run stopped, or the kernel refused the wait): park the
 			// card so its answer wakes the agent.
@@ -1633,7 +1651,12 @@ export class CloudActionReviewGate {
 		}
 	}
 
-	async #poll(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
+	async #poll(
+		reviewId: string,
+		approver: string,
+		signal: AbortSignal,
+		elsewhere: boolean,
+	): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
 		for (let parkFailures = 0; ; ) {
 			const park = Date.now() >= until;
@@ -1673,7 +1696,11 @@ export class CloudActionReviewGate {
 			if (state.state === "parked")
 				return {
 					run: false,
-					text: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's \`call\` field as its arguments, value for value (not its \`arguments\` text, which is the same call escaped; use that only when the card has no \`call\`); it will then run without another review.`,
+					text: elsewhere
+						? // A worker's card, or one from a conversation that cannot hold it: the member answers it in the
+							// agent's thread, and the answer wakes the agent there to make the call.
+							`APPROVAL_PENDING: The action waits for approval from ${approver} on a card in the agent's own thread (members see it there, not here), so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again. Carry on with other work, and say in your reply or report what you could not do because this action waits for approval in the agent's thread. If it is approved, the agent makes this one call in its own thread; nothing else of this run's work is picked up again.`
+						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's \`call\` field as its arguments, value for value (not its \`arguments\` text, which is the same call escaped; use that only when the card has no \`call\`); it will then run without another review.`,
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");
