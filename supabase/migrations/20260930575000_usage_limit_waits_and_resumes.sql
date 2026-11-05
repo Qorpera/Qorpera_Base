@@ -68,10 +68,11 @@ select pg_temp.as575_patch('public.qorpera_native_account_usage_limit_reset_comp
 select pg_temp.as575_patch('public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,
 	$old$          and (recovered.provider_account_usage ->> 'observedAt')::timestamptz > statement_timestamp() - interval '5 minutes'
 $old$, '');
+-- A window that had already reset when the reading was taken makes it no evidence; one that reset since does not.
 select pg_temp.as575_patch('public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,
-	$old$              or (w ->> 'usedPercent')::numeric >= 100
-              or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz <= statement_timestamp()))$old$,
-	$new$              or (w ->> 'usedPercent')::numeric >= 100)$new$);
+	$old$              or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz <= statement_timestamp()))$old$,
+	$new$              or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
+                <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))$new$);
 
 -- The reset of a login at its usage limit by its newest usage reading.
 create function public.qorpera_native_account_reading_reset(p_connection_id uuid, p_connection_version bigint)
