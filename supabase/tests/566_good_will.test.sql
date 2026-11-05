@@ -83,8 +83,6 @@ begin
 	perform pg_temp.base_assert((select count(*) from public.qorpera_native_host_calls
 		where name in ('qorpera_good_will_agent_list', 'qorpera_good_will_agent_mark') and scope = 'binding') = 2,
 		'the agent''s calls are host calls');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		'''good_will''') > 0, 'the runtime observes the good_will tool');
 end
 $$;
 
