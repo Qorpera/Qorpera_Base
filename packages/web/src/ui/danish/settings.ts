@@ -71,8 +71,8 @@ export const SETTINGS: Record<string, string> = {
 
 	// Good will (app/views/settings-good-will.ts). The name is one key: change "Goodwill" here to rename it.
 	"Good will": "Goodwill",
-	"We lend you our machines for free as an investment in your company. In exchange, {company} pays {name} to Qorpera. The more you earn, the smaller the rate.":
-		"Vi låner jer vores maskiner gratis som en investering i jeres virksomhed. Til gengæld betaler {company} {name} til Qorpera. Jo mere I tjener, jo lavere er satsen.",
+	"We lend you our machines for free as an investment in your company. In exchange, {company} pays a good will tax to Qorpera. The more you earn, the smaller the tax rate.":
+		"Vi låner jer vores maskiner gratis som en investering i jeres virksomhed. Til gengæld betaler {company} en goodwill-skat til Qorpera. Jo mere I tjener, jo lavere er satsen.",
 	"Loading {name}…": "Henter {name}…",
 	"{name} could not be read just now.": "{name} kunne ikke læses lige nu.",
 	Invoices: "Fakturaer",

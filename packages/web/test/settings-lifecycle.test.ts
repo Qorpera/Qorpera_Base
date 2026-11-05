@@ -1824,7 +1824,7 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-company");
 		await draw();
 		const section = f.root.querySelector<HTMLElement>(
-			".settings-staff-group + .settings-memory-slot > .settings-memory",
+			".settings-staff-group + .settings-good-will-slot + .settings-memory-slot > .settings-memory",
 		)!;
 		expect(section.hidden).toBe(false);
 		// The company's pages (C6a) come between its memory and its file.

@@ -151,8 +151,8 @@ export class GoodWillView {
 				"p",
 				{ class: "settings-lead" },
 				t(
-					"We lend you our machines for free as an investment in your company. In exchange, {company} pays {name} to Qorpera. The more you earn, the smaller the rate.",
-					{ company: name, name: goodWillName() },
+					"We lend you our machines for free as an investment in your company. In exchange, {company} pays a good will tax to Qorpera. The more you earn, the smaller the tax rate.",
+					{ company: name },
 				),
 			),
 		];
