@@ -6,7 +6,7 @@ import {
 	type FounderSeat,
 } from "../../cloud/company-founding.ts";
 import type { FoundingField } from "../../cloud/founding-presence.ts";
-import { button, confirmDialog, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
+import { button, confirmDialog, fmtTime, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
 import { navigate } from "../router.ts";
@@ -208,6 +208,13 @@ class SyncedField<T extends HTMLInputElement | HTMLTextAreaElement> {
 	}
 }
 
+/** A seat whose logins are all used up: when the first resets, if known (founder, 5 November 2026). */
+function usedUp(seat: FounderSeat): string {
+	return seat.modelLoginResetsAt
+		? t("ChatGPT used up · resets {time}", { time: fmtTime(seat.modelLoginResetsAt) })
+		: t("ChatGPT used up");
+}
+
 function names(table: CompanyFounding, userIds: readonly string[], me: string): string {
 	const list = userIds.map((id) =>
 		id === me ? t("you") : (table.seats.find((seat) => seat.userId === id)?.displayName ?? t("a founder")),
@@ -255,7 +262,9 @@ class SeatChip {
 				: seat.ready
 					? t("Ready ✓")
 					: seat.modelLoginReady
-						? t("Not ready yet")
+						? seat.modelLoginUsedUp
+							? usedUp(seat)
+							: t("Not ready yet")
 						: t("ChatGPT not connected");
 		const here = presence?.here === true && !this.#mine;
 		this.#body.show([seat.displayName, seat.state, status, here, canRemove, canWithdraw].join("\n"), () => {
@@ -341,6 +350,8 @@ export class FoundingView {
 	readonly #waiting = h("p", { class: "founding-hint" });
 	readonly #owners = h("p", { class: "founding-hint" });
 	readonly #withdrawn = h("p", { class: "founding-hint" });
+	/** Your logins are all used up: Start still works, and the Co-Founder begins by itself at the reset. */
+	readonly #usedUp = h("p", { class: "founding-hint" });
 	readonly #bar: HTMLElement;
 	readonly #exit = new Slot();
 	readonly #startedSlot = new Slot();
@@ -461,6 +472,7 @@ export class FoundingView {
 			"div",
 			{ class: "founding-bar" },
 			h("div", { class: "founding-actions" }, this.#ready, this.#start),
+			this.#usedUp,
 			this.#waiting,
 			this.#owners,
 			this.#withdrawn,
@@ -876,6 +888,16 @@ export class FoundingView {
 		const startLabel = state.busy === "start" ? t("Starting…") : t("Start {name}", { name: table.companyName });
 		if (this.#start.textContent !== startLabel) this.#start.textContent = startLabel;
 		this.#start.disabled = state.busy === "start" || (alone ? !connected : !table.me.canStart);
+		const usedUpAt = mySeat?.modelLoginUsedUp === true ? mySeat.modelLoginResetsAt : undefined;
+		this.#usedUp.hidden = usedUpAt === undefined;
+		this.#usedUp.textContent =
+			usedUpAt === undefined
+				? ""
+				: usedUpAt
+					? t("Your ChatGPT is used up until {time}. You can start now: the Co-Founder begins by itself then.", {
+							time: fmtTime(usedUpAt),
+						})
+					: t("Your ChatGPT is used up. You can start now: the Co-Founder begins by itself once it resets.");
 		this.#waiting.hidden = alone;
 		this.#waiting.textContent =
 			table.waitingFor.length > 0
@@ -1009,10 +1031,12 @@ export class FoundingView {
 		const ready = table.start?.companyReady === true;
 		const failed = !ready && table.start?.companySetup === "failed";
 		const firstRun = ready ? (table.start?.firstRun ?? null) : null;
+		const waitsUntil = ready && firstRun === "queued" ? (table.start?.firstRunWaitsUntil ?? null) : null;
 		const key = [
 			ready,
 			failed,
 			firstRun,
+			waitsUntil,
 			table.companyName,
 			...seats.map((seat) => `${seat.userId}:${seat.displayName}:${seat.role}`),
 		].join("\n");
@@ -1063,6 +1087,15 @@ export class FoundingView {
 						),
 					),
 				),
+				// The Co-Founder waits for a used-up login: say when it begins.
+				waitsUntil
+					? notice(
+							"neutral",
+							t("The Co-Founder begins by itself at {time}, when your ChatGPT resets.", {
+								time: fmtTime(waitsUntil),
+							}),
+						)
+					: null,
 				// The Co-Founder could not start on its own: say why, and how its founders start it.
 				firstRun === "waiting_for_login" || firstRun === "failed"
 					? notice(

@@ -305,11 +305,13 @@ export class FoundingController {
 		this.#showPresence();
 		this.#savePendingVision(table);
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
-		// 2026). A first run that waits for a login or failed keeps the page, which says why.
+		// 2026). A first run that waits for a login or failed keeps the page, which says why; so does one waiting for a
+		// used-up login to reset (20260930579000), whose page says when it begins and opens the company with a press.
 		const firstRun = table.start?.firstRun;
 		if (
 			table.start?.companyReady &&
 			!this.#opened &&
+			!table.start.firstRunWaitsUntil &&
 			(firstRun === null || firstRun === undefined || firstRun === "queued" || firstRun === "started")
 		) {
 			this.#opened = true;
