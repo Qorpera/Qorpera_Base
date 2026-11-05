@@ -620,8 +620,15 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 		// Rows of a table are written as files are.
 		companyFile: (tool: CloudNativeTool) =>
 			!readOnly ||
-			!["company_write", "company_edit", "company_move", "company_mkdir", "company_delete", "table_write"].includes(
-				tool.name,
-			),
+			![
+				"company_write",
+				"company_edit",
+				"company_move",
+				"company_mkdir",
+				"company_delete",
+				"table_write",
+				"save_app",
+				"post_app",
+			].includes(tool.name),
 	};
 }

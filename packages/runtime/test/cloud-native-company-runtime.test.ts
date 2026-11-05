@@ -987,6 +987,8 @@ it.each([
 				"company_write",
 				"table_read",
 				"table_write",
+				"save_app",
+				"post_app",
 				"company_account",
 				"ask_member",
 				"create_group_chat",
@@ -2953,7 +2955,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// so they moved again. Company sites (20260930550000) add publish_site and unpublish_site after manage_hook, so
 	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
 	// links, so they moved again. Good will (20260930566000) adds good_will_list and good_will_mark after add_review_rule,
-	// so they moved again; every other tool is as on master.
+	// so they moved again. Interface apps
+	// (5 November 2026) add save_app and post_app after table_write, so they moved again; every other tool is as on
+	// master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2964,6 +2968,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"company_delete",
 		"table_read",
 		"table_write",
+		"save_app",
+		"post_app",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -2993,9 +2999,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"869b6984e4bb9c9b2f0e01664619f3842e880b73af82d8ce54f8f288f7228d3c",
+		"6c51f8f3400634624f6cd0b6eac12ecc041db8d707d2ad762aead720f4d85f75",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"3288853cb9d8a7137d85c3d526b9da7aa47fe1fb7427fc01f6a97cd1fbd17617",
+		"ef3064bbbf14f8b4b364e6c3927c27591b7eebb6874668a7b78be6c2eee559c2",
 	);
 });

@@ -1510,14 +1510,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // grows like a company of employees; Jonas, 4 November 2026), and for listener routines in Standing work ("put out
 // listeners for a task"; Jonas, 4 November 2026), for overlay v9 (the Co-Founder has last month's payments sorted
 // for the company's good will; 5 November 2026), and for brief plain messages in one company language whose technical
-// level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026). A change
-// to either is a change to every run's bytes.
+// level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
+// interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026). A change to
+// either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "5981ef1c60e1513f1893d15c9f2b6a9703d7d01277c0cc84a537ecd81be2f82b",
+			instructions: "98053be6cf24da8a8a482f240eee4e1e3866a0fad1884cf324ff62055344ae29",
 			prompt: "3ff71cfe1fa690762d7370d1a8a9170006c4ea1484553a9aca92717f738a1bec",
 		},
 	],
@@ -1525,7 +1526,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "1005fd7806c410b1920f36b03e9d933ad4596f623cab68296dcb7e425eb7084d",
+			instructions: "659bafa46f8a598ba43ec70d4fef5e5052105df6cffbe49441394efb360dcd24",
 			prompt: "72605dd21b42608ebe2e47b21e24efbd4fd9de67b538db57b2223f60b0d07e17",
 		},
 	],
@@ -1533,7 +1534,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "5981ef1c60e1513f1893d15c9f2b6a9703d7d01277c0cc84a537ecd81be2f82b",
+			instructions: "98053be6cf24da8a8a482f240eee4e1e3866a0fad1884cf324ff62055344ae29",
 			prompt: "42c958cdbd43bf06644459b6aed1bf1a2a81f75032a3846349551c7924eb99af",
 		},
 	],
@@ -1610,6 +1611,10 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"A file they asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
+	);
+	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app beside the chat.
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open beside the chat. Link it in your message as [Title](app:<name>) instead of pasting long text",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",

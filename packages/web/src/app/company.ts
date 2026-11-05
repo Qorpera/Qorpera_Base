@@ -68,6 +68,7 @@ import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { MailState } from "./company-mail.ts";
+import type { CompanyApp } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -231,6 +232,9 @@ export interface CompanyState {
 	 * supervision consents (I9b). Unset until the first read lands, and on a cloud without them: no page draws an offer
 	 * then. */
 	interfaceOffers?: InterfaceOffersState;
+	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
+	 * first read lands. */
+	apps?: readonly CompanyApp[];
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;

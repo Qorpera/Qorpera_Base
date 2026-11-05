@@ -1,3 +1,4 @@
+import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import {
@@ -26,6 +27,7 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
+import type { CompanyApp } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
 import type { Route } from "../router.ts";
@@ -895,7 +897,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
 	const interfacesShown = companyInterfaces(company);
-	const hasApps = interfacesShown.length > 0;
+	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages.
+	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true);
+	const hasApps = interfacesShown.length > 0 || postedApps.length > 0;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
@@ -940,7 +944,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1324,6 +1328,7 @@ function drawInterfaces(
 	parts: RailParts,
 	company: CompanyController,
 	shown: readonly CompanyInterface[],
+	apps: readonly CompanyApp[],
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -1344,6 +1349,18 @@ function drawInterfaces(
 		else element.removeAttribute("aria-current");
 		return element;
 	});
+	// An agent's app opens beside the chat (app/application.ts answers its data-app-name), not as a page of its own.
+	for (const app of apps) {
+		const manifest = app.manifest;
+		if (!manifest) continue;
+		const key = `app:${app.name}`;
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, manifest.colour]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : agentAppIcon(app.name, manifest);
+		rows.set(key, { shown: model, element });
+		element.style.setProperty("--i", String(elements.length));
+		elements.push(element);
+	}
 	parts.interfaceRows = rows;
 	reconcile(parts.appsGrid, elements);
 	const dot = waiting > 0 && !parts.appsOpen;
@@ -1379,6 +1396,21 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 			countBadge(count),
 		),
 		h("span", { class: "rail-app-name" }, file.name),
+	);
+}
+
+/** An agent's posted app in the drawer: its emblem with its name under it, a button that opens it beside the chat. */
+function agentAppIcon(name: string, manifest: AppManifest): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "rail-app",
+			"data-app-name": name,
+			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
+		h("span", { class: "rail-app-name" }, manifest.name),
 	);
 }
 
