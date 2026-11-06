@@ -1361,7 +1361,7 @@ describe("conversation UI boundaries", () => {
 		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
 		expect(dock?.classList.contains("coding-dock")).toBe(true);
 		expect(dock?.hidden).toBe(true);
-		expect(dock?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
 	});
 
 	it("places the failed-run line above the coding dock without a notification host", () => {
@@ -1370,7 +1370,7 @@ describe("conversation UI boundaries", () => {
 		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
 		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(slot?.nextElementSibling?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -1437,14 +1437,14 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card sits above the composer (only the coding dock between), below the notices, never in the thread.
+		// The card sits above the composer (only the coding dock and the wall between), below the notices, never in the thread.
 		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
 		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(slot?.nextElementSibling?.nextElementSibling?.classList.contains("composer")).toBe(true);
+		expect(f.view.el.querySelector(".coding-dock + .agent-wall + .composer")).not.toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();

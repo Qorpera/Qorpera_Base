@@ -25,7 +25,7 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
-	/** "Latest notes": the agent's wall on top of its thread, shown again and open. The row shows once `read` finds a
+	/** "Latest notes": the agent's wall above its composer, shown again and open. The row shows once `read` finds a
 	 * wall with something on it. */
 	notes?: { open: () => void; read: (signal: AbortSignal) => Promise<string | null> };
 }
