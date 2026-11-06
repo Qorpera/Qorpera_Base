@@ -143,8 +143,9 @@ export class AgentWallPoster {
 	#open = false;
 	/** The member opened the done line to the week; else it shows only what is new. */
 	#doneOpen = false;
-	/** The questions the conversation's messages answer (cloud/wall-reply.ts): until the agent takes them off, they wait on nobody. */
-	#answered: ReadonlySet<string> = new Set();
+	/** The questions the conversation's messages answer (cloud/wall-reply.ts), one for each answer: until the agent
+	 * takes them off, they wait on nobody. */
+	#answers: readonly string[] = [];
 	/** Items new since the member last saw this wall, while the poster shows this agent. */
 	#fresh = new Set<string>();
 	/** Items drawn so far: one that joins later comes in moving. */
@@ -327,16 +328,11 @@ export class AgentWallPoster {
 	}
 
 	/** The questions answered in the conversation, as replyQuestion wrote them. */
-	answered(questions: ReadonlySet<string>): void {
-		if (questions.size === this.#answered.size && [...questions].every((question) => this.#answered.has(question)))
-			return;
-		this.#answered = questions;
+	answered(questions: readonly string[]): void {
+		if (questions.join("\n") === this.#answers.join("\n")) return;
+		this.#answers = questions;
 		if (this.#agent && this.#text !== null && !this.el.hidden)
 			this.#draw(this.#agent, parseWall(this.#text).wall, this.#today);
-	}
-
-	#isAnswered(entry: WallItem): boolean {
-		return this.#answered.has(replyQuestion(plainWords(entry.text)));
 	}
 
 	#setOpen(open: boolean): void {
@@ -378,14 +374,24 @@ export class AgentWallPoster {
 		};
 		const doneKey = (done: Wall["done"][number]) => itemKey("done", `${done.day}: ${done.text}`);
 		const newDone = wall.done.filter((done) => this.#fresh.has(doneKey(done)));
-		const waiting = wall.waiting.filter((entry) => !this.#isAnswered(entry));
-		count(waiting.length, phrase("{n} waits on you"), phrase("{n} wait on you"), "agent-wall-count-waiting");
+		// One answer for one item: of two items with the same headline, an answer settles the first.
+		const answers = [...this.#answers];
+		const answered = new Set(
+			wall.waiting.filter((entry) => {
+				const at = answers.indexOf(replyQuestion(plainWords(entry.text)));
+				if (at >= 0) answers.splice(at, 1);
+				return at >= 0;
+			}),
+		);
+		const waiting = wall.waiting.length - answered.size;
+		count(waiting, phrase("{n} waits on you"), phrase("{n} wait on you"), "agent-wall-count-waiting");
+		count(answered.size, phrase("{n} answered"));
 		count(wall.working.length, phrase("{n} working"));
 		// What was just finished says more than the whole count.
 		if (newDone.length) count(newDone.length, phrase("{n} just done"));
 		else count(wall.done.length, phrase("{n} done"));
 		replace(this.#summary, ...counts);
-		this.#state.className = `agent-wall-state${waiting.length ? " is-waiting" : wall.working.length ? " is-working" : ""}`;
+		this.#state.className = `agent-wall-state${waiting ? " is-waiting" : wall.working.length ? " is-working" : ""}`;
 
 		const drawn = new Set<string>();
 		this.#items = new Map();
@@ -448,23 +454,23 @@ export class AgentWallPoster {
 			}
 			if (part === "waiting" && this.#onAnswer) {
 				row.classList.add("has-answer");
-				row.classList.toggle("is-answered", this.#isAnswered(entry));
+				const done = answered.has(entry);
+				row.classList.toggle("is-answered", done);
 				row.append(
-					this.#isAnswered(entry)
-						? h("span", { class: "agent-wall-answered" }, t("Answered"))
-						: h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small agent-wall-answer",
-									onclick: () => {
-										// The question moves down into the composer.
-										this.#setOpen(false);
-										this.#onAnswer?.(plainWords(entry.text));
-									},
-								},
-								t("Answer"),
-							),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small agent-wall-answer",
+							...(done ? { title: t("Answer again"), "aria-label": t("Answer again") } : {}),
+							onclick: () => {
+								// The question moves down into the composer.
+								this.#setOpen(false);
+								this.#onAnswer?.(plainWords(entry.text));
+							},
+						},
+						done ? t("Answered") : t("Answer"),
+					),
 				);
 			}
 			// What joins the wall while it is on screen comes in moving.

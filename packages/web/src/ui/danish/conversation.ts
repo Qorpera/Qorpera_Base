@@ -378,6 +378,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Waiting for you": "Venter på dig",
 	Answered: "Besvaret",
 	Answering: "Svarer på",
+	"Answer again": "Svar igen",
+	"{n} answered": "{n} besvaret",
 	"Stop answering": "Stop med at svare",
 	"Your answer…": "Dit svar…",
 	Declined: "Afvist",

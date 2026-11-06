@@ -189,6 +189,22 @@ describe("an agent's wall above its composer", () => {
 		expect(texts(next.el, ".is-done .agent-wall-text")).toEqual(["Plan written"]);
 	});
 
+	it("settles one item per answer, and the closed button still says something when nothing else is left", () => {
+		const poster = new AgentWallPoster({ onAnswer: vi.fn() });
+		poster.show(
+			AGENT,
+			"# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n",
+			TODAY,
+		);
+		const words = () => texts(poster.el, ".agent-wall-answer");
+		poster.answered(["Approve the post"]);
+		expect(words()).toEqual(["Answered", "Answer"]);
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you · 1 answered");
+		poster.answered(["Approve the post", "Approve the post"]);
+		expect(words()).toEqual(["Answered", "Answered"]);
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("2 answered");
+	});
+
 	it("answers what waits from the composer, when the view offers it", () => {
 		const onAnswer = vi.fn();
 		const poster = new AgentWallPoster({ onAnswer });
@@ -205,10 +221,12 @@ describe("an agent's wall above its composer", () => {
 		// The question moved down to the composer.
 		expect(poster.el.classList.contains("is-folded")).toBe(true);
 		// Answered, it waits on nobody; the agent takes it off when it has read the answer.
-		poster.answered(new Set([replyQuestion(question)]));
-		expect(poster.el.querySelector(".agent-wall-answer")).toBeNull();
-		expect(poster.el.querySelector(".agent-wall-answered")?.textContent).toBe("Answered");
+		poster.answered([replyQuestion(question)]);
+		expect(poster.el.querySelector(".agent-wall-answer")?.textContent).toBe("Answered");
 		expect(poster.el.querySelector(".agent-wall-count-waiting")).toBeNull();
+		// It can still be answered again.
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-answer")?.click();
+		expect(onAnswer).toHaveBeenCalledTimes(2);
 		const without = new AgentWallPoster({ member: "someone-else" });
 		without.show(AGENT, WALL, TODAY);
 		expect(without.el.querySelector(".agent-wall-answer")).toBeNull();

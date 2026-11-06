@@ -2998,12 +2998,10 @@ export class ConversationView {
 		}
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		this.#wall.answered(
-			new Set(
-				items.flatMap((item) => {
-					const reply = item.kind === "member" && !item.erased ? splitReply(item.text) : undefined;
-					return reply ? [reply.question] : [];
-				}),
-			),
+			items.flatMap((item) => {
+				const reply = item.kind === "member" && !item.erased ? splitReply(item.text) : undefined;
+				return reply ? [reply.question] : [];
+			}),
 		);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
