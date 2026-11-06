@@ -1810,6 +1810,7 @@ export class ConversationView {
 					return;
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
+					if (state.answering) this.#wall.answerSent();
 					if (!this.#isRoom) this.#run?.messageSent();
 					void this.#execution?.refresh();
 				}
@@ -2997,12 +2998,6 @@ export class ConversationView {
 			this.#messages.focus({ preventScroll: true });
 		}
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
-		this.#wall.answered(
-			items.flatMap((item) => {
-				const reply = item.kind === "member" && !item.erased ? splitReply(item.text) : undefined;
-				return reply ? [reply.question] : [];
-			}),
-		);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		// And one on a coworker's chip keeps it as its line takes in another message.

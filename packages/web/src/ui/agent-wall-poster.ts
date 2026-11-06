@@ -2,7 +2,6 @@ import { foldWallDone, parseWall, type Wall, type WallItem, wallPreview } from "
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { forgetPictureUrl, pictureUrl } from "../app/folder-images.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { replyQuestion } from "../cloud/wall-reply.ts";
 import { h, icon, replace } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
 import { markdownInline } from "./markdown.ts";
@@ -56,6 +55,11 @@ function keysOf(wall: Wall): string[] {
 function plainWords(text: string): string {
 	const drawn = h("span", null, markdownInline(text.replace(LINK, "$1")));
 	return drawn.textContent ?? "";
+}
+
+/** An item as the member answers it: two with one headline and different details are two questions. */
+function answerKey(entry: WallItem): string {
+	return `${entry.text}\n${entry.detail ?? ""}`;
 }
 
 /** Markdown links in a headline: the row is a button, so they show as words there and as links when it opens. */
@@ -143,9 +147,10 @@ export class AgentWallPoster {
 	#open = false;
 	/** The member opened the done line to the week; else it shows only what is new. */
 	#doneOpen = false;
-	/** The questions the conversation's messages answer (cloud/wall-reply.ts), one for each answer: until the agent
-	 * takes them off, they wait on nobody. */
-	#answers: readonly string[] = [];
+	/** The item the member last pressed Answer on (answerKey). */
+	#answering: string | undefined;
+	/** Items answered from here: until the agent takes them off the wall, they wait on nobody. */
+	#answered = new Set<string>();
 	/** Items new since the member last saw this wall, while the poster shows this agent. */
 	#fresh = new Set<string>();
 	/** Items drawn so far: one that joins later comes in moving. */
@@ -199,6 +204,8 @@ export class AgentWallPoster {
 			this.#drawn = undefined;
 			this.#doneOpen = false;
 			this.#expanded = new Set();
+			this.#answering = undefined;
+			this.#answered = new Set();
 			this.#forgetPictures();
 		} else if (text !== this.#text) {
 			// The wall changed: an opened item reads its picture again, which may have changed with it.
@@ -208,6 +215,11 @@ export class AgentWallPoster {
 		this.#text = text;
 		this.#today = today;
 		const wall = agent && text !== null ? parseWall(text).wall : undefined;
+		// Off the wall, an answered item is over: the same words later are a new question.
+		if (wall) {
+			const asked = new Set(wall.waiting.map(answerKey));
+			this.#answered = new Set([...this.#answered].filter((item) => asked.has(item)));
+		}
 		const keys = wall ? keysOf(wall) : [];
 		if (!agent || !wall || !keys.length) {
 			this.el.hidden = true;
@@ -327,10 +339,10 @@ export class AgentWallPoster {
 		}
 	}
 
-	/** The questions answered in the conversation, as replyQuestion wrote them. */
-	answered(questions: readonly string[]): void {
-		if (questions.join("\n") === this.#answers.join("\n")) return;
-		this.#answers = questions;
+	/** The answer begun with Answer has been sent. */
+	answerSent(): void {
+		if (this.#answering) this.#answered.add(this.#answering);
+		this.#answering = undefined;
 		if (this.#agent && this.#text !== null && !this.el.hidden)
 			this.#draw(this.#agent, parseWall(this.#text).wall, this.#today);
 	}
@@ -374,18 +386,10 @@ export class AgentWallPoster {
 		};
 		const doneKey = (done: Wall["done"][number]) => itemKey("done", `${done.day}: ${done.text}`);
 		const newDone = wall.done.filter((done) => this.#fresh.has(doneKey(done)));
-		// One answer for one item: of two items with the same headline, an answer settles the first.
-		const answers = [...this.#answers];
-		const answered = new Set(
-			wall.waiting.filter((entry) => {
-				const at = answers.indexOf(replyQuestion(plainWords(entry.text)));
-				if (at >= 0) answers.splice(at, 1);
-				return at >= 0;
-			}),
-		);
-		const waiting = wall.waiting.length - answered.size;
+		const answered = wall.waiting.filter((entry) => this.#answered.has(answerKey(entry))).length;
+		const waiting = wall.waiting.length - answered;
 		count(waiting, phrase("{n} waits on you"), phrase("{n} wait on you"), "agent-wall-count-waiting");
-		count(answered.size, phrase("{n} answered"));
+		count(answered, phrase("{n} answered"));
 		count(wall.working.length, phrase("{n} working"));
 		// What was just finished says more than the whole count.
 		if (newDone.length) count(newDone.length, phrase("{n} just done"));
@@ -454,7 +458,7 @@ export class AgentWallPoster {
 			}
 			if (part === "waiting" && this.#onAnswer) {
 				row.classList.add("has-answer");
-				const done = answered.has(entry);
+				const done = this.#answered.has(answerKey(entry));
 				row.classList.toggle("is-answered", done);
 				row.append(
 					h(
@@ -465,6 +469,7 @@ export class AgentWallPoster {
 							...(done ? { title: t("Answer again"), "aria-label": t("Answer again") } : {}),
 							onclick: () => {
 								// The question moves down into the composer.
+								this.#answering = answerKey(entry);
 								this.#setOpen(false);
 								this.#onAnswer?.(plainWords(entry.text));
 							},
