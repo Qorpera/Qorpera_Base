@@ -241,6 +241,41 @@ describe("room startup usage refresh", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(hydrate).toHaveBeenCalledOnce();
 	});
+	it("offers the retry of an uncertain answer to the wall's question, whose text opens with the question", async () => {
+		const f = setup();
+		await settle();
+		f.company.conversation(session.sessionId).set({
+			draft: "Hello",
+			answering: "Who first?",
+			retrySend: {
+				clientInputId: id(150),
+				clientRequestId: id(150),
+				text: "> Who first?\n\nHello",
+				files: [],
+				executionSponsor: f.sponsor()!,
+			},
+		});
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		// Without the question it is another message, which waits for the retry to be settled.
+		f.company.conversation(session.sessionId).set({ answering: undefined });
+		await settle();
+		expect(f.send().disabled).toBe(true);
+	});
+	it("does not send when another question is picked during the account check", async () => {
+		const f = setup();
+		await settle();
+		f.company.conversation(session.sessionId).set({ answering: "Who first?" });
+		type(f.view, "Young couples");
+		await settle();
+		const pending = deferred<NativeExecutionConnections>();
+		f.listConnections.mockImplementationOnce(() => pending.promise);
+		f.send().click();
+		f.company.conversation(session.sessionId).set({ answering: "Who second?" });
+		pending.resolve(connections());
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+	});
 	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});

@@ -9,6 +9,7 @@ import type {
 	WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
+import { withReply } from "../../cloud/wall-reply.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { RunPayer } from "../../ui/run-failure.ts";
@@ -155,7 +156,7 @@ export class SessionExecutionView {
 		const files = conversation.attachments ?? [];
 		if (retry)
 			return (
-				retry.text === (conversation.draft ?? "").trim() &&
+				retry.text === withReply(conversation.answering, (conversation.draft ?? "").trim(), files.length) &&
 				retry.files.length === files.length &&
 				retry.files.every((file, index) => file === files[index])
 			);

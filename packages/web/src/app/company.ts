@@ -2434,9 +2434,7 @@ export class CompanyController {
 		}
 		const store = this.conversation(sessionId);
 		const files = [...(store.get().attachments ?? [])];
-		const words = text.trim();
-		const answering = store.get().answering;
-		const trimmed = answering && (words || files.length) ? withReply(answering, words) : words;
+		const trimmed = withReply(store.get().answering, text.trim(), files.length);
 		// The quotes of the text as sent: its records' words in their marks, counted from the trimmed start.
 		const quotes = placeQuotes(trimmed, store.get().quoteRecords ?? []);
 		if ((!trimmed && !files.length) || store.get().sending) return false;

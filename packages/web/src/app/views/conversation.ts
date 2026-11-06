@@ -1807,6 +1807,7 @@ export class ConversationView {
 				if (
 					this.#cannotSend ||
 					this.#composer.value !== text ||
+					current.answering !== state.answering ||
 					current.retrySend !== retry ||
 					files.length !== currentFiles.length ||
 					files.some((file, index) => file !== currentFiles[index])

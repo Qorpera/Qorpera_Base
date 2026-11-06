@@ -3,14 +3,16 @@ import { replyQuestion, splitReply, withReply } from "../src/cloud/wall-reply.ts
 
 describe("an answer to a question on the wall", () => {
 	it("reads back the question and the member's words", () => {
-		const text = withReply("Who first?", "Young couples.\n\nIn flats.");
+		const text = withReply("Who first?", "Young couples.\n\nIn flats.", 0);
 		expect(text).toBe("> Who first?\n\nYoung couples.\n\nIn flats.");
 		expect(splitReply(text)).toEqual({
 			question: "Who first?",
 			text: "Young couples.\n\nIn flats.",
 			start: "> Who first?\n\n".length,
 		});
-		expect(splitReply(withReply("Who first?", ""))).toEqual({ question: "Who first?", text: "", start: 12 });
+		expect(splitReply(withReply("Who first?", "", 1))).toEqual({ question: "Who first?", text: "", start: 12 });
+		expect(withReply("Who first?", "", 0)).toBe("");
+		expect(withReply(undefined, "Words", 0)).toBe("Words");
 		expect(splitReply("Just words")).toBeUndefined();
 		expect(splitReply("> two\nlines")).toBeUndefined();
 	});

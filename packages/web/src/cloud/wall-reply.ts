@@ -10,7 +10,9 @@ export function replyQuestion(words: string): string {
 	return line.length > QUESTION_MAX ? `${line.slice(0, QUESTION_MAX - 1).trimEnd()}…` : line;
 }
 
-export function withReply(question: string, text: string): string {
+/** The text a draft goes as. Nothing to say and nothing attached stays nothing, so it is not sent. */
+export function withReply(question: string | undefined, text: string, files: number): string {
+	if (!question || (!text && !files)) return text;
 	return text ? `> ${question}\n\n${text}` : `> ${question}`;
 }
 
