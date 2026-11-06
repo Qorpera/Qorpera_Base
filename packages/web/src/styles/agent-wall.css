@@ -9,8 +9,6 @@
 }
 .agent-wall[hidden] { display: none; }
 @keyframes agent-wall-in { from { opacity: 0; transform: translateY(6px); } }
-.agent-wall.is-leaving { animation: agent-wall-out var(--motion-base) var(--ease-in) both; }
-@keyframes agent-wall-out { to { opacity: 0; transform: translateY(6px); } }
 
 .agent-wall-bar { position: relative; display: flex; align-items: center; justify-content: center; min-height: 32px; margin-top: 6px; }
 .agent-wall-toggle {
@@ -33,18 +31,7 @@
 .agent-wall:not(.is-folded) .agent-wall-toggle { border-color: transparent; background: transparent; }
 .agent-wall:not(.is-folded) .agent-wall-toggle:hover { background: var(--hover); }
 .agent-wall:not(.is-folded) :is(.agent-wall-summary, .agent-wall-state) { display: none; }
-/* Hide: only once open. The member puts the wall away; "Latest notes" on the agent's card brings it back. */
-.agent-wall-hide {
-	position: absolute; right: 4px; top: 4px; height: 24px; opacity: 0; padding: 0 8px; border: 0;
-	border-radius: var(--radius); background: transparent; color: var(--text-muted); font: 12.5px/1.2 var(--font-sans); cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, opacity var(--motion-fast) ease;
-}
-.agent-wall.is-folded .agent-wall-hide { display: none; }
-/* The rows' controls come first: Hide shows when the pointer is on the wall, and always where there is no pointer. */
-.agent-wall:hover .agent-wall-hide, .agent-wall:focus-within .agent-wall-hide { opacity: 1; }
-@media (hover: none) { .agent-wall-hide { display: none; } }
-.agent-wall-hide:hover { background: var(--hover); color: var(--text); }
-.agent-wall-toggle:focus-visible, .agent-wall-hide:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.agent-wall-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
 /* The fold: its row grows from nothing to the body's height and back. */
 .agent-wall-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease; }
@@ -138,6 +125,6 @@
 	.agent-wall-body { max-height: 40dvh; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall.is-leaving, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
-	.agent-wall-fold, .agent-wall-toggle, .agent-wall-toggle > .icon, .agent-wall-hide, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
+	.agent-wall, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
+	.agent-wall-fold, .agent-wall-toggle, .agent-wall-toggle > .icon, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
 }
