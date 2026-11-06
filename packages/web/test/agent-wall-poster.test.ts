@@ -36,16 +36,17 @@ const toggle = (poster: AgentWallPoster) => poster.el.querySelector<HTMLButtonEl
 beforeEach(() => localStorage.clear());
 afterEach(() => document.body.replaceChildren());
 
-describe("an agent's wall on top of its chat", () => {
-	it("shows the three parts in order, waiting first, with a summary row", () => {
+describe("an agent's wall above its composer", () => {
+	it("shows done, working and, nearest the composer, waiting, with a summary on its button", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, WALL, TODAY);
 		expect(poster.shown).toBe(true);
 		expect(poster.el.getAttribute("aria-label")).toBe("Shop Operations's wall");
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe(
-			"1 waits on you · 2 working on · 5 done",
-		);
-		expect(texts(poster.el, ".agent-wall-heading")).toEqual(["Waits on you1", "Working on2", "Done5"]);
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you · 2 working · 5 done");
+		expect(poster.el.querySelector(".agent-wall-state")?.classList.contains("is-waiting")).toBe(true);
+		expect(
+			[...poster.el.querySelectorAll(".agent-wall-part")].map((part) => part.getAttribute("aria-label")),
+		).toEqual(["Done", "Working on", "Waits on you"]);
 		expect(texts(poster.el, ".is-waiting .agent-wall-text")).toEqual([
 			"Pick a shop name. My pick is Båndklar. The names",
 		]);
@@ -54,24 +55,28 @@ describe("an agent's wall on top of its chat", () => {
 			// A link in a headline reads as its words on the row; the link itself is there when the row opens.
 			"Choosing the shop system, see Launch checklist",
 		]);
-		// The two newest done, then the rest of the week behind "more done".
-		expect(texts(poster.el, ".is-done .agent-wall-text")).toEqual(["Two suppliers found", "Shop launch plan"]);
-		expect(texts(poster.el, ".agent-wall-more")).toEqual(["2 more done"]);
+		// Done is one line until it opens.
+		expect(texts(poster.el, ".is-done .agent-wall-text")).toEqual(["5 done"]);
+		expect(poster.el.querySelectorAll(".is-done .agent-wall-item")).toHaveLength(0);
 	});
 
-	it("shows the week and how many are earlier behind more done, and folds it back", () => {
+	it("opens the done line to the week and says how many are earlier", () => {
 		const poster = new AgentWallPoster();
+		document.body.append(poster.el);
 		poster.show(AGENT, WALL, TODAY);
-		poster.el.querySelector<HTMLButtonElement>(".agent-wall-more button")!.click();
-		expect(texts(poster.el, ".is-done .agent-wall-text")).toEqual([
-			"Two suppliers found",
-			"Shop launch plan",
-			"Test list",
+		const done = () => poster.el.querySelector<HTMLButtonElement>(".agent-wall-done")!;
+		done().click();
+		expect(texts(poster.el, ".is-done .agent-wall-item .agent-wall-text")).toEqual([
 			"Team hired",
+			"Test list",
+			"Shop launch plan",
+			"Two suppliers found",
 		]);
-		expect(texts(poster.el, ".agent-wall-more")).toEqual(["Earlier: 1 · Show fewer"]);
-		poster.el.querySelector<HTMLButtonElement>(".agent-wall-more button")!.click();
-		expect(texts(poster.el, ".is-done .agent-wall-text")).toHaveLength(2);
+		expect(texts(poster.el, ".agent-wall-done .agent-wall-text")).toEqual(["Show fewer · Earlier: 1"]);
+		expect(done().getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(done());
+		done().click();
+		expect(poster.el.querySelectorAll(".is-done .agent-wall-item")).toHaveLength(0);
 	});
 
 	it("draws links as the same folder-link and app-card buttons a message has", () => {
@@ -117,62 +122,97 @@ describe("an agent's wall on top of its chat", () => {
 		expect(texts(poster.el, ".agent-wall-text")).toEqual(["Writing the plan"]);
 	});
 
-	it("opens when something waits on the member, folds to one line, and keeps the fold per agent", () => {
+	it("starts closed, even when something waits, opens on a click, and keeps that per agent", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, WALL, TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(false);
-		expect(toggle(poster).textContent).toBe("Fold");
-		expect(toggle(poster).getAttribute("aria-expanded")).toBe("true");
-		toggle(poster).click();
 		expect(poster.el.classList.contains("is-folded")).toBe(true);
-		expect(toggle(poster).textContent).toBe("Open");
-		expect(toggle(poster).getAttribute("aria-expanded")).toBe("false");
 		expect(poster.el.querySelector<HTMLElement>(".agent-wall-fold")!.inert).toBe(true);
-		// The summary row stays.
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toContain("1 waits on you");
-		// The same agent's thread opened again keeps it folded.
+		expect(toggle(poster).getAttribute("aria-expanded")).toBe("false");
+		expect(toggle(poster).textContent).toContain("1 waits on you");
+		toggle(poster).click();
+		expect(poster.el.classList.contains("is-folded")).toBe(false);
+		expect(toggle(poster).getAttribute("aria-expanded")).toBe("true");
+		expect(poster.el.querySelector(".agent-wall-close-word")?.textContent).toBe("Close");
+		// The same agent's thread opened again keeps it open.
 		const again = new AgentWallPoster();
 		again.show(AGENT, WALL, TODAY);
-		expect(again.el.classList.contains("is-folded")).toBe(true);
-		toggle(again).click();
 		expect(again.el.classList.contains("is-folded")).toBe(false);
+		toggle(again).click();
+		expect(again.el.classList.contains("is-folded")).toBe(true);
 	});
 
-	it("starts folded when nothing waits and nothing is new", () => {
+	it("leads with a spinner while only work goes on, and with nothing when all is done", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, "## Working on\n- Writing the plan\n", TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(true);
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working on");
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working");
+		expect(poster.el.querySelector(".agent-wall-state")?.classList.contains("is-working")).toBe(true);
+		const done = new AgentWallPoster({ member: "someone-else" });
+		done.show(AGENT, "## Done\n- 2026-11-05: Plan written\n", TODAY);
+		expect(done.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 done");
+		expect(done.el.querySelector(".agent-wall-state")?.className).toBe("agent-wall-state");
 	});
 
-	it("marks what is new since the member last saw the wall open, and opens for it", () => {
+	it("counts what is new on the closed button, shows it under the done line, and forgets it once closed", () => {
+		const first = new AgentWallPoster();
+		first.show(AGENT, "## Working on\n- Writing the plan\n\n## Done\n- 2026-11-04: Old\n", TODAY);
+		// Seen for the first time: nothing to mark from.
+		expect(first.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working · 1 done");
+		const CHANGED = "## Working on\n- Writing the plan\n\n## Done\n- 2026-11-05: Plan written\n- 2026-11-04: Old\n";
+		const next = new AgentWallPoster();
+		next.show(AGENT, CHANGED, TODAY);
+		// Stays closed for what is new: the button says so.
+		expect(next.el.classList.contains("is-folded")).toBe(true);
+		expect(next.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working · 1 just done");
+		// Not seen while closed: another visit counts it too.
+		const closed = new AgentWallPoster();
+		closed.show(AGENT, CHANGED, TODAY);
+		expect(closed.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working · 1 just done");
+		toggle(closed).click();
+		expect(texts(closed.el, ".agent-wall-done .agent-wall-text")).toEqual(["1 more done"]);
+		expect(texts(closed.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Plan written"]);
+		expect(closed.el.querySelector(".agent-wall-item.is-new .visually-hidden")?.textContent).toBe(" (New)");
+		toggle(closed).click();
+		expect(closed.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working · 2 done");
+		// Seen now: the next visit marks nothing.
+		const later = new AgentWallPoster();
+		later.show(AGENT, CHANGED, TODAY);
+		expect(later.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working · 2 done");
+	});
+
+	it("has no done line when all that is done is new", () => {
 		const first = new AgentWallPoster();
 		first.show(AGENT, "## Working on\n- Writing the plan\n", TODAY);
-		// Seen for the first time: nothing to mark from.
-		expect(first.el.querySelectorAll(".is-new")).toHaveLength(0);
-		toggle(first).click(); // open
-		toggle(first).click(); // fold again: kept folded
 		const next = new AgentWallPoster();
 		next.show(AGENT, "## Working on\n- Writing the plan\n\n## Done\n- 2026-11-05: Plan written\n", TODAY);
-		expect(next.el.classList.contains("is-folded")).toBe(false);
-		expect(texts(next.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Plan written"]);
-		expect(next.el.querySelector(".agent-wall-item.is-new .visually-hidden")?.textContent).toBe(" (New)");
-		// Seen now, as it showed open: the next visit marks nothing.
-		const later = new AgentWallPoster();
-		later.show(AGENT, "## Working on\n- Writing the plan\n\n## Done\n- 2026-11-05: Plan written\n", TODAY);
-		expect(later.el.querySelectorAll(".is-new")).toHaveLength(0);
+		expect(next.el.querySelector(".agent-wall-done")).toBeNull();
+		expect(texts(next.el, ".is-done .agent-wall-text")).toEqual(["Plan written"]);
 	});
 
-	it("opens and marks an item that joins while the poster is shown folded", () => {
+	it("answers what waits from the composer, when the view offers it", () => {
+		const onAnswer = vi.fn();
+		const poster = new AgentWallPoster({ onAnswer });
+		poster.show(AGENT, WALL, TODAY);
+		const answers = poster.el.querySelectorAll<HTMLButtonElement>(".agent-wall-answer");
+		expect(answers).toHaveLength(1);
+		expect(answers[0]?.closest(".agent-wall-part")?.classList.contains("is-waiting")).toBe(true);
+		expect(answers[0]?.closest(".agent-wall-row")).toBeNull();
+		answers[0]?.click();
+		expect(onAnswer).toHaveBeenCalledTimes(1);
+		const without = new AgentWallPoster({ member: "someone-else" });
+		without.show(AGENT, WALL, TODAY);
+		expect(without.el.querySelector(".agent-wall-answer")).toBeNull();
+	});
+
+	it("stays closed and marks an item that joins while it shows", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, "## Working on\n- Writing the plan\n", TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(true);
 		poster.show(AGENT, "## Waits on you\n- Approve the plan\n\n## Working on\n- Writing the plan\n", TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(false);
+		expect(poster.el.classList.contains("is-folded")).toBe(true);
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you · 1 working");
 		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["Approve the plan"]);
 		// The mark stays while the member is here.
 		poster.show(AGENT, "## Waits on you\n- Approve the plan\n\n## Working on\n- Writing the plan\n- More\n", TODAY);
-		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["Approve the plan", "More"]);
+		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["More", "Approve the plan"]);
 	});
 
 	it("keeps working when storage throws", () => {
@@ -187,7 +227,7 @@ describe("an agent's wall on top of its chat", () => {
 			poster.show(AGENT, WALL, TODAY);
 			expect(poster.shown).toBe(true);
 			toggle(poster).click();
-			expect(poster.el.classList.contains("is-folded")).toBe(true);
+			expect(poster.el.classList.contains("is-folded")).toBe(false);
 		} finally {
 			get.mockRestore();
 			set.mockRestore();
@@ -315,7 +355,7 @@ describe("hiding the wall", () => {
 		poster.reveal(AGENT.id);
 		expect(poster.shown).toBe(true);
 		expect(wallHidden(MEMBER, AGENT.id)).toBe(false);
-		expect(toggle(poster).textContent).toBe("Fold");
+		expect(poster.el.classList.contains("is-folded")).toBe(false);
 		expect(texts(poster.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Writing the shop texts"]);
 		expect(document.activeElement).toBe(toggle(poster));
 	});
@@ -328,7 +368,7 @@ describe("hiding the wall", () => {
 		expect(poster.shown).toBe(false);
 		poster.show(AGENT, WALL, TODAY);
 		expect(poster.shown).toBe(true);
-		expect(toggle(poster).textContent).toBe("Fold");
+		expect(poster.el.classList.contains("is-folded")).toBe(false);
 		expect(document.activeElement).toBe(toggle(poster));
 	});
 
@@ -387,6 +427,7 @@ describe("items that open", () => {
 `;
 	const row = (poster: AgentWallPoster, index: number) =>
 		poster.el.querySelectorAll<HTMLElement>(".agent-wall-item")[index]!;
+	const waiting = (poster: AgentWallPoster) => poster.el.querySelector<HTMLElement>(".is-waiting .agent-wall-item")!;
 
 	it("shows headlines, and a click opens one's detail, links and preview", async () => {
 		const image = vi.fn(async () => new Blob(["<svg/>"], { type: "image/svg+xml" }));
@@ -394,14 +435,14 @@ describe("items that open", () => {
 		document.body.append(poster.el);
 		poster.show(AGENT, DETAILED, TODAY);
 		expect(texts(poster.el, ".agent-wall-text")).toEqual([
-			"Pick a bundle",
 			"Building the shop demo",
 			"Checking prices",
+			"Pick a bundle",
 		]);
 		// A headline with nothing more is no button.
-		expect(row(poster, 2).querySelector(".agent-wall-row")).toBeNull();
-		const button = row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!;
-		const detail = row(poster, 0).querySelector<HTMLElement>(".agent-wall-detail")!;
+
+		const button = waiting(poster).querySelector<HTMLButtonElement>(".agent-wall-row")!;
+		const detail = waiting(poster).querySelector<HTMLElement>(".agent-wall-detail")!;
 		expect([button.getAttribute("aria-expanded"), detail.hidden]).toEqual(["false", true]);
 		expect(button.getAttribute("aria-controls")).toBe(detail.id);
 		// The picture is read only when the item opens.
@@ -422,14 +463,14 @@ describe("items that open", () => {
 		);
 		// It stays open when the wall changes, and closes on a second click.
 		poster.show(AGENT, `${DETAILED}- Writing texts\n`, TODAY);
-		expect(row(poster, 0).classList.contains("is-open")).toBe(true);
+		expect(waiting(poster).classList.contains("is-open")).toBe(true);
 		// The wall changed, so the opened item reads its picture again: an agent may have redrawn the sketch.
 		expect(image).toHaveBeenCalledTimes(2);
-		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
-		expect(row(poster, 0).querySelector<HTMLElement>(".agent-wall-detail")!.hidden).toBe(true);
+		waiting(poster).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		expect(waiting(poster).querySelector<HTMLElement>(".agent-wall-detail")!.hidden).toBe(true);
 		// An app it links opens as the message's app card.
-		row(poster, 1).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
-		expect(row(poster, 1).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
+		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		expect(row(poster, 0).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
 	});
 
 	it("keeps a headline's links out of its row, reads an encoded picture path, and tells twin headlines apart", async () => {
@@ -478,8 +519,8 @@ describe("items that open", () => {
 		const poster = new AgentWallPoster({ image: async () => null });
 		document.body.append(poster.el);
 		poster.show(AGENT, DETAILED, TODAY);
-		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
-		await vi.waitFor(() => expect(row(poster, 0).querySelector(".agent-wall-preview")).toBeNull());
-		expect(row(poster, 0).querySelector(".agent-wall-detail-text")).not.toBeNull();
+		waiting(poster).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		await vi.waitFor(() => expect(waiting(poster).querySelector(".agent-wall-preview")).toBeNull());
+		expect(waiting(poster).querySelector(".agent-wall-detail-text")).not.toBeNull();
 	});
 });

@@ -1,81 +1,97 @@
-/* An agent's wall pinned on top of its chat (ui/agent-wall-poster.ts; Jonas, 5 Nov 2026, direction A): a poster that
- * folds to its header row. Open, it shows what waits on the member (first, tinted), what the agent works on, and what it
- * has done. Colours are tokens only, so the dark theme follows. */
+/* An agent's wall right above its composer (ui/agent-wall-poster.ts; Jonas, 6 Nov 2026): one small centred button that
+ * opens upward and pushes the chat up. No card: flat rows that line up with the text of the notices above them and share
+ * their size and colours. Colours are tokens only, so the dark theme follows. */
 .agent-wall {
-	--agent-wall-wait: var(--sidebar-selection);
-	flex: none; position: relative; z-index: 2; display: grid; gap: 4px; margin: 10px 14px 0; padding: 8px 12px 10px;
-	border-radius: var(--radius-lg); background: var(--header-surface);
-	box-shadow: 0 0 0 1px var(--border), 0 6px 18px rgb(18 18 17 / 6%);
-	font-family: var(--font-sans); animation: agent-wall-in var(--motion-slow) var(--ease-out) both;
+	--agent-wall-accent: var(--composer-accent);
+	container: agent-wall / inline-size;
+	flex: none; position: relative; padding: 0 16px; font-family: var(--font-sans);
+	animation: agent-wall-in var(--motion-slow) var(--ease-out) both;
 }
 .agent-wall[hidden] { display: none; }
-@keyframes agent-wall-in { from { opacity: 0; transform: translateY(-6px); } }
-.agent-wall-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.agent-wall-figure { display: grid; flex: none; place-items: center; }
-.agent-wall-summary { flex: 1; min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
-.agent-wall-count-waiting { color: var(--agent-wall-wait); font-weight: 600; }
+@keyframes agent-wall-in { from { opacity: 0; transform: translateY(6px); } }
+.agent-wall.is-leaving { animation: agent-wall-out var(--motion-base) var(--ease-in) both; }
+@keyframes agent-wall-out { to { opacity: 0; transform: translateY(6px); } }
+
+.agent-wall-bar { position: relative; display: flex; align-items: center; justify-content: center; min-height: 32px; margin-top: 6px; }
 .agent-wall-toggle {
-	flex: none; padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: var(--hover); color: var(--text-muted);
-	font: 600 11.5px/1.2 var(--font-sans); cursor: pointer; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
-}
-.agent-wall-toggle:hover { background: var(--pane-strong); color: var(--text); }
-/* Hide: the member puts the poster away; "Latest notes" on the agent's card brings it back. */
-.agent-wall-hide {
-	display: grid; flex: none; place-items: center; width: 24px; height: 24px; margin-right: -4px; padding: 0; border: 0;
-	border-radius: 50%; background: transparent; color: var(--text-soft); cursor: pointer;
+	display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; height: 32px; padding: 0 12px; border: 1px solid var(--border-strong);
+	border-radius: 16px; background: var(--bg); color: var(--text-muted); font: 12.5px/1.2 var(--font-sans); cursor: pointer;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
+.agent-wall-toggle:hover { background: var(--hover); color: var(--text); }
+.agent-wall-toggle > .icon { flex: none; width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--motion-base) var(--ease-out); }
+.agent-wall:not(.is-folded) .agent-wall-toggle > .icon { transform: rotate(90deg); }
+.agent-wall-summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* The accent, deep enough to read as words, in either theme. */
+.agent-wall-count-waiting { color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
+.agent-wall.is-folded .agent-wall-close-word { display: none; }
+.agent-wall-state { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.agent-wall-state:not(.is-waiting, .is-working) { display: none; }
+.agent-wall-state.is-waiting { background: var(--agent-wall-accent); }
+.agent-wall-state.is-working { box-sizing: border-box; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
+/* Open, the rows say all of it: the button is the word Close, in the place the member just clicked. */
+.agent-wall:not(.is-folded) .agent-wall-toggle { border-color: transparent; background: transparent; }
+.agent-wall:not(.is-folded) .agent-wall-toggle:hover { background: var(--hover); }
+.agent-wall:not(.is-folded) :is(.agent-wall-summary, .agent-wall-state) { display: none; }
+/* Hide: only once open. The member puts the wall away; "Latest notes" on the agent's card brings it back. */
+.agent-wall-hide {
+	position: absolute; right: 4px; top: 4px; height: 24px; opacity: 0; padding: 0 8px; border: 0;
+	border-radius: var(--radius); background: transparent; color: var(--text-muted); font: 12.5px/1.2 var(--font-sans); cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, opacity var(--motion-fast) ease;
+}
+.agent-wall.is-folded .agent-wall-hide { display: none; }
+/* The rows' controls come first: Hide shows when the pointer is on the wall, and always where there is no pointer. */
+.agent-wall:hover .agent-wall-hide, .agent-wall:focus-within .agent-wall-hide { opacity: 1; }
+@media (hover: none) { .agent-wall-hide { display: none; } }
 .agent-wall-hide:hover { background: var(--hover); color: var(--text); }
-.agent-wall-hide .icon { width: 13px; height: 13px; }
-.agent-wall-toggle:focus-visible, .agent-wall-hide:focus-visible, .agent-wall-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.agent-wall.is-leaving { animation: agent-wall-out var(--motion-base) var(--ease-in) both; }
-@keyframes agent-wall-out { to { opacity: 0; transform: translateY(-8px) scale(0.98); } }
+.agent-wall-toggle:focus-visible, .agent-wall-hide:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
 /* The fold: its row grows from nothing to the body's height and back. */
 .agent-wall-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease; }
 .agent-wall.is-folded .agent-wall-fold { grid-template-rows: 0fr; opacity: 0; }
-.agent-wall-body { display: grid; gap: 8px; min-height: 0; max-height: min(46dvh, 420px); overflow: hidden auto; overscroll-behavior: contain; padding-top: 6px; scrollbar-width: thin; }
-/* Folded, the poster is its header row: the body's padding and the gap above it fold away too. */
-.agent-wall { transition: gap var(--motion-slow) var(--ease-out), padding-bottom var(--motion-slow) var(--ease-out); }
-.agent-wall.is-folded { gap: 0; padding-bottom: 8px; }
-.agent-wall.is-folded .agent-wall-body { overflow: hidden; padding-top: 0; }
+.agent-wall-body { display: grid; min-height: 0; max-height: min(46dvh, 420px); margin-top: 12px; padding-top: 6px; overflow: hidden auto; overscroll-behavior: contain; border-top: 1px solid var(--border); scrollbar-width: thin; }
+/* Closed, the body's margin, padding and rule fold away too. */
+.agent-wall.is-folded .agent-wall-body { margin-top: 0; padding-top: 0; overflow: hidden; border-top-width: 0; }
 
-.agent-wall-part { display: grid; gap: 2px; min-width: 0; }
-.agent-wall-heading { display: flex; align-items: center; gap: 6px; margin: 0 0 1px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; line-height: 1.4; text-transform: uppercase; }
-.agent-wall-number { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--pane-strong); color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
-.agent-wall-part.is-waiting .agent-wall-heading { color: var(--agent-wall-wait); }
-.agent-wall-part.is-waiting .agent-wall-number { background: var(--agent-wall-wait); color: var(--sidebar-selection-text); }
-.agent-wall-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.agent-wall-part { display: grid; min-width: 0; }
+.agent-wall-list { display: grid; margin: 0; padding: 0; list-style: none; }
 .agent-wall-item {
-	display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; padding: 4px 8px; border-radius: var(--radius);
-	color: var(--text); font-size: 13.5px; line-height: 1.4; overflow-wrap: anywhere;
-	transition: background-color 900ms ease;
+	display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 13px; align-items: start; padding: 6px 16px; border-radius: var(--radius);
+	color: var(--text-muted); font-size: 13.5px; line-height: 1.4; overflow-wrap: anywhere;
 }
-.agent-wall-part.is-waiting .agent-wall-item { background: color-mix(in srgb, var(--agent-wall-wait) 7%, transparent); }
-/* New since the member last looked: a soft highlight that fades in and stays while they are here. */
-.agent-wall-item.is-new { animation: agent-wall-new 900ms ease both; background: var(--warning-soft); }
-.agent-wall-part.is-waiting .agent-wall-item.is-new { background: var(--warning-soft); }
-@keyframes agent-wall-new { from { background-color: transparent; } }
-.agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both, agent-wall-new 900ms ease both; }
-@keyframes agent-wall-enter { from { opacity: 0; transform: translateY(-8px) scale(0.97); } }
-.agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; border-radius: 50%; font-size: 9px; font-weight: 800; line-height: 1; }
-.agent-wall-part.is-done .agent-wall-mark { background: var(--ok-soft); color: var(--ok); }
-.agent-wall-part.is-waiting .agent-wall-mark { background: var(--agent-wall-wait); color: var(--sidebar-selection-text); }
-.agent-wall-part.is-working .agent-wall-mark { border: 1.5px solid var(--border-strong); border-top-color: var(--agent-wall-wait); animation: agent-wall-spin 1.4s linear infinite; }
+.agent-wall-part.is-working .agent-wall-item { color: var(--text); }
+.agent-wall-part.is-waiting .agent-wall-item { color: var(--text); font-weight: 600; }
+.agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both; }
+@keyframes agent-wall-enter { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
+.agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; font-size: 11px; line-height: 1; color: var(--text-muted); }
+.agent-wall-part.is-done .agent-wall-mark { color: var(--ok); }
+.agent-wall-part.is-waiting .agent-wall-mark::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--agent-wall-accent); }
+.agent-wall-part.is-working .agent-wall-mark::before { content: ""; box-sizing: border-box; width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
+/* What waits has its answer at hand. */
+.agent-wall-item.has-answer { position: relative; }
+.agent-wall-item.has-answer > .agent-wall-row, .agent-wall-item.has-answer:not(.is-expandable) { padding-right: 96px; }
+.agent-wall .agent-wall-answer { position: absolute; right: 16px; top: 3px; border-radius: var(--radius-pill); color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
+
 @keyframes agent-wall-spin { to { transform: rotate(360deg); } }
 .agent-wall-text { min-width: 0; }
 /* An item with more to it is a row that opens: the headline is its button, the detail and a preview show under it. */
 .agent-wall-item.is-expandable { display: block; padding: 0; }
 .agent-wall-row {
-	display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: start; width: 100%;
-	padding: 4px 8px; border: 0; border-radius: var(--radius); background: transparent; color: inherit; font: inherit;
+	display: grid; grid-template-columns: 14px minmax(0, max-content) auto; justify-content: start; gap: 13px; align-items: start; width: 100%;
+	padding: 6px 16px; border: 0; border-radius: var(--radius); background: transparent; color: inherit; font: inherit;
 	text-align: left; cursor: pointer; transition: background-color var(--motion-fast) ease;
 }
 .agent-wall-row:hover { background: var(--hover); }
 .agent-wall-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.agent-wall-row > .icon { width: 11px; height: 11px; margin-top: 4px; color: var(--text-soft); transform: rotate(90deg); transition: transform var(--motion-base) var(--ease-out); }
+/* Its arrow right after its words, so the two read as one control. */
+.agent-wall-row > .icon { width: 11px; height: 11px; margin: 4px 0 0 -6px; color: var(--text-muted); transform: rotate(90deg); transition: transform var(--motion-base) var(--ease-out); }
 .agent-wall-item.is-open > .agent-wall-row > .icon { transform: rotate(-90deg); }
-.agent-wall-detail { display: grid; gap: 6px; padding: 0 8px 8px 30px; color: var(--text-muted); font-size: 13px; line-height: 1.45; animation: agent-wall-open var(--motion-base) var(--ease-out) both; }
+/* It grows upward: its arrow says so. */
+.agent-wall-done > .icon { transform: rotate(-90deg); }
+.agent-wall-done[aria-expanded="true"] > .icon { transform: rotate(90deg); }
+/* The done line: as quiet as what it holds. */
+.agent-wall-done { color: var(--text-muted); font-size: 13.5px; line-height: 1.4; }
+.agent-wall-detail { display: grid; gap: 6px; padding: 0 16px 8px 43px; color: var(--text-muted); font-size: 13px; font-weight: 400; line-height: 1.45; animation: agent-wall-open var(--motion-base) var(--ease-out) both; }
 .agent-wall-detail[hidden] { display: none; }
 @keyframes agent-wall-open { from { opacity: 0; transform: translateY(-3px); } }
 .agent-wall-detail p { margin: 0; }
@@ -86,9 +102,7 @@
 .agent-wall-picture { display: block; width: min(100%, 260px); padding: 0; border: 0; border-radius: var(--radius); background: none; cursor: zoom-in; }
 .agent-wall-picture img { display: block; width: 100%; height: auto; max-height: 180px; border-radius: var(--radius); object-fit: contain; object-position: left center; }
 .agent-wall-text .message-prose { line-height: inherit; }
-.agent-wall-more { margin: 0; padding: 1px 8px 0 30px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-.agent-wall-link { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
-.agent-wall-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.agent-wall-more { margin: 0; padding: 1px 16px 4px 43px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 
 /* An app linked from the wall reads as a small chip in the line, not a message's card. */
 .agent-wall .app-card {
@@ -104,8 +118,26 @@
 .agent-wall-preview.is-app .app-card-emblem svg { width: 28px; height: 28px; }
 .agent-wall-preview.is-app .app-card-note { display: block; }
 
-@media (max-width: 760px) { .agent-wall { margin: 8px 10px 0; } .agent-wall-body { max-height: 40dvh; } }
+/* One draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
+ * its width, which a draft's preview is measured against. Several drafts, an open draft or a note take their own place
+ * above the composer, clear of the wall's button. */
+.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
+	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
+}
+.agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
+/* Room for that button on the line, on both sides so the wall's stays centred. */
+.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
+/* A narrow conversation, on a phone or beside a panel: the button says only its first count, and gives up the centre. */
+@container agent-wall (max-width: 30em) {
+	.agent-wall-summary > :not(:first-child) { display: none; }
+	.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
+}
+/* A finger's reach, without a bigger outline. */
+@media (pointer: coarse) { .agent-wall-toggle { position: relative; } .agent-wall-toggle::after { content: ""; position: absolute; inset: -6px 0; } .agent-wall .agent-wall-answer::after { content: ""; position: absolute; inset: -8px -4px; } }
+@media (max-width: 760px) {
+	.agent-wall-body { max-height: 40dvh; }
+}
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall.is-leaving, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item, .agent-wall-item.is-new, .agent-wall-item.is-entering, .agent-wall-part.is-working .agent-wall-mark { animation: none; }
-	.agent-wall, .agent-wall-fold, .agent-wall-item, .agent-wall-toggle, .agent-wall-hide, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
+	.agent-wall, .agent-wall.is-leaving, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
+	.agent-wall-fold, .agent-wall-toggle, .agent-wall-toggle > .icon, .agent-wall-hide, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
 }

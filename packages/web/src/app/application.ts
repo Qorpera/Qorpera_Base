@@ -1554,7 +1554,7 @@ export function mountApplication(
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
-							// The agent's wall on top of its thread, read with the member's own folder client and again after
+							// The agent's wall above its composer, read with the member's own folder client and again after
 							// each change hint of the company's folder (the apps' hint channel).
 							agentWall: {
 								read: agentWallReader(() =>

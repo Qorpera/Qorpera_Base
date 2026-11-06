@@ -2,18 +2,17 @@ import { foldWallDone, parseWall, type Wall, type WallItem, wallPreview } from "
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { forgetPictureUrl, pictureUrl } from "../app/folder-images.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { agentFigure } from "./avatar.ts";
 import { h, icon, replace } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
 import { markdownInline } from "./markdown.ts";
 import { leave, playOnce } from "./motion.ts";
 import { phrase, presentationDay, t } from "./preferences.ts";
 
-/* An agent's wall, pinned on top of its chat (Jonas, 5 Nov 2026, direction A): a poster that folds to one line. Its
- * header row has the agent's figure, "N waits on you · N working on · N done" and Fold/Open; open, it shows what waits
- * on the member (first, highlighted), what the agent is working on, and what it has done (the two newest, then "N more
- * done", which shows the rest of the week and how many are earlier). The wall is the file
- * QorperaOS/agents/<handle>/wall.md (@qorpera/cloud-client/agent-wall); the view reads it and hands its text here.
+/* An agent's wall, right above its composer (Jonas, 6 Nov 2026): one small centred button, "N waits on you · N working
+ * · N new", that opens upward and pushes the chat up. Open, it shows what the agent has done (one line that opens to the
+ * week and how many are earlier), what it is working on, and, nearest the composer, what waits on the member. The wall
+ * is the file QorperaOS/agents/<handle>/wall.md (@qorpera/cloud-client/agent-wall); the view reads it and hands its text
+ * here.
  *
  * Each item is a headline (Jonas, 5 November 2026: no more text per headline than a glance takes). One with more to it
  * (a detail, a link) is a row that opens on a click: its detail and links, drawn as a message draws them, so its folder
@@ -27,7 +26,7 @@ import { phrase, presentationDay, t } from "./preferences.ts";
 
 export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">;
 
-/** Done items shown while the done part is short. */
+/** Done items its line opens to, at the least. */
 const DONE_SHORT = 2;
 const SEEN_KEY = "qorpera.agent-wall.seen.";
 const FOLD_KEY = "qorpera.agent-wall.folded.";
@@ -145,18 +144,23 @@ export interface WallPosterOptions {
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** After the member hid the poster (and it left), so the view can put focus where they find it again. */
 	onHide?: () => void;
+	/** The member means to answer what waits on them: the view puts them in its composer. */
+	onAnswer?: () => void;
 }
 
 export class AgentWallPoster {
 	readonly el: HTMLElement;
 	readonly #toggle: HTMLButtonElement;
-	readonly #figure = h("span", { class: "agent-wall-figure", "aria-hidden": "true" });
-	readonly #summary = h("p", { class: "agent-wall-summary" });
+	/** What the closed button leads with: a dot when something waits, else a spinner while something is worked on. */
+	readonly #state = h("span", { class: "agent-wall-state", "aria-hidden": "true" });
+	readonly #summary = h("span", { class: "agent-wall-summary" });
+	readonly #closeWord = h("span", { class: "agent-wall-close-word" });
 	readonly #body = h("div", { class: "agent-wall-body", id: `agent-wall-${crypto.randomUUID()}` });
 	readonly #fold: HTMLElement;
 	readonly #hide: HTMLButtonElement;
 	readonly #member: string;
 	readonly #onHide: (() => void) | undefined;
+	readonly #onAnswer: (() => void) | undefined;
 	readonly #image: WallPosterOptions["image"];
 	/** Previews read for this agent, by path: a picture is read once while the poster shows the agent. */
 	#pictures = new Map<string, Promise<string | null>>();
@@ -167,14 +171,11 @@ export class AgentWallPoster {
 	#text: string | null = null;
 	#key = "";
 	#today = "";
-	#figureKey = "";
 	#open = false;
-	/** The whole week of done items is shown. */
-	#moreDone = false;
+	/** The member opened the done line to the week; else it shows only what is new. */
+	#doneOpen = false;
 	/** Items new since the member last saw this wall, while the poster shows this agent. */
 	#fresh = new Set<string>();
-	/** The items of the wall shown last: a new one that joins opens the poster. */
-	#present = new Set<string>();
 	/** Items drawn so far: one that joins later comes in moving. */
 	#drawn: Set<string> | undefined;
 	/** The items drawn, by key, for an item that opens later. */
@@ -191,24 +192,32 @@ export class AgentWallPoster {
 	constructor(options: WallPosterOptions = {}) {
 		this.#member = options.member ?? "";
 		this.#onHide = options.onHide;
+		this.#onAnswer = options.onAnswer;
 		this.#image = options.image;
 		this.#hide = h(
 			"button",
 			{ type: "button", class: "agent-wall-hide", onclick: () => this.#hideWall() },
-			icon("close"),
+			t("Hide"),
 		);
-		this.#toggle = h("button", {
-			type: "button",
-			class: "agent-wall-toggle",
-			"aria-controls": this.#body.id,
-			onclick: () => this.#setOpen(!this.#open),
-		});
+		this.#toggle = h(
+			"button",
+			{
+				type: "button",
+				class: "agent-wall-toggle",
+				"aria-controls": this.#body.id,
+				onclick: () => this.#setOpen(!this.#open),
+			},
+			this.#state,
+			this.#summary,
+			this.#closeWord,
+			icon("chevron"),
+		);
 		this.#fold = h("div", { class: "agent-wall-fold" }, this.#body);
 		this.el = h(
 			"section",
 			{ class: "agent-wall", hidden: true },
-			h("div", { class: "agent-wall-head" }, this.#figure, this.#summary, this.#toggle, this.#hide),
 			this.#fold,
+			h("div", { class: "agent-wall-bar" }, this.#toggle, this.#hide),
 		);
 	}
 
@@ -226,7 +235,7 @@ export class AgentWallPoster {
 		if (agent?.id !== this.#agent?.id) {
 			this.#fresh = new Set();
 			this.#drawn = undefined;
-			this.#moreDone = false;
+			this.#doneOpen = false;
 			this.#expanded = new Set();
 			this.#forgetPictures();
 			this.#stopLeaving();
@@ -256,11 +265,8 @@ export class AgentWallPoster {
 		// Marks stay while the poster shows this agent; a wall seen for the first time has nothing to mark.
 		this.#fresh = new Set([...this.#fresh].filter((item) => present.has(item)));
 		if (seen) for (const item of keys) if (!seen.has(item)) this.#fresh.add(item);
-		if (!this.#drawn) {
-			const folded = readFolded(where);
-			this.#open = this.#fresh.size > 0 || (folded === null ? wall.waiting.length > 0 : !folded);
-		} else if ([...this.#fresh].some((item) => !this.#present.has(item))) this.#open = true;
-		this.#present = present;
+		// Closed until the member opens it, however much is new: the button says so and the chat keeps its room.
+		if (!this.#drawn) this.#open = readFolded(where) === false;
 		this.el.hidden = false;
 		this.#draw(agent, wall, today);
 		this.#syncOpen();
@@ -403,25 +409,28 @@ export class AgentWallPoster {
 	#setOpen(open: boolean): void {
 		if (open === this.#open) return;
 		this.#open = open;
-		if (this.#agent) writeFolded(slot(this.#member, this.#agent.id), !open);
+		const agent = this.#agent;
+		if (agent) writeFolded(slot(this.#member, agent.id), !open);
+		if (open && agent && this.#text !== null)
+			writeSeen(slot(this.#member, agent.id), keysOf(parseWall(this.#text).wall));
+		// Closed again, what was new has been seen: the button no longer counts it.
+		if (!open) {
+			this.#fresh = new Set();
+			this.#doneOpen = false;
+		}
+		if (agent && this.#text !== null) this.#draw(agent, parseWall(this.#text).wall, this.#today);
 		this.#syncOpen();
-		if (open && this.#agent && this.#text !== null)
-			writeSeen(slot(this.#member, this.#agent.id), keysOf(parseWall(this.#text).wall));
 	}
 
 	#syncOpen(): void {
 		this.el.classList.toggle("is-folded", !this.#open);
 		this.#fold.inert = !this.#open;
-		this.#toggle.textContent = this.#open ? t("Fold") : t("Open");
+		// Open, the rows say what the summary said: the button says what it does.
+		this.#closeWord.textContent = t("Close");
 		this.#toggle.setAttribute("aria-expanded", String(this.#open));
 	}
 
 	#draw(agent: WallPosterAgent, wall: Wall, today: string): void {
-		const figureKey = JSON.stringify([agent.id, agent.displayName, agent.appearance, agent.templateId]);
-		if (figureKey !== this.#figureKey) {
-			this.#figureKey = figureKey;
-			replace(this.#figure, agentFigure(agent, agent.displayName, { size: 22 }));
-		}
 		this.el.setAttribute("aria-label", t("{name}'s wall", { name: agent.displayName }));
 		const hide = t("Hide. Latest notes on {name}'s card brings it back.", { name: agent.displayName });
 		this.#hide.setAttribute("aria-label", hide);
@@ -429,13 +438,23 @@ export class AgentWallPoster {
 		const counts: Node[] = [];
 		const count = (n: number, one: string, many = one, className?: string) => {
 			if (!n) return;
-			if (counts.length) counts.push(document.createTextNode(" · "));
-			counts.push(h("span", className ? { class: className } : null, t(n === 1 ? one : many, { n })));
+			counts.push(
+				h(
+					"span",
+					className ? { class: className } : null,
+					`${counts.length ? " · " : ""}${t(n === 1 ? one : many, { n })}`,
+				),
+			);
 		};
+		const doneKey = (done: Wall["done"][number]) => itemKey("done", `${done.day}: ${done.text}`);
+		const newDone = wall.done.filter((done) => this.#fresh.has(doneKey(done)));
 		count(wall.waiting.length, phrase("{n} waits on you"), phrase("{n} wait on you"), "agent-wall-count-waiting");
-		count(wall.working.length, phrase("{n} working on"));
-		count(wall.done.length, phrase("{n} done"));
+		count(wall.working.length, phrase("{n} working"));
+		// What was just finished says more than the whole count.
+		if (newDone.length) count(newDone.length, phrase("{n} just done"));
+		else count(wall.done.length, phrase("{n} done"));
 		replace(this.#summary, ...counts);
+		this.#state.className = `agent-wall-state${wall.waiting.length ? " is-waiting" : wall.working.length ? " is-working" : ""}`;
 
 		const drawn = new Set<string>();
 		this.#items = new Map();
@@ -446,11 +465,7 @@ export class AgentWallPoster {
 			drawn.add(key);
 			this.#items.set(key, entry);
 			const fresh = this.#fresh.has(key);
-			const mark = h(
-				"span",
-				{ class: "agent-wall-mark", "aria-hidden": "true" },
-				part === "done" ? "✓" : part === "waiting" ? "!" : "",
-			);
+			const mark = h("span", { class: "agent-wall-mark", "aria-hidden": "true" }, part === "done" ? "✓" : "");
 			const news = fresh ? h("span", { class: "visually-hidden" }, ` (${t("New")})`) : null;
 			const links = [...entry.text.matchAll(LINK)].map((match) => match[0]);
 			const opens = Boolean(entry.detail || links.length || wallPreview(entry));
@@ -500,89 +515,94 @@ export class AgentWallPoster {
 					detail,
 				);
 			}
-			// What joins the wall while it is on screen comes in moving; a highlight fades in on what is new.
+			if (part === "waiting" && this.#onAnswer) {
+				row.classList.add("has-answer");
+				row.append(
+					h(
+						"button",
+						{ type: "button", class: "btn btn-small agent-wall-answer", onclick: () => this.#onAnswer?.() },
+						t("Answer"),
+					),
+				);
+			}
+			// What joins the wall while it is on screen comes in moving.
 			if (this.#drawn && !this.#drawn.has(key)) playOnce(row, "is-entering");
 			return row;
 		};
-		const part = (name: Part, heading: string, rows: Node[], foot?: Node | null) =>
+		const part = (name: Part, label: string, rows: Node[]) =>
 			rows.length
 				? h(
 						"div",
-						{ class: `agent-wall-part is-${name}` },
-						h(
-							"h2",
-							{ class: "agent-wall-heading" },
-							heading,
-							h(
-								"span",
-								{ class: "agent-wall-number" },
-								String(name === "done" ? wall.done.length : rows.length),
-							),
-						),
+						{ class: `agent-wall-part is-${name}`, role: "group", "aria-label": label },
 						h("ul", { class: "agent-wall-list" }, rows),
-						foot ?? null,
 					)
 				: null;
 
 		const { recent } = foldWallDone(wall.done, today);
-		const longest = Math.max(DONE_SHORT, recent.length);
-		const extra = Math.max(0, Math.min(longest, wall.done.length) - DONE_SHORT);
-		const shownDone = wall.done.slice(0, this.#moreDone && extra ? longest : DONE_SHORT);
-		const earlier = wall.done.length - Math.min(longest, wall.done.length);
-		let foot: HTMLElement | null = null;
-		if (extra && !this.#moreDone)
-			foot = h(
-				"p",
-				{ class: "agent-wall-more" },
-				h(
-					"button",
-					{ type: "button", class: "agent-wall-link", onclick: () => this.#setMoreDone(true) },
-					t("{n} more done", { n: extra }),
-				),
-			);
-		else if (extra || earlier)
-			foot = h(
-				"p",
-				{ class: "agent-wall-more" },
-				earlier ? t("Earlier: {n}", { n: earlier }) : null,
-				earlier && extra ? " · " : null,
-				extra
-					? h(
-							"button",
-							{ type: "button", class: "agent-wall-link", onclick: () => this.#setMoreDone(false) },
-							t("Show fewer"),
-						)
-					: null,
-			);
+		const longest = Math.min(wall.done.length, Math.max(DONE_SHORT, recent.length));
+		const earlier = wall.done.length - longest;
+		// What is new, until the member asks for the rest; oldest first, so the newest stands nearest the work going on.
+		const doneList = [...(this.#doneOpen ? wall.done.slice(0, longest) : newDone)].reverse();
+		const rest = wall.done.length - doneList.length;
+		const doneWords = this.#doneOpen
+			? earlier
+				? `${t("Show fewer")} · ${t("Earlier: {n}", { n: earlier })}`
+				: t("Show fewer")
+			: newDone.length
+				? t("{n} more done", { n: rest })
+				: t("{n} done", { n: rest });
+		const doneLine =
+			this.#doneOpen || rest > 0
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "agent-wall-row agent-wall-done",
+							"aria-expanded": String(this.#doneOpen),
+							onclick: () => this.#setDoneOpen(!this.#doneOpen),
+						},
+						h("span", { class: "agent-wall-mark", "aria-hidden": "true" }),
+						h("span", { class: "agent-wall-text" }, doneWords),
+						icon("chevron"),
+					)
+				: null;
 		replace(
 			this.#body,
-			part(
-				"waiting",
-				t("Waits on you"),
-				wall.waiting.map((entry) => item("waiting", entry)),
-			),
+			wall.done.length
+				? h(
+						"div",
+						{ class: "agent-wall-part is-done", role: "group", "aria-label": t("Done") },
+						doneLine,
+						doneList.length
+							? h(
+									"ul",
+									{ class: "agent-wall-list" },
+									doneList.map((done) => item("done", done, `${done.day}: ${done.text}`)),
+								)
+							: null,
+					)
+				: null,
 			part(
 				"working",
 				t("Working on"),
 				wall.working.map((entry) => item("working", entry)),
 			),
 			part(
-				"done",
-				t("Done"),
-				shownDone.map((done) => item("done", done, `${done.day}: ${done.text}`)),
-				foot,
+				"waiting",
+				t("Waits on you"),
+				wall.waiting.map((entry) => item("waiting", entry)),
 			),
 		);
-		// Done items the member shows with "more done" slide in the first time; what was drawn before stays still.
+		// Done items the member opens slide in the first time; what was drawn before stays still.
 		this.#drawn = new Set([...(this.#drawn ?? []), ...drawn]);
 	}
 
-	#setMoreDone(more: boolean): void {
-		this.#moreDone = more;
+	#setDoneOpen(open: boolean): void {
+		this.#doneOpen = open;
 		const agent = this.#agent;
 		const text = this.#text;
 		if (!agent || text === null) return;
 		this.#draw(agent, parseWall(text).wall, this.#today);
-		this.#body.querySelector<HTMLButtonElement>(".agent-wall-more .agent-wall-link")?.focus();
+		this.#body.querySelector<HTMLButtonElement>(".agent-wall-done")?.focus();
 	}
 }

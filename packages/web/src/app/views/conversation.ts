@@ -256,7 +256,7 @@ export class ConversationView {
 	/** The first sequence of the live log: the oldest item the thread showed first. */
 	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
-	/** The agent's wall, pinned above the messages of its own thread (ui/agent-wall-poster.ts). */
+	/** The agent's wall, right above the composer of its own thread (ui/agent-wall-poster.ts). */
 	readonly #wall: AgentWallPoster;
 	/** The agent whose wall is read, its text as last read, and the read on its way. */
 	#wallAgent: string | undefined;
@@ -415,6 +415,9 @@ export class ConversationView {
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
 			...(actions.folderImage ? { image: actions.folderImage } : {}),
+			onAnswer: () => {
+				if (!this.#composer.disabled) this.#composer.focus();
+			},
 			onHide: () => {
 				if (this.#disposed || document.activeElement?.closest("input, textarea")) return;
 				if (this.#identity.getClientRects().length) this.#identity.focus({ preventScroll: true });
@@ -754,13 +757,13 @@ export class ConversationView {
 			"div",
 			{ class: "thread-conversation" },
 			this.#header,
-			this.#wall.el,
 			this.#messages,
 			this.#earlierStatus,
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
 			this.#coding.el,
+			this.#wall.el,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
@@ -965,7 +968,7 @@ export class ConversationView {
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
-					// From the member's private chat too: the wall is on top of the agent's company thread.
+					// From the member's private chat too: the wall is in the agent's company thread.
 					notes: wall?.show
 						? { open: () => wall.show?.(agent.id), read: (signal) => wall.read(agent.id, signal) }
 						: undefined,
@@ -990,7 +993,7 @@ export class ConversationView {
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
-		// The wall is on top of the agent's company thread only: from its private chat the app opens that thread.
+		// The wall is in the agent's company thread only: from its private chat the app opens that thread.
 		if (page === "wall" && this.#wallAgent !== agentId) return false;
 		// The computer and the wall sit under the pages laid over the thread: they close for them.
 		this.#closePair(false);
