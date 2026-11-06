@@ -3,6 +3,7 @@
  * their size and colours. Colours are tokens only, so the dark theme follows. */
 .agent-wall {
 	--agent-wall-accent: var(--composer-accent);
+	container: agent-wall / inline-size;
 	flex: none; position: relative; padding: 0 16px; font-family: var(--font-sans);
 	animation: agent-wall-in var(--motion-slow) var(--ease-out) both;
 }
@@ -124,12 +125,17 @@
 	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
 }
 .agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
+/* Room for that button on the line, on both sides so the wall's stays centred. */
+.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
+/* A narrow conversation, on a phone or beside a panel: the button says only its first count, and gives up the centre. */
+@container agent-wall (max-width: 30em) {
+	.agent-wall-summary > :not(:first-child) { display: none; }
+	.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
+}
 /* A finger's reach, without a bigger outline. */
 @media (pointer: coarse) { .agent-wall-toggle { position: relative; } .agent-wall-toggle::after { content: ""; position: absolute; inset: -6px 0; } .agent-wall .agent-wall-answer::after { content: ""; position: absolute; inset: -8px -4px; } }
 @media (max-width: 760px) {
 	.agent-wall-body { max-height: 40dvh; }
-	/* Narrow, the button says only its first count, which leaves room beside a draft's button. */
-	.agent-wall-summary > :not(:first-child) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.agent-wall, .agent-wall.is-leaving, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
