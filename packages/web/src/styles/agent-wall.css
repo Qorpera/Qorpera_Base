@@ -117,9 +117,10 @@
 .agent-wall-preview.is-app .app-card-emblem svg { width: 28px; height: 28px; }
 .agent-wall-preview.is-app .app-card-note { display: block; }
 
-/* A draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
- * its width, which a draft's preview is measured against; an open draft or a note takes its own place above the composer. */
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches:not(:empty)):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
+/* One draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
+ * its width, which a draft's preview is measured against. Several drafts, an open draft or a note take their own place
+ * above the composer, clear of the wall's button. */
+.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
 	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
 }
 .agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
