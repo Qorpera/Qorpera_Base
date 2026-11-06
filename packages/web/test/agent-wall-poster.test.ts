@@ -189,7 +189,8 @@ describe("an agent's wall above its composer", () => {
 	});
 
 	it("settles only the item answered, until it leaves the wall", () => {
-		const poster = new AgentWallPoster({ onAnswer: vi.fn() });
+		const onAnswer = vi.fn();
+		const poster = new AgentWallPoster({ onAnswer });
 		const both = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n";
 		const first = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n";
 		const second = "# Wall\n\n## Waits on you\n- Approve the post\n  The second.\n";
@@ -200,7 +201,10 @@ describe("an agent's wall above its composer", () => {
 		buttons()[1]?.click();
 		// Pressing Answer settles nothing until the answer is sent.
 		expect(summary()).toBe("2 wait on you");
-		poster.answerSent();
+		// A press on another item meanwhile changes nothing about the answer on its way.
+		const sending = onAnswer.mock.lastCall?.[1] as string;
+		buttons()[0]?.click();
+		poster.answerSent(sending);
 		expect(buttons().map((button) => button.textContent)).toEqual(["Answer", "Answered"]);
 		expect(summary()).toBe("1 waits on you · 1 answered");
 		// The answered one goes: its answer does not pass to the other.
@@ -210,7 +214,7 @@ describe("an agent's wall above its composer", () => {
 		poster.show(AGENT, second, TODAY);
 		expect(buttons().map((button) => button.textContent)).toEqual(["Answer"]);
 		buttons()[0]?.click();
-		poster.answerSent();
+		poster.answerSent(onAnswer.mock.lastCall?.[1] as string);
 		// With nothing else left, the closed button still says something.
 		expect(summary()).toBe("1 answered");
 	});
@@ -231,7 +235,7 @@ describe("an agent's wall above its composer", () => {
 		// The question moved down to the composer.
 		expect(poster.el.classList.contains("is-folded")).toBe(true);
 		// Answered, it waits on nobody; the agent takes it off when it has read the answer.
-		poster.answerSent();
+		poster.answerSent(onAnswer.mock.calls[0]?.[1] as string);
 		expect(poster.el.querySelector(".agent-wall-answer")?.textContent).toBe("Answered");
 		expect(poster.el.querySelector(".agent-wall-count-waiting")).toBeNull();
 		// It can still be answered again.

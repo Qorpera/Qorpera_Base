@@ -120,7 +120,8 @@ export interface WallPosterOptions {
 	/** Reads a picture of the company's folder an item links, for its preview; null when there is none to show. */
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** The member means to answer what waits on them: the view puts them in its composer. */
-	onAnswer?: (question: string) => void;
+	/** The member pressed Answer: the question's words, and the item to name to `answerSent`. */
+	onAnswer?: (question: string, item: string) => void;
 }
 
 export class AgentWallPoster {
@@ -133,7 +134,7 @@ export class AgentWallPoster {
 	readonly #body = h("div", { class: "agent-wall-body", id: `agent-wall-${crypto.randomUUID()}` });
 	readonly #fold: HTMLElement;
 	readonly #member: string;
-	readonly #onAnswer: ((question: string) => void) | undefined;
+	readonly #onAnswer: WallPosterOptions["onAnswer"];
 	readonly #image: WallPosterOptions["image"];
 	/** Previews read for this agent, by path: a picture is read once while the poster shows the agent. */
 	#pictures = new Map<string, Promise<string | null>>();
@@ -147,8 +148,6 @@ export class AgentWallPoster {
 	#open = false;
 	/** The member opened the done line to the week; else it shows only what is new. */
 	#doneOpen = false;
-	/** The item the member last pressed Answer on (answerKey). */
-	#answering: string | undefined;
 	/** Items answered from here: until the agent takes them off the wall, they wait on nobody. */
 	#answered = new Set<string>();
 	/** Items new since the member last saw this wall, while the poster shows this agent. */
@@ -204,7 +203,6 @@ export class AgentWallPoster {
 			this.#drawn = undefined;
 			this.#doneOpen = false;
 			this.#expanded = new Set();
-			this.#answering = undefined;
 			this.#answered = new Set();
 			this.#forgetPictures();
 		} else if (text !== this.#text) {
@@ -339,10 +337,9 @@ export class AgentWallPoster {
 		}
 	}
 
-	/** The answer begun with Answer has been sent. */
-	answerSent(): void {
-		if (this.#answering) this.#answered.add(this.#answering);
-		this.#answering = undefined;
+	/** The answer to this item (from `onAnswer`) has been sent. */
+	answerSent(item: string): void {
+		this.#answered.add(item);
 		if (this.#agent && this.#text !== null && !this.el.hidden)
 			this.#draw(this.#agent, parseWall(this.#text).wall, this.#today);
 	}
@@ -469,9 +466,8 @@ export class AgentWallPoster {
 							...(done ? { title: t("Answer again"), "aria-label": t("Answer again") } : {}),
 							onclick: () => {
 								// The question moves down into the composer.
-								this.#answering = answerKey(entry);
 								this.#setOpen(false);
-								this.#onAnswer?.(plainWords(entry.text));
+								this.#onAnswer?.(plainWords(entry.text), answerKey(entry));
 							},
 						},
 						done ? t("Answered") : t("Answer"),

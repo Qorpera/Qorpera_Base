@@ -286,6 +286,8 @@ export class ConversationView {
 	readonly #answerStrip: HTMLElement;
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
 	#answerShown: string | undefined;
+	/** The wall's item that question is, once Answer was pressed in this view. */
+	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
 	/** Names to mention, shown while "@" and the start of a name are typed. */
@@ -418,8 +420,9 @@ export class ConversationView {
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
 			...(actions.folderImage ? { image: actions.folderImage } : {}),
-			onAnswer: (question) => {
+			onAnswer: (question, item) => {
 				if (this.#composer.disabled) return;
+				this.#answeringItem = item;
 				company.conversation(sessionId).set({ answering: replyQuestion(question) });
 				this.#composer.focus();
 			},
@@ -1787,6 +1790,7 @@ export class ConversationView {
 		const state = this.#company.conversation(this.#sessionId).get();
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
+		const answered = state.answering ? this.#answeringItem : undefined;
 		this.#submitting = true;
 		this.#syncSend();
 		void (async () => {
@@ -1810,7 +1814,7 @@ export class ConversationView {
 					return;
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
-					if (state.answering) this.#wall.answerSent();
+					if (answered) this.#wall.answerSent(answered);
 					if (!this.#isRoom) this.#run?.messageSent();
 					void this.#execution?.refresh();
 				}
