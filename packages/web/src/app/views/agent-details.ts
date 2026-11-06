@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { wallHidden, wallNews } from "../../ui/agent-wall-poster.ts";
+import { wallNews } from "../../ui/agent-wall-poster.ts";
 import { figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
@@ -25,7 +25,7 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
-	/** "Latest notes": the agent's wall above its composer, shown again and open. The row shows once `read` finds a
+	/** "Latest notes": the agent's wall above its composer, open. The row shows once `read` finds a
 	 * wall with something on it. */
 	notes?: { open: () => void; read: (signal: AbortSignal) => Promise<string | null> };
 }
@@ -217,8 +217,8 @@ export class AgentDetails {
 		onClose();
 	}
 
-	/** "Latest notes", shown once the agent's wall is read and has an item; while the member has the wall hidden, it
-	 * says how many items are new since they last saw it. A wall that cannot be read leaves the row away. */
+	/** "Latest notes", shown once the agent's wall is read and has an item; it says how many items are new since the
+	 * member last saw it open. A wall that cannot be read leaves the row away. */
 	#notesLink(notes: NonNullable<AgentCardActions["notes"]>, then: (act: () => void) => () => void): HTMLElement {
 		const count = h("span", { class: "agent-card-count", hidden: true });
 		const row = h(
@@ -236,9 +236,8 @@ export class AgentDetails {
 				const member = this.#company.userId;
 				const { items, unseen } = wallNews(member, this.#agent.id, text);
 				if (!items) return;
-				const news = wallHidden(member, this.#agent.id) ? unseen : 0;
-				count.hidden = !news;
-				count.textContent = news === 1 ? t("1 new") : news ? t("{n} new", { n: news }) : "";
+				count.hidden = !unseen;
+				count.textContent = unseen === 1 ? t("1 new") : unseen ? t("{n} new", { n: unseen }) : "";
 				row.hidden = false;
 			},
 			() => {

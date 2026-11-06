@@ -410,18 +410,11 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
-		// Hidden, the poster gives focus to the agent's name where the thread shows it (a phone), whose card has Latest
-		// notes to bring it back; else to the composer, as the thread opens.
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
 			...(actions.folderImage ? { image: actions.folderImage } : {}),
 			onAnswer: () => {
 				if (!this.#composer.disabled) this.#composer.focus();
-			},
-			onHide: () => {
-				if (this.#disposed || document.activeElement?.closest("input, textarea")) return;
-				if (this.#identity.getClientRects().length) this.#identity.focus({ preventScroll: true });
-				else if (!this.#composer.disabled) this.#composer.focus({ preventScroll: true });
 			},
 		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
