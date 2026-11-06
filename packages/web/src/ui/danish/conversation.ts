@@ -377,6 +377,9 @@ export const CONVERSATION: Record<string, string> = {
 	// Cards an agent raises (ui/interaction-card.ts)
 	"Waiting for you": "Venter på dig",
 	Answered: "Besvaret",
+	Answering: "Svarer på",
+	"Stop answering": "Stop med at svare",
+	"Your answer…": "Dit svar…",
 	Declined: "Afvist",
 	Expired: "Udløbet",
 	Question: "Spørgsmål",

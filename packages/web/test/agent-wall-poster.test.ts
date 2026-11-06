@@ -2,6 +2,7 @@
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentWallReader } from "../src/app/agent-wall.ts";
+import { replyQuestion } from "../src/cloud/wall-reply.ts";
 import { AgentWallPoster, type WallPosterAgent, wallNews } from "../src/ui/agent-wall-poster.ts";
 import { markdownInline } from "../src/ui/markdown.ts";
 
@@ -196,8 +197,18 @@ describe("an agent's wall above its composer", () => {
 		expect(answers).toHaveLength(1);
 		expect(answers[0]?.closest(".agent-wall-part")?.classList.contains("is-waiting")).toBe(true);
 		expect(answers[0]?.closest(".agent-wall-row")).toBeNull();
-		answers[0]?.click();
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")?.click();
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-answer")?.click();
 		expect(onAnswer).toHaveBeenCalledTimes(1);
+		const question = onAnswer.mock.calls[0]?.[0] as string;
+		expect(question.length).toBeGreaterThan(0);
+		// The question moved down to the composer.
+		expect(poster.el.classList.contains("is-folded")).toBe(true);
+		// Answered, it waits on nobody; the agent takes it off when it has read the answer.
+		poster.answered(new Set([replyQuestion(question)]));
+		expect(poster.el.querySelector(".agent-wall-answer")).toBeNull();
+		expect(poster.el.querySelector(".agent-wall-answered")?.textContent).toBe("Answered");
+		expect(poster.el.querySelector(".agent-wall-count-waiting")).toBeNull();
 		const without = new AgentWallPoster({ member: "someone-else" });
 		without.show(AGENT, WALL, TODAY);
 		expect(without.el.querySelector(".agent-wall-answer")).toBeNull();

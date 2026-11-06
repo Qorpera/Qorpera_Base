@@ -62,6 +62,7 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
+import { withReply } from "../cloud/wall-reply.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
@@ -244,6 +245,8 @@ export interface CompanyState {
 
 export interface ConversationState {
 	sessionId: string;
+	/** The wall's question the member is answering: the next message opens with it (cloud/wall-reply.ts). */
+	answering?: string;
 	events: HostedSessionEvent[];
 	pending: PendingSessionInput[];
 	projection: TranscriptProjection;
@@ -2430,10 +2433,12 @@ export class CompanyController {
 			return false;
 		}
 		const store = this.conversation(sessionId);
-		const trimmed = text.trim();
+		const files = [...(store.get().attachments ?? [])];
+		const words = text.trim();
+		const answering = store.get().answering;
+		const trimmed = answering && (words || files.length) ? withReply(answering, words) : words;
 		// The quotes of the text as sent: its records' words in their marks, counted from the trimmed start.
 		const quotes = placeQuotes(trimmed, store.get().quoteRecords ?? []);
-		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
 		// The last guard: a quote's words with one mark gone never go as the member's own.
 		if (brokenQuotes(trimmed, store.get().quoteRecords ?? []).length) {
@@ -2548,6 +2553,7 @@ export class CompanyController {
 				return {
 					sending: false,
 					retrySend: undefined,
+					answering: undefined,
 					draft: rest,
 					// The records go with the sent text; words another member added meanwhile keep theirs.
 					quoteRecords: rest ? state.quoteRecords : undefined,

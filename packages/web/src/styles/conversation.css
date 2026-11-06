@@ -166,6 +166,15 @@
 /* A quote of outside content (an email's words) lies in the same copy: one piece in its «» marks, tinted as quoted.
  * Only colours change, never the font or spacing, so the copy keeps the field's wrapping. */
 .composer-quote { color: var(--text-muted); background: var(--hover); border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+/* The wall's question being answered, at the top of the composer. */
+.composer-answer { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
+.composer-answer[hidden] { display: none; }
+.composer-answer-words { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 1px 0 1px 9px; border-left: 3px solid var(--composer-accent); }
+.composer-answer-label { color: var(--composer-accent); font-size: 12px; font-weight: 600; line-height: 15px; }
+.composer-answer-question { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-answer-stop { flex: none; width: 26px; height: 26px; color: var(--text-muted); }
+.composer-answer-stop svg { width: 14px; height: 14px; }
+.message-reply { display: block; margin-bottom: 6px; padding-left: 8px; border-left: 2px solid currentColor; font-size: 13px; line-height: 17px; opacity: .78; }
 .composer-quote-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-quote-note[hidden] { display: none; }
 /* The same quotes in written messages: set apart as quoted, never read as the member's own words. */
