@@ -117,14 +117,17 @@
 .agent-wall-preview.is-app .app-card-emblem svg { width: 28px; height: 28px; }
 .agent-wall-preview.is-app .app-card-note { display: block; }
 
-/* A draft's button shares the line with the wall's: the draft on the left, the wall in the centre. A phone stacks them. */
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts { position: relative; z-index: 1; width: fit-content; max-width: calc(50% - 140px); margin-top: -40px; }
+/* A draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
+ * its width, which a draft's preview is measured against; an open draft or a note takes its own place above the composer. */
+.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches:not(:empty)):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
+	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
+}
+.agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
 /* A finger's reach, without a bigger outline. */
 @media (pointer: coarse) { .agent-wall-toggle { position: relative; } .agent-wall-toggle::after { content: ""; position: absolute; inset: -6px 0; } .agent-wall .agent-wall-answer::after { content: ""; position: absolute; inset: -8px -4px; } }
 @media (max-width: 760px) {
 	.agent-wall-body { max-height: 40dvh; }
 	/* Narrow, the button says only its first count, which leaves room beside a draft's button. */
-	.agent-wall:not([hidden]) ~ .composer > .composer-drafts { max-width: 30%; }
 	.agent-wall-summary > :not(:first-child) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
