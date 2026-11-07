@@ -10,6 +10,9 @@ export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
 	stop(): void;
+	/** Whether the channel is subscribed now. A failure while the page is hidden is held back from the health callback, so
+	 * the health can say connected while no hints come; this says what is so. */
+	live(): boolean;
 }
 
 /** A channel's health. `recovered`: this subscription replaces a channel that failed, so hints may have been missed,
@@ -192,6 +195,7 @@ function keepSubscribed(cloud: Cloud, open: () => RealtimeChannel, onHealth: Rea
 	onHealth("connecting");
 	subscribe();
 	return {
+		live: () => subscribed && !stopped,
 		stop() {
 			if (stopped) return;
 			stopped = true;

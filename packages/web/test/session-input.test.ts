@@ -154,7 +154,8 @@ describe("member message transport", () => {
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 		const [url, request] = f.fetch.mock.calls[0]!;
 		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_request_session_turn_v2");
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		expect(request?.cache).toBeUndefined();
 		expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request?.body as string)).toEqual({
 			p_session_id: session.sessionId,
