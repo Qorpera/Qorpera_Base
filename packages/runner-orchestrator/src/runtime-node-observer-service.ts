@@ -194,7 +194,11 @@ export type ObserverReport<State extends string> = (state: State, reason: Runtim
 
 /** The observer's journal line for one look: `{event, state}`, and for a look that was not whole its step, closed code
  * and entry kinds (`check`, `code`, `entries`). Nothing else: a healthy line is the same as before. */
-export function runtimeNodeObserverLine(event: string, state: string, reason: RuntimeNodeObserverReason | null): string {
+export function runtimeNodeObserverLine(
+	event: string,
+	state: string,
+	reason: RuntimeNodeObserverReason | null,
+): string {
 	const why = reason
 		? { check: reason.check, code: reason.code, ...(reason.entries ? { entries: reason.entries } : {}) }
 		: {};

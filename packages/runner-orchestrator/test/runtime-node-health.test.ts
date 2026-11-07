@@ -272,7 +272,9 @@ describe("bounded node health evidence", () => {
 		const stderr = (text: string) => `process.stderr.write(${JSON.stringify(text)}); process.exitCode = 1;\n`;
 		expect(
 			await failure(
-				stderr("(node) a warning naming /etc/private\nNODE_HEALTH_COLLECTION_UNCONFIRMED NODE_HEALTH_HOST_DIFFERS\n"),
+				stderr(
+					"(node) a warning naming /etc/private\nNODE_HEALTH_COLLECTION_UNCONFIRMED NODE_HEALTH_HOST_DIFFERS\n",
+				),
 			),
 		).toBe("NODE_HEALTH_HOST_DIFFERS");
 		// An older probe's bare line, other text, or nothing at all: the probe failed, and no text is taken.

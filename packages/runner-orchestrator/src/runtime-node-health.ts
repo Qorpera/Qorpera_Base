@@ -452,8 +452,7 @@ export class RuntimeNodeHealthPublisher {
 		if (this.#pending) throw new Error("NODE_HEALTH_BUSY");
 		this.#pending = true;
 		try {
-			let observation: RuntimeNodeHealth,
-				reason: RuntimeNodeObserverReason | null;
+			let observation: RuntimeNodeHealth, reason: RuntimeNodeObserverReason | null;
 			try {
 				observation = parseRuntimeNodeHealth(await this.collect(signal));
 				if (

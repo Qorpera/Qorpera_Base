@@ -1469,7 +1469,7 @@ describe("trusted node inventory publisher composition", () => {
 				f.context.policy = structuredClone(f.policy);
 				f.context.policy.host.serverName = "other";
 			}
-			if (fault === "inventory") f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("SECRET"));
+			if (fault === "inventory") f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("SECRET /etc/x"));
 			if (["socket", "boot", "hardware"].includes(fault))
 				f.ports.host.mockResolvedValueOnce(structuredClone(f.host)).mockImplementation(async () => {
 					const h = structuredClone(f.host);
