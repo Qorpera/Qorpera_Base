@@ -114,7 +114,9 @@ describe("bounded node health evidence", () => {
 	it("gives a measured report a new time-ordered id and keeps everything else", () => {
 		vi.useFakeTimers({ now: Date.parse(until) });
 		try {
-			const report = measuredRuntimeNodeHealth({ ...sample() });
+			// As the real collection calls it: the helper adds the schema, the id and the time.
+			const { schema: _schema, observationId: _observationId, observedAt: _observedAt, ...fields } = sample();
+			const report = measuredRuntimeNodeHealth(fields);
 			expect(report.observationId[14]).toBe("7");
 			expect(report.observationId.replaceAll("-", "").slice(0, 12)).toBe(
 				Date.parse(until).toString(16).padStart(12, "0"),
