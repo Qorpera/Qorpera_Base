@@ -11,6 +11,9 @@ import {
 	APP_MANIFEST_MAX_BYTES,
 	APP_MAX_BYTES,
 	APP_MAX_FILES,
+	APP_VIDEO_FILE_MAX_BYTES,
+	APP_VIDEO_KINDS,
+	APP_VIDEOS_MAX_BYTES,
 	APPS_FOLDER,
 	type AppManifest,
 	type AppProblem,
@@ -160,6 +163,7 @@ class AppFiles {
 	readonly #signal: AbortSignal;
 	readonly #read = new Map<string, Promise<Uint8Array | null>>();
 	#bytes = 0;
+	#videoBytes = 0;
 	tooLarge = false;
 
 	constructor(folder: Folder, root: string, signal: AbortSignal) {
@@ -189,12 +193,18 @@ class AppFiles {
 			const entry = (await this.#folder.read(`${this.#root}/${path}`, this.#signal)).entry;
 			const file: CloudMemberFolderFile | null | undefined = entry?.kind === "file" ? entry.file : null;
 			if (!file) return null;
-			if (file.bytes > APP_FILE_MAX_BYTES || this.#bytes + file.bytes > APP_MAX_BYTES) {
+			const video = APP_VIDEO_KINDS.has(appFileKind(path));
+			const most = video ? APP_VIDEO_FILE_MAX_BYTES : APP_FILE_MAX_BYTES;
+			if (
+				file.bytes > most ||
+				(video ? this.#videoBytes + file.bytes > APP_VIDEOS_MAX_BYTES : this.#bytes + file.bytes > APP_MAX_BYTES)
+			) {
 				this.tooLarge = true;
 				return null;
 			}
-			this.#bytes += file.bytes;
-			return this.#folder.readFile(file, this.#signal, APP_FILE_MAX_BYTES);
+			if (video) this.#videoBytes += file.bytes;
+			else this.#bytes += file.bytes;
+			return this.#folder.readFile(file, this.#signal, most);
 		})();
 		this.#read.set(key, reading);
 		return reading;
@@ -243,7 +253,7 @@ export async function assembleApp(
 	const html = await files.text(app.entry);
 	if (html === null)
 		return files.tooLarge
-			? { ok: false, reason: "too_large", message: "The app is larger than 4 MiB or 64 files." }
+			? { ok: false, reason: "too_large", message: "The app is larger than 4 MiB and its videos, or 64 files." }
 			: { ok: false, reason: "missing", message: `The app's page, ${app.entry}, is not in its folder.` };
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
 	const page = new DOMParser().parseFromString(html, "text/html");
@@ -274,7 +284,14 @@ export async function assembleApp(
 		const url = await files.dataUrl(path);
 		if (url) media.setAttribute(attribute, url);
 	}
-	if (files.tooLarge) return { ok: false, reason: "too_large", message: "The app is larger than 4 MiB or 64 files." };
+	for (const media of [...page.querySelectorAll("video[src], source[src]")]) {
+		const path = resolveAppPath(base, media.getAttribute("src") ?? "");
+		if (path === null || !APP_VIDEO_KINDS.has(appFileKind(path))) continue;
+		const url = await files.dataUrl(path);
+		if (url) media.setAttribute("src", url);
+	}
+	if (files.tooLarge)
+		return { ok: false, reason: "too_large", message: "The app is larger than 4 MiB and its videos, or 64 files." };
 	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
 	const handed = framePage(written);
 	return handed === null

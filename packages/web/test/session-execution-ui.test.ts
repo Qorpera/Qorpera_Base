@@ -311,6 +311,72 @@ describe("room startup usage refresh", () => {
 		expect(answers().map((button) => button.textContent)).toEqual(["Answered", "Answer"]);
 		view.dispose();
 	});
+	it("sends what Enter pressed a moment before Send opened, if the text is still the same", async () => {
+		const f = setup();
+		await settle();
+		const pending = deferred<NativeExecutionConnections>();
+		f.listConnections.mockImplementationOnce(() => pending.promise);
+		refresh();
+		type(f.view, "Hello");
+		const field = f.view.el.querySelector("textarea")!;
+		expect(f.send().disabled).toBe(true);
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		pending.resolve(connections());
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+	});
+	it.each(["the question", "the files"] as const)(
+		"does not send what Enter held when %s changed before Send opened",
+		async (change) => {
+			const f = setup();
+			await settle();
+			const pending = deferred<NativeExecutionConnections>();
+			f.listConnections.mockImplementationOnce(() => pending.promise);
+			refresh();
+			type(f.view, "Hello");
+			f.view.el
+				.querySelector("textarea")!
+				.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			f.company
+				.conversation(session.sessionId)
+				.set(
+					change === "the question"
+						? { answering: "Who first?" }
+						: { attachments: [new File(["bytes"], "image.png", { type: "image/png" })] },
+				);
+			pending.resolve(connections());
+			await settle();
+			expect(f.sendMessage).not.toHaveBeenCalled();
+		},
+	);
+	it("does not send what Enter held when another item with the same headline is answered before Send opened", async () => {
+		const f = setup();
+		const wall = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n";
+		const view = new ConversationView(f.company, session.sessionId, {
+			nativeSubscription: f.native,
+			sendMessage: f.sendMessage,
+			agentWall: { read: async () => wall, onFolderChange: () => () => {} },
+		});
+		document.body.append(view.el);
+		await settle();
+		const toggle = () => view.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")!;
+		const answers = () => [...view.el.querySelectorAll<HTMLButtonElement>(".agent-wall-answer")];
+		toggle().click();
+		answers()[0]!.click();
+		await settle();
+		const pending = deferred<NativeExecutionConnections>();
+		f.listConnections.mockImplementationOnce(() => pending.promise);
+		refresh();
+		type(view, "Yes");
+		view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		toggle().click();
+		answers()[1]!.click();
+		pending.resolve(connections());
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		view.dispose();
+	});
 	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});

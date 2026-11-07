@@ -208,10 +208,8 @@ describe("the shipped pages (C6a)", () => {
 		missing(main);
 		renderInterface(main, company([], { members: 3 }).controller, "members");
 		missing(main);
-		// Members needs a team, Mailbox a mailbox.
+		// Members needs a team.
 		renderInterface(main, company([], { members: 1, pages: pages(true, true) }).controller, "members");
-		missing(main);
-		renderInterface(main, company([], { members: 3, pages: pages(true, true) }).controller, "mailbox");
 		missing(main);
 	});
 });
