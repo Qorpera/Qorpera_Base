@@ -1,4 +1,8 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import {
+	CloudRequestTimeoutError,
+	readBoundedCloudResponse,
+	withCloudDeadline,
+} from "@qorpera/cloud-client/cloud-request";
 import {
 	type CloudCodingCommandRead,
 	type CloudMachineCommandReceipt,
@@ -153,8 +157,17 @@ export function checkCloudMachineCommandReceipt(
 	return receipt;
 }
 
-/** Credential and binding are host-only; no model argument chooses a host or
- * route. There are no automatic effect retries. */
+/** A request the executor did not answer: it timed out, its connection failed, or a proxy in front of the executor
+ * answered instead (5xx). Whether it reached the executor is not known. An answer from the executor itself, a refusal or
+ * its 403 for any other failure, is not this. */
+export class CloudMachineCommandUnanswered extends Error {
+	constructor() {
+		super(ERROR);
+	}
+}
+
+/** Credential and binding are host-only; no model argument chooses a host or route. One request is sent once: only
+ * machine_run sends a start again, under its rules (cloud-machine-tools.ts). */
 export function createHttpCloudMachineCommandGateway(options: {
 	url: string;
 	token: string;
@@ -194,7 +207,13 @@ export function createHttpCloudMachineCommandGateway(options: {
 							...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
 						},
 						body,
+					}).catch(() => {
+						throw new CloudMachineCommandUnanswered();
 					});
+					if (response.status >= 500) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new CloudMachineCommandUnanswered();
+					}
 					if (response.status !== 200) {
 						// A refusal names a fixed code the agent can act on (not running, a start given up), and why
 						// the machine lost the command when the company folder made it (6e-2a): an unknown cause is dropped.
@@ -224,6 +243,8 @@ export function createHttpCloudMachineCommandGateway(options: {
 				signal,
 			);
 		} catch (error) {
+			if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+				throw new CloudMachineCommandUnanswered();
 			throw error instanceof Error && /^[A-Z][A-Z0-9_]{2,60}$/.test(error.message) ? error : new Error(ERROR);
 		}
 	};
