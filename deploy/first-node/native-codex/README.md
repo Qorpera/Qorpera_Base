@@ -188,6 +188,39 @@ model request and fail at `codex-turn-completion` with `budget_exhausted` and
 `usage_limit`. Against the previous pin (a7531592…), the mid-stream case makes six requests
 and fails without a usage signal, and the 429 case fails as `provider_failed`.
 
+## Model catalog
+
+The patch leaves model metadata alone; this section is about where it comes from at run time. Upstream, each app-server
+fetches `GET /models` at start and `thread/start` fetches it again unless the first answer is already on disk. `thread/start`
+waits for its own fetch, up to `MODELS_REFRESH_TIMEOUT` (5 s), and after a timeout the thread runs on the older catalog
+compiled into the binary. On 111 runs (7 Nov 2026) that wait was 0.4 to 5 s, mean 1.6 s, 5 s on 9 % of them. The network part is
+small (DNS, TCP and TLS to chatgpt.com take 25 ms from the exec host): the time is the provider answering.
+
+So a Codex login's process gets `-c model_catalog_json=<file>`, written from
+`packages/runtime/src/cloud-codex-model-catalog.generated.ts` into its private `config/` directory (the Codex home stays auth-only).
+Codex then uses a static catalog: no fetch at start, none at `thread/start`, and the ETag refresh does nothing. The host
+checks through `config/read` that the setting was applied. A plan run keeps asking OpenAI's API.
+
+The file is not a synthetic catalog: its `models` are the provider's own answer for this Codex version, as Codex saved them
+in a live run's `models_cache.json`, with only the `identity` and `etag` fields left out. With the same catalog the first
+provider request is byte for byte what it is when the provider serves it (`packages/runtime/test/native-codex-model-catalog.test.ts`,
+for all of `AGENT_MODELS`, on the pinned artifact). What the provider changes in its catalog reaches runs at the next refresh
+of this file, not at their next start.
+
+To refresh it, read that one file while a run is live on an execution host, as root, leave out `identity` and `etag`, and
+give the rest to `scripts/write-native-model-catalog.mjs` on its stdin:
+
+```sh
+python3 -c '
+import glob, json
+d = json.load(open(glob.glob("/var/lib/qorpera-shared-execution/slots/*/host/*/codex/models_cache.json")[0]))
+print(json.dumps({"client_version": d["client_version"], "fetched_at": d["fetched_at"], "models": d["models"]}))
+'
+```
+
+A new Codex version needs a new file: the test on `clientVersion` fails until it has one. Keep Codex's `update_plan` guidance out
+of it, as the same test checks: Codex removes that guidance only from a catalog it fetched.
+
 ## Verification and rollout boundary
 
 Six native tests cover governed versus ordinary tool selection, exact-body
