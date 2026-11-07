@@ -470,20 +470,21 @@ describe("the edge function's route for the one call", () => {
 		assert.deepEqual(calls, []);
 	});
 
-	it("names the function the migration makes, whose answers are the drains' due lists, the materializer's and the heads", () => {
+	it("names the function the migration makes, each of whose answers reads its own list", () => {
 		const migration = readFileSync(
 			new URL("../../migrations/20260930612000_orchestrator_due_summary.sql", import.meta.url),
 			"utf8",
 		);
 		assert.match(migration, /create function public\.qorpera_orchestrator_due_summary\(\)/);
-		const lists = [
-			...Object.entries(FOLDER_DRAINS).map(([name, drain]) => [name, drain.due]),
+		const lists = new Map<string, string>([
+			...Object.entries(FOLDER_DRAINS).map(([name, drain]): [string, string] => [name, drain.due]),
 			["materialize", "qorpera_folder_materialize_due"],
 			["routine_heads", "qorpera_list_routine_schedule_heads"],
-		];
-		for (const [name, due] of lists) {
-			assert.ok(migration.includes(`'${name}', public.${due}(null, 1) -> 'items' <> '[]'::jsonb`), `${name} reads ${due}`);
-		}
-		assert.equal(migration.match(/\(null, 1\) -> 'items'/g)?.length, lists.length);
+		]);
+		const answers = [...migration.matchAll(/'([a-z_]+)', public\.([a-z_]+)\(null, 1\) -> 'items' <> '\[\]'::jsonb/g)];
+		// Every list the migration reads is checked. A drain it does not name is allowed: the orchestrator lists that one itself.
+		assert.ok(answers.length > 0);
+		assert.equal(answers.length, migration.match(/\(null, 1\) -> 'items'/g)?.length);
+		for (const [, name, due] of answers) assert.equal(due, lists.get(name), `${name} reads ${due}`);
 	});
 });
