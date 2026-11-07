@@ -174,6 +174,7 @@ export class AppPanel {
 
 	async #load(fresh: boolean): Promise<void> {
 		const signal = this.#lifetime.signal;
+		if (!this.#frame) replace(this.#body, h("p", { class: "side-panel-status" }, t("Opening…")));
 		const folder = this.#host.folder();
 		let page: string | null;
 		let handle: AppCallHandler;
@@ -237,6 +238,12 @@ export class AppPanel {
 		});
 		this.#frame = frame;
 		this.#page = page;
-		replace(this.#body, frame.frame);
+		// The frame document loads, then the page written into it: "Opening…" stays over it until the page is there.
+		const opening = h("p", { class: "side-panel-status is-over" }, t("Opening…"));
+		let loads = 0;
+		frame.frame.addEventListener("load", () => {
+			if (++loads === 2) opening.remove();
+		});
+		replace(this.#body, frame.frame, opening);
 	}
 }

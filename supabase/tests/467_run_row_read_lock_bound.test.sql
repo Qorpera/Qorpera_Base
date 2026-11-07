@@ -309,19 +309,38 @@ begin
 			v_held, v_outcome, v_holding; end if;
 end $$;
 
--- 6. With the row free, the caller's same two calls answer: the 55P03s above were the wait for the row.
+-- 5b. The run's check around a tool call (20260930603000), the same way through the 8 s entry point: it asks what describe
+--     and the context read ask, so it gives up with 55P03 after about 3 s too, and its transaction has ended by the answer.
 do $$
-declare v_read jsonb; v_fence jsonb;
+declare v_held jsonb; v_outcome jsonb; v_holding boolean;
+begin
+	v_held := pg_temp.rr_hold('qorpera_native_host_call', 'qorpera_assert_company_path_reads', pg_temp.rr_context_args(), 6);
+	v_outcome := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_check_native_run', pg_temp.rr_context_args() - 'p_paths');
+	v_holding := pg_temp.rr_release();
+	perform set_config('qorpera_test.rr_check', format('%s after %s ms', v_outcome ->> 'state', v_outcome ->> 'ms'), false);
+	if v_held is distinct from '{"answer": null}'::jsonb or v_outcome ->> 'state' is distinct from '55P03'
+		or not (v_outcome ->> 'waited')::boolean or (v_outcome ->> 'ms')::numeric not between 2950 and 4500 or not v_holding
+		or v_outcome -> 'after' is distinct from '{"state": "idle", "transaction": false, "locks": 0, "blockers": 0}'::jsonb then
+		raise exception 'The run check did not give up on the held row within its bound: held %, caller %, holder still holding %',
+			v_held, v_outcome, v_holding; end if;
+end $$;
+
+-- 6. With the row free, the caller's same three calls answer: the 55P03s above were the wait for the row.
+do $$
+declare v_read jsonb; v_fence jsonb; v_check jsonb;
 begin
 	v_read := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_assert_company_path_reads', pg_temp.rr_context_args());
 	v_fence := pg_temp.rr_host('qorpera_native_host_call_long', 'qorpera_fence_native_context', pg_temp.rr_fence_args('rr467-free'));
+	v_check := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_check_native_run', pg_temp.rr_context_args() - 'p_paths');
 	if not (v_read ? 'result') or v_read -> 'result' is distinct from 'null'::jsonb or (v_read ->> 'waited')::boolean
-		or v_fence #>> '{result,schema}' is distinct from 'qorpera.native-context-fence/v1' or (v_fence ->> 'waited')::boolean then
-		raise exception 'The run-row reads did not answer with the row free: read %, fence %', v_read, v_fence; end if;
+		or v_fence #>> '{result,schema}' is distinct from 'qorpera.native-context-fence/v1' or (v_fence ->> 'waited')::boolean
+		or v_check #>> '{result,schema}' is distinct from 'qorpera.native-tool-authority/v1' or (v_check ->> 'waited')::boolean then
+		raise exception 'The run-row reads did not answer with the row free: read %, fence %, check %', v_read, v_fence, v_check; end if;
 end $$;
 select current_setting('qorpera_test.rr_statement') as rr_statement, current_setting('qorpera_test.rr_local') as rr_local,
-	current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence \gset
+	current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence,
+	current_setting('qorpera_test.rr_check') as rr_check \gset
 \echo 467 statement_timeout: :rr_statement
-\echo 467 while the row is held: SET LOCAL lock_timeout 1s gave :rr_local; the context read gave :rr_read; the fence gave :rr_fence
+\echo 467 while the row is held: SET LOCAL lock_timeout 1s gave :rr_local; the context read gave :rr_read; the fence gave :rr_fence; the run check gave :rr_check
 
 select pg_temp.rr_cleanup();

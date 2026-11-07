@@ -287,3 +287,26 @@ it("reviews posting, and changing another's app, as delegation", async () => {
 		"Change another agent's app",
 	);
 });
+
+it("counts a video as a file of its app, but not toward the bytes of the rest", async () => {
+	const app = 'name = "Ideas"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
+	const big = await fixture({
+		folders: ["apps"],
+		files: {
+			"apps/ideas/app.toml": app,
+			"apps/ideas/index.html": PAGE,
+			"apps/ideas/a.mp4": "x".repeat(5 * 1024 * 1024),
+		},
+	});
+	// Refused, this would throw.
+	await big.call("save_app", save("ideas", "video-1", null, [{ path: "more.txt", text: "more" }]));
+	const notes = Object.fromEntries(Array.from({ length: 62 }, (_, n) => [`apps/ideas/n${n}.txt`, "note"]));
+	const full = await fixture({
+		folders: ["apps"],
+		files: { "apps/ideas/app.toml": app, "apps/ideas/index.html": PAGE, "apps/ideas/a.mp4": "x", ...notes },
+	});
+	await refuses(
+		full.call("save_app", save("ideas", "video-2", null, [{ path: "one-more.txt", text: "more" }])),
+		"APP_TOO_LARGE",
+	);
+});

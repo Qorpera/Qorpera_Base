@@ -127,6 +127,37 @@ describe("putting an app's page together", () => {
 			"apps/secret.png": PNG,
 		});
 
+	it("puts an app's videos in, each up to its own limit, outside the limit of the rest", async () => {
+		const big = new Uint8Array(1024 * 1024);
+		const assembled = await assembleApp(
+			fakeFolder({
+				"apps/ideas/index.html":
+					'<!doctype html><html><body><video src="a.mp4" controls></video><video><source src="clips/b.webm"></video><video src="../c.mp4"></video></body></html>',
+				"apps/ideas/a.mp4": big,
+				"apps/ideas/clips/b.webm": big,
+				"apps/c.mp4": big,
+			}) as never,
+			{ path: "apps/ideas", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(assembled.ok).toBe(true);
+		if (!assembled.ok) return;
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		expect(page.querySelector("video")?.getAttribute("src")?.startsWith("data:video/mp4;base64,")).toBe(true);
+		expect(page.querySelector("source")?.getAttribute("src")?.startsWith("data:video/webm;base64,")).toBe(true);
+		// Out of the app's own folder, it stays as written and the frame's policy blocks it.
+		expect(page.querySelectorAll("video")[2]?.getAttribute("src")).toBe("../c.mp4");
+		const tooBig = await assembleApp(
+			fakeFolder({
+				"apps/ideas/index.html": '<!doctype html><html><body><video src="a.mp4"></video></body></html>',
+				"apps/ideas/a.mp4": new Uint8Array(13 * 1024 * 1024),
+			}) as never,
+			{ path: "apps/ideas", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(tooBig.ok).toBe(false);
+	});
+
 	it("puts the app's own stylesheets, scripts and pictures in, and leaves everything else as written", async () => {
 		const assembled = await assembleApp(
 			folder(),
@@ -265,6 +296,21 @@ describe("the bridge", () => {
 });
 
 describe("an app's card in a message", () => {
+	it("keeps a sentence whole around an app's link, with the card under it", () => {
+		const prose = markdown("See this [first sketch](app:first-sketch): the desk is by the window.");
+		const paragraph = prose.querySelector("p");
+		expect(paragraph?.textContent).toBe("See this first sketch: the desk is by the window.");
+		expect(paragraph?.querySelector(".app-card")).toBeNull();
+		expect(paragraph?.querySelector<HTMLElement>("[data-app-name]")?.dataset.appName).toBe("first-sketch");
+		expect(prose.querySelector(":scope > .app-card, p + .app-card")?.getAttribute("data-app-name")).toBe(
+			"first-sketch",
+		);
+		// Alone on its line, it is the card and nothing else.
+		const alone = markdown("[First sketch](app:first-sketch)");
+		expect(alone.querySelectorAll("[data-app-name]")).toHaveLength(1);
+		expect(alone.querySelector(".app-card")).not.toBeNull();
+	});
+
 	it("draws app: links as a card that names the app", () => {
 		const body = markdown("See [Sales this week](app:sales-board) and [x](app:Bad).");
 		const card = body.querySelector<HTMLButtonElement>("button.app-card");

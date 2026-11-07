@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "af754cb17f396e1c6f02b13cd67b4a7422d424129fe0a6d666c36e7c28b08e0a",
+			instructions: "a281d687c88d3f92763879d9f87054dec603504da9df2dcda73a12f639294a8e",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1533,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "db2fc6de41f5e8daf2646c801d16ea7159970ffbdb0192abc2232287bc1c44c5",
+			instructions: "ab0871f29a9d11c2320de8cab93bab55631431a7b11170e35174215aeb9872b5",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "af754cb17f396e1c6f02b13cd67b4a7422d424129fe0a6d666c36e7c28b08e0a",
+			instructions: "a281d687c88d3f92763879d9f87054dec603504da9df2dcda73a12f639294a8e",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1589,6 +1589,18 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"a decision that waits for a member goes on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
 		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+	])
+		expect(instructions).toContain(rule);
+});
+
+it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"do not settle on the first idea",
+		"start several workers at once, three to five, each with write access, its own clearly different idea",
+		"it makes its idea, looks at the result, improves what is weak, and goes round again for a few rounds",
+		"records a simple demo video of the idea",
+		'show each with <video src="name.mp4" controls loop muted playsinline>, post the app with post_app',
 	])
 		expect(instructions).toContain(rule);
 });

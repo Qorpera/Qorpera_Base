@@ -1,8 +1,9 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- 20260930603000 on 924's real native run of Alice's: qorpera_check_native_run makes both of the run's checks in one call
--- of the native host. Each check makes exactly the calls of the two it replaces, in their order; a refusal from either is
--- the call's; it is listed with the binding scope on the 8 s entry point; and only the platform's service caller reaches
--- it. Timed beside the two separate calls at the end (printed, not checked).
+-- of the native host. Through the host's entry point, one check makes exactly the calls of the two it replaces, the
+-- plain describe included (test 467 holds it to their 3 s wait for the run's row); a refusal from either is the call's;
+-- it is listed with the binding scope on the 8 s entry point; and only the platform's service caller reaches it. Timed
+-- beside the two separate calls at the end (printed, not checked).
 reset role;
 select set_config('qorpera_test.nc_token', 'nc1103-lease-token-0123456789abcdef', false);
 update public.qorpera_runner_jobs
@@ -41,7 +42,7 @@ $$;
 
 -- The check as the native host makes it: the publishable key's role, on the entry point's RPC path, with the job's token.
 -- 'ok:<result>', 'refused' (the entry point's own refusal) or '<sqlstate>'.
-create function pg_temp.nc_host(p_entry text, p_args jsonb) returns text language plpgsql as $$
+create function pg_temp.nc_host(p_entry text, p_args jsonb, p_name text default 'qorpera_check_native_run') returns text language plpgsql as $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_result jsonb;
 begin
 	perform set_config('request.jwt.claims', '{"role":"anon"}', true);
@@ -49,7 +50,7 @@ begin
 	execute 'set local role anon';
 	begin
 		execute format('select public.%I($1, $2, $3, $4)', p_entry) into v_result
-		using (v_binding ->> 'jobId')::uuid, current_setting('qorpera_test.nc_token'), 'qorpera_check_native_run', p_args;
+		using (v_binding ->> 'jobId')::uuid, current_setting('qorpera_test.nc_token'), p_name, p_args;
 	exception when others then
 		execute 'reset role';
 		return case when sqlstate = '42501' and sqlerrm = 'native host call is refused' then 'refused' else sqlstate end;
@@ -66,7 +67,12 @@ create function pg_temp.nc_calls() returns bigint[] language sql as $$
 	select array_agg(coalesce((select sum(f.calls) from pg_stat_xact_user_functions f
 		where f.schemaname = 'public' and f.funcname = n.name), 0)::bigint order by n.ordinal)
 	from unnest(array['qorpera_describe_native_tool_authority', 'qorpera_assert_company_path_reads',
-		'qorpera_folder_tool_run', 'qorpera_folder_run_reads_current']) with ordinality as n(name, ordinal)
+		'qorpera_folder_tool_run', 'qorpera_folder_run_reads_current',
+		'qorpera_folder_native_run_plain', 'qorpera_native_tool_locked_run']) with ordinality as n(name, ordinal)
+$$;
+create function pg_temp.nc_since(p_now bigint[], p_at bigint[]) returns bigint[] language sql as $$
+	select array_agg(now.v - at.v order by now.i) from unnest(p_now) with ordinality as now(v, i)
+	join unnest(p_at) with ordinality as at(v, i) on at.i = now.i
 $$;
 
 -- 1. Listed with the binding scope on the 8 s entry point (it sets no statement budget of its own, as test 792 holds);
@@ -89,17 +95,20 @@ begin
 	perform set_config('request.path', '', true);
 end $$;
 
--- 2. One check through the native host makes the separate calls' checks, no fewer and no more, and answers what describe
---    answers (the authority the host keeps).
+-- 2. One check through the native host makes the separate calls' checks, as the native host makes those: one describe
+--    that reads plain and takes no run check, one read-set check with the one run check and read re-check. It answers
+--    what describe answers (the authority the host keeps).
 set local track_functions = 'all';
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_at bigint[]; v_separate bigint[]; v_one bigint[];
-	v_outcome text; v_authority jsonb; v_described jsonb;
+declare v_at bigint[]; v_separate bigint[]; v_one bigint[]; v_outcome text; v_authority jsonb; v_described jsonb;
 begin
 	v_at := pg_temp.nc_calls();
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	v_described := public.qorpera_describe_native_tool_authority(v_binding);
-	perform public.qorpera_assert_company_path_reads('92400000-0000-4000-8000-000000000020', v_binding, '{}');
+	v_outcome := pg_temp.nc_host('qorpera_native_host_call',
+		jsonb_build_object('p_binding', current_setting('qorpera_test.base_binding')::jsonb), 'qorpera_describe_native_tool_authority');
+	if v_outcome not like 'ok:%' then raise exception 'describe through the entry point: %', v_outcome; end if;
+	v_described := substr(v_outcome, 4)::jsonb;
+	v_outcome := pg_temp.nc_host('qorpera_native_host_call', pg_temp.nc_args() || '{"p_paths": []}'::jsonb, 'qorpera_assert_company_path_reads');
+	if v_outcome not like 'ok:%' then raise exception 'the read-set check through the entry point: %', v_outcome; end if;
 	v_separate := pg_temp.nc_calls();
 	v_outcome := pg_temp.nc_host('qorpera_native_host_call', pg_temp.nc_args());
 	v_one := pg_temp.nc_calls();
@@ -108,12 +117,26 @@ begin
 	if v_authority ->> 'schema' is distinct from 'qorpera.native-tool-authority/v1'
 		or v_authority -> 'identity' is distinct from v_described -> 'identity' then
 		raise exception 'the run check answered %', v_authority; end if;
-	if array[v_one[1] - v_separate[1], v_one[2] - v_separate[2], v_one[3] - v_separate[3], v_one[4] - v_separate[4]]
-		is distinct from array[v_separate[1] - v_at[1], v_separate[2] - v_at[2], v_separate[3] - v_at[3], v_separate[4] - v_at[4]]
-		or v_one[1] - v_separate[1] <> 1 or v_one[2] - v_separate[2] <> 1 or v_one[4] - v_separate[4] <> 1 then
-		raise exception 'one check made % where the two calls made %',
-			array[v_one[1] - v_separate[1], v_one[2] - v_separate[2], v_one[3] - v_separate[3], v_one[4] - v_separate[4]],
-			array[v_separate[1] - v_at[1], v_separate[2] - v_at[2], v_separate[3] - v_at[3], v_separate[4] - v_at[4]]; end if;
+	-- Describes, read-set checks, run checks, read re-checks, plain reads and locked run checks.
+	if pg_temp.nc_since(v_separate, v_at) is distinct from array[1, 1, 1, 1, 1, 0]::bigint[]
+		or pg_temp.nc_since(v_one, v_separate) is distinct from pg_temp.nc_since(v_separate, v_at) then
+		raise exception 'one check made % where the two calls made %', pg_temp.nc_since(v_one, v_separate), pg_temp.nc_since(v_separate, v_at); end if;
+end $$;
+
+-- 2b. Only directly under this call does describe read plain: under a function it calls, it keeps the locked check.
+do $$
+declare v_at bigint[]; v_now bigint[];
+begin
+	create function pg_temp.nc_nested(p_binding jsonb) returns jsonb language plpgsql as $f$
+	begin return public.qorpera_describe_native_tool_authority(p_binding); end $f$;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	perform set_config('request.path', '/rpc/qorpera_check_native_run', true);
+	v_at := pg_temp.nc_calls();
+	perform pg_temp.nc_nested(current_setting('qorpera_test.base_binding')::jsonb);
+	v_now := pg_temp.nc_calls();
+	perform set_config('request.path', '', true);
+	if pg_temp.nc_since(v_now, v_at) is distinct from array[1, 0, 1, 0, 0, 1]::bigint[] then
+		raise exception 'describe under another function made %', pg_temp.nc_since(v_now, v_at); end if;
 end $$;
 
 -- 3. A refusal of either check is the call's. The read-set check: another environment than the run's, called as the

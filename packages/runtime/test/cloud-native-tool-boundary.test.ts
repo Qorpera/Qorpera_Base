@@ -417,7 +417,10 @@ describe("cloud-owned native tool boundary", () => {
 		const page = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 2);
 		expect(fitsOneResult(page)).toBe(true);
 		expect(fitsOneResult(`${page}x`)).toBe(false);
-		const { tool } = fixture({ name: "company_read", execute: async () => ({ kind: "text", value: page }) });
+		const { tool } = fixture({
+			name: "company_read",
+			execute: async () => ({ kind: "text", value: page, companyReadId: randomUUID() }),
+		});
 		const boundary = new CloudNativeToolBoundary({
 			companyId: identity.companyId,
 			runId: identity.runId,

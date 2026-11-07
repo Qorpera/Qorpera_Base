@@ -33,7 +33,6 @@ import { INTERFACE_PAGES } from "../cloud/interface-pages.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { BANK_INTERFACE } from "./bank-page.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
-import { mailShown } from "./company-mail.ts";
 import type { FolderProblem, FolderTable } from "./interface-folder.ts";
 import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -451,9 +450,8 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 		// listed and its table says it can't be read.
 		if (need.startsWith("table:"))
 			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
-		// The company has mail when the member mail read lists an address (step I5c; its answer is empty while the
-		// company's mail is off), or when its Digital Post is connected or holds letters (RUNTIME-DIGITAL-POST.md).
-		if (need === "mail") return mailShown(company.store.get().mail);
+		// The Mailbox shows from the start (Jonas, 7 Nov 2026): with no address yet, its page says so and offers one.
+		if (need === "mail") return true;
 		return false;
 	});
 }
