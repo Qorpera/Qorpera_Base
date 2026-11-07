@@ -90,9 +90,12 @@ change.
 
   Before this change, a full fast host made every node wait 15 s.
 
-  A run a member is waiting for (`session_turn`, `room_delivery`) waits 2 s instead of 15 after a refusal for full
-  capacity (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, `NODE_CAPACITY_EXHAUSTED`), and the claim takes such runs
-  before older wakes (`20260930602000`, test 1102).
+  A run a member is waiting for (`qorpera_run_member_waits`: a room delivery, or a session turn with a member's message,
+  not a hire's kickoff) waits 2 s instead of 15 after a full or retiring fast host's refusal
+  (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`). That 2 s never shortens a wait already running. A node's refusal
+  (`NODE_CAPACITY_EXHAUSTED`) keeps 15 s, equal to the overflow's `qorpera_runtime_refused_recently` window. A fast host's
+  refusal stays recent for those 15 s after its 2 s wait ends, so the overflow may still take the run. The claim takes
+  such runs before older wakes (`20260930602000`, tests 1102, 563 and 810).
 - **`qorpera_runtime_node_drain_status(node)`** (service role) reports:
   - `serving` and the last change;
   - `runs`: claims held by the node's orchestrators, counting `claimed`/`assigned`, and each

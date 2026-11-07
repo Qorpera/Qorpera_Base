@@ -209,7 +209,9 @@ expired claims and the provider, and re-reads its retained claims (default 2 s).
 Reconcile runs beside the claim loop, so asking for new work never waits for a
 pass; a failed reconcile blocks claims and is retried after one poll interval,
 and a failed dispatch brings the next pass forward and holds claims until it
-has succeeded.
+has succeeded. An acquisition whose release the control plane answers as
+deferred (an admission refusal, or an attempt another provider has reserved)
+brings the pass forward but holds no claims.
 `QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.

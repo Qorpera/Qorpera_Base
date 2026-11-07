@@ -158,9 +158,8 @@ select pg_temp.base_assert(current_setting('qorpera_test.sw_claim')::jsonb #>> '
 select pg_temp.sw_refuse('92400000-0000-4000-8000-000000000092',current_setting('qorpera_test.sw_claim')::jsonb,'NODE_CAPACITY_EXHAUSTED');
 reset role;
 select pg_temp.base_assert((pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).dispatch_refused_by is null
-	and pg_temp.sw_wait(current_setting('qorpera_test.sw_run')::uuid) = interval '2 seconds',
-	'Two full nodes: every orchestrator waits');
-select pg_temp.sw_hold(current_setting('qorpera_test.sw_run')::uuid);
+	and pg_temp.sw_wait(current_setting('qorpera_test.sw_run')::uuid) = interval '15 seconds',
+	'Two full nodes: every orchestrator waits, 15 s after a node''s refusal, a member''s post too');
 set local role service_role;
 select pg_temp.base_assert(pg_temp.sw_claim('92400000-0000-4000-8000-000000000092') = 'null'::jsonb
 	and pg_temp.sw_claim('64000000-0000-4000-8000-000000000012') = 'null'::jsonb,'Neither node trades the job back');

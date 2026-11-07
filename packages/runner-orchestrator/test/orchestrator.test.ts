@@ -2231,23 +2231,36 @@ describe("cloud runner orchestrator", () => {
 		).toBe(true);
 	});
 
-	it("keeps claiming through a reconcile pass after a typed admission refusal", async () => {
-		// A refusal started nothing, and the pass may be materializing a burst of wakes (6 Nov 2026: 11.3 s).
+	it.each([
+		{
+			name: "a typed admission refusal",
+			failure: new CloudRunnerProviderRequestError(
+				422,
+				{ state: "deferred", reason: "SANDBOX_CAPACITY_EXHAUSTED" },
+				"acquire",
+			),
+			released: "ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED",
+		},
+		{
+			// A fast host that cannot provision an attempt another provider holds: not typed, but deferred (20260930563000).
+			name: "a plain failure the control plane deferred",
+			failure: new CloudRunnerProviderRequestError(422, undefined, "acquire"),
+			released: "Runner provider request failed (422) [code=PROVIDER_ACQUIRE]",
+		},
+	])("keeps claiming through a reconcile pass after $name", async ({ failure, released }) => {
+		// No machine started and the job waits by its own deferral, and the pass may be materializing a burst of wakes
+		// (6 Nov 2026: 11.3 s).
 		const control = controlPlane(undefined);
 		vi.mocked(control.claimNext)
 			.mockResolvedValueOnce(claim())
 			.mockResolvedValueOnce(claim())
 			.mockResolvedValue(undefined);
+		vi.mocked(control.releaseClaim).mockResolvedValueOnce({ deferred: true });
 		const local = localAdapter();
 		local.reconcile
 			.mockImplementationOnce(async () => undefined)
 			.mockImplementation(() => new Promise<undefined>(() => undefined));
-		const refusal = new CloudRunnerProviderRequestError(
-			422,
-			{ state: "deferred", reason: "SANDBOX_CAPACITY_EXHAUSTED" },
-			"acquire",
-		);
-		local.acquire.mockRejectedValueOnce(refusal);
+		local.acquire.mockRejectedValueOnce(failure);
 		const controller = new AbortController();
 		const giveUp = setTimeout(() => controller.abort(), 3_000);
 		local.deliver.mockImplementationOnce(async () => {
@@ -2270,14 +2283,71 @@ describe("cloud runner orchestrator", () => {
 			onError,
 		});
 		clearTimeout(giveUp);
-		expect(control.releaseClaim).toHaveBeenCalledWith(
-			expect.anything(),
-			assignmentId,
-			"ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED",
-		);
-		expect(onError).toHaveBeenCalledWith(refusal);
+		expect(control.releaseClaim).toHaveBeenCalledWith(expect.anything(), assignmentId, released);
+		expect(onError).toHaveBeenCalledWith(failure);
 		// The next claim went out and was delivered while the pass was still running.
 		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		{ name: "was lost", release: () => Promise.reject(new Error("Control plane unavailable")) },
+		{ name: "was not deferred", release: () => Promise.resolve({ deferred: false }) },
+	])("holds claims for the next pass after a refusal whose release $name", async ({ release }) => {
+		// A lost release leaves a retained claim behind, and a counted failure may leave a sandbox.
+		const control = controlPlane(undefined);
+		vi.mocked(control.claimNext).mockResolvedValueOnce(claim()).mockResolvedValue(claim());
+		vi.mocked(control.releaseClaim).mockImplementationOnce(release);
+		const local = localAdapter();
+		local.reconcile
+			.mockImplementationOnce(async () => undefined)
+			.mockImplementation(() => new Promise<undefined>(() => undefined));
+		local.acquire.mockRejectedValueOnce(
+			new CloudRunnerProviderRequestError(
+				422,
+				{ state: "deferred", reason: "SANDBOX_CAPACITY_EXHAUSTED" },
+				"acquire",
+			),
+		);
+		const controller = new AbortController();
+		const giveUp = setTimeout(() => controller.abort(), 200);
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, {
+			pollIntervalMs: 10,
+			reconcileIntervalMs: 10,
+			shutdownGraceMs: 10,
+			onError: () => undefined,
+		});
+		clearTimeout(giveUp);
+		expect(control.claimNext).toHaveBeenCalledOnce();
+		expect(local.deliver).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ answer: { released: true, deferred: true, dispatch_failure_count: 0, terminal: false }, deferred: true },
+		{ answer: { released: true, dispatch_failure_count: 1, terminal: false }, deferred: false },
+		{ answer: null, deferred: false },
+	])("reads a release's deferral from the control plane: $deferred", async ({ answer, deferred }) => {
+		const fetchImplementation = vi.fn(
+			async () => new Response(JSON.stringify({ value: answer }), { status: 200 }),
+		) as unknown as typeof fetch;
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://example.supabase.co",
+			"publishable",
+			orchestratorId,
+			"a".repeat(43),
+			fetchImplementation,
+		);
+		await expect(control.releaseClaim(claim(), assignmentId, "ADMISSION_REFUSED:SANDBOX_RETIRING")).resolves.toEqual({
+			deferred,
+		});
 	});
 
 	it("retries a failed reconcile on the next poll and claims nothing until it succeeds", async () => {

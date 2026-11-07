@@ -1007,10 +1007,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// Parking keeps the host for the conversation's next run: only the runner stops.
 			const park = options.park === true;
 			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
-			// A run that ended by itself leaves its host nothing to do: the capsule was resealed inside the run and the
-			// slot's scratch is wiped below. Such a host still outlives SIGTERM, so waiting out its TimeoutStopSec only kept
-			// the slot from the next run (production, 6 Nov 2026: 11.2 s from a wake's end to its slot's release, 1.9 s for
-			// a run that parks). It gets a moment, then the kill below. A revoked or undelivered run's host keeps the full wait.
+			// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
+			// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
+			// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
+			// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
+			// kill below. A revoked or undelivered run's host keeps the full wait.
 			if (!park)
 				await this.#units
 					.stop(
