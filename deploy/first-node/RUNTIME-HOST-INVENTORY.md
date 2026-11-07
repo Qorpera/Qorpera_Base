@@ -13,9 +13,10 @@ pass the returned `observationId`, `nextProject` and `nextName`. A cursor requir
 an observation ID, so concurrent polling cannot splice two physical inventories
 into one traversal. Limits are 1–1,000 entries and 4 MiB per response; the source
 receipt already limits the complete observation to 4,096 entries. Historical
-observations can be read by their retained ID for seven days (a node's latest at
-any age; `RUNTIME-NODE-CAPACITY.md`, "Receipt retention"). Wrong-node, missing
-and deleted IDs are refused. Raw receipt tables remain private, including to the service role.
+observations can be read by their retained ID: every one for two days, then the
+ones thinning keeps (about one in five) up to seven days, and a node's latest at
+any age (`RUNTIME-NODE-CAPACITY.md`, "Receipt retention"). Wrong-node, missing
+and deleted IDs are refused, including an ID thinning removed. Raw receipt tables remain private, including to the service role.
 
 Every entry retains its reported state/reason, physical identity, configuration
 hash, measured resource limits and original recorded allocation, where present.
