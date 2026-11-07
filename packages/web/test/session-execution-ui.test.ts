@@ -295,12 +295,19 @@ describe("room startup usage refresh", () => {
 		await settle();
 		const pending = deferred<NativeExecutionConnections>();
 		f.listConnections.mockImplementationOnce(() => pending.promise);
-		view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		const send = () => view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+		// The first try does not go through: the second must still answer the first item.
+		f.sendMessage.mockResolvedValueOnce(false);
+		send().click();
 		toggle().click();
 		answers()[1]!.click();
 		pending.resolve(connections());
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledOnce();
+		expect(answers().map((button) => button.textContent)).toEqual(["Answer", "Answer"]);
+		send().click();
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledTimes(2);
 		expect(answers().map((button) => button.textContent)).toEqual(["Answered", "Answer"]);
 		view.dispose();
 	});
