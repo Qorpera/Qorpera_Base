@@ -41,6 +41,10 @@ without a lock. A company is due when it is `folder-v2`, not paused, not at zero
 - a queued wake whose `not_before` has passed. A wake left waiting with its reason counts again after 30 seconds, so a
   full login is not retried on every pass.
 
+Work whose login has no room (`qorpera_sponsor_waits_for_usage_limit`, migration `20260930575000`) is not due either: the
+company's scan would leave it queued and answer `idle`. The check comes last and runs once per sponsor version (migration
+`20260930611000`, SQL test 1111).
+
 Partial indexes on `(profile_id, admission_scan_at, created_at, id) where status = 'queued'` serve the per-company
 reads of wakes and turn requests.
 
