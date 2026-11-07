@@ -421,7 +421,8 @@ export class ConversationView {
 			member: company.userId,
 			...(actions.folderImage ? { image: actions.folderImage } : {}),
 			onAnswer: (question, item) => {
-				if (this.#composer.disabled) return;
+				// A message on its way keeps the question it goes with.
+				if (this.#composer.disabled || this.#submitting) return;
 				this.#answeringItem = item;
 				company.conversation(sessionId).set({ answering: replyQuestion(question) });
 				this.#composer.focus();
