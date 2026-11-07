@@ -25,13 +25,27 @@ It compares what the runtime depends on:
 - the LXD projects (`features.*`, `restricted*`, `limits.*`), managed networks and storage pools;
 - the LXD projects that exist, even with none of those keys set;
 - LXD instances that the database does not place: the fast host and company machine hosts. Their
-  size (from the expanded configuration, as the node inventory reads it) and state are checked.
-  Runs, sign-ins and machines placed by the database are checked by the node inventory, not here.
-  Build machines (`user.qorpera.image_builder=true`) come and go, so they are left out.
+  size (from the expanded configuration, as the node inventory reads it), state and the **names**
+  of their configuration keys are checked. Each name says where it comes from: `instance` (the
+  instance's own configuration) or `profile` (only a profile adds it). Runs, sign-ins and machines
+  placed by the database are checked by the node inventory, not here. Build machines
+  (`user.qorpera.image_builder=true`) come and go, so they are left out.
 - the node agent's role releases, and the **names** of each role's fixed settings and secret keys.
 
-It takes only the names of a role's settings and secret keys. It never prints or stores a
-setting's value or a credential, and never reads an env file.
+`collect` also lists, under `lxd.workloads`, the configuration key names of every instance that
+comes and goes (placed by the database, or building an image), merged per project. A name there is
+`profile` only if no instance of that project has it in its own configuration. So a key that a
+script, a hand edit or a profile put on any instance shows, without its value and without the
+instance's name. `compare` leaves this list out, since what runs differs from node to node; read it
+in the collected file.
+
+Both key lists leave out LXD's own state (`volatile.*`): LXD writes it, and it changes as an
+instance starts and stops.
+
+It takes only the names of configuration keys, settings and secret keys. It never prints or
+stores a configuration value, a setting's value or a credential, and never reads an env file.
+A setup file is `qorpera.node-setup/v2`; `compare` refuses a file from before the key names (v1),
+so collect both nodes again.
 
 The node's name is replaced by `<node>` in every name. For the label `company41-node-01` that is
 the full label and its short forms `node01`, `node-01`, `node1` and `node-1`. So
@@ -49,8 +63,12 @@ names on one node become the same after the swap, the collection stops with
 - `onlyOn`: `{"<label>": [prefix, …]}`, things that only that node has on purpose. They must be
   missing on the other node. The label is the one given to `collect`.
 
+A role's settings go with the role. An entry that covers a role (`agent › roles` or
+`agent › roles › <role>`) also covers the names of that role's settings (`agent › settings › <role>`).
+
 Keep the class small. The goal is identical nodes, so every entry is a known gap with a plan. The
-checked-in class allows only role releases. As of 2026-09-28 the known gaps are:
+checked-in class allows only the roles (their releases and the names of their settings). As of
+2026-09-28 the known gaps are:
 
 - node 1 mounts the company objects `noexec`, and node 2 does not;
 - per-node coding and office workbench shares;
