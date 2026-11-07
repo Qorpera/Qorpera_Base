@@ -6273,7 +6273,7 @@ each step. It now leaves the envelope.
 5. **Why.** Each result repeated about 1.2 KiB of ids and hashes, roughly 640 tokens, that stayed in every later
    round. That came to an estimated fifth of all input tokens in the runs of 5–6 November.
    - The room goes to the result's own content. Tools now leave the envelope 800 bytes instead of 2.2 KiB, so a
-     Company File read shows up to about 7.3 KiB of plain text in one result instead of about 6 KiB.
+     Company File read shows up to about 7 KiB of plain text in one result, instead of about 5.7 KiB.
    - That means fewer model rounds for the same reading.
 
 ## 20. Enforcement matrix
