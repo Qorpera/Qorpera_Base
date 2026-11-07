@@ -4,7 +4,7 @@
 # against the kernel. It loads nothing and enables nothing: README.md has the observe and enforce steps.
 set -euo pipefail
 
-EXPECTED_RULES_SHA256="f165865f66093ed404025807f2d31a2ac3e79458e05277fd038a92ad9327bd4a"
+EXPECTED_RULES_SHA256="31f82e834604796d2072ee677c7a626efde7be946d25ca5a21e877b9f903f952"
 EXPECTED_TOOL_SHA256="fba9a23b5d4d5d6119892de049f253d34b5121fcdddc52d2229e0257f0eea4a7"
 EXPECTED_UNIT_SHA256="6ef1d6ee3e1203eba9c486228e20cabfe967dd83542093e31ccf6768cab1dd0e"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)

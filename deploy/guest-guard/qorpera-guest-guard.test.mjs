@@ -483,6 +483,7 @@ except Exception:
 		// TCP targets, by who connects and which hook refuses them in enforce mode.
 		const GUEST_OPEN = [
 			"10.41.0.1:53",
+			"10.41.0.1:443",
 			"10.41.0.1:8789",
 			"100.75.4.70:10000",
 			"100.75.4.70:18544",
@@ -504,7 +505,7 @@ except Exception:
 		const GUEST_IPV6 = ["[fd00:41::1]:22"];
 		const CODING_OPEN = ["10.200.0.1:53", "1.1.1.1:443"];
 		const CODING_REFUSED_FORWARD = ["100.75.4.70:10000", "192.168.1.40:2049", "10.41.0.3:8082"];
-		const CODING_REFUSED_INPUT = ["10.41.0.1:8789", "10.41.0.1:53", "10.200.0.1:22"];
+		const CODING_REFUSED_INPUT = ["10.41.0.1:443", "10.41.0.1:8789", "10.41.0.1:53", "10.200.0.1:22"];
 		// Connections the node itself opens to its guests are never checked.
 		const NODE_OPEN = ["10.41.0.3:8082", "10.200.0.3:22"];
 		const ALL_DHCP = ["from 10.200.0.3 other-gateway", "from 10.41.0.3 broadcast", "from 10.41.0.3 own-gateway"];
@@ -598,6 +599,7 @@ except Exception:
 					"10.41.0.1:53",
 					"udp:10.41.0.1:53",
 					"10.41.0.1:111",
+					"10.41.0.1:443",
 					"10.41.0.1:8789",
 					"[fd00:41::1]:22",
 					"10.200.0.1:22",
@@ -676,7 +678,7 @@ except Exception:
 				GUEST_REFUSED_INPUT.length + CODING_REFUSED_INPUT.length + 1,
 				"refused_input (+1: coding DNS over UDP to qorpera0's gateway)",
 			);
-			assert.equal(c.allowed, 4, "allowed_services_used");
+			assert.equal(c.allowed, 5, "allowed_services_used");
 			assert.equal(c.spoofed, 0);
 			assert.equal(c.related, 0);
 			assert.equal(inNs(ns.guest, ["python3", "-c", FROM, "192.168.1.99", "1.1.1.1", "443"]).stdout.trim(), "closed");
