@@ -27,6 +27,29 @@ machine that does not answer is skipped, so the list may name a machine before i
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
 | Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
+Real-binary tests (`QORPERA_CODEX_FENCE_BINARY`) find the pinned patched Codex at `/opt/qorpera-codex-fence/codex` on
+both machines (a file in the guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`. The tests
+refuse a file whose sha256 is not `nativeCompany.binarySha256` in
+`deploy/first-node/native-codex/guest-package-manifest.json`; `QORPERA_CODEX_FENCE_UNPINNED=1` lets a build that is not yet
+the pin run. Without the variable they are skipped, as before.
+
+Nothing can download this build, so a rebuilt machine gets it pushed before `guest-setup.sh`, which refuses to finish
+without the right file (the machine then counts as not set up). From the node that holds it, node 2, as root:
+
+```sh
+lxc file push --create-dirs --mode 0755 /home/company41-admin/cut-v55-a1/native-company-fence-m896/codex \
+  qorpera-testvm-node02/opt/qorpera-codex-fence/codex --project testmachines
+```
+
+Or from the other test machine, through the Mac:
+
+```sh
+ssh tester@<other> sudo -n cat /opt/qorpera-codex-fence/codex | ssh tester@<rebuilt> \
+  'sudo -n install -d /opt/qorpera-codex-fence && sudo -n tee /opt/qorpera-codex-fence/codex >/dev/null && sudo -n chmod 0755 /opt/qorpera-codex-fence/codex'
+```
+
+Without either source, build it from the pin (`deploy/first-node/native-codex/README.md`).
+
 ## Node accounting
 
 Every LXD instance on a node must be a registered allocation or enrolled infrastructure,
@@ -51,6 +74,7 @@ node scripts/run-on-node.mjs changed
 node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
 node scripts/run-on-node.mjs hosted-db -- --only 810,811
+node scripts/run-on-node.mjs --quick -- node --test scripts/run-on-node.test.mjs
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts
@@ -75,13 +99,16 @@ workflows and run at least what those ran for the same change:
 - shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
   `packages/contracts`, `packages/company`) and any path no rule knows: every step.
 
-A moved file counts at both paths. Every step runs even when an earlier one fails. The full `test` suite is
+A moved file counts at both paths. Every step runs even when an earlier one fails. Steps run side by side within two
+cores, what one slot gives, longest first (`--cores N` for another number); their tree-wide parts (lint, typecheck, the
+checks, the web release build) run first and alone. Each step's output is printed whole when it ends. The full `test` suite is
 for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
 uncommitted changes included, `node_modules` and `.git` left out. It copies them to a fresh
-directory on the VM, and only changed files cross the network (rsync `--copy-dest` against a
-per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
+directory on the VM, and only changed files cross the network: rsync compares contents and looks for each file
+in the worktree's own copy on the VM, then in the copy of the worktree that ran there last, so a new worktree's first
+copy takes about 3 s instead of about 100 s (`--checksum`, `--copy-dest`). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
 no packages), streams the output, and exits with the suite's exit code. The `test` suite is the whole
 repository's `npm test`; it first runs `npm run build:web-sdk`, because the script tests import the built
 `@qorpera/contracts` (`--build` does the same for any suite).
@@ -93,7 +120,7 @@ every task of the user on the machine. When all runs shared `tester`, a few para
 past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
 When all 16 are busy, a run waits (up to an hour).
 
-At most five runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 5 (2 on
+The CPU lane has five slots, and each run in it runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 5 (2 on
 10 or 12 vCPUs; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the five slots together use the
 machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
 `npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
@@ -113,6 +140,23 @@ for writing and so skip it. A `--front --cores` run takes more slots as they fre
 machine has at least 2 GiB available (`MemAvailable`); below that it leaves the queue until there is more. With five
 busy runs node01 had dropped to 1264 MiB.
 
+Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least
+7 GiB available, CPU pressure over the last minute (`/proc/pressure/cpu`, `some avg60`) under 20 %, and no extra slot
+taken in the last two minutes. The slots count runs while a run's CPU varies: on 7 Nov 06:25-06:45Z node01 had runs waiting
+in all 36 samples, with its CPUs idle at least 25 % in 86 % of them, because a load test in a slot mostly waits.
+
+A run you know is short takes the quick lane with `--quick`: two slots and a queue of their own, so one test file or
+a lint of a few files does not wait behind `changed` runs. `hosted-db -- --only` takes it by itself. A `--quick` run is
+stopped at 3 minutes (exit 124, or 137 if it would not stop) and its containers removed, so the lane stays quick; it takes a command after `--` or
+`scripts/<file>.mjs`, not a named suite. The first in the quick lane's queue waits while the machine has under 2 GiB
+available, so a quick run goes to a machine with room when there is one, and gives up after 20 minutes in the queue (exit
+94) rather than stall. On 7 Nov 05:20-07:25Z, 51 of 107 runs in the CPU lane took under a minute and held 1.8 % of its slot time, and
+those waited a median of 239 s for a slot, 1136 s at most.
+
+No run has a memory limit and the machines have no swap, so the kernel may kill the biggest process, whichever run's. A
+run records how many it killed meanwhile (`oomKills`). One that failed meanwhile has the result `oom-killed`, which posts as
+the harness's error, not the change's failure, and pr-loop does not bisect it. If these show, set `EXTRA_SLOTS` to 0.
+
 Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
@@ -131,6 +175,13 @@ is the record contract 24.4 asks for. It names the `machine` the run used, what 
 (`machines`), how long asking took (`probeSeconds`) and, when the first choice failed before the suite started,
 the machines `passedOver`.
 `--record FILE` also writes it to a file.
+
+The hosted-db suite and the other PostgreSQL scripts run `POSTGRES_IMAGE` (`scripts/test-hosted-db.mjs`), which
+`guest-setup.sh` pulls too: PostgreSQL 17.6 on Debian's glibc, started on production's locale (ICU en-US, `POSTGRES_LOCALE`).
+Each of them checks the locale once its PostgreSQL is ready (`checkLocale`) and stops on any other: the hosted-db
+harness, `load-folder-core`, `test-identity-recovery`, `test-login-recovery-automation`, `test-runtime-cpu-allocation-ratio`
+and `test-runtime-office-delete-reason`; a test in `scripts/test-hosted-db.test.mjs` fails a script that starts the image
+without both.
 
 Several sessions can use a machine at once. Each run has its own directory and runner user, and the
 hosted-db harness names its containers per process. Slots, queue, runner users, npm caches and worktree copies

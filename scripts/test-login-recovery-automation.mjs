@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const container = `qorpera-login-recovery-${randomBytes(6).toString("hex")}`;
@@ -20,7 +20,7 @@ function docker(args, input) {
 const sql = (text) => docker(psql, text);
 let started = false;
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable", "-e", "POSTGRES_DB=recovery", POSTGRES_IMAGE]);
+	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable", "-e", "POSTGRES_DB=recovery", ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
 	started = true;
 	let ready = 0;
 	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
@@ -29,6 +29,7 @@ try {
 		if (ready < 2) spawnSync("sleep", ["1"]);
 	}
 	assert(ready >= 2, "postgres did not become ready");
+	checkLocale(sql(LOCALE_QUERY));
 	sql(readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
 	for (const name of sortMigrationNames(readdirSync(join(root, "supabase/migrations")).filter((n) => n.endsWith(".sql"))))
 		sql(readFileSync(join(root, "supabase/migrations", name), "utf8"));

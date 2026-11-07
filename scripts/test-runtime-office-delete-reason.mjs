@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { POSTGRES_IMAGE } from "./test-hosted-db.mjs";
+import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "./test-hosted-db.mjs";
 const container=`qorpera-delete-reason-${randomBytes(6).toString("hex")}`;
 const migration=readFileSync(new URL("../supabase/migrations/20260913010000_runtime_office_delete_administrative_disposition.sql",import.meta.url),"utf8");
 const helper=migration.match(/create function public\.qorpera_office_delete_reason_valid\(v jsonb\)[\s\S]*?\n\$\$;/)?.[0];
@@ -15,10 +15,11 @@ const valid=v=>typeof v==="string"&&v.length>=1&&v.length<=512&&v.trim()===v&&!/
 const lit=v=>"'"+JSON.stringify(v).replaceAll("'","''")+"'::jsonb";
 let started=false;
 try{
- docker(["run","--rm","-d","--network","none","--pull","never","--name",container,"--tmpfs","/var/lib/postgresql/data:rw,size=128m","-e","POSTGRES_PASSWORD=local-fixture-only",POSTGRES_IMAGE]);started=true;
+ docker(["run","--rm","-d","--network","none","--pull","never","--name",container,"--tmpfs","/var/lib/postgresql/data:rw,size=128m","-e","POSTGRES_PASSWORD=local-fixture-only",...POSTGRES_LOCALE,POSTGRES_IMAGE]);started=true;
  let ready=false;
  for(let i=0;i<80;i++){const r=spawnSync("docker",["logs",container],{encoding:"utf8",timeout:2000,maxBuffer:1048576});if((r.stdout+r.stderr).includes("PostgreSQL init process complete")&&spawnSync("docker",["exec",container,"pg_isready","-U","postgres"],{timeout:2000}).status===0){ready=true;break;}await new Promise(r=>setTimeout(r,250));}
  assert(ready,"Disposable PostgreSQL not ready");
+ checkLocale(docker(["exec","-i",container,"psql","-X","-qAt","-U","postgres","-v","ON_ERROR_STOP=1"],LOCALE_QUERY));
  const rows=cases.map((v,i)=>`(${i},${lit(v)},${valid(v)})`).join(",");
  const query=helper+`\nselect coalesce(jsonb_agg(jsonb_build_object('i',i,'v',v,'expected',expected,'actual',public.qorpera_office_delete_reason_valid(v))),'[]'::jsonb) from (values ${rows}) as fixture(i,v,expected) where coalesce(public.qorpera_office_delete_reason_valid(v),false) is distinct from expected;`;
  assert.equal(docker(["exec","-i",container,"psql","-X","-qAt","-U","postgres","-v","ON_ERROR_STOP=1"],query),"[]");

@@ -6,22 +6,42 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
+/** Debian's image, not Alpine's: PostgreSQL on musl spends as long in the kernel as on its own code, mostly page faults
+ * and munmap from musl's allocator. The same 924 migrations and 49 SQL tests in one slot, alternating (7 Nov): replay
+ * 57 s and 60 CPU s on Alpine, 28 s and 31 CPU s here; tests 48 s and 39 CPU s, 33 s and 25 CPU s. Production's
+ * supabase/postgres:17.6.1.136 is no musl build either: its version string says x86_64-pc-linux-gnu (read 7 Nov), though
+ * the os-release in that image says Alpine. deploy/test-machine/guest-setup.sh pulls this same image. */
 export const POSTGRES_IMAGE =
-	"docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94";
+	"docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3";
+
+/** Every test PostgreSQL starts on production's locale: read from production on 7 Nov, its database has provider ICU, locale
+ * en-US (datcollate en_US.UTF-8, collation version 153.121). The image's own default is the libc provider, and libc en_US
+ * sorts text and changes case differently from ICU en-US (`_x` and `-x`, `mail_1` and `mail1`, `upper('ß')`), so a test
+ * there could pass on an order production does not give. This image's ICU is an older release (72, collation version
+ * 153.120); the provider and the locale are the same. */
+export const POSTGRES_LOCALE = ["--env", "POSTGRES_INITDB_ARGS=--locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8"];
+/** The query whose one row checkLocale reads: the provider and locale of the database it runs in. */
+export const LOCALE_QUERY = "select datlocprovider::text || '|' || coalesce(datlocale, '') from pg_database where datname = current_database();";
+
+/** Refuses a cluster not on production's locale (POSTGRES_LOCALE). `line`: LOCALE_QUERY's answer. Every script that starts
+ * POSTGRES_IMAGE calls it once its PostgreSQL is ready, before any migration. */
+export function checkLocale(line) {
+	if (line.trim() !== "i|en-US") throw new Error(`The disposable PostgreSQL is not on ICU en-US as production is: ${line.trim()}`);
+}
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
  * database. A database runs the tests from its first name on, in their usual order, up to the next database's;
- * the four take about the same time (100–110 s each on a test machine, 16 Oct). Every test that keeps rows for a
- * later one (000, 040 and its readers up to 200, then 120, 260, 595 and 625) stays in the first, so a test still
- * sees only rows its usual predecessors left. A test connecting to its database again uses `current_database()`,
- * not a name. */
+ * the five take about the same time (100-125 s each on a test machine, 7 Nov). The tests that keep rows for a later
+ * one, 000 and 040 and its readers up to 200, stay in the first, so a test still sees only rows its usual predecessors
+ * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "658"],
-	["qorpera_test_3", "826"],
-	["qorpera_test_4", "893"],
+	["qorpera_test_2", "509"],
+	["qorpera_test_3", "672"],
+	["qorpera_test_4", "826"],
+	["qorpera_test_5", "893"],
 ];
 
 export function sortMigrationNames(names) {

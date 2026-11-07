@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { runNativeCodexCompactionProbe } from "./fixtures/native-codex-compaction-probe.ts";
 import { runNativeCodexFenceFailureProbe } from "./fixtures/native-codex-fence-failure-probe.ts";
+import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 
-const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
+const binary = pinnedCodexBinary();
 const cases = (["offline-probe", "provider-default"] as const).flatMap((model) =>
 	(["local", "remote-v2"] as const).map((mode) => ({ model, mode })),
 );
