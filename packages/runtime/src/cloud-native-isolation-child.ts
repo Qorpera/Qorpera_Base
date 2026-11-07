@@ -1,12 +1,41 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, writeSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { isAbsolute, resolve } from "node:path";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+
+/**
+ * Keeps the native program's stdout and stderr blocking. Node creates process.stdout and process.stderr when they are
+ * first read, and its own code reads them: Readable.pipe compares its destination with both, and a net.Socket's destroy
+ * compares itself with stderr. Creating one sets O_NONBLOCK on the socket behind it, and the program inherits that very
+ * open file. Codex's stdout writer takes any failed write as the end of the connection, so one message over the socket's
+ * buffer (a PNG in a tool result, a large file's arguments) would leave the run silent for good, its lease renewing
+ * (7 Nov 2026). So here they are plain writers of the same descriptors, and the real streams are never made.
+ */
+function keepInheritedStdioBlocking(): void {
+	for (const [name, fd] of [
+		["stdout", 1],
+		["stderr", 2],
+	] as const) {
+		const stream = new Writable({
+			write(chunk: Buffer, _encoding, done) {
+				try {
+					writeSync(fd, chunk);
+					done();
+				} catch (error) {
+					done(error as Error);
+				}
+			},
+		});
+		Object.defineProperty(process, name, { configurable: true, enumerable: true, value: stream });
+	}
+}
 
 /** Runs inside the empty network/PID namespace. The only outbound transport
  * is the mounted, host-filtered Unix relay; TLS remains native end-to-end. */
 export async function runNativeIsolationChild(args: string[]): Promise<void> {
+	keepInheritedStdioBlocking();
 	const [relayPath, command, ...commandArgs] = args;
 	if (!relayPath || !isAbsolute(relayPath) || !command || !isAbsolute(command))
 		throw new Error("Invalid native namespace entry");
