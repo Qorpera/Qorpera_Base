@@ -1844,6 +1844,10 @@ describe("what the reviewer reads as the mandate", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"changing or replacing a file in the company folder, /company on a machine, is never permanent, because the folder keeps its earlier versions",
 		);
+		// That evening, on v214: a UX Designer's copy over its own /tmp files was held as "ownership is unclear".
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"every file on the agent's own company machine outside /company, such as in /tmp or /root, is its own work, so replacing or deleting one is never deletesOrOverwrites",
+		);
 	});
 
 	it("gives the reviewer the mandate beside the request, and null without one", async () => {
