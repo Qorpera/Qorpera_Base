@@ -104,11 +104,9 @@ const REASONS: Record<RunFailureKind, string> = {
 	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
-	// Try again is refused while a save is unsettled, so the member reads that a person checks it first, never that a
-	// retry would do.
-	completion_refused: phrase(
-		"The run ended, but one of its saves did not finish. A person must check it before the run can be tried again.",
-	),
+	// Try again is refused while a save is unsettled, so the words never ask for it. A founder has nothing to check: a new
+	// message carries the work on (Jonas, 7 Nov 2026, plain words for someone who just had an idea).
+	completion_refused: phrase("The run ended before all of its work was saved. Send a message to carry on."),
 	lost: phrase("Qorpera lost contact with this run. The problem is on Qorpera's side."),
 	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
@@ -204,7 +202,7 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	),
 	dispatch: phrase("No computer could be started for the session. The workspace is kept; a follow-up tries again."),
 	completion_refused: phrase(
-		"One of the session's saves did not finish, and a person must check it first. The workspace is kept; a follow-up continues it after that.",
+		"The session ended before all of its work was saved. The workspace is kept; a follow-up continues it.",
 	),
 	lost: phrase("Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again."),
 	step_timeout: phrase(
