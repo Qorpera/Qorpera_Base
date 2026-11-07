@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
 	chmod,
@@ -719,5 +720,57 @@ test("the installer pins the agent, the launcher and the migration helper it ins
 			.update(await readFile(new URL(file, here)))
 			.digest("hex");
 		assert.ok(installer.includes(`EXPECTED_${name}_SHA256="${digest}"`), `installer pin for ${file} is stale`);
+	}
+});
+
+test("the installer refuses a key that would make a ninth, counting the legacy key once", async () => {
+	const installer = await readFile(new URL("install-node-agent.sh", import.meta.url), "utf8");
+	const sizeFunction = /^release_key_set_size\(\) \{\n[\s\S]*?\n\}\n/m.exec(installer)?.[0];
+	assert.ok(sizeFunction, "the installer counts the set with release_key_set_size");
+	const refusal =
+		'if [[ $(release_key_set_size "${release_keys}" /etc/qorpera-node/keys/release.pem "${key_id}" "${staging}") ' +
+		"-gt 8 ]]; then\n";
+	assert.ok(installer.includes(refusal), "the installer refuses past 8 keys");
+	const root = await mkdtemp(join(tmpdir(), "qorpera-installer-keys-"));
+	const folder = join(root, "release-keys");
+	const legacy = join(root, "release.pem");
+	const pem = (publicKey) => publicKey.export({ type: "spki", format: "pem" });
+	// The size of the set once `joining` joins a folder of `inFolder` and a legacy file holding `legacyFile`.
+	const setSize = async (inFolder, legacyFile, joining) => {
+		await rm(folder, { recursive: true, force: true });
+		await rm(legacy, { force: true });
+		if (inFolder) {
+			await mkdir(folder);
+			for (const label of inFolder)
+				await writeFile(join(folder, `${caseKeyId(label)}.pem`), pem(caseKeys[label].publicKey));
+		}
+		if (legacyFile !== undefined)
+			await writeFile(legacy, legacyFile in caseKeys ? pem(caseKeys[legacyFile].publicKey) : legacyFile);
+		const script = `${sizeFunction}release_key_set_size "$@"`;
+		const run = spawnSync(
+			"bash",
+			["--noprofile", "--norc", "-c", script, "installer", folder, legacy, caseKeyId(joining), root],
+			{ encoding: "utf8" },
+		);
+		assert.equal(run.status, 0, run.stderr);
+		return Number(run.stdout.trim());
+	};
+	const seven = [..."abcdefg"];
+	try {
+		assert.equal(await setSize(undefined, undefined, "a"), 1);
+		assert.equal(await setSize([], "a", "a"), 1);
+		assert.equal(await setSize(["a"], "a", "b"), 2);
+		// Seven in the folder and a different legacy key: one more is a ninth.
+		assert.equal(await setSize(seven, "h", "i"), 9);
+		// The legacy key that is also in the folder, or is the joining key, counts once.
+		assert.equal(await setSize(seven, "a", "h"), 8);
+		assert.equal(await setSize(seven, "h", "h"), 8);
+		// Eight in the folder: the same key again is still eight; a new one is a ninth.
+		assert.equal(await setSize([...seven, "h"], undefined, "h"), 8);
+		assert.equal(await setSize([...seven, "h"], undefined, "i"), 9);
+		// A legacy file that is not a key counts as one more.
+		assert.equal(await setSize(seven, "not a key\n", "h"), 9);
+	} finally {
+		await rm(root, { recursive: true, force: true });
 	}
 });

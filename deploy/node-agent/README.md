@@ -231,9 +231,10 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
 `install-node-agent.sh --release-key <public PEM> --release-key-sha256 <hex from the registry>` does three things:
 - copies the agent, launcher and key into a root-only temp folder, verifies those copies against its pins (a test checks
   the pins), and installs exactly those copies (the migration helper goes next to the launcher);
-- enrolls the key: it refuses a key that is not an Ed25519 public key in the plain PEM form openssl writes, or a ninth
-  key, and installs it as `/usr/share/qorpera/release-keys/<key id>.pem`. It writes the legacy key file only when there
-  is none, so a re-run with a new key adds that key and keeps the old one;
+- enrolls the key: it refuses a key that is not an Ed25519 public key in the plain PEM form openssl writes, or one that
+  would make a ninth distinct key (the folder's keys, the legacy key and the new key, each counted once; a test checks
+  the count), and installs it as `/usr/share/qorpera/release-keys/<key id>.pem`. It writes the legacy key file only
+  when there is none, so a re-run with a new key adds that key and keeps the old one;
 - creates the folders.
 
 It changes no unit.

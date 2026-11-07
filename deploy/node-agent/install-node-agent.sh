@@ -52,6 +52,25 @@ verify_sha256() {
 	fi
 }
 
+# How many distinct keys the release-key set holds once the key with id $3 joins it: the folder's keys (by file name),
+# the legacy key (by its id) and the joining key, each counted once. A legacy file that is not a key counts as one
+# more. The agent and the observer refuse the whole set past 8 keys.
+release_key_set_size() {
+	local folder=$1 legacy=$2 joining=$3 scratch=$4
+	{
+		printf '%s\n' "${joining}"
+		if [[ -d ${folder} ]]; then
+			find "${folder}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sed 's/\.pem$//'
+		fi
+		if [[ -f ${legacy} && ! -L ${legacy} ]] &&
+			openssl pkey -pubin -in "${legacy}" -outform DER -out "${scratch}/legacy.der" 2>/dev/null; then
+			sha256sum "${scratch}/legacy.der" | cut -c1-16
+		elif [[ -e ${legacy} || -L ${legacy} ]]; then
+			printf 'legacy\n'
+		fi
+	} | sort -u | wc -l
+}
+
 # Verify root-only copies and install exactly those: the source paths are not re-read after the check.
 staging=$(mktemp -d)
 trap 'rm -rf "${staging}"' EXIT
@@ -77,9 +96,8 @@ if [[ ! ${key_der} =~ ^302a300506032b6570032100[0-9a-f]{64}$ ]]; then
 fi
 key_id=$(openssl pkey -pubin -in "${staging}/release.pem" -outform DER | sha256sum | cut -c1-16)
 release_keys=/usr/share/qorpera/release-keys
-if [[ -d ${release_keys} && ! -e ${release_keys}/${key_id}.pem ]] &&
-	[[ $(find "${release_keys}" -mindepth 1 -maxdepth 1 | wc -l) -ge 8 ]]; then
-	echo "The release-key set already holds 8 keys; drop one before adding another." >&2
+if [[ $(release_key_set_size "${release_keys}" /etc/qorpera-node/keys/release.pem "${key_id}" "${staging}") -gt 8 ]]; then
+	echo "The release-key set would hold more than 8 keys; drop one before adding another." >&2
 	exit 1
 fi
 
