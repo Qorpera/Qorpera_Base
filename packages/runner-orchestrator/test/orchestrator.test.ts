@@ -2077,6 +2077,13 @@ describe("cloud runner orchestrator", () => {
 			await f.orchestrator.runOnce();
 			expect(f.listed()).toEqual([]);
 			expect(f.materialize).toHaveBeenCalledTimes(1);
+			// The materialization is a step that ran: the heads, though their answer was false, are asked after it.
+			expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+			// An answer of true whose list has nothing by the time it is read runs no step: the heads stay out.
+			const empty = folderControl({ ...quiet, materialize: true });
+			await empty.orchestrator.runOnce();
+			expect(empty.listMaterialization).toHaveBeenCalledTimes(1);
+			expect(empty.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
 			const heads = folderControl({ ...quiet, routine_heads: true });
 			await heads.orchestrator.runOnce();
 			expect(heads.listed()).toEqual([]);
@@ -2091,28 +2098,115 @@ describe("cloud runner orchestrator", () => {
 			expect(f.listed()).toEqual(["events"]);
 		});
 
-		it("asks every list itself when the call fails, and reports the failure", async () => {
+		it("asks every list itself when the call fails, and reports the failure once per wait", async () => {
 			const outage = new CloudRunnerOrchestratorRequestError(503);
 			const f = folderControl();
+			const start = Date.parse("2026-11-07T06:00:00.000Z");
 			f.readPassDue.mockRejectedValue(outage);
-			await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+			vi.useFakeTimers({ toFake: ["Date"], now: start });
+			try {
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+				expect(f.listMaterialization).toHaveBeenCalledTimes(1);
+				expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+				// Within the wait a pass is the pass without the call: no call, no report, every list.
+				vi.setSystemTime(start + 999);
+				f.listDrain.mockClear();
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(1);
+				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+				// The wait doubles: 1 s, then 2 s, then 4 s, as a failing drain's does.
+				vi.setSystemTime(start + 1_000);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(2);
+				vi.setSystemTime(start + 2_999);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(2);
+				vi.setSystemTime(start + 3_000);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(3);
+				vi.setSystemTime(start + 6_999);
+				await f.orchestrator.runOnce();
+				expect(f.readPassDue).toHaveBeenCalledTimes(3);
+				// An answer ends it: the pass leaves its lists out again, and the next failure waits 1 s, not 8 s.
+				vi.setSystemTime(start + 7_000);
+				f.readPassDue.mockResolvedValueOnce(quiet);
+				f.listDrain.mockClear();
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(4);
+				expect(f.listed()).toEqual([]);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(5);
+				vi.setSystemTime(start + 8_000);
+				await f.orchestrator.runOnce();
+				expect(f.readPassDue).toHaveBeenCalledTimes(6);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("never waits longer than five minutes between tries of a failing call", async () => {
+			const f = folderControl();
+			const start = Date.parse("2026-11-07T06:00:00.000Z");
+			f.readPassDue.mockRejectedValue(new CloudRunnerOrchestratorRequestError(503));
+			vi.useFakeTimers({ toFake: ["Date"], now: start });
+			try {
+				let now = start;
+				for (let failure = 1; failure <= 12; failure++) {
+					await f.orchestrator.runOnce();
+					expect(f.readPassDue).toHaveBeenCalledTimes(failure);
+					now += Math.min(5 * 60_000, 1_000 * 2 ** (failure - 1));
+					vi.setSystemTime(now - 1);
+					await f.orchestrator.runOnce();
+					expect(f.readPassDue).toHaveBeenCalledTimes(failure);
+					vi.setSystemTime(now);
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("waits and asks every list on an answer that is not one, like any other failure", async () => {
+			const f = folderControl();
+			const invalid = new Error("Runner orchestrator returned an invalid due summary");
+			f.readPassDue.mockRejectedValueOnce(invalid);
+			await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [invalid] });
 			expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
-			expect(f.listMaterialization).toHaveBeenCalledTimes(1);
-			expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
-			// An outage is not a reason to stop asking: the next pass tries the call again.
+			await f.orchestrator.runOnce();
+			expect(f.readPassDue).toHaveBeenCalledTimes(1);
+		});
+
+		it("stops the pass when it is shut down during the call, without asking a list or starting a wait", async () => {
+			const f = folderControl();
+			const stop = new AbortController();
+			const stopped = new Error("stopped");
+			f.readPassDue.mockImplementationOnce(async () => {
+				stop.abort();
+				throw stopped;
+			});
+			await expect(f.orchestrator.runOnce(stop.signal)).rejects.toBe(stopped);
+			expect(f.listed()).toEqual([]);
+			expect(f.listMaterialization).not.toHaveBeenCalled();
+			expect(f.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
+			expect(f.control.reconcileExpired).not.toHaveBeenCalled();
+			// No wait began: a later pass asks at once.
 			await f.orchestrator.runOnce();
 			expect(f.readPassDue).toHaveBeenCalledTimes(2);
 		});
 
-		it("does not ask again for ten minutes when the edge function does not know the call", async () => {
+		it("reports once and does not ask again for ten minutes when the edge function does not know the call", async () => {
 			const f = folderControl();
-			f.readPassDue.mockRejectedValue(new CloudRunnerOrchestratorRequestError(400));
+			const unknown = new CloudRunnerOrchestratorRequestError(400);
+			f.readPassDue.mockRejectedValue(unknown);
 			vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-07T06:00:00.000Z") });
 			try {
-				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({
+					status: "idle",
+					reconciliationErrors: [unknown],
+				});
 				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
 				vi.setSystemTime(Date.parse("2026-11-07T06:09:59.000Z"));
-				await f.orchestrator.runOnce();
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
 				expect(f.readPassDue).toHaveBeenCalledTimes(1);
 				vi.setSystemTime(Date.parse("2026-11-07T06:10:00.000Z"));
 				f.readPassDue.mockResolvedValue(quiet);

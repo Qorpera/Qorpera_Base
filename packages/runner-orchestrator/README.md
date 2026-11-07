@@ -218,9 +218,12 @@ A pass first asks `qorpera_orchestrator_due_summary` (migration
 `20260930612000`, action `due_summary`) which of its ten lists have anything,
 and leaves out a list the answer says is empty while nothing has run earlier in
 that pass. A step that ran makes every later list be asked, so a pass still takes
-what it admits. A list the answer does not name is asked. Without an answer
-(an edge function that predates the call answers 400, which pauses it for ten
-minutes; any other failure lasts one pass) the pass asks every list itself.
+what it admits. A list the answer does not name is asked. The call reads every
+list, so one bad list fails it, and it waits as a failing drain does: 1 s,
+doubling to 5 minutes, until an answer ends the wait. An edge function that
+predates the call answers 400, which waits ten minutes. Each failure is reported
+once, and while the call waits a pass asks every list itself, as it would without
+the call.
 
 `QORPERA_RUNNER_ORCHESTRATOR_WAKE=realtime` (off unless set) switches on push
 wake-ups. The service joins its private Supabase Realtime topic with the

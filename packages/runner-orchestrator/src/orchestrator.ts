@@ -2191,8 +2191,10 @@ export class CloudRunnerOrchestrator {
 	readonly #clientClaimId: () => string;
 	readonly #clientAssignmentId: () => string;
 	readonly #createCapability: () => string;
-	/** An edge function that answers the one call with 400 predates it: ask the lists one by one, and ask again later. */
-	#passDuePausedUntil = 0;
+	/** The one call reads every list, so one bad list fails it. It waits like a failing drain, and while it waits a pass asks
+	 * every list itself, each with its own backoff, and never pays for the call. A 400 (an edge function that predates the
+	 * call) waits ten minutes. */
+	#passDueBackoff?: FolderDrainBackoff;
 
 	constructor(options: CloudRunnerOrchestratorOptions) {
 		requiredUuid(options.orchestratorId, "Orchestrator id");
@@ -2241,15 +2243,21 @@ export class CloudRunnerOrchestrator {
 			else await this.#controlPlane.renewControl();
 		}
 		let due: CloudOrchestratorPassDue | undefined;
-		if (this.#controlPlane.readPassDue && Date.now() >= this.#passDuePausedUntil) {
+		if (this.#controlPlane.readPassDue && Date.now() >= (this.#passDueBackoff?.until ?? 0)) {
 			try {
 				due = new CloudOrchestratorPassDue(await this.#controlPlane.readPassDue(signal));
+				this.#passDueBackoff = undefined;
 			} catch (error) {
-				// Without the answer the pass asks every list itself, each with its own backoff, as it always did.
 				if (signal?.aborted) throw error;
-				if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400)
-					this.#passDuePausedUntil = Date.now() + ROUTINE_ADVANCE_RETRY_MS;
-				else reconciliationErrors.push(error);
+				// Reported once per wait, since nothing else says why a pass is back to asking every list.
+				this.#passDueBackoff = folderDrainBackoff(
+					this.#passDueBackoff,
+					Date.now(),
+					error instanceof CloudRunnerOrchestratorRequestError && error.status === 400
+						? ROUTINE_ADVANCE_RETRY_MS
+						: undefined,
+				);
+				reconciliationErrors.push(error);
 			}
 		}
 		for (const reconciler of this.#occurrenceReconcilers) {
