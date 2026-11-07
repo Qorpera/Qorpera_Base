@@ -521,6 +521,8 @@ export class CompanyController {
 	/** The member's client for the company's folder, where the sections are QorperaOS/agents/sections.md. */
 	#sectionsFolder: ((signal: AbortSignal) => WebMemberFolder) | undefined;
 	#poll: ReturnType<typeof setInterval> | undefined;
+	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
+	#skippedWhileHidden = false;
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
@@ -635,7 +637,30 @@ export class CompanyController {
 		await this.refreshAll();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), 30_000);
 		if (!this.#stopped && typeof document !== "undefined")
-			document.addEventListener("visibilitychange", () => this.#seeMentions(), { signal: this.signal });
+			document.addEventListener(
+				"visibilitychange",
+				() => {
+					this.#seeMentions();
+					if (document.visibilityState === "hidden" || !this.#skippedWhileHidden) return;
+					this.#skippedWhileHidden = false;
+					void this.#tick();
+				},
+				{ signal: this.signal },
+			);
+	}
+
+	/** A hidden tab with live hints reads on no clock: nobody is looking, the hints still land and read what they name, and
+	 * its first moment back reads what the clock skipped. (A tab left open read 19 times a minute all night, 7 Nov 2026.)
+	 * Without live hints the clock stays the recovery path. */
+	#restsWhileHidden(): boolean {
+		if (
+			typeof document === "undefined" ||
+			document.visibilityState !== "hidden" ||
+			this.store.get().realtime !== "connected"
+		)
+			return false;
+		this.#skippedWhileHidden = true;
+		return true;
 	}
 
 	stop(): void {
@@ -2614,6 +2639,7 @@ export class CompanyController {
 			}
 			// Re-arm first: a refresh that still sees work extends the watch.
 			this.#watchWork(0);
+			if (this.#restsWhileHidden()) return;
 			// With live hints, a change to the open conversation reads it in full and the agents'
 			// activity (#onHint); the watch then reads only new events, which arrive faster than
 			// the hints settle. Without them it reads everything, as the recovery path.
@@ -2694,7 +2720,7 @@ export class CompanyController {
 	}
 
 	async #tick(): Promise<void> {
-		if (this.#stopped || this.#polling) return;
+		if (this.#stopped || this.#polling || this.#restsWhileHidden()) return;
 		this.#polling = true;
 		try {
 			// Polling is the recovery path when Realtime is degraded; a light

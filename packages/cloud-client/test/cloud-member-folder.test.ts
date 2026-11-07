@@ -434,6 +434,8 @@ describe("the member folder client", () => {
 		expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe("Bearer member-token");
 		expect(new Headers(calls[0]!.init.headers).get("apikey")).toBe("sb_publishable_fixture");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env, p_path: "notes/a.txt" });
+		// With "no-store" Chrome sends the CORS preflight again on every call; no browser stores a POST's answer anyway.
+		expect(calls[0]!.init.cache).toBeUndefined();
 		expect(() => folder.list(null, null, 0, new AbortController().signal)).toThrow();
 		expect(() => folder.pathHistory("a", "not-a-version", 10, new AbortController().signal)).toThrow();
 	});
@@ -493,6 +495,9 @@ describe("the member folder client", () => {
 			`https://objects.test/v1/member-folder-objects/${env}/${file.manifestSha256}`,
 			`https://objects.test/v1/member-folder-objects/${env}/${file.fileSha256}`,
 		]);
+		// The route answers "private, no-store" itself (object-gateway's member-folder-objects test); asking here too would
+		// only make Chrome send the CORS preflight again on every read.
+		expect(calls.map((call) => call.init.cache)).toEqual([undefined, undefined]);
 	});
 
 	it("refuses bytes that are not what the entry and its manifest name", async () => {

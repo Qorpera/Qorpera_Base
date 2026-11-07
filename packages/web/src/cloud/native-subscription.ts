@@ -166,8 +166,9 @@ export interface WebNativeSubscription {
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
 	listConnections(signal?: AbortSignal): Promise<WebExecutionConnections>;
 	/** Resolves once account usage is current. `force` asks for a new observation
-	 * even inside the window of a completed attempt: the member pressed Refresh. */
-	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
+	 * even inside the window of a completed attempt: the member pressed Refresh.
+	 * `known`: the accounts as the caller read them just now, so they are not read again. */
+	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean, known?: NativeExecutionConnections): Promise<void>;
 	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
 	/** The member picks a conversation's login by hand (20260930059000): the only way a
 	 * conversation moves to another login, offered once its own login was disconnected. */
@@ -315,6 +316,7 @@ export function createWebNativeSubscription(
 					!/^[A-Za-z0-9._~-]{1,8192}$/.test(data.session.access_token)
 				)
 					throw new Error("Sign in again to manage cloud execution.");
+				// No `cache` option: no browser stores the answer to a POST, and "no-store" would only make Chrome send the CORS preflight again on every call, one more round trip each time.
 				const response = await fetch(`${origin.origin}/rest/v1/rpc/${method}`, {
 					method: "POST",
 					headers: {
@@ -325,7 +327,6 @@ export function createWebNativeSubscription(
 					body,
 					signal: deadline,
 					redirect: "error",
-					cache: "no-store",
 					credentials: "omit",
 				});
 				cloud.noticeResponse?.(`${origin.origin}/rest/v1/rpc/${method}`, data.session.access_token, response);
@@ -634,14 +635,14 @@ export function createWebNativeSubscription(
 			}).listConnections(profileId);
 			return { ...listed, connections: listed.connections.map((connection) => withPlanFields(connection, answer)) };
 		},
-		refreshAccountMetadata: async (signal, force = false) => {
+		refreshAccountMetadata: async (signal, force = false, known) => {
 			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
 			checked.throwIfAborted();
 			current();
 			if (!pendingMetadataRefresh) {
 				const work = withCloudDeadline(
 					async (deadline) => {
-						const accounts = await client(deadline).listConnections(profileId);
+						const accounts = known ?? (await client(deadline).listConnections(profileId));
 						const eligible = accounts.connections.filter(
 							(account) =>
 								account.provider === "openai" &&

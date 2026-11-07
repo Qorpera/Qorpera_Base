@@ -2,12 +2,13 @@
 import { createHash } from "node:crypto";
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
 	appReadablePath,
 	assembleApp,
 	type CompanyApp,
+	CompanyApps,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
@@ -318,5 +319,50 @@ describe("an app's card in a message", () => {
 		expect(card?.querySelector(".app-card-title")?.textContent).toBe("Sales this week");
 		expect(body.querySelectorAll(".app-card")).toHaveLength(1);
 		expect(body.querySelector("a")).toBeNull();
+	});
+});
+
+describe("following the company's apps from a hidden tab", () => {
+	it("reads on no clock, reads on a hint, and reads what the clock skipped when it is back", async () => {
+		vi.useFakeTimers();
+		const showing = (state: DocumentVisibilityState) =>
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+		try {
+			const folders = vi.fn(() => fakeFolder({}));
+			let hint = () => {};
+			const apps = new CompanyApps(
+				{
+					signal: new AbortController().signal,
+					folder: folders as never,
+					folderHints: (onHint) => {
+						hint = () => onHint(2);
+						return { close: async () => {} };
+					},
+				},
+				() => {},
+			);
+			apps.open();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(folders).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(folders).toHaveBeenCalledTimes(2);
+			showing("hidden");
+			await vi.advanceTimersByTimeAsync(10 * 60_000);
+			expect(folders).toHaveBeenCalledTimes(2);
+			hint();
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(folders).toHaveBeenCalledTimes(3);
+			showing("visible");
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(folders).toHaveBeenCalledTimes(4);
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(folders).toHaveBeenCalledTimes(4);
+			apps.dispose();
+		} finally {
+			Reflect.deleteProperty(document, "visibilityState");
+			vi.useRealTimers();
+		}
 	});
 });

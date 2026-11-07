@@ -308,7 +308,8 @@ export class SessionExecutionView {
 		try {
 			// Usage improves account ranking, but an unavailable refresh host must
 			// not prevent the cloud from selecting an already eligible account.
-			await this.#native.refreshAccountMetadata(signal);
+			// The accounts were read just now: the refresh asks about those, not the cloud again.
+			await this.#native.refreshAccountMetadata(signal, false, this.#observed);
 			signal.throwIfAborted();
 			refreshed = true;
 		} catch {
@@ -366,6 +367,9 @@ export class SessionExecutionView {
 				this.#scheduleRefresh();
 				return;
 			}
+			// A hidden tab asks on no clock (a tab left open asked twice a minute all night): nothing is on screen to send
+			// from, and its first moment back reads the accounts (the constructor's listeners).
+			if (document.visibilityState === "hidden") return;
 			void this.refresh();
 		}, delay);
 	}

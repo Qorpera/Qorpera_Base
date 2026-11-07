@@ -537,7 +537,22 @@ export class CompanyApps {
 
 	open(): void {
 		if (this.#stop.signal.aborted || this.#poll) return;
-		this.#poll = setInterval(() => void this.read(), APPS_POLL_MS);
+		// A hidden tab reads on no clock (a list, each app's manifest and its bytes, every minute all night); its first
+		// moment back reads what the clock skipped. A folder hint still reads at once.
+		let skipped = false;
+		this.#poll = setInterval(() => {
+			if (document.visibilityState === "hidden") skipped = true;
+			else void this.read();
+		}, APPS_POLL_MS);
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (document.visibilityState === "hidden" || !skipped) return;
+				skipped = false;
+				void this.read();
+			},
+			{ signal: this.#stop.signal },
+		);
 		try {
 			this.#hints = this.#source.folderHints(() => this.#hinted());
 		} catch {

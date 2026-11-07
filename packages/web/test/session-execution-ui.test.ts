@@ -164,6 +164,45 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 }
 const CONNECT_HINT = "Connect a model account in Settings → AI subscriptions to send messages.";
 
+describe("reading the accounts", () => {
+	const showing = (state: DocumentVisibilityState) =>
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+	afterEach(() => {
+		Reflect.deleteProperty(document, "visibilityState");
+	});
+
+	it("does not ask again for the accounts it just read before it refreshes their usage", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const hydrate = vi.fn(async () => {});
+		const observed = withUsage([80, 40]);
+		const f = setup(true, observed, select, hydrate);
+		await settle();
+		expect(hydrate).toHaveBeenCalledTimes(1);
+		expect(hydrate.mock.calls[0]).toEqual([expect.any(AbortSignal), false, observed]);
+		expect(f.listConnections).toHaveBeenCalledTimes(1);
+	});
+
+	it("asks on no clock while the tab is hidden, and at once when it is back", async () => {
+		vi.useFakeTimers();
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(true, withUsage([80, 40]), select);
+		await settle();
+		const reads = () => [select.mock.calls.length, f.listConnections.mock.calls.length];
+		showing("hidden");
+		const before = reads();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		// 7 Nov 2026: a thread left open in a hidden tab asked twice a minute all night, at 102 ms a call.
+		expect(reads()).toEqual(before);
+		showing("visible");
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(reads()).toEqual([before[0]! + 1, before[1]! + 1]);
+		// Back on the clock.
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(reads()).toEqual([before[0]! + 2, before[1]! + 2]);
+	});
+});
+
 describe("room startup usage refresh", () => {
 	it("selects a known eligible account and sends while the optional usage probe remains pending", async () => {
 		const pending = deferred<void>();
