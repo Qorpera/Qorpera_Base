@@ -101,7 +101,7 @@ describe("preparation of an acknowledged first boot", () => {
 			root: "/",
 			mountPoint: "/var/lib/qorpera-office",
 		});
-		expect(request.limits).toEqual({ memoryBytes: 4 * 1024 ** 3, pids: 512, cpuQuota: 200000, cpuPeriod: 100000 });
+		expect(request.limits).toEqual({ memoryBytes: 4 * 1024 ** 3, pids: 4096, cpuQuota: 200000, cpuPeriod: 100000 });
 		expect(request.uid).toBe(f.policy.workbench.uid);
 		expect(request.gid).toBe(f.policy.workbench.gid);
 		expect(request.copy.adoptionId).toBe(f.copy.adoptionId);

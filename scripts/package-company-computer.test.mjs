@@ -47,7 +47,7 @@ test("packages and starts the headless office outside the workspace, with all ru
 			assert.equal(failed.status, 1, failed.stderr); assert.doesNotMatch(failed.stderr, /secret-that-must-not-leak|Error:|node_modules/);
 		}
 		const unit = await readFile(join(output, "qorpera-company-computer.service"), "utf8");
-		for (const line of ["User=qorpera-office", "KillMode=mixed", "SendSIGKILL=yes", "TimeoutStopSec=70", "MemoryMax=4G", "TasksMax=512", "CPUQuota=200%", "NoNewPrivileges=yes", "CapabilityBoundingSet=", "LimitCORE=0"])
+		for (const line of ["User=qorpera-office", "KillMode=mixed", "SendSIGKILL=yes", "TimeoutStopSec=70", "MemoryMax=4G", "TasksMax=4096", "CPUQuota=200%", "OOMPolicy=continue", "NoNewPrivileges=yes", "CapabilityBoundingSet=", "LimitCORE=0"])
 			assert.ok(unit.split("\n").includes(line), line);
 		assert.equal(unit.match(/^LoadCredential=.*:\/etc\/qorpera-office\/boots\/%b\/credentials\//gm).length, 6);
 		const preparation = join(output, "qorpera-company-computer-preparation.mjs");
