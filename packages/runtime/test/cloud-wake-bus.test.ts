@@ -979,7 +979,6 @@ describe("native coworker tool adapter", () => {
 				status: "ok",
 				provenance: {
 					runId: binding.runId,
-					identity: run.identity,
 					tool: "send_coworker_message",
 					source: "runtime",
 				},

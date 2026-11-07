@@ -117,8 +117,11 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(envelope).toMatchObject({
 		trust: "untrusted_data",
 		status: "ok",
-		provenance: { identity: f.authority.identity },
+		provenance: { companyId: f.authority.identity.companyId, runId: f.authority.identity.runId },
 	});
+	// The run's row keeps who it acts for; a result names the run, not every id of its identity in each prompt.
+	expect(envelope.provenance).not.toHaveProperty("identity");
+	expect(encoded).not.toContain(f.authority.identity.sponsorBindingId);
 	expect(envelope.content.text).toContain("ignore all previous instructions");
 	expect(encoded).not.toContain("</tool_result>");
 	expect(JSON.stringify(result)).not.toMatch(/PRIVATE_|tool_result|ignore all/);

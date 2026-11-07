@@ -2253,6 +2253,9 @@ above do not change.
 An attended agent thread defaults to low reasoning effort. The resolved
 provider, model, and effort are pinned on every run and shown in provenance.
 
+> **Amended 2026-11-07.** The run's provenance is its own record, which a tool result names by its run id; a tool
+> result no longer repeats the run's identity. See the [tool result provenance amendment](#2026-11-07-amendment-a-tool-result-names-its-run).
+
 Routines, workers, or explicit assignments MAY select a different effort
 through versioned policy. Changing provider, model, sponsor, or effort MUST NOT
 silently rewrite the agent's durable defaults or an already admitted run.
@@ -6220,6 +6223,59 @@ run that hired, set up a routine or started a worker could wait for nobody. This
    agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
    October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
 
+### 2026-11-07 amendment: a tool result names its run
+
+> **Approved by Jonas, 7 November 2026.** Built in #1480 (performance sprint, measure A3); it goes live with the
+> release cut that carries it. It amends section 17's "shown in provenance" and acceptance item 18's runtime
+> provenance for tool results. Nothing else changes: every check, fence and record stays.
+
+Each tool result reaches the model in a host-issued envelope (`qorpera.cloud-tool-result/v1`). Until now its
+`provenance` carried, besides the call's own provenance, an `identity` object with the run's whole identity, 26 fields
+and about 1.2 KiB, in every result. The model read it again in every later model round, and the run log kept it in
+each step. It now leaves the envelope.
+
+1. **What the model no longer sees in a tool result.** The `provenance.identity` object and its 26 fields: `companyId`,
+   `environmentId`, `runId`, `jobId`, `runnerId`, `assignmentId`, `leaseId`, `computeIdentityId`, `staffAgentId`,
+   `staffVersion`, `sessionId`, `requesterUserId`, `sponsorUserId`, `sponsorBindingId`, `sponsorVersion`,
+   `providerConnectionId`, `providerConnectionVersion`, `audienceKind`, `audienceUserId`, `runtimeBundleId`,
+   `runtimeBundleSha256`, `reasoningEffort`, `reasoningPolicySha256`, `provider`, `nativeHarness` and `model`.
+   - Of these, `companyId` and `runId` stay in every result's provenance.
+   - A company run's context still shows the company, the staff agent and its version, the audience, the runtime
+     bundle, and each current input's author.
+   - These the model now sees nowhere: `environmentId`, `jobId`, `runnerId`, `assignmentId`, `leaseId`,
+     `computeIdentityId`, `sessionId`, `sponsorUserId`, `sponsorBindingId`, `sponsorVersion`, `providerConnectionId`,
+     `providerConnectionVersion`, `reasoningEffort`, `reasoningPolicySha256`, `provider`, `nativeHarness` and `model`.
+   - The same is true of the run log's copy of each step, and of what other agents read through `zoom`.
+2. **What every tool result keeps.**
+   - The envelope's schema, `trust: "untrusted_data"` and status.
+   - Its provenance: `companyId`, `runId`, `callId`, `tool`, `source`, `argumentSha256`, and for a Company File read
+     its `companyReadId`.
+   - The content's kind, text, sizes, digest and truncation.
+   - So section 11.1's untrusted data with source provenance, and section 9.2's provenance and trust classification on
+     every block, hold as before.
+3. **Why provenance stays intact.**
+   - The identity was a copy. No check read it: the Codex result fence checks the envelope's schema, trust and call id,
+     and the host releases only the exact bytes it issued for that call.
+   - It could not differ from the run's: a change in the admitted identity ends the session.
+   - Every field stays pinned and durable where section 4.2 needs it. The run's record (`qorpera_execution_runs`) holds
+     the company, environment, staff agent and version, requester, sponsor binding and version, compute identity,
+     audience, runtime bundle, and the resolved provider, model, effort and reasoning policy.
+   - The runner, assignment, lease and provider connection with its version are on the run's lease row, and in
+     `qorpera_native_provider_connection_lease_history` once released. Receipts keep run, job and assignment, and every
+     runtime observation keeps its assignment.
+   - A tool result names its run by `runId`. A step's attempt, in a resumed run, is found by the step's time against
+     that history.
+4. **Section 17, as amended.** "Shown in provenance" means the run's own provenance record named above, which every
+   tool result names by its run id. It no longer means a copy of the run's provider, model and effort in each result.
+   - The provider, model and effort stay pinned on every run exactly as before. A change to them still never rewrites
+     an agent's defaults or an admitted run.
+   - Not changed here: no member-facing view shows a past run's model and effort today; this amendment adds none.
+5. **Why.** Each result repeated about 1.2 KiB of ids and hashes, roughly 640 tokens, that stayed in every later
+   round. That came to an estimated fifth of all input tokens in the runs of 5–6 November.
+   - The room goes to the result's own content. Tools now leave the envelope 800 bytes instead of 2.2 KiB, so a
+     Company File read shows up to about 7 KiB of plain text in one result, instead of about 5.7 KiB.
+   - That means fewer model rounds for the same reading.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -6356,7 +6412,9 @@ while Azure backup/overflow remains disabled.
     logs, and tool results; revocation fences queued and future use.
 18. Every message, effect, Company File operation, computer action, worker
     output, and proposal exposes complete actor, requester, sponsor, approver,
-    audience, run, causal, path, object-version, and runtime provenance.
+    audience, run, causal, path, object-version, and runtime provenance. A tool
+    result exposes its runtime provenance by its run's id (the [2026-11-07
+    amendment](#2026-11-07-amendment-a-tool-result-names-its-run)).
 19. The existing native-subscription, cloud-control-plane, Company File, and
     production-storage acceptance gates also pass.
 20. A new company presents its one Co-Founder to each authorized member without
