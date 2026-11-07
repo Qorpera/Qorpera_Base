@@ -880,15 +880,20 @@ const receiptOf = (r) =>
 		? { state: r.state, exitCode: r.exitCode, output: r.output, totalBytes: r.log?.totalBytes, companyFolder: r.companyFolder ?? null }
 		: null;
 
+/** A `date +%s%N` answer in ms, NaN for anything else. The guest clock takes %N and cuts it to ms here: uutils date
+ * (Ubuntu 26.04) prints the nanoseconds, unpadded, for %3N. */
+export const msFromNanoseconds = (text) =>
+	/^[0-9]{19,}$/.test(text) ? Number(BigInt(text) / 1_000_000n) : Number.NaN;
+
 /** A guest's wall clock against this host's, from the fastest of a few `date` calls over `lxc exec`: `offsetMs` is the
  * guest's time minus the host's, within `uncertaintyMs`. */
 async function guestClock(project, name) {
 	let best = null;
 	for (let i = 0; i < 5; i++) {
 		const before = Date.now();
-		const said = await lxc(project, ["exec", name, "--", "date", "+%s%3N"], { timeoutMs: 30_000 });
+		const said = await lxc(project, ["exec", name, "--", "date", "+%s%N"], { timeoutMs: 30_000 });
 		const after = Date.now();
-		const guest = Number(said.stdout.trim());
+		const guest = msFromNanoseconds(said.stdout.trim());
 		if (said.status !== 0 || !Number.isSafeInteger(guest)) continue;
 		const sample = { offsetMs: guest - Math.round((before + after) / 2), uncertaintyMs: Math.ceil((after - before) / 2) };
 		if (!best || sample.uncertaintyMs < best.uncertaintyMs) best = sample;
@@ -985,22 +990,26 @@ print(json.dumps({"scanned": len(said), "answered": [port for port, how in said 
 PY`;
 
 /** L: a write under /company at every 10 s of the guest's clock (a counter and the guest's time in ms), its last on
- * TERM (a cancel or a stop), at most 60. */
+ * TERM (a cancel or a stop), at most 60. `now` cuts the ms from %N: uutils date (Ubuntu 26.04) prints the
+ * nanoseconds, unpadded, for %3N. */
+export const NOW_MS = "now() { echo $(( $(date +%s%N) / 1000000 )); }";
 const LOOP_COMMAND = [
 	"f=/company/p4/loop.txt; n=0",
-	`trap 'n=$((n+1)); t=$(date +%s%3N); echo "$n last $t" > $f; echo "last $n $t"; exit 0' TERM`,
+	NOW_MS,
+	`trap 'n=$((n+1)); t=$(now); echo "$n last $t" > $f; echo "last $n $t"; exit 0' TERM`,
 	"while [ $n -lt 60 ]; do",
-	"ms=$(( $(date +%s%3N) % 10000 )); w=$(( 10000 - ms ))",
+	"ms=$(( $(now) % 10000 )); w=$(( 10000 - ms ))",
 	`sleep "$((w / 1000)).$(printf %03d $((w % 1000)))" & wait $!`,
-	`n=$((n+1)); t=$(date +%s%3N); echo "$n $t" > $f; echo "tick $n $t"`,
+	`n=$((n+1)); t=$(now); echo "$n $t" > $f; echo "tick $n $t"`,
 	"done",
 ].join("\n");
 
 /** S: a write under /company every half second until it is stopped, its last on TERM. */
 const STOP_LOOP_COMMAND = [
 	"f=/company/p4/stop-loop.txt; n=0",
-	`trap 'n=$((n+1)); echo "$n last $(date +%s%3N)" > $f; exit 0' TERM`,
-	`while :; do n=$((n+1)); echo "$n $(date +%s%3N)" > $f; sleep 0.5 & wait $!; done`,
+	NOW_MS,
+	`trap 'n=$((n+1)); echo "$n last $(now)" > $f; exit 0' TERM`,
+	`while :; do n=$((n+1)); echo "$n $(now)" > $f; sleep 0.5 & wait $!; done`,
 ].join("\n");
 
 async function prove(options, evidence, cleanups, secrets) {

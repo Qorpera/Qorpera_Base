@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -13,8 +14,10 @@ import {
 	keepHandover,
 	literal,
 	loopFileSha256,
+	msFromNanoseconds,
 	NEW_DISK,
 	nicStandIn,
+	NOW_MS,
 	parseArgs,
 	parseSocketUnits,
 	parseVsockListener,
@@ -816,6 +819,19 @@ test("a writer left running after its command ended commits as the starter, cred
 		"the writer never started": (e) => Object.assign(d(e).receipt, { output: "" }),
 		"nothing was committed": (e) => Object.assign(d(e), { commits: [] }),
 	});
+});
+
+test("the guest clock and the loops take ms from %N: uutils date (Ubuntu 26.04) prints %3N unpadded", () => {
+	assert.equal(msFromNanoseconds("1700000000012345678"), 1700000000012);
+	// Shorter than a %s%N (as %s%3N can be on uutils), or not digits only.
+	for (const text of ["", "170000000012345678", "17000000000123", "1700000000.012345678", "-1700000000012345678"])
+		assert.ok(Number.isNaN(msFromNanoseconds(text)), text);
+	for (const shell of ["bash", "sh"]) {
+		const before = Date.now();
+		const said = execFileSync(shell, ["-c", `${NOW_MS}\nnow`], { encoding: "utf8", timeout: 5000 }).trim();
+		assert.match(said, /^[0-9]{13}$/, shell);
+		assert.ok(Math.abs(Number(said) - before) < 5000, `${shell} ${said}`);
+	}
 });
 
 test("a loop's changes are published by the quiet period, a read's boundary and the cancel, each crediting the loop", () => {
