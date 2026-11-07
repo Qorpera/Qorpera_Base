@@ -4,6 +4,7 @@ import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
 	type CloudCodexOpening,
+	type CloudCodexProcessAhead,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -105,6 +106,8 @@ export async function runCloudNativeRunToolSession(options: {
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
+	/** The process started ahead for this run, beside its first reads. */
+	processAhead?: CloudCodexProcessAhead;
 	isolation?: NativeIsolationConfiguration;
 	/** How a ChatGPT plan run's Codex gets the plan's token (the host's setting). */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
@@ -259,6 +262,7 @@ export async function runCloudNativeRunToolSession(options: {
 				: {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
+			...(options.processAhead ? { processAhead: options.processAhead } : {}),
 			isolation: options.isolation,
 			...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 			signal: run.signal,

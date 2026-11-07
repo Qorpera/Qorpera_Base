@@ -921,6 +921,44 @@ it("waits for the run's admission and context bind as long as the database may r
 		).toHaveLength(1);
 });
 
+it("starts the run's Codex process beside its reads, not after them", async () => {
+	const f = await fixture("company-runtime", false, undefined, false, false, 30_000);
+	// The run's authority read waits for the process's handshake: with the process started after it, this run never ends.
+	const describe = f.control.describeToolAuthority.getMockImplementation()!;
+	f.control.describeToolAuthority.mockImplementation(async () => {
+		await vi.waitFor(async () => expect(await readFile(`${f.evidence}.handshakes`, "utf8")).toMatch(/\d+\n/), {
+			timeout: 20_000,
+		});
+		return describe();
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect((await readFile(`${f.evidence}.handshakes`, "utf8")).split("\n").filter(Boolean)).toHaveLength(1);
+});
+
+it("stops the Codex process it started when the run ends before taking it", async () => {
+	const f = await fixture("company-runtime", false, undefined, false, false, 30_000);
+	f.control.describeToolAuthority.mockResolvedValue({
+		...f.authority,
+		identity: { ...f.authority.identity, staffVersion: f.authority.identity.staffVersion + 1 },
+	});
+	// A slower context read would only leave the process more time: the handshake lands first.
+	const describe = f.control.describeToolAuthority.getMockImplementation()!;
+	f.control.describeToolAuthority.mockImplementation(async () => {
+		await vi.waitFor(async () => expect(await readFile(`${f.evidence}.handshakes`, "utf8")).toMatch(/\d+\n/), {
+			timeout: 20_000,
+		});
+		return describe();
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"Cloud context identity changed",
+	);
+	const pid = Number((await readFile(`${f.evidence}.handshakes`, "utf8")).trim());
+	expect(pid).toBeGreaterThan(0);
+	expect(() => process.kill(pid, 0)).toThrow();
+	// No thread started.
+	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 it("runs a standard-tier run without Fast", async () => {
 	const f = await fixture("company-runtime");
 	f.context.serviceTier = "standard";

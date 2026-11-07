@@ -2176,6 +2176,71 @@ async function pruneCodexHome(codexHome: string): Promise<void> {
 			await rm(join(codexHome, entry.name), { recursive: true, force: true });
 }
 
+/** A run's process: the spare for these inputs, or a new one. */
+async function cloudCodexProcessForRun(
+	inputs: CloudCodexProcessInputs,
+	reusedIdentityRoot: boolean | undefined,
+	signal: AbortSignal,
+): Promise<CloudCodexProcess> {
+	const spare = await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
+	if (spare) return spare;
+	if (inputs.identityRoot) {
+		// No other process may share this identity home with the one that starts now.
+		const disposed = await disposeCloudCodexSpares(inputs.identityRoot);
+		if (disposed > 0 || reusedIdentityRoot) await pruneCodexHome(join(inputs.identityRoot, "codex"));
+	}
+	return startCloudCodexProcess(inputs, { stage: "codex-artifact" }, signal);
+}
+
+/** A run's process, started beside the run's first reads so the run does not wait for it after them. */
+export interface CloudCodexProcessAhead {
+	readonly process: Promise<CloudCodexProcess>;
+	/** Stops the process if the run never took it, and waits for that; a process a run took and closed stays closed. */
+	discard(): Promise<void>;
+}
+
+/**
+ * Starts a run's process once its context names its effort and tier. Like a spare, the process has no run until one is
+ * bound: the result fence refuses every request, and no thread or model request starts before the run's admission.
+ * A failed start waits for the run to take it, and fails the run there.
+ */
+export function startCloudCodexProcessAhead(
+	inputs: {
+		command: readonly [string, ...string[]];
+		binarySha256: string;
+		reasoningEffort: CloudRuntimeReasoningEffort;
+		serviceTier: CloudRuntimeServiceTier;
+		identityRoot?: string;
+		isolation?: NativeIsolationConfiguration;
+		chatGptPlanAuth?: CloudChatGptPlanAuth;
+		reusedIdentityRoot?: boolean;
+	},
+	signal: AbortSignal,
+): CloudCodexProcessAhead {
+	const stop = new AbortController();
+	const started = cloudCodexProcessForRun(
+		{
+			command: inputs.command,
+			binarySha256: inputs.binarySha256,
+			effort: inputs.reasoningEffort,
+			serviceTier: inputs.serviceTier,
+			...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
+			...(inputs.isolation ? { isolation: inputs.isolation } : {}),
+			...(inputs.chatGptPlanAuth ? { chatGptPlanAuth: inputs.chatGptPlanAuth } : {}),
+		},
+		inputs.reusedIdentityRoot,
+		AbortSignal.any([signal, stop.signal]),
+	);
+	started.catch(() => undefined);
+	return {
+		process: started,
+		async discard() {
+			stop.abort();
+			await started.then((process) => process.close()).catch(() => undefined);
+		},
+	};
+}
+
 /**
  * Cloud-host adapter selected only by the explicit company-path-v1 runtime lane.
  * No Company File directory is passed to Codex. The caller supplies the cloud tools.
@@ -2208,6 +2273,8 @@ export async function runCloudCodexToolSession(options: {
 	 * before a new process starts, so the auth-only check keeps its meaning.
 	 */
 	reusedIdentityRoot?: boolean;
+	/** The process started ahead for this run; it starts its own when this one is for other inputs. */
+	processAhead?: CloudCodexProcessAhead;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 	/** The opening (RUNTIME-AGENT-MEMORY-TREE.md §5.4): after beforeModelStart and before the agent's thread, with the
@@ -2281,18 +2348,17 @@ export async function runCloudCodexToolSession(options: {
 		...(options.isolation ? { isolation: options.isolation } : {}),
 		...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 	};
-	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
 	let started: CloudCodexProcess;
 	try {
-		const spare = await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
-		if (spare) started = spare;
+		const ahead = await options.processAhead?.process;
+		if (ahead?.key === cloudCodexProcessKey(inputs)) started = ahead;
 		else {
-			if (options.identityRoot) {
-				// No other process may share this identity home with the one that starts now.
-				const disposed = await disposeCloudCodexSpares(options.identityRoot);
-				if (disposed > 0 || options.reusedIdentityRoot) await pruneCodexHome(join(options.identityRoot, "codex"));
+			if (ahead) {
+				await ahead.close();
+				// What it left in the Codex home goes, as a spare's does, so the new process's auth-only check keeps its meaning.
+				if (options.identityRoot) await pruneCodexHome(join(options.identityRoot, "codex"));
 			}
-			started = await startCloudCodexProcess(inputs, progress, signal);
+			started = await cloudCodexProcessForRun(inputs, options.reusedIdentityRoot, signal);
 		}
 	} catch (error) {
 		options.boundary.close();

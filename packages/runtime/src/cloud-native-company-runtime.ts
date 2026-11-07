@@ -15,9 +15,11 @@ import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
 	type CloudCodexOpening,
+	type CloudCodexProcessAhead,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
+	startCloudCodexProcessAhead,
 } from "./cloud-codex-tool-session.ts";
 import { type CloudCompanyAccountClient, cloudCompanyAccountTool } from "./cloud-company-account-tools.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
@@ -290,6 +292,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const composition = observability.start("company_context");
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
+		let processAhead: CloudCodexProcessAhead | undefined;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Since 20260930499000 only the
@@ -357,6 +360,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					observability,
 				});
 			}
+			// The run's Codex process starts now, beside the reads below: 0.35 s the run would otherwise wait after them. It
+			// has no run until one is bound, and no thread or model request starts before the run's admission.
+			processAhead = startCloudCodexProcessAhead(
+				{
+					command: this.#command,
+					binarySha256: this.#sha256,
+					reasoningEffort: context.identity.reasoningEffort,
+					serviceTier,
+					identityRoot,
+					...(this.#isolation ? { isolation: this.#isolation } : {}),
+					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+				},
+				signal,
+			);
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
@@ -799,6 +817,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					binarySha256: this.#sha256,
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+					...(processAhead ? { processAhead } : {}),
 					isolation: this.#isolation,
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					signal,
@@ -1149,6 +1168,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			await this.#recordUsageSignal(binding, error);
 			throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, signal));
 		} finally {
+			await processAhead?.discard();
 			await presence?.close().catch(() => undefined);
 			await observability.close();
 		}
