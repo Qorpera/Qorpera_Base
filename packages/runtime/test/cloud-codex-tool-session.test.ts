@@ -11,11 +11,13 @@ import {
 } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
+	type CloudCodexProcessAhead,
 	CodexLineReader,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
 	runCloudCodexToolSession,
+	startCloudCodexProcessAhead,
 } from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import {
@@ -70,6 +72,7 @@ function run(
 		compactor?: MemoryCompactChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
+		processAhead?: CloudCodexProcessAhead;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -548,6 +551,91 @@ describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 		// A Codex login's 429 stays a rate limit.
 		const codex = await run("terminal-rate-error").result.catch((failure: unknown) => failure);
 		expect(nativeProviderUsageSignal(codex)).toBe("rate_limited");
+	});
+});
+
+describe("a process started ahead of its run", () => {
+	const ahead = (mode: string, options: { reasoningEffort?: "low" | "high"; signal?: AbortSignal } = {}) => {
+		const evidence = join(root, "evidence.json");
+		return {
+			evidence,
+			processAhead: startCloudCodexProcessAhead(
+				{
+					command: [process.execPath, rpcFixture, mode, evidence],
+					binarySha256,
+					reasoningEffort: options.reasoningEffort ?? "low",
+					serviceTier: "standard",
+				},
+				options.signal ?? new AbortController().signal,
+			),
+		};
+	};
+	const handshakes = async (evidence: string) =>
+		(await readFile(`${evidence}.handshakes`, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+
+	it("serves its run, which starts no process of its own", async () => {
+		const { evidence, processAhead } = ahead("response-first");
+		await processAhead.process;
+		expect(await handshakes(evidence)).toBe(1);
+		await expect(run("response-first", { processAhead }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await handshakes(evidence)).toBe(1);
+		await processAhead.discard();
+	});
+
+	it("has no thread and makes no provider request before its run", async () => {
+		const { evidence, processAhead } = ahead("response-first");
+		await processAhead.process;
+		expect(JSON.parse(await readFile(evidence, "utf8").catch(() => "null"))).toBeNull();
+		await processAhead.discard();
+	});
+
+	it("is closed for a run with other inputs, which starts its own", async () => {
+		const { evidence, processAhead } = ahead("response-first", { reasoningEffort: "high" });
+		const stale = await processAhead.process;
+		await expect(run("response-first", { processAhead }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(stale.healthy).toBe(false);
+		expect(await handshakes(evidence)).toBe(2);
+	});
+
+	it("leaves nothing of a stale process in a kept Codex home for the run's own process", async () => {
+		const identityRoot = join(root, "identity");
+		await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+		await writeFile(join(identityRoot, "codex", "auth.json"), "{}", { mode: 0o600 });
+		const evidence = join(root, "evidence.json");
+		const processAhead = startCloudCodexProcessAhead(
+			{
+				command: [process.execPath, rpcFixture, "writes-home", evidence],
+				binarySha256,
+				reasoningEffort: "high",
+				serviceTier: "standard",
+				identityRoot,
+			},
+			new AbortController().signal,
+		);
+		await processAhead.process;
+		await expect(
+			run("writes-home", { identityRoot, reasoningEffort: "low", processAhead }).result,
+		).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("fails its run when it could not start, and only then", async () => {
+		const { processAhead } = ahead("missing-fence");
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
+		await expect(run("response-first", { processAhead }).result).rejects.toThrow("missing native result fence");
+	});
+
+	it("is stopped when its run never takes it, also while it is still starting", async () => {
+		const ready = ahead("response-first");
+		const started = await ready.processAhead.process;
+		await ready.processAhead.discard();
+		expect(started.healthy).toBe(false);
+		const starting = ahead("response-first");
+		await starting.processAhead.discard();
+		await expect(starting.processAhead.process).rejects.toThrow();
 	});
 });
 
