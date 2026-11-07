@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import {
+	chmod,
+	cp,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	readlink,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { buildRelease } from "./make-release.mjs";
-import { NodeAgent, roleChanged, withNodeLock } from "./qorpera-node-agent.mjs";
+import { NodeAgent, readReleaseKeys, roleChanged, withNodeLock } from "./qorpera-node-agent.mjs";
 
 const keys = generateKeyPairSync("ed25519");
 const privatePem = keys.privateKey.export({ type: "pkcs8", format: "pem" });
@@ -14,10 +26,28 @@ const bundle = (character) => character.repeat(64);
 const OLD_PROVIDER = "qorpera-native25-phql-provider.service";
 const UNITS = { provider: "qorpera-node-provider.service", orchestrator: "qorpera-node-orchestrator.service" };
 
+// The release-key cases both verifiers run (README.md "Release keys"); the observer runs them in
+// packages/runner-orchestrator/test/runtime-node-releases.test.ts.
+const KEY_CASES = JSON.parse(await readFile(new URL("fixtures/release-key-cases.json", import.meta.url), "utf8")).cases;
+const caseKeys = Object.fromEntries([
+	...[..."abcdefghi"].map((label) => [label, generateKeyPairSync("ed25519")]),
+	["x", generateKeyPairSync("x25519")],
+]);
+const caseKeyIdOf = (publicKey) =>
+	createHash("sha256")
+		.update(publicKey.export({ type: "spki", format: "der" }))
+		.digest("hex")
+		.slice(0, 16);
+const caseKeyId = (label) => caseKeyIdOf(caseKeys[label].publicKey);
+const refusedWith = (code) => (error) => error.message.split(" ")[0] === code;
+
 async function nodeFixture() {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-node-agent-"));
 	await mkdir(join(root, "etc/qorpera-node/keys"), { recursive: true });
 	await writeFile(join(root, "etc/qorpera-node/keys/release.pem"), publicPem);
+	// The agent refuses a key folder or file others can write: fix the modes whatever the umask.
+	await chmod(join(root, "etc/qorpera-node/keys"), 0o755);
+	await chmod(join(root, "etc/qorpera-node/keys/release.pem"), 0o444);
 	await writeFile(
 		join(root, "etc/qorpera-node/node.json"),
 		JSON.stringify({
@@ -117,6 +147,7 @@ async function nodeFixture() {
 		runtime = "a",
 		order = "either",
 		roles = ["provider", "orchestrator"],
+		key = privatePem,
 	}) => {
 		const folder = join(root, `source-${sources++}`);
 		await mkdir(folder);
@@ -137,7 +168,7 @@ async function nodeFixture() {
 				files: { "provider.mjs": join(folder, "provider.mjs"), "orchestrator.mjs": join(folder, "orchestrator.mjs") },
 				roles: Object.fromEntries(Object.entries(all).filter(([role]) => roles.includes(role))),
 			},
-			privatePem,
+			key,
 			out,
 		);
 		return out;
@@ -194,9 +225,77 @@ test("stages only a correctly signed, complete release that follows the current 
 		const skipping = await node.release({ revision: 2, previousRevision: 1 });
 		await assert.rejects(node.agent.stage(skipping), /STAGE_PREVIOUS expected 0 got 1/);
 		assert.deepEqual(await readdir(join(node.agentRoot, "releases")), ["0"]);
+		assert.equal((await lastRecord(node, /-stage-r0-/)).keyId, caseKeyIdOf(keys.publicKey));
 	} finally {
 		await node.close();
 	}
+});
+
+/** Writes one case entry at `path`; a link points at a copy in `scratch`. */
+async function writeCaseKey(scratch, path, entry) {
+	if (entry.dir) {
+		await mkdir(path);
+		return chmod(path, 0o755);
+	}
+	const pair = caseKeys[entry.key];
+	const pem = entry.private
+		? pair.privateKey.export({ type: "pkcs8", format: "pem" })
+		: pair.publicKey.export({ type: "spki", format: "pem" });
+	const file = entry.link ? join(scratch, `${randomUUID()}.pem`) : path;
+	await writeFile(file, pem.padEnd(entry.size ?? 0, "#"));
+	await chmod(file, Number.parseInt(entry.mode ?? "0444", 8));
+	if (entry.link) await symlink(file, path);
+}
+
+/** Lays one case out at the agent's key folder and legacy key path. */
+async function writeKeyCase(node, keyCase) {
+	await rm(node.agent.releaseKey);
+	if (keyCase.legacy) await writeCaseKey(node.root, node.agent.releaseKey, keyCase.legacy);
+	if (!keyCase.folder) return;
+	await mkdir(node.agent.releaseKeys, { recursive: true });
+	for (const entry of keyCase.folder.entries) {
+		const name = entry.name ?? `${caseKeyId(entry.nameOf ?? entry.key)}.pem`;
+		await writeCaseKey(node.root, join(node.agent.releaseKeys, name), entry);
+	}
+	await chmod(node.agent.releaseKeys, Number.parseInt(keyCase.folder.mode ?? "0755", 8));
+}
+
+test("verifies with the release-key set, or refuses the whole set (the shared cases)", async (t) => {
+	for (const keyCase of KEY_CASES)
+		await t.test(keyCase.name, async () => {
+			const node = await nodeFixture();
+			try {
+				await writeKeyCase(node, keyCase);
+				const uid = process.getuid();
+				const read = readReleaseKeys({
+					folder: node.agent.releaseKeys,
+					legacy: node.agent.releaseKey,
+					owner: keyCase.folder?.owner === "other" ? uid + 1 : uid,
+				});
+				if (keyCase.error) await assert.rejects(read, refusedWith(keyCase.error));
+				else
+					assert.deepEqual(
+						(await read).map(({ id }) => id),
+						keyCase.keys.map(caseKeyId).sort(),
+					);
+				// The agent stages as root; unprivileged, it expects the test's own user, so this case stops here.
+				if (keyCase.folder?.owner === "other") return;
+				const signed = await node.release({
+					revision: 0,
+					previousRevision: null,
+					key: caseKeys[keyCase.signedBy].privateKey.export({ type: "pkcs8", format: "pem" }),
+				});
+				if (keyCase.error) await assert.rejects(node.agent.stage(signed), refusedWith(keyCase.error));
+				else if (keyCase.verifiedBy === null)
+					await assert.rejects(node.agent.stage(signed), refusedWith("RELEASE_SIGNATURE"));
+				else {
+					await node.agent.stage(signed);
+					assert.equal((await lastRecord(node, /-stage-r0-/)).keyId, caseKeyId(keyCase.verifiedBy));
+				}
+			} finally {
+				await node.close();
+			}
+		});
 });
 
 test("refuses a release folder whose signed revision is not its name", async () => {

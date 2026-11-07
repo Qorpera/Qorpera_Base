@@ -1,0 +1,188 @@
+{
+	"about": "The release-key set cases both verifiers run (README.md \"Release keys\"): the node agent's readReleaseKeys (qorpera-node-agent.test.mjs) and the observer's readNodeReleaseKeys (packages/runner-orchestrator/test/runtime-node-releases.test.ts). Keys are named by letter and made fresh for each run: a to i are Ed25519, x is X25519. folder: the release-keys folder (left out: no folder), with mode (default 0755), owner \"other\" (owned by someone else) and entries. An entry writes one key's public PEM as <key id>.pem, mode 0444; nameOf names it after another key, name gives a literal name, mode, private (the key's private PEM), size (padded to that many bytes), link (a symlink to the file) and dir (a subfolder) change that. legacy: the legacy key file, the same way (left out: no file). A case expects either keys, the set by letter, and verifiedBy, the key that verifies a release signed by signedBy (null: none does), or error, the code that refuses the whole set.",
+	"cases": [
+		{
+			"name": "a good key",
+			"folder": { "entries": [{ "key": "a" }] },
+			"signedBy": "a",
+			"keys": ["a"],
+			"verifiedBy": "a"
+		},
+		{
+			"name": "any key in the set verifies (a second key next to the legacy one)",
+			"folder": { "entries": [{ "key": "a" }, { "key": "b" }] },
+			"legacy": { "key": "a" },
+			"signedBy": "b",
+			"keys": ["a", "b"],
+			"verifiedBy": "b"
+		},
+		{
+			"name": "a key outside the set does not verify",
+			"folder": { "entries": [{ "key": "a" }] },
+			"signedBy": "b",
+			"keys": ["a"],
+			"verifiedBy": null
+		},
+		{
+			"name": "the legacy key alone",
+			"legacy": { "key": "a" },
+			"signedBy": "a",
+			"keys": ["a"],
+			"verifiedBy": "a"
+		},
+		{
+			"name": "an empty folder next to the legacy key",
+			"folder": { "entries": [] },
+			"legacy": { "key": "a" },
+			"signedBy": "a",
+			"keys": ["a"],
+			"verifiedBy": "a"
+		},
+		{
+			"name": "an empty folder and no legacy key: nothing verifies",
+			"folder": { "entries": [] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_NONE"
+		},
+		{
+			"name": "no folder and no legacy key: nothing verifies",
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_NONE"
+		},
+		{
+			"name": "a wrong key type refuses the whole set",
+			"folder": { "entries": [{ "key": "a" }, { "key": "x" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_TYPE"
+		},
+		{
+			"name": "a private key is not a public key",
+			"folder": { "entries": [{ "key": "a" }, { "key": "b", "private": true }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_TYPE"
+		},
+		{
+			"name": "a writable folder",
+			"folder": { "mode": "0775", "entries": [{ "key": "a" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_FOLDER"
+		},
+		{
+			"name": "a folder owned by someone else",
+			"folder": { "owner": "other", "entries": [{ "key": "a" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_FOLDER"
+		},
+		{
+			"name": "a writable key file",
+			"folder": { "entries": [{ "key": "a" }, { "key": "b", "mode": "0664" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_FILE"
+		},
+		{
+			"name": "a key file over 4 KiB",
+			"folder": { "entries": [{ "key": "a", "size": 4097 }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_FILE"
+		},
+		{
+			"name": "a mismatched name",
+			"folder": { "entries": [{ "key": "a", "nameOf": "b" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_NAME"
+		},
+		{
+			"name": "another name",
+			"folder": { "entries": [{ "key": "a" }, { "key": "b", "name": "b.pem" }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_NAME"
+		},
+		{
+			"name": "a symlink",
+			"folder": { "entries": [{ "key": "a", "link": true }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_ENTRY"
+		},
+		{
+			"name": "a subfolder",
+			"folder": { "entries": [{ "key": "a" }, { "key": "b", "dir": true }] },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_ENTRY"
+		},
+		{
+			"name": "more than 8 keys in the folder",
+			"folder": {
+				"entries": [
+					{ "key": "a" },
+					{ "key": "b" },
+					{ "key": "c" },
+					{ "key": "d" },
+					{ "key": "e" },
+					{ "key": "f" },
+					{ "key": "g" },
+					{ "key": "h" },
+					{ "key": "i" }
+				]
+			},
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_COUNT"
+		},
+		{
+			"name": "8 in the folder and a 9th as the legacy key",
+			"folder": {
+				"entries": [
+					{ "key": "a" },
+					{ "key": "b" },
+					{ "key": "c" },
+					{ "key": "d" },
+					{ "key": "e" },
+					{ "key": "f" },
+					{ "key": "g" },
+					{ "key": "h" }
+				]
+			},
+			"legacy": { "key": "i" },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_COUNT"
+		},
+		{
+			"name": "the same key in the folder and as the legacy key counts once",
+			"folder": {
+				"entries": [
+					{ "key": "a" },
+					{ "key": "b" },
+					{ "key": "c" },
+					{ "key": "d" },
+					{ "key": "e" },
+					{ "key": "f" },
+					{ "key": "g" },
+					{ "key": "h" }
+				]
+			},
+			"legacy": { "key": "h" },
+			"signedBy": "h",
+			"keys": ["a", "b", "c", "d", "e", "f", "g", "h"],
+			"verifiedBy": "h"
+		},
+		{
+			"name": "a writable legacy key",
+			"folder": { "entries": [{ "key": "a" }] },
+			"legacy": { "key": "a", "mode": "0666" },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_FILE"
+		},
+		{
+			"name": "a legacy key that is a symlink",
+			"legacy": { "key": "a", "link": true },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_ENTRY"
+		},
+		{
+			"name": "a wrong legacy key type",
+			"folder": { "entries": [{ "key": "a" }] },
+			"legacy": { "key": "x" },
+			"signedBy": "a",
+			"error": "RELEASE_KEYS_TYPE"
+		}
+	]
+}

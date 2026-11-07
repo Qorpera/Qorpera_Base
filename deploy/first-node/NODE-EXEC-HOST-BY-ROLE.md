@@ -30,10 +30,11 @@ An infrastructure entry in a node's inventory policy may declare `"role": "execu
     any older one `agent gc` has not removed yet (at most the newest 16 by revision),
   - with `release.json` and `release.sig` small regular files (a pipe or device is skipped, so it
     cannot block the scan),
-  - whose `release.json` verifies against the node's enrolled release key
-    (`/etc/qorpera-node/keys/release.pem`).
-- Otherwise the entry is `INSTANCE_IMAGE_NOT_RELEASED` and the node is unavailable. No key or no
-  releases means no image is accepted.
+  - whose `release.json` verifies against one of the node's release keys (the
+    `/usr/share/qorpera/release-keys` set plus the legacy `/etc/qorpera-node/keys/release.pem`;
+    `deploy/node-agent/README.md` "Release keys").
+- Otherwise the entry is `INSTANCE_IMAGE_NOT_RELEASED` and the node is unavailable. No key, a
+  refused key set or no releases means no image is accepted.
 - Everything else stays exact: name, physical UUID, type, profiles, devices, every other configuration
   key, size. Any other difference is `INSTANCE_AUTHORITY_DIFFERS`, as before.
 - The observer reads the releases only when an entry declares a role. Policies without one behave
