@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
-	CLOUD_MACHINE_COMMAND_ANSWER_MS,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
 } from "../src/cloud-machine-command-http.ts";
-import { cloudMachineTools } from "../src/cloud-machine-tools.ts";
+import { CLOUD_MACHINE_START_ANSWER_MS, cloudMachineTools } from "../src/cloud-machine-tools.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import {
 	type CloudNativeToolOperations,
@@ -253,9 +253,21 @@ describe("machine tools", () => {
 		}
 	});
 
-	describe("an executor that answers late", () => {
+	describe("a start the executor does not answer", () => {
 		const run = { operationKey: "suite:1", machine: "build-a", command: "npm test" };
-		const unanswered = () => new Error("Machine command gateway unavailable");
+		const unanswered = () => new CloudMachineCommandUnanswered();
+		/** How the kernel answers a look: the machine running and no record of the command, unless told otherwise. */
+		const noRecord = (f: ReturnType<typeof fixture>) => ({
+			schema: "qorpera.machine-status/v1",
+			machine: f.listed[0],
+			command: null,
+		});
+		/** The call's result, as the boundary answers an outcome it does not know. */
+		const unknown = (result: { success: boolean; contentItems: { text: string }[] }) => {
+			expect(result.contentItems[0].text).not.toContain("refused");
+			expect(result.contentItems[0].text).not.toContain("start it again");
+			expect(result.contentItems[0].text).not.toContain('"commandId"');
+		};
 		beforeEach(() => {
 			vi.useFakeTimers();
 		});
@@ -263,16 +275,16 @@ describe("machine tools", () => {
 			vi.useRealTimers();
 		});
 
-		it("sends a start again, the same start, until it is answered", async () => {
+		it("sends it again, the same start, while the kernel has no record of it", async () => {
 			const f = fixture();
 			try {
+				f.statuses.push(noRecord(f), noRecord(f));
 				f.gateway.start.mockRejectedValueOnce(unanswered()).mockRejectedValueOnce(unanswered());
 				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
 				await vi.advanceTimersByTimeAsync(3000);
 				const result = await call;
 				expect(result.success).toBe(true);
 				expect(f.content(result as never)).toMatchObject({ commandId: f.receiptId, state: "running" });
-				// Exactly one command: its id is the receipt's, on every send.
 				expect(f.gateway.start.mock.calls.map(([scope, input]) => [scope, input])).toEqual(
 					Array(3).fill([
 						{ machineId: f.listed[0].machineId },
@@ -285,38 +297,93 @@ describe("machine tools", () => {
 						},
 					]),
 				);
-				// The receipt's deadline is long enough for it, and one call makes one operation.
-				expect(f.execute).toHaveBeenCalledTimes(1);
-				expect(f.execute.mock.calls[0][0].performMs).toBe(CLOUD_MACHINE_COMMAND_ANSWER_MS);
+				// Each send after the first follows a look that asked about this command.
+				expect(f.looks().map(([, args]) => args.p_request)).toEqual(
+					Array(2).fill({ action: "status", machine: "build-a", commandId: f.receiptId }),
+				);
+				expect(f.execute.mock.calls[0][0].performMs).toBe(CLOUD_MACHINE_START_ANSWER_MS);
 			} finally {
 				f.boundary.close();
 			}
 		});
 
-		it("takes a refusal on a later send as the answer: nothing started, and the receipt can settle", async () => {
+		it.each([
+			[
+				"a record of the command, which may have started",
+				{ command: { commandId: "c", state: "running", endedAt: null } },
+			],
+			[
+				"a record of a command that already ended",
+				{ command: { commandId: "c", state: "succeeded", endedAt: "x" } },
+			],
+			["a machine no longer running", { machine: { name: "build-a", state: "stopping" }, command: null }],
+			["a machine gone", { machine: null }],
+			["a run told to stop", { machine: undefined, workStopped: true }],
+		])("sends nothing more on %s, and the outcome stays unknown", async (_label, look) => {
 			const f = fixture();
 			try {
-				f.gateway.start
-					.mockRejectedValueOnce(unanswered())
-					.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED"));
+				f.statuses.push({ ...noRecord(f), ...look });
+				f.gateway.start.mockRejectedValueOnce(unanswered());
 				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
 				await vi.advanceTimersByTimeAsync(1000);
-				const result = await call;
-				expect(result.success).toBe(true);
-				expect(f.content(result as never).refused).toMatchObject({ reason: "MACHINE_COMMAND_ENDED" });
-				expect(f.gateway.start).toHaveBeenCalledTimes(2);
+				unknown((await call) as never);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				expect(f.looks()).toHaveLength(1);
 			} finally {
 				f.boundary.close();
 			}
 		});
 
-		it("sends nothing more once the run stops", async () => {
+		it.each(["MACHINE_COMMAND_ENDED", "MACHINE_NOT_RUNNING"] as const)(
+			"never reads %s after an unanswered send as nothing started: that send proves only itself",
+			async (code) => {
+				const f = fixture();
+				try {
+					f.statuses.push(noRecord(f));
+					f.gateway.start
+						.mockRejectedValueOnce(unanswered())
+						.mockRejectedValueOnce(new CloudMachineCommandRefusal(code));
+					const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
+					await vi.advanceTimersByTimeAsync(1000);
+					const result = await call;
+					unknown(result as never);
+					expect(result.contentItems[0].text).not.toContain(code);
+					expect(f.gateway.start).toHaveBeenCalledTimes(2);
+				} finally {
+					f.boundary.close();
+				}
+			},
+		);
+
+		it("does not send again what the executor answered, a refusal or its 403, and does not look", async () => {
 			const f = fixture();
 			try {
+				f.gateway.start.mockRejectedValueOnce(new Error("Machine command gateway unavailable"));
+				unknown((await f.boundary.invoke("r1", "qorpera", "machine_run", run)) as never);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				// The first send's refusal still says nothing started.
+				f.gateway.start.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED"));
+				const refused = await f.boundary.invoke("r2", "qorpera", "machine_run", {
+					...run,
+					operationKey: "suite:2",
+				});
+				expect(f.content(refused as never).refused).toMatchObject({ reason: "MACHINE_COMMAND_ENDED" });
+				expect(f.gateway.start).toHaveBeenCalledTimes(2);
+				expect(f.looks()).toHaveLength(0);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("does not send again while it cannot look, and sends nothing more once the run stops", async () => {
+			const f = fixture();
+			try {
+				f.statuses.push(new Error("database slow"), new Error("database slow"));
 				f.gateway.start.mockRejectedValue(unanswered());
 				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
-				await vi.advanceTimersByTimeAsync(0);
+				await vi.advanceTimersByTimeAsync(3000);
 				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				expect(f.looks()).toHaveLength(2);
 				f.run.abort();
 				await call;
 				await vi.advanceTimersByTimeAsync(60_000);
@@ -326,22 +393,18 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("sends a cancel again until it is answered", async () => {
+		it("leaves machine_cancel as it was: an unanswered cancel is not sent again", async () => {
 			const f = fixture();
 			try {
-				const commandId = randomUUID();
 				f.gateway.cancel.mockRejectedValueOnce(unanswered());
-				const call = f.boundary.invoke("r1", "qorpera", "machine_cancel", {
+				const result = await f.boundary.invoke("r1", "qorpera", "machine_cancel", {
 					operationKey: "stop:1",
 					machine: "build-a",
-					commandId,
+					commandId: randomUUID(),
 				});
-				await vi.advanceTimersByTimeAsync(1000);
-				const result = await call;
-				expect(result.success).toBe(true);
-				expect(f.content(result as never)).toMatchObject({ commandId, state: "cancelled" });
-				expect(f.gateway.cancel).toHaveBeenCalledTimes(2);
-				expect(f.execute.mock.calls[0][0].performMs).toBe(CLOUD_MACHINE_COMMAND_ANSWER_MS);
+				unknown(result as never);
+				expect(f.gateway.cancel).toHaveBeenCalledTimes(1);
+				expect(f.execute.mock.calls[0][0].performMs).toBeUndefined();
 			} finally {
 				f.boundary.close();
 			}
@@ -366,16 +429,15 @@ describe("machine tools", () => {
 				expect(result.success).toBe(true);
 				expect(f.content(result as never)).toMatchObject({ commandId, state: "succeeded" });
 				expect(f.gateway.read).toHaveBeenCalledTimes(1);
-				// No answer at all: the agent hears so after that long, and a read that failed is not sent again here.
+				// No answer at all: the agent hears so after that long, and a read is not sent again.
 				f.gateway.read.mockClear();
 				f.gateway.read.mockImplementationOnce(() => new Promise(() => undefined));
 				const never = f.boundary.invoke("r2", "qorpera", "machine_read", { machine: "build-a", commandId });
-				await vi.advanceTimersByTimeAsync(29_000);
 				let settled = false;
 				void never.then(() => {
 					settled = true;
 				});
-				await vi.advanceTimersByTimeAsync(0);
+				await vi.advanceTimersByTimeAsync(29_000);
 				expect(settled).toBe(false);
 				await vi.advanceTimersByTimeAsync(1000);
 				await never;

@@ -9,10 +9,8 @@ import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import { unavailable } from "./cloud-folder-file-tools.ts";
 import {
-	CLOUD_MACHINE_COMMAND_ANSWER_MS,
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandGateway,
-	cloudMachineCommandAnswer,
 	cloudMachineCommandRefusal,
 } from "./cloud-machine-command-http.ts";
 import {
@@ -874,26 +872,21 @@ export function cloudSiteTools(options: {
 						requiresCompanyRevision: false,
 					},
 					signal: context.signal,
-					performMs: CLOUD_MACHINE_COMMAND_ANSWER_MS,
 					authorize: async (_operation, admittedIdentity) => {
 						if (!isDeepStrictEqual(admittedIdentity, expected))
 							throw new Error("App link program identity changed");
 					},
 					perform: async (_operation, effect) => {
 						try {
-							const receipt = await cloudMachineCommandAnswer(
-								() =>
-									machines.gateway.start(
-										{ machineId: machine.machineId },
-										{
-											commandId: effect.receiptId,
-											inputSha256: effect.inputSha256,
-											command,
-											timeoutMs: null,
-											notify: false,
-										},
-										effect.signal,
-									),
+							const receipt = await machines.gateway.start(
+								{ machineId: machine.machineId },
+								{
+									commandId: effect.receiptId,
+									inputSha256: effect.inputSha256,
+									command,
+									timeoutMs: null,
+									notify: false,
+								},
 								effect.signal,
 							);
 							return { content: { kind: "json", value: receipt as unknown as JsonValue } };

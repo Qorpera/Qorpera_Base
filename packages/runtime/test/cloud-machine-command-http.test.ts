@@ -8,6 +8,7 @@ import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandHttpRequest,
 	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
 	createHttpCloudMachineCommandGateway,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
@@ -132,6 +133,54 @@ describe("machine command gateway", () => {
 		await expect(other.cancel({ machineId }, randomUUID(), new AbortController().signal)).rejects.toThrow(
 			"Machine command gateway unavailable",
 		);
+	});
+
+	it("tells a request the executor did not answer from one it answered", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const read = (fetch: typeof globalThis.fetch) =>
+			createHttpCloudMachineCommandGateway({
+				url: "https://executor.example/",
+				token: randomBytes(32).toString("base64url"),
+				binding,
+				holder: () => "holder",
+				fetch,
+			}).read({ machineId }, { commandId: randomUUID(), offset: 0, limit: 4096 }, new AbortController().signal);
+		// Its connection failed, or a proxy in front of it answered: nothing is known of the request.
+		await expect(
+			read((async () => {
+				throw new TypeError("fetch failed");
+			}) as typeof fetch),
+		).rejects.toBeInstanceOf(CloudMachineCommandUnanswered);
+		for (const status of [502, 503, 504, 524])
+			await expect(read((async () => new Response("", { status })) as typeof fetch)).rejects.toBeInstanceOf(
+				CloudMachineCommandUnanswered,
+			);
+		// The executor's own answers.
+		for (const status of [403, 404]) {
+			const answered = read((async () => new Response("{}", { status })) as typeof fetch);
+			await expect(answered).rejects.toThrow("Machine command gateway unavailable");
+			await expect(answered).rejects.not.toBeInstanceOf(CloudMachineCommandUnanswered);
+		}
+		const refused = read(
+			(async () => new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 })) as typeof fetch,
+		);
+		await expect(refused).rejects.toBeInstanceOf(CloudMachineCommandRefusal);
+		// No answer within the request's 30 s.
+		vi.useFakeTimers();
+		try {
+			const late = read(
+				((_input: string | URL | Request, init?: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+					})) as typeof fetch,
+			);
+			const expected = expect(late).rejects.toBeInstanceOf(CloudMachineCommandUnanswered);
+			await vi.advanceTimersByTimeAsync(30_000);
+			await expected;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("carries why the machine lost a command that already ended, and drops a cause it does not know (6e-2a)", async () => {
