@@ -2542,7 +2542,11 @@ export class CloudRunnerOrchestrator {
 								// A failed dispatch can leave a finished sandbox or a retained claim
 								// behind: reconcile at once, and claim again after that pass. A deferred or
 								// retried job sends no wake-up, so poll at the fast rate for a while.
-								reconcile.required = reconcile.started + 1;
+								// A typed refusal started nothing and its job waits by its own deferral, so
+								// it holds no claims: a pass that materializes a burst of wakes takes
+								// seconds (production, 6 Nov 2026: one refusal held every claim for 11.3 s).
+								if (!(error instanceof CloudRunnerProviderRequestError && error.admission))
+									reconcile.required = reconcile.started + 1;
 								reconcileTimer.wake();
 								wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
 								options.onError?.(error);

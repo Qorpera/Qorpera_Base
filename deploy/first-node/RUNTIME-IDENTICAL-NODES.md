@@ -89,6 +89,10 @@ change.
   | Anything else | Everyone, 15 s (unchanged) |
 
   Before this change, a full fast host made every node wait 15 s.
+
+  A run a member is waiting for (`session_turn`, `room_delivery`) waits 2 s instead of 15 after a refusal for full
+  capacity (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, `NODE_CAPACITY_EXHAUSTED`), and the claim takes such runs
+  before older wakes (`20260930602000`, test 1102).
 - **`qorpera_runtime_node_drain_status(node)`** (service role) reports:
   - `serving` and the last change;
   - `runs`: claims held by the node's orchestrators, counting `claimed`/`assigned`, and each

@@ -114,8 +114,11 @@ class FakeUnits implements SharedExecutionUnitControl {
 		if (this.failing.has(unit)) throw new Error(`${unit} failed`);
 		this.activeUnits.add(unit);
 	}
-	async stop(unit: string): Promise<void> {
+	/** What each stop was told to wait at most, by unit. */
+	readonly stopWaits = new Map<string, number | undefined>();
+	async stop(unit: string, _signal?: AbortSignal, waitMs?: number): Promise<void> {
 		this.log.push(`stop ${unit}`);
+		this.stopWaits.set(unit, waitMs);
 		if (!this.stuck.has(unit)) this.activeUnits.delete(unit);
 	}
 	async kill(unit: string): Promise<void> {
@@ -1001,12 +1004,40 @@ describe("shared execution provider backend", () => {
 	it("kills a unit that ignores stop and quarantines the slot while anything still runs in it", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		f.units.stuck.add("qorpera-shared-run-host@0.service");
+		f.units.log.length = 0;
+		await f.backend.stop(runner, "revoked");
+		// A revoked run's host may be in the middle of something: it keeps the full wait, and is killed only after that.
+		expect(f.units.log).toEqual([
+			"stop qorpera-shared-runner@0.service",
+			"stop qorpera-shared-run-host@0.service",
+			"kill qorpera-shared-run-host@0.service",
+		]);
+		expect(f.units.stopWaits.get("qorpera-shared-run-host@0.service")).toBeUndefined();
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+	});
+
+	it("gives a host whose run ended by itself a moment, then kills it, so the slot is soon free", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
 		f.units.stuck.add("qorpera-shared-run-host@0.service");
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		f.units.log.length = 0;
 		await f.backend.reconcile();
-		expect(f.units.log).toContain("kill qorpera-shared-run-host@0.service");
-		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		expect(f.units.log).toEqual([
+			"stop qorpera-shared-runner@0.service",
+			"stop qorpera-shared-run-host@0.service",
+			"kill qorpera-shared-run-host@0.service",
+		]);
+		// Not the 15 s every other stop may wait, nor the unit's own 10 s TimeoutStopSec.
+		expect(f.units.stopWaits.get("qorpera-shared-run-host@0.service")).toBe(1_000);
+		expect(f.units.stopWaits.get("qorpera-shared-runner@0.service")).toBeUndefined();
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", stopReason: "idle", capacityReleased: true });
+		const otherRun = "30000000-0000-4000-8000-000000000062";
+		await f.backend.acquire(otherRun, work({ runId: otherRun, sourceId: otherRun }), signal);
+		expect(await journal(f, otherRun)).toMatchObject({ physicalState: "registered", slot: 0 });
 	});
 
 	it("reads unit states strictly", () => {

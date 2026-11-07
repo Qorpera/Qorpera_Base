@@ -21,6 +21,7 @@ import {
 	SupabaseCloudRunnerOrchestratorControlPlane,
 	validateCloudRunnerWork,
 } from "../src/orchestrator.ts";
+import { CloudRunnerProviderRequestError } from "../src/provider-http.ts";
 
 const orchestratorId = "11111111-1111-4111-8111-111111111111";
 const claimId = "22222222-2222-4222-8222-222222222222";
@@ -2228,6 +2229,55 @@ describe("cloud runner orchestrator", () => {
 		expect(
 			vi.mocked(control.claimNext).mock.invocationCallOrder.every((order) => order < failed || order > reconciled),
 		).toBe(true);
+	});
+
+	it("keeps claiming through a reconcile pass after a typed admission refusal", async () => {
+		// A refusal started nothing, and the pass may be materializing a burst of wakes (6 Nov 2026: 11.3 s).
+		const control = controlPlane(undefined);
+		vi.mocked(control.claimNext)
+			.mockResolvedValueOnce(claim())
+			.mockResolvedValueOnce(claim())
+			.mockResolvedValue(undefined);
+		const local = localAdapter();
+		local.reconcile
+			.mockImplementationOnce(async () => undefined)
+			.mockImplementation(() => new Promise<undefined>(() => undefined));
+		const refusal = new CloudRunnerProviderRequestError(
+			422,
+			{ state: "deferred", reason: "SANDBOX_CAPACITY_EXHAUSTED" },
+			"acquire",
+		);
+		local.acquire.mockRejectedValueOnce(refusal);
+		const controller = new AbortController();
+		const giveUp = setTimeout(() => controller.abort(), 3_000);
+		local.deliver.mockImplementationOnce(async () => {
+			controller.abort();
+		});
+		const onError = vi.fn();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, {
+			pollIntervalMs: 10,
+			reconcileIntervalMs: 10,
+			shutdownGraceMs: 10,
+			onError,
+		});
+		clearTimeout(giveUp);
+		expect(control.releaseClaim).toHaveBeenCalledWith(
+			expect.anything(),
+			assignmentId,
+			"ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED",
+		);
+		expect(onError).toHaveBeenCalledWith(refusal);
+		// The next claim went out and was delivered while the pass was still running.
+		expect(local.deliver).toHaveBeenCalledOnce();
 	});
 
 	it("retries a failed reconcile on the next poll and claims nothing until it succeeds", async () => {
