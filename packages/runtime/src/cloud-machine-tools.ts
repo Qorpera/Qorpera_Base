@@ -27,10 +27,13 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	CloudControlRefusalRelay,
 	type CloudNativeTool,
+	type CloudToolContent,
 	type CloudToolContext,
 	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -305,7 +308,8 @@ export function cloudMachineTools(options: {
 				/[<>&\u2028\u2029]/g,
 				(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
 			),
-		) <= 4096;
+		) <=
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
 	const receipt = (value: CloudMachineCommandReceipt, machine: string) => {
 		let shown: CloudMachineCommandReceipt = value;
 		// A handle without a preview is still a complete, honest cursor.
@@ -638,42 +642,50 @@ export function cloudMachineTools(options: {
 						state: machine.state,
 					},
 				);
+			// What the executor reports once stays with the answer, whichever read it came on.
+			let folder: CloudMachineCommandFolder | undefined;
+			const page = async (): Promise<{ content: CloudToolContent; running: boolean }> => {
+				let limit = Number(query.limit ?? 4096);
+				for (;;) {
+					let read: unknown;
+					try {
+						read = await cloudToolRequest(
+							(signal) =>
+								options.gateway.read(
+									{ machineId: machine.machineId },
+									parseCloudCodingCommandRead({ ...query, limit }),
+									signal,
+								),
+							context.signal,
+						);
+					} catch (error) {
+						return { content: commandGone(error, machine.name), running: false };
+					}
+					const got = parseCloudMachineCommandReceipt(read);
+					check(context);
+					folder = carried(folder, got.companyFolder);
+					const shown: CloudMachineCommandReceipt = folder ? { ...got, companyFolder: folder } : got;
+					if (fits({ machine: machine.name, ...shown }))
+						return { content: receipt(shown, machine.name), running: got.state === "running" };
+					if (limit === 4) throw new Error("Machine command page exceeds result budget");
+					limit = Math.max(4, Math.floor(limit / 2));
+				}
+			};
+			if (waitSeconds === undefined) return (await page()).content;
+			// A command that already ended needs no wait: most have, by the time the model reads them, and the kernel
+			// hears of it only at the executor's next pass (7 Nov 2026).
+			const first = await page();
+			if (!first.running) return first.content;
 			// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
 			// or the time passed. It looks at the kernel's status, not at the machine; the read below answers.
-			if (waitSeconds !== undefined) {
-				const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
-					const now = await status(machine.name, String(query.commandId), context.signal);
-					if (now.workStopped) return "stopped";
-					return now.machine?.state !== "running" || now.command?.state !== "running";
-				});
-				check(context);
-				if (outcome === "stopped") return workStopped();
-			}
-			let limit = Number(query.limit ?? 4096);
-			let folder: CloudMachineCommandFolder | undefined;
-			for (;;) {
-				let read: unknown;
-				try {
-					read = await cloudToolRequest(
-						(signal) =>
-							options.gateway.read(
-								{ machineId: machine.machineId },
-								parseCloudCodingCommandRead({ ...query, limit }),
-								signal,
-							),
-						context.signal,
-					);
-				} catch (error) {
-					return commandGone(error, machine.name);
-				}
-				const got = parseCloudMachineCommandReceipt(read);
-				check(context);
-				folder = carried(folder, got.companyFolder);
-				const page: CloudMachineCommandReceipt = folder ? { ...got, companyFolder: folder } : got;
-				if (fits({ machine: machine.name, ...page })) return receipt(page, machine.name);
-				if (limit === 4) throw new Error("Machine command page exceeds result budget");
-				limit = Math.max(4, Math.floor(limit / 2));
-			}
+			const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
+				const now = await status(machine.name, String(query.commandId), context.signal);
+				if (now.workStopped) return "stopped";
+				return now.machine?.state !== "running" || now.command?.state !== "running";
+			});
+			check(context);
+			if (outcome === "stopped") return workStopped();
+			return (await page()).content;
 		},
 	};
 

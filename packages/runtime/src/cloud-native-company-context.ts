@@ -14,7 +14,11 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolAuthority,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, MAX_CLOUD_TOOL_RESULT_BYTES } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
+	type CloudNativeTool,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
+} from "./cloud-native-tool-boundary.ts";
 import { CLOUD_RUNTIME_CONSTITUTION, CLOUD_RUNTIME_CONSTITUTION_VERSION } from "./cloud-runtime-constitution.ts";
 import {
 	CLOUD_RUNTIME_HIRE_OVERLAY_VERSION,
@@ -996,9 +1000,6 @@ export function composeCloudNativeCompanyPrompt(
 	return prompt;
 }
 
-/** Room for the result fence's provenance (identity, call and digest) around a page. */
-const CONTEXT_PAGE_FENCE_RESERVE_BYTES = 3072;
-
 /** The result fence cuts every tool result at MAX_CLOUD_TOOL_RESULT_BYTES from the end,
  * where nextOffset sits, and escapes the page JSON a second time. A page is shortened
  * here instead, at a code point, so the model always receives its continuation handle.
@@ -1017,7 +1018,7 @@ function fittedContextPage(page: CloudCompanyContextSource): string {
 		});
 	const fits = (value: string) =>
 		Buffer.byteLength(JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <=
-		MAX_CLOUD_TOOL_RESULT_BYTES - CONTEXT_PAGE_FENCE_RESERVE_BYTES;
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
 	if (fits(encode(characters.length))) return encode(characters.length);
 	let low = 1;
 	let high = characters.length;

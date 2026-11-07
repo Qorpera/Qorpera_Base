@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
-import { CloudCompanyPathRpcMissing } from "./cloud-company-path-refusal.ts";
+import { CloudCompanyPathRpcMissing, CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	CLOUD_TOOL_REQUEST_MAX_MS,
@@ -33,6 +33,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_native_context_view"
 	| "qorpera_fence_native_context"
 	| "qorpera_assert_company_path_reads"
+	// The run's check around a tool call: its authority and read set in one call (20260930603000).
+	| "qorpera_check_native_run"
 	| "qorpera_native_presence_register"
 	| "qorpera_company_presence_scope"
 	| "qorpera_native_presence_subject"
@@ -213,6 +215,9 @@ export class CloudCompanyPathGateway {
 	readonly #control: CloudCompanyPathControl;
 	/** The database has no one-call fence yet (a runtime ahead of 20260929400000). */
 	#fenceUnavailable = false;
+	/** The one-call run check: the database lacks it (a runtime ahead of 20260930603000), or it has answered this run. */
+	#checkUnavailable = false;
+	#checkAnswered = false;
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -261,6 +266,32 @@ export class CloudCompanyPathGateway {
 			timeoutMs,
 		);
 		if (checked !== null) throw new Error("Invalid Company File context authorization");
+	}
+
+	/**
+	 * The run's two checks in one database call (qorpera_check_native_run, 20260930603000): its authority, then its read
+	 * set, each made as the separate calls make it. Returns the authority as that call read it, or undefined when the
+	 * database does not have the call yet; the caller then makes the separate calls. On the native host's entry point a
+	 * call the database does not list is refused like any other, so a refusal before the call ever answered this run
+	 * also says undefined: the separate calls then make the same checks, and a refusal of the run comes from them.
+	 */
+	async checkRun(signal: AbortSignal, timeoutMs?: number): Promise<unknown> {
+		if (this.#checkUnavailable) return undefined;
+		try {
+			const authority = await this.#call("qorpera_check_native_run", this.#bound(), signal, timeoutMs);
+			this.#checkAnswered = true;
+			return authority;
+		} catch (error) {
+			if (
+				!signal.aborted &&
+				(error instanceof CloudCompanyPathRpcMissing ||
+					(error instanceof CloudCompanyPathRpcRefusal && !this.#checkAnswered))
+			) {
+				this.#checkUnavailable = true;
+				return undefined;
+			}
+			throw error;
+		}
 	}
 
 	/** Called by the native fence with host-fenced outputs only, before release. */

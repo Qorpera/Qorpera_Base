@@ -43,6 +43,7 @@ import type { CloudFolderNotebookGateway } from "./cloud-folder-notebooks.ts";
 import { ensureCloudCompanyFolders, retryingCloudCompanyChange } from "./cloud-memory-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
@@ -75,8 +76,6 @@ const SEARCH_MAX_FILES = 400;
 /** Skill files read at once, for the catalog and a search. */
 const READ_CONCURRENCY = 16;
 const DISTINCTIVE_WORD_CHARS = 3;
-/** Room for the result fence's provenance around a page (read_context keeps the same). */
-const RESULT_FENCE_RESERVE_BYTES = 3072;
 const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The characters the result fence and prompt escape as six-byte \uXXXX sequences. */
 const FENCE_ESCAPED = new RegExp(`[<>&${String.fromCodePoint(0x2028, 0x2029)}]`, "g");
@@ -345,7 +344,7 @@ function fitsResult(value: JsonValue): boolean {
 	// The tool's JSON text is one string inside the fence's JSON, with markup escaped.
 	return (
 		Buffer.byteLength(JSON.stringify(cloudToolJsonText(value)).replace(FENCE_ESCAPED, "\\u0000")) <=
-		MAX_CLOUD_TOOL_RESULT_BYTES - RESULT_FENCE_RESERVE_BYTES
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES
 	);
 }
 

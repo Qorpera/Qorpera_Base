@@ -38,6 +38,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_begin_native_tool_operation", "standard"],
 	["qorpera_bind_native_company_context", "standard"],
 	["qorpera_check_company_path_mutation", "standard"],
+	["qorpera_check_native_run", "standard"],
 	["qorpera_commit_company_path_mutation", "standard"],
 	["qorpera_company_machines_available", "standard"],
 	["qorpera_company_presence_scope", "standard"],
