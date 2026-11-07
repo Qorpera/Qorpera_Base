@@ -1987,7 +1987,7 @@ describe("cloud runner orchestrator", () => {
 	describe("one answer for an idle pass's lists", () => {
 		const environmentId = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
 		const profileId = "18181818-1818-4818-8818-181818181818";
-		const quiet = {
+		const quiet: Readonly<Record<string, boolean>> = {
 			...Object.fromEntries(CLOUD_FOLDER_DRAINS.map(({ name }) => [name, false])),
 			materialize: false,
 			routine_heads: false,
