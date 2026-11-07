@@ -103,7 +103,7 @@ interface Database {
 	machines?: { name: string; state: string }[];
 	/** How the machine's executor answers the program's start: a running command (default), one that ended at once,
 	 * one whose start is unconfirmed, a refusal, or a failure. */
-	start?: "running" | "failed" | "unconfirmed" | "MACHINE_NOT_RUNNING" | "throw";
+	start?: "running" | "failed" | "unconfirmed" | "MACHINE_NOT_RUNNING" | "throw" | "lost-once";
 }
 
 /** The site tools behind the boundary, with a review that lets every call run (recording what it read). */
@@ -218,10 +218,16 @@ async function fixture(
 	const reviewed: unknown[] = [];
 	const contents: unknown[] = [];
 	const reviewId = randomUUID();
+	const startDeadline = new AbortController();
 	// The machine's executor, behind the run's operations as machine_run uses them (one receipt, then the start).
 	const start = vi.fn<CloudMachineCommandGateway["start"]>(async (scope, input) => {
 		if (options.start === "MACHINE_NOT_RUNNING") throw new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING");
-		if (options.start === "throw") throw new Error("executor unreachable");
+		if (options.start === "throw") {
+			// Unanswered for the receipt's whole deadline, which ends the sends.
+			startDeadline.abort();
+			throw new Error("executor unreachable");
+		}
+		if (options.start === "lost-once" && start.mock.calls.length === 1) throw new Error("executor unreachable");
 		return {
 			schema: "qorpera.machine-command-result/v1",
 			machineId: scope.machineId,
@@ -242,7 +248,7 @@ async function fixture(
 				receiptId: randomUUID(),
 				inputSha256: "c".repeat(64),
 				idempotencyKey: "k",
-				signal,
+				signal: AbortSignal.any([signal, startDeadline.signal]),
 			})
 		).content;
 	});
@@ -910,6 +916,15 @@ describe("share_app", () => {
 			expect(result.text).not.toContain(CLAIM);
 		},
 	);
+
+	it("sends a link program's start again, the same start, while it has no answer", async () => {
+		const f = await fixture({}, { start: "lost-once" });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.status, result.text).toBe("ok");
+		expect(f.start).toHaveBeenCalledTimes(2);
+		expect(f.start.mock.calls[1]?.[1]).toEqual(f.start.mock.calls[0]?.[1]);
+		expect(result.answer.state).not.toBe("program_unconfirmed");
+	});
 
 	it("tells a link program that ended at once where to read why", async () => {
 		const f = await fixture({}, { start: "failed" });

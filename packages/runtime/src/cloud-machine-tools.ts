@@ -14,9 +14,12 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
+	CLOUD_MACHINE_COMMAND_ANSWER_MS,
+	CLOUD_MACHINE_COMMAND_READ_MS,
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
+	cloudMachineCommandAnswer,
 	cloudMachineCommandHead,
 	cloudMachineCommandRefusal,
 } from "./cloud-machine-command-http.ts";
@@ -552,21 +555,26 @@ export function cloudMachineTools(options: {
 				},
 				signal: context.signal,
 				observation: context.observation,
+				performMs: CLOUD_MACHINE_COMMAND_ANSWER_MS,
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
 				perform: async (_operation, effect) => {
 					let started: CloudMachineCommandReceipt;
 					try {
-						started = await options.gateway.start(
-							scope,
-							{
-								commandId: effect.receiptId,
-								inputSha256: effect.inputSha256,
-								command: String(input.command),
-								timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
-								notify: input.notify === true,
-							},
+						started = await cloudMachineCommandAnswer(
+							() =>
+								options.gateway.start(
+									scope,
+									{
+										commandId: effect.receiptId,
+										inputSha256: effect.inputSha256,
+										command: String(input.command),
+										timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
+										notify: input.notify === true,
+									},
+									effect.signal,
+								),
 							effect.signal,
 						);
 					} catch (error) {
@@ -662,6 +670,7 @@ export function cloudMachineTools(options: {
 								signal,
 							),
 						context.signal,
+						CLOUD_MACHINE_COMMAND_READ_MS,
 					);
 				} catch (error) {
 					return commandGone(error, machine.name);
@@ -715,15 +724,20 @@ export function cloudMachineTools(options: {
 				},
 				signal: context.signal,
 				observation: context.observation,
+				performMs: CLOUD_MACHINE_COMMAND_ANSWER_MS,
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
 				perform: async (_operation, effect) => {
 					let cancelled: CloudMachineCommandReceipt;
 					try {
-						cancelled = await options.gateway.cancel(
-							{ machineId: machine.machineId },
-							String(input.commandId),
+						cancelled = await cloudMachineCommandAnswer(
+							() =>
+								options.gateway.cancel(
+									{ machineId: machine.machineId },
+									String(input.commandId),
+									effect.signal,
+								),
 							effect.signal,
 						);
 					} catch (error) {

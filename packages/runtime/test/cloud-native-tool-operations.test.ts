@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import {
+	CLOUD_MACHINE_COMMAND_ANSWER_MS,
+	cloudMachineCommandAnswer,
+} from "@qorpera/runtime/cloud-machine-command-http";
 import { CLOUD_RUN_ROW_WRITE_MS, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
@@ -542,6 +546,45 @@ it("bounds an uncooperative effect and keeps its outcome uncertain", async () =>
 	await vi.advanceTimersByTimeAsync(30_000);
 	await result;
 	expect(f.perform.mock.calls[0][1].signal.aborted).toBe(true);
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect([...f.ledger.values()][0].state).toBe("executing");
+});
+
+it("lets an effect that asks again by itself wait as long as it says, and settles its receipt", async () => {
+	vi.useFakeTimers();
+	const f = await fixture();
+	let answer: (output: Awaited<ReturnType<typeof f.perform>>) => void = () => undefined;
+	f.perform.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const result = f.execute({ performMs: CLOUD_MACHINE_COMMAND_ANSWER_MS });
+	await vi.advanceTimersByTimeAsync(CLOUD_MACHINE_COMMAND_ANSWER_MS - 1000);
+	answer({ content: { kind: "json", value: { changed: true } } });
+	await expect(result).resolves.toEqual({ kind: "json", value: { changed: true } });
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect([...f.ledger.values()][0].state).toBe("completed");
+});
+
+it("sends a machine start that gets no answer again for its whole deadline, then keeps its outcome uncertain", async () => {
+	vi.useFakeTimers();
+	const f = await fixture();
+	const send = vi.fn(async () => {
+		throw new Error("Machine command gateway unavailable");
+	});
+	f.perform.mockImplementationOnce((_operation, effect) => cloudMachineCommandAnswer(send, effect.signal));
+	const result = expect(f.execute({ performMs: CLOUD_MACHINE_COMMAND_ANSWER_MS })).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+	await vi.advanceTimersByTimeAsync(CLOUD_MACHINE_COMMAND_ANSWER_MS);
+	await result;
+	// Never faster than one send every 15 s once it has waited a while: 1, 2, 4 and 8 s, then 19 of 15 s.
+	expect(send.mock.calls.length).toBeLessThanOrEqual(25);
+	expect(send.mock.calls.length).toBeGreaterThan(20);
+	await vi.advanceTimersByTimeAsync(60_000);
+	expect(send.mock.calls.length).toBeLessThanOrEqual(25);
 	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 	expect([...f.ledger.values()][0].state).toBe("executing");
 });

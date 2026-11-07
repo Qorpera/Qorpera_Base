@@ -6,7 +6,12 @@ import {
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
-import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import { cloudControlPause } from "./cloud-control-errors.ts";
+import {
+	CLOUD_TOOL_REQUEST_MAX_MS,
+	type CloudNativeToolBinding,
+	parseCloudNativeToolBinding,
+} from "./cloud-native-tool-authority.ts";
 
 // Machine commands travel the coding executor's command gateway (the same
 // HTTPS ingress, peer routing and transport credential) on their own route,
@@ -154,7 +159,7 @@ export function checkCloudMachineCommandReceipt(
 }
 
 /** Credential and binding are host-only; no model argument chooses a host or
- * route. There are no automatic effect retries. */
+ * route. One request is sent once: the tool sends it again, under its receipt (cloudMachineCommandAnswer). */
 export function createHttpCloudMachineCommandGateway(options: {
 	url: string;
 	token: string;
@@ -253,6 +258,38 @@ export function cloudMachineCommandRefusal(error: unknown): CloudMachineCommandR
 	return error instanceof Error && (CLOUD_MACHINE_COMMAND_REFUSALS as readonly string[]).includes(error.message)
 		? (error.message as CloudMachineCommandRefusalCode)
 		: null;
+}
+
+/** How long a machine command's start or cancel waits for an answer, in all (the limit of one tool request): its receipt
+ * stays open until it has one, and an open receipt refuses the run's later effects and its completion. */
+export const CLOUD_MACHINE_COMMAND_ANSWER_MS = CLOUD_TOOL_REQUEST_MAX_MS;
+/** How long a read waits: what the gateway and the executor give one request, not the 5 s of a database read. It crosses
+ * the executor and the machine (0.7 s when all is well), and a read given up sooner only costs the agent a model round
+ * to ask again. It leaves nothing open, so it is not sent again here. */
+export const CLOUD_MACHINE_COMMAND_READ_MS = 30_000;
+
+/**
+ * A machine command's start or cancel, sent again as it was while it has no answer, until it is answered, refused or the
+ * caller's signal ends. A slow executor is not a failed command: on 6 and 7 Nov 2026 an executor that froze for minutes
+ * left runs with a start that never reached the database, its receipt open, and nothing those runs did after could land.
+ *
+ * Each step is built to be sent again. The command id is the receipt's, so a start runs at most once however often it
+ * is sent: the guest keeps its first intent and answers the same command, and SQL gives a start sent again its two
+ * minutes (qorpera_authorize_machine_command). Every send is authorized again, on the executor, as the first was, so no
+ * authority outlives its check. A start the executor already gave up is refused (MACHINE_COMMAND_ENDED), which ends this
+ * and starts nothing. The executor answers every other failure alike, so all are sent again; the receipt stays open until
+ * one is answered either way. The pause grows from 1 s to 15 s: a failure answered at once does not become a steady load.
+ */
+export async function cloudMachineCommandAnswer<T>(send: () => Promise<T>, signal: AbortSignal): Promise<T> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			return await send();
+		} catch (error) {
+			signal.throwIfAborted();
+			if (cloudMachineCommandRefusal(error)) throw error;
+		}
+		await cloudControlPause(Math.min(15_000, 1000 * 2 ** Math.min(attempt, 4)), signal);
+	}
 }
 
 /** The executor side of the machine route (HttpCloudCodingCommandService):
