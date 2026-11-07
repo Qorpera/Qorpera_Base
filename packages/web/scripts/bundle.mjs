@@ -124,13 +124,21 @@ export const VENDORED_SCRIPTS = ["assets/avatars/motion-model.js", "assets/avata
 
 /** Point index.html at the hashed files and preload main.js's static chunks,
  * so splitting adds no request that waits for main.js to be parsed.
- * `versions` maps each of VENDORED_SCRIPTS to its content hash. */
-export function rewriteIndex(html, layout, versions) {
+ * `versions` maps each of VENDORED_SCRIPTS to its content hash. `apiOrigin`, the
+ * deployment's checked project origin, is opened ahead: the first API call comes
+ * only after main.js has run, and would otherwise wait for its own DNS, TCP and
+ * TLS. `crossorigin` because the client's fetches carry no credentials, so they
+ * use the browser's anonymous connections. */
+export function rewriteIndex(html, layout, versions, apiOrigin) {
+	if (typeof apiOrigin !== "string" || new URL(apiOrigin).origin !== apiOrigin) throw new Error(`Not an origin: ${apiOrigin}`);
 	const once = (text, from, to) => {
 		if (text.split(from).length !== 2) throw new Error(`index.html must contain ${from} exactly once`);
 		return text.replace(from, () => to);
 	};
-	const preload = layout.preload.map((file) => `<link rel="modulepreload" href="./${file}">\n`).join("");
+	const preload = [
+		`<link rel="preconnect" href="${apiOrigin}" crossorigin>\n`,
+		...layout.preload.map((file) => `<link rel="modulepreload" href="./${file}">\n`),
+	].join("");
 	let result = once(html, 'src="./theme.js"', `src="./${layout.theme}"`);
 	for (const file of VENDORED_SCRIPTS) {
 		if (!/^[\da-f]{12}$/.test(versions?.[file] ?? "")) throw new Error(`No content hash for ${file}`);
