@@ -20,6 +20,7 @@ import {
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import { CodingControlBusy, CodingControlRefused } from "./coding-executor.ts";
 import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
@@ -1356,7 +1357,10 @@ export class LxdCompanyMachineHost {
 	 * on its machine and retried at the next pass, never hidden. Admission
 	 * takes one machine per call (one reservation per transaction) and never
 	 * holds up the rest of the pass. */
-	async pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
+	pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
+		return withAbortScope(signal, (scoped) => this.#pass(scoped));
+	}
+	async #pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
 		const admission: CompanyMachineOutcome[] = [];
 		for (let admitted = 0; admitted < 8; admitted++) {
 			let taken: unknown;

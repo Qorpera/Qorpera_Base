@@ -1,5 +1,6 @@
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
+import { withAbortScope } from "./abort-scope.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { RuntimeNodeAgentExitPublisher } from "./runtime-node-agent-exit.ts";
@@ -159,7 +160,7 @@ export async function runRuntimeNodeObserver(
 	const inventoryLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				report((await observer.observe(signal)).state);
+				report((await withAbortScope(signal, (scoped) => observer.observe(scoped))).state);
 			} catch {
 				if (!signal.aborted) report("unconfirmed");
 			}
@@ -169,7 +170,7 @@ export async function runRuntimeNodeObserver(
 	const healthLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				await health.observe(signal);
+				await withAbortScope(signal, (scoped) => health.observe(scoped));
 				reportHealth("reported");
 			} catch {
 				if (!signal.aborted) reportHealth("unconfirmed");
@@ -180,7 +181,9 @@ export async function runRuntimeNodeObserver(
 	const exitLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				reportExit((await exit.observe(signal)).healthy ? "healthy" : "unhealthy");
+				reportExit(
+					(await withAbortScope(signal, (scoped) => exit.observe(scoped))).healthy ? "healthy" : "unhealthy",
+				);
 			} catch {
 				if (!signal.aborted) reportExit("unconfirmed");
 			}

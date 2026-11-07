@@ -1156,6 +1156,35 @@ const firstBoot = { op: "restarted", machine: id(6) };
 const recorded = (f: Fixture) =>
 	f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").map((call) => call.args.p_ended);
 
+describe("company machine host's passes over the signal that lasts as long as its process", () => {
+	it("leaves nothing on it (Node 22's AbortSignal.any walks what is there), and its end still reaches a step", async () => {
+		const f = await fixture();
+		const lasting = new AbortController();
+		const dependants = () => {
+			const key = Object.getOwnPropertySymbols(lasting.signal).find((symbol) =>
+				String(symbol).includes("kDependantSignals"),
+			);
+			return key ? ((lasting.signal as unknown as Record<symbol, Set<unknown> | undefined>)[key]?.size ?? 0) : 0;
+		};
+		await f.host.pass(lasting.signal);
+		f.running();
+		await f.host.pass(lasting.signal);
+		await f.host.pass(lasting.signal);
+		expect(dependants()).toBe(0);
+		let seen: AbortSignal | undefined;
+		f.client.execInstance.mockImplementation(async (_project, _name, _asked, signal?: AbortSignal) => {
+			seen = signal;
+			await new Promise((_settle, refuse) => signal?.addEventListener("abort", () => refuse(signal.reason)));
+		});
+		const passing = f.host.pass(lasting.signal);
+		for (let tries = 0; tries < 400 && !seen; tries++) await new Promise((settle) => setTimeout(settle, 5));
+		expect(seen?.aborted).toBe(false);
+		lasting.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await passing.catch(() => undefined);
+		expect(seen?.aborted).toBe(true);
+	});
+});
+
 describe("company machine host with the node's folder service (F3 6d)", () => {
 	it("opens the boot's own view once SQL knows the boot, and hands it to the guest on stdin alone", async () => {
 		const f = await fixture({ folder: true });

@@ -24,6 +24,7 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
+import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
@@ -463,7 +464,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		const hosting = (async () => {
 			if (!codeHosts) return;
 			try {
-				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await codeHosts.housekeep(stop.signal) }));
+				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await withAbortScope(stop.signal, (scoped) => codeHosts.housekeep(scoped)) }));
 			} catch (error) {
 				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
 			}
@@ -478,7 +479,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			});
 			while (!stop.signal.aborted) {
 				try {
-					await codeHosts.removeDeleting(deleting, stop.signal);
+					await withAbortScope(stop.signal, (scoped) => codeHosts.removeDeleting(deleting, scoped));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "deletions", code: errorCode(error) }));
 				}
