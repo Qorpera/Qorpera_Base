@@ -506,9 +506,9 @@ do $$
 declare x jsonb := pg_temp.agent_run(); y jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor');
 	c jsonb := pg_temp.box(y -> 'actor'); r jsonb;
 begin
-	perform pg_temp.expect(pg_temp.vcommit(b, 'own-1', jsonb_build_array(jsonb_build_object('op','write','path','own-room.blend',
+	perform pg_temp.expect(pg_temp.vcommit(b, 'own-file-1', jsonb_build_array(jsonb_build_object('op','write','path','own-room.blend',
 		'file', pg_temp.stage('scene 1', pg_temp.vactor(b))))), 1, 'saved');
-	r := pg_temp.vcommit(b, 'own-2', jsonb_build_array(jsonb_build_object('op','move','from','own-room.blend','to','own-room.blend1',
+	r := pg_temp.vcommit(b, 'own-file-2', jsonb_build_array(jsonb_build_object('op','move','from','own-room.blend','to','own-room.blend1',
 		'expectedVersion', pg_temp.read('own-room.blend') -> 'entry' ->> 'version'),
 		jsonb_build_object('op','write','path','own-room.blend','file', pg_temp.stage('scene 2', pg_temp.vactor(b)))));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -516,20 +516,20 @@ begin
 	if (pg_temp.parked(r)).id is not null or not pg_temp.present('own-room.blend1') then
 		raise exception 'A view''s own rename parked: %', r; end if;
 	-- Its own moved file deletes too.
-	r := pg_temp.vcommit(b, 'own-3', jsonb_build_array(pg_temp.deletes('own-room.blend1')));
+	r := pg_temp.vcommit(b, 'own-file-3', jsonb_build_array(pg_temp.deletes('own-room.blend1')));
 	perform pg_temp.expect(r, 1, 'saved');
 	if pg_temp.present('own-room.blend1') then raise exception 'A view''s own delete changed nothing'; end if;
 	-- Another view (another run's box): the file is not its own, so it parks.
-	r := pg_temp.vcommit(c, 'own-4', jsonb_build_array(pg_temp.deletes('own-room.blend')));
+	r := pg_temp.vcommit(c, 'own-file-4', jsonb_build_array(pg_temp.deletes('own-room.blend')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	-- A member's file (rr12.txt, written by the member) still parks, as in 1.
-	r := pg_temp.vcommit(b, 'own-5', jsonb_build_array(jsonb_build_object('op','move','from','rr12.txt','to','rr12-moved.txt',
+	r := pg_temp.vcommit(b, 'own-file-5', jsonb_build_array(jsonb_build_object('op','move','from','rr12.txt','to','rr12-moved.txt',
 		'expectedVersion', pg_temp.read('rr12.txt') -> 'entry' ->> 'version')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	-- Under QorperaOS/: its own file still parks.
-	perform pg_temp.expect(pg_temp.vcommit(b, 'own-6', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/own-note.md',
+	perform pg_temp.expect(pg_temp.vcommit(b, 'own-file-6', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/own-note.md',
 		'file', pg_temp.stage('note', pg_temp.vactor(b))))), 1, 'saved');
-	r := pg_temp.vcommit(b, 'own-7', jsonb_build_array(pg_temp.deletes('QorperaOS/own-note.md')));
+	r := pg_temp.vcommit(b, 'own-file-7', jsonb_build_array(pg_temp.deletes('QorperaOS/own-note.md')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 end $$;
 

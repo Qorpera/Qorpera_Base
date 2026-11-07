@@ -3,12 +3,13 @@
 -- machine sent the rename as a move, every delete or move from an agent's view was a deletion, and a view's deletion
 -- with no review is parked: each save parked one more proposal, and the founder saw cards reading "Rename “Room” to
 -- “Room”" for a file the worker had made minutes before.
--- Now a view's delete or move of a file whose live version this same view committed takes the structured hook's class
--- like any other unit, when neither its path nor where it moves is under QorperaOS/ (the company's agents, routines,
+-- Now a test machine's or run box's delete or move of a file whose live version this same view committed takes the
+-- structured hook's class like any other unit, when neither its path nor where it moves is under QorperaOS/ (the company's agents, routines,
 -- interfaces and tables keep every rule they had). Such a version is the view's own: it wrote or copied it, or moved one
 -- of its own under this rule (Blender's next save deletes room.blend1). A view's move of anyone else's file parks, and
 -- an approved proposal is applied by the run, not the view; a move never replaces anything (a taken name is refused,
--- 'exists'). A file anyone else last changed is still a deletion and still parks. Runs, members, the platform and
+-- 'exists'). A file anyone else last changed is still a deletion and still parks, and so is every delete or move from a
+-- company computer's desktop or shell command, which members and runs share. Runs, members, the platform and
 -- coding sessions are unchanged.
 
 set local lock_timeout = '3s';
@@ -29,8 +30,10 @@ end $$;
 select pg_temp.own_file_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', array[
 	$old$			v_class := case when v_op in ('delete','move') then 'deletion'
 $old$,
-	$new$			-- 20260930619000: a view's delete or move of a file it wrote itself, outside QorperaOS/, takes the hook's class.
-			v_class := case when v_op in ('delete','move') and not (v_actor_kind = 'view' and v_row.kind = 'file'
+	$new$			-- 20260930619000: a test machine's or run box's delete or move of a file it wrote itself, outside QorperaOS/, takes
+			-- the hook's class.
+			v_class := case when v_op in ('delete','move') and not (v_actor_kind = 'view' and v_view.kind in ('test_machine','run_box')
+					and v_row.kind = 'file'
 					and v_key not like 'qorperaos/%' and coalesce(v_to_key, '') not like 'qorperaos/%'
 					and exists (select 1 from public.qorpera_folder_commits c where c.id = v_row.commit_id
 						and c.view_id = v_view.id)) then 'deletion'
