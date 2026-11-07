@@ -367,6 +367,56 @@ it("releases nothing when the one call fails or reads another run's authority", 
 	}
 });
 
+it("makes the run's check in one call when the database has it: one round trip per check, none separate", async () => {
+	const separate = fixture();
+	await separate.start();
+	const checks = separate.assertContext.mock.calls.length;
+	expect(checks).toBeGreaterThanOrEqual(3);
+
+	const f = fixture();
+	// The start's one read of the run's authority, before any check.
+	const checkRun = vi.fn(async () => structuredClone(f.authority) as unknown);
+	await expect(f.start({ tools: () => ({ ...f.tools(), checkRun }) })).resolves.toMatchObject({
+		providerSessionId: "thread_fixture",
+	});
+	expect(checkRun).toHaveBeenCalledTimes(checks);
+	expect(f.assertContext).not.toHaveBeenCalled();
+	// Each check's own read lands: the run's own refresh and its one opening read are all that is left.
+	expect(f.control.describeToolAuthority.mock.calls.length).toBeLessThan(
+		separate.control.describeToolAuthority.mock.calls.length,
+	);
+});
+
+it("makes the separate calls, all of them, while the database lacks the one-call check", async () => {
+	const separate = fixture();
+	await separate.start();
+
+	const f = fixture();
+	const checkRun = vi.fn(async () => undefined);
+	await expect(f.start({ tools: () => ({ ...f.tools(), checkRun }) })).resolves.toMatchObject({
+		providerSessionId: "thread_fixture",
+	});
+	expect(f.assertContext).toHaveBeenCalledTimes(separate.assertContext.mock.calls.length);
+	expect(f.control.describeToolAuthority).toHaveBeenCalledTimes(
+		separate.control.describeToolAuthority.mock.calls.length,
+	);
+});
+
+it("starts nothing when the one-call check refuses or reads another run's authority", async () => {
+	for (const failure of ["refused", "other-run"] as const) {
+		const f = fixture();
+		const checkRun = vi.fn(async () => {
+			if (failure === "refused") throw new Error("PRIVATE_REVOKED");
+			return { ...structuredClone(f.authority), identity: { ...f.authority.identity, sessionId: null } };
+		});
+		await expect(f.start({ tools: () => ({ ...f.tools(), checkRun }) })).rejects.toThrow();
+		expect(checkRun).toHaveBeenCalledOnce();
+		expect(f.assertContext).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+		await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+	}
+});
+
 /** A run's work log and its step lines as the run's closing sees them: each call is step 0, and nothing acts. */
 function workLog(runId: string) {
 	const order: string[] = [];

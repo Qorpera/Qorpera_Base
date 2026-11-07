@@ -13,6 +13,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
@@ -30,8 +31,6 @@ const TODO_STATES = ["open", "blocked", "done", "cancelled"] as const;
 const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] as const;
 /** A listing cursor: the id of the last item shown before (keyset on creation order). */
 export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** Room for the result fence's provenance around a page, as read_context reserves. */
-const PAGE_FENCE_RESERVE_BYTES = 3072;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
 	if (
@@ -89,7 +88,7 @@ function listing(a: Record<string, unknown>, states: readonly string[]): Record<
 export function fitsOneResult(text: string): boolean {
 	return (
 		Buffer.byteLength(JSON.stringify(text).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <=
-		MAX_CLOUD_TOOL_RESULT_BYTES - PAGE_FENCE_RESERVE_BYTES
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES
 	);
 }
 function paths(value: unknown, max: number, maxBytes: number): string[] {

@@ -9,7 +9,13 @@ import {
 export { type CloudCodingCommandScope, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
 
 import { type CloudNativeToolIdentity, cloudToolRequest } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -66,7 +72,7 @@ export function cloudCodingCommandTools(options: {
 			(inputSha256 !== undefined && receipt.inputSha256 !== inputSha256)
 		)
 			throw new Error("Coding command result differs");
-		// Reserve half the native result envelope for provenance. A start/cancel
+		// Leave the native result envelope its room for provenance. A start/cancel
 		// can return a handle without a preview; never truncate a JSON cursor.
 		if (!fitsPage(receipt))
 			receipt = {
@@ -83,7 +89,8 @@ export function cloudCodingCommandTools(options: {
 				/[<>&\u2028\u2029]/g,
 				(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
 			),
-		) <= 4096;
+		) <=
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
 	const parse = (value: JsonValue, action: "start" | "read" | "cancel"): Record<string, JsonValue> => {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid coding command");
 		if (action === "read") return { ...parseCloudCodingCommandRead(value) };
