@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { type LxdHostInventoryClient, LxdUnixClient } from "./lxd-client.ts";
 import { inspectLxdHostInventorySocket } from "./lxd-office-physical-host.ts";
+import { assertNodeHealthRecord, NodeHealthRefusal } from "./runtime-node-health-record.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 import {
 	parseRuntimeNodeInventoryContext,
@@ -24,7 +25,8 @@ export interface RuntimeNodeObserverRegistry {
 const CODE = /^[A-Z][A-Z0-9_]{1,127}$/;
 /** Why a look was not ready, for the observer's log line: the step that stopped it (`check`) and the closed code it
  * stopped with. An unavailable inventory also names the kinds of entry that kept it so (`category:REASON`), never an
- * instance. No values: no names, versions, digests, ids or paths. */
+ * instance, and a node health record that is not ok names its failed local checks. No values: no names, versions,
+ * digests, ids or paths. */
 export interface RuntimeNodeObserverReason {
 	check: string;
 	code: string;
@@ -76,6 +78,7 @@ export class RuntimeNodeInventoryObserver {
 	readonly #lxd: LxdHostInventoryClient;
 	readonly #host: typeof physicalHost;
 	readonly #releases: () => Promise<ReadonlySet<string>>;
+	readonly #healthRecord: (bootId: string) => Promise<void>;
 	#pending = false;
 	constructor(
 		policy: RuntimeNodeInventoryPolicy,
@@ -84,6 +87,7 @@ export class RuntimeNodeInventoryObserver {
 			lxd?: LxdHostInventoryClient;
 			host?: typeof physicalHost;
 			releases?: () => Promise<ReadonlySet<string>>;
+			healthRecord?: (bootId: string) => Promise<void>;
 		},
 	) {
 		this.#policy = parseRuntimeNodeInventoryPolicy(policy);
@@ -91,6 +95,7 @@ export class RuntimeNodeInventoryObserver {
 		this.#lxd = ports?.lxd ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#host = ports?.host ?? physicalHost;
 		this.#releases = ports?.releases ?? (() => readNodeReleaseImages());
+		this.#healthRecord = ports?.healthRecord ?? ((bootId) => assertNodeHealthRecord(bootId));
 	}
 	async observe(caller: AbortSignal): Promise<{
 		state: "ready" | "unavailable";
@@ -139,6 +144,10 @@ export class RuntimeNodeInventoryObserver {
 				check = "host-again";
 				const after = await this.#host(this.#policy, signal);
 				if (!isDeepStrictEqual(before, after)) throw new Error("NODE_OBSERVER_HOST_CHANGED");
+				check = "health-record";
+				// A node whose image ships the boot gate takes work only while its node health record says ok.
+				await this.#healthRecord(before.bootId);
+				signal.throwIfAborted();
 				check = "releases";
 				// Only an entry listed by role needs the node's signed releases.
 				const released = this.#policy.infrastructure.some((i) => i.role)
@@ -172,7 +181,11 @@ export class RuntimeNodeInventoryObserver {
 				// A failed scan publishes unavailable, never a fabricated empty
 				// ready host. Cancellation cannot open a new outbound request.
 				observation.state = "unavailable";
-				reason = { check, code: runtimeNodeObserverCode(error) };
+				reason = {
+					check,
+					code: runtimeNodeObserverCode(error),
+					...(error instanceof NodeHealthRefusal && error.entries ? { entries: error.entries } : {}),
+				};
 			}
 			signal.throwIfAborted();
 			if (performance.now() - started >= 15000) throw new Error("NODE_OBSERVER_EXPIRED");

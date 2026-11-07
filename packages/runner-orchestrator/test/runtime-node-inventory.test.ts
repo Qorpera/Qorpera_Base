@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { codeHostProject, codeHostRequest } from "../src/code-host.ts";
 import { executionHostIdentityDevice } from "../src/execution-host-identity.ts";
 import type { LxdHostInventory, LxdHostInventoryInstance } from "../src/lxd-client.ts";
+import { NodeHealthRefusal } from "../src/runtime-node-health-record.ts";
 import {
 	parseRuntimeNodeInventoryPolicy,
 	type RuntimeNodeInventoryContext,
@@ -781,6 +782,7 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 					host: vi.fn(async () => structuredClone(f.host)),
 					lxd: { inspectHostInventory: vi.fn(async () => structuredClone(f.inventory)) },
 					releases,
+					healthRecord: async () => {},
 				});
 				return { state: (await observer.observe(signal())).state, releases };
 			};
@@ -1445,6 +1447,7 @@ describe("trusted node inventory publisher composition", () => {
 		const ports = {
 			host: vi.fn(async () => structuredClone(f.host)),
 			lxd: { inspectHostInventory: vi.fn(async () => structuredClone(f.inventory)) },
+			healthRecord: vi.fn(async (_bootId: string) => {}),
 		};
 		return { ...f, calls, registry, ports, observer: new RuntimeNodeInventoryObserver(f.policy, registry, ports) };
 	}
@@ -1452,6 +1455,7 @@ describe("trusted node inventory publisher composition", () => {
 		const f = observer();
 		expect(await f.observer.observe(signal())).toMatchObject({ state: "ready", reason: null });
 		expect(f.ports.host).toHaveBeenCalledTimes(2);
+		expect(f.ports.healthRecord.mock.calls).toEqual([[f.host.bootId]]);
 		expect(f.calls.map((c) => c.method)).toEqual([
 			"qorpera_runtime_node_inventory_context",
 			"qorpera_observe_runtime_node_inventory",
@@ -1518,6 +1522,25 @@ describe("trusted node inventory publisher composition", () => {
 		expect(await g.observer.observe(signal())).toMatchObject({
 			state: "unavailable",
 			reason: { check: "reconcile", code: "NODE_INVENTORY_HEADROOM_EXCEEDED", entries: [] },
+		});
+	});
+	it("takes no work while the node health record refuses, naming the failed local checks", async () => {
+		const f = observer();
+		f.ports.healthRecord.mockRejectedValue(new NodeHealthRefusal("NODE_HEALTH_NOT_OK", ["pool-write", "zpool"]));
+		expect(await f.observer.observe(signal())).toMatchObject({
+			state: "unavailable",
+			reason: { check: "health-record", code: "NODE_HEALTH_NOT_OK", entries: ["pool-write", "zpool"] },
+		});
+		// No inventory is published: the host is not claimed ready or known.
+		expect(f.calls.map((c) => c.method)).toEqual([
+			"qorpera_runtime_node_inventory_context",
+			"qorpera_observe_runtime_node",
+		]);
+		const g = observer();
+		g.ports.healthRecord.mockRejectedValue(new NodeHealthRefusal("NODE_HEALTH_RECORD_STALE"));
+		expect((await g.observer.observe(signal())).reason).toEqual({
+			check: "health-record",
+			code: "NODE_HEALTH_RECORD_STALE",
 		});
 	});
 	it("publishes unknown machines without dropping them or claiming a ready host", async () => {
