@@ -47,6 +47,7 @@ export function createWebSessionRunControl(
 						!/^[A-Za-z0-9._~-]{1,8192}$/.test(data.session.access_token)
 					)
 						throw new Error("Sign in again to control this cloud run.");
+					// No `cache` option: see cloud/native-subscription.ts (the CORS preflight).
 					const response = await fetch(`${origin.origin}/rest/v1/rpc/${method}`, {
 						method: "POST",
 						headers: {
@@ -57,7 +58,6 @@ export function createWebSessionRunControl(
 						body: JSON.stringify(args),
 						signal: deadline,
 						redirect: "error",
-						cache: "no-store",
 						credentials: "omit",
 					});
 					cloud.noticeResponse?.(`${origin.origin}/rest/v1/rpc/${method}`, data.session.access_token, response);

@@ -65,7 +65,9 @@ describe("native subscription browser transport", () => {
 			p_profile_id: profileA.profileId,
 			p_session_id: session.sessionId,
 		});
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		// With "no-store" Chrome sends the CORS preflight again on every call; no browser stores a POST's answer anyway.
+		expect(request?.cache).toBeUndefined();
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
 		f.fetch.mockResolvedValueOnce(Response.json(null));
 		expect(await f.client.selectSessionAccount!(session.sessionId)).toBeUndefined();
@@ -125,7 +127,7 @@ describe("native subscription browser transport", () => {
 		});
 		const [url, request] = f.fetch.mock.calls[0]!;
 		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_request_session_turn_v2");
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
 		expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request?.body as string)).toEqual({
 			p_session_id: session.sessionId,

@@ -49,7 +49,8 @@ describe("company notices member read", () => {
 		const [url, request] = f.fetch.mock.calls[0]!;
 		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_list_member_notifications");
 		expect(JSON.parse(request!.body as string)).toEqual({ p_profile_id: profileA.profileId, p_limit: 50 });
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		expect(request?.cache).toBeUndefined();
 		expect(new Headers(request!.headers).get("authorization")).toBe("Bearer fixture-token");
 		f.fetch.mockResolvedValueOnce(Response.json({ ...full, acknowledged_at: timestamp }));
 		expect(await f.client.acknowledgeNotification(id(90))).toMatchObject({
