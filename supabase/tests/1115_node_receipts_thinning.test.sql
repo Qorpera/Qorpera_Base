@@ -14,7 +14,7 @@ begin
 		v_result := pg_temp.run(30);
 		v_observations := v_observations + (v_result ->> 'observations')::bigint;
 		v_inventories := v_inventories + (v_result ->> 'inventories')::bigint;
-		if v_result ->> 'stopped' = 'done' then
+		if v_result ->> 'stopped' in ('done', 'held_by_meter') then
 			return v_result || jsonb_build_object('observations', v_observations, 'inventories', v_inventories, 'runs', i);
 		end if;
 		perform pg_temp.ok(v_result ->> 'stopped' = 'row_limit', 'A run stopped on ' || v_result::text);
@@ -27,14 +27,15 @@ create function pg_temp.entry(p_state text) returns jsonb language sql as $$
 		'physicalId', '11150000-0000-4000-8000-0000000000f1', 'configurationSha256', repeat('e', 64), 'cpuMillis', 4000,
 		'memoryBytes', 8589934592, 'allocation', jsonb_build_object('allocationId', '11150000-0000-4000-8000-0000000000a1'),
 		'category', 'managed', 'reason', null) $$;
--- A report, as the observer files it: no inventory when p_state is null (a failed scan).
-create function pg_temp.report(p_node uuid, p_key text, p_at timestamptz, p_state text) returns uuid language plpgsql as $$
+-- A report, as the observer files it: no inventory when p_state is null (a failed scan). p_node_state is the node's own
+-- state: 'unavailable' can come with a complete inventory, which then says the same as the report before.
+create function pg_temp.report(p_node uuid, p_key text, p_at timestamptz, p_state text, p_node_state text default 'ready') returns uuid language plpgsql as $$
 declare v_id uuid := pg_temp.id(p_node, p_key);
 begin
 	insert into public.qorpera_runtime_node_observation_receipts(node_id, observation_id, observed_at, observation)
 	values (p_node, v_id, p_at, jsonb_build_object('schema', 'qorpera.runtime-node-observation/v1', 'nodeId', p_node,
 		'machineIdSha256', repeat('a', 64), 'observationId', v_id, 'observedAt', p_at, 'cpuMillis', 32000, 'memoryBytes', 68719476736,
-		'state', case when p_state is null then 'unavailable' else 'ready' end));
+		'state', case when p_state is null then 'unavailable' else p_node_state end));
 	if p_state is not null then
 		insert into public.qorpera_runtime_node_inventory_receipts(node_id, observation_id, node_version, policy_sha256,
 			context_sha256, inventory)
@@ -97,7 +98,9 @@ $$;
 
 -- Fixture, at the transaction's time (the run's now()). The meter is current for now; node A reports every five seconds
 -- from three days ago, across an hour's slice boundary (the cursor starts seven days back, so at three days and no
--- minutes): running, stopped, one failed scan, stopped, a silence of 100 seconds, stopped. Then recent reports and a latest.
+-- minutes): running, stopped from 235 s, one failed scan, stopped, a silence of 100 seconds, stopped with one report at
+-- 595 s where the node says unavailable and its inventory is unchanged. Then recent reports and a latest. Every change
+-- falls between the 30-second marks, so only the comparison can keep it.
 select set_config('qorpera_test.t0', (now() - interval '3 days' - interval '5 minutes')::text, true);
 create function pg_temp.at(p_seconds integer) returns timestamptz language sql as $$
 	select current_setting('qorpera_test.t0')::timestamptz + p_seconds * interval '1 second' $$;
@@ -107,21 +110,34 @@ insert into public.qorpera_runtime_nodes(id, machine_id_sha256, label, version, 
 select id, repeat(digit, 64), 'thinning-' || digit, 1, 32000, 68719476736, 4000, 4294967296, 4000, 8589934592, true
 from (values ('11150000-0000-4000-8000-00000000000a'::uuid, 'a'), ('11150000-0000-4000-8000-00000000000b'::uuid, 'b')) node(id, digit);
 select pg_temp.report('11150000-0000-4000-8000-00000000000a', 'r' || n, pg_temp.at(n * 5),
-	case when n < 48 then 'running' when n = 72 then null else 'suspended' end)
+	case when n < 47 then 'running' when n = 72 then null else 'suspended' end)
 from generate_series(0, 89) n;
-select pg_temp.report('11150000-0000-4000-8000-00000000000a', 'r' || n, pg_temp.at(n * 5 + 95), 'suspended')
+select pg_temp.report('11150000-0000-4000-8000-00000000000a', 'r' || n, pg_temp.at(n * 5 + 95), 'suspended',
+	case when n = 100 then 'unavailable' else 'ready' end)
 from generate_series(90, 119) n;
 select pg_temp.report('11150000-0000-4000-8000-00000000000a', 'recent' || n, now() - interval '47 hours' + n * interval '5 seconds', 'suspended')
 from generate_series(0, 9) n;
+-- While running, the rest of the receipt changes with the inventory the same, and stays changed: its context at 75 s, the
+-- node's version at 140 s, its policy at 195 s. So the change at 235 s is in the inventory alone.
+update public.qorpera_runtime_node_inventory_receipts set context_sha256 = repeat('d', 64)
+where node_id = '11150000-0000-4000-8000-00000000000a'
+	and observation_id in (select pg_temp.id(node_id, 'r' || n) from generate_series(15, 119) n);
+update public.qorpera_runtime_node_inventory_receipts set node_version = 2
+where node_id = '11150000-0000-4000-8000-00000000000a'
+	and observation_id in (select pg_temp.id(node_id, 'r' || n) from generate_series(28, 119) n);
+update public.qorpera_runtime_node_inventory_receipts set policy_sha256 = repeat('e', 64)
+where node_id = '11150000-0000-4000-8000-00000000000a'
+	and observation_id in (select pg_temp.id(node_id, 'r' || n) from generate_series(39, 119) n);
 select pg_temp.report('11150000-0000-4000-8000-00000000000a', 'latest', now() - interval '5 seconds', 'suspended');
 insert into public.qorpera_runtime_node_observations(node_id, observation_id, observed_at, observation)
 select node_id, observation_id, observed_at, observation from public.qorpera_runtime_node_observation_receipts
 where node_id = '11150000-0000-4000-8000-00000000000a' and observation_id = pg_temp.id(node_id, 'latest');
--- Node B went silent three days ago: its latest is one of a run of equal reports, in the thinned range.
+-- Node B went silent three days ago. Its latest row names r5, at 25 s, in the middle of a run of equal reports with more
+-- after it, so only the guard on a node's latest keeps it: the 30-second rule alone would remove it.
 select pg_temp.report('11150000-0000-4000-8000-00000000000b', 'r' || n, pg_temp.at(n * 5), 'running') from generate_series(0, 11) n;
 insert into public.qorpera_runtime_node_observations(node_id, observation_id, observed_at, observation)
 select node_id, observation_id, observed_at, observation from public.qorpera_runtime_node_observation_receipts
-where node_id = '11150000-0000-4000-8000-00000000000b' and observation_id = pg_temp.id(node_id, 'r11');
+where node_id = '11150000-0000-4000-8000-00000000000b' and observation_id = pg_temp.id(node_id, 'r5');
 
 -- The machine node A reports, for the history. Foreign keys and triggers off for these rows only: the company behind
 -- the allocation plays no part here.
@@ -152,8 +168,10 @@ select pg_temp.ok((current_setting('qorpera_test.history')::jsonb -> 'usage' ->>
 
 -- The meter holds the cut back: metered until four days ago, the cut is five days ago, and nothing newer is looked at.
 update public.qorpera_computer_hour_meter set metered_until = now() - interval '4 days';
-select pg_temp.ok((v ->> 'stopped' = 'done' and v ->> 'observations' = '0' and (v ->> 'thinnedUntil')::timestamptz = now() - interval '5 days'),
-	'The meter did not hold the cut: ' || v::text) from pg_temp.run_all() v;
+select pg_temp.ok((v ->> 'stopped' = 'held_by_meter' and v ->> 'observations' = '0' and (v ->> 'thinnedUntil')::timestamptz = now() - interval '5 days'),
+	'The meter did not hold the cut, or the run did not say so: ' || v::text) from pg_temp.run_all() v;
+select pg_temp.ok((select stopped = 'held_by_meter' and thinned_until = now() - interval '5 days' from public.qorpera_runtime_node_receipt_thinning_status),
+	'A run held by the meter was not recorded as held');
 select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000a') = 131, 'Thinning passed the meter');
 update public.qorpera_computer_hour_meter set metered_until = now();
 
@@ -168,29 +186,33 @@ select pg_temp.ok((select stopped = 'row_limit' and observations = (current_sett
 		and thinned_until = (current_setting('qorpera_test.first')::jsonb ->> 'thinnedUntil')::timestamptz
 	from public.qorpera_runtime_node_receipt_thinning_status), 'A run''s cursor was not recorded');
 
--- Thinned: the first of each stretch of equal reports stays, and then one each 30 seconds.
--- running 0-235 s: 0, 30, ... 210 (8). stopped 240-355 s: 240, 270, 300, 330 (4). The failed scan at 360 (1).
--- stopped 365-445 s: 365, 395, 425 and 445, the last before the silence (4). stopped 545-690 s: 545, 575, 605, 635, 665 and
--- 690, the last before nothing (6). That is 23 of 120. The ten recent ones and the latest are too new.
+-- Thinned: the first of each stretch of equal reports stays, and then one each 30 seconds or so. By report number, in
+-- steps of 5 s until the silence:
+-- running: 0, 6, 12, 15 (context), 21, 27, 28 (version), 34, 39 (policy), 45. stopped from 235 s: 47, 53, 59, 65, 71.
+-- The failed scan: 72. stopped: 73, 79, 85 and 89, the last before the silence. stopped from 545 s: 90, 96, 100 where the
+-- node says unavailable, 101 where it is ready again, 107, 113 and 119, the last before nothing. That is 27 of 120.
+-- The ten recent ones and the latest are too new.
 select set_config('qorpera_test.result', pg_temp.run_all()::text, true);
-select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000a') = 23 + 10 + 1,
+select pg_temp.ok(pg_temp.has('11150000-0000-4000-8000-00000000000a', 'r' || n)
+		= (n = any(array[0, 6, 12, 15, 21, 27, 28, 34, 39, 45, 47, 53, 59, 65, 71, 72, 73, 79, 85, 89, 90, 96, 100, 101, 107, 113, 119])),
+	'Report ' || n || ' should ' || case when n = any(array[0, 6, 12, 15, 21, 27, 28, 34, 39, 45, 47, 53, 59, 65, 71, 72, 73, 79, 85, 89, 90, 96, 100, 101, 107, 113, 119])
+		then 'have stayed' else 'be gone' end)
+from generate_series(0, 119) n;
+select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000a') = 27 + 10 + 1,
 	'Node A has ' || pg_temp.reports('11150000-0000-4000-8000-00000000000a') || ' reports');
-select pg_temp.ok(pg_temp.has('11150000-0000-4000-8000-00000000000a', 'r' || n), 'Report ' || n || ' is gone')
-from unnest(array[0, 6, 42, 48, 54, 72, 73, 79, 85, 89, 90, 96, 119]) n;
-select pg_temp.ok(not pg_temp.has('11150000-0000-4000-8000-00000000000a', 'r' || n), 'Report ' || n || ' is still there')
-from unnest(array[1, 5, 7, 47, 49, 71, 74, 88, 91, 118]) n;
 select pg_temp.ok(pg_temp.has('11150000-0000-4000-8000-00000000000a', 'recent' || n), 'A report newer than two days is gone')
 from generate_series(0, 9) n;
 select pg_temp.ok(pg_temp.has('11150000-0000-4000-8000-00000000000a', 'latest'), 'Node A''s latest is gone');
 -- Each report's inventory went with it; the failed scan never had one.
-select pg_temp.ok(pg_temp.inventories('11150000-0000-4000-8000-00000000000a') = 23 + 10 + 1 - 1, 'Inventory rows do not match the reports');
--- Node B's latest stays, though it says the same as the one before: 0, 30 and its latest at 55.
-select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000b') = 3 and pg_temp.has('11150000-0000-4000-8000-00000000000b', 'r11'),
-	'Node B has ' || pg_temp.reports('11150000-0000-4000-8000-00000000000b') || ' reports');
+select pg_temp.ok(pg_temp.inventories('11150000-0000-4000-8000-00000000000a') = 27 + 10 + 1 - 1, 'Inventory rows do not match the reports');
+-- Node B: 0, its latest at 25 s, and 55 s, the last before nothing. Without the guard 30 s would stay instead of 25 s.
+select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000b') = 3, 'Node B has ' || pg_temp.reports('11150000-0000-4000-8000-00000000000b') || ' reports');
+select pg_temp.ok(pg_temp.has('11150000-0000-4000-8000-00000000000b', 'r5'), 'Node B''s latest is gone');
+select pg_temp.ok(not pg_temp.has('11150000-0000-4000-8000-00000000000b', 'r6'), 'Node B''s report after its latest is still there');
 select pg_temp.ok((current_setting('qorpera_test.result')::jsonb ->> 'observations')::integer
-		+ (current_setting('qorpera_test.first')::jsonb ->> 'observations')::integer = 97 + 9
+		+ (current_setting('qorpera_test.first')::jsonb ->> 'observations')::integer = 93 + 9
 	and (current_setting('qorpera_test.result')::jsonb ->> 'inventories')::integer
-		+ (current_setting('qorpera_test.first')::jsonb ->> 'inventories')::integer = 97 + 9, 'The runs counted ' || current_setting('qorpera_test.result'));
+		+ (current_setting('qorpera_test.first')::jsonb ->> 'inventories')::integer = 93 + 9, 'The runs counted ' || current_setting('qorpera_test.result'));
 
 -- The history answers the same, to the second. Only which report ids open and close a stretch may differ.
 select pg_temp.ok(pg_temp.history() = current_setting('qorpera_test.history')::jsonb,
@@ -198,7 +220,7 @@ select pg_temp.ok(pg_temp.history() = current_setting('qorpera_test.history')::j
 
 -- Each report is looked at once: nothing is left to do.
 select pg_temp.ok((v ->> 'stopped' = 'done' and v ->> 'observations' = '0' and v ->> 'slices' = '0'), 'A second pass had work: ' || v::text) from pg_temp.run() v;
-select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000a') = 34, 'A second pass removed reports');
+select pg_temp.ok(pg_temp.reports('11150000-0000-4000-8000-00000000000a') = 38, 'A second pass removed reports');
 
 -- pg_cron is not part of the test database. A stand-in with pg_cron's schedule-by-name contract shows the helper
 -- schedules one job, idempotently, hourly at minute 32, whose command runs as its owner.

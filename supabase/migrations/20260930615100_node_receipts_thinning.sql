@@ -26,8 +26,11 @@
 -- have passed: on a test machine with production's row shapes one slice removed 1,124 reports in 0.24 s and 6.3 MB of WAL.
 -- That WAL is not new for long: from 10 November the seven-day retention would delete these same rows anyway. It shares
 -- the retention's advisory lock, waits at most a second for any lock and locks no node row; deletes touch only rows the
--- observers never read again. The inventory row goes with its observation (the only foreign key into either table). Health receipts
--- are not thinned: the observer now samples them less often.
+-- observers never read again. The inventory row goes with its observation (the only foreign key into either table). Health
+-- receipts are left as they are.
+--
+-- A meter more than a day behind holds the cut back. A run then ends 'held_by_meter', not 'done', and logs a warning, so a
+-- stopped meter shows here long before the seven-day retention's own hold (at six days) does.
 --
 -- Undo: select cron.unschedule('qorpera-runtime-node-receipts-thinning'). Removed reports do not come back; nothing else
 -- depends on the two functions or the status row.
@@ -38,7 +41,7 @@ create table public.qorpera_runtime_node_receipt_thinning_status (
 	-- Reports observed before this have been looked at.
 	thinned_until timestamptz,
 	ran_at timestamptz,
-	stopped text check (stopped in ('done', 'row_limit', 'time_budget', 'busy', 'lock_timeout')),
+	stopped text check (stopped in ('done', 'held_by_meter', 'row_limit', 'time_budget', 'busy', 'lock_timeout')),
 	slices integer check (slices >= 0),
 	observations bigint check (observations >= 0),
 	inventories bigint check (inventories >= 0)
@@ -142,6 +145,7 @@ declare
 	v_observations bigint := 0;
 	v_inventories bigint := 0;
 	v_stopped text := 'done';
+	v_held boolean := false;
 begin
 	-- The retention's lock: the two never run at once.
 	if not pg_try_advisory_xact_lock(hashtextextended('qorpera.runtime-node-receipt-retention', 0)) then
@@ -151,6 +155,7 @@ begin
 			select meter.metered_until into v_meter from public.qorpera_computer_hour_meter meter;
 			-- least() ignores a missing meter row.
 			v_cut := least(now() - interval '48 hours', v_meter - interval '1 day');
+			v_held := v_cut < now() - interval '48 hours';
 			select greatest(status.thinned_until, now() - interval '7 days') into v_start
 			from public.qorpera_runtime_node_receipt_thinning_status status;
 			v_from := v_start;
@@ -171,6 +176,10 @@ begin
 				v_from := v_until;
 				v_slices := v_slices + 1;
 			end loop;
+			if v_stopped = 'done' and v_held then
+				v_stopped := 'held_by_meter';
+				raise warning 'Node receipt thinning is held back by the computer-hour meter: nothing observed after % is thinned', v_cut;
+			end if;
 		exception when lock_not_available then
 			-- This run's slices are undone with the block; the next run starts them again.
 			v_stopped := 'lock_timeout';
