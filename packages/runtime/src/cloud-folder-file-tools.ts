@@ -71,7 +71,7 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /** A read asks for a window of at most 8 KiB, and is shown as much of it as fits one tool result: the result fence
  * (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 8 KiB) is the real cap, so a window of plain text
- * shows about 5 to 6 KiB and the model reads on from nextOffset. A write or an edit's file is at most 512 KiB of text
+ * shows about 6 to 7 KiB and the model reads on from nextOffset. A write or an edit's file is at most 512 KiB of text
  * (21 October 2026): the folder stores it in chunks, and the call's arguments, escaped, may take up to
  * MAX_TOOL_ARGUMENT_BYTES. A page lists at most 50 entries. */
 const MAX_READ_BYTES = 8192;
