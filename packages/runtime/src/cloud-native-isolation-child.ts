@@ -21,13 +21,15 @@ function keepInheritedStdioBlocking(): void {
 		const stream = new Writable({
 			write(chunk: Buffer, _encoding, done) {
 				try {
-					writeSync(fd, chunk);
+					for (let written = 0; written < chunk.length; ) written += writeSync(fd, chunk, written);
 					done();
 				} catch (error) {
 					done(error as Error);
 				}
 			},
 		});
+		// Only the entry's own lines come this way, never the program's: losing one is not worth an uncaught exception.
+		stream.on("error", () => undefined);
 		Object.defineProperty(process, name, { configurable: true, enumerable: true, value: stream });
 	}
 }

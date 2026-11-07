@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:net";
+import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const CHILD = fileURLToPath(new URL("../src/cloud-native-isolation-child.ts", import.meta.url));
 /** Larger than a Unix socket's send buffer (212,992 bytes by default), as a PNG in a tool result is. */
 const LARGE_MESSAGE_BYTES = 1024 * 1024;
+/** The pinned Codex, where a machine has it: the test machines do. */
+const CODEX = [process.env.QORPERA_CODEX_FENCE_BINARY, "/opt/qorpera-codex-fence/codex"].find(
+	(path): path is string => path !== undefined && existsSync(path),
+);
+const O_NONBLOCK = 0o4000;
 
 /**
  * The native program, not in Node, so any O_NONBLOCK on what it inherited is the entry's: it goes out through the
@@ -69,7 +75,8 @@ describe.skipIf(process.platform !== "linux")("the native entry", () => {
 		await rm(root, { recursive: true, force: true });
 	});
 
-	/** Built as the runtime bundle builds it, and run with no flags, as the host runs it. */
+	/** Its own source without its types (the runtime bundle's build adds only a banner and its target), run with no flags,
+	 * as the host runs it. */
 	const built = async (): Promise<string> => {
 		const path = join(root, "entry.mjs");
 		await writeFile(path, transformSync(await readFile(CHILD, "utf8"), { loader: "ts", format: "esm" }).code);
@@ -115,4 +122,85 @@ describe.skipIf(process.platform !== "linux")("the native entry", () => {
 		});
 		expect(received).toBe(LARGE_MESSAGE_BYTES);
 	}, 20_000);
+
+	// No model and no network: the answer to a skills/list of many folders is a large message, as a PNG's echo is.
+	it.skipIf(!CODEX)(
+		"keeps the real Codex answering after a message larger than its socket's buffer",
+		async () => {
+			const entry = spawn(
+				process.execPath,
+				[await built(), join(root, "relay.sock"), CODEX as string, "app-server", "--listen", "stdio://"],
+				{
+					cwd: root,
+					detached: true,
+					stdio: ["pipe", "pipe", "pipe"],
+					env: { HOME: root, CODEX_HOME: root, PATH: process.env.PATH, NO_COLOR: "1" },
+				},
+			);
+			try {
+				entry.stderr.resume();
+				const answers = new Map<number, number>();
+				const waiting = new Map<number, () => void>();
+				let line: Buffer[] = [];
+				entry.stdout.on("data", (chunk: Buffer) => {
+					for (let rest = chunk; ; ) {
+						const end = rest.indexOf(10);
+						if (end < 0) {
+							line.push(rest);
+							return;
+						}
+						const whole = Buffer.concat([...line, rest.subarray(0, end)]);
+						line = [];
+						rest = rest.subarray(end + 1);
+						const id = (JSON.parse(whole.toString()) as { id?: unknown }).id;
+						if (typeof id === "number") {
+							answers.set(id, whole.length);
+							waiting.get(id)?.();
+						}
+					}
+				});
+				const ask = (id: number, method: string, params: unknown): Promise<number> => {
+					entry.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+					return new Promise((resolve) => {
+						waiting.set(id, () => resolve(answers.get(id) as number));
+					});
+				};
+				await ask(1, "initialize", {
+					clientInfo: { name: "entry-test", version: "1" },
+					capabilities: { experimentalApi: true },
+				});
+				entry.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+				const [pid] = (await readFile(`/proc/${entry.pid}/task/${entry.pid}/children`, "utf8")).trim().split(/\s+/);
+				// A connection through the entry's proxy, opened and ended, as the entry's first ones are.
+				const environment = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
+				const proxy = new URL(environment.find((item) => item.startsWith("HTTPS_PROXY="))?.split("=")[1] as string);
+				await new Promise((resolve) => {
+					const socket = connect(Number(proxy.port), proxy.hostname, () => socket.write("hello"));
+					socket.resume();
+					socket.on("error", resolve);
+					socket.on("close", resolve);
+				});
+				const nonblocking = async (fd: number): Promise<boolean> => {
+					const flags = (await readFile(`/proc/${pid}/fdinfo/${fd}`, "utf8")).match(
+						/flags:\s+(\d+)/,
+					)?.[1] as string;
+					return (Number.parseInt(flags, 8) & O_NONBLOCK) !== 0;
+				};
+				expect([await nonblocking(1), await nonblocking(2)]).toEqual([false, false]);
+				// The host reads late, so that a writer that does not wait finds the buffer full.
+				entry.stdout.pause();
+				const cwds = Array.from({ length: 100 }, (_, index) => join(root, `no-such-folder-${index}`));
+				const large = ask(2, "skills/list", { cwds, forceReload: true });
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+				entry.stdout.resume();
+				expect(await large).toBeGreaterThan(212_992);
+				// The link is alive: the writer did not end.
+				expect(await ask(3, "config/read", { includeLayers: false, cwd: root })).toBeGreaterThan(0);
+			} finally {
+				process.kill(-(entry.pid as number), "SIGKILL");
+				await new Promise((resolve) => entry.once("close", resolve));
+			}
+		},
+		30_000,
+	);
 });
