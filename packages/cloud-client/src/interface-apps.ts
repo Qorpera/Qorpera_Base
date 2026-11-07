@@ -17,7 +17,9 @@ export const APP_FILE_MAX_BYTES = 512 * 1024;
 export const APP_MAX_FILES = 64;
 /** What a page of an app may load in all, its entry included. */
 export const APP_MAX_BYTES = 4 * 1024 * 1024;
-/** One video of an app, and an app's videos in all, on top of the rest (a machine writes them; no text tool does). */
+/** One picture or video of an app, and an app's pictures and videos in all, on top of the rest (a machine writes them;
+ * no text tool does). Pictures share the videos' bounds since 7 November 2026: a photoreal render is 0.5 to 2 MB, past
+ * the 512 KiB of a page or code file. */
 export const APP_VIDEO_FILE_MAX_BYTES = 12 * 1024 * 1024;
 export const APP_VIDEOS_MAX_BYTES = 48 * 1024 * 1024;
 export const APP_NAME_MAX_CHARS = 60;
@@ -50,6 +52,10 @@ export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 });
 /** The kinds that are videos. */
 export const APP_VIDEO_KINDS: ReadonlySet<string> = new Set(["mp4", "webm"]);
+/** The kinds that are pictures (an SVG is text). */
+export const APP_PICTURE_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+/** Pictures and videos: each at most APP_VIDEO_FILE_MAX_BYTES, all of them at most APP_VIDEOS_MAX_BYTES. */
+export const APP_MEDIA_KINDS: ReadonlySet<string> = new Set([...APP_PICTURE_KINDS, ...APP_VIDEO_KINDS]);
 /** The kinds that are text: an agent writes them with its text tools. */
 export const APP_TEXT_KINDS: ReadonlySet<string> = new Set([
 	"html",

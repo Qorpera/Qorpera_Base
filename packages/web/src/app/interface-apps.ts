@@ -11,6 +11,7 @@ import {
 	APP_MANIFEST_MAX_BYTES,
 	APP_MAX_BYTES,
 	APP_MAX_FILES,
+	APP_MEDIA_KINDS,
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEO_KINDS,
 	APP_VIDEOS_MAX_BYTES,
@@ -193,7 +194,7 @@ class AppFiles {
 			const entry = (await this.#folder.read(`${this.#root}/${path}`, this.#signal)).entry;
 			const file: CloudMemberFolderFile | null | undefined = entry?.kind === "file" ? entry.file : null;
 			if (!file) return null;
-			const video = APP_VIDEO_KINDS.has(appFileKind(path));
+			const video = APP_MEDIA_KINDS.has(appFileKind(path));
 			const most = video ? APP_VIDEO_FILE_MAX_BYTES : APP_FILE_MAX_BYTES;
 			if (
 				file.bytes > most ||
@@ -253,7 +254,11 @@ export async function assembleApp(
 	const html = await files.text(app.entry);
 	if (html === null)
 		return files.tooLarge
-			? { ok: false, reason: "too_large", message: "The app is larger than 4 MiB and its videos, or 64 files." }
+			? {
+					ok: false,
+					reason: "too_large",
+					message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
+				}
 			: { ok: false, reason: "missing", message: `The app's page, ${app.entry}, is not in its folder.` };
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
 	const page = new DOMParser().parseFromString(html, "text/html");
@@ -291,7 +296,11 @@ export async function assembleApp(
 		if (url) media.setAttribute("src", url);
 	}
 	if (files.tooLarge)
-		return { ok: false, reason: "too_large", message: "The app is larger than 4 MiB and its videos, or 64 files." };
+		return {
+			ok: false,
+			reason: "too_large",
+			message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
+		};
 	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
 	const handed = framePage(written);
 	return handed === null
