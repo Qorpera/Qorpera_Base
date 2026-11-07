@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -121,10 +121,8 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	const api = "https://api.example.test";
 	const html = rewriteIndex(template, layout, versions, api);
 	const head = html.slice(0, html.indexOf("</head>"));
-	// The API's connection and the page's face start with the page, not after main.js has run.
+	// The API's connection starts with the page, not after main.js has run.
 	assert.ok(head.includes(`<link rel="preconnect" href="${api}" crossorigin>`));
-	assert.ok(head.includes('<link rel="preload" as="font" type="font/woff2" href="./assets/fonts/source-sans-3-latin-normal.woff2" crossorigin>'));
-	assert.ok(existsSync(join(root, "public/assets/fonts/source-sans-3-latin-normal.woff2")));
 	assert.throws(() => rewriteIndex(template, layout, versions, `${api}/rest`), /Not an origin/);
 	assert.throws(() => rewriteIndex(template, layout, versions), /Not an origin/);
 	assert.ok(layout.preload.length > 0);

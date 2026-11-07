@@ -22,7 +22,8 @@ afterEach(() => {
 });
 
 describe("sign-in page weight", () => {
-	it("leaves the lockup of the other theme undownloaded", () => {
+	// Attributes only: jsdom has no layout and loads no images, so this cannot show what a browser downloads.
+	it("marks both lockups lazy, with loading set before src", () => {
 		const f = fixture();
 		f.auth(null);
 		vi.stubGlobal(
@@ -34,6 +35,11 @@ describe("sign-in page weight", () => {
 		const lockups = [...root.querySelectorAll<HTMLImageElement>(".auth-brand img")];
 		expect(lockups.map((image) => image.className)).toEqual(["lockup-on-light", "lockup-on-dark"]);
 		expect(lockups.map((image) => image.getAttribute("loading"))).toEqual(["lazy", "lazy"]);
+		for (const image of lockups) {
+			const names = image.getAttributeNames();
+			expect(names.indexOf("loading")).toBeGreaterThanOrEqual(0);
+			expect(names.indexOf("loading")).toBeLessThan(names.indexOf("src"));
+		}
 	});
 });
 

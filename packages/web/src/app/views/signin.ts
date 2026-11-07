@@ -107,23 +107,24 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"header",
 				{ class: "auth-brand" },
-				// Ink on paper, and paper on ink for the dark theme; the stylesheet shows one. Lazy, so the browser
-				// downloads only that one (about 90 KB each), and the other if the theme ever changes.
+				// Ink on paper, and paper on ink for the dark theme; the stylesheet shows one. Lazy, so the browser need
+				// download only that one (about 90 KB each), and the other if the theme changes. h() sets attributes in
+				// this order, and `loading` goes before `src`: an engine may decide when `src` is set.
 				h("img", {
 					class: "lockup-on-light",
+					loading: "lazy",
 					src: "./assets/brand/qorpera-lockup-light-800.png",
 					alt: "Qorpera",
 					width: 800,
 					height: 200,
-					loading: "lazy",
 				}),
 				h("img", {
 					class: "lockup-on-dark",
+					loading: "lazy",
 					src: "./assets/brand/qorpera-lockup-dark-800.png",
 					alt: "Qorpera",
 					width: 800,
 					height: 200,
-					loading: "lazy",
 				}),
 			),
 			h(
