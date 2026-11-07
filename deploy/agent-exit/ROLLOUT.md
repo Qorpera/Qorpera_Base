@@ -198,7 +198,7 @@ Check, per node, within 30 seconds of the restart:
 - `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`;
 - the node's health (`node_health` in the log says `reported` for an unconfirmed sample too, so read the row):
   `select now() - h.observed_at as age, h.observation->>'bootId' is not null as measured, h.observation->'errors' as errors, h.observation->>'observerPackageSha256' as software from public.qorpera_runtime_node_health_latest l join public.qorpera_runtime_node_health_receipts h using (node_id, observation_id) where l.node_id = '<node id>';`
-  shows an age under 20 seconds (under 40 for an observer with the 30-second health wait), `true`, `[]` and the `sha256sum` above.
+  shows an age under 20 seconds (under 30 for an observer with the 20-second health wait), `true`, `[]` and the `sha256sum` above.
 
 Undo (back to the untouched `observer-nodeNN-v145.cjs`; nothing reads the health yet):
 

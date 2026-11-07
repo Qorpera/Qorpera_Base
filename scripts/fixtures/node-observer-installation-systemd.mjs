@@ -15,8 +15,8 @@ const installer=root+'/package/qorpera-node-observer-install.cjs',specPath=root+
 const installedKey='/etc/qorpera/node-observer.key',checks=[],requests=[],observations=[],errors=[],lxdReads=[],healthObservations=[];
 let registry,lxd,broken=false,stall=false,healthStall=false,collectionFault=false,healthReplies=0;
 const check=name=>{checks.push(name);console.log('PASS '+name);};
-// The health loop waits 30 seconds after each settled attempt (RUNTIME_NODE_HEALTH_WAIT_MS).
-const healthWait=50000;
+// The health loop waits 20 seconds after each settled attempt (RUNTIME_NODE_HEALTH_WAIT_MS).
+const healthWait=40000;
 async function until(fn,label,ms=20000){const start=performance.now();while(!await fn()){assert(performance.now()-start<ms,label+' '+exec('/usr/bin/systemctl',['status',unit,'--no-pager']).stdout+' '+exec('/usr/bin/journalctl',['-u',unit,'--no-pager','-n','10']).stdout);await delay(50);}}
 function install(stage='--apply',success=true,code){const r=exec('/usr/bin/node',['--jitless','--disable-proto=throw','--disallow-code-generation-from-strings',installer,stage,'--spec',specPath],60000);assert.equal(r.status,success?0:1,JSON.stringify({error:String(r.error),signal:r.signal})+' '+r.stdout+' '+r.stderr);if(code)assert(r.stderr.includes(code),r.stderr);return r;}
 const exists=async p=>!!await lstat(p).catch(e=>{if(e.code==='ENOENT')return undefined;throw e;});
@@ -53,6 +53,13 @@ try {
 				assert.deepEqual(o.network,expectedNetwork);assert.deepEqual(o.errors,expectedNetwork?[]:['NETWORK_COUNTERS_UNAVAILABLE']);}
 			healthObservations.push(o);if(healthStall)return;
 			healthReplies++;value={nodeId:o.nodeId,observationId:o.observationId,observedAt:o.observedAt};
+		}
+		else if(request.url==='/rest/v1/rpc/qorpera_observe_runtime_node_agent_exit'){
+			// This guest has no agent exit, so the observer reports an unhealthy one with no check.
+			const o=args.p_observation;assert.equal(o.schema,'qorpera.runtime-node-agent-exit/v1');assert.equal(o.nodeId,policy.nodeId);
+			assert.equal(o.machineIdSha256,policy.host.machineIdSha256);assert.equal(o.policySha256,spec.policySha256);
+			assert.equal(o.healthy,false);assert.equal(o.checkedAt,null);
+			value={nodeId:o.nodeId,healthy:o.healthy};
 		}
 		else {
 			assert(['/rest/v1/rpc/qorpera_observe_runtime_node','/rest/v1/rpc/qorpera_observe_runtime_node_inventory'].includes(request.url));const o=args.p_observation;

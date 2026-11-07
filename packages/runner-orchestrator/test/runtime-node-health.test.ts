@@ -111,15 +111,15 @@ describe("bounded node health evidence", () => {
 		])
 			expect(() => parseRuntimeNodeHealth(invalid)).toThrow();
 	});
-	it("waits 30 seconds between health samples, well inside the 60-second stale bound", () => {
-		expect(RUNTIME_NODE_HEALTH_WAIT_MS).toBe(30_000);
-		// Wait + the child's deadline + the RPC's timeout: even the slowest settled attempt leaves a margin.
-		expect(RUNTIME_NODE_HEALTH_WAIT_MS + 5_000 + 5_000).toBeLessThan(60_000);
+	it("waits 20 seconds between health samples, and the loops placement reads keep their 5", () => {
+		expect(RUNTIME_NODE_HEALTH_WAIT_MS).toBe(20_000);
 		const service = readFileSync(new URL("../src/runtime-node-observer-service.ts", import.meta.url), "utf8");
 		expect(service.match(/const healthLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(RUNTIME_NODE_HEALTH_WAIT_MS,");
-		// The loops placement and admission read keep their five seconds.
 		expect(service.match(/const inventoryLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
 		expect(service.match(/const exitLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
+		// A merge that takes the old sentence back fails here.
+		const doc = readFileSync(new URL("../../../deploy/first-node/RUNTIME-NODE-HEALTH.md", import.meta.url), "utf8");
+		expect(doc).not.toContain("Both loops wait five seconds");
 	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();
