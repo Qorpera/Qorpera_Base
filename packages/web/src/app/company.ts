@@ -376,6 +376,14 @@ const OPEN_FULL_MS = 10_000;
 /** The work watch skips a read of the open conversation a hint made this recently. */
 const WATCH_SKIP_MS = 1_500;
 
+/** What a live hint reads: at once and then at most once an interval for someone looking, so a message shows as soon as
+ * it is saved. A hidden tab keeps the wait, which also merges a burst of hints: nobody pays for reads nobody sees. */
+function readOnHint(read: () => void, intervalMs: number): () => void {
+	const atOnce = throttle(read, intervalMs);
+	const afterTheWait = debounce(read, intervalMs);
+	return () => (typeof document !== "undefined" && document.visibilityState === "hidden" ? afterTheWait() : atOnce());
+}
+
 /** The page cursor after the newest of these conversations (as the listing orders them). */
 function newestSession(sessions: readonly HostedSession[], after?: PageCursor): PageCursor | undefined {
 	let newest = after;
@@ -2638,7 +2646,8 @@ export class CompanyController {
 	 * seconds while a room is busy. */
 	readonly #refreshMentionsSoon = throttle(() => void this.refreshMentions(), 5_000);
 
-	readonly #refreshOpenConversation = debounce(() => {
+	/** A change to the open conversation is read as a hint says (readOnHint). */
+	readonly #refreshOpenConversation = readOnHint(() => {
 		const open = this.#openSessionId;
 		if (!open) return;
 		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
@@ -2663,8 +2672,9 @@ export class CompanyController {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
-	/** A burst of transcript events is one hint's worth of reads. */
-	readonly #sessionsChangedSoon = debounce(() => void this.#sessionsChanged(), 250);
+	/** A burst of transcript events is at most one read an interval, plus the first at once where someone is looking
+	 * (readOnHint). */
+	readonly #sessionsChangedSoon = readOnHint(() => void this.#sessionsChanged(), 250);
 
 	/** The agents' activity moves with their events: read at most every few seconds while they write. */
 	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);
