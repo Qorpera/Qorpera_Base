@@ -246,13 +246,24 @@ describe("reading again after a hint", () => {
 		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
 		cleanup.push(() => Reflect.deleteProperty(document, "visibilityState"));
 		const listed = () => vi.mocked(busy.f.api.listSessions).mock.calls.length;
+		const reads = () =>
+			vi.mocked(busy.f.api.readSessionEvents).mock.calls.filter((call) => call[0] === open.sessionId).length;
 		const before = listed();
+		const readBefore = reads();
 		for (let index = 0; index < 5; index++) {
 			busy.write(open.sessionId);
 			await vi.advanceTimersByTimeAsync(20);
 		}
 		expect(listed()).toBe(before);
-		await vi.advanceTimersByTimeAsync(1_000);
+		// The last hint was 20 ms ago. The list read comes 250 ms after it...
+		await vi.advanceTimersByTimeAsync(240);
+		expect(listed() - before).toBe(1);
+		expect(reads()).toBe(readBefore);
+		// ...and the open thread's read 400 ms after that: not at 630 ms, by 670 ms.
+		await vi.advanceTimersByTimeAsync(370);
+		expect(reads()).toBe(readBefore);
+		await vi.advanceTimersByTimeAsync(40);
+		expect(reads()).toBe(readBefore + 1);
 		expect(listed() - before).toBe(1);
 		expect(busy.store.get().events).toHaveLength(5);
 		state = "visible";
