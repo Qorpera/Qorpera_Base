@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- 20260930604000: a run's context shows up to 16 KiB of its continuation in one piece, and read_context reads on from
+-- 20260930617000: a run's context shows up to 16 KiB of its continuation in one piece, and read_context reads on from
 -- there as before. The continuation's own builders have tests of their own (519, 848, 892): here the function is
 -- replaced with one that answers a text of a chosen length, so this test is only about how much of it the run is shown.
 select pg_temp.base_claims('service_role');
@@ -47,5 +47,9 @@ begin
 		and strpos(pg_get_functiondef('public.qorpera_describe_company_run_context(jsonb)'::regprocedure),
 			E'public.qorpera_company_context_excerpt(v_source ->> ''text'',0,2048)') > 0,
 		'the job record and the history keep their excerpts');
+
+	-- The function names its migration, and a second apply says so instead of failing on a changed anchor.
+	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_describe_company_run_context(jsonb)'::regprocedure),
+			'20260930617000') > 0, 'the body names its migration');
 end
 $$;
