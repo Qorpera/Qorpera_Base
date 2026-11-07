@@ -6,6 +6,7 @@ import {
 	CLOUD_ACTION_REVIEW_MODEL,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_MACHINE_WORK_REASON,
+	CLOUD_WORKER_WORK_ASK_REASON,
 	type CloudActionGuards,
 	type CloudActionReviewControl,
 	type CloudActionReviewer,
@@ -20,6 +21,7 @@ import {
 	parseCloudActionVerdict,
 	repositoryAccessCheck,
 	siteAccessCheck,
+	workerWorkCheck,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
@@ -3429,6 +3431,42 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		});
 	});
 
+	it("allows an agent's own worker briefs by the same rule, and keeps every other manage_worker action as reviewed", () => {
+		// 7 November 2026: Rumlig's Product Lead was refused handing the founder's combined demo app to its own worker.
+		const worker = { name: "manage_worker", source: "runtime" } as const;
+		const refused = {
+			...verdict("deny", "none"),
+			reason: "This tells the worker to carry out the member's newly requested combined demo app work.",
+		};
+		for (const action of ["dispatch", "followup"]) {
+			expect(workerWorkCheck({ tool: worker, parsed: { action } }, refused, new Set()), action).toMatchObject({
+				decision: "allow",
+				builtIn: "none",
+				reason: expect.stringMatching(
+					/^Starting or steering its own workers on its work is part of every agent's job, .* The review said deny: /,
+				),
+			});
+			expect(workerWorkCheck({ tool: worker, parsed: { action } }, refused, new Set([RULE])), action).toMatchObject({
+				decision: "ask",
+				reason: expect.stringContaining(CLOUD_WORKER_WORK_ASK_REASON),
+			});
+			for (const guard of Object.keys(NONE) as Array<keyof CloudActionGuards>) {
+				const held = verdict("deny", "not_requested", { [guard]: true });
+				expect(workerWorkCheck({ tool: worker, parsed: { action } }, held, new Set()), guard).toEqual(held);
+			}
+		}
+		for (const parsed of [{ action: "stop" }, {}, null, "dispatch"] as const)
+			expect(workerWorkCheck({ tool: worker, parsed }, refused, new Set())).toEqual(refused);
+		expect(
+			workerWorkCheck(
+				{ tool: { name: "manage_worker", source: "connector" }, parsed: { action: "dispatch" } },
+				refused,
+				new Set(),
+			),
+		).toEqual(refused);
+		expect(workerWorkCheck({ tool: machine, parsed: { action: "dispatch" } }, refused, new Set())).toEqual(refused);
+	});
+
 	it("records the 16:34 package install as allowed, asks with an uncited Ask first rule, keeps a cited one's verdict", async () => {
 		for (const ruled of ["none", "uncited", "cited"] as const) {
 			const recorded: Array<Record<string, unknown>> = [];
@@ -3501,7 +3539,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			.tools;
 		expect(tools[0].inputSchema.required).toContain("guards");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"A command on a company machine (machine_run) for which all five are false runs by a fixed platform rule",
+			"A command on a company machine (machine_run), or starting or steering one of the agent's own workers (manage_worker), for which all five are false runs by a fixed platform rule",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"never from whether the request or the mandate names its exact step, package or page.",
