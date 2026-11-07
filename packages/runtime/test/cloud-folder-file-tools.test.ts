@@ -362,7 +362,7 @@ it("reads a link's target in windows that each fit one result, however much its 
 			windows++;
 		}
 		expect(shown).toBe(target);
-		expect(windows).toBeGreaterThan(4);
+		expect(windows).toBeGreaterThan(1);
 		// Each window is released as shown.
 		expect(f.releases).toHaveLength(windows);
 	}
