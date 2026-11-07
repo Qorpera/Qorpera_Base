@@ -8,6 +8,7 @@ import {
 	collectRuntimeNodeHealthProcess,
 	measuredRuntimeNodeHealth,
 	parseRuntimeNodeHealth,
+	RUNTIME_NODE_HEALTH_WAIT_MS,
 	type RuntimeNodeHealth,
 	RuntimeNodeHealthPublisher,
 	runtimeNodeCpuUsage,
@@ -125,6 +126,16 @@ describe("bounded node health evidence", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+	it("waits 20 seconds between health samples, and the loops placement reads keep their 5", () => {
+		expect(RUNTIME_NODE_HEALTH_WAIT_MS).toBe(20_000);
+		const service = readFileSync(new URL("../src/runtime-node-observer-service.ts", import.meta.url), "utf8");
+		expect(service.match(/const healthLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(RUNTIME_NODE_HEALTH_WAIT_MS,");
+		expect(service.match(/const inventoryLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
+		expect(service.match(/const exitLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
+		// A merge that takes the old sentence back fails here.
+		const doc = readFileSync(new URL("../../../deploy/first-node/RUNTIME-NODE-HEALTH.md", import.meta.url), "utf8");
+		expect(doc).not.toContain("Both loops wait five seconds");
 	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();
