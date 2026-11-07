@@ -705,8 +705,12 @@ member's Codex login is kept once by the shared vault and used in every company 
   then the accounts and the switch-off) renews only a login still used by some company.
 - **Usage.** A usage-limit signal on any company's link connection blocks new work on every link of the same login
   (`qorpera_native_account_usage_limit_reset`), and the tightest fresh reading (5 minutes) of any of its companies
-  counts for all (`qorpera_native_account_remaining`); both keep their old answers for a connection that is no link (the old bodies
-  are kept as `..._company`). The account refresh reads an account login's usage through its link.
+  counts for all (`qorpera_native_account_remaining`); both keep their old answers for a connection that is no link.
+  `qorpera_native_account_usage_limit_reset_company` is one connection's wall, which the login's wall takes for each company.
+  Since migration `20260930611000` `qorpera_native_account_remaining` works out each company's wall once and reads each
+  company's fresh windows through `qorpera_native_account_window_room`, so it no longer calls
+  `qorpera_native_account_remaining_company`, which keeps its answers. The account refresh reads an account login's usage
+  through its link.
 - **Switch-off.** `qorpera_switch_off_replaced_by_account_logins` moves a member's pins from their older logins of the
   same ChatGPT account in each linked company (a node login, a company vault login, an older account login) to the link
   and then switches the old one off as Disconnect does, in companies that take sign-ins in the vault, and only while

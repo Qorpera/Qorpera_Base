@@ -985,7 +985,7 @@ by their keys, never with a lowercase literal.
 ### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
-three pages in its Interfaces tab, Mailbox, Members and Bank, each off until an owner or admin switches it on. A client draws
+three pages in its Interfaces tab, Mailbox, Members and Bank. Mailbox and Bank are on and Members off until an owner or admin switches one (20260930583000). A client draws
 them from the definitions it ships, never from a definition in the folder's `QorperaOS/interfaces/`: Pulse, a page an agent wrote
 and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
 data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a

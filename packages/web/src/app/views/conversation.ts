@@ -286,6 +286,9 @@ export class ConversationView {
 	readonly #answerStrip: HTMLElement;
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
 	#answerShown: string | undefined;
+	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
+	 * message is still the same: its text, the question it answers and its files. */
+	#sendSoon: { text: string; answering?: string; files: readonly File[]; until: number } | undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -424,6 +427,8 @@ export class ConversationView {
 				// A message on its way keeps the question it goes with.
 				if (this.#composer.disabled || this.#submitting) return;
 				this.#answeringItem = item;
+				// Enter was for the question before this one.
+				this.#sendSoon = undefined;
 				company.conversation(sessionId).set({ answering: replyQuestion(question) });
 				this.#composer.focus();
 			},
@@ -1781,6 +1786,17 @@ export class ConversationView {
 
 	#submit(): void {
 		const text = this.#composer.value;
+		this.#sendSoon = undefined;
+		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
+			const { answering, attachments } = this.#company.conversation(this.#sessionId).get();
+			this.#sendSoon = {
+				text,
+				...(answering ? { answering } : {}),
+				files: [...(attachments ?? [])],
+				until: Date.now() + 2000,
+			};
+			return;
+		}
 		if (
 			this.#submitting ||
 			(!text.trim() && !this.#attachments.count) ||
@@ -1923,6 +1939,19 @@ export class ConversationView {
 			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX ||
 			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
+		if (this.#sendSoon && !this.#send.disabled) {
+			const soon = this.#sendSoon;
+			this.#sendSoon = undefined;
+			const files = conversation.attachments ?? [];
+			if (
+				soon.text === this.#composer.value &&
+				soon.answering === conversation.answering &&
+				soon.files.length === files.length &&
+				soon.files.every((file, index) => file === files[index]) &&
+				Date.now() <= soon.until
+			)
+				queueMicrotask(() => this.#submit());
+		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;

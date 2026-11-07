@@ -24,6 +24,7 @@ import {
 	APP_MAX_FILES,
 	APP_READS,
 	APP_TEXT_KINDS,
+	APP_VIDEO_KINDS,
 	type AppManifest,
 	appFileKind,
 	appFolder,
@@ -503,7 +504,11 @@ export function cloudAppTools(options: {
 				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
 					sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
 			for (const file of request.files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
-			const total = [...sizes.values()].reduce((sum, bytes) => sum + bytes, 0);
+			// A video counts as a file, and toward the videos' own bound, which the page's reader holds it to.
+			const total = [...sizes].reduce(
+				(sum, [path, bytes]) => (APP_VIDEO_KINDS.has(appFileKind(path)) ? sum : sum + bytes),
+				0,
+			);
 			if (listed.next !== null || sizes.size > APP_MAX_FILES || total > APP_MAX_BYTES)
 				throw new CloudToolRefusal(
 					`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files and ${APP_MAX_BYTES / 1024 / 1024} MiB in all; remove files with company_delete first`,
