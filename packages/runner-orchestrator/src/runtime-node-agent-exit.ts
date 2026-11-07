@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { isUuid } from "@qorpera/contracts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
-import type { RuntimeNodeObserverRegistry } from "./runtime-node-observer.ts";
+import {
+	type RuntimeNodeObserverReason,
+	type RuntimeNodeObserverRegistry,
+	runtimeNodeObserverCode,
+} from "./runtime-node-observer.ts";
 
 /** The node's agent exit writes its own health check here every 10 seconds (deploy/agent-exit, `health`). */
 export const AGENT_EXIT_HEALTH_PATH = "/run/qorpera-agent-exit/health.json";
@@ -25,13 +29,18 @@ export type AgentExitHealth = Pick<RuntimeNodeAgentExit, "checkedAt" | "healthy"
  * problems it saw and when it checked leave the node: the problem texts name machines and addresses. Anything else
  * (a missing, unprotected or malformed file) is an unhealthy exit with no check. */
 export function parseAgentExitHealth(bytes: Buffer | null): AgentExitHealth {
-	const unknown = { checkedAt: null, healthy: false, problemCount: 0 };
-	if (!bytes) return unknown;
+	return readAgentExitHealth(bytes).health;
+}
+/** The answer, and the closed code for why it is unhealthy (null when healthy): unreadable, malformed, problems seen,
+ * or unhealthy by its own word. Only the observer's log line reads the code; the report's fields stay as they are. */
+function readAgentExitHealth(bytes: Buffer | null): { health: AgentExitHealth; code: string | null } {
+	const unknown = (code: string) => ({ health: { checkedAt: null, healthy: false, problemCount: 0 }, code });
+	if (!bytes) return unknown("NODE_AGENT_EXIT_HEALTH_UNREADABLE");
 	let value: Record<string, unknown>;
 	try {
 		value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 	} catch {
-		return unknown;
+		return unknown("NODE_AGENT_EXIT_HEALTH_MALFORMED");
 	}
 	const checked = typeof value?.checkedAt === "string" ? value.checkedAt : "";
 	if (
@@ -47,11 +56,14 @@ export function parseAgentExitHealth(bytes: Buffer | null): AgentExitHealth {
 		!Number.isFinite(Date.parse(checked)) ||
 		new Date(checked).toISOString() !== checked.replace("Z", ".000Z")
 	)
-		return unknown;
+		return unknown("NODE_AGENT_EXIT_HEALTH_MALFORMED");
 	const problemCount = Math.min(value.problems.length, 1000);
 	// Healthy only as the exit said it, with no problem.
 	const healthy = value.healthy && problemCount === 0;
-	return { checkedAt: new Date(checked).toISOString(), healthy, problemCount };
+	return {
+		health: { checkedAt: new Date(checked).toISOString(), healthy, problemCount },
+		code: problemCount ? "NODE_AGENT_EXIT_PROBLEMS" : healthy ? null : "NODE_AGENT_EXIT_UNHEALTHY",
+	};
 }
 
 /** Reports the node's agent exit to the database (qorpera_observe_runtime_node_agent_exit) on its own connection, apart
@@ -69,8 +81,8 @@ export class RuntimeNodeAgentExitPublisher {
 		machineIdSha256: string,
 		policySha256: string,
 		registry: RuntimeNodeObserverRegistry,
-		read: () => Promise<Buffer | null> = () =>
-			readLxdOfficeProtectedFile(AGENT_EXIT_HEALTH_PATH, 65536).catch(() => null),
+		// A file that cannot be read (missing, unprotected) is an unhealthy exit with no check (observe).
+		read: () => Promise<Buffer | null> = () => readLxdOfficeProtectedFile(AGENT_EXIT_HEALTH_PATH, 65536),
 	) {
 		if (!isUuid(nodeId) || !SHA.test(machineIdSha256) || !SHA.test(policySha256))
 			throw new Error("INVALID_NODE_AGENT_EXIT_PUBLISHER");
@@ -80,12 +92,20 @@ export class RuntimeNodeAgentExitPublisher {
 		this.#registry = registry;
 		this.#read = read;
 	}
-	async observe(signal: AbortSignal): Promise<RuntimeNodeAgentExit> {
+	/** Posts the exit's answer and returns it, with why it is unhealthy for the observer's log line: the read's own code
+	 * (a missing or unprotected file) or the answer's (readAgentExitHealth). The report never carries the reason. */
+	async observe(
+		signal: AbortSignal,
+	): Promise<{ healthy: boolean; reason: RuntimeNodeObserverReason | null; observation: RuntimeNodeAgentExit }> {
 		if (this.#pending) throw new Error("NODE_AGENT_EXIT_REPORT_PENDING");
 		this.#pending = true;
 		try {
 			signal.throwIfAborted();
-			const health = parseAgentExitHealth(await this.#read());
+			const read = await this.#read().then(
+				(bytes) => ({ bytes, failed: null }),
+				(error: unknown) => ({ bytes: null, failed: runtimeNodeObserverCode(error) }),
+			);
+			const { health, code } = readAgentExitHealth(read.bytes);
 			const observation: RuntimeNodeAgentExit = {
 				schema: "qorpera.runtime-node-agent-exit/v1",
 				nodeId: this.#nodeId,
@@ -103,7 +123,12 @@ export class RuntimeNodeAgentExitPublisher {
 			)) as Record<string, unknown> | null;
 			if (!answer || answer.nodeId !== this.#nodeId || typeof answer.healthy !== "boolean")
 				throw new Error("NODE_AGENT_EXIT_REPORT_UNCONFIRMED");
-			return observation;
+			const failed = read.failed ?? code;
+			return {
+				healthy: observation.healthy,
+				reason: failed ? { check: "exit-health", code: failed } : null,
+				observation,
+			};
 		} finally {
 			this.#pending = false;
 		}

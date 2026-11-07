@@ -55,6 +55,21 @@ The current inventory policy is immutable. A daemon certificate/version change, 
 
 After deployment approval, start the observer through systemd and independently verify a fresh matching inventory receipt and node capacity query before enabling dispatch. The namespace helper executes with its limited root capability; the ordinary observer has zero capabilities and stays in the host mount namespace. It can access the privileged LXD socket, so its account and code remain part of the trusted host boundary despite having no Linux capabilities. Only fixed read requests are implemented. Closing every desktop/web client has no effect on polling or machine reservations.
 
+## Journal lines
+
+Each look writes one JSON line to the observer's journal (`journalctl -u <the observer's unit> -o cat`): `{"event","state"}`, where `event` is `node_inventory`, `node_health` or `node_agent_exit`. A ready inventory, a whole health sample and a healthy exit write that line alone, as before. Any other look adds why: `check`, the step it stopped at or found the problem in, and `code`, a closed code. An unavailable inventory also has `entries`, the kinds of entry that kept it so. For example:
+
+```json
+{"event":"node_inventory","state":"unavailable","check":"reconcile","code":"NODE_INVENTORY_ENTRY_UNAVAILABLE","entries":["unmanaged:UNREGISTERED_INSTANCE"]}
+```
+
+The steps:
+- `node_inventory`: `host` (the first read of the socket, boot and hardware), `context` (the database's inventory context), `policy` (it equals the installed policy), `inventory` (the VM manager's instances), `host-again` (the same read after the scan), `releases` (the node's signed releases), `reconcile`, then `publish` and `receipt`; `look` for a look that started while the last one was still running (`NODE_OBSERVER_BUSY`). A failed scan step is published `unavailable` with its step and code; a failure at `host`, `publish` or `receipt`, or a look past its 15 seconds, is `unconfirmed` with the step it was in. `reconcile` is `NODE_INVENTORY_ENTRY_UNAVAILABLE`, or `NODE_INVENTORY_HEADROOM_EXCEEDED` when the enrolled reservations no longer fit the node's headroom (its `entries` may be empty). Each entry is `category:REASON` (`unmanaged:UNREGISTERED_INSTANCE`, `build:BUILD_SPACE_EXCEEDED` and the like), once per kind, never an instance.
+- `node_health`: `collect` (the probe; a failed probe's sample is still published, so the line says `reported` with the probe's code, `RUNTIME-NODE-HEALTH.md`), `sample` (`NODE_HEALTH_SAMPLE_INCOMPLETE`, with `entries` the metrics' own failure codes) and `publish`.
+- `node_agent_exit`: `exit-health` (`NODE_AGENT_EXIT_PROBLEMS`, `NODE_AGENT_EXIT_UNHEALTHY` by the exit's own word, `NODE_AGENT_EXIT_HEALTH_MALFORMED`, or the read's own code for a missing or unprotected file, such as `ENOENT` or `OFFICE_HOST_FILE_UNPROTECTED`) and `publish`.
+
+A database call that fails gives the call's code: `NODE_OBSERVER_RPC_HTTP_<status>`, `NODE_OBSERVER_RPC_CONTENT_TYPE`, `NODE_OBSERVER_RPC_RESPONSE_INVALID`, `NODE_OBSERVER_RPC_RESPONSE_INCOMPLETE`, `NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE`, `NODE_OBSERVER_RPC_REQUEST_TOO_LARGE`, a system or TLS code (`ECONNREFUSED`, `ECONNRESET` and the like), `NODE_OBSERVER_RPC_TIMEOUT` when the call's own five seconds ran out, or `TIMED_OUT` when the look's did. A code is a fixed name only: an error's text, a path, a name, a version, a digest or an id is never logged, and an error with no such code is `UNCODED`. The reports to the database are unchanged.
+
 ## Local evidence and limits
 
 `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=<prepared-local-image-digest> node scripts/test-node-observer-installation-systemd.mjs` uses a prepared digest-pinned Linux image (`scripts/fixtures/systemd-test-image.Dockerfile`), private systemd/cgroups, no external network and no host cgroup bind. Twenty-one checks exercise actual installation/account/file custody, inherited and competing kernel locks, zero observer capabilities, host namespace, trusted HTTPS publication, restart/crash recovery, daemon failure/recovery, cancellation, identical reinstall, partial retained state and loaded/unloaded overrides. The TLS registry and LXD daemon are explicit fixtures; real PostgreSQL integration is separately covered by `scripts/test-runtime-node-inventory.mjs` (deleted in the legacy sweep).

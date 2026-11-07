@@ -91,11 +91,12 @@ it("publishes through actual jitless TLS with bounded bodies, cancellation and n
 			`const assert=require('node:assert/strict'); const {RuntimeNodeObserverHttpRegistry}=require('./registry.cjs');
 (async()=>{const out=[];for(const mode of ['success','redirect','denied','bad-json','limit','cancel']){
 const r=new RuntimeNodeObserverHttpRegistry(${JSON.stringify(`https://127.0.0.1:${address.port}`)},'fixture-observer-credential-'.repeat(3));
-try{out.push({mode,value:await r.call('qorpera_observe_runtime_node_inventory',{mode},AbortSignal.timeout(1000))});}catch(e){out.push({mode,error:e.message});}}
+try{out.push({mode,value:await r.call('qorpera_observe_runtime_node_inventory',{mode},AbortSignal.timeout(1000))});}catch(e){out.push({mode,error:e.message,code:e.code});}}
 const r=new RuntimeNodeObserverHttpRegistry(${JSON.stringify(`https://127.0.0.1:${address.port}`)},'fixture-observer-credential-'.repeat(3));
+const unconfirmed=(code)=>(e)=>e.message==='NODE_OBSERVER_RPC_UNCONFIRMED'&&e.code===code;
 await assert.rejects(r.call('qorpera_enroll_runtime_node_inventory',{},new AbortController().signal),/UNAVAILABLE/);
-await assert.rejects(r.call('qorpera_observe_runtime_node_inventory',{mode:'x'.repeat(4194305)},new AbortController().signal),/UNCONFIRMED/);
-await assert.rejects(r.call('qorpera_observe_runtime_node_inventory',{},AbortSignal.abort()),/UNCONFIRMED/);
+await assert.rejects(r.call('qorpera_observe_runtime_node_inventory',{mode:'x'.repeat(4194305)},new AbortController().signal),unconfirmed('NODE_OBSERVER_RPC_REQUEST_TOO_LARGE'));
+await assert.rejects(r.call('qorpera_observe_runtime_node_inventory',{},AbortSignal.abort()),unconfirmed('ABORTED'));
 process.stdout.write(JSON.stringify(out));})().catch(()=>process.exit(1));`,
 		);
 		const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
@@ -124,6 +125,16 @@ process.stdout.write(JSON.stringify(out));})().catch(()=>process.exit(1));`,
 		const out = JSON.parse(result.stdout);
 		expect(out[0]).toEqual({ mode: "success", value: { ok: true } });
 		for (const entry of out.slice(1)) expect(entry.error).toBe("NODE_OBSERVER_RPC_UNCONFIRMED");
+		// The closed code the observer's log line carries: the status, what was wrong with the answer, or the caller's
+		// timeout. Never the answer's bytes.
+		expect(out.slice(1).map((entry: { code: string }) => entry.code)).toEqual([
+			"NODE_OBSERVER_RPC_HTTP_307",
+			"NODE_OBSERVER_RPC_HTTP_403",
+			"NODE_OBSERVER_RPC_RESPONSE_INVALID",
+			"NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE",
+			"TIMED_OUT",
+		]);
+		expect(result.stdout).not.toContain("PRIVATE");
 		expect(seen).toEqual(["success", "redirect", "denied", "bad-json", "limit", "cancel"]);
 		expect(closed).toEqual(expect.arrayContaining(seen));
 	} finally {

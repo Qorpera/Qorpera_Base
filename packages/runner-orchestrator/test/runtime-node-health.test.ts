@@ -16,7 +16,7 @@ import {
 	runtimeNodeNetwork,
 	runtimeNodeObserverSoftware,
 } from "../src/runtime-node-health.ts";
-import type { RuntimeNodeObserverRegistry } from "../src/runtime-node-observer.ts";
+import { RuntimeNodeObserverFailure, type RuntimeNodeObserverRegistry } from "../src/runtime-node-observer.ts";
 
 const linux = process.platform === "linux" && !!process.geteuid?.();
 const nodeId = "36000000-0000-4000-8000-000000000010",
@@ -146,7 +146,8 @@ describe("bounded node health evidence", () => {
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();
 		const publisher = new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, async () => sample());
-		await publisher.observe(new AbortController().signal);
+		// A whole sample has nothing for the log line.
+		expect(await publisher.observe(new AbortController().signal)).toBeNull();
 		expect(call.mock.calls[0]!.slice(0, 2)).toEqual([
 			"qorpera_observe_runtime_node_health",
 			{ p_observation: sample() },
@@ -162,7 +163,8 @@ describe("bounded node health evidence", () => {
 			throw new Error("PRIVATE filesystem path");
 		});
 		const publisher = new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, collect);
-		await publisher.observe(new AbortController().signal);
+		// The log line gets the step and a closed code: this error's text is not one.
+		expect(await publisher.observe(new AbortController().signal)).toEqual({ check: "collect", code: "UNCODED" });
 		const observation = call.mock.calls[0]![1].p_observation;
 		// A time-ordered id: reports land beside each other in the receipts' index.
 		expect((observation as { observationId: string }).observationId[14]).toBe("7");
@@ -178,6 +180,43 @@ describe("bounded node health evidence", () => {
 		call.mockRejectedValueOnce(new Error("lost receipt"));
 		await expect(publisher.observe(new AbortController().signal)).rejects.toThrow("lost receipt");
 		expect(call).toHaveBeenCalledTimes(2);
+	});
+	it("says why a sample is not whole for the log line, and the report stays as it was", async () => {
+		const reason = async (collect: () => Promise<RuntimeNodeHealth>) => {
+			const call = registryCall();
+			const why = await new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, collect).observe(
+				new AbortController().signal,
+			);
+			expect(Object.keys(call.mock.calls[0]![1].p_observation as object)).not.toContain("reason");
+			return why;
+		};
+		// The probe's own closed code.
+		expect(
+			await reason(async () => {
+				throw new RuntimeNodeObserverFailure("NODE_HEALTH_COLLECTION_UNCONFIRMED", "NODE_HEALTH_HOST_DIFFERS");
+			}),
+		).toEqual({ check: "collect", code: "NODE_HEALTH_HOST_DIFFERS" });
+		expect(await reason(async () => ({ ...sample(), nodeId: "36000000-0000-4000-8000-000000000013" }))).toEqual({
+			check: "collect",
+			code: "NODE_HEALTH_IDENTITY_DIFFERS",
+		});
+		expect(await reason(async () => ({ ...sample(), credential: "PRIVATE" }) as RuntimeNodeHealth)).toEqual({
+			check: "collect",
+			code: "INVALID_OFFICE_PHYSICAL_RECORD",
+		});
+		// A sample with metrics it could not read names which, from the closed list the report carries too.
+		expect(
+			await reason(async () => ({
+				...sample(),
+				rootFilesystem: null,
+				cpu: null,
+				errors: ["ROOT_FILESYSTEM_UNAVAILABLE", "CPU_SAMPLE_UNAVAILABLE"],
+			})),
+		).toEqual({
+			check: "sample",
+			code: "NODE_HEALTH_SAMPLE_INCOMPLETE",
+			entries: ["CPU_SAMPLE_UNAVAILABLE", "ROOT_FILESYSTEM_UNAVAILABLE"],
+		});
 	});
 	it("keeps one measurement in flight and cancellation starts no new export", async () => {
 		const controller = new AbortController();
@@ -214,6 +253,46 @@ describe("bounded node health evidence", () => {
 		await expect(collectRuntimeNodeHealthProcess(new AbortController().signal, observer)).rejects.toThrow(
 			"NODE_HEALTH_COLLECTION_UNCONFIRMED",
 		);
+	});
+	it("takes the probe's closed code from its one stderr line, and nothing else it writes", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "qorpera-node-health-"));
+		const observer = join(dir, "observer.cjs");
+		const failure = async (source: string | null, signal = new AbortController().signal) => {
+			if (source !== null) await writeFile(observer, source);
+			const file = source === null ? join(dir, "absent.cjs") : observer;
+			const error = await collectRuntimeNodeHealthProcess(signal, file).then(
+				() => null,
+				(e: unknown) => e,
+			);
+			expect(error).toBeInstanceOf(RuntimeNodeObserverFailure);
+			// The message stays the one fixed code; only `code` says why.
+			expect((error as Error).message).toBe("NODE_HEALTH_COLLECTION_UNCONFIRMED");
+			return (error as RuntimeNodeObserverFailure).code;
+		};
+		const stderr = (text: string) => `process.stderr.write(${JSON.stringify(text)}); process.exitCode = 1;\n`;
+		expect(
+			await failure(
+				stderr("(node) a warning naming /etc/private\nNODE_HEALTH_COLLECTION_UNCONFIRMED NODE_HEALTH_HOST_DIFFERS\n"),
+			),
+		).toBe("NODE_HEALTH_HOST_DIFFERS");
+		// An older probe's bare line, other text, or nothing at all: the probe failed, and no text is taken.
+		expect(await failure(stderr("NODE_HEALTH_COLLECTION_UNCONFIRMED\n"))).toBe("NODE_HEALTH_PROBE_FAILED");
+		expect(await failure(stderr("NODE_HEALTH_COLLECTION_UNCONFIRMED /etc/private path\n"))).toBe(
+			"NODE_HEALTH_PROBE_FAILED",
+		);
+		expect(await failure("process.exit(3);\n")).toBe("NODE_HEALTH_PROBE_FAILED");
+		// Node's own complaint about a file it cannot run names the path: still only the fixed code.
+		expect(await failure(null)).toBe("NODE_HEALTH_PROBE_FAILED");
+		// It exits 0 but its answer is not one.
+		expect(await failure('process.stdout.write("not json\\n");\n')).toBe("NODE_HEALTH_PROBE_OUTPUT_INVALID");
+		expect(
+			await failure(
+				`process.stdout.write(${JSON.stringify(`${JSON.stringify({ ...sample(), errors: ["PRIVATE FAILURE"] })}\n`)});\n`,
+			),
+		).toBe("NODE_HEALTH_ERROR_INVALID");
+		expect(await failure('process.stdout.write("x".repeat(40000));\n')).toBe("NODE_HEALTH_PROBE_OUTPUT_TOO_LARGE");
+		// Stopped while it runs.
+		expect(await failure("setTimeout(() => {}, 10000);\n", AbortSignal.timeout(200))).toBe("ABORTED");
 	});
 	it.runIf(linux)("names a cut's observer by its own bytes, only from a file its account cannot change", async () => {
 		const observer = join(await mkdtemp(join(tmpdir(), "qorpera-node-health-")), "observer-node02-v180.cjs");
