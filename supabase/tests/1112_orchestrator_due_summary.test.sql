@@ -54,7 +54,7 @@ begin
 		perform pg_temp.base_assert((v_summary ->> v_list.key)::boolean = (v_page -> 'items' <> '[]'::jsonb),
 			v_list.key || ' answers as its list does: ' || v_summary::text || ' ' || v_page::text);
 	end loop;
-	perform pg_temp.base_assert(not (v_summary ->> 'materialize')::boolean, 'nothing to materialize yet: ' || v_summary::text);
+	-- Another test's rows may already be due in this database, so only the answer after the post is pinned.
 	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Hello Bob.');
 	v_summary := pg_temp.ds_summary();
 	perform pg_temp.base_assert((v_summary ->> 'materialize')::boolean, 'a post is due: ' || v_summary::text);
