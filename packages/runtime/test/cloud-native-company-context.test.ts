@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "051a1f0426241f5024978de1f807785cfe3c4504a9a954b8c099a17436b6e459",
+			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1533,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "f0d1dc6706eb484dd0659fa4902a64ed193fc978f26cd78d03bc3ea2ef630cd9",
+			instructions: "0fc30ec213e757e7cc6c8b5a86a54b30d589ec912c752fb77d9026c1961b9402",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "051a1f0426241f5024978de1f807785cfe3c4504a9a954b8c099a17436b6e459",
+			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1589,6 +1589,30 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"a decision that waits for a member goes on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
 		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+	])
+		expect(instructions).toContain(rule);
+});
+
+it("builds the founders' product at their ambition, and demos the product itself (Jonas, 7 November 2026)", () => {
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	for (const rule of [
+		"The product the founders describe is what the company builds and sells",
+		"never swap it for something smaller, such as an existing app, a manual workaround or advice on the founders' own situation",
+		"A founder who says they will use it first is its first test customer: the company still builds the product",
+		"As soon as the vision names a product, hire the people who build it",
+		"once the product is clear, add the people who build it",
+		"Write the product in the vision as the founders describe it, at their ambition",
+		"The first thing they show the founders is the vision realized as a prototype of the finished product, at its full ambition",
+	])
+		expect(cofounder).toContain(rule);
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"The first demos prototype the vision realized: the finished product at the founders' full ambition, never a sketch of early work",
+		"how the founders check that the company understood them and how the idea's potential is put to the test",
+		"A demo or prototype shows the company's own product as its customers will use it",
+		"on the platform it will run on, such as a phone app or a desktop or web application, at the quality the product promises",
+		"(for 3D, rendering in Blender on a machine), never a diagram or a toy in its place",
+		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
 });
