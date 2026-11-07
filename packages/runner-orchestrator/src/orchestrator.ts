@@ -265,6 +265,8 @@ export interface CloudRoutineWakeOccurrence {
 
 export interface CloudRunnerOrchestratorControlPlane {
 	renewControl?(signal?: AbortSignal): Promise<void>;
+	/** One answer for the lists of an idle pass (migration 20260930612000): spares a pass's list requests, nothing else. */
+	readPassDue?(signal?: AbortSignal): Promise<Readonly<Record<string, boolean>>>;
 	listRoutineScheduleHeads(
 		afterRoutineId: string | undefined,
 		limit: number,
@@ -335,8 +337,34 @@ export interface CloudRunnerOrchestratorControlPlane {
 	): Promise<void>;
 }
 
+/** One pass's answer to "which lists have anything?": the drains by name, `materialize` and `routine_heads`. A list may
+ * be left out only while the answer says false for it and nothing has run earlier in the pass, since a step that ran may
+ * have made a later list due (the listener marks task changes, a drain admits wakes). A list it does not name is asked. */
+export class CloudOrchestratorPassDue {
+	readonly #answers: Readonly<Record<string, boolean>>;
+	#worked = false;
+
+	constructor(answers: Readonly<Record<string, boolean>>) {
+		this.#answers = answers;
+	}
+
+	/** Nothing is due for this list, and nothing has run yet in this pass. */
+	quiet(list: string): boolean {
+		return !this.#worked && this.#answers[list] === false;
+	}
+
+	/** A step ran: every later list in this pass is asked. */
+	worked(): void {
+		this.#worked = true;
+	}
+}
+
 export interface CloudRunnerOccurrenceReconciler {
-	reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void>;
+	reconcile(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		signal?: AbortSignal,
+		due?: CloudOrchestratorPassDue,
+	): Promise<void>;
 }
 
 export interface CloudRoutineScheduleReconcilerOptions {
@@ -477,6 +505,7 @@ type CloudRunnerOrchestratorRequest =
 	| { action: "folder_materialize_company"; orchestratorId: string; profileId: string; limit: number }
 	| { action: "folder_drain_due"; orchestratorId: string; drain: string; afterEnvironmentId?: string; limit: number }
 	| { action: "folder_drain_company"; orchestratorId: string; drain: string; environmentId: string; limit: number }
+	| { action: "due_summary"; orchestratorId: string }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| { action: "claim"; orchestratorId: string; clientClaimId: string; leaseSeconds: number }
@@ -1578,8 +1607,22 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 		}
 	}
 
-	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+	async reconcile(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		signal?: AbortSignal,
+		due?: CloudOrchestratorPassDue,
+	): Promise<void> {
 		const failures: unknown[] = [];
+		if (!due?.quiet("routine_heads")) await this.#reconcileDueHeads(controlPlane, failures, signal);
+		await this.#restoreFolderDynamicRoutines(controlPlane, failures, signal);
+		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
+	}
+
+	async #reconcileDueHeads(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		failures: unknown[],
+		signal?: AbortSignal,
+	): Promise<void> {
 		let afterRoutineId: string | undefined;
 		do {
 			const page = signal
@@ -1641,8 +1684,6 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Routine schedule pagination lost its cursor");
 		} while (afterRoutineId);
-		await this.#restoreFolderDynamicRoutines(controlPlane, failures, signal);
-		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
 	}
 
 	/** A folder-v2 dynamic routine's next run: one restore per listed routine, each in its own company's transaction
@@ -1737,7 +1778,11 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 		}
 	}
 
-	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+	async reconcile(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		signal?: AbortSignal,
+		due?: CloudOrchestratorPassDue,
+	): Promise<void> {
 		if (!controlPlane.listFolderDrainDue || !controlPlane.runFolderDrain) return;
 		const now = this.#now().getTime();
 		// A company no longer due is forgotten once its wait has long passed.
@@ -1747,6 +1792,11 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 		const failures: unknown[] = [];
 		for (const drain of this.#drains) {
 			if (now < (this.#drainBackoff.get(drain.name)?.until ?? 0)) continue;
+			if (due?.quiet(drain.name)) {
+				// Its list was read, in the one call, and was empty: as good as a list that answered.
+				this.#drainBackoff.delete(drain.name);
+				continue;
+			}
 			const failed = (error: unknown, wait?: number) => {
 				failures.push(error);
 				this.#drainBackoff.set(
@@ -1776,6 +1826,7 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 				for (const environmentId of page.items) {
 					const key = `${drain.name} ${environmentId}`;
 					if (now < (this.#companyBackoff.get(key)?.until ?? 0)) continue;
+					due?.worked();
 					try {
 						if (signal) await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit, signal);
 						else await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit);
@@ -1831,10 +1882,14 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 		}
 	}
 
-	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+	async reconcile(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		signal?: AbortSignal,
+		due?: CloudOrchestratorPassDue,
+	): Promise<void> {
 		if (!controlPlane.listFolderMaterializationDue || !controlPlane.materializeFolderCompany) return;
 		const now = this.#now().getTime();
-		if (now < this.#pausedUntil) return;
+		if (now < this.#pausedUntil || due?.quiet("materialize")) return;
 		const failures: unknown[] = [];
 		let afterProfileId: string | undefined;
 		do {
@@ -1852,6 +1907,7 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 				break;
 			}
 			for (const profileId of page.items) {
+				due?.worked();
 				try {
 					if (signal) await controlPlane.materializeFolderCompany(profileId, this.#companyLimit, signal);
 					else await controlPlane.materializeFolderCompany(profileId, this.#companyLimit);
@@ -2135,6 +2191,8 @@ export class CloudRunnerOrchestrator {
 	readonly #clientClaimId: () => string;
 	readonly #clientAssignmentId: () => string;
 	readonly #createCapability: () => string;
+	/** An edge function that answers the one call with 400 predates it: ask the lists one by one, and ask again later. */
+	#passDuePausedUntil = 0;
 
 	constructor(options: CloudRunnerOrchestratorOptions) {
 		requiredUuid(options.orchestratorId, "Orchestrator id");
@@ -2182,9 +2240,22 @@ export class CloudRunnerOrchestrator {
 			if (signal) await this.#controlPlane.renewControl(signal);
 			else await this.#controlPlane.renewControl();
 		}
+		let due: CloudOrchestratorPassDue | undefined;
+		if (this.#controlPlane.readPassDue && Date.now() >= this.#passDuePausedUntil) {
+			try {
+				due = new CloudOrchestratorPassDue(await this.#controlPlane.readPassDue(signal));
+			} catch (error) {
+				// Without the answer the pass asks every list itself, each with its own backoff, as it always did.
+				if (signal?.aborted) throw error;
+				if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400)
+					this.#passDuePausedUntil = Date.now() + ROUTINE_ADVANCE_RETRY_MS;
+				else reconciliationErrors.push(error);
+			}
+		}
 		for (const reconciler of this.#occurrenceReconcilers) {
 			try {
-				if (signal) await reconciler.reconcile(this.#controlPlane, signal);
+				if (due) await reconciler.reconcile(this.#controlPlane, signal, due);
+				else if (signal) await reconciler.reconcile(this.#controlPlane, signal);
 				else await reconciler.reconcile(this.#controlPlane);
 			} catch (error) {
 				if (!(error instanceof RoutineWakeAdmissionErrors)) throw error;
@@ -2928,6 +2999,19 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				signal,
 			),
 		);
+	}
+
+	async readPassDue(signal?: AbortSignal): Promise<Readonly<Record<string, boolean>>> {
+		const input = record(
+			await this.#request({ action: "due_summary", orchestratorId: this.#orchestratorId }, signal),
+			"due summary",
+		);
+		const answers: Record<string, boolean> = {};
+		for (const [list, answer] of Object.entries(input)) {
+			if (typeof answer !== "boolean") throw new Error("Runner orchestrator returned an invalid due summary");
+			answers[list] = answer;
+		}
+		return answers;
 	}
 
 	async reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void> {

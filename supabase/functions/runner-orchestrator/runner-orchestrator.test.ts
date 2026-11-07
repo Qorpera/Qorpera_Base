@@ -238,6 +238,10 @@ describe("runner orchestrator boundary", () => {
 
 	it("parses the folder drains' due companies and one company's step, for a drain it knows", () => {
 		const environmentId = profileId;
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "due_summary", orchestratorId }), {
+			action: "due_summary",
+			orchestratorId,
+		});
 		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain: "listen", limit: 100 }), {
 			action: "folder_drain_due",
 			orchestratorId,
