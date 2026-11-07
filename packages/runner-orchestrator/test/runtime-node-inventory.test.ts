@@ -16,8 +16,10 @@ import {
 } from "../src/runtime-node-inventory.ts";
 import {
 	RuntimeNodeInventoryObserver,
+	RuntimeNodeObserverFailure,
 	type RuntimeNodeObserverHost,
 	type RuntimeNodeObserverRegistry,
+	runtimeNodeObserverFailureReason,
 } from "../src/runtime-node-observer.ts";
 
 const sha = "a".repeat(64),
@@ -1448,7 +1450,7 @@ describe("trusted node inventory publisher composition", () => {
 	}
 	it("publishes a bounded receipt after complete inventory and matching physical readback", async () => {
 		const f = observer();
-		expect((await f.observer.observe(signal())).state).toBe("ready");
+		expect(await f.observer.observe(signal())).toMatchObject({ state: "ready", reason: null });
 		expect(f.ports.host).toHaveBeenCalledTimes(2);
 		expect(f.calls.map((c) => c.method)).toEqual([
 			"qorpera_runtime_node_inventory_context",
@@ -1467,7 +1469,7 @@ describe("trusted node inventory publisher composition", () => {
 				f.context.policy = structuredClone(f.policy);
 				f.context.policy.host.serverName = "other";
 			}
-			if (fault === "inventory") f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("SECRET"));
+			if (fault === "inventory") f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("SECRET /etc/x"));
 			if (["socket", "boot", "hardware"].includes(fault))
 				f.ports.host.mockResolvedValueOnce(structuredClone(f.host)).mockImplementation(async () => {
 					const h = structuredClone(f.host);
@@ -1476,11 +1478,48 @@ describe("trusted node inventory publisher composition", () => {
 					if (fault === "hardware") h.cpuMillis++;
 					return h;
 				});
-			expect((await f.observer.observe(signal())).state).toBe("unavailable");
+			const look = await f.observer.observe(signal());
+			expect(look.state).toBe("unavailable");
 			expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
 			expect(JSON.stringify(f.calls)).not.toContain("SECRET");
+			// The log line names the step that stopped the scan and its closed code; the error's text is not one.
+			expect(look.reason).toEqual(
+				fault === "policy"
+					? { check: "policy", code: "NODE_OBSERVER_POLICY_DIFFERS" }
+					: fault === "inventory"
+						? { check: "inventory", code: "UNCODED" }
+						: { check: "host-again", code: "NODE_OBSERVER_HOST_CHANGED" },
+			);
 		},
 	);
+	it("names the step and its code when the context cannot be read", async () => {
+		const f = observer((method) => {
+			if (method === "qorpera_runtime_node_inventory_context")
+				throw new RuntimeNodeObserverFailure("NODE_OBSERVER_RPC_UNCONFIRMED", "NODE_OBSERVER_RPC_HTTP_401");
+		});
+		expect(await f.observer.observe(signal())).toMatchObject({
+			state: "unavailable",
+			reason: { check: "context", code: "NODE_OBSERVER_RPC_HTTP_401" },
+		});
+		expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
+	});
+	it("names the kinds of entry that keep a host unavailable, or its headroom, never an instance", async () => {
+		const f = observer();
+		delete f.inventory.instances[0].config["user.qorpera.schema"];
+		const unknown = await f.observer.observe(signal());
+		expect(unknown.reason).toEqual({
+			check: "reconcile",
+			code: "NODE_INVENTORY_ENTRY_UNAVAILABLE",
+			entries: ["unmanaged:UNREGISTERED_INSTANCE"],
+		});
+		expect(JSON.stringify(unknown.reason)).not.toContain("computer");
+		const g = observer();
+		g.context.headroomCpuMillis = runtimeNodeReserved(g.policy).cpuMillis - 1;
+		expect(await g.observer.observe(signal())).toMatchObject({
+			state: "unavailable",
+			reason: { check: "reconcile", code: "NODE_INVENTORY_HEADROOM_EXCEEDED", entries: [] },
+		});
+	});
 	it("publishes unknown machines without dropping them or claiming a ready host", async () => {
 		const f = observer();
 		delete f.inventory.instances[0].config["user.qorpera.schema"];
@@ -1500,6 +1539,36 @@ describe("trusted node inventory publisher composition", () => {
 		});
 		await expect(f.observer.observe(signal())).rejects.toThrow(/^NODE_OBSERVER_UNCONFIRMED$/);
 		expect(f.calls).toHaveLength(2);
+	});
+	it("names the publication or its receipt when the look itself is unconfirmed, keeping the one message", async () => {
+		const failure = async (f: ReturnType<typeof observer>) => {
+			const error = await f.observer.observe(signal()).then(
+				() => null,
+				(e: unknown) => e,
+			);
+			expect(error).toBeInstanceOf(RuntimeNodeObserverFailure);
+			expect((error as Error).message).toBe("NODE_OBSERVER_UNCONFIRMED");
+			return runtimeNodeObserverFailureReason(error, "look");
+		};
+		expect(
+			await failure(
+				observer((method) => {
+					if (method === "qorpera_observe_runtime_node_inventory")
+						throw new RuntimeNodeObserverFailure("NODE_OBSERVER_RPC_UNCONFIRMED", "NODE_OBSERVER_RPC_TIMEOUT");
+				}),
+			),
+		).toEqual({ check: "publish", code: "NODE_OBSERVER_RPC_TIMEOUT" });
+		const wrong = observer();
+		wrong.registry.call = vi.fn(async (method: string) =>
+			method === "qorpera_runtime_node_inventory_context" ? structuredClone(wrong.context) : { nodeId: "private" },
+		);
+		expect(await failure(wrong)).toEqual({
+			check: "receipt",
+			code: "NODE_OBSERVER_PUBLICATION_UNCONFIRMED",
+		});
+		const unhosted = observer();
+		unhosted.ports.host.mockRejectedValueOnce(new Error("NODE_OBSERVER_HOST_DIFFERS"));
+		expect(await failure(unhosted)).toEqual({ check: "host", code: "NODE_OBSERVER_HOST_DIFFERS" });
 	});
 	it("holds the observation slot until cancelled host IO actually settles", async () => {
 		const f = observer(),

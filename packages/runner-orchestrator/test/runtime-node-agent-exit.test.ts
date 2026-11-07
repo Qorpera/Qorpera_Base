@@ -84,7 +84,12 @@ describe("the agent exit publisher", () => {
 		expect(r.calls).toHaveLength(1);
 		expect(r.calls[0].method).toBe("qorpera_observe_runtime_node_agent_exit");
 		const posted = r.calls[0].args.p_observation as Record<string, unknown>;
-		expect(posted).toEqual(report);
+		expect(posted).toEqual(report.observation);
+		expect(report).toMatchObject({
+			healthy: false,
+			reason: { check: "exit-health", code: "NODE_AGENT_EXIT_PROBLEMS" },
+		});
+		expect(JSON.stringify(report.reason)).not.toContain("10.210.1.1");
 		expect(Object.keys(posted).sort()).toEqual([
 			"checkedAt",
 			"healthy",
@@ -120,6 +125,54 @@ describe("the agent exit publisher", () => {
 				new AbortController().signal,
 			),
 		).rejects.toThrow("NODE_AGENT_EXIT_REPORT_UNCONFIRMED");
+	});
+	it("says why the exit is unhealthy for the log line, a closed code only, and nothing when it is healthy", async () => {
+		const reason = async (read: () => Promise<Buffer | null>) => {
+			const r = registry();
+			const look = await new RuntimeNodeAgentExitPublisher(nodeId, "a".repeat(64), "b".repeat(64), r, read).observe(
+				new AbortController().signal,
+			);
+			// The report the database gets has no reason in it.
+			expect(Object.keys(r.calls[0].args.p_observation as object)).not.toContain("reason");
+			return look.reason;
+		};
+		const answer = (fields: Record<string, unknown>) => async () =>
+			health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: [], ...fields });
+		expect(await reason(answer({}))).toBeNull();
+		expect(await reason(answer({ healthy: false }))).toEqual({
+			check: "exit-health",
+			code: "NODE_AGENT_EXIT_UNHEALTHY",
+		});
+		expect(await reason(answer({ problems: ["qp/m1 (10.210.1.1)"] }))).toEqual({
+			check: "exit-health",
+			code: "NODE_AGENT_EXIT_PROBLEMS",
+		});
+		expect(await reason(async () => null)).toEqual({
+			check: "exit-health",
+			code: "NODE_AGENT_EXIT_HEALTH_UNREADABLE",
+		});
+		expect(await reason(async () => Buffer.from("not json"))).toEqual({
+			check: "exit-health",
+			code: "NODE_AGENT_EXIT_HEALTH_MALFORMED",
+		});
+		expect(await reason(answer({ extra: 1 }))).toEqual({
+			check: "exit-health",
+			code: "NODE_AGENT_EXIT_HEALTH_MALFORMED",
+		});
+		// A read that fails names its system code, never its message or the path.
+		const missing = Object.assign(new Error("ENOENT: no such file or directory, open '/run/private/health.json'"), {
+			code: "ENOENT",
+		});
+		expect(
+			await reason(async () => {
+				throw missing;
+			}),
+		).toEqual({ check: "exit-health", code: "ENOENT" });
+		expect(
+			await reason(async () => {
+				throw new Error("refused /run/private/health.json");
+			}),
+		).toEqual({ check: "exit-health", code: "UNCODED" });
 	});
 	it("refuses an identity that is not one, and a second report while one is pending", async () => {
 		expect(() => new RuntimeNodeAgentExitPublisher("node", "a".repeat(64), "b".repeat(64), registry())).toThrow(

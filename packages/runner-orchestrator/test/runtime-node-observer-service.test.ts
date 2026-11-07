@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { runRuntimeNodeObserverLoops } from "../src/runtime-node-observer-service.ts";
+import { RuntimeNodeObserverFailure, type RuntimeNodeObserverReason } from "../src/runtime-node-observer.ts";
+import { runRuntimeNodeObserverLoops, runtimeNodeObserverLine } from "../src/runtime-node-observer-service.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
 describe("the node observer's loops", () => {
@@ -47,5 +48,116 @@ describe("the node observer's loops", () => {
 		} finally {
 			watch.restore();
 		}
+	});
+	it("report why a look was not ready: its own reason, or the step a failure names, or the loop's", async () => {
+		const lasting = new AbortController();
+		// Each loop plays its steps, then repeats the last; the process stops once every loop has looked past its end,
+		// so every scripted look has been reported.
+		const script = <T>(steps: (() => T)[]) => {
+			let next = 0;
+			return {
+				done: () => next > steps.length,
+				look: async () => {
+					const step = steps[Math.min(next++, steps.length - 1)]!;
+					if (inventory.done() && health.done() && exit.done()) lasting.abort();
+					return step();
+				},
+			};
+		};
+		const unavailable = {
+			check: "reconcile",
+			code: "NODE_INVENTORY_ENTRY_UNAVAILABLE",
+			entries: ["unmanaged:UNREGISTERED_INSTANCE"],
+		};
+		const inventory = script<{ state: "ready" | "unavailable"; reason?: RuntimeNodeObserverReason | null }>([
+			() => ({ state: "unavailable", reason: unavailable }),
+			() => {
+				throw new RuntimeNodeObserverFailure("NODE_OBSERVER_UNCONFIRMED", "NODE_OBSERVER_RPC_HTTP_503", "publish");
+			},
+			() => {
+				throw new Error("NODE_OBSERVER_BUSY");
+			},
+			() => {
+				throw new Error("refused /etc/private/path");
+			},
+			() => ({ state: "ready", reason: null }),
+		]);
+		const health = script<RuntimeNodeObserverReason | null>([
+			() => ({ check: "collect", code: "NODE_HEALTH_PROBE_TIMEOUT" }),
+			() => {
+				throw new Error("NODE_HEALTH_PUBLICATION_UNCONFIRMED");
+			},
+			() => null,
+		]);
+		const exit = script<{ healthy: boolean; reason?: RuntimeNodeObserverReason | null }>([
+			() => ({ healthy: false, reason: { check: "exit-health", code: "ENOENT" } }),
+			() => {
+				throw new RuntimeNodeObserverFailure("NODE_OBSERVER_RPC_UNCONFIRMED", "NODE_OBSERVER_RPC_TIMEOUT");
+			},
+			() => ({ healthy: true }),
+		]);
+		const reported: Record<string, [string, RuntimeNodeObserverReason | null][]> = {
+			inventory: [],
+			health: [],
+			exit: [],
+		};
+		await runRuntimeNodeObserverLoops(
+			lasting.signal,
+			{ inventory: inventory.look, health: health.look, exit: exit.look },
+			{
+				report: (state, reason) => reported.inventory!.push([state, reason]),
+				reportHealth: (state, reason) => reported.health!.push([state, reason]),
+				reportExit: (state, reason) => reported.exit!.push([state, reason]),
+			},
+			1,
+			1,
+		);
+		expect(reported.inventory!.slice(0, 5)).toEqual([
+			["unavailable", unavailable],
+			["unconfirmed", { check: "publish", code: "NODE_OBSERVER_RPC_HTTP_503" }],
+			["unconfirmed", { check: "look", code: "NODE_OBSERVER_BUSY" }],
+			["unconfirmed", { check: "look", code: "UNCODED" }],
+			["ready", null],
+		]);
+		expect(reported.health!.slice(0, 3)).toEqual([
+			["reported", { check: "collect", code: "NODE_HEALTH_PROBE_TIMEOUT" }],
+			["unconfirmed", { check: "publish", code: "NODE_HEALTH_PUBLICATION_UNCONFIRMED" }],
+			["reported", null],
+		]);
+		expect(reported.exit!.slice(0, 3)).toEqual([
+			["unhealthy", { check: "exit-health", code: "ENOENT" }],
+			["unconfirmed", { check: "publish", code: "NODE_OBSERVER_RPC_TIMEOUT" }],
+			["healthy", null],
+		]);
+		expect(JSON.stringify(reported)).not.toContain("private");
+	});
+});
+
+describe("the node observer's journal line", () => {
+	it("is the look's event and state, with its step, code and entry kinds only when it was not ready", () => {
+		expect(runtimeNodeObserverLine("node_agent_exit", "healthy", null)).toBe(
+			'{"event":"node_agent_exit","state":"healthy"}\n',
+		);
+		expect(
+			runtimeNodeObserverLine("node_health", "unconfirmed", {
+				check: "publish",
+				code: "NODE_OBSERVER_RPC_TIMEOUT",
+			}),
+		).toBe('{"event":"node_health","state":"unconfirmed","check":"publish","code":"NODE_OBSERVER_RPC_TIMEOUT"}\n');
+		expect(
+			JSON.parse(
+				runtimeNodeObserverLine("node_inventory", "unavailable", {
+					check: "reconcile",
+					code: "NODE_INVENTORY_HEADROOM_EXCEEDED",
+					entries: [],
+				}),
+			),
+		).toEqual({
+			event: "node_inventory",
+			state: "unavailable",
+			check: "reconcile",
+			code: "NODE_INVENTORY_HEADROOM_EXCEEDED",
+			entries: [],
+		});
 	});
 });

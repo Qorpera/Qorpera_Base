@@ -12,7 +12,12 @@ import {
 } from "./lxd-office-physical-host.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
-import type { RuntimeNodeObserverRegistry } from "./runtime-node-observer.ts";
+import {
+	RuntimeNodeObserverFailure,
+	type RuntimeNodeObserverReason,
+	type RuntimeNodeObserverRegistry,
+	runtimeNodeObserverCode,
+} from "./runtime-node-observer.ts";
 import { timeOrderedUuid } from "./time-ordered-uuid.ts";
 
 // The first installation (deploy/first-node/NODE-OBSERVER-INSTALLATION.md) runs
@@ -347,48 +352,73 @@ export function measuredRuntimeNodeHealth(fields: Record<string, unknown>): Runt
 	});
 }
 
+/** The probe's one line on stderr when it fails (runtime-node-observer-main.ts): the fixed code, then the closed code
+ * that stopped it. Any other stderr (a runtime warning) is not read. */
+const PROBE_FAILED = /^NODE_HEALTH_COLLECTION_UNCONFIRMED(?: ([A-Z][A-Z0-9_]{1,127}))?$/;
+
 export async function collectRuntimeNodeHealthProcess(
 	signal: AbortSignal,
 	observer: string | undefined = process.argv[1],
 ): Promise<RuntimeNodeHealth> {
 	signal.throwIfAborted();
-	if (typeof observer !== "string") throw new Error("NODE_HEALTH_COLLECTION_UNCONFIRMED");
+	if (typeof observer !== "string")
+		throw new RuntimeNodeObserverFailure("NODE_HEALTH_COLLECTION_UNCONFIRMED", "NODE_HEALTH_OBSERVER_UNKNOWN");
 	return new Promise((resolve, reject) => {
 		// The running observer's own file: the first installation's fixed path, or
 		// the file a cut's drop-in starts. The probe checks its custody itself.
 		const child = spawn(
 			process.execPath,
 			["--jitless", "--disable-proto=throw", "--disallow-code-generation-from-strings", observer, "--health-probe"],
-			{ env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] },
+			{ env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "pipe"] },
 		);
-		let failed = false,
-			size = 0;
+		// Every failure is NODE_HEALTH_COLLECTION_UNCONFIRMED; the first reason it stopped is its code.
+		let failed: string | null = null,
+			size = 0,
+			said = "";
 		const chunks: Buffer[] = [];
-		const stop = () => {
-			failed = true;
+		const stop = (code: string) => {
+			failed ??= code;
 			child.kill("SIGKILL");
 		};
-		const timer = setTimeout(stop, 5000);
-		signal.addEventListener("abort", stop, { once: true });
+		const late = () => stop("NODE_HEALTH_PROBE_TIMEOUT"),
+			cancel = () => stop("ABORTED");
+		const timer = setTimeout(late, 5000);
+		signal.addEventListener("abort", cancel, { once: true });
 		child.once("error", () => {
-			failed = true;
+			failed ??= "NODE_HEALTH_PROBE_UNSTARTED";
 		});
 		child.stdout.on("data", (bytes: Buffer) => {
 			size += bytes.length;
-			if (size > 32768) stop();
+			if (size > 32768) stop("NODE_HEALTH_PROBE_OUTPUT_TOO_LARGE");
 			else chunks.push(bytes);
+		});
+		child.stderr.setEncoding("latin1");
+		child.stderr.on("data", (text: string) => {
+			if (said.length < 4096) said += text.slice(0, 4096 - said.length);
 		});
 		child.once("close", (code) => {
 			clearTimeout(timer);
-			signal.removeEventListener("abort", stop);
-			try {
-				if (failed || code !== 0 || signal.aborted) throw new Error();
-				resolve(parseRuntimeNodeHealth(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
-			} catch {
-				reject(new Error("NODE_HEALTH_COLLECTION_UNCONFIRMED"));
+			signal.removeEventListener("abort", cancel);
+			if (signal.aborted) failed ??= "ABORTED";
+			if (!failed && code !== 0)
+				failed =
+					said
+						.split("\n")
+						.map((line) => PROBE_FAILED.exec(line)?.[1])
+						.find((reason) => reason) ?? "NODE_HEALTH_PROBE_FAILED";
+			if (!failed) {
+				try {
+					resolve(parseRuntimeNodeHealth(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+					return;
+				} catch (error) {
+					// The answer's own closed code (parseRuntimeNodeHealth), or bytes that are not one.
+					const reason = runtimeNodeObserverCode(error);
+					failed = reason === "UNCODED" ? "NODE_HEALTH_PROBE_OUTPUT_INVALID" : reason;
+				}
 			}
+			reject(new RuntimeNodeObserverFailure("NODE_HEALTH_COLLECTION_UNCONFIRMED", failed));
 		});
-		if (signal.aborted) stop();
+		if (signal.aborted) cancel();
 	});
 }
 
@@ -415,12 +445,14 @@ export class RuntimeNodeHealthPublisher {
 		this.registry = registry;
 		this.collect = collect;
 	}
-	async observe(signal: AbortSignal): Promise<void> {
+	/** Publishes one sample and returns why it is not whole, for the observer's log line: the collection's closed code
+	 * when it failed, else the metrics it could not read; null for a whole sample. The report never carries the code. */
+	async observe(signal: AbortSignal): Promise<RuntimeNodeObserverReason | null> {
 		signal.throwIfAborted();
 		if (this.#pending) throw new Error("NODE_HEALTH_BUSY");
 		this.#pending = true;
 		try {
-			let observation: RuntimeNodeHealth;
+			let observation: RuntimeNodeHealth, reason: RuntimeNodeObserverReason | null;
 			try {
 				observation = parseRuntimeNodeHealth(await this.collect(signal));
 				if (
@@ -428,9 +460,13 @@ export class RuntimeNodeHealthPublisher {
 					observation.machineIdSha256 !== this.machineIdSha256 ||
 					observation.policySha256 !== this.policySha256
 				)
-					throw new Error();
-			} catch {
+					throw new Error("NODE_HEALTH_IDENTITY_DIFFERS");
+				reason = observation.errors.length
+					? { check: "sample", code: "NODE_HEALTH_SAMPLE_INCOMPLETE", entries: [...observation.errors].sort() }
+					: null;
+			} catch (error) {
 				signal.throwIfAborted();
+				reason = { check: "collect", code: runtimeNodeObserverCode(error) };
 				observation = {
 					schema: "qorpera.runtime-node-health/v1",
 					nodeId: this.nodeId,
@@ -460,6 +496,7 @@ export class RuntimeNodeHealthPublisher {
 				Date.parse(receipt.observedAt) !== Date.parse(observation.observedAt)
 			)
 				throw new Error("NODE_HEALTH_PUBLICATION_UNCONFIRMED");
+			return reason;
 		} finally {
 			this.#pending = false;
 		}

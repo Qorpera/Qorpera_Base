@@ -16,9 +16,12 @@ observer's account. A cut's observer file (`deploy/agent-exit/ROLLOUT.md` step
 the file and every directory above it are root-owned and not group- or
 world-writable. Until v180 the probe always ran the first installation's path,
 which the cuts' observers do not use, so every sample was
-`COLLECTION_UNCONFIRMED`. Run by hand, a failed probe prints
+`COLLECTION_UNCONFIRMED`. A failed probe prints one line on stderr,
 `NODE_HEALTH_COLLECTION_UNCONFIRMED` and the closed code that stopped it, never
-an error's text or a path; the observer ignores the probe's stderr. It reports:
+an error's text or a path. The observer reads at most 4 KiB of the probe's
+stderr, takes the code from that line only and logs it in its `node_health`
+line (`NODE-OBSERVER-INSTALLATION.md`, "Journal lines"); a probe that exits
+without one is `NODE_HEALTH_PROBE_FAILED`. It reports:
 
 - CPU busy basis points over a one-second sample of Node's OS CPU time counters,
   summed across CPUs and excluding idle time; the original interval is retained.

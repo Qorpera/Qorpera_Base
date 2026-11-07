@@ -8,8 +8,12 @@ import { RUNTIME_NODE_HEALTH_WAIT_MS, RuntimeNodeHealthPublisher } from "./runti
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import {
 	RuntimeNodeInventoryObserver,
+	RuntimeNodeObserverFailure,
 	type RuntimeNodeObserverMethod,
+	type RuntimeNodeObserverReason,
 	type RuntimeNodeObserverRegistry,
+	runtimeNodeObserverCode,
+	runtimeNodeObserverFailureReason,
 } from "./runtime-node-observer.ts";
 
 const METHODS = new Set<RuntimeNodeObserverMethod>([
@@ -35,10 +39,13 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 		const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
 		if (!METHODS.has(method) || this.#pending) throw new Error("NODE_OBSERVER_RPC_UNAVAILABLE");
 		this.#pending = true;
+		// Every failure is NODE_OBSERVER_RPC_UNCONFIRMED, carrying a closed code for the log line: the HTTP status, what
+		// was wrong with the answer, the socket's system code, or the timeout. Never the answer's bytes.
+		const unconfirmed = (code: string) => new RuntimeNodeObserverFailure("NODE_OBSERVER_RPC_UNCONFIRMED", code);
 		try {
 			signal.throwIfAborted();
 			const body = JSON.stringify(args);
-			if (Buffer.byteLength(body) > LIMIT) throw new Error();
+			if (Buffer.byteLength(body) > LIMIT) throw unconfirmed("NODE_OBSERVER_RPC_REQUEST_TOO_LARGE");
 			return await new Promise((resolve, reject) => {
 				const req = request(
 					`${this.#origin}/rest/v1/rpc/${method}`,
@@ -55,18 +62,24 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 					},
 					(res) => {
 						res.once("error", reject);
-						const fail = () => {
+						const fail = (code: string) => {
 							res.destroy();
 							req.destroy();
-							reject(new Error());
+							reject(unconfirmed(code));
 						};
 						const length = res.headers["content-length"];
-						if (
-							res.statusCode !== 200 ||
-							!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(res.headers["content-type"] ?? "") ||
-							(length !== undefined && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > LIMIT))
-						) {
-							fail();
+						const refused =
+							res.statusCode !== 200
+								? `NODE_OBSERVER_RPC_HTTP_${res.statusCode ?? 0}`
+								: !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(res.headers["content-type"] ?? "")
+									? "NODE_OBSERVER_RPC_CONTENT_TYPE"
+									: length !== undefined && !/^(0|[1-9][0-9]*)$/.test(length)
+										? "NODE_OBSERVER_RPC_RESPONSE_INVALID"
+										: length !== undefined && Number(length) > LIMIT
+											? "NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE"
+											: null;
+						if (refused) {
+							fail(refused);
 							return;
 						}
 						const chunks: Buffer[] = [];
@@ -74,18 +87,21 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 						res.on("data", (chunk: Buffer) => {
 							size += chunk.length;
 							if (size > LIMIT) {
-								fail();
+								fail("NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE");
 								return;
 							}
 							chunks.push(chunk);
 						});
 						res.once("end", () => {
-							try {
-								signal.throwIfAborted();
-								if (!res.complete || (length !== undefined && Number(length) !== size)) throw new Error();
-								resolve(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))));
-							} catch {
-								fail();
+							if (signal.aborted) fail(this.#stopped(caller));
+							else if (!res.complete || (length !== undefined && Number(length) !== size))
+								fail("NODE_OBSERVER_RPC_RESPONSE_INCOMPLETE");
+							else {
+								try {
+									resolve(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))));
+								} catch {
+									fail("NODE_OBSERVER_RPC_RESPONSE_INVALID");
+								}
 							}
 						});
 					},
@@ -93,11 +109,16 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 				req.once("error", reject);
 				req.end(body);
 			});
-		} catch {
-			throw new Error("NODE_OBSERVER_RPC_UNCONFIRMED");
+		} catch (error) {
+			if (error instanceof RuntimeNodeObserverFailure) throw error;
+			throw unconfirmed(signal.aborted ? this.#stopped(caller) : runtimeNodeObserverCode(error));
 		} finally {
 			this.#pending = false;
 		}
+	}
+	/** Why a call's signal ended: its own five seconds, or the caller's (a look's own timeout, or the process stopping). */
+	#stopped(caller: AbortSignal): string {
+		return caller.aborted ? runtimeNodeObserverCode(caller.reason) : "NODE_OBSERVER_RPC_TIMEOUT";
 	}
 }
 
@@ -107,9 +128,9 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
  * expiry; it never deletes inventory or frees a machine reservation. */
 export async function runRuntimeNodeObserver(
 	signal: AbortSignal,
-	report: (state: "ready" | "unavailable" | "unconfirmed") => void,
-	reportHealth: (state: "reported" | "unconfirmed") => void = () => {},
-	reportExit: (state: "healthy" | "unhealthy" | "unconfirmed") => void = () => {},
+	report: ObserverReport<"ready" | "unavailable" | "unconfirmed">,
+	reportHealth: ObserverReport<"reported" | "unconfirmed"> = () => {},
+	reportExit: ObserverReport<"healthy" | "unhealthy" | "unconfirmed"> = () => {},
 ): Promise<void> {
 	const config = officeRecord(
 		JSON.parse(
@@ -168,20 +189,40 @@ export async function runRuntimeNodeObserver(
 	);
 }
 
+/** A loop's report: the look's state, and why it was not ready (null when it was). */
+export type ObserverReport<State extends string> = (state: State, reason: RuntimeNodeObserverReason | null) => void;
+
+/** The observer's journal line for one look: `{event, state}`, and for a look that was not whole its step, closed code
+ * and entry kinds (`check`, `code`, `entries`). Nothing else: a healthy line is the same as before. */
+export function runtimeNodeObserverLine(
+	event: string,
+	state: string,
+	reason: RuntimeNodeObserverReason | null,
+): string {
+	const why = reason
+		? { check: reason.check, code: reason.code, ...(reason.entries ? { entries: reason.entries } : {}) }
+		: {};
+	return `${JSON.stringify({ event, state, ...why })}\n`;
+}
+
 /** The observer's three loops: inventory and agent exit one look every `pauseMs` each (placement reads them), health
  * every `healthPauseMs` (RUNTIME_NODE_HEALTH_WAIT_MS: nothing gates on it). `signal` lasts as long as the process, so
- * each look runs under a scope of its own (abort-scope.ts). */
+ * each look runs under a scope of its own (abort-scope.ts). A look that throws reports the step it names, else the
+ * loop's own: `look` for the inventory (busy before its first step), `publish` for health and the exit (only their
+ * publication and its receipt can throw). */
 export async function runRuntimeNodeObserverLoops(
 	signal: AbortSignal,
 	looks: {
-		inventory: (signal: AbortSignal) => Promise<{ state: "ready" | "unavailable" }>;
-		health: (signal: AbortSignal) => Promise<unknown>;
-		exit: (signal: AbortSignal) => Promise<{ healthy: boolean }>;
+		inventory: (
+			signal: AbortSignal,
+		) => Promise<{ state: "ready" | "unavailable"; reason?: RuntimeNodeObserverReason | null }>;
+		health: (signal: AbortSignal) => Promise<RuntimeNodeObserverReason | null | undefined>;
+		exit: (signal: AbortSignal) => Promise<{ healthy: boolean; reason?: RuntimeNodeObserverReason | null }>;
 	},
 	reports: {
-		report: (state: "ready" | "unavailable" | "unconfirmed") => void;
-		reportHealth: (state: "reported" | "unconfirmed") => void;
-		reportExit: (state: "healthy" | "unhealthy" | "unconfirmed") => void;
+		report: ObserverReport<"ready" | "unavailable" | "unconfirmed">;
+		reportHealth: ObserverReport<"reported" | "unconfirmed">;
+		reportExit: ObserverReport<"healthy" | "unhealthy" | "unconfirmed">;
 	},
 	pauseMs = 5000,
 	healthPauseMs = RUNTIME_NODE_HEALTH_WAIT_MS,
@@ -190,9 +231,10 @@ export async function runRuntimeNodeObserverLoops(
 	const inventoryLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				report((await withAbortScope(signal, (scoped) => looks.inventory(scoped))).state);
-			} catch {
-				if (!signal.aborted) report("unconfirmed");
+				const look = await withAbortScope(signal, (scoped) => looks.inventory(scoped));
+				report(look.state, look.reason ?? null);
+			} catch (error) {
+				if (!signal.aborted) report("unconfirmed", runtimeNodeObserverFailureReason(error, "look"));
 			}
 			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
 		}
@@ -200,10 +242,9 @@ export async function runRuntimeNodeObserverLoops(
 	const healthLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				await withAbortScope(signal, (scoped) => looks.health(scoped));
-				reportHealth("reported");
-			} catch {
-				if (!signal.aborted) reportHealth("unconfirmed");
+				reportHealth("reported", (await withAbortScope(signal, (scoped) => looks.health(scoped))) ?? null);
+			} catch (error) {
+				if (!signal.aborted) reportHealth("unconfirmed", runtimeNodeObserverFailureReason(error, "publish"));
 			}
 			if (!signal.aborted) await delay(healthPauseMs, undefined, { signal }).catch(() => {});
 		}
@@ -211,11 +252,10 @@ export async function runRuntimeNodeObserverLoops(
 	const exitLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				reportExit(
-					(await withAbortScope(signal, (scoped) => looks.exit(scoped))).healthy ? "healthy" : "unhealthy",
-				);
-			} catch {
-				if (!signal.aborted) reportExit("unconfirmed");
+				const look = await withAbortScope(signal, (scoped) => looks.exit(scoped));
+				reportExit(look.healthy ? "healthy" : "unhealthy", look.reason ?? null);
+			} catch (error) {
+				if (!signal.aborted) reportExit("unconfirmed", runtimeNodeObserverFailureReason(error, "publish"));
 			}
 			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
 		}
