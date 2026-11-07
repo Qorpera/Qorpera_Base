@@ -321,6 +321,57 @@ it("serves any number of model requests in a run, one after another", async () =
 	expect(f.onFailure).not.toHaveBeenCalled();
 });
 
+/** Sends one whole request and hangs up at once, as Codex does when a turn is interrupted with its request open. */
+function hangUpAfter(path: string, value: unknown): Promise<void> {
+	const body = Buffer.from(JSON.stringify(value));
+	const size = Buffer.alloc(4);
+	size.writeUInt32BE(body.length);
+	return new Promise((resolve) => {
+		const socket = connect(path);
+		socket.on("connect", () => {
+			socket.write(Buffer.concat([size, body]), () => {
+				socket.destroy();
+				resolve();
+			});
+		});
+		socket.on("error", () => resolve());
+	});
+}
+
+it("takes a peer's hang-up with its request open as that request's end, and goes on serving the run", async () => {
+	const f = await fixture();
+	for (let tries = 0; tries < 50; tries += 1) {
+		await hangUpAfter(f.service.path, { ...request(), outputs: [] });
+		await new Promise((resolve) => setTimeout(resolve, 2));
+	}
+	expect(f.onFailure).not.toHaveBeenCalled();
+	expect(await exchange(f.service.path, { ...request(), outputs: [] })).toMatchObject({ outputs: [] });
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("takes a hang-up from a request whose answer comes later the same way", async () => {
+	let release: () => void = () => undefined;
+	const assertActive = vi.fn(
+		() =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+	);
+	const f = await fixture(assertActive);
+	await hangUpAfter(f.service.path, { ...request(), outputs: [] });
+	await vi.waitFor(() => expect(assertActive).toHaveBeenCalled());
+	release();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("still fails the run on a request that breaks the protocol, after a hang-up too", async () => {
+	const f = await fixture();
+	await hangUpAfter(f.service.path, { ...request(), outputs: [] });
+	expect(await exchange(f.service.path, { ...request(), schema: "other" })).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
 it("caps a native connection flood before unbounded waiting work is created", async () => {
 	const f = await fixture(async () => new Promise(() => undefined));
 	// The bound at once is a run (the agent's, a reviewer's and the compactor threads' compositions and fences); one

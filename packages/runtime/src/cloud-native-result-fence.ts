@@ -34,6 +34,14 @@ export const CLOUD_NATIVE_FENCE_MAX_CONNECTIONS = 2 * 2 * (2 + JOBS);
 // authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
 // alive but hung (0001-cloud-result-fence.patch), and a host that dies closes the socket at once.
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
+/** What a socket reports when its peer closed before our answer: on the write, the read, or a write after the end. */
+const PEER_HUNG_UP: ReadonlySet<string> = new Set([
+	"EPIPE",
+	"ECONNRESET",
+	"ERR_STREAM_DESTROYED",
+	"ERR_STREAM_WRITE_AFTER_END",
+	"ERR_STREAM_ALREADY_FINISHED",
+]);
 
 export interface CloudNativeFenceRequest {
 	schema: typeof CLOUD_NATIVE_RESULT_FENCE_SCHEMA;
@@ -193,7 +201,12 @@ export async function startCloudNativeResultFence(options: {
 		let frame: Buffer | undefined;
 		let frameBytes = 0;
 		let processing = false;
-		socket.on("error", fail);
+		// A peer that hung up is not a broken boundary: Codex drops its open request when a turn is interrupted, as every
+		// review's is once its verdict is in. Nothing was released on that socket, and no answer can reach anyone now. Any
+		// other socket error stays a failure.
+		socket.on("error", (error: NodeJS.ErrnoException) => {
+			if (!PEER_HUNG_UP.has(error.code ?? "")) fail();
+		});
 		socket.on("close", () => {
 			sockets.delete(socket);
 		});
