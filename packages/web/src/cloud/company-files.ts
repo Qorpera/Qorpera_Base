@@ -104,8 +104,8 @@ export class WebCompanyFiles {
 	/** The folder's hint (folder core C4, P30): `onHint(seq)` when it changed. Closes with this company's signal.
 	 * Its private channel joins once Realtime holds the member's token. The client sets that only after its first
 	 * answer, so a channel joined at once went out with the publishable key, was refused ("Unauthorized") and joined
-	 * only on the 10 s retry (3 Nov 2026). */
-	folderHints(onHint: (seq: number) => void): { close(): Promise<void> } {
+	 * only on the 10 s retry (3 Nov 2026). `onState`: whether its channel is subscribed, each time that changes. */
+	folderHints(onHint: (seq: number) => void, onState?: (connected: boolean) => void): { close(): Promise<void> } {
 		this.current();
 		const client = this.#realtime();
 		let hints: CloudMemberFolderHints | undefined;
@@ -120,6 +120,7 @@ export class WebCompanyFiles {
 					client,
 					signal: this.signal,
 					onHint,
+					...(onState ? { onState } : {}),
 				});
 			});
 		return {
