@@ -485,27 +485,45 @@ export class AppBridge {
 export interface CompanyAppsSource {
 	readonly signal: AbortSignal;
 	folder(): Folder;
-	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
+	/** `onState`: whether the hint's channel is subscribed, each time that changes. */
+	folderHints(
+		onHint: (seq: number) => void,
+		onState?: (connected: boolean) => void,
+	): { close(): Promise<void> };
 }
 
 /** One folder hint shared by every reader of the open company (its pages' and its apps'): one channel, each reader's
  * hint passed on, closed when the last reader closes it. */
 export function sharedFolderHints<T extends CompanyAppsSource>(
 	source: T,
-): (onHint: (seq: number) => void) => { close(): Promise<void> } {
+): (onHint: (seq: number) => void, onState?: (connected: boolean) => void) => { close(): Promise<void> } {
 	const listeners = new Set<(seq: number) => void>();
+	const states = new Set<(connected: boolean) => void>();
+	let connected = false;
 	let channel: { close(): Promise<void> } | undefined;
-	return (onHint) => {
+	return (onHint, onState) => {
 		listeners.add(onHint);
-		channel ??= source.folderHints((seq) => {
-			for (const listener of [...listeners]) listener(seq);
-		});
+		if (onState) {
+			states.add(onState);
+			onState(connected);
+		}
+		channel ??= source.folderHints(
+			(seq) => {
+				for (const listener of [...listeners]) listener(seq);
+			},
+			(now) => {
+				connected = now;
+				for (const state of [...states]) state(now);
+			},
+		);
 		return {
 			close: async () => {
 				listeners.delete(onHint);
+				if (onState) states.delete(onState);
 				if (listeners.size > 0 || !channel) return;
 				const closing = channel;
 				channel = undefined;
+				connected = false;
 				await closing.close();
 			},
 		};
@@ -515,9 +533,9 @@ export function sharedFolderHints<T extends CompanyAppsSource>(
 const APPS_POLL_MS = 60_000;
 const APPS_HINT_MS = 1000;
 
-/** The company's apps, read when the company opens, after each folder hint (at most once a second) and each minute,
- * published when they change; and every hint passed on to the open panels (`onChange`), which read their own app's
- * files again. A read that fails keeps what was read before. */
+/** The company's apps, read when the company opens, after each folder hint (at most once a second) and each minute
+ * (in a hidden tab only while the hint's channel is down), published when they change; and every hint passed on to the
+ * open panels (`onChange`), which read their own app's files again. A read that fails keeps what was read before. */
 export class CompanyApps {
 	readonly #source: CompanyAppsSource;
 	readonly #publish: (apps: readonly CompanyApp[]) => void;
@@ -528,6 +546,8 @@ export class CompanyApps {
 	#timer?: ReturnType<typeof setTimeout>;
 	#shown: string | undefined;
 	#last: readonly CompanyApp[] = [];
+	/** The hint's channel is subscribed. */
+	#hintsLive = false;
 
 	constructor(source: CompanyAppsSource, publish: (apps: readonly CompanyApp[]) => void) {
 		this.#source = source;
@@ -537,24 +557,37 @@ export class CompanyApps {
 
 	open(): void {
 		if (this.#stop.signal.aborted || this.#poll) return;
-		// A hidden tab reads on no clock (a list, each app's manifest and its bytes, every minute all night); its first
-		// moment back reads what the clock skipped. A folder hint still reads at once.
+		// A hidden tab whose hints work reads on no clock (a list, each app's manifest and its bytes, every minute all
+		// night); a hint still reads at once. Its first moment back reads, if the clock came due or it was away a whole
+		// period (a frozen tab's timers never fired, so no skip was noted).
 		let skipped = false;
+		let hiddenAt = document.visibilityState === "hidden" ? Date.now() : undefined;
 		this.#poll = setInterval(() => {
-			if (document.visibilityState === "hidden") skipped = true;
+			if (document.visibilityState === "hidden" && this.#hintsLive) skipped = true;
 			else void this.read();
 		}, APPS_POLL_MS);
 		document.addEventListener(
 			"visibilitychange",
 			() => {
-				if (document.visibilityState === "hidden" || !skipped) return;
+				if (document.visibilityState === "hidden") {
+					hiddenAt ??= Date.now();
+					return;
+				}
+				const away = hiddenAt !== undefined && Date.now() - hiddenAt >= APPS_POLL_MS;
+				hiddenAt = undefined;
+				if (!away && !skipped) return;
 				skipped = false;
 				void this.read();
 			},
 			{ signal: this.#stop.signal },
 		);
 		try {
-			this.#hints = this.#source.folderHints(() => this.#hinted());
+			this.#hints = this.#source.folderHints(
+				() => this.#hinted(),
+				(connected) => {
+					this.#hintsLive = connected;
+				},
+			);
 		} catch {
 			/* The minute's poll still reads. */
 		}

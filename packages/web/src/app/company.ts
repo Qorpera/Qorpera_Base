@@ -375,6 +375,8 @@ const NO_ID = "00000000-0000-0000-0000-000000000000";
 const OPEN_FULL_MS = 10_000;
 /** The work watch skips a read of the open conversation a hint made this recently. */
 const WATCH_SKIP_MS = 1_500;
+/** The company's clock: its heartbeat with live hints, its recovery path without them. */
+const HEARTBEAT_MS = 30_000;
 
 /** The page cursor after the newest of these conversations (as the listing orders them). */
 function newestSession(sessions: readonly HostedSession[], after?: PageCursor): PageCursor | undefined {
@@ -523,6 +525,8 @@ export class CompanyController {
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
 	#skippedWhileHidden = false;
+	/** When the tab was hidden (Date.now()), while it is. */
+	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
@@ -635,28 +639,38 @@ export class CompanyController {
 			},
 		);
 		await this.refreshAll();
-		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), 30_000);
-		if (!this.#stopped && typeof document !== "undefined")
+		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
+		if (!this.#stopped && typeof document !== "undefined") {
+			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
 			document.addEventListener(
 				"visibilitychange",
 				() => {
 					this.#seeMentions();
-					if (document.visibilityState === "hidden" || !this.#skippedWhileHidden) return;
+					if (document.visibilityState === "hidden") {
+						this.#hiddenAt ??= Date.now();
+						return;
+					}
+					// Away a whole clock period: a frozen tab's timers never fired, so no skip was noted.
+					const away = this.#hiddenAt !== undefined && Date.now() - this.#hiddenAt >= HEARTBEAT_MS;
+					this.#hiddenAt = undefined;
+					if (!away && !this.#skippedWhileHidden) return;
 					this.#skippedWhileHidden = false;
 					void this.#tick();
 				},
 				{ signal: this.signal },
 			);
+		}
 	}
 
 	/** A hidden tab with live hints reads on no clock: nobody is looking, the hints still land and read what they name, and
-	 * its first moment back reads what the clock skipped. (A tab left open read 19 times a minute all night, 7 Nov 2026.)
-	 * Without live hints the clock stays the recovery path. */
+	 * its first moment back reads. (A tab left open read 19 times a minute all night, 7 Nov 2026.) Without live hints the
+	 * clock stays the recovery path. That asks the channel itself: a failure while hidden does not reach the store. */
 	#restsWhileHidden(): boolean {
 		if (
 			typeof document === "undefined" ||
 			document.visibilityState !== "hidden" ||
-			this.store.get().realtime !== "connected"
+			this.store.get().realtime !== "connected" ||
+			!this.#realtime?.live()
 		)
 			return false;
 		this.#skippedWhileHidden = true;

@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
 	appReadablePath,
@@ -323,46 +323,121 @@ describe("an app's card in a message", () => {
 });
 
 describe("following the company's apps from a hidden tab", () => {
-	it("reads on no clock, reads on a hint, and reads what the clock skipped when it is back", async () => {
+	function following() {
 		vi.useFakeTimers();
-		const showing = (state: DocumentVisibilityState) =>
-			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
-		try {
-			const folders = vi.fn(() => fakeFolder({}));
-			let hint = () => {};
-			const apps = new CompanyApps(
-				{
-					signal: new AbortController().signal,
-					folder: folders as never,
-					folderHints: (onHint) => {
-						hint = () => onHint(2);
-						return { close: async () => {} };
-					},
+		const folders = vi.fn(() => fakeFolder({}));
+		let hint = () => {};
+		let state = (_connected: boolean) => {};
+		const apps = new CompanyApps(
+			{
+				signal: new AbortController().signal,
+				folder: folders as never,
+				folderHints: (onHint, onState) => {
+					hint = () => onHint(2);
+					state = (connected) => onState?.(connected);
+					return { close: async () => {} };
 				},
-				() => {},
-			);
-			apps.open();
-			await vi.advanceTimersByTimeAsync(0);
-			expect(folders).toHaveBeenCalledTimes(1);
-			await vi.advanceTimersByTimeAsync(60_000);
-			expect(folders).toHaveBeenCalledTimes(2);
-			showing("hidden");
-			await vi.advanceTimersByTimeAsync(10 * 60_000);
-			expect(folders).toHaveBeenCalledTimes(2);
-			hint();
-			await vi.advanceTimersByTimeAsync(1_000);
-			expect(folders).toHaveBeenCalledTimes(3);
-			showing("visible");
+			},
+			() => {},
+		);
+		apps.open();
+		const showing = (shown: DocumentVisibilityState) => {
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => shown });
 			document.dispatchEvent(new Event("visibilitychange"));
-			await vi.advanceTimersByTimeAsync(0);
-			expect(folders).toHaveBeenCalledTimes(4);
-			document.dispatchEvent(new Event("visibilitychange"));
-			await vi.advanceTimersByTimeAsync(0);
-			expect(folders).toHaveBeenCalledTimes(4);
-			apps.dispose();
-		} finally {
-			Reflect.deleteProperty(document, "visibilityState");
-			vi.useRealTimers();
-		}
+		};
+		return { apps, folders, showing, hint: () => hint(), state: (connected: boolean) => state(connected) };
+	}
+	afterEach(() => {
+		Reflect.deleteProperty(document, "visibilityState");
+		vi.useRealTimers();
+	});
+
+	it("reads on no clock while its hints work, reads on a hint, and reads what the clock skipped when it is back", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.hint();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(f.folders).toHaveBeenCalledTimes(3);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(4);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(4);
+		f.apps.dispose();
+	});
+
+	it("stays on the minute's poll while its hint's channel is down", async () => {
+		const f = following();
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.state(false);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(3);
+		f.apps.dispose();
+	});
+
+	it("reads at once when it comes back after a whole period, though no timer fired (a frozen tab)", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		vi.setSystemTime(Date.now() + 60 * 60_000);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.apps.dispose();
+	});
+
+	it("reads nothing extra when it comes back before a period has passed", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(5_000);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(1);
+		f.apps.dispose();
+	});
+
+	it("tells each reader of the shared hint whether its channel is subscribed", async () => {
+		let tell = (_connected: boolean) => {};
+		const hints = sharedFolderHints({
+			signal: new AbortController().signal,
+			folder: () => {
+				throw new Error("not read here");
+			},
+			folderHints: (_onHint, onState) => {
+				tell = (connected) => onState?.(connected);
+				return { close: async () => {} };
+			},
+		});
+		const first: boolean[] = [];
+		const second: boolean[] = [];
+		hints(
+			() => {},
+			(connected) => first.push(connected),
+		);
+		tell(true);
+		hints(
+			() => {},
+			(connected) => second.push(connected),
+		);
+		tell(false);
+		expect(first).toEqual([false, true, false]);
+		expect(second).toEqual([true, false]);
 	});
 });

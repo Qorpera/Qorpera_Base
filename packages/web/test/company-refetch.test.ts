@@ -540,6 +540,36 @@ describe("a hidden tab", () => {
 		expect(busy.rpcs()).toEqual(before);
 	});
 
+	it("reads at once when it comes back after a whole clock period, though no timer fired (a frozen tab)", async () => {
+		const busy = await company("connected", false);
+		showing("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		const before = busy.rpcs();
+		// The page freezes: its timers do not run, and only the wall clock moves on.
+		vi.setSystemTime(Date.now() + 60 * 60_000);
+		back();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.rpcs().listStaffActivity).toBe((before.listStaffActivity ?? 0) + 1);
+		expect(busy.rpcs().companyWaitingForHours).toBe((before.companyWaitingForHours ?? 0) + 1);
+	});
+
+	it("goes back on the clock when its channel fails while hidden, though the badge still says live", async () => {
+		const busy = await company("connected", false);
+		showing("hidden");
+		busy.status("CHANNEL_ERROR");
+		// A failure while hidden is held back from the badge (realtime.ts).
+		expect(busy.controller.store.get().realtime).toBe("connected");
+		const before = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(busy.rpcs().companyWaitingForHours).toBeGreaterThan(before.companyWaitingForHours ?? 0);
+		// Subscribed again: it catches up on what it missed, and rests.
+		busy.status("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(1_000);
+		const rested = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(busy.rpcs()).toEqual(rested);
+	});
+
 	it("stays on the clock without live hints, the recovery path", async () => {
 		const busy = await company("degraded", false);
 		showing("hidden");

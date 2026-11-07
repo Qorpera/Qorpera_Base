@@ -368,8 +368,12 @@ export class SessionExecutionView {
 				return;
 			}
 			// A hidden tab asks on no clock (a tab left open asked twice a minute all night): nothing is on screen to send
-			// from, and its first moment back reads the accounts (the constructor's listeners).
-			if (document.visibilityState === "hidden") return;
+			// from, and its first moment back reads the accounts (the constructor's listeners). The timer stays armed, for
+			// a return no event told of.
+			if (document.visibilityState === "hidden") {
+				this.#scheduleRefresh();
+				return;
+			}
 			void this.refresh();
 		}, delay);
 	}

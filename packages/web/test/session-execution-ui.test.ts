@@ -201,6 +201,19 @@ describe("reading the accounts", () => {
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(reads()).toEqual([before[0]! + 2, before[1]! + 2]);
 	});
+
+	it("reads on its clock after a return no event told of", async () => {
+		vi.useFakeTimers();
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(true, withUsage([80, 40]), select);
+		await settle();
+		showing("hidden");
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		const before = f.listConnections.mock.calls.length;
+		showing("visible");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.listConnections.mock.calls.length).toBe(before + 1);
+	});
 });
 
 describe("room startup usage refresh", () => {
