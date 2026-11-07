@@ -65,7 +65,15 @@ function binding(placementId = id(6)): LxdCompanyMachineBinding {
 
 /** SQL's side: one machine as the executor's list shows it, and every call recorded. With `folder`, the node's folder
  * service too (F3 6d): every request recorded, in one order with SQL's calls and the guest's helper. */
-async function fixture(options: { helperSha256?: string; previousHelperSha256s?: string[]; folder?: boolean } = {}) {
+async function fixture(
+	options: {
+		helperSha256?: string;
+		previousHelperSha256s?: string[];
+		folder?: boolean;
+		passHoldMs?: number;
+		guestReadyTimeoutMs?: number;
+	} = {},
+) {
 	const { folder: withFolder, ...pins } = options;
 	state.controlPath = await realpath(await mkdtemp(join(tmpdir(), "company-machine-host-")));
 	await chmod(state.controlPath, 0o700);
@@ -1155,6 +1163,250 @@ const idle = { at: 0, cpuUsec: 0, ioBytes: 0 };
 const firstBoot = { op: "restarted", machine: id(6) };
 const recorded = (f: Fixture) =>
 	f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").map((call) => call.args.p_ended);
+
+describe("company machine host's wake (perf A5)", () => {
+	const BOOT_USABLE = "/usr/bin/systemctl is-active --quiet basic.target network-online.target";
+	/** A guest whose agent does not answer yet, until `up.agent`; whose boot is usable from `up.usable`. */
+	function booting(f: Awaited<ReturnType<typeof fixture>>) {
+		const up = { agent: false, usable: false };
+		const read = f.client.readInstanceFile.getMockImplementation()!;
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.readInstanceFile.mockImplementation(async (project, name, path) => {
+			if (!up.agent) throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+			return read(project, name, path);
+		});
+		f.client.execInstance.mockImplementation(async (project, name, asked) => {
+			if (!up.agent) throw new Error("LXD VM agent is not currently running");
+			if (asked.join(" ") === BOOT_USABLE && !up.usable) throw new Error("LXD instance command failed");
+			return exec(project, name, asked);
+		});
+		return up;
+	}
+	const until = async (done: () => boolean) => {
+		for (let tries = 0; tries < 1000 && !done(); tries++) await new Promise((settle) => setTimeout(settle, 5));
+		expect(done()).toBe(true);
+	};
+
+	it("a wake ends the wait before the next pass, and one during a pass leaves no wait after it", async () => {
+		const f = await fixture();
+		const wait = new AbortController();
+		let ended = false;
+		const paused = f.host.pause(60000, wait.signal).then(() => {
+			ended = true;
+		});
+		await new Promise((settle) => setTimeout(settle, 20));
+		expect(ended).toBe(false);
+		f.host.wake();
+		await paused;
+		expect(ended).toBe(true);
+		f.host.wake();
+		const started = Date.now();
+		await f.host.pause(60000, wait.signal);
+		expect(Date.now() - started).toBeLessThan(1000);
+	});
+
+	it("the wait ends at its time without a wake, and on its signal", async () => {
+		const f = await fixture();
+		const started = Date.now();
+		await f.host.pause(30, f.signal);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+		const wait = new AbortController();
+		const paused = f.host.pause(60000, wait.signal);
+		wait.abort();
+		await paused;
+	});
+
+	it("asks a starting guest each second, of LXD alone, and the wait ends only once its boot is usable", async () => {
+		const f = await fixture();
+		const up = booting(f);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+		const before = f.calls.length;
+		const wait = new AbortController();
+		let ended = false;
+		const paused = f.host.pause(60000, wait.signal).then(() => {
+			ended = true;
+		});
+		// The agent answers the first file read, the boot is not usable yet: looks go on.
+		up.agent = true;
+		await until(
+			() => f.client.execInstance.mock.calls.filter((call) => call[2].join(" ") === BOOT_USABLE).length >= 2,
+		);
+		expect(ended).toBe(false);
+		up.usable = true;
+		await paused;
+		expect(ended).toBe(true);
+		// SQL was asked nothing meanwhile: every step of the next pass asks it, as ever.
+		expect(f.calls.length).toBe(before);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		// Started: nothing is looked at any more.
+		const looks = f.client.execInstance.mock.calls.length;
+		await f.host.pause(1100, f.signal);
+		expect(f.client.execInstance.mock.calls.length).toBe(looks);
+	});
+
+	it("leaves a guest past its grace to the passes", async () => {
+		const f = await fixture({ guestReadyTimeoutMs: 1 });
+		const up = booting(f);
+		await f.host.pass(f.signal).catch(() => undefined);
+		await new Promise((settle) => setTimeout(settle, 5));
+		up.agent = true;
+		up.usable = true;
+		const started = Date.now();
+		await f.host.pause(1200, f.signal);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(1100);
+	});
+
+	it("a stopped boot's time to come up ends with it: its next wake starts a new one", async () => {
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const f = await fixture();
+			booting(f);
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			f.entry.stopDue = true;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+			// Long after its first boot: the new boot's agent not answering yet is still only starting.
+			clock.mockReturnValue(now + 3600000);
+			f.entry.stopDue = false;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("one placement's slow step does not hold its pass, and none starts another until it ended", async () => {
+		const f = await fixture({ passHoldMs: 20 });
+		await f.host.pass(f.signal);
+		f.running();
+		let free = () => {};
+		const held = new Promise<void>((settle) => {
+			free = settle;
+		});
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project, name, asked) => {
+			await held;
+			return exec(project, name, asked);
+		});
+		f.client.execInstance.mockClear();
+		// The pass answers though the guest does not, without its step.
+		expect(await f.host.pass(f.signal)).toEqual([]);
+		await until(() => f.client.execInstance.mock.calls.length === 1);
+		// The next one admits and lists, and does not start the placement again.
+		f.calls.length = 0;
+		expect(await f.host.pass(f.signal)).toEqual([]);
+		expect(f.methods()).toEqual(["qorpera_admit_executor_machines", "qorpera_list_executor_machines"]);
+		expect(f.client.execInstance).toHaveBeenCalledTimes(1);
+		free();
+		await f.host.settled();
+		// Then its step comes up again as ever.
+		f.client.execInstance.mockImplementation(exec);
+		await f.host.pass(f.signal);
+		expect(f.client.execInstance.mock.calls.map((call) => call[2][3]).slice(-2)).toEqual([
+			"refresh-lease",
+			"observe",
+		]);
+	});
+
+	it("hands over what a step that outlasted its pass came to, with the next pass", async () => {
+		const f = await fixture({ passHoldMs: 20 });
+		await f.host.pass(f.signal);
+		f.running();
+		let free = () => {};
+		const held = new Promise<void>((settle) => {
+			free = settle;
+		});
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async () => {
+			await held;
+			throw new Error("LXD instance command failed");
+		});
+		expect(await f.host.pass(f.signal)).toEqual([]);
+		free();
+		await f.host.settled();
+		f.client.execInstance.mockImplementation(exec);
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "guest", state: "pending" },
+			{ placementId: id(6), step: "commands", state: "done" },
+		]);
+	});
+
+	it("tells who waits once a start is done, and a stop or release asks for the next pass at once", async () => {
+		const f = await fixture();
+		const up = booting(f);
+		const waiting = new AbortController();
+		const told = f.host.changed(id(2), waiting.signal);
+		let answer: boolean | undefined;
+		void told.then((value) => {
+			answer = value;
+		});
+		// Pending is not somewhere yet.
+		await f.host.pass(f.signal);
+		await new Promise((settle) => setTimeout(settle, 5));
+		expect(answer).toBeUndefined();
+		up.agent = true;
+		up.usable = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(await told).toBe(true);
+		// Another machine's step tells nobody here, and a wait that ends says so.
+		const other = new AbortController();
+		const untold = f.host.changed(id(9), other.signal);
+		await f.host.pass(f.signal);
+		other.abort();
+		expect(await untold).toBe(false);
+		await f.host.pause(0, f.signal);
+		// A machine in line waits for the room this frees: no wait before the next pass.
+		f.running();
+		f.entry.stopDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		const started = Date.now();
+		await f.host.pause(60000, f.signal);
+		expect(Date.now() - started).toBeLessThan(1000);
+	});
+
+	it("leaves nothing on the long-lived signal it is given (Node 22's AbortSignal.any walks what is there)", async () => {
+		const f = await fixture({ passHoldMs: 2000 });
+		const process = new AbortController();
+		const dependants = () => {
+			const key = Object.getOwnPropertySymbols(process.signal).find((symbol) =>
+				String(symbol).includes("kDependantSignals"),
+			);
+			return key ? ((process.signal as unknown as Record<symbol, Set<unknown> | undefined>)[key]?.size ?? 0) : 0;
+		};
+		const up = booting(f);
+		await f.host.pass(process.signal);
+		await f.host.pause(1100, process.signal);
+		up.agent = true;
+		up.usable = true;
+		await f.host.pass(process.signal);
+		f.running();
+		await f.host.pass(process.signal);
+		f.host.wake();
+		await f.host.pause(1, process.signal);
+		await f.host.settled();
+		expect(dependants()).toBe(0);
+		// And the process's end still reaches a step that outlasts its pass.
+		const short = await fixture({ passHoldMs: 10 });
+		await short.host.pass(new AbortController().signal);
+		short.running();
+		let seen: AbortSignal | undefined;
+		short.client.execInstance.mockImplementation(async (_project, _name, _asked, signal?: AbortSignal) => {
+			seen = signal;
+			await new Promise((_settle, refuse) => signal?.addEventListener("abort", () => refuse(signal.reason)));
+		});
+		const ending = new AbortController();
+		await short.host.pass(ending.signal);
+		await until(() => seen !== undefined);
+		expect(seen?.aborted).toBe(false);
+		ending.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await short.host.settled();
+		expect(seen?.aborted).toBe(true);
+	});
+
+	it("a pass without a hold still waits for every step", async () => {
+		const f = await fixture();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+	});
+});
 
 describe("company machine host with the node's folder service (F3 6d)", () => {
 	it("opens the boot's own view once SQL knows the boot, and hands it to the guest on stdin alone", async () => {

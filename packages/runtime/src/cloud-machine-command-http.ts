@@ -12,6 +12,9 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 // HTTPS ingress, peer routing and transport credential) on their own route,
 // /v1/machine-commands/{start|read|cancel}. The scope names a company
 // machine, never a node, host or address; SQL decides where it runs.
+// /v1/machine-commands/wake asks the machines' executors for a pass now: it
+// carries no authority (each step of that pass asks SQL) and gives nothing away
+// but "look again".
 
 /** The machine tools' operation version: receipts and the executor's check both use it. */
 export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
@@ -56,7 +59,23 @@ export interface CloudMachineCommandGateway {
 		signal: AbortSignal,
 	): Promise<CloudMachineCommandReceipt>;
 	cancel(scope: CloudMachineCommandScope, commandId: string, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	/** Asks for a pass now. With `wait`, it answers once a step took the machine somewhere (true), or after
+	 * CLOUD_MACHINE_WAKE_WAIT_MS at most (false); the caller then looks at what SQL says. */
+	wake?(scope: CloudMachineCommandScope, wait: boolean, signal: AbortSignal): Promise<boolean>;
 }
+
+/** How long a wake with `wait` stays open at the executor, well inside the gateway's and the client's bounds. */
+export const CLOUD_MACHINE_WAKE_WAIT_MS = 20000;
+/** How long a caller gives a wake: the executor's wait, then the way back. */
+const WAKE_DEADLINE_MS = CLOUD_MACHINE_WAKE_WAIT_MS + 5000;
+export const CLOUD_MACHINE_WAKE_SCHEMA = "qorpera.machine-wake/v1";
+export type CloudMachineWakeHttpRequest = Readonly<{
+	schema: "qorpera.machine-command-http/v1";
+	binding: CloudNativeToolBinding;
+	scope: CloudMachineCommandScope;
+	action: "wake";
+	input: { wait: boolean };
+}>;
 
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (
@@ -112,6 +131,26 @@ export function parseCloudMachineCommandHttpRequest(value: unknown, action: stri
 		action,
 		input: Object.freeze({ ...body }),
 	}) as CloudMachineCommandHttpRequest;
+}
+export function parseCloudMachineWakeHttpRequest(value: unknown): CloudMachineWakeHttpRequest {
+	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = record(input.scope, ["machineId"]);
+	const body = record(input.input, ["wait"]);
+	if (
+		input.schema !== "qorpera.machine-command-http/v1" ||
+		input.action !== "wake" ||
+		typeof scope.machineId !== "string" ||
+		!UUID.test(scope.machineId) ||
+		typeof body.wait !== "boolean"
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(input.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action: "wake",
+		input: Object.freeze({ wait: body.wait }),
+	});
 }
 function validToken(value: string): boolean {
 	return (
@@ -231,6 +270,51 @@ export function createHttpCloudMachineCommandGateway(options: {
 		start: (scope, input, signal) => request("start", scope, input, signal),
 		read: (scope, input, signal) => request("read", scope, input, signal),
 		cancel: (scope, commandId, signal) => request("cancel", scope, { commandId }, signal),
+		wake: async (scope, wait, signal) => {
+			try {
+				const admitted = parseCloudMachineWakeHttpRequest({
+					schema: "qorpera.machine-command-http/v1",
+					binding,
+					scope,
+					action: "wake",
+					input: { wait },
+				});
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/wake`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: {
+								authorization: `Bearer ${options.token}`,
+								"content-type": "application/json",
+								...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+							},
+							body: JSON.stringify(admitted),
+						});
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						const answer = record(
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							),
+							["schema", "told"],
+						);
+						if (answer.schema !== CLOUD_MACHINE_WAKE_SCHEMA || typeof answer.told !== "boolean")
+							throw new Error(ERROR);
+						return answer.told;
+					},
+					WAKE_DEADLINE_MS,
+					signal,
+				);
+			} catch {
+				throw new Error(ERROR);
+			}
+		},
 	});
 }
 
@@ -260,6 +344,8 @@ export function cloudMachineCommandRefusal(error: unknown): CloudMachineCommandR
 export interface CloudMachineCommandServiceOptions {
 	authorize(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
 	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
+	/** Asks the machines' executors for a pass now; true once a step took the machine somewhere. */
+	wake?(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

@@ -45,8 +45,11 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-/** How often a waiting worker looks at the machine's status again. */
+/** How often a waiting worker looks at the machine's status again, when no word from its executor ends the wait first. */
 const WAIT_STEP_MS = 5000;
+/** How long a run waits for the executor to take a wake it does not wait on. A lost word costs only the executor's next
+ * pass, 10 s at most. */
+const WAKE_SENT_MS = 2000;
 
 /** A pause that the run's abort ends early. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -272,14 +275,17 @@ export function cloudMachineTools(options: {
 		if (result.schema !== "qorpera.machine-status/v1") throw new Error("Machine status differs");
 		return result as { workStopped?: true; machine?: MachineView | null; command?: { state: string } | null };
 	};
-	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped. No model
-	 * turn is spent. A failed look is only a failed look; the answer comes after the wait either way. */
+	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped, and at once when
+	 * `word` comes (its machine's executor saying to look again). No model turn is spent. A failed look is only a failed
+	 * look; the answer comes after the wait either way. */
 	const waitUntil = async (
 		seconds: number,
 		signal: AbortSignal,
 		settled: () => Promise<boolean | "stopped">,
+		word?: Promise<boolean>,
 	): Promise<"stopped" | undefined> => {
 		const deadline = Date.now() + seconds * 1000;
+		let waiting = word;
 		for (;;) {
 			try {
 				const outcome = await settled();
@@ -290,9 +296,21 @@ export function cloudMachineTools(options: {
 			}
 			const left = deadline - Date.now();
 			if (left <= 0) return undefined;
-			await pause(Math.min(WAIT_STEP_MS, left), signal);
+			// One word only: told, the wait ends now; not told, the looks go on every few seconds.
+			const cut = new AbortController();
+			void waiting?.then((told) => {
+				waiting = undefined;
+				if (told) cut.abort();
+			});
+			await pause(Math.min(WAIT_STEP_MS, left), AbortSignal.any([signal, cut.signal])).catch(() => undefined);
+			signal.throwIfAborted();
 		}
 	};
+	/** Asks the machine's executor for a pass now. It never fails the call: a lost word only means its next pass. */
+	const wake = (machine: MachineView, wait: boolean, signal: AbortSignal): Promise<boolean> =>
+		options.gateway.wake
+			? options.gateway.wake({ machineId: machine.machineId }, wait, signal).catch(() => false)
+			: Promise.resolve(false);
 	const waitSecondsOf = (value: JsonValue): number => {
 		if (!worker || !Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 300)
 			throw new Error("Invalid machine wait");
@@ -469,14 +487,27 @@ export function cloudMachineTools(options: {
 			// A worker waits while its machine starts; one waiting in line for room answers at once.
 			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
 			const machine = started?.machine as MachineView | undefined;
-			if (waitSeconds === undefined || machine?.state !== "starting") return result;
+			if (waitSeconds === undefined || machine?.state !== "starting") {
+				// In line or starting: its executor need not wait for its next pass to see it.
+				if (machine?.state === "starting" || machine?.state === "waiting")
+					await wake(machine, false, AbortSignal.any([context.signal, AbortSignal.timeout(WAKE_SENT_MS)]));
+				return result;
+			}
 			let latest: MachineView = machine;
-			const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
-				const now = await status(machine.name, undefined, context.signal);
-				if (now.workStopped) return "stopped";
-				latest = now.machine ?? { ...latest, state: "deleted" };
-				return latest.state !== "starting";
-			});
+			const stopWord = new AbortController();
+			const word = wake(machine, true, AbortSignal.any([context.signal, stopWord.signal]));
+			const outcome = await waitUntil(
+				Number(waitSeconds),
+				context.signal,
+				async () => {
+					const now = await status(machine.name, undefined, context.signal);
+					if (now.workStopped) return "stopped";
+					latest = now.machine ?? { ...latest, state: "deleted" };
+					return latest.state !== "starting";
+				},
+				word,
+			);
+			stopWord.abort();
 			check(context);
 			// The machine was started either way: a stopped worker is told so beside it, not refused.
 			return {

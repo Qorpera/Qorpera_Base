@@ -2218,6 +2218,23 @@ describe("housekeeping of a member's machines", () => {
 		vi.mocked(f.client.replaceInstanceDevices).mockClear();
 		f.call.mockClear();
 	}
+	it("leaves nothing on the signal that lasts as long as its process, keeping or housekeeping (Node 22's AbortSignal.any walks what is there)", async () => {
+		const f = await fixture();
+		const lasting = new AbortController();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		expect(await f.host.keep(lasting.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		await f.host.housekeep(lasting.signal);
+		const key = Object.getOwnPropertySymbols(lasting.signal).find((symbol) =>
+			String(symbol).includes("kDependantSignals"),
+		);
+		const held = key ? (lasting.signal as unknown as Record<symbol, Set<unknown> | undefined>)[key] : undefined;
+		expect(held?.size ?? 0).toBe(0);
+	});
+
 	it("does nothing for machines not due", async () => {
 		const f = await fixture();
 		f.state.listed = [f.entry(), f.entry({ machineId: randomUUID(), live: true })];

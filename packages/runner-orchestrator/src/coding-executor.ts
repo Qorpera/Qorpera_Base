@@ -5,6 +5,7 @@ import {
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -454,14 +455,16 @@ export class CloudCodingExecutor {
 		signal: AbortSignal,
 	): Promise<{ state: "idle" } | { state: "claimed"; turn: Promise<CodingTurnOutcome> }> {
 		const sent = Date.now();
-		const value = await this.#control.call(
-			"qorpera_claim_coding_session",
-			{ p_owner: this.#owner, p_lease_seconds: LEASE_SECONDS },
-			AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+		const value = await withAbortScope(signal, (asking) =>
+			this.#control.call(
+				"qorpera_claim_coding_session",
+				{ p_owner: this.#owner, p_lease_seconds: LEASE_SECONDS },
+				AbortSignal.any([asking, AbortSignal.timeout(10000)]),
+			),
 		);
 		if (value === null) return { state: "idle" };
 		const claim = parseCodingSessionClaim(value);
-		const turn = this.#turn(claim, sent, signal);
+		const turn = withAbortScope(signal, (scoped) => this.#turn(claim, sent, scoped));
 		this.#turns.add(turn);
 		void turn.finally(() => this.#turns.delete(turn)).catch(() => undefined);
 		return { state: "claimed", turn };

@@ -15,6 +15,7 @@ import {
 	isUuid,
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import {
 	type CodingCommandSecrets,
@@ -2307,7 +2308,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * passes: a slow or stuck machine or take-off never holds up another's
 	 * renewals. Every failure is returned, never hidden; a take-off's outcome
 	 * with the next pass. */
-	async keep(signal: AbortSignal): Promise<CodingKeepOutcome[]> {
+	keep(signal: AbortSignal): Promise<CodingKeepOutcome[]> {
+		return withAbortScope(signal, (scoped) => this.#keep(scoped, signal));
+	}
+	/** `lasting` outlasts this pass: a take-off started here goes on under it. */
+	async #keep(signal: AbortSignal, lasting: AbortSignal): Promise<CodingKeepOutcome[]> {
 		const pass = performance.now();
 		const listed = await this.#call(
 			"qorpera_list_coding_machines",
@@ -2356,7 +2361,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						AbortSignal.timeout(this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS),
 					]);
 					// The pass stops waiting at the deadline even for a call that does not.
-					return abortable(this.#keepMachine(entry, deadline, signal), deadline).catch(
+					return abortable(this.#keepMachine(entry, deadline, lasting), deadline).catch(
 						(error): CodingKeepOutcome[] => {
 							signal.throwIfAborted();
 							return [
@@ -2934,7 +2939,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * is written to the machine (last_error) and returned, never hidden; a step
 	 * that succeeds clears its earlier failure. SQL re-checks custody for every
 	 * effect, so an entry that changed since the list is only refused. */
-	async housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]> {
+	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]> {
+		return withAbortScope(signal, (scoped) => this.#housekeep(scoped));
+	}
+	async #housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]> {
 		const outcomes: CodingHousekeepingOutcome[] = [];
 		// Now and then: archive the sessions of this executor's environments that
 		// have had no turn and no busy command for the environment's archive delay.

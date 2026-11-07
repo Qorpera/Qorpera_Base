@@ -24,6 +24,7 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
+import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
@@ -320,6 +321,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
+		// One machine's slow guest or LXD call holds up no other machine's wake.
+		passHoldMs: 2000,
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
@@ -332,6 +335,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
+			wakeLocal: async (machineId, wait, signal) => {
+				if (wait) return machineHost.changed(machineId, signal);
+				machineHost.wake();
+				return false;
+			},
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -364,6 +372,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		machines: {
 			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
 			execute: (request, signal) => machineRouter.execute(request, signal),
+			wake: (request, signal) => machineRouter.wake(request, signal),
 		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
@@ -375,6 +384,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		machines: {
 			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
 			execute: (request, signal) => machineRouter.execute(request, signal, true),
+			wake: (request, signal) => machineRouter.wake(request, signal, true),
 		},
 	});
 	let executor: CloudCodingExecutor | undefined;
@@ -443,7 +453,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			}
 		})();
 		// Company machines: admission, lifecycle, guest leases and command ends,
-		// every 10 s after a pass. A failed step is logged and recorded on its machine.
+		// every 10 s after a pass, or at once when a run asks for a machine, a stop or a
+		// release frees room, or a starting guest's boot becomes usable. A failed step is
+		// logged and recorded on its machine.
 		const machines = (async () => {
 			while (machineHost && !stop.signal.aborted) {
 				try {
@@ -454,7 +466,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));
 				}
-				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
+				await machineHost.pause(10_000, stop.signal);
 			}
 		})();
 		// Code hosts: once at start, every one an earlier executor left started
@@ -463,7 +475,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		const hosting = (async () => {
 			if (!codeHosts) return;
 			try {
-				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await codeHosts.housekeep(stop.signal) }));
+				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await withAbortScope(stop.signal, (scoped) => codeHosts.housekeep(scoped)) }));
 			} catch (error) {
 				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
 			}
@@ -478,7 +490,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			});
 			while (!stop.signal.aborted) {
 				try {
-					await codeHosts.removeDeleting(deleting, stop.signal);
+					await withAbortScope(stop.signal, (scoped) => codeHosts.removeDeleting(deleting, scoped));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "deletions", code: errorCode(error) }));
 				}
@@ -489,6 +501,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	} finally {
 		stop.abort();
 		await executor?.drain();
+		// A machine step that outlasted its pass ends on the same abort.
+		await machineHost?.settled();
 		// A take-off the keeper started settles before the process ends.
 		for (const outcome of await host.settled())
 			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
