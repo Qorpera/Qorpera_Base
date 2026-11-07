@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { runNativeCodexCompactionProbe } from "./fixtures/native-codex-compaction-probe.ts";
+import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 
-const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
+const binary = pinnedCodexBinary();
 describe.skipIf(!binary)("pinned native compaction trust boundary", () => {
 	it.each(["local", "remote-v2"] as const)(
 		"fences %s compaction and restores runtime laws",
