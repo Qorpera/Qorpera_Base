@@ -287,8 +287,8 @@ export class ConversationView {
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
-	 * text is still the same. */
-	#sendSoon: { text: string; until: number } | undefined;
+	 * message is still the same: its text, the question it answers and its files. */
+	#sendSoon: { text: string; answering?: string; files: readonly File[]; until: number } | undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -1786,7 +1786,13 @@ export class ConversationView {
 		const text = this.#composer.value;
 		this.#sendSoon = undefined;
 		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
-			this.#sendSoon = { text, until: Date.now() + 2000 };
+			const { answering, attachments } = this.#company.conversation(this.#sessionId).get();
+			this.#sendSoon = {
+				text,
+				...(answering ? { answering } : {}),
+				files: [...(attachments ?? [])],
+				until: Date.now() + 2000,
+			};
 			return;
 		}
 		if (
@@ -1932,9 +1938,17 @@ export class ConversationView {
 			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
 		if (this.#sendSoon && !this.#send.disabled) {
-			const { text, until } = this.#sendSoon;
+			const soon = this.#sendSoon;
 			this.#sendSoon = undefined;
-			if (text === this.#composer.value && Date.now() <= until) queueMicrotask(() => this.#submit());
+			const files = conversation.attachments ?? [];
+			if (
+				soon.text === this.#composer.value &&
+				soon.answering === conversation.answering &&
+				soon.files.length === files.length &&
+				soon.files.every((file, index) => file === files[index]) &&
+				Date.now() <= soon.until
+			)
+				queueMicrotask(() => this.#submit());
 		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;

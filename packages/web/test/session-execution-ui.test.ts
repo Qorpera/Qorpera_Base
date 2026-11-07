@@ -326,6 +326,30 @@ describe("room startup usage refresh", () => {
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledOnce();
 	});
+	it.each(["the question", "the files"] as const)(
+		"does not send what Enter held when %s changed before Send opened",
+		async (change) => {
+			const f = setup();
+			await settle();
+			const pending = deferred<NativeExecutionConnections>();
+			f.listConnections.mockImplementationOnce(() => pending.promise);
+			refresh();
+			type(f.view, "Hello");
+			f.view.el
+				.querySelector("textarea")!
+				.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			f.company
+				.conversation(session.sessionId)
+				.set(
+					change === "the question"
+						? { answering: "Who first?" }
+						: { attachments: [new File(["bytes"], "image.png", { type: "image/png" })] },
+				);
+			pending.resolve(connections());
+			await settle();
+			expect(f.sendMessage).not.toHaveBeenCalled();
+		},
+	);
 	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});

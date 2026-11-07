@@ -918,7 +918,7 @@
  * the thread, with Close. */
 .thread-body.has-beside > .thread-conversation { flex: 1 1 0; min-width: 300px; }
 .side-panel {
-	position: relative; z-index: 5; display: flex; flex: 0 0 min(54%, 820px); flex-direction: column; min-width: 0; min-height: 0;
+	position: relative; z-index: 5; display: flex; flex: 0 1 min(54%, 820px); flex-direction: column; min-width: 0; min-height: 0;
 	background: var(--bg); border-left: 1px solid var(--border); box-shadow: -14px 0 32px rgb(18 18 17 / 6%); outline: none;
 	animation: pair-sheet-in var(--motion-slow) var(--ease-spring) both;
 }
