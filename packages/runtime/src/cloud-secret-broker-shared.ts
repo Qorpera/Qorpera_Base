@@ -1,3 +1,4 @@
+import { withAbortScope } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
@@ -419,76 +420,84 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	}
 
 	/** Each company's queued connector tokens in turn. */
-	async revokeTokens(): Promise<void> {
-		for (const served of [...this.#served.values()]) {
-			if (this.#closed) return;
-			if (this.#served.get(served.scope.companyId) === served)
-				await logConnectorTokenRevocationPass(served.revocations, this.#closing.signal);
-		}
+	revokeTokens(): Promise<void> {
+		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
+		return withAbortScope(this.#closing.signal, async (signal) => {
+			for (const served of [...this.#served.values()]) {
+				if (this.#closed) return;
+				if (this.#served.get(served.scope.companyId) === served)
+					await logConnectorTokenRevocationPass(served.revocations, signal);
+			}
+		});
 	}
 
 	/** The deliveries to signed hooks of each company that has some due, in turn: one call asks which. */
-	async verifyEvents(): Promise<void> {
-		if (this.#closed) return;
-		const answer = record(
-			await this.#principal.eventVerificationsDue(
-				AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)]),
-			),
-			"Shared vault event verifications",
-		);
-		if (
-			answer.schema !== "qorpera.broker-principal-event-verifications/v1" ||
-			!Array.isArray(answer.companyIds) ||
-			answer.companyIds.length > 1000
-		)
-			throw new Error("Shared vault event verifications are invalid");
-		for (const companyId of new Set(answer.companyIds.map(company))) {
+	verifyEvents(): Promise<void> {
+		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
+		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed) return;
-			const served = this.#served.get(companyId);
-			if (served) await logEventVerificationPass(served.verifications, this.#closing.signal);
-		}
+			const answer = record(
+				await this.#principal.eventVerificationsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				"Shared vault event verifications",
+			);
+			if (
+				answer.schema !== "qorpera.broker-principal-event-verifications/v1" ||
+				!Array.isArray(answer.companyIds) ||
+				answer.companyIds.length > 1000
+			)
+				throw new Error("Shared vault event verifications are invalid");
+			for (const companyId of new Set(answer.companyIds.map(company))) {
+				if (this.#closed) return;
+				const served = this.#served.get(companyId);
+				if (served) await logEventVerificationPass(served.verifications, signal);
+			}
+		});
 	}
 
 	/** The bank syncs of each company that has one due, in turn: one call asks which. */
-	async syncBanks(): Promise<void> {
-		if (this.#closed || !this.#bank) return;
-		const answer = record(
-			await this.#principal.bankSyncsDue(AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)])),
-			"Shared vault bank syncs",
-		);
-		if (
-			answer.schema !== "qorpera.broker-principal-bank-syncs/v1" ||
-			!Array.isArray(answer.companyIds) ||
-			answer.companyIds.length > 1000
-		)
-			throw new Error("Shared vault bank syncs are invalid");
-		for (const companyId of new Set(answer.companyIds.map(company))) {
-			if (this.#closed) return;
-			const syncs = this.#served.get(companyId)?.bankSyncs;
-			if (syncs) await logBankSyncPass(syncs, this.#closing.signal);
-		}
+	syncBanks(): Promise<void> {
+		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
+		return withAbortScope(this.#closing.signal, async (signal) => {
+			if (this.#closed || !this.#bank) return;
+			const answer = record(
+				await this.#principal.bankSyncsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				"Shared vault bank syncs",
+			);
+			if (
+				answer.schema !== "qorpera.broker-principal-bank-syncs/v1" ||
+				!Array.isArray(answer.companyIds) ||
+				answer.companyIds.length > 1000
+			)
+				throw new Error("Shared vault bank syncs are invalid");
+			for (const companyId of new Set(answer.companyIds.map(company))) {
+				if (this.#closed) return;
+				const syncs = this.#served.get(companyId)?.bankSyncs;
+				if (syncs) await logBankSyncPass(syncs, signal);
+			}
+		});
 	}
 
 	/** The Digital Post syncs of each served company that has one due, in turn: one call asks which. */
-	async syncDigitalPost(): Promise<void> {
-		if (this.#closed || !this.#digitalPost) return;
-		const answer = record(
-			await this.#principal.digitalPostSyncsDue(
-				AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)]),
-			),
-			"Shared vault Digital Post syncs",
-		);
-		if (
-			answer.schema !== "qorpera.broker-principal-digital-post-syncs/v1" ||
-			!Array.isArray(answer.companyIds) ||
-			answer.companyIds.length > 1000
-		)
-			throw new Error("Shared vault Digital Post syncs are invalid");
-		for (const companyId of new Set(answer.companyIds.map(company))) {
-			if (this.#closed) return;
-			const syncs = this.#served.get(companyId)?.digitalPostSyncs;
-			if (syncs) await logDigitalPostSyncPass(syncs, this.#closing.signal);
-		}
+	syncDigitalPost(): Promise<void> {
+		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
+		return withAbortScope(this.#closing.signal, async (signal) => {
+			if (this.#closed || !this.#digitalPost) return;
+			const answer = record(
+				await this.#principal.digitalPostSyncsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				"Shared vault Digital Post syncs",
+			);
+			if (
+				answer.schema !== "qorpera.broker-principal-digital-post-syncs/v1" ||
+				!Array.isArray(answer.companyIds) ||
+				answer.companyIds.length > 1000
+			)
+				throw new Error("Shared vault Digital Post syncs are invalid");
+			for (const companyId of new Set(answer.companyIds.map(company))) {
+				if (this.#closed) return;
+				const syncs = this.#served.get(companyId)?.digitalPostSyncs;
+				if (syncs) await logDigitalPostSyncPass(syncs, signal);
+			}
+		});
 	}
 
 	start(): void {

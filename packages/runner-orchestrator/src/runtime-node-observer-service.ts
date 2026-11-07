@@ -157,37 +157,65 @@ export async function runRuntimeNodeObserver(
 		officeDigest(policy),
 		exitRegistry,
 	);
+	await runRuntimeNodeObserverLoops(
+		signal,
+		{
+			inventory: (scoped) => observer.observe(scoped),
+			health: (scoped) => health.observe(scoped),
+			exit: (scoped) => exit.observe(scoped),
+		},
+		{ report, reportHealth, reportExit },
+	);
+}
+
+/** The observer's three loops, one look every `pauseMs` each. `signal` lasts as long as the process, so each look runs
+ * under a scope of its own (abort-scope.ts). */
+export async function runRuntimeNodeObserverLoops(
+	signal: AbortSignal,
+	looks: {
+		inventory: (signal: AbortSignal) => Promise<{ state: "ready" | "unavailable" }>;
+		health: (signal: AbortSignal) => Promise<unknown>;
+		exit: (signal: AbortSignal) => Promise<{ healthy: boolean }>;
+	},
+	reports: {
+		report: (state: "ready" | "unavailable" | "unconfirmed") => void;
+		reportHealth: (state: "reported" | "unconfirmed") => void;
+		reportExit: (state: "healthy" | "unhealthy" | "unconfirmed") => void;
+	},
+	pauseMs = 5000,
+): Promise<void> {
+	const { report, reportHealth, reportExit } = reports;
 	const inventoryLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				report((await withAbortScope(signal, (scoped) => observer.observe(scoped))).state);
+				report((await withAbortScope(signal, (scoped) => looks.inventory(scoped))).state);
 			} catch {
 				if (!signal.aborted) report("unconfirmed");
 			}
-			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
 		}
 	};
 	const healthLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				await withAbortScope(signal, (scoped) => health.observe(scoped));
+				await withAbortScope(signal, (scoped) => looks.health(scoped));
 				reportHealth("reported");
 			} catch {
 				if (!signal.aborted) reportHealth("unconfirmed");
 			}
-			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
 		}
 	};
 	const exitLoop = async () => {
 		while (!signal.aborted) {
 			try {
 				reportExit(
-					(await withAbortScope(signal, (scoped) => exit.observe(scoped))).healthy ? "healthy" : "unhealthy",
+					(await withAbortScope(signal, (scoped) => looks.exit(scoped))).healthy ? "healthy" : "unhealthy",
 				);
 			} catch {
 				if (!signal.aborted) reportExit("unconfirmed");
 			}
-			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
 		}
 	};
 	await Promise.all([inventoryLoop(), healthLoop(), exitLoop()]);

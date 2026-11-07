@@ -2567,12 +2567,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const step: CodingKeepOutcome["step"] = again ? "keep" : "detach";
 		const report = (state: CodingKeepOutcome["state"], code: string) =>
 			this.#released.push({ machineId: machine.machineId, workerId, step, state, code });
-		const work = (async () => {
+		// Under a scope of its own: `signal` lasts as long as the process (abort-scope.ts).
+		const work = withAbortScope(signal, async (scoped) => {
 			if (again) {
 				// Only while that turn is still prepared here: an ended turn's lease is never opened again.
 				const attached = await this.#leaseTask(workerId, async () => {
 					if (this.#prepared.get(workerId) !== again) return false;
-					await this.#attachSessionNow(again.claim, again.machine, again.storage, again, again.scope, signal);
+					await this.#attachSessionNow(again.claim, again.machine, again.storage, again, again.scope, scoped);
 					return true;
 				});
 				if (attached) report("done", "REATTACHED");
@@ -2583,11 +2584,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				lxdCodingSessionStorage(machine, this.#placement, workerId),
 				{ workerId, leaseToken: null },
 				running.map((command) => command.commandId),
-				signal,
+				scoped,
 			);
-			await this.#recordDetached(machine, workerId, token, reason, running, signal);
+			await this.#recordDetached(machine, workerId, token, reason, running, scoped);
 			report("done", reason);
-		})()
+		})
 			.catch((error: unknown) => {
 				if (signal.aborted) return;
 				if (error instanceof CodingCustodyRefused) report("not-now", error.reason);

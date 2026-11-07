@@ -2,13 +2,7 @@ import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { withAbortScope } from "../src/abort-scope.ts";
 import { CloudCodingExecutor } from "../src/coding-executor.ts";
-
-/** What Node keeps on a plain signal for each `AbortSignal.any` over it. Node 22 does for every one; Node 24, which the
- * tests run on, only once the result has a listener, as a request's signal does. */
-const dependants = (signal: AbortSignal): number => {
-	const key = Object.getOwnPropertySymbols(signal).find((symbol) => String(symbol).includes("kDependantSignals"));
-	return key ? ((signal as unknown as Record<symbol, Set<unknown> | undefined>)[key]?.size ?? 0) : 0;
-};
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
 describe("withAbortScope", () => {
 	it("ends the scope when its parent ends, with the parent's reason", async () => {
@@ -32,21 +26,27 @@ describe("withAbortScope", () => {
 
 	it("leaves nothing on its parent once the work ended, however it ended", async () => {
 		const parent = new AbortController();
-		await withAbortScope(parent.signal, async (scoped) => {
-			AbortSignal.any([scoped, AbortSignal.timeout(60000)]).addEventListener("abort", () => undefined);
-			AbortSignal.any([
-				AbortSignal.any([scoped, AbortSignal.timeout(60000)]),
-				AbortSignal.timeout(60000),
-			]).addEventListener("abort", () => undefined);
-			expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
-		});
-		await expect(
-			withAbortScope(parent.signal, async () => {
-				throw new Error("failed");
-			}),
-		).rejects.toThrow("failed");
-		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
-		expect(dependants(parent.signal)).toBe(0);
+		const watch = watchAbortSignalAny();
+		try {
+			await withAbortScope(parent.signal, async (scoped) => {
+				AbortSignal.any([scoped, AbortSignal.timeout(60000)]);
+				AbortSignal.any([AbortSignal.any([scoped, AbortSignal.timeout(60000)]), AbortSignal.timeout(60000)]);
+				expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
+			});
+			await expect(
+				withAbortScope(parent.signal, async () => {
+					throw new Error("failed");
+				}),
+			).rejects.toThrow("failed");
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+			expect(watch.made()).toBe(3);
+			expect(watch.on(parent.signal)).toBe(0);
+			// The watch itself sees what hangs off a signal, a composite's sources included.
+			AbortSignal.any([AbortSignal.any([parent.signal, AbortSignal.timeout(60000)]), AbortSignal.timeout(60000)]);
+			expect(watch.on(parent.signal)).toBe(2);
+		} finally {
+			watch.restore();
+		}
 	});
 });
 
@@ -63,13 +63,19 @@ describe("the coding executor over the signal that lasts as long as its process"
 		const lasting = new AbortController();
 		const call = vi.fn(async (_method: string, _args: Record<string, unknown>, signal: AbortSignal) => {
 			expect(signal.aborted).toBe(false);
-			signal.addEventListener("abort", () => undefined);
 			return null;
 		});
 		const running = executor({}, call as never);
-		for (let claims = 0; claims < 5; claims++) expect(await running.claim(lasting.signal)).toEqual({ state: "idle" });
-		expect(call).toHaveBeenCalledTimes(5);
-		expect(dependants(lasting.signal)).toBe(0);
-		expect(getEventListeners(lasting.signal, "abort")).toHaveLength(0);
+		const watch = watchAbortSignalAny();
+		try {
+			for (let claims = 0; claims < 5; claims++)
+				expect(await running.claim(lasting.signal)).toEqual({ state: "idle" });
+			expect(call).toHaveBeenCalledTimes(5);
+			expect(watch.made()).toBeGreaterThanOrEqual(5);
+			expect(watch.on(lasting.signal)).toBe(0);
+			expect(getEventListeners(lasting.signal, "abort")).toHaveLength(0);
+		} finally {
+			watch.restore();
+		}
 	});
 });
