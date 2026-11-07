@@ -488,6 +488,38 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("ends the worker's turn when its report is saved, and only then", async () => {
+		const f = await fixture(workerWake);
+		try {
+			const answer = (outcome: string, schema = "qorpera.worker-report-receipt/v1") => ({
+				kind: "text" as const,
+				value: JSON.stringify({ schema, outcome }),
+			});
+			const report = { operationKey: "r1", outcome: "succeeded", summary: "Done." };
+			// Not saved: the answer says to report again, so the model must get the next round.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("refused"));
+			const refused = await f.boundary.invoke("r_1", "qorpera", "report_work", report);
+			expect(body(refused).status).toBe("ok");
+			expect(refused.completesTurn).toBeUndefined();
+			// Another tool's answer that happens to read "saved" is not a report.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("saved", "qorpera.something-else/v1"));
+			expect((await f.boundary.invoke("r_2", "qorpera", "report_work", report)).completesTurn).toBeUndefined();
+			f.folderWorkers.report.mockResolvedValueOnce({ kind: "text", value: "not json" });
+			expect((await f.boundary.invoke("r_3", "qorpera", "report_work", report)).completesTurn).toBeUndefined();
+			// Saved, first made or replayed: the host-only marker, which never enters what the model reads.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("saved"));
+			const saved = await f.boundary.invoke("r_4", "qorpera", "report_work", report);
+			expect(saved.completesTurn).toBe(true);
+			expect(saved.contentItems[0].text).not.toContain("completesTurn");
+			// A refused call never ends the turn, whatever the tool would have answered.
+			const invalid = await f.boundary.invoke("r_5", "qorpera", "report_work", { ...report, outcome: "done" });
+			expect(body(invalid).status).toBe("denied");
+			expect(invalid.completesTurn).toBeUndefined();
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("lets a worker report once to its parent, with a question only when blocked", async () => {
 		const f = await fixture(workerWake);
 		try {

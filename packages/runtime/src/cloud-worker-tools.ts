@@ -15,6 +15,7 @@ import {
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
+	type CloudToolContent,
 	type CloudToolContext,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
@@ -169,6 +170,17 @@ function folderWorkerDescription(description: string): string {
 		);
 }
 
+/** Whether report_work's answer, first made or replayed from its receipt, says the folder saved the report. */
+function reportSaved(content: CloudToolContent): boolean {
+	if (content.kind !== "text") return false;
+	try {
+		const answer = JSON.parse(content.value) as { schema?: unknown; outcome?: unknown };
+		return answer.schema === "qorpera.worker-report-receipt/v1" && answer.outcome === "saved";
+	} catch {
+		return false;
+	}
+}
+
 export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
 	"Report your result to your parent. This is your only way out: you cannot speak to anyone, and a run that ends without a report counts as failed. Report exactly once, when the definition of done in wake.payload.dispatch is met or when you cannot continue. " +
 	"outcome: succeeded (the definition of done is met), blocked (you need something only your parent can give; say exactly what in needs), failed (it cannot be done; say why). " +
@@ -256,7 +268,10 @@ export function cloudWorkerTools(
 			async execute(value, context) {
 				assertContext(context);
 				// A worker reports in its results file; the folder core decides the save.
-				return folderWorkers.report(value as unknown as CloudFolderWorkerReport, context);
+				const content = await folderWorkers.report(value as unknown as CloudFolderWorkerReport, context);
+				// A saved report is the worker's last act: its answer says "stop now", and nobody reads what the model writes
+				// next. A report that was not saved says to report again, so that turn goes on.
+				return reportSaved(content) ? { ...content, completesTurn: true } : content;
 			},
 		};
 		return [report];

@@ -156,7 +156,7 @@ export interface CloudNativeTool {
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
-	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
+	/** Host-only: a confirmed final public send, or a worker's saved report. The turn ends after this result is fenced. */
 	completesTurn?: boolean;
 	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
 	 * converted), handed to the model right after the envelope. */
@@ -1242,8 +1242,8 @@ export class CloudNativeToolBoundary {
 		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
 		const completesTurn =
 			status === "ok" &&
-			tool?.source === "runtime" &&
-			(tool.name === "send_message" || tool.name === "ask_member") &&
+			((tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")) ||
+				(tool?.source === "worker" && tool.name === "report_work")) &&
 			content.completesTurn === true;
 		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],
