@@ -460,6 +460,54 @@ describe("a peer that hangs up", () => {
 	});
 });
 
+describe("the journal line of a failure", () => {
+	const lines: string[] = [];
+	let journal: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		lines.length = 0;
+		journal = vi.spyOn(console, "error").mockImplementation((line: string) => {
+			lines.push(line);
+		});
+	});
+	afterEach(() => {
+		journal.mockRestore();
+	});
+
+	it("names a request that is not the run's binding, not its frame", async () => {
+		const f = await fixture();
+		f.assertSession.mockImplementationOnce(() => {
+			throw new Error("Native review binding failed");
+		});
+		expect(await exchange(f.service.path, request())).toBeUndefined();
+		expect(f.onFailure).toHaveBeenCalledOnce();
+		expect(lines).toEqual(["Native result fence failed (site=binding)"]);
+	});
+
+	it("names a composition the run does not own binding too", async () => {
+		const f = await fixture(undefined, undefined, undefined, {
+			assertRequest: vi.fn(() => {
+				throw new Error("Native result binding failed");
+			}),
+		});
+		expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+		expect(lines).toEqual(["Native result fence failed (site=binding)"]);
+	});
+
+	it("names a request id seen before replay", async () => {
+		const f = await fixture();
+		const input = request();
+		expect(await exchange(f.service.path, input)).toBeDefined();
+		expect(await exchange(f.service.path, input)).toBeUndefined();
+		expect(lines).toEqual(["Native result fence failed (site=replay)"]);
+	});
+
+	it("keeps frame for a frame that is not a request", async () => {
+		const f = await fixture();
+		expect(await exchange(f.service.path, Buffer.from([0, 0, 0, 2, 123, 125]))).toBeUndefined();
+		expect(lines).toEqual(["Native result fence failed (site=frame)"]);
+	});
+});
+
 it("caps a native connection flood before unbounded waiting work is created", async () => {
 	const f = await fixture(async () => new Promise(() => undefined));
 	// The bound at once is a run (the agent's, a reviewer's and the compactor threads' compositions and fences); one

@@ -173,10 +173,12 @@ export async function startCloudNativeResultFence(options: {
 		size.writeUInt32BE(wire.length);
 		socket.end(Buffer.concat([size, wire]));
 	};
-	const compose = (socket: Socket, request: CloudNativeContextRequest): void => {
+	const compose = (socket: Socket, request: CloudNativeContextRequest, step: (site: string) => void): void => {
 		const context = options.context;
 		if (!context) throw new Error("Native context composition unavailable");
+		step("replay");
 		track(request.requestId);
+		step("binding");
 		context.assertRequest(request);
 		void Promise.resolve(context.compose?.(request, options.signal))
 			.then((composition) => {
@@ -212,6 +214,12 @@ export async function startCloudNativeResultFence(options: {
 			sockets.delete(socket);
 		});
 		socket.on("data", (chunk: Buffer) => {
+			// What a throw below says went wrong, for the journal: the frame (its size, bytes or schema), a request id seen
+			// before, or a request that is not the run's (its binding, as assertSession and the composer check it).
+			let site = "frame";
+			const step = (next: string): void => {
+				site = next;
+			};
 			try {
 				if (stopped || processing) throw new Error("Native result frame after its request");
 				let offset = 0;
@@ -236,14 +244,17 @@ export async function startCloudNativeResultFence(options: {
 					(value as { schema?: unknown }).schema === CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA
 				) {
 					lane = "composition";
-					compose(socket, parseCloudNativeContextRequest(value));
+					compose(socket, parseCloudNativeContextRequest(value), step);
 					return;
 				}
 				const request = parseRequest(value);
+				step("replay");
 				track(request.requestId);
+				step("binding");
 				options.assertSession(request);
 				const review = options.releaseReviewOutputs?.(request);
 				lane = review ? "side-thread" : request.purpose;
+				step("fence");
 				// Nothing below reaches the socket before recordContextView has returned, so when that
 				// call checks authority itself the boundary need not check first.
 				const checkedByRecord =
@@ -271,7 +282,7 @@ export async function startCloudNativeResultFence(options: {
 					})
 					.catch(() => fail("fence"));
 			} catch {
-				fail("frame");
+				fail(site);
 			}
 		});
 	});
