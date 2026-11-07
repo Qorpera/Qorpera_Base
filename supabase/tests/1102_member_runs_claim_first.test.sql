@@ -12,10 +12,15 @@ create function pg_temp.mf_refuse(p_claim jsonb, p_reason text) returns jsonb la
 	select public.qorpera_release_runner_job_claim('92400000-0000-4000-8000-000000000092',
 		(p_claim ->> 'claim_id')::uuid, extensions.gen_random_uuid(), 'ADMISSION_REFUSED:' || p_reason)
 $$;
--- How long the run's job now waits, in seconds.
-create function pg_temp.mf_wait(p_run uuid) returns numeric language sql as $$
-	select extract(epoch from dispatch_deferred_until - statement_timestamp())::numeric
-	from public.qorpera_runner_jobs where run_id = p_run
+-- The wait the last release set: both times come from one statement, so a slow machine cannot change the answer.
+create function pg_temp.mf_wait(p_run uuid) returns interval language sql as $$
+	select job.dispatch_deferred_until - claim.released_at from public.qorpera_runner_jobs job
+	join public.qorpera_runner_job_claims claim on claim.job_id = job.id
+	where job.run_id = p_run and claim.released_at is not null order by claim.released_at desc limit 1
+$$;
+-- The run's wait is still running, however slow the machine is.
+create function pg_temp.mf_hold(p_run uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp() + interval '1 minute' where run_id = p_run
 $$;
 -- The waits have passed.
 create function pg_temp.mf_waits_over() returns void language sql as $$
@@ -65,17 +70,18 @@ select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '
 -- A full host: the member's run comes back after 2 s, and nothing counts as a failure.
 select pg_temp.base_assert((pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'SANDBOX_CAPACITY_EXHAUSTED') ->> 'deferred')::boolean,
 	'A capacity refusal defers the member''s run');
-select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) between 0.5 and 2,
+select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) = interval '2 seconds',
 	'The member''s run waits 2 s: ' || pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid));
 select pg_temp.base_assert((select dispatch_failure_count = 0 from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.mf_post')::uuid),
 	'The refusal is not a dispatch failure');
 
 -- While it waits the wake may go, and a wake's refusal keeps its 15 s.
+select pg_temp.mf_hold(current_setting('qorpera_test.mf_post')::uuid);
 select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.mf_wake'),
 	'The wake is claimed while the member''s run waits: ' || current_setting('qorpera_test.mf_claim'));
 select pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'SANDBOX_CAPACITY_EXHAUSTED') \g /dev/null
-select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_wake')::uuid) between 14 and 15,
+select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_wake')::uuid) = interval '15 seconds',
 	'A wake still waits 15 s: ' || pg_temp.mf_wait(current_setting('qorpera_test.mf_wake')::uuid));
 
 -- A refusal of the other capacity kinds counts the same; a node preference keeps its 5 s.
@@ -84,12 +90,12 @@ select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /d
 select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.mf_post'),
 	'Once both waits are over the member''s run is first again');
 select pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'NODE_CAPACITY_EXHAUSTED') \g /dev/null
-select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) between 0.5 and 2,
+select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) = interval '2 seconds',
 	'A full node also looks at the member''s run again after 2 s');
 select pg_temp.mf_waits_over();
 select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /dev/null
 select pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'NODE_NOT_PREFERRED') \g /dev/null
-select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) between 4 and 5,
+select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid) = interval '5 seconds',
 	'A node preference keeps its 5 s: ' || pg_temp.mf_wait(current_setting('qorpera_test.mf_post')::uuid));
 rollback to savepoint wake_queued;
 
@@ -111,7 +117,7 @@ select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /d
 select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.mf_turn'),
 	'The session turn goes before the older wake: ' || current_setting('qorpera_test.mf_claim'));
 select pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'SANDBOX_RETIRING') \g /dev/null
-select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_turn')::uuid) between 0.5 and 2,
+select pg_temp.base_assert(pg_temp.mf_wait(current_setting('qorpera_test.mf_turn')::uuid) = interval '2 seconds',
 	'A retiring host also looks at the session turn again after 2 s');
 
 rollback;

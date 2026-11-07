@@ -36,6 +36,16 @@ $$;
 create function pg_temp.sw_job(p_run uuid) returns public.qorpera_runner_jobs language sql as $$
 	select job.* from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.job_id = job.id where run.id = p_run
 $$;
+-- The wait the last release set: both times come from one statement, so a slow machine cannot change the answer.
+create function pg_temp.sw_wait(p_run uuid) returns interval language sql as $$
+	select job.dispatch_deferred_until - claim.released_at from public.qorpera_runner_jobs job
+	join public.qorpera_runner_job_claims claim on claim.job_id = job.id
+	where job.run_id = p_run and claim.released_at is not null order by claim.released_at desc limit 1
+$$;
+-- The wait a wake would have: a check that needs the wait still running does not race a member's 2 s.
+create function pg_temp.sw_hold(p_run uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp() + interval '15 seconds' where run_id = p_run
+$$;
 create function pg_temp.sw_status(p_node uuid) returns jsonb language sql as $$
 	select public.qorpera_runtime_node_drain_status(p_node)
 $$;
@@ -133,27 +143,29 @@ select pg_temp.base_assert((pg_temp.sw_refuse('64000000-0000-4000-8000-000000000
 	'SANDBOX_CAPACITY_EXHAUSTED') ->> 'deferred')::boolean,'A full fast host defers');
 reset role;
 select pg_temp.base_assert((pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).dispatch_refused_by = '64000000-0000-4000-8000-000000000012'
-	and (pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).dispatch_deferred_until > statement_timestamp() + interval '14 seconds',
-	'Only the refusing orchestrator waits, for 15 s');
+	and pg_temp.sw_wait(current_setting('qorpera_test.sw_run')::uuid) = interval '2 seconds',
+	'Only the refusing orchestrator waits, for 2 s: this run is a member''s post (20260930602000; a wake''s 15 s: test 1102)');
+select pg_temp.sw_hold(current_setting('qorpera_test.sw_run')::uuid);
 set local role service_role;
 select pg_temp.base_assert(pg_temp.sw_claim('64000000-0000-4000-8000-000000000012') = 'null'::jsonb,'Node B waits');
 select pg_temp.base_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',true,1,'update done') ->> 'serving' = 'true',
 	'Node A serves again');
 select set_config('qorpera_test.sw_claim',pg_temp.sw_claim('92400000-0000-4000-8000-000000000092')::text,true);
 select pg_temp.base_assert(current_setting('qorpera_test.sw_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.sw_run'),
-	'Node A takes the run at once instead of waiting 15 s');
+	'Node A takes the run at once instead of waiting');
 
 -- Node A is full too, inside node B's wait: now every orchestrator waits.
 select pg_temp.sw_refuse('92400000-0000-4000-8000-000000000092',current_setting('qorpera_test.sw_claim')::jsonb,'NODE_CAPACITY_EXHAUSTED');
 reset role;
 select pg_temp.base_assert((pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).dispatch_refused_by is null
-	and (pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).dispatch_deferred_until > statement_timestamp() + interval '14 seconds',
+	and pg_temp.sw_wait(current_setting('qorpera_test.sw_run')::uuid) = interval '2 seconds',
 	'Two full nodes: every orchestrator waits');
+select pg_temp.sw_hold(current_setting('qorpera_test.sw_run')::uuid);
 set local role service_role;
 select pg_temp.base_assert(pg_temp.sw_claim('92400000-0000-4000-8000-000000000092') = 'null'::jsonb
 	and pg_temp.sw_claim('64000000-0000-4000-8000-000000000012') = 'null'::jsonb,'Neither node trades the job back');
 
--- Preference refusals keep their 5 s wait for the refuser; other refusals make everyone wait 15 s.
+-- Preference refusals keep their 5 s wait for the refuser; a refusal that is not about capacity makes everyone wait 15 s.
 reset role;
 update public.qorpera_runner_jobs set dispatch_deferred_until = null, dispatch_refused_by = null
 where id = (pg_temp.sw_job(current_setting('qorpera_test.sw_run')::uuid)).id;
