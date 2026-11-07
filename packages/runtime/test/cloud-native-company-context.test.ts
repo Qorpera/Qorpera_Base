@@ -1587,6 +1587,8 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
 		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
+		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
 	])
 		expect(instructions).toContain(rule);
 });
