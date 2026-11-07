@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "b73f79954b0ec406b7af267778b1f88639745b93fb67dca2b4bb1f40f79414b8",
+			instructions: "af754cb17f396e1c6f02b13cd67b4a7422d424129fe0a6d666c36e7c28b08e0a",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "b73f79954b0ec406b7af267778b1f88639745b93fb67dca2b4bb1f40f79414b8",
+			instructions: "af754cb17f396e1c6f02b13cd67b4a7422d424129fe0a6d666c36e7c28b08e0a",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1587,6 +1587,8 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
 		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
+		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
 	])
 		expect(instructions).toContain(rule);
 });
