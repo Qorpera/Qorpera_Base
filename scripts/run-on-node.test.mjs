@@ -56,6 +56,7 @@ import {
 	QUICK_LIMIT_SECONDS,
 	QUICK_MEMORY_MIB,
 	QUICK_SLOTS,
+	QUICK_WAIT_SECONDS,
 	quickMemoryLine,
 	RUNNERS,
 	rankMachines,
@@ -392,8 +393,9 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 		script
 			// The extra slots are the CPU lane's only.
 			.replace(`${roomyScript()}\n`, "")
-			// The memory floor is the quick lane's only.
+			// The memory floor and the shorter wait are the quick lane's only.
 			.replace(`${quickMemoryLine()}\n`, "")
+			.replace(/-ge (1200|7200) \] && \{ echo "== run-on-node: no [^"]*"; exit 94; \}/, "WAIT")
 			.replace(/\t\tif \[ -z "\$slot" \] && roomy; then\n[\s\S]*?\n\t\tfi\n/, "")
 			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
 			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
@@ -404,8 +406,11 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 	for (const script of [quick, cpu]) {
 		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 		assert.match(script, /if \[ "\$position" = 1 \]; then/);
-		assert.match(script, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; exit 94; \}/);
 	}
+	assert.match(cpu, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; exit 94; \}/);
+	// A quick run gives up sooner: it is short, so a long wait means no room.
+	assert.equal(QUICK_WAIT_SECONDS, 1200);
+	assert.match(quick, /-ge 1200 \] && \{ echo "== run-on-node: no quick slot with room for 20 minutes"; exit 94; \}/);
 });
 
 test("past the CPU lane's slots, the first run in the queue takes an extra one only while the machine has room", () => {
@@ -822,6 +827,16 @@ test("a quick run goes to the machine with the free quick slot, however full its
 	// A quick run waiting in a quick queue counts against it; arriving copies count against the CPU lane only.
 	assert.deepEqual(names([{ ...idle("node02"), quickBusy: 1, quickWaiting: 1 }, { ...idle("node01"), quickBusy: 1 }], true), ["node01", "node02"]);
 	assert.deepEqual(names([{ ...idle("node02"), arriving: 3 }, idle("node01")], true), ["node02", "node01"]);
+	// A machine short of memory, where a quick run would wait, comes after one with room, however full its quick lane.
+	const low = [{ ...idle("node02"), memMiB: QUICK_MEMORY_MIB - 1 }, { ...idle("node01"), quickBusy: 2, quickWaiting: 3, memMiB: 9000 }];
+	assert.deepEqual(names(low, true), ["node01", "node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), memMiB: QUICK_MEMORY_MIB }, { ...idle("node01"), memMiB: 9000 }], true), ["node02", "node01"]);
+	// Memory it could not read counts as before; both short, the quick lane decides.
+	assert.deepEqual(names([{ ...idle("node02"), memMiB: null, quickBusy: 1 }, idle("node01")], true), ["node01", "node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), memMiB: 10, quickBusy: 1 }, { ...idle("node01"), memMiB: 10 }], true), ["node01", "node02"]);
+	// The CPU lane's choice is not about it.
+	assert.deepEqual(names(low, false), ["node02", "node01"]);
+	assert.equal(describeProbes([{ ...idle("node02"), memMiB: 1500 }]), "node02 0/5 slots busy, 0 waiting, quick 0/2 (1500 MiB available)");
 	// Closed machines stay out of a quick run's choice too.
 	assert.deepEqual(names([{ ...idle("node02"), closed: true }, { ...idle("node01"), quickBusy: 1 }], true), ["node01"]);
 });
@@ -929,7 +944,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 		probe,
 		/kept_busy=0; for i in \$\(seq 5 5\); do \{ flock -n 5 \|\| kept_busy=\$\(\(kept_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"; done/,
 	);
-	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy closed=/);
+	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy mem_mib=\$mem_mib closed=/);
 	// guest-setup.sh makes the kept slot's lock file root's and read-only, now and at every boot.
 	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
 	assert.match(setup, /^kept=\/run\/lock\/qorpera-test-machine-slot5\.lock$/m);
@@ -1011,6 +1026,7 @@ test(
 			assert.deepEqual([answer.quick_busy, answer.quick_waiting], ["1", "2"]);
 			assert.deepEqual([answer.front_waiting, answer.kept_busy], ["0", "0"]);
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
+			assert.match(answer.mem_mib, /^[0-9]+$/);
 			// Slot 2 was never made, and nothing else appeared or went: not the kept slot's file either.
 			assert.deepEqual(listing(), before);
 			// A run in the kept slot counts as busy and as kept.

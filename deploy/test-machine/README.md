@@ -149,7 +149,8 @@ A run you know is short takes the quick lane with `--quick`: two slots and a que
 a lint of a few files does not wait behind `changed` runs. `hosted-db -- --only` takes it by itself. A `--quick` run is
 stopped at 3 minutes (exit 124, or 137 if it would not stop) and its containers removed, so the lane stays quick; it takes a command after `--` or
 `scripts/<file>.mjs`, not a named suite. The first in the quick lane's queue waits while the machine has under 2 GiB
-available. On 7 Nov 05:20-07:25Z, 51 of 107 runs in the CPU lane took under a minute and held 1.8 % of its slot time, and
+available, so a quick run goes to a machine with room when there is one, and gives up after 20 minutes in the queue (exit
+94) rather than stall. On 7 Nov 05:20-07:25Z, 51 of 107 runs in the CPU lane took under a minute and held 1.8 % of its slot time, and
 those waited a median of 239 s for a slot, 1136 s at most.
 
 No run has a memory limit and the machines have no swap, so the kernel may kill the biggest process, whichever run's. A

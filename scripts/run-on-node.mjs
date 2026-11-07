@@ -157,6 +157,9 @@ export const QUICK_LIMIT_SECONDS = 180;
 /** The first run in the quick lane's queue waits while the machine has less than this available (MiB, MemAvailable). It
  * passes the CPU lane's queue, so it must not start where a run in a CPU slot is short of memory. */
 export const QUICK_MEMORY_MIB = 2048;
+/** How long a run waits in the quick lane's queue before it gives up (exit 94). Such a run is short, so a long wait means
+ * the machine is out of memory or the lane is jammed; better a clear error than a stall of two hours. */
+export const QUICK_WAIT_SECONDS = 1200;
 /** The label a --quick run's containers carry (dockerLabelScript), with the run's name as its value. */
 export const RUN_LABEL = "qorpera-run";
 /** A run that failed while the machine's kernel killed processes for lack of memory (runResult). The kernel kills the
@@ -530,7 +533,9 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		"\tfi",
 		'\tif [ -z "$slot" ]; then',
 		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${slots} run${slots === 1 ? "" : "s"} at a time${front || !lane.kept ? "" : `, ${lane.kept} more slot${lane.kept === 1 ? "" : "s"} kept for --front runs`}), queue position $position" && shown=$position`,
-		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
+		lane === LANES.quick
+			? `\t\t[ $(( $(date +%s) - queued )) -ge ${QUICK_WAIT_SECONDS} ] && { echo "== run-on-node: no quick slot with room for ${QUICK_WAIT_SECONDS / 60} minutes"; exit 94; }`
+			: '\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
 		// A claim session's input ends once its part has started elsewhere (read's status 1; a timeout's is over 128).
 		claim ? `\t\tread -r -t 2 _; [ $? -gt 128 ] || { rm -rf ${runDir}; exit ${DROPPED}; }` : "\t\tsleep 2",
 		"\tfi",
@@ -741,7 +746,7 @@ export function candidateMachines(machine, env) {
  * created) and tried once: a held one counts, a free one is held for an instant only (a run taking a slot right
  * then tries the next and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that
  * died. A copy marker counts for 10 minutes; a killed copy's marker ages out. */
-export function probeScript({ locks, closed, setUp, arriving }) {
+export function probeScript({ locks, closed, setUp, arriving, meminfo = "/proc/meminfo" }) {
 	const count = (lane, busy, waiting) => [
 		`for i in $(seq 1 ${lane.slots}); do { flock -n 5 || ${busy}=$((${busy} + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/${lane.slot}`)}"$i.lock"; done`,
 		`for t in ${shellQuote(`${locks}/${lane.queue}`)}/*; do { flock -n 5 || ${waiting}=$((${waiting} + 1)); } 2>/dev/null 5<"$t"; done`,
@@ -757,7 +762,9 @@ export function probeScript({ locks, closed, setUp, arriving }) {
 		// The CPU lane's waiting front runs, counted in `waiting` too. With none, the unmatched pattern opens no file.
 		`front_waiting=0; for t in ${shellQuote(`${locks}/${LANES.cpu.queue}/${FRONT}`)}*; do { flock -n 5 || front_waiting=$((front_waiting + 1)); } 2>/dev/null 5<"$t"; done`,
 		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
-		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting kept_busy=$kept_busy extra_busy=$extra_busy closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		// What the machine has available (MiB): a quick run waits for QUICK_MEMORY_MIB. Empty when unreadable.
+		`mem_mib=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null)`,
+		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting kept_busy=$kept_busy extra_busy=$extra_busy mem_mib=$mem_mib closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
@@ -765,7 +772,8 @@ export function probeScript({ locks, closed, setUp, arriving }) {
  * negative when runs wait. A front run counts every slot, only running runs and the front runs it would queue behind;
  * any other CPU run only the slots before the kept ones. */
 function free(probe, quick, front = false) {
-	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting;
+	// A machine short of memory takes no quick run (quickMemoryLine): it ranks after every one with room.
+	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting - (probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? 100 : 0);
 	if (front) return CPU_SLOTS - probe.busy - probe.frontWaiting;
 	return CPU_SLOTS - KEPT_SLOTS - (probe.busy - (probe.keptBusy ?? 0)) - (probe.extraBusy ?? 0) - probe.waiting - probe.arriving;
 }
@@ -872,7 +880,7 @@ export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy${probe.keptBusy ? ` (${probe.keptBusy} kept for --front runs)` : ""}${probe.extraBusy ? ` + ${probe.extraBusy} extra` : ""}, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy${probe.keptBusy ? ` (${probe.keptBusy} kept for --front runs)` : ""}${probe.extraBusy ? ` + ${probe.extraBusy} extra` : ""}, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}${probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? ` (${probe.memMiB} MiB available)` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -957,6 +965,7 @@ function probeOverSsh(machine, key, signal) {
 					closed: answer.closed === "1",
 					setUp: answer.setup === "1",
 					cpus: Number(answer.cpus) || null,
+					memMiB: /^\d+$/.test(answer.mem_mib ?? "") ? Number(answer.mem_mib) : null,
 					load: Number(answer.load) || 0,
 				});
 			else if (code === 0) unreachable(`unexpected answer: ${out.trim().slice(0, 120)}`);
