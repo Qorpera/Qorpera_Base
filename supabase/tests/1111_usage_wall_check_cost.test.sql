@@ -521,9 +521,11 @@ begin
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'idle', 'the scan took work at its login''s limit: ' || v_pass::text);
 end $$;
 
--- 5. The check is last. Companies 901 and 902 have a wake due on a sponsor of their own, and so do 903, paused, and 904, not
--- on folder-v2; they sort before this company, whose only sponsor is at its limit.
-create function pg_temp.d1_company(p_n integer, p_file boolean, p_paused boolean) returns void language plpgsql as $$
+-- 5. The check is last. Companies 901 and 902 have a wake due on a sponsor of their own, and so do 903, paused, 904, with no
+-- company file, and 905, whose company file is on snapshot-v1; they sort before this company, whose only sponsor is at its
+-- limit.
+create function pg_temp.d1_company(p_n integer, p_file boolean, p_paused boolean, p_snapshot boolean default false)
+returns void language plpgsql as $$
 declare v_wake public.qorpera_wake_occurrences := pg_temp.d1_wake('d1_post_1'); v_profile uuid := pg_temp.d1_id(2, p_n);
 begin
 	perform set_config('session_replication_role', 'replica', true);
@@ -535,7 +537,9 @@ begin
 		insert into public.qorpera_company_files
 		select (jsonb_populate_record(null::public.qorpera_company_files, to_jsonb(file) || jsonb_build_object(
 			'environment_id', extensions.gen_random_uuid(), 'profile_id', v_profile,
-			'canonical_workspace_id', extensions.gen_random_uuid()))).*
+			'canonical_workspace_id', extensions.gen_random_uuid())
+			|| case when p_snapshot then jsonb_build_object('core', 'snapshot-v1', 'head_snapshot_id', extensions.gen_random_uuid())
+				else '{}'::jsonb end)).*
 		from public.qorpera_company_files as file where file.profile_id = '92400000-0000-4000-8000-000000000010';
 	end if;
 	if p_paused then
@@ -558,11 +562,11 @@ create function pg_temp.d1_items(p_companies integer[]) returns jsonb language s
 	select coalesce(jsonb_agg(jsonb_build_object('profile_id', pg_temp.d1_id(2, n)) order by n), '[]'::jsonb) from unnest(p_companies) as n
 $$;
 select pg_temp.d1_company(901, true, false), pg_temp.d1_company(902, true, false), pg_temp.d1_company(903, true, true),
-	pg_temp.d1_company(904, false, false) \g /dev/null
+	pg_temp.d1_company(904, false, false), pg_temp.d1_company(905, true, false, true) \g /dev/null
 do $$
 declare v_page jsonb;
 begin
-	-- The paused company and the one not on folder-v2 cost nothing.
+	-- The paused company and the two not on folder-v2 are not named and cost nothing.
 	v_page := pg_temp.d1_page(null, 100);
 	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901, 902]) and (v_page ->> 'checks')::integer = 3,
 		'a whole page: ' || v_page::text);
