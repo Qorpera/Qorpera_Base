@@ -326,7 +326,12 @@ if (process.argv[2] === "migrate") {
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
-			server.close(() => process.exit(0));
+			server.close(() => {
+				void replication
+					.flushStoredLines()
+					.catch(() => process.stderr.write("Object gateway audit lines were not written at stop\n"))
+					.finally(() => process.exit(0));
+			});
 		});
 	}
 }

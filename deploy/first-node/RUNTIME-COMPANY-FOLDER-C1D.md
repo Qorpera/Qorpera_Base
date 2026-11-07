@@ -741,7 +741,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   hours, its NAS file and any Storage replica are removed and the entry dropped (`folder_object_uncatalogued_removed`).
   Any other answer forgets `missingSince` (`folder_object_uncatalogued_cleared`), so the wait starts over; a stored
   time more than 5 minutes ahead of the gateway's clock is marked again. `catalogued`, `other` and `listed` leave the
-  entry otherwise as it is. An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`),
+  entry otherwise as it is. An upload that puts the object again rewrites the entry (`unconfirmed`),
   which ends the wait. An entry is asked about again only when due, 10 minutes after its last check (or at the end of
   its 24 hours, if sooner), or at once when its `missingSince` changed meanwhile; the gateway keeps these times in
   memory only for entries checked within the last 10 minutes (at most 10,000).

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { type FileHandle, mkdir, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -250,6 +250,79 @@ describe("cloud object outage continuity", () => {
 		expect(Buffer.from(await fixture.objects.get(profileId, sha256, bytes.length))).toEqual(bytes);
 		expect(fixture.cloud.catalog.get(objectKey)?.backend).toBe("nas-object-gateway");
 		expect(fixture.cloud.physicalWrites).toBe(0);
+	});
+
+	it("answers an upload after two synchronous file writes: the intent and the bytes", async () => {
+		const fixture = await gateway();
+		const probe = await open(join(fixture.root, "sync-probe"), "w");
+		const prototype = Object.getPrototypeOf(probe) as { sync(): Promise<void> };
+		await probe.close();
+		const sync = prototype.sync;
+		let fileSyncs = 0;
+		const spy = vi.spyOn(prototype, "sync").mockImplementation(async function (this: FileHandle) {
+			// A directory's sync writes nothing on NFS; a file's is the disk flush on the storage server.
+			if ((await this.stat()).isFile()) fileSyncs++;
+			return sync.call(this);
+		});
+		try {
+			expect(await fixture.upload()).toBe("stored");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(fileSyncs).toBe(2);
+		expect(fixture.cloud.catalog.has(objectKey)).toBe(true);
+		expect(await fixture.journal.read(`pending/${profileId}-${sha256}`)).toMatchObject({ state: "unconfirmed" });
+		expect(await fixture.replication.status()).toEqual({ pending: 1, blocked: 0, degraded: true });
+		await fixture.replication.reconcile();
+		expect(fixture.cloud.replicas.size).toBe(1);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+	});
+
+	it("writes stored objects' audit lines with the reconcile's next sync, all in one", async () => {
+		const fixture = await gateway();
+		const second = Buffer.from("second immutable object");
+		await fixture.upload();
+		await fixture.upload(createHash("sha256").update(second).digest("hex"), second);
+		const audit = vi.spyOn(fixture.journal, "audit");
+		await fixture.replication.reconcile();
+		expect(audit.mock.calls[0]).toHaveLength(2);
+		const events = (await readFile(join(fixture.root, "state", "audit.jsonl"), "utf-8"))
+			.trim()
+			.split("\n")
+			.map((line) => (JSON.parse(line) as { event: string }).event);
+		expect(events.filter((event) => event === "object_stored_replication_pending")).toHaveLength(2);
+		expect(events.filter((event) => event === "object_replicated")).toHaveLength(2);
+	});
+
+	it("still replicates an answered upload after a crash that lost its audit line", async () => {
+		const fixture = await gateway();
+		expect(await fixture.upload()).toBe("stored");
+		await fixture.restart();
+		await fixture.replication.reconcile();
+		expect(fixture.cloud.replicas.size).toBe(1);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+		const audit = await readFile(join(fixture.root, "state", "audit.jsonl"), "utf-8");
+		expect(audit).toContain("object_replicated");
+		expect(audit).not.toContain("object_stored_replication_pending");
+	});
+
+	it("refuses uploads while the audit refuses its lines, and writes them once it takes them", async () => {
+		const fixture = await gateway();
+		const second = Buffer.from("second immutable object");
+		const secondHash = createHash("sha256").update(second).digest("hex");
+		await fixture.upload();
+		const audit = vi
+			.spyOn(fixture.journal, "audit")
+			.mockRejectedValue(new Error("Gateway audit capacity requires operator attention"));
+		await fixture.replication.reconcile();
+		expect((await fixture.replication.status()).degraded).toBe(true);
+		await expect(fixture.upload(secondHash, second)).rejects.toThrow("capacity");
+		await expect(fixture.objects.get(profileId, secondHash, second.length)).rejects.toThrow("not found");
+		audit.mockRestore();
+		expect(await fixture.upload(secondHash, second)).toBe("stored");
+		await fixture.replication.flushStoredLines();
+		const lines = (await readFile(join(fixture.root, "state", "audit.jsonl"), "utf-8")).trim().split("\n");
+		expect(lines.filter((line) => line.includes("object_stored_replication_pending"))).toHaveLength(2);
 	});
 
 	it("does not strand a newly authorized upload of a previously cleaned immutable identity", async () => {

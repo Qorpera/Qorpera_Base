@@ -30,6 +30,8 @@ export interface BlockedObject extends LegacyObjectMigrationItem {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
+/** Stored objects' audit lines kept for the reconcile's one sync. At this many an upload writes them itself. */
+const MAX_STORED_LINES = 1000;
 
 function pendingObject(value: unknown, expectedKey: string): PendingObject {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Replication intent is invalid");
@@ -72,6 +74,8 @@ export class ObjectGatewayReplication {
 	#pendingCursor: string | undefined;
 	#lastError = false;
 	#running = false;
+	readonly #storedLines: Record<string, unknown>[] = [];
+	#storedLinesRefused = false;
 
 	constructor(journal: ObjectGatewayJournal, store: FileSystemObjectStore, authority: ObjectReplicationAuthority) {
 		this.#journal = journal;
@@ -92,6 +96,8 @@ export class ObjectGatewayReplication {
 		const object = { profileId, sha256, bytes: bytes.byteLength };
 		verify(bytes, object);
 		return this.#journal.exclusive(key(object), async () => {
+			// A line the audit refused stops uploads until it is written, as it did when each upload wrote its own.
+			if (this.#storedLinesRefused || this.#storedLines.length >= MAX_STORED_LINES) await this.flushStoredLines();
 			// Recheck inside the same lane as cleanup; an earlier request is not a reusable write grant.
 			await authority.authorize();
 			const prior = await this.#journal.read(key(object));
@@ -100,14 +106,31 @@ export class ObjectGatewayReplication {
 			await this.#journal.write(key(object), { ...object, state: "unconfirmed" });
 			const result = await this.#store.put(profileId, sha256, bytes);
 			await authority.confirm();
-			await this.#journal.write(key(object), { ...object, state: "replicate" });
-			await this.#journal.audit({
+			// The answer waits for the intent and the bytes only: on the NAS each synchronous write is a disk flush. The
+			// entry stays `unconfirmed`, which the reconcile treats as it treats `replicate` (a crash just here left it so
+			// already), and the audit line goes with the reconcile's next sync. A crash before that sync loses the line, and
+			// the entry still brings the object's `object_replicated`.
+			this.#storedLines.push({
 				event: "object_stored_replication_pending",
 				at: new Date().toISOString(),
 				...object,
 			});
 			return result;
 		});
+	}
+
+	/** Writes the stored objects' audit lines waiting, with one sync. A refusal keeps them, and refuses uploads until a
+	 * later try writes them. */
+	async flushStoredLines(): Promise<void> {
+		const lines = this.#storedLines.splice(0);
+		try {
+			if (lines.length > 0) await this.#journal.audit(...lines);
+			this.#storedLinesRefused = false;
+		} catch (error) {
+			this.#storedLines.unshift(...lines);
+			this.#storedLinesRefused = true;
+			throw error;
+		}
 	}
 
 	/** Runs `operation` under the object's lock: the one its upload, replication, cleanup and folder GC's lane take. */
@@ -202,10 +225,14 @@ export class ObjectGatewayReplication {
 		let blocked = 0;
 		for (const name of await this.#journal.list("pending")) {
 			const entry = pendingObject(await this.#journal.read(name), name);
-			if (entry.state === "blocked" || entry.state === "unconfirmed") blocked++;
+			if (entry.state === "blocked") blocked++;
 			else if (entry.state !== "deleted") pending++;
 		}
-		return { pending, blocked, degraded: this.#lastError || pending > 0 || blocked > 0 };
+		return {
+			pending,
+			blocked,
+			degraded: this.#lastError || this.#storedLinesRefused || pending > 0 || blocked > 0,
+		};
 	}
 
 	async reconcile(limit = 50): Promise<void> {
@@ -215,6 +242,10 @@ export class ObjectGatewayReplication {
 		this.#running = true;
 		this.#lastError = false;
 		try {
+			// A refused audit shows as degraded and stops uploads; the entries below still go on.
+			await this.flushStoredLines().catch(() => {
+				this.#lastError = true;
+			});
 			let processed = 0;
 			const names = await this.#journal.list("pending");
 			const ordered = this.#pendingCursor
