@@ -162,6 +162,30 @@ select pg_temp.base_assert(not pg_temp.re_claims_run('56300000-0000-4000-8000-00
 	and not pg_temp.re_claims_run('92400000-0000-4000-8000-000000000092'),'No orchestrator claims the job until the wait ends');
 rollback to savepoint two;
 
+-- 2e. This run is a member's post, and its attempt is bound to node A (20260930602000). A full fast host's 2 s never
+-- shortens node B's running 15 s, and neither does the holder's next refusal: nobody comes back to the bound run sooner.
+savepoint bound_member;
+select set_config('qorpera_test.re_until',(pg_temp.re_job()).dispatch_deferred_until::text,true) \g /dev/null
+set local role service_role;
+select set_config('qorpera_test.re_claim',pg_temp.re_claim('56300000-0000-4000-8000-0000000000c1')::text,true) \g /dev/null
+select pg_temp.base_assert((pg_temp.re_release('56300000-0000-4000-8000-0000000000c1',current_setting('qorpera_test.re_claim')::jsonb,
+	'ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED') ->> 'deferred')::boolean,'Node C''s fast host is full');
+reset role;
+select pg_temp.base_assert((pg_temp.re_job()).dispatch_refused_by is null
+	and (pg_temp.re_job()).dispatch_deferred_until = current_setting('qorpera_test.re_until')::timestamptz,
+	'A full fast host''s 2 s leaves node B''s wait as it is, for every orchestrator: ' || to_jsonb(pg_temp.re_job())::text);
+rollback to savepoint bound_member;
+set local role service_role;
+select set_config('qorpera_test.re_claim',pg_temp.re_claim('92400000-0000-4000-8000-000000000092')::text,true) \g /dev/null
+select pg_temp.base_assert((pg_temp.re_release('92400000-0000-4000-8000-000000000092',current_setting('qorpera_test.re_claim')::jsonb,
+	'ADMISSION_REFUSED:NODE_CAPACITY_EXHAUSTED') ->> 'deferred')::boolean,'The holder''s node is still full');
+reset role;
+select pg_temp.base_assert((pg_temp.re_job()).dispatch_refused_by is null
+	and (pg_temp.re_job()).dispatch_deferred_until = (select claim.released_at from public.qorpera_runner_job_claims claim
+		where claim.id = (current_setting('qorpera_test.re_claim')::jsonb ->> 'claim_id')::uuid) + interval '15 seconds',
+	'The holder''s refusal makes everyone wait 15 s: ' || to_jsonb(pg_temp.re_job())::text);
+rollback to savepoint bound_member;
+
 -- 2d. The bound: a reservation older than 15 minutes (its holder may be gone and never release it) is counted again.
 savepoint old;
 update public.qorpera_runtime_machine_allocations set reserved_at = clock_timestamp() - interval '16 minutes'

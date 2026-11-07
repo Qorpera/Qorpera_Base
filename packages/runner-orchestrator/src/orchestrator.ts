@@ -327,12 +327,13 @@ export interface CloudRunnerOrchestratorControlPlane {
 		assignmentSeconds: number,
 		signal?: AbortSignal,
 	): Promise<CloudRunnerAssignment>;
+	/** Answers `deferred` when the release left the job waiting by its own deferral, with nothing counted. */
 	releaseClaim(
 		claim: CloudRunnerOrchestrationClaim,
 		clientAssignmentId: string,
 		error: string,
 		signal?: AbortSignal,
-	): Promise<void>;
+	): Promise<{ deferred: boolean } | undefined>;
 }
 
 export interface CloudRunnerOccurrenceReconciler {
@@ -2132,6 +2133,8 @@ export class CloudRunnerOrchestrator {
 	readonly #claimRenewalIntervalMs: number;
 	readonly #assignmentSeconds: number;
 	readonly #dispatchConcurrency: number;
+	/** Failed acquisitions whose release the control plane answered with a deferral: see `reconcile.required`. */
+	readonly #deferredDispatches = new WeakSet<object>();
 	readonly #clientClaimId: () => string;
 	readonly #clientAssignmentId: () => string;
 	readonly #createCapability: () => string;
@@ -2284,9 +2287,10 @@ export class CloudRunnerOrchestrator {
 			void acquisition
 				.then((lateRunner) => this.#providerAdapter.stop(lateRunner, "delivery_failed"))
 				.catch(() => undefined);
-			await this.#controlPlane
+			const released = await this.#controlPlane
 				.releaseClaim(claim, clientAssignmentId, deliveryFailure(error))
 				.catch(() => undefined);
+			if (released?.deferred && typeof error === "object" && error !== null) this.#deferredDispatches.add(error);
 			throw error;
 		}
 		if (
@@ -2462,7 +2466,8 @@ export class CloudRunnerOrchestrator {
 			/** The latest finished pass failed. */
 			failed: false,
 			/** Claims wait for a successful pass numbered at least this: the first one, and after a failed
-			 * dispatch, which can leave a finished sandbox or a retained claim behind, the next to start. */
+			 * dispatch, which can leave a finished sandbox or a retained claim behind, the next to start.
+			 * An acquisition the control plane deferred is the exception: see the dispatch's catch below. */
 			required: 1,
 			/** Retained claims are re-read after each successful pass, as soon as the loop has capacity
 			 * for them, and keep that priority until the read succeeds. */
@@ -2542,7 +2547,12 @@ export class CloudRunnerOrchestrator {
 								// A failed dispatch can leave a finished sandbox or a retained claim
 								// behind: reconcile at once, and claim again after that pass. A deferred or
 								// retried job sends no wake-up, so poll at the fast rate for a while.
-								reconcile.required = reconcile.started + 1;
+								// An acquisition the control plane deferred left neither: no machine started,
+								// its claim is released and its job waits by its own deferral, whatever
+								// row the provider keeps for its next try. That release holds no claims, as
+								// a pass that materializes a burst of wakes takes seconds (production, 6 Nov
+								// 2026: one refusal held every claim for 11.3 s). A lost release still does.
+								if (!this.#deferredDispatches.has(error as object)) reconcile.required = reconcile.started + 1;
 								reconcileTimer.wake();
 								wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
 								options.onError?.(error);
@@ -3012,11 +3022,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		clientAssignmentId: string,
 		error: string,
 		signal?: AbortSignal,
-	): Promise<void> {
+	): Promise<{ deferred: boolean }> {
 		this.#assertIdentity(claim.orchestratorId);
 		requiredUuid(clientAssignmentId, "Client assignment id");
 		const failure = safeDeliveryFailure(error);
-		await this.#request(
+		const released = await this.#request(
 			{
 				action: "release_claim",
 				orchestratorId: this.#orchestratorId,
@@ -3026,6 +3036,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			},
 			signal,
 		);
+		return { deferred: (released as { deferred?: unknown } | null)?.deferred === true };
 	}
 
 	#assertIdentity(orchestratorId: string): void {

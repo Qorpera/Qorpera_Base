@@ -67,6 +67,8 @@ const WARM_SCHEMA = "qorpera.shared-execution-warm-slot/v1";
 /** After this many failed retirements a sandbox is recorded as lost and its
  * slot is handed back; the reason stays in the archived journal. */
 const MAX_RETIRE_ATTEMPTS = 12;
+/** How long a native host gets to answer SIGTERM, once its runner unit exited (its run ended, or it crashed), before it is killed. */
+const ENDED_RUN_HOST_STOP_MS = 1_000;
 /** The provider's own refusal reasons. `NODE_NOT_PREFERRED` is the control
  * plane's "defer this orchestrator only" reason: another provider on another
  * node can still take the job. The others defer every orchestrator briefly. */
@@ -189,7 +191,8 @@ function warmConversationKey(work: CloudRunnerWork): string | undefined {
 
 export interface SharedExecutionUnitControl {
 	start(unit: string, signal?: AbortSignal): Promise<void>;
-	stop(unit: string, signal?: AbortSignal): Promise<void>;
+	/** Waits `waitMs` at most for the unit to go, 15 s without one. */
+	stop(unit: string, signal?: AbortSignal, waitMs?: number): Promise<void>;
 	active(unit: string, signal?: AbortSignal): Promise<boolean>;
 	/** The subset of `units` that is active or activating, in one query. */
 	activeSet(units: readonly string[], signal?: AbortSignal): Promise<Set<string>>;
@@ -302,9 +305,9 @@ class SystemctlUnitControl implements SharedExecutionUnitControl {
 	 * bounded time, and let retire observe the unit later if it lingers. A
 	 * one-run unit that ended non-zero stays "failed" until reset; the slot is
 	 * free either way, so clear it before the next start. */
-	async stop(unit: string, signal?: AbortSignal): Promise<void> {
+	async stop(unit: string, signal?: AbortSignal, waitMs = 15_000): Promise<void> {
 		await execFileAsync("/usr/bin/systemctl", ["stop", "--no-block", unit], { signal, timeout: 30_000 });
-		const deadline = Date.now() + 15_000;
+		const deadline = Date.now() + waitMs;
 		while (Date.now() < deadline && (await this.active(unit, signal))) await delay(250, signal);
 		await execFileAsync("/usr/bin/systemctl", ["reset-failed", unit], { signal, timeout: 10_000 }).catch(
 			() => undefined,
@@ -1004,7 +1007,19 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// Parking keeps the host for the conversation's next run: only the runner stops.
 			const park = options.park === true;
 			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
-			if (!park) await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
+			// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
+			// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
+			// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
+			// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
+			// kill below. A revoked or undelivered run's host keeps the full wait.
+			if (!park)
+				await this.#units
+					.stop(
+						this.#unit("host", marked.slot),
+						signal,
+						marked.stopReason === "idle" ? ENDED_RUN_HOST_STOP_MS : undefined,
+					)
+					.catch(() => undefined);
 			signal?.throwIfAborted();
 			const slotUnits = park
 				? [this.#unit("runner", marked.slot)]
