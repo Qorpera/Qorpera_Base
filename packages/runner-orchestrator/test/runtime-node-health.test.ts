@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	collectRuntimeNodeHealthProcess,
+	measuredRuntimeNodeHealth,
 	parseRuntimeNodeHealth,
 	type RuntimeNodeHealth,
 	RuntimeNodeHealthPublisher,
@@ -110,6 +111,21 @@ describe("bounded node health evidence", () => {
 		])
 			expect(() => parseRuntimeNodeHealth(invalid)).toThrow();
 	});
+	it("gives a measured report a new time-ordered id and keeps everything else", () => {
+		vi.useFakeTimers({ now: Date.parse(until) });
+		try {
+			// As the real collection calls it: the helper adds the schema, the id and the time.
+			const { schema: _schema, observationId: _observationId, observedAt: _observedAt, ...fields } = sample();
+			const report = measuredRuntimeNodeHealth(fields);
+			expect(report.observationId[14]).toBe("7");
+			expect(report.observationId.replaceAll("-", "").slice(0, 12)).toBe(
+				Date.parse(until).toString(16).padStart(12, "0"),
+			);
+			expect({ ...report, observationId: sample().observationId }).toEqual(sample());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();
 		const publisher = new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, async () => sample());
@@ -131,6 +147,8 @@ describe("bounded node health evidence", () => {
 		const publisher = new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, collect);
 		await publisher.observe(new AbortController().signal);
 		const observation = call.mock.calls[0]![1].p_observation;
+		// A time-ordered id: reports land beside each other in the receipts' index.
+		expect((observation as { observationId: string }).observationId[14]).toBe("7");
 		expect(parseRuntimeNodeHealth(observation)).toMatchObject({
 			bootId: null,
 			cpu: null,

@@ -41,6 +41,8 @@ until the child closes, preventing overlapping unreaped probes. A kernel-blocked
 child can remain pending after that signal. Inventory polling uses its own loop
 and HTTP adapter, so pending collection or export does not occupy admission's
 inventory publisher. Both loops wait five seconds after each settled attempt.
+Observation ids are time-ordered (UUID version 7), so a report lands beside the one
+before it in the receipts' index instead of on a random page.
 
 The registry retains immutable original observations, receipt times, policy and
 package hashes. Exact replay returns the original receipt. Conflicting replay is
