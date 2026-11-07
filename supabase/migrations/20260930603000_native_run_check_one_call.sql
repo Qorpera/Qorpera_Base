@@ -9,9 +9,14 @@
 -- qorpera_check_native_run makes the same two calls, in the same order, in one call of the native host. Nothing is
 -- skipped or remembered: both checks run on every check, and under READ COMMITTED each sees what committed before it
 -- starts. A refusal from either is the call's refusal. The two are still never in flight at once (R1): they are two
--- statements of one transaction. The read-set check takes the run's budget row with its own lock_timeout of 3 s
--- (20260930540000), which it keeps here; describe reads plain (20260930487000), so nothing holds the row any longer than
--- the read-set check did. The qorpera_fence_native_context call before a model request has done the same since 20260928339400.
+-- statements of one transaction, under one 8 s statement budget instead of 8 s each.
+--
+-- It must ask what the two calls ask. So describe, called directly by this entry point, reads plain as it does when it
+-- is the entry point itself (20260930487000, as 20260930499000 did for the context describe); any other caller keeps
+-- the locked run check. The read-set check then takes the run's budget row with its own lock_timeout of 3 s
+-- (20260930540000): with the row held, the call gives up with 55P03 after about 3 s (test 467), and the checks made are
+-- exactly the two calls' (test 1103). Without this describe would wait for the row under the entry point's 8 s, and hold
+-- it longer.
 --
 -- Rollout: record this migration before the runtime that calls it. A runtime on a database without it falls back to
 -- the two separate calls (CloudCompanyPathGateway.checkRun), and a database without such a runtime changes nothing.
@@ -61,3 +66,40 @@ as $$
 		'qorpera_fence_native_context'
 	]), false)
 $$;
+
+-- describe: plain also under this call as the entry point, when it is the frame directly above describe.
+create temporary table nc_before as
+select prosecdef, proconfig, provolatile, proacl from pg_proc
+where oid = 'public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure;
+
+create function pg_temp.nc_replace(p_function regprocedure, p_old text, p_new text) returns void language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_function);
+begin
+	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
+		raise exception '20260930603000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+	execute replace(v_definition, p_old, p_new);
+end $$;
+
+select pg_temp.nc_replace('public.qorpera_describe_native_tool_authority(jsonb)',
+	$old$			or (v_entry is not distinct from 'qorpera_describe_company_run_context'
+				and split_part(v_context, E'\n', 2) ~ '^PL/pgSQL function (public\.)?qorpera_describe_company_run_context\(jsonb\) line '))
+$old$,
+	$new$			or (v_entry is not distinct from 'qorpera_describe_company_run_context'
+				and split_part(v_context, E'\n', 2) ~ '^PL/pgSQL function (public\.)?qorpera_describe_company_run_context\(jsonb\) line ')
+			-- 20260930603000: or the run's check around a tool call is that entry point and calls describe itself.
+			or (v_entry is not distinct from 'qorpera_check_native_run'
+				and split_part(v_context, E'\n', 2) ~ '^PL/pgSQL function (public\.)?qorpera_check_native_run\(uuid,jsonb\) line '))
+$new$);
+
+do $$
+declare v_describe pg_proc; v_before record;
+begin
+	select * into strict v_describe from pg_proc where oid = 'public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure;
+	select * into strict v_before from pg_temp.nc_before;
+	if position('20260930603000' in v_describe.prosrc) = 0 or position('20260930487000' in v_describe.prosrc) = 0
+		or position('20260930499000' in v_describe.prosrc) = 0
+		or v_describe.prosecdef is distinct from v_before.prosecdef or v_describe.proconfig is distinct from v_before.proconfig
+		or v_describe.provolatile is distinct from v_before.provolatile or v_describe.proacl is distinct from v_before.proacl then
+		raise exception '20260930603000: describe did not change as expected'; end if;
+end $$;
+drop table pg_temp.nc_before;

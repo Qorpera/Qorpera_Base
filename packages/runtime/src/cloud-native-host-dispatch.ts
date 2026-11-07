@@ -17,7 +17,8 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * release of tree blocks, M1b-3), 20260930204000 (the primary view and its record, M1b-4a), 20260930220000 (branches,
  * M4), 20260930231000 (run logs, W1b), 20260930300000 (tree writer, M1b-4b-2), 20260930300100 (the admission split,
  * M1b-4b-3), 20260930340000 (resumed attempts, W5b-2), 20260930341000 (worker memory, W4b), 20260930539000 (a
- * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites) and 20260930566000 (good will) list them, without the two
+ * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites), 20260930566000 (good will) and
+ * 20260930603000 (the run's check around a tool call) list them, without the two
  * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
  * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model request's
  * fence's. */

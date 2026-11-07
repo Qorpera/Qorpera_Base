@@ -366,7 +366,7 @@ export class CloudNativeToolRun {
 
 	/**
 	 * assertActive with another cloud call that reads the run's authority in its own
-	 * transaction (the one-call context fence reads it with the same describe function), safe to repeat.
+	 * transaction (the one-call context fence and run check read it with the same describe function), safe to repeat.
 	 * The same checks before the call (not closed, the last authority not lapsed) and after
 	 * it (same identity, not expired, new deadline). Returns false, changing nothing, when `read` returns undefined:
 	 * the database lacks the call and nothing ran.

@@ -411,7 +411,7 @@ describe("cloud-owned native tool boundary", () => {
 		expect(full.content.text).not.toContain("whsec_0123456789");
 	});
 
-	it("keeps a page whole that leaves the envelope its reserve, with a run's whole identity and the longest call id", async () => {
+	it("keeps a page whole that leaves the envelope its reserve, with the longest call id and model a binding allows", async () => {
 		const { authority } = nativeToolAuthorityFixture();
 		const identity = {
 			...authority.identity,
@@ -420,13 +420,16 @@ describe("cloud-owned native tool boundary", () => {
 			staffVersion: Number.MAX_SAFE_INTEGER,
 			sponsorVersion: Number.MAX_SAFE_INTEGER,
 			providerConnectionVersion: Number.MAX_SAFE_INTEGER,
-			model: "m".repeat(40),
+			model: "m".repeat(160),
 		};
 		// What a tool sends when it has measured a page to its last byte, as fitsOneResult does.
 		const page = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 2);
 		expect(fitsOneResult(page)).toBe(true);
 		expect(fitsOneResult(`${page}x`)).toBe(false);
-		const { tool } = fixture({ name: "company_read", execute: async () => ({ kind: "text", value: page }) });
+		const { tool } = fixture({
+			name: "company_read",
+			execute: async () => ({ kind: "text", value: page, companyReadId: randomUUID() }),
+		});
 		const boundary = new CloudNativeToolBoundary({
 			companyId: identity.companyId,
 			runId: identity.runId,
