@@ -422,7 +422,7 @@ describe("a peer that hangs up", () => {
 			...args: unknown[]
 		) {
 			if (event === "connection") accepted.push(args[0] as Socket);
-			return emit.call(this, event, ...args);
+			return Reflect.apply(emit, this, [event, ...args]) as boolean;
 		});
 		const f = await fixture();
 		const client = connect(f.service.path);
