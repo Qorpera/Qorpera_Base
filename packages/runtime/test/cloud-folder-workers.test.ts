@@ -643,5 +643,8 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	);
 	expect(report?.name).toBe("report_work");
 	const parsed = report?.parseArguments({ operationKey: "report-1", outcome: "succeeded", summary: "Done." });
-	expect(parse(await report!.execute(parsed, reporting.context))).toMatchObject({ outcome: "saved" });
+	const answered = await report!.execute(parsed, reporting.context);
+	expect(parse(answered)).toMatchObject({ outcome: "saved" });
+	// The writer's own answer: a saved report ends the worker's turn.
+	expect(answered.completesTurn).toBe(true);
 });

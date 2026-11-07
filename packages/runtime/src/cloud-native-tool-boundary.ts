@@ -161,7 +161,8 @@ export interface CloudNativeTool {
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
-	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
+	/** Host-only: a confirmed final public send, or a worker's saved report (unless its answer tells of desktop paths the
+	 * folder did not take). The turn ends after this result is fenced. */
 	completesTurn?: boolean;
 	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
 	 * converted), handed to the model right after the envelope. */
@@ -226,8 +227,10 @@ export interface CloudNativeFolderReports {
 export interface CloudDynamicToolResponse {
 	contentItems: [{ type: "inputText"; text: string }, ...Array<{ type: "inputImage"; imageUrl: string }>];
 	success: boolean;
-	/** Host-only signal to the native session, never written to the provider. */
-	completesTurn?: true;
+	/** Host-only signal to the native session, never written to the provider: the turn ends at the fence after this
+	 * result. `alone`: only when this was the model response's one call, counting the calls Codex answers itself, so no
+	 * other answer goes unread. */
+	completesTurn?: true | "alone";
 }
 
 export interface CloudNativeResultInput {
@@ -1249,15 +1252,24 @@ export class CloudNativeToolBoundary {
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
 		this.#issuedResults.add(fingerprint);
 		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+		// A final send closes the turn whatever else its answer says or its response holds (contract 7.1). A worker's report
+		// waits for one more round when its answer tells of desktop paths the folder did not take, or that more of that
+		// report is to come, and when its response held another call (`alone`): the worker is the only one who can act on
+		// those, and this is the last result it would read.
+		const folderUnread =
+			folder && (folder.report.notSaved || folder.report.refused !== undefined || folder.report.more);
 		const completesTurn =
-			status === "ok" &&
-			tool?.source === "runtime" &&
-			(tool.name === "send_message" || tool.name === "ask_member") &&
-			content.completesTurn === true;
+			status !== "ok" || content.completesTurn !== true
+				? undefined
+				: tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")
+					? (true as const)
+					: tool?.source === "worker" && tool.name === "report_work" && !folderUnread
+						? ("alone" as const)
+						: undefined;
 		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],
 			success: status === "ok",
-			...(completesTurn ? { completesTurn: true } : {}),
+			...(completesTurn ? { completesTurn } : {}),
 		};
 		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
 		return response;
