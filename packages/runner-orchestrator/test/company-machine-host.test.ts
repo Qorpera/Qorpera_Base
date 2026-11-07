@@ -386,6 +386,8 @@ async function fixture(
 			},
 			helperSha256,
 			agentPlug,
+			// A pass waits for every step here, unless a test says otherwise.
+			passHoldMs: Number.POSITIVE_INFINITY,
 			...pins,
 			...upgraded,
 			...(withFolder ? { folder } : {}),
@@ -395,6 +397,7 @@ async function fixture(
 	return {
 		entry,
 		calls,
+		control,
 		refusals,
 		admissions,
 		retirements,
@@ -475,6 +478,8 @@ describe("company machine host", () => {
 		expect(execs).toEqual([
 			["prepare", id(2), expect.stringMatching(/^\d+$/)],
 			["refresh-lease", "900000"],
+			// A new boot is marked once it is usable.
+			["basic.target", "network-online.target"],
 		]);
 		const marked = f.calls.find((call) => call.method === "qorpera_mark_company_machine_running");
 		expect(marked?.args).toMatchObject({
@@ -974,6 +979,7 @@ describe("company machine host", () => {
 			"refresh-lease",
 			"prepare",
 			"refresh-lease",
+			"basic.target",
 		]);
 		expect(failures(f)).toEqual([]);
 	});
@@ -1203,7 +1209,8 @@ describe("company machine host's wake (perf A5)", () => {
 		f.host.wake();
 		const started = Date.now();
 		await f.host.pause(60000, wait.signal);
-		expect(Date.now() - started).toBeLessThan(1000);
+		// At once, but for the second passes keep between them.
+		expect(Date.now() - started).toBeLessThan(1500);
 	});
 
 	it("the wait ends at its time without a wake, and on its signal", async () => {
@@ -1361,7 +1368,8 @@ describe("company machine host's wake (perf A5)", () => {
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		const started = Date.now();
 		await f.host.pause(60000, f.signal);
-		expect(Date.now() - started).toBeLessThan(1000);
+		// At once, but for the second passes keep between them.
+		expect(Date.now() - started).toBeLessThan(1500);
 	});
 
 	it("leaves nothing on the long-lived signal it is given (Node 22's AbortSignal.any walks what is there)", async () => {
@@ -1402,6 +1410,124 @@ describe("company machine host's wake (perf A5)", () => {
 		ending.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 		await short.host.settled();
 		expect(seen?.aborted).toBe(true);
+	});
+
+	it("a usable boot whose step stays pending asks for one pass, not one after another (review F1)", async () => {
+		for (const failing of ["prepare", "helper"] as const) {
+			const f = await fixture();
+			const up = booting(f);
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			up.agent = true;
+			up.usable = true;
+			if (failing === "prepare") {
+				const exec = f.client.execInstance.getMockImplementation()!;
+				f.client.execInstance.mockImplementation(async (project, name, asked) => {
+					if (asked[3] === "prepare") throw new Error("LXD instance command failed");
+					return exec(project, name, asked);
+				});
+			} else
+				f.client.readInstanceFile.mockImplementation(async () => ({
+					content: Buffer.from("another helper"),
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+				}));
+			const lists = () => f.methods().filter((method) => method === "qorpera_list_executor_machines").length;
+			const before = lists();
+			const running = new AbortController();
+			const loop = f.host.run(running.signal, () => undefined);
+			await new Promise((settle) => setTimeout(settle, 7000));
+			running.abort();
+			await loop;
+			// The first pass at once. Then, for a boot not up yet, at most STARTING_WAKES passes a look asked for; for a
+			// step that failed for another reason, none: the next comes at its time, 10 s on.
+			expect(lists() - before).toBeLessThanOrEqual(failing === "prepare" ? 4 : 1);
+		}
+	}, 30000);
+
+	it("passes come a second apart at most, however many wakes come", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		f.running();
+		const running = new AbortController();
+		const lists = () => f.methods().filter((method) => method === "qorpera_list_executor_machines").length;
+		const before = lists();
+		const loop = f.host.run(running.signal, () => undefined);
+		const waking = setInterval(() => f.host.wake(), 20);
+		await new Promise((settle) => setTimeout(settle, 2500));
+		clearInterval(waking);
+		running.abort();
+		await loop;
+		expect(lists() - before).toBeGreaterThanOrEqual(2);
+		expect(lists() - before).toBeLessThanOrEqual(4);
+	});
+
+	it("a pass whose list was asked before a late step ended leaves that placement to the next pass (review F2)", async () => {
+		const f = await fixture({ folder: true, passHoldMs: 20 });
+		let free = () => {};
+		const held = new Promise<void>((settle) => {
+			free = settle;
+		});
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project, name, asked) => {
+			if (asked[3] === "refresh-lease") await held;
+			return exec(project, name, asked);
+		});
+		// The start step outlives its pass.
+		expect(await f.host.pass(f.signal)).toEqual([]);
+		// The next pass's list is answered as SQL saw it before the step ended, and delivered after it ended.
+		const call = f.control.call.getMockImplementation()!;
+		let listing: (() => void) | undefined;
+		f.control.call.mockImplementation(async (method, args) => {
+			if (method !== "qorpera_list_executor_machines") return call(method, args);
+			const answer = await call(method, args);
+			await new Promise<void>((settle) => {
+				listing = settle;
+			});
+			return answer;
+		});
+		const second = f.host.pass(f.signal);
+		await until(() => listing !== undefined);
+		free();
+		await f.host.settled();
+		listing?.();
+		await second;
+		await f.host.settled();
+		const marks = f.methods().filter((method) => method === "qorpera_mark_company_machine_running").length;
+		expect(marks).toBe(1);
+		expect(f.views.opened).toHaveLength(1);
+	});
+
+	it("marks a new boot running only once it is usable, for a minute at most (review F4)", async () => {
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const f = await fixture();
+			const up = booting(f);
+			up.agent = true;
+			const waiting = new AbortController();
+			let told: boolean | undefined;
+			void f.host.changed(id(2), waiting.signal).then((answer) => {
+				told = answer;
+			});
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			expect(f.methods()).not.toContain("qorpera_mark_company_machine_running");
+			expect(told).toBeUndefined();
+			// Usable: marked, and the waiting worker told.
+			up.usable = true;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+			await new Promise((settle) => setTimeout(settle, 0));
+			expect(told).toBe(true);
+			// A boot that never becomes usable is marked all the same once its minute is over.
+			const g = await fixture();
+			const late = booting(g);
+			late.agent = true;
+			expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			clock.mockReturnValue(now + 60001);
+			expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("a pass without a hold still waits for every step", async () => {

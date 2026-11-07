@@ -52,8 +52,8 @@ export class MachineCommandRouter {
 			});
 			return (await gateway.wake?.(request.scope, wait, bounded)) === true;
 		}).map((asked) => asked.catch(() => false));
-		if (local) return local;
-		return wait ? anyTold(peers) : Promise.all(peers).then(() => false);
+		const asked = local ? [local, ...peers] : peers;
+		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
 	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);
@@ -81,4 +81,34 @@ export class MachineCommandRouter {
 			throw refusal ? new CloudMachineCommandRefusal(refusal, error instanceof CloudMachineCommandRefusal ? error.folderLost : undefined) : error;
 		}
 	}
+}
+
+/** How a router reaches this node's machines for a wake (MachineCommandRouter's `wakeLocal`). */
+export function localMachineWake(host: {
+	wake(): void;
+	changed(machineId: string, signal: AbortSignal): Promise<boolean>;
+}): (machineId: string, wait: boolean, signal: AbortSignal) => Promise<boolean> {
+	return async (machineId, wait, signal) => {
+		if (wait) return host.changed(machineId, signal);
+		host.wake();
+		return false;
+	};
+}
+
+/** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
+ * never forwards. */
+export function machineCommandRoutes(
+	router: MachineCommandRouter,
+	control: MachineCommandRouterOptions["control"],
+	localOnly: boolean,
+): {
+	authorize(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<MachineCommandAuthority>;
+	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	wake(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
+} {
+	return {
+		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
+		execute: (request, signal) => router.execute(request, signal, localOnly),
+		wake: (request, signal) => router.wake(request, signal, localOnly),
+	};
 }

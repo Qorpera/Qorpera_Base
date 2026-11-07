@@ -2,7 +2,11 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
-import { MachineCommandRouter } from "../../../deploy/coding-worker/machine-command-routing.ts";
+import {
+	localMachineWake,
+	MachineCommandRouter,
+	machineCommandRoutes,
+} from "../../../deploy/coding-worker/machine-command-routing.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
@@ -378,6 +382,30 @@ describe("a machine wake's route", () => {
 		const wakeLocal = vi.fn(async () => false);
 		expect(await router({ wakeLocal, urls }).wake(request(), signal, true)).toBe(false);
 		expect(urls).toEqual([]);
+	});
+
+	it("a peer's word counts beside this node's, when the machine is on the peer (review F3)", async () => {
+		expect(await router({ wakeLocal: async () => false, told: true }).wake(request(), signal)).toBe(true);
+	});
+
+	it("an executor's ingress and peer listener route a wake to the router, the peer listener never forwarding", async () => {
+		const wake = vi.fn(async () => true);
+		const execute = vi.fn();
+		const fake = { wake, execute } as unknown as MachineCommandRouter;
+		const asked = request();
+		expect(await machineCommandRoutes(fake, { call: vi.fn() }, false).wake(asked, signal)).toBe(true);
+		expect(await machineCommandRoutes(fake, { call: vi.fn() }, true).wake(asked, signal)).toBe(true);
+		expect(wake.mock.calls.map((call) => call[2])).toEqual([false, true]);
+	});
+
+	it("reaches this node's machines: a word to wait on, or only a pass", async () => {
+		const host = { wake: vi.fn(), changed: vi.fn(async () => true) };
+		const reach = localMachineWake(host);
+		const machineId = randomUUID();
+		expect(await reach(machineId, true, signal)).toBe(true);
+		expect(host.changed).toHaveBeenCalledWith(machineId, signal);
+		expect(await reach(machineId, false, signal)).toBe(false);
+		expect(host.wake).toHaveBeenCalledOnce();
 	});
 
 	it("without machines here, a peer's word answers, and one out of reach is no error", async () => {

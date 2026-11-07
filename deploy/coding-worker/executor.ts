@@ -29,8 +29,7 @@ import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/co
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
-import { authorizeMachineCommand } from "./machine-command-authority.ts";
-import { MachineCommandRouter } from "./machine-command-routing.ts";
+import { localMachineWake, MachineCommandRouter, machineCommandRoutes } from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
@@ -321,8 +320,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
-		// One machine's slow guest or LXD call holds up no other machine's wake.
-		passHoldMs: 2000,
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
@@ -335,11 +332,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
-			wakeLocal: async (machineId, wait, signal) => {
-				if (wait) return machineHost.changed(machineId, signal);
-				machineHost.wake();
-				return false;
-			},
+			wakeLocal: localMachineWake(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -369,11 +362,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
-		machines: {
-			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
-			execute: (request, signal) => machineRouter.execute(request, signal),
-			wake: (request, signal) => machineRouter.wake(request, signal),
-		},
+		machines: machineCommandRoutes(machineRouter, control, false),
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
@@ -381,11 +370,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		proveBinding: null,
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
-		machines: {
-			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
-			execute: (request, signal) => machineRouter.execute(request, signal, true),
-			wake: (request, signal) => machineRouter.wake(request, signal, true),
-		},
+		machines: machineCommandRoutes(machineRouter, control, true),
 	});
 	let executor: CloudCodingExecutor | undefined;
 	try {
@@ -456,19 +441,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// every 10 s after a pass, or at once when a run asks for a machine, a stop or a
 		// release frees room, or a starting guest's boot becomes usable. A failed step is
 		// logged and recorded on its machine.
-		const machines = (async () => {
-			while (machineHost && !stop.signal.aborted) {
-				try {
-					for (const outcome of await machineHost.pass(stop.signal))
-						if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
-						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code) || outcome.folder)
-							console.log(JSON.stringify({ event: "company-machine", ...outcome }));
-				} catch (error) {
-					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));
-				}
-				await machineHost.pause(10_000, stop.signal);
-			}
-		})();
+		const machines = machineHost?.run(stop.signal, (outcomes) => {
+			if (!Array.isArray(outcomes)) console.error(JSON.stringify({ event: "company-machine-error", code: outcomes.failed }));
+			else for (const outcome of outcomes)
+				if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
+				else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code) || outcome.folder)
+					console.log(JSON.stringify({ event: "company-machine", ...outcome }));
+		});
 		// Code hosts: once at start, every one an earlier executor left started
 		// stops, and one made under another policy goes; each starts again on its
 		// company's next job.
