@@ -815,7 +815,7 @@ describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
 			// The entry was the upload's by the time the pass had the lock: it is not asked about, and nothing goes.
 			expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(asked);
 			expect(await f.nasBytes()).toEqual(bytes);
-			expect(await f.journal.read(entryKey)).toMatchObject({ state: confirms ? "replicate" : "unconfirmed" });
+			expect(await f.journal.read(entryKey)).toMatchObject({ state: "unconfirmed" });
 		}
 	});
 

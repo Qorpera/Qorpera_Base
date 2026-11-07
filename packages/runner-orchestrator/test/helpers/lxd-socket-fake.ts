@@ -550,7 +550,9 @@ export class FakeClaimQueue implements CloudRunnerOrchestratorControlPlane {
 			expiresAt: new Date(Date.now() + 120_000).toISOString(),
 		};
 	}
-	async releaseClaim(): Promise<void> {}
+	async releaseClaim(): Promise<undefined> {
+		return undefined;
+	}
 }
 
 function delay(ms: number, signal?: AbortSignal | null): Promise<void> {

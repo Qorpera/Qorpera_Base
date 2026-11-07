@@ -2,12 +2,18 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
-import { MachineCommandRouter } from "../../../deploy/coding-worker/machine-command-routing.ts";
+import {
+	localMachineWake,
+	MachineCommandRouter,
+	machineCommandRoutes,
+} from "../../../deploy/coding-worker/machine-command-routing.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandHttpRequest,
 	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
+	type CloudMachineWakeHttpRequest,
 	createHttpCloudMachineCommandGateway,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
@@ -34,6 +40,7 @@ function receiptFor(machineId: string, commandId: string, inputSha256: string) {
 async function service(
 	authorize: (request: CloudMachineCommandHttpRequest) => Promise<{ inputSha256: string }>,
 	execute: (request: CloudMachineCommandHttpRequest) => Promise<unknown>,
+	wake?: (request: CloudMachineWakeHttpRequest) => Promise<boolean>,
 ) {
 	const token = randomBytes(32).toString("base64url");
 	// G2-6b: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
@@ -52,7 +59,11 @@ async function service(
 		execute: async () => {
 			throw new Error("not a coding command");
 		},
-		machines: { authorize: (request) => authorize(request), execute: (request) => execute(request) },
+		machines: {
+			authorize: (request) => authorize(request),
+			execute: (request) => execute(request),
+			...(wake ? { wake: (request: CloudMachineWakeHttpRequest) => wake(request) } : {}),
+		},
 	});
 	const port = await http.start();
 	cleanups.push(() => http.close());
@@ -132,6 +143,54 @@ describe("machine command gateway", () => {
 		await expect(other.cancel({ machineId }, randomUUID(), new AbortController().signal)).rejects.toThrow(
 			"Machine command gateway unavailable",
 		);
+	});
+
+	it("tells a request the executor did not answer from one it answered", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const read = (fetch: typeof globalThis.fetch) =>
+			createHttpCloudMachineCommandGateway({
+				url: "https://executor.example/",
+				token: randomBytes(32).toString("base64url"),
+				binding,
+				holder: () => "holder",
+				fetch,
+			}).read({ machineId }, { commandId: randomUUID(), offset: 0, limit: 4096 }, new AbortController().signal);
+		// Its connection failed, or a proxy in front of it answered: nothing is known of the request.
+		await expect(
+			read((async () => {
+				throw new TypeError("fetch failed");
+			}) as typeof fetch),
+		).rejects.toBeInstanceOf(CloudMachineCommandUnanswered);
+		for (const status of [502, 503, 504, 524])
+			await expect(read((async () => new Response("", { status })) as typeof fetch)).rejects.toBeInstanceOf(
+				CloudMachineCommandUnanswered,
+			);
+		// The executor's own answers.
+		for (const status of [403, 404]) {
+			const answered = read((async () => new Response("{}", { status })) as typeof fetch);
+			await expect(answered).rejects.toThrow("Machine command gateway unavailable");
+			await expect(answered).rejects.not.toBeInstanceOf(CloudMachineCommandUnanswered);
+		}
+		const refused = read(
+			(async () => new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 })) as typeof fetch,
+		);
+		await expect(refused).rejects.toBeInstanceOf(CloudMachineCommandRefusal);
+		// No answer within the request's 30 s.
+		vi.useFakeTimers();
+		try {
+			const late = read(
+				((_input: string | URL | Request, init?: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+					})) as typeof fetch,
+			);
+			const expected = expect(late).rejects.toBeInstanceOf(CloudMachineCommandUnanswered);
+			await vi.advanceTimersByTimeAsync(30_000);
+			await expected;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("carries why the machine lost a command that already ended, and drops a cause it does not know (6e-2a)", async () => {
@@ -231,6 +290,178 @@ describe("machine command gateway", () => {
 			"Machine command gateway unavailable",
 		);
 		expect(authorize).not.toHaveBeenCalled();
+	});
+});
+
+describe("a machine wake", () => {
+	const nothing = async () => {
+		throw new Error("not a command");
+	};
+	const wakeFixture = async (wake: (request: CloudMachineWakeHttpRequest) => Promise<boolean>) => {
+		const { binding } = nativeToolAuthorityFixture();
+		const started = await service(nothing, nothing, wake);
+		return {
+			...started,
+			binding,
+			gateway: createHttpCloudMachineCommandGateway({
+				url: started.url,
+				token: started.token,
+				binding,
+				holder: () => started.holderOf(binding),
+				allowLoopback: true,
+			}),
+		};
+	};
+	const scope = { machineId: randomUUID() };
+
+	it("reaches the machines' executors with the run's own lease and answers what they said", async () => {
+		const wake = vi.fn(async (request: CloudMachineWakeHttpRequest) => request.input.wait);
+		const f = await wakeFixture(wake);
+		const signal = new AbortController().signal;
+		expect(await f.gateway.wake?.(scope, true, signal)).toBe(true);
+		expect(await f.gateway.wake?.(scope, false, signal)).toBe(false);
+		expect(wake.mock.calls.map(([request]) => [request.scope, request.input])).toEqual([
+			[scope, { wait: true }],
+			[scope, { wait: false }],
+		]);
+		expect(f.proveBinding).toHaveBeenCalledTimes(2);
+	});
+
+	it("asks nothing without the run's own lease, and a wrong token or shape is refused", async () => {
+		const wake = vi.fn(async () => true);
+		const f = await wakeFixture(wake);
+		const signal = new AbortController().signal;
+		const stranger = createHttpCloudMachineCommandGateway({
+			url: f.url,
+			token: f.token,
+			binding: f.binding,
+			holder: () => `job.${f.binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`,
+			allowLoopback: true,
+		});
+		await expect(stranger.wake?.(scope, true, signal)).rejects.toThrow();
+		const wrongToken = createHttpCloudMachineCommandGateway({
+			url: f.url,
+			token: randomBytes(32).toString("base64url"),
+			binding: f.binding,
+			holder: () => f.holderOf(f.binding),
+			allowLoopback: true,
+		});
+		await expect(wrongToken.wake?.(scope, true, signal)).rejects.toThrow();
+		await expect(f.gateway.wake?.({ machineId: "not-a-machine" }, true, signal)).rejects.toThrow();
+		const raw = await fetch(`${f.url}/v1/machine-commands/wake`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${f.token}`,
+				"content-type": "application/json",
+				"x-qorpera-identity": f.holderOf(f.binding),
+			},
+			body: JSON.stringify({
+				schema: "qorpera.machine-command-http/v1",
+				binding: f.binding,
+				scope,
+				action: "wake",
+				input: { wait: true, machine: "other" },
+			}),
+		});
+		expect(raw.status).toBe(403);
+		expect(wake).not.toHaveBeenCalled();
+	});
+
+	it("an executor without the route refuses it, as a run's tool takes it", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const started = await service(nothing, nothing);
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: started.url,
+			token: started.token,
+			binding,
+			holder: () => started.holderOf(binding),
+			allowLoopback: true,
+		});
+		await expect(gateway.wake?.(scope, true, new AbortController().signal)).rejects.toThrow();
+	});
+});
+
+describe("a machine wake's route", () => {
+	const peers = [
+		{
+			owner: "mx-b",
+			providerId: "machine-node",
+			origin: "https://node-b.example",
+			tokenCredential: "qorpera-coding-peer-b",
+		},
+	];
+	const request = (): CloudMachineWakeHttpRequest => ({
+		schema: "qorpera.machine-command-http/v1",
+		binding: nativeToolAuthorityFixture().binding,
+		scope: { machineId: randomUUID() },
+		action: "wake",
+		input: { wait: true },
+	});
+	const router = (options: {
+		wakeLocal?: (machineId: string, wait: boolean, signal: AbortSignal) => Promise<boolean>;
+		told?: boolean;
+		fails?: boolean;
+		urls?: string[];
+	}) =>
+		new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers,
+			control: { call: vi.fn() },
+			credential: async () => randomBytes(32).toString("base64url"),
+			...(options.wakeLocal ? { wakeLocal: options.wakeLocal } : {}),
+			fetch: (async (input: string | URL | Request) => {
+				options.urls?.push(String(input));
+				if (options.fails) throw new Error("unreachable");
+				return new Response(JSON.stringify({ schema: "qorpera.machine-wake/v1", told: options.told ?? false }));
+			}) as typeof fetch,
+		});
+	const signal = new AbortController().signal;
+
+	it("goes to this node's machines and to every peer, and this node's answer stands", async () => {
+		const urls: string[] = [];
+		const wakeLocal = vi.fn(async () => true);
+		expect(await router({ wakeLocal, urls }).wake(request(), signal)).toBe(true);
+		expect(wakeLocal).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(urls).toEqual(["https://node-b.example/v1/machine-commands/wake"]));
+	});
+
+	it("a peer never forwards it", async () => {
+		const urls: string[] = [];
+		const wakeLocal = vi.fn(async () => false);
+		expect(await router({ wakeLocal, urls }).wake(request(), signal, true)).toBe(false);
+		expect(urls).toEqual([]);
+	});
+
+	it("a peer's word counts beside this node's, when the machine is on the peer (review F3)", async () => {
+		expect(await router({ wakeLocal: async () => false, told: true }).wake(request(), signal)).toBe(true);
+	});
+
+	it("an executor's ingress and peer listener route a wake to the router, the peer listener never forwarding", async () => {
+		const wake = vi.fn(async (_request: unknown, _signal: AbortSignal, _localOnly?: boolean) => true);
+		const execute = vi.fn();
+		const fake = { wake, execute } as unknown as MachineCommandRouter;
+		const asked = request();
+		expect(await machineCommandRoutes(fake, { call: vi.fn() }, false).wake(asked, signal)).toBe(true);
+		expect(await machineCommandRoutes(fake, { call: vi.fn() }, true).wake(asked, signal)).toBe(true);
+		expect(wake.mock.calls.map((call) => call[2])).toEqual([false, true]);
+	});
+
+	it("reaches this node's machines: a word to wait on, or only a pass", async () => {
+		const host = { wake: vi.fn(), changed: vi.fn(async () => true) };
+		const reach = localMachineWake(host);
+		const machineId = randomUUID();
+		expect(await reach(machineId, true, signal)).toBe(true);
+		expect(host.changed).toHaveBeenCalledWith(machineId, signal);
+		expect(await reach(machineId, false, signal)).toBe(false);
+		expect(host.wake).toHaveBeenCalledOnce();
+	});
+
+	it("without machines here, a peer's word answers, and one out of reach is no error", async () => {
+		expect(await router({ told: true }).wake(request(), signal)).toBe(true);
+		expect(await router({ told: false }).wake(request(), signal)).toBe(false);
+		expect(await router({ fails: true }).wake(request(), signal)).toBe(false);
+		expect(await router({}).wake(request(), signal, true)).toBe(false);
 	});
 });
 

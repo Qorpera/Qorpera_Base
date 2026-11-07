@@ -19,7 +19,10 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // and healthy, deploy/agent-exit/README.md):
 //   node prove-machine-node.mjs <proof.json>
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
-//               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...] }
+//               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...],
+//               agentPlugMac?: "0e:51:0a:d2:xx:yy" }
+// agentPlugMac stands in for the node's plug tool where no agent exit is installed (a test VM's nested LXD, with a
+// qagent0 bridge of its own): every machine gets that MAC.
 // blockedTargets must stay out of reach: a TCP connect to each must fail. Since E2c the machine's
 // traffic leaves through the node's agent exit, which refuses them at once (a TCP reset), so a
 // refusal here no longer tells the exit from a closed port: the exit's own proof
@@ -40,6 +43,7 @@ interface Proof {
 	diskGiB: number;
 	repositoryBundle?: string;
 	blockedTargets?: string[];
+	agentPlugMac?: string;
 }
 
 async function main(path: string): Promise<void> {
@@ -139,6 +143,9 @@ async function main(path: string): Promise<void> {
 		journalRoot: proof.journalRoot,
 		storagePolicy: proof.storagePolicy,
 		helperSha256: proof.helperSha256,
+		// Each pass waits for its steps: the checks below read what a pass did.
+		passHoldMs: Number.POSITIVE_INFINITY,
+		...(proof.agentPlugMac ? { agentPlug: async () => String(proof.agentPlugMac) } : {}),
 	});
 	const signal = AbortSignal.timeout(3_600_000);
 	const started = Date.now();
@@ -170,6 +177,11 @@ async function main(path: string): Promise<void> {
 		note(ok ? "pass-check" : "FAIL-check", { what });
 		if (!ok) process.exitCode = 1;
 	};
+	// Marked running only once usable: the network and the basic system are up when the first command runs.
+	expect(
+		(await command("systemctl is-active basic.target network-online.target")).state === "succeeded",
+		"usable when marked running",
+	);
 	expect((await command("nproc && free -g && df -h / && uname -r")).state === "succeeded", "sizes and kernel");
 	expect((await command("docker run --rm hello-world && docker compose version")).state === "succeeded", "rootful Docker");
 	expect(

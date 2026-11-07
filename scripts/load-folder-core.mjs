@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { buildContainerName, checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /**
@@ -30,6 +30,16 @@ import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
  *
  *   node scripts/load-folder-core.mjs [--runs 32] [--seconds 60] [--pool 48] [--rtt 50] [--stop-every 15]
  *     [--no-big | --big-paths 25000] [--probe-only] [--skip <migration file>]... [--check]
+ *     [--plain] [--pace 2000] [--parallel 4] [--cpus 4] [--lock-log-ms 100]
+ *
+ * The curve (perf sprint, 7 Nov 2026; scripts/load-run-curve.mjs runs it at each size): --plain runs only the agent
+ * runs (no stopper, ACL client, wake admitter, GC or foreign-key writers), so a size's numbers are the runs' own.
+ * --pace is the think time between a run's rounds (half to one and a half times it; a real run spends most of its
+ * life waiting for the model; without it the runs go flat out). --parallel adds that many tool steps of the same run
+ * side by side each round, on the run mutex (see parallelSteps). --cpus limits the database to the production VM's
+ * CPUs. --lock-log-ms is deadlock_timeout, so log_lock_waits reports each wait past it (default 1000).
+ * Each lock wait the 100 ms sampler sees also names its holder; the report prints holders by samples, and a final
+ * "== load-run-curve" JSON line with every run call's percentiles.
  *
  * --big-paths sets the big run's read set (500-25,000, a multiple of 500). --probe-only skips the load: it times the big
  * run alone, with PL/pgSQL function statistics on, and reports where the re-check after a re-grant spends its time.
@@ -38,7 +48,8 @@ import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
  * read set's stamps current, and after a re-grant of load/big both the fence and one read-set check (the runtime's
  * qorpera_assert_company_path_reads). Then it checks the folder: no entry without its parent folder, no file whose bytes GC removed. It reports
  * each kind's latency and failures, the wakes admitted, the stop's drain latency, GC outcomes, multixact SLRU use and
- * lock waits over a second (log_lock_waits), and every deadlock from the server log with who waited for whom.
+ * lock waits past --lock-log-ms (log_lock_waits, 1 s by default), and every deadlock from the server log with who waited
+ * for whom.
  *
  * --check exits 1 on: any deadlock; any statement timeout or unexpected failure; an authority leak (a restricted read
  * that succeeded after the agent's revoke committed and before its next grant began); an entry without its parent; a
@@ -58,6 +69,11 @@ const options = {
 	bigPaths: 25_000,
 	probeOnly: false,
 	check: false,
+	plain: false,
+	pace: 0,
+	parallel: 0,
+	cpus: 0,
+	lockLogMs: 1000,
 };
 {
 	const args = process.argv.slice(2);
@@ -70,13 +86,18 @@ const options = {
 		const [flag, value] = [args[index], args[index + 1]];
 		if (flag === "--check") options.check = true;
 		else if (flag === "--no-big") options.big = false;
+		else if (flag === "--plain") options.plain = true;
+		else if (flag === "--pace" && value) options.pace = count(args[++index], flag, 0, 60_000);
+		else if (flag === "--parallel" && value) options.parallel = count(args[++index], flag, 0, 16);
+		else if (flag === "--cpus" && value) options.cpus = count(args[++index], flag, 1, 64);
+		else if (flag === "--lock-log-ms" && value) options.lockLogMs = count(args[++index], flag, 10, 10_000);
 		else if (flag === "--probe-only") options.probeOnly = true;
 		else if (flag === "--big-paths" && value) {
 			options.bigPaths = count(args[++index], flag, 500, 25_000);
 			if (options.bigPaths % 500) throw new Error("--big-paths must be a multiple of 500");
 		}
 		else if (flag === "--skip" && value) options.skipped.add(args[++index]);
-		else if (flag === "--runs" && value) options.runs = count(args[++index], flag, 2, 64);
+		else if (flag === "--runs" && value) options.runs = count(args[++index], flag, 1, 256);
 		else if (flag === "--seconds" && value) options.seconds = count(args[++index], flag, 10, 900);
 		else if (flag === "--pool" && value) options.pool = count(args[++index], flag, 4, 128);
 		else if (flag === "--rtt" && value) options.rtt = count(args[++index], flag, 0, 1000);
@@ -112,6 +133,9 @@ const RUN_KINDS = new Set([
 	"subtree-delete",
 	"restricted-read",
 	"message",
+	"step-hooks",
+	"step-open-work",
+	"step-describe",
 ]);
 const database = "qorpera_test";
 const password = "qorpera-load-only";
@@ -190,6 +214,13 @@ function percentile(values, fraction) {
 	if (!values.length) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
 	return sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)];
+}
+/** The largest sample, 0 for none. Math.max(...samples) overflows the stack at about 125,000 of them, which a long flat-out
+ * run reaches, and it would throw after the load and lose the results. */
+function highest(values) {
+	let most = 0;
+	for (const value of values) if (value > most) most = value;
+	return most;
 }
 
 let pool;
@@ -338,10 +369,33 @@ const wakes = { passes: 0, byStatus: {} };
 const gcOutcomes = new Map();
 const stops = [];
 
+/**
+ * A round's tool steps side by side, on one run: two kinds of tool step that take the run mutex
+ * (qorpera_list_agent_event_hooks, qorpera_describe_agent_open_work), each a call of its own as the native host makes
+ * them, beside the plain describe. Only the locked ones queue on each other; describe must not. A real run does not do
+ * this today (0 of 20,444 tool steps overlapped, 5-6 Nov 2026): it is the mutex's worst case, not its usual one.
+ */
+function parallelSteps(runRow) {
+	const step = (kind, rpc) =>
+		call(kind, rpc, `select public.${rpc}($1::jsonb) as value`, [runRow.binding], TOOL_DEADLINE, { expected: ["paused"] });
+	return Promise.all(
+		Array.from({ length: options.parallel }, (_, index) =>
+			index % 3 === 0
+				? step("step-hooks", "qorpera_list_agent_event_hooks")
+				: index % 3 === 1
+					? step("step-open-work", "qorpera_describe_agent_open_work")
+					: step("step-describe", "qorpera_describe_native_tool_authority"),
+		),
+	);
+}
+
 async function agentRun(runRow, others, gcTexts) {
 	const reads = [];
+	// The runs start spread over one pace, not all at once.
+	if (options.pace) await sleep(Math.random() * options.pace);
 	for (let round = 1; running(); round += 1) {
 		await fence("fence", runRow);
+		if (options.parallel) await parallelSteps(runRow);
 		const got = await read("read", runRow, `load/shared/d${1 + Math.floor(Math.random() * 20)}/f${1 + Math.floor(Math.random() * 50)}.md`);
 		if (got.value?.entry) reads.push(got.value.entry);
 		await call(
@@ -389,7 +443,7 @@ async function agentRun(runRow, others, gcTexts) {
 				TOOL_DEADLINE,
 				{ expected: ["paused", "busy"] },
 			);
-		await sleep(Math.random() * 20);
+		await sleep(options.pace ? options.pace * (0.5 + Math.random()) : Math.random() * 20);
 	}
 }
 
@@ -630,9 +684,10 @@ async function functionTimes(client) {
 	await client.query("select pg_stat_force_next_flush()");
 	await client.query("select pg_stat_clear_snapshot()");
 	const rows = (
-		await client.query("select funcname, calls, total_time, self_time from pg_stat_user_functions where schemaname = 'public'")
+		await client.query(`select s.funcname, s.calls, s.total_time, s.self_time, l.lanname from pg_stat_user_functions s
+			join pg_proc p on p.oid = s.funcid join pg_language l on l.oid = p.prolang where s.schemaname = 'public'`)
 	).rows;
-	return Object.fromEntries(rows.map((row) => [row.funcname, { calls: Number(row.calls), total: row.total_time, self: row.self_time }]));
+	return Object.fromEntries(rows.map((row) => [row.funcname, { calls: Number(row.calls), total: row.total_time, self: row.self_time, language: row.lanname }]));
 }
 
 /** Each deadlock the server logged: which call waited for which, and the row the cancelled one waited for, counted. */
@@ -671,7 +726,7 @@ function deadlockCycles(lines) {
 	}
 	return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
-/** Lock waits the server logged (log_lock_waits: each wait past deadlock_timeout, 1 s), by the waiting statement. */
+/** Lock waits the server logged (log_lock_waits: each wait past deadlock_timeout, --lock-log-ms), by the waiting statement. */
 function lockWaits(lines) {
 	const counts = new Map();
 	for (let index = 0; index < lines.length; index += 1) {
@@ -740,6 +795,36 @@ function slowPlans(lines) {
  * an I/O or LWLock wait, or none: CPU), with the longest seen. A wait the server's log_lock_waits does not report (I/O,
  * LWLocks, a busy CPU) shows here. */
 const slowStatements = new Map();
+const callName = (query) =>
+	/public\.(qorpera_[a-z0-9_]+)\s*\(/.exec(query)?.[1] ?? /(loadfolder\.[a-z_]+)\s*\(/.exec(query)?.[1] ?? query.trim().slice(0, 40);
+const lockHolders = new Map();
+async function holderSampler(port) {
+	const client = new pg.Client({ host: "127.0.0.1", port, user: "postgres", password, database });
+	client.on("error", (error) => process.stdout.write(`holder sampler connection lost: ${error.message}\n`));
+	try {
+		await client.connect();
+		while (running()) {
+			const { rows } = await client.query(`select w.query as waiter, b.query as holder, b.state, w.wait_event,
+					extract(epoch from clock_timestamp() - w.query_start) * 1000 as ms,
+					(select l.relation::regclass::text from pg_locks l where l.pid = w.pid and not l.granted limit 1) as relation
+				from pg_stat_activity w cross join lateral unnest(pg_blocking_pids(w.pid)) h(pid)
+				join pg_stat_activity b on b.pid = h.pid
+				where w.wait_event_type = 'Lock' and w.pid <> pg_backend_pid()`);
+			for (const row of rows) {
+				const key = `${callName(row.holder)} (${row.state}) holds ${callName(row.waiter)} on ${row.wait_event}${row.relation ? ` ${row.relation}` : ""}`;
+				const entry = lockHolders.get(key) ?? { samples: 0, maxMs: 0 };
+				entry.samples += 1;
+				entry.maxMs = Math.max(entry.maxMs, Math.round(Number(row.ms)));
+				lockHolders.set(key, entry);
+			}
+			await sleep(100);
+		}
+	} catch (error) {
+		process.stdout.write(`holder sampler stopped: ${error.message}\n`);
+	} finally {
+		await client.end().catch(() => undefined);
+	}
+}
 async function sampler(port) {
 	// Diagnostics never fail the run: a sampler that cannot connect or loses its connection stops and says so.
 	const client = new pg.Client({ host: "127.0.0.1", port, user: "postgres", password, database });
@@ -794,7 +879,7 @@ function report(seconds) {
 			p50: Math.round(percentile(totals, 0.5)),
 			p95: Math.round(percentile(totals, 0.95)),
 			p99: Math.round(percentile(totals, 0.99)),
-			max: Math.round(Math.max(...totals)),
+			max: Math.round(highest(totals)),
 			queueP95: Math.round(percentile(samples.map((sample) => sample.queueMs), 0.95)),
 			gaveUp: samples.filter((sample) => sample.gaveUp).length,
 			failures,
@@ -832,12 +917,14 @@ try {
 		"127.0.0.1::5432",
 		"--shm-size",
 		"512m",
+		...(options.cpus ? [`--cpus=${options.cpus}`] : []),
 		"--volume",
 		"/var/lib/postgresql/data",
 		"--env",
 		`POSTGRES_PASSWORD=${password}`,
 		"--env",
 		`POSTGRES_DB=${database}`,
+		...POSTGRES_LOCALE,
 		POSTGRES_IMAGE,
 		"-c",
 		"max_connections=300",
@@ -846,7 +933,7 @@ try {
 		"-c",
 		"log_lock_waits=on",
 		"-c",
-		"deadlock_timeout=1s",
+		`deadlock_timeout=${options.lockLogMs}ms`,
 		// Where the time goes: PL/pgSQL functions' totals, and every statement over 1 s, nested ones too, with its text.
 		"-c",
 		"track_functions=all",
@@ -865,6 +952,7 @@ try {
 				: 0;
 		spawnSync("sleep", ["0.5"]);
 	}
+	checkLocale(psql(LOCALE_QUERY));
 	const disk = run("docker", ["exec", containerName, "sh", "-c", "df -PT /var/lib/postgresql/data | tail -1"]).trim();
 	if (/tmpfs/.test(disk)) throw new Error(`The data directory is on tmpfs, not a real disk: ${disk}`);
 	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));
@@ -921,13 +1009,9 @@ try {
 	await Promise.all([
 		...loadRuns.map((row) => agentRun(row, loadRuns.filter((other) => other.n !== row.n), gcTexts)),
 		...(bigRow ? [bigRun(bigRow, bigId)] : []),
-		stopper(),
-		aclClient(loadRuns, restrictedId),
-		wakeAdmitter(),
-		gc(),
-		foreignKeyInsert(),
-		foreignKeyInsert(),
+		...(options.plain ? [] : [stopper(), aclClient(loadRuns, restrictedId), wakeAdmitter(), gc(), foreignKeyInsert(), foreignKeyInsert()]),
 		sampler(Number(port)),
+		holderSampler(Number(port)),
 	]);
 	const seconds = (performance.now() - started) / 1000;
 	await pool.end();
@@ -939,10 +1023,11 @@ try {
 			calls: value.calls - (functionsBeforeLoad[name]?.calls ?? 0),
 			selfMs: Math.round(value.self - (functionsBeforeLoad[name]?.self ?? 0)),
 			totalMs: Math.round(value.total - (functionsBeforeLoad[name]?.total ?? 0)),
+			language: value.language,
 		}))
 		.filter((row) => row.calls > 0)
 		.sort((a, b) => b.selfMs - a.selfMs)
-		.slice(0, 12);
+		.slice(0, options.plain ? 60 : 12);
 	await statsClient.end();
 	statsClient = undefined;
 
@@ -1075,6 +1160,29 @@ try {
 	const plans = slowPlans(lines.slice(logLinesBeforeLoad));
 	const { lines: table, summary } = report(seconds);
 	const leaked = leaks();
+	const runCalls = [...stats.entries()].filter(([kind]) => RUN_KINDS.has(kind)).flatMap(([, samples]) => samples);
+	const runTotals = runCalls.map((sample) => sample.totalMs);
+	const curve = {
+		runs: loadRuns.length,
+		pace: options.pace,
+		parallel: options.parallel,
+		pool: options.pool,
+		rtt: options.rtt,
+		cpus: options.cpus,
+		seconds: Number(seconds.toFixed(1)),
+		calls: runCalls.length,
+		callsPerSecond: Number((runCalls.length / seconds).toFixed(1)),
+		p50: Math.round(percentile(runTotals, 0.5)),
+		p95: Math.round(percentile(runTotals, 0.95)),
+		p99: Math.round(percentile(runTotals, 0.99)),
+		max: Math.round(highest(runTotals)),
+		poolQueueP95: Math.round(percentile(runCalls.map((sample) => sample.queueMs), 0.95)),
+		failed: runCalls.filter((sample) => sample.failure && !sample.failure.expected).length,
+		byKind: Object.fromEntries(
+			Object.entries(summary).filter(([kind]) => RUN_KINDS.has(kind)).map(([kind, row]) => [kind, { calls: row.calls, p50: row.p50, p95: row.p95, p99: row.p99, max: row.max }]),
+		),
+		holders: Object.fromEntries([...lockHolders.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 12)),
+	};
 	const drains = stops.map((stop) => stop.drainMs);
 	const all = [...stats.entries()].flatMap(([kind, samples]) => samples.map((sample) => ({ kind, ...sample })));
 	// Unexpected: a failure no call listed as expected. A deadlock, a statement timeout or another failure is never
@@ -1086,7 +1194,7 @@ try {
 	const bigFailed = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.failure && sample.failure.name !== "paused").length;
 
 	process.stdout.write(
-		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); ${files.length - 1} migrations ${migrateSeconds.toFixed(0)} s, setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
+		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}${options.plain ? `, the runs alone, pace ${options.pace} ms, ${options.parallel} parallel steps a round` : `, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers`}; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); ${files.length - 1} migrations ${migrateSeconds.toFixed(0)} s, setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
 	);
 	process.stdout.write(`${table.join("\n")}\n`);
 	process.stdout.write(
@@ -1105,8 +1213,11 @@ try {
 			process.stdout.write(`  ${row.name}: ${row.calls} calls, self ${row.selfMs} ms, total ${row.totalMs} ms\n`);
 	}
 	process.stdout.write(`multixact SLRU (deltas): ${JSON.stringify(multixact)}; deadlocks (pg_stat_database) ${deadlocksAfter - deadlocksBefore}\n`);
-	if (waits.length) process.stdout.write("lock waits over 1 s (log_lock_waits), by the waiting call:\n");
+	if (waits.length) process.stdout.write(`lock waits over ${options.lockLogMs} ms (log_lock_waits), by the waiting call:\n`);
 	for (const [key, count] of waits.slice(0, 15)) process.stdout.write(`  ${count} x ${key}\n`);
+	if (lockHolders.size) process.stdout.write("lock holders (sampled every 0.1 s), by who held whom:\n");
+	for (const [key, entry] of [...lockHolders.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 15))
+		process.stdout.write(`  ${entry.samples} samples, waiter up to ${entry.maxMs} ms: ${key}\n`);
 	if (slowStatements.size) process.stdout.write("statements over 2 s (sampled every 0.5 s), by call and what they waited on:\n");
 	for (const [key, entry] of [...slowStatements.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 15))
 		process.stdout.write(`  ${entry.samples} samples, up to ${entry.maxMs} ms: ${key}\n`);
@@ -1120,7 +1231,7 @@ try {
 	process.stdout.write(`the objects most paths name: ${referenced.join("; ")}\n`);
 	process.stdout.write("PL/pgSQL functions by self time over the load:\n");
 	for (const row of loadFunctions)
-		process.stdout.write(`  ${row.name}: ${row.calls} calls, self ${row.selfMs} ms, total ${row.totalMs} ms\n`);
+		process.stdout.write(`  ${row.name} (${row.language}): ${row.calls} calls, self ${row.selfMs} ms, total ${row.totalMs} ms\n`);
 	if (timeouts.length) process.stdout.write("statement timeouts from the server log, by where they were (PL/pgSQL frames, innermost first):\n");
 	for (const [key, count] of timeouts.slice(0, 12)) process.stdout.write(`  ${count} x ${key}\n`);
 	if (cycles.length) process.stdout.write("deadlocks from the server log (who waited for whom, and the row the cancelled call waited for):\n");
@@ -1151,6 +1262,7 @@ try {
 		summary,
 	};
 	process.stdout.write(`== load-folder-core ${JSON.stringify(result)}\n`);
+	process.stdout.write(`== load-run-curve ${JSON.stringify(curve)}\n`);
 	const problems = [
 		result.deadlocks || cycles.length ? `${Math.max(result.deadlocks, cycles.length)} deadlocks` : "",
 		unexpected ? `${unexpected} calls failed unexpectedly or ran into the statement timeout` : "",

@@ -17,10 +17,12 @@ import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
 	cloudMachineCommandHead,
 	cloudMachineCommandRefusal,
 } from "./cloud-machine-command-http.ts";
 import {
+	CLOUD_TOOL_REQUEST_MAX_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	cloudToolRequest,
@@ -48,8 +50,17 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-/** How often a waiting worker looks at the machine's status again. */
+/** How long machine_run's start may take, in all, with its sends again: the limit of one tool request. */
+export const CLOUD_MACHINE_START_ANSWER_MS = CLOUD_TOOL_REQUEST_MAX_MS;
+/** How long machine_read waits: what the gateway and the executor give one request, not the 5 s of a database read. It
+ * crosses the executor and the machine (0.7 s when all is well), and one given up sooner costs the agent a model round
+ * to ask again. A read leaves nothing open, so it is not sent again. */
+export const CLOUD_MACHINE_READ_MS = 30_000;
+/** How often a waiting worker looks at the machine's status again, when no word from its executor ends the wait first. */
 const WAIT_STEP_MS = 5000;
+/** How long a run waits for the executor to take a wake it does not wait on. A lost word costs only the executor's next
+ * pass, 10 s at most. */
+const WAKE_SENT_MS = 2000;
 
 /** A pause that the run's abort ends early. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -75,7 +86,8 @@ function carried(
 	before: CloudMachineCommandFolder | undefined,
 	folder: CloudMachineCommandFolder | undefined,
 ): CloudMachineCommandFolder | undefined {
-	if (!before || !folder) return folder;
+	if (!before) return folder;
+	if (!folder) return before;
 	const {
 		notSaved: _notSaved,
 		moreNotSaved: _more,
@@ -275,14 +287,59 @@ export function cloudMachineTools(options: {
 		if (result.schema !== "qorpera.machine-status/v1") throw new Error("Machine status differs");
 		return result as { workStopped?: true; machine?: MachineView | null; command?: { state: string } | null };
 	};
-	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped. No model
-	 * turn is spent. A failed look is only a failed look; the answer comes after the wait either way. */
+	/**
+	 * machine_run's start, sent again as it was only while the executor gives no answer AND the kernel has no record of
+	 * the command: the case an executor's freeze leaves, a start that never reached the database, whose open receipt
+	 * would refuse everything the run does after it (four runs on 6 and 7 Nov 2026).
+	 *
+	 * A record means the start may have reached the machine, and then a send again could report what it did not do, or
+	 * reach a command that already ended and open its folder window for good. So at the first record, or a machine no
+	 * longer running, this stops and the outcome stays unknown, as it always did. Only a first send's refusal says
+	 * nothing started; after any unanswered send a refusal proves only that that send started nothing, so it too leaves
+	 * the outcome unknown. What the executor did answer (a refusal, its 403) is never sent again. The command id is the
+	 * receipt's on every send, the guest runs it at most once, and each send is authorized on the executor as the first.
+	 */
+	const startWhileUnrecorded = async (
+		machine: string,
+		commandId: string,
+		send: () => Promise<CloudMachineCommandReceipt>,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> => {
+		const unknown = () => new Error("Machine command outcome unknown");
+		for (let sends = 0; ; ) {
+			try {
+				return await send();
+			} catch (error) {
+				signal.throwIfAborted();
+				if (error instanceof CloudMachineCommandUnanswered) sends += 1;
+				else if (sends === 0) throw error;
+				else throw unknown();
+			}
+			for (let waits = sends - 1; ; waits += 1) {
+				await pause(Math.min(15_000, 1000 * 2 ** Math.min(waits, 4)), signal);
+				let now: Awaited<ReturnType<typeof status>>;
+				try {
+					now = await status(machine, commandId, signal);
+				} catch {
+					signal.throwIfAborted();
+					continue;
+				}
+				if (now.workStopped || now.machine?.state !== "running" || now.command !== null) throw unknown();
+				break;
+			}
+		}
+	};
+	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped, and at once when
+	 * `word` comes (its machine's executor saying to look again). No model turn is spent. A failed look is only a failed
+	 * look; the answer comes after the wait either way. */
 	const waitUntil = async (
 		seconds: number,
 		signal: AbortSignal,
 		settled: () => Promise<boolean | "stopped">,
+		word?: Promise<boolean>,
 	): Promise<"stopped" | undefined> => {
 		const deadline = Date.now() + seconds * 1000;
+		let waiting = word;
 		for (;;) {
 			try {
 				const outcome = await settled();
@@ -293,9 +350,21 @@ export function cloudMachineTools(options: {
 			}
 			const left = deadline - Date.now();
 			if (left <= 0) return undefined;
-			await pause(Math.min(WAIT_STEP_MS, left), signal);
+			// One word only: told, the wait ends now; not told, the looks go on every few seconds.
+			const cut = new AbortController();
+			void waiting?.then((told) => {
+				waiting = undefined;
+				if (told) cut.abort();
+			});
+			await pause(Math.min(WAIT_STEP_MS, left), AbortSignal.any([signal, cut.signal])).catch(() => undefined);
+			signal.throwIfAborted();
 		}
 	};
+	/** Asks the machine's executor for a pass now. It never fails the call: a lost word only means its next pass. */
+	const wake = (machine: MachineView, wait: boolean, signal: AbortSignal): Promise<boolean> =>
+		options.gateway.wake
+			? options.gateway.wake({ machineId: machine.machineId }, wait, signal).catch(() => false)
+			: Promise.resolve(false);
 	const waitSecondsOf = (value: JsonValue): number => {
 		if (!worker || !Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 300)
 			throw new Error("Invalid machine wait");
@@ -473,14 +542,27 @@ export function cloudMachineTools(options: {
 			// A worker waits while its machine starts; one waiting in line for room answers at once.
 			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
 			const machine = started?.machine as MachineView | undefined;
-			if (waitSeconds === undefined || machine?.state !== "starting") return result;
+			if (waitSeconds === undefined || machine?.state !== "starting") {
+				// In line or starting: its executor need not wait for its next pass to see it.
+				if (machine?.state === "starting" || machine?.state === "waiting")
+					await wake(machine, false, AbortSignal.any([context.signal, AbortSignal.timeout(WAKE_SENT_MS)]));
+				return result;
+			}
 			let latest: MachineView = machine;
-			const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
-				const now = await status(machine.name, undefined, context.signal);
-				if (now.workStopped) return "stopped";
-				latest = now.machine ?? { ...latest, state: "deleted" };
-				return latest.state !== "starting";
-			});
+			const stopWord = new AbortController();
+			const word = wake(machine, true, AbortSignal.any([context.signal, stopWord.signal]));
+			const outcome = await waitUntil(
+				Number(waitSeconds),
+				context.signal,
+				async () => {
+					const now = await status(machine.name, undefined, context.signal);
+					if (now.workStopped) return "stopped";
+					latest = now.machine ?? { ...latest, state: "deleted" };
+					return latest.state !== "starting";
+				},
+				word,
+			);
+			stopWord.abort();
 			check(context);
 			// The machine was started either way: a stopped worker is told so beside it, not refused.
 			return {
@@ -556,21 +638,28 @@ export function cloudMachineTools(options: {
 				},
 				signal: context.signal,
 				observation: context.observation,
+				performMs: CLOUD_MACHINE_START_ANSWER_MS,
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
 				perform: async (_operation, effect) => {
 					let started: CloudMachineCommandReceipt;
 					try {
-						started = await options.gateway.start(
-							scope,
-							{
-								commandId: effect.receiptId,
-								inputSha256: effect.inputSha256,
-								command: String(input.command),
-								timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
-								notify: input.notify === true,
-							},
+						started = await startWhileUnrecorded(
+							machine.name,
+							effect.receiptId,
+							() =>
+								options.gateway.start(
+									scope,
+									{
+										commandId: effect.receiptId,
+										inputSha256: effect.inputSha256,
+										command: String(input.command),
+										timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
+										notify: input.notify === true,
+									},
+									effect.signal,
+								),
 							effect.signal,
 						);
 					} catch (error) {
@@ -668,6 +757,7 @@ export function cloudMachineTools(options: {
 									signal,
 								),
 							context.signal,
+							CLOUD_MACHINE_READ_MS,
 						);
 					} catch (error) {
 						return { content: told(commandGone(error, machine.name)), ended: true };
@@ -708,7 +798,20 @@ export function cloudMachineTools(options: {
 				if (outcome === "stopped") return told(workStopped());
 				if (answer) return answer;
 			}
-			return (await page()).content;
+			try {
+				return (await page()).content;
+			} catch (error) {
+				// The executor has spent what it reports once, on a read before this one, and a run that is still going can
+				// act on it, so it gets it now. A stopped run's goes with it: nothing would read it.
+				context.signal.throwIfAborted();
+				if (!folder?.notSaved?.length && !folder?.moreNotSaved) throw error;
+				return told(
+					refused(
+						"MACHINE_READ_UNANSWERED",
+						"this read did not answer, so how the command stands is unknown; read it again",
+					),
+				);
+			}
 		},
 	};
 

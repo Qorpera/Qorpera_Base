@@ -1,7 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- 20260930603000 on 924's real native run of Alice's: qorpera_check_native_run makes both of the run's checks in one call
+-- 20260930618000 on 924's real native run of Alice's: qorpera_check_native_run makes both of the run's checks in one call
 -- of the native host. Through the host's entry point, one check makes exactly the calls of the two it replaces, the
--- plain describe included (test 467 holds it to their 3 s wait for the run's row); a refusal from either is the call's;
+-- plain describe included (test 467 holds it to their 3 s wait for the run's row, and to the order of the run's row and a
+-- wake run's connection); a refusal from either is the call's;
 -- it is listed with the binding scope on the 8 s entry point; and only the platform's service caller reaches it. Timed
 -- beside the two separate calls at the end (printed, not checked).
 reset role;
@@ -140,7 +141,8 @@ begin
 end $$;
 
 -- 3. A refusal of either check is the call's. The read-set check: another environment than the run's, called as the
---    service caller (the entry point refuses that first, also tested). The authority: a lapsed lease.
+--    service caller (the entry point refuses that first, also tested). Describe alone: a run whose reasoning policy
+--    changed, which only describe checks (3b). A lapsed lease, which both refuse.
 select pg_temp.base_claims('service_role');
 set local role service_role;
 select pg_temp.base_error(format('select public.qorpera_check_native_run(%L::uuid, %L::jsonb)',
@@ -163,7 +165,8 @@ select pg_temp.base_claims('service_role');
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_outcome text; v_job uuid := (v_binding ->> 'jobId')::uuid;
 begin
-	-- A lease that lapsed: both the entry point and describe refuse it; the direct call shows describe's refusal.
+	-- A lease that lapsed: the entry point refuses it, and the direct call is refused too, by the read-set check, which
+	-- comes first.
 	update public.qorpera_runner_jobs set lease_expires_at = now() - interval '1 minute' where id = v_job;
 	v_outcome := pg_temp.nc_host('qorpera_native_host_call', pg_temp.nc_args());
 	if v_outcome is distinct from 'refused' then raise exception 'a lapsed lease through the entry point: %', v_outcome; end if;
@@ -176,6 +179,31 @@ begin
 	end;
 	update public.qorpera_runner_jobs set lease_expires_at = now() + interval '5 minutes' where id = v_job;
 end $$;
+
+-- 3b. A state only describe refuses: the run's reasoning policy no longer the one its bundle pins. The read-set check
+--     answers; describe refuses; the one call refuses as describe does. The change is undone before the next section.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_describe text; v_reads text; v_one text;
+begin
+	begin
+		perform set_config('session_replication_role', 'replica', true);
+		update public.qorpera_execution_runs set reasoning_policy_sha256 = repeat('d', 64) where id = (v_binding ->> 'runId')::uuid;
+		perform set_config('session_replication_role', 'origin', true);
+		v_describe := pg_temp.nc_host('qorpera_native_host_call', jsonb_build_object('p_binding', v_binding),
+			'qorpera_describe_native_tool_authority');
+		v_reads := pg_temp.nc_host('qorpera_native_host_call', pg_temp.nc_args() || '{"p_paths": []}'::jsonb,
+			'qorpera_assert_company_path_reads');
+		v_one := pg_temp.nc_host('qorpera_native_host_call', pg_temp.nc_args());
+		raise exception 'nc1103-undo' using errcode = 'P0003';
+	exception when sqlstate 'P0003' then
+		null;
+	end;
+	if v_reads not like 'ok:%' or v_describe like 'ok:%' or v_one is distinct from v_describe then
+		raise exception 'a refusal of describe alone: describe %, read-set check %, one call %', v_describe, v_reads, v_one; end if;
+	perform set_config('qorpera_test.nc_describe_only', v_describe, true);
+end $$;
+select current_setting('qorpera_test.nc_describe_only') as nc_describe_only \gset
+\echo 1103 a changed reasoning policy: describe and the one call refused with :nc_describe_only, the read-set check answered
 
 -- 4. Timed beside the two separate calls: printed, not checked.
 do $$

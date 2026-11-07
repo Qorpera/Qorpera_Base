@@ -20,6 +20,7 @@ import {
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import { CodingControlBusy, CodingControlRefused } from "./coding-executor.ts";
 import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
@@ -71,6 +72,24 @@ const LOG_LIMIT_BYTES = 67108864;
 /** One NAS storage check's own bound, as the coding host's. It runs from the check's start: the wait for the checks
  * before it is bounded only by its caller's own signal (a start's 300 s, a stop's 120 s). */
 const STORAGE_TASK_MS = 5000;
+/** Between passes, how often the guests still starting are asked whether they are up (#lookAtStarting). */
+const STARTING_LOOK_MS = 1000;
+/** One look at a starting guest answers within this, or counts as not yet. */
+const STARTING_LOOK_LIMIT_MS = 5000;
+/** A boot that reached these runs commands: systemd's basic system is up (sockets too, so a first `docker` waits for its
+ * daemon instead of failing) and the network answers. */
+const BOOT_USABLE = ["/usr/bin/systemctl", "is-active", "--quiet", "basic.target", "network-online.target"];
+/** How long a new boot waits to be usable, counted from when its agent first answered, before it is marked running all the
+ * same (a boot that never gets there runs as it always did). */
+const BOOT_USABLE_GRACE_MS = 60000;
+/** How often a starting boot's looks may ask for a pass. */
+const STARTING_WAKES = 3;
+/** The least time between passes, however many wakes come. */
+const PASS_FLOOR_MS = 1000;
+/** The most time between passes. */
+export const COMPANY_MACHINE_PASS_EVERY_MS = 10000;
+/** How long a pass waits for its placements' steps by default. */
+const PASS_HOLD_MS = 2000;
 
 /** Why a boot whose folder ended (6d-2) has no /company, by the cause its ending keeps (#endings). */
 const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
@@ -158,6 +177,10 @@ export interface CompanyMachineHostOptions {
 	previousHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
+	/** How long a pass waits for its placements' steps (default 2 s; `Infinity`: for every step). One still running then
+	 * goes on by itself, and no pass starts another for its placement until it ends, so one machine's slow guest holds up
+	 * no other machine's wake. Its outcome comes with the next pass. */
+	passHoldMs?: number;
 	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
 	agentPlug?: AgentPlug;
 }
@@ -407,8 +430,37 @@ export class LxdCompanyMachineHost {
 	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
 	 * busy since SQL last took that. */
 	readonly #guests = new Map<string, { bootId: string; sample: IdleRuleSample; busy: boolean }>();
-	/** When this process first saw the placement started and its guest not yet answering. */
-	readonly #starting = new Map<string, number>();
+	/** When this process first saw the placement started and its guest not yet answering, and the placement as SQL last
+	 * listed it. */
+	readonly #starting = new Map<
+		string,
+		{
+			since: number;
+			entry: CompanyMachineEntry;
+			/** How often its looks asked for a pass (STARTING_WAKES at most). */
+			wakes: number;
+			/** Its step failed for another reason than not being up yet: only the passes look at it. */
+			failing: boolean;
+			/** When its agent first answered: BOOT_USABLE_GRACE_MS counts from then. */
+			answered?: number;
+		}
+	>();
+	/** The starting guests being looked at now (#lookAtStarting). */
+	readonly #looking = new Set<string>();
+	/** The placements whose step runs, in a pass or past the end of its hold. */
+	readonly #stepping = new Set<string>();
+	/** Steps ended so far, and per placement the count when its last one ended: a list asked before a step ended may
+	 * show its placement as it was before that step, so that pass leaves the placement to the next. */
+	#stepEnds = 0;
+	readonly #endedAt = new Map<string, number>();
+	/** What steps that outlasted their pass came to, for the next pass to hand over. */
+	readonly #late: CompanyMachineOutcome[] = [];
+	/** A wake came: the next pass starts as soon as the one running ends (#pause). */
+	#woken = false;
+	/** Ends the wait before the next pass, while there is one. */
+	#ending: (() => void) | undefined;
+	/** Who waits to hear that a machine got somewhere (#changed), per machine. */
+	readonly #listeners = new Map<string, Set<() => void>>();
 	/** Per placement: its running boot's folder. */
 	readonly #folders = new Map<string, BootFolder>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
@@ -629,13 +681,19 @@ export class LxdCompanyMachineHost {
 	 * or on a boot going down, LXD's agent may answer one and drop at the next (LXD ends the exec without a code). For
 	 * `guestReadyTimeoutMs` at most from the first pass it did not answer; then the pass fails with the error. */
 	#unready(e: CompanyMachineEntry, error: unknown): CompanyMachineOutcome {
-		const since = this.#starting.get(e.placementId) ?? Date.now();
-		this.#starting.set(e.placementId, since);
-		if (
-			Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) &&
-			errorCode(error) !== "COMPANY_MACHINE_HELPER_DIFFERS"
-		)
+		const known = this.#starting.get(e.placementId);
+		const since = known?.since ?? Date.now();
+		const starting = {
+			since,
+			entry: e,
+			wakes: known?.wakes ?? 0,
+			failing: errorCode(error) === "COMPANY_MACHINE_HELPER_DIFFERS",
+			...(known?.answered === undefined ? {} : { answered: known.answered }),
+		};
+		this.#starting.set(e.placementId, starting);
+		if (Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) && !starting.failing)
 			return { placementId: e.placementId, step: "guest", state: "pending" };
+		starting.failing = true;
 		throw error;
 	}
 	/** A started guest: its helper is the packaged one, this boot is claimed
@@ -690,6 +748,22 @@ export class LxdCompanyMachineHost {
 			leased = await this.#ask(e, ["refresh-lease", String(COMPANY_MACHINE_LEASE_MS)], signal);
 		} catch (error) {
 			return this.#unready(e, error);
+		}
+		// A new boot is marked running once it is usable (BOOT_USABLE: commands find the network and Docker's socket), for
+		// BOOT_USABLE_GRACE_MS at most from when its agent first answered.
+		if (e.bootId !== prepared.bootId && !(await this.#usable(e, signal))) {
+			const known = this.#starting.get(e.placementId);
+			const answered = known?.answered ?? Date.now();
+			if (Date.now() - answered < BOOT_USABLE_GRACE_MS) {
+				this.#starting.set(e.placementId, {
+					since: known?.since ?? answered,
+					entry: e,
+					wakes: known?.wakes ?? 0,
+					failing: false,
+					answered,
+				});
+				return { placementId: e.placementId, step: "guest", state: "pending" };
+			}
 		}
 		this.#starting.delete(e.placementId);
 		const lease = guestAnswer(leased);
@@ -1277,6 +1351,8 @@ export class LxdCompanyMachineHost {
 		const state = await this.#physical(e, "stopped", signal);
 		if (state === "not-now") return { placementId: e.placementId, step: "stop", state: "not-now" };
 		this.#guests.delete(e.placementId);
+		// Its next boot has its own time to come up.
+		this.#starting.delete(e.placementId);
 		if (this.#options.folder && e.bootId !== null) {
 			// Powered off: the machine's command windows end, and what it was served is gone with it.
 			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
@@ -1304,6 +1380,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
 		this.#guests.delete(e.placementId);
+		this.#starting.delete(e.placementId);
 		this.#folders.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
@@ -1356,7 +1433,11 @@ export class LxdCompanyMachineHost {
 	 * on its machine and retried at the next pass, never hidden. Admission
 	 * takes one machine per call (one reservation per transaction) and never
 	 * holds up the rest of the pass. */
-	async pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
+	pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
+		return withAbortScope(signal, (scoped) => this.#pass(scoped, signal));
+	}
+	/** `lasting` outlasts this pass: a step that outlasts it goes on under it, each step under a scope of its own. */
+	async #pass(signal: AbortSignal, lasting: AbortSignal): Promise<CompanyMachineOutcome[]> {
 		const admission: CompanyMachineOutcome[] = [];
 		for (let admitted = 0; admitted < 8; admitted++) {
 			let taken: unknown;
@@ -1372,6 +1453,7 @@ export class LxdCompanyMachineHost {
 			}
 			if (!Array.isArray(taken) || taken.length === 0) break;
 		}
+		const asked = this.#stepEnds;
 		const listed = await this.#call(
 			"qorpera_list_executor_machines",
 			{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256 },
@@ -1379,46 +1461,214 @@ export class LxdCompanyMachineHost {
 		);
 		if (!Array.isArray(listed)) throw new Error("COMPANY_MACHINE_LIST_INVALID");
 		const entries = listed.map(entry);
-		const outcomes = await Promise.all(
-			entries.map((e) =>
-				this.#exclusive(e.placementId, async () => {
-					const stage = (step: CompanyMachineOutcome["step"]) =>
-						step === "guest" || step === "commands"
-							? step === "guest"
-								? "guest"
-								: "commands"
-							: step === "wait"
-								? "start"
-								: step;
-					try {
-						const outcome = await this.#step(e, signal);
-						if (outcome.state === "done" && outcome.step !== "commands")
-							await this.#recordError(e, stage(outcome.step), null, signal);
-						return outcome;
-					} catch (error) {
-						const step: CompanyMachineOutcome["step"] =
-							e.released || (e.removeDue && !e.reserved)
-								? "delete"
-								: (e.stopDue || e.sleepDue) && e.reserved
-									? "stop"
-									: "start";
-						// The company's locks were busy past SQL's short wait (lock_not_available): no fault
-						// of the machine's, and nothing to show; the next pass tries again.
-						if (error instanceof CodingControlBusy)
-							return {
-								placementId: e.placementId,
-								step,
-								state: "not-now" as const,
-								code: "CODING_CONTROL_BUSY",
-							};
-						const failed = errorCode(error);
-						await this.#recordError(e, stage(step), failed, signal);
-						return { placementId: e.placementId, step, state: "failed" as const, code: failed };
-					}
-				}),
-			),
+		const outcomes: (CompanyMachineOutcome | undefined)[] = [];
+		let over = false;
+		const steps = Promise.all(
+			entries.map(async (e, index) => {
+				if (this.#stepping.has(e.placementId) || (this.#endedAt.get(e.placementId) ?? -1) >= asked) return;
+				this.#stepping.add(e.placementId);
+				try {
+					const outcome = await withAbortScope(lasting, (scoped) =>
+						this.#exclusive(e.placementId, () => this.#stepped(e, scoped)),
+					);
+					this.#after(e, outcome);
+					if (over) this.#late.push(outcome);
+					else outcomes[index] = outcome;
+				} finally {
+					this.#stepping.delete(e.placementId);
+					this.#endedAt.set(e.placementId, this.#stepEnds++);
+				}
+			}),
 		);
-		return [...admission, ...outcomes];
+		const hold = this.#options.passHoldMs ?? PASS_HOLD_MS;
+		if (!Number.isFinite(hold)) await steps;
+		else {
+			const done = new AbortController();
+			await Promise.race([
+				steps.finally(() => done.abort()),
+				setTimeout(hold, undefined, { signal: done.signal }).catch(() => undefined),
+			]);
+		}
+		over = true;
+		return [
+			...this.#late.splice(0),
+			...admission,
+			...outcomes.filter((outcome): outcome is CompanyMachineOutcome => outcome !== undefined),
+		];
+	}
+	/** One placement's step: what came of it. A failed step is recorded on its machine. */
+	async #stepped(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
+		const stage = (step: CompanyMachineOutcome["step"]) =>
+			step === "guest" || step === "commands"
+				? step === "guest"
+					? "guest"
+					: "commands"
+				: step === "wait"
+					? "start"
+					: step;
+		try {
+			const outcome = await this.#step(e, signal);
+			if (outcome.state === "done" && outcome.step !== "commands")
+				await this.#recordError(e, stage(outcome.step), null, signal);
+			return outcome;
+		} catch (error) {
+			const step: CompanyMachineOutcome["step"] =
+				e.released || (e.removeDue && !e.reserved)
+					? "delete"
+					: (e.stopDue || e.sleepDue) && e.reserved
+						? "stop"
+						: "start";
+			// The company's locks were busy past SQL's short wait (lock_not_available): no fault
+			// of the machine's, and nothing to show; the next pass tries again.
+			if (error instanceof CodingControlBusy)
+				return {
+					placementId: e.placementId,
+					step,
+					state: "not-now" as const,
+					code: "CODING_CONTROL_BUSY",
+				};
+			const failed = errorCode(error);
+			await this.#recordError(e, stage(step), failed, signal);
+			return { placementId: e.placementId, step, state: "failed" as const, code: failed };
+		}
+	}
+	/** A step that took its machine somewhere tells who waits to hear it. A stop or a release may have freed the room a
+	 * machine in line waits for, and only a pass admits it: the next one comes at once. */
+	#after(e: CompanyMachineEntry, outcome: CompanyMachineOutcome): void {
+		if (outcome.state !== "done" || outcome.step === "commands") return;
+		for (const tell of [...(this.#listeners.get(e.machineId) ?? [])]) tell();
+		if (outcome.step === "stop" || outcome.step === "release") this.wake();
+	}
+
+	/** Asks for the next pass now, instead of at the end of the wait before it (or right after the pass that runs). A wake
+	 * carries no authority: each step of that pass asks SQL as ever. */
+	wake(): void {
+		this.#woken = true;
+		this.#ending?.();
+	}
+	/** A wake, and the answer once a step took this machine somewhere: true when its start is done (its folder settled
+	 * too) or it stopped or went, false when the signal ended first. The answer only says to look: what SQL says stands. */
+	changed(machineId: string, signal: AbortSignal): Promise<boolean> {
+		this.wake();
+		return new Promise((settle) => {
+			if (signal.aborted) return settle(false);
+			const listeners = this.#listeners.get(machineId) ?? new Set<() => void>();
+			this.#listeners.set(machineId, listeners);
+			const finish = (answer: boolean): void => {
+				signal.removeEventListener("abort", left);
+				listeners.delete(told);
+				if (!listeners.size && this.#listeners.get(machineId) === listeners) this.#listeners.delete(machineId);
+				settle(answer);
+			};
+			const told = (): void => finish(true);
+			const left = (): void => finish(false);
+			listeners.add(told);
+			signal.addEventListener("abort", left, { once: true });
+		});
+	}
+	/** The wait before the next pass, `ms` at most. A wake ends it. So does a guest still starting whose boot became usable:
+	 * each is asked every second, of LXD alone, so a boot costs SQL nothing more. A boot that never gets there is left to
+	 * the passes, as it would be without this. */
+	async pause(ms: number, signal: AbortSignal): Promise<void> {
+		const started = Date.now();
+		const deadline = started + ms;
+		// However many wakes come, passes come a second apart at most.
+		const earliest = started + Math.min(PASS_FLOOR_MS, ms);
+		while (!signal.aborted) {
+			const now = Date.now();
+			if (now >= deadline || (this.#woken && now >= earliest)) break;
+			if (!this.#woken) this.#lookAtStarting(signal);
+			await new Promise<void>((settle) => {
+				const end = (): void => {
+					clearTimeout(timer);
+					signal.removeEventListener("abort", end);
+					this.#ending = undefined;
+					settle();
+				};
+				const wait = this.#woken ? earliest - now : Math.min(STARTING_LOOK_MS, deadline - now);
+				const timer = globalThis.setTimeout(end, Math.max(0, wait));
+				signal.addEventListener("abort", end, { once: true });
+				this.#ending = end;
+			});
+		}
+		this.#woken = false;
+	}
+	/** The machine workload's loop: a pass, what came of it, then the wait before the next. */
+	async run(
+		signal: AbortSignal,
+		log: (outcomes: CompanyMachineOutcome[] | { failed: string }) => void,
+	): Promise<void> {
+		while (!signal.aborted) {
+			try {
+				log(await this.pass(signal));
+			} catch (error) {
+				if (!signal.aborted) log({ failed: errorCode(error) });
+			}
+			await this.pause(COMPANY_MACHINE_PASS_EVERY_MS, signal);
+		}
+	}
+	#lookAtStarting(signal: AbortSignal): void {
+		const limit = this.#options.guestReadyTimeoutMs ?? 180000;
+		for (const [placementId, starting] of this.#starting) {
+			if (
+				starting.failing ||
+				starting.wakes >= STARTING_WAKES ||
+				Date.now() - starting.since >= limit ||
+				this.#looking.has(placementId) ||
+				this.#stepping.has(placementId)
+			)
+				continue;
+			this.#looking.add(placementId);
+			void withAbortScope(signal, (scoped) =>
+				this.#bootUsable(starting.entry, AbortSignal.any([scoped, AbortSignal.timeout(STARTING_LOOK_LIMIT_MS)])),
+			)
+				.then((usable) => {
+					if (!usable || this.#starting.get(placementId) !== starting) return;
+					starting.wakes++;
+					this.wake();
+				})
+				.finally(() => this.#looking.delete(placementId));
+		}
+	}
+	/** Whether the guest's agent answers (a file read, which fails at once and leaves no operation behind) and its boot
+	 * reached BOOT_USABLE. */
+	async #bootUsable(e: CompanyMachineEntry, signal: AbortSignal): Promise<boolean> {
+		try {
+			const { project, name } = this.#plan(e);
+			await this.#options.client.readInstanceFile(project, name, PATHS.helper, 65536, signal);
+			await this.#options.client.execInstance(
+				project,
+				name,
+				BOOT_USABLE,
+				signal,
+				Math.ceil(STARTING_LOOK_LIMIT_MS / 1000),
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	/** Whether a boot whose agent answers reached BOOT_USABLE. */
+	async #usable(e: CompanyMachineEntry, signal: AbortSignal): Promise<boolean> {
+		try {
+			const { project, name } = this.#plan(e);
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(STARTING_LOOK_LIMIT_MS)]);
+			await this.#options.client.execInstance(
+				project,
+				name,
+				BOOT_USABLE,
+				checked,
+				Math.ceil(STARTING_LOOK_LIMIT_MS / 1000),
+			);
+			return true;
+		} catch {
+			signal.throwIfAborted();
+			return false;
+		}
+	}
+	/** The steps still running, once they ended. */
+	async settled(): Promise<void> {
+		await Promise.allSettled([...this.#work.values()]);
 	}
 
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered

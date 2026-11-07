@@ -432,14 +432,13 @@ async function fixture(
 			}
 			if (method === "qorpera_assert_company_path_reads") return null;
 			if (method === "qorpera_check_native_run") {
-				// What the one SQL call makes, in its order, through the same synthetic handlers.
-				const authority = await control.describeToolAuthority();
+				// What the one SQL call makes, in its order (the read set first), through the same synthetic handlers.
 				await pathCall(
 					"qorpera_assert_company_path_reads",
 					{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_paths: [] },
 					signal,
 				);
-				return authority;
+				return await control.describeToolAuthority();
 			}
 			if (method === "qorpera_fence_native_context") {
 				// What the one SQL call makes, in its order, through the same synthetic handlers.
@@ -2932,7 +2931,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// context reads. Its receipts, which a resumed attempt in Agent notebooks starts from (20260930539000), are read
 	// beside it and add none. Since R1 (28 Oct 2026) each of the three context checks before the fence (once the
 	// tools are built, and before and after the execution's start) asked for the run's admission and then
-	// its read set, one after the other, not together: 12 before that. Since 20260930603000 each of the three is one
+	// its read set, one after the other, not together: 12 before that. Since 20260930618000 each of the three is one
 	// call again, with both reads in it (qorpera_check_native_run): 15 before that.
 	expect(wave("qorpera_memory_run_log_place")).toBe(6);
 	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);

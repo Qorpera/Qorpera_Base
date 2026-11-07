@@ -274,12 +274,15 @@ it("leaves another agent's app to save_app, which asks first, and lets no app mo
 	await refuses(move("drafts/note.md", "apps/sales/note.md"), "APP_NOT_YOURS");
 });
 
-it("reviews posting, and changing another's app, as delegation", async () => {
+it("posts its own app without review, and reviews posting or changing another's app as delegation", async () => {
 	const { cloudActionEffect, describeCloudAction } = await import("@qorpera/runtime/cloud-action-review");
 	const runtime = (name: string) => ({ name, source: "runtime" as const });
 	expect(cloudActionEffect(runtime("save_app"), { name: "sales" })).toBe("internal");
 	expect(cloudActionEffect(runtime("save_app"), { name: "sales", foreignOwner: true })).toBe("delegation");
-	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true })).toBe("delegation");
+	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true })).toBe("internal");
+	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true, foreignOwner: true })).toBe(
+		"delegation",
+	);
 	expect(describeCloudAction(runtime("post_app"), { name: "sales", posted: true }).title).toBe(
 		"Post an app for every member",
 	);
@@ -309,4 +312,32 @@ it("counts a video as a file of its app, but not toward the bytes of the rest", 
 		full.call("save_app", save("ideas", "video-2", null, [{ path: "one-more.txt", text: "more" }])),
 		"APP_TOO_LARGE",
 	);
+});
+
+it("posts only the manifest it checked: an app made or changed in between is refused, never posted unreviewed", async () => {
+	const f = await fixture({ folders: ["apps"], files: { "apps/sales/index.html": PAGE } });
+	const me = f.identity.staffAgentId.toLowerCase();
+	const other = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f";
+	const tool = f.tool("post_app");
+	const prepare = async (key: string) =>
+		(await tool.prepare?.(tool.parseArguments({ name: "sales", operationKey: key, posted: true }), f.context)) as {
+			foreignOwner?: boolean;
+			checkedVersion: string | null;
+		};
+	// No manifest when checked, another agent's when posted.
+	const missing = await prepare("p-1");
+	expect(missing.foreignOwner).toBeUndefined();
+	f.seed("apps/sales/app.toml", `name = "Sales"\nposted = false\nowner = "${other}"\n`);
+	await refuses(tool.execute(missing as never, f.context), "APP_CHANGED");
+	// Its own when checked, replaced by another's before the post.
+	f.seed("apps/sales/app.toml", `name = "Sales"\nposted = false\nowner = "${me}"\n`);
+	const own = await prepare("p-2");
+	expect(own.foreignOwner).toBeUndefined();
+	f.seed("apps/sales/app.toml", `name = "Sales" # theirs\nposted = false\nowner = "${other}"\n`);
+	await refuses(tool.execute(own as never, f.context), "APP_CHANGED");
+	expect(f.text("apps/sales/app.toml")).toContain("posted = false");
+	// Another's checked as another's is delegation, and posts once the review allows it.
+	const theirs = await prepare("p-3");
+	expect(theirs.foreignOwner).toBe(true);
+	expect(read(await tool.execute(theirs as never, f.context))).toMatchObject({ state: "applied", posted: true });
 });

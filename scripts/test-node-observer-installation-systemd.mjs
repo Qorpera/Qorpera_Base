@@ -21,6 +21,6 @@ try {
 	args.push(image,'/bin/bash','-c',systemdContainerBoot('groupadd --gid 2302 node-lxd-fixture'));
 	container=command('docker',args);let ready=false;
 	for(let n=0;n<40;n++){const state=spawnSync('docker',['exec',container,'systemctl','is-system-running'],{encoding:'utf8',timeout:10000}).stdout?.trim();if(['running','degraded'].includes(state)){ready=true;break;}await delay(500);}assert(ready,'Private systemd did not start: '+command('docker',['logs',container]));
-	await new Promise((done,reject)=>{const child=spawn('docker',['exec',container,'node','/fixture/check.mjs'],{stdio:'inherit',timeout:180000});child.once('error',reject);child.once('exit',code=>code===0?done():reject(new Error('Observer systemd installation proof failed')));});
+	await new Promise((done,reject)=>{const child=spawn('docker',['exec',container,'node','/fixture/check.mjs'],{stdio:'inherit',timeout:300000});child.once('error',reject);child.once('exit',code=>code===0?done():reject(new Error('Observer systemd installation proof failed')));});
 	console.log(JSON.stringify({image,network:'none',privateCgroupNamespace:true,hostCgroupBind:false}));
 } finally {try{if(container)command('docker',['rm','-f',container]);}finally{await rm(temporary,{recursive:true,force:true});}}

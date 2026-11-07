@@ -24,12 +24,12 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
+import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
-import { authorizeMachineCommand } from "./machine-command-authority.ts";
-import { MachineCommandRouter } from "./machine-command-routing.ts";
+import { localMachineWake, MachineCommandRouter, machineCommandRoutes } from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
@@ -332,6 +332,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
+			wakeLocal: localMachineWake(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -361,10 +362,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
-		machines: {
-			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
-			execute: (request, signal) => machineRouter.execute(request, signal),
-		},
+		machines: machineCommandRoutes(machineRouter, control, false),
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
@@ -372,10 +370,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		proveBinding: null,
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
-		machines: {
-			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
-			execute: (request, signal) => machineRouter.execute(request, signal, true),
-		},
+		machines: machineCommandRoutes(machineRouter, control, true),
 	});
 	let executor: CloudCodingExecutor | undefined;
 	try {
@@ -443,27 +438,23 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			}
 		})();
 		// Company machines: admission, lifecycle, guest leases and command ends,
-		// every 10 s after a pass. A failed step is logged and recorded on its machine.
-		const machines = (async () => {
-			while (machineHost && !stop.signal.aborted) {
-				try {
-					for (const outcome of await machineHost.pass(stop.signal))
-						if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
-						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code) || outcome.folder)
-							console.log(JSON.stringify({ event: "company-machine", ...outcome }));
-				} catch (error) {
-					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));
-				}
-				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
-			}
-		})();
+		// every 10 s after a pass, or at once when a run asks for a machine, a stop or a
+		// release frees room, or a starting guest's boot becomes usable. A failed step is
+		// logged and recorded on its machine.
+		const machines = machineHost?.run(stop.signal, (outcomes) => {
+			if (!Array.isArray(outcomes)) console.error(JSON.stringify({ event: "company-machine-error", code: outcomes.failed }));
+			else for (const outcome of outcomes)
+				if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
+				else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code) || outcome.folder)
+					console.log(JSON.stringify({ event: "company-machine", ...outcome }));
+		});
 		// Code hosts: once at start, every one an earlier executor left started
 		// stops, and one made under another policy goes; each starts again on its
 		// company's next job.
 		const hosting = (async () => {
 			if (!codeHosts) return;
 			try {
-				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await codeHosts.housekeep(stop.signal) }));
+				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await withAbortScope(stop.signal, (scoped) => codeHosts.housekeep(scoped)) }));
 			} catch (error) {
 				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
 			}
@@ -478,7 +469,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			});
 			while (!stop.signal.aborted) {
 				try {
-					await codeHosts.removeDeleting(deleting, stop.signal);
+					await withAbortScope(stop.signal, (scoped) => codeHosts.removeDeleting(deleting, scoped));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "deletions", code: errorCode(error) }));
 				}
@@ -489,6 +480,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	} finally {
 		stop.abort();
 		await executor?.drain();
+		// A machine step that outlasted its pass ends on the same abort.
+		await machineHost?.settled();
 		// A take-off the keeper started settles before the process ends.
 		for (const outcome of await host.settled())
 			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
