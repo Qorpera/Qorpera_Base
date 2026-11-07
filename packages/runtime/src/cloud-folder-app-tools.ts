@@ -579,20 +579,37 @@ export function cloudAppTools(options: {
 			return { name: appName(input.name), operationKey: operationKey(input.operationKey), posted: input.posted };
 		},
 		// Its own app posts at once; another agent's or a member's goes through the automatic review. Read before the
-		// review, so its effect class is the one that runs.
+		// review, so its effect class is the one that runs, and bound to that read: the post writes only the manifest
+		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
-			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
-			return foreign ? ({ ...(value as Record<string, JsonValue>), foreignOwner: true } as JsonValue) : value;
+			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
+			const foreign = parsed === null ? stored === "unreadable" : !parsed.ok || parsed.manifest.owner !== owner;
+			return {
+				...(value as Record<string, JsonValue>),
+				checkedVersion: stored !== null && stored !== "unreadable" ? stored.entry.version : null,
+				...(foreign ? { foreignOwner: true } : {}),
+			} as JsonValue;
 		},
 		refused: cloudFolderRefusal,
 		async execute(value, context) {
-			const request = value as { name: string; operationKey: string; posted: boolean };
+			const request = value as {
+				name: string;
+				operationKey: string;
+				posted: boolean;
+				checkedVersion?: string | null;
+			};
 			writable();
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
 			const stored = await manifestText(path, context.signal);
+			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
+			if (
+				request.checkedVersion !== undefined &&
+				(stored === null || stored === "unreadable" ? null : stored.entry.version) !== request.checkedVersion
+			)
+				throw new CloudToolRefusal("APP_CHANGED: the app changed while this post was checked; post it again");
 			if (stored === null) throw new CloudToolRefusal("APP_NOT_FOUND: no app has that name; make it with save_app");
 			if (stored === "unreadable")
 				throw new CloudToolRefusal(`APP_MANIFEST_UNREADABLE: ${path} is not text; replace it with save_app`);
