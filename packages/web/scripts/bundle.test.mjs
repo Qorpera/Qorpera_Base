@@ -118,8 +118,13 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	const { layout } = await built;
 	const template = readFileSync(join(root, "public/index.html"), "utf8");
 	const versions = Object.fromEntries(VENDORED_SCRIPTS.map((file, index) => [file, `${index}`.repeat(12)]));
-	const html = rewriteIndex(template, layout, versions);
+	const api = "https://api.example.test";
+	const html = rewriteIndex(template, layout, versions, api);
 	const head = html.slice(0, html.indexOf("</head>"));
+	// The API's connection starts with the page, not after main.js has run.
+	assert.ok(head.includes(`<link rel="preconnect" href="${api}" crossorigin>`));
+	assert.throws(() => rewriteIndex(template, layout, versions, `${api}/rest`), /Not an origin/);
+	assert.throws(() => rewriteIndex(template, layout, versions), /Not an origin/);
 	assert.ok(layout.preload.length > 0);
 	for (const file of layout.preload) assert.ok(head.includes(`<link rel="modulepreload" href="./${file}">`), file);
 	for (const file of layout.lazy) assert.ok(!html.includes(file), file);
@@ -130,8 +135,8 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	// fetched by its content hash: /assets/ is cached for a day.
 	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
-	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout, versions), /main\.js/);
-	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[1]]: undefined }), /avatar-appearance\.js/);
+	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout, versions, api), /main\.js/);
+	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[1]]: undefined }, api), /avatar-appearance\.js/);
 });
 
 test("the deployment manifest checksums every script and stylesheet the build made", async () => {
