@@ -58,8 +58,8 @@ names on one node become the same after the swap, the collection stops with
 
 `class.json` lists the differences that are planned:
 
-- `mayDiffer`: path prefixes that may differ. Example: `agent › roles`, while a rolling update has
-  one node a release ahead.
+- `mayDiffer`: path prefixes that may differ. Example: `agent › roles › provider`, while a rolling
+  update has one node a release ahead.
 - `onlyOn`: `{"<label>": [prefix, …]}`, things that only that node has on purpose. They must be
   missing on the other node. The label is the one given to `collect`.
 
@@ -67,8 +67,9 @@ A role's settings go with the role. An entry that covers a role (`agent › role
 `agent › roles › <role>`) also covers the names of that role's settings (`agent › settings › <role>`).
 
 Keep the class small. The goal is identical nodes, so every entry is a known gap with a plan. The
-checked-in class allows only the roles (their releases and the names of their settings). As of
-2026-09-28 the known gaps are:
+checked-in class allows only the orchestrator role (its release and the names of its settings),
+which only node 1 runs. Every other role must match: a provider release or setting name that one
+node has and the other lacks shows as a difference. As of 2026-09-28 the known gaps are:
 
 - node 1 mounts the company objects `noexec`, and node 2 does not;
 - per-node coding and office workbench shares;
