@@ -130,9 +130,15 @@ describe("bounded node health evidence", () => {
 	it("waits 20 seconds between health samples, and the loops placement reads keep their 5", () => {
 		expect(RUNTIME_NODE_HEALTH_WAIT_MS).toBe(20_000);
 		const service = readFileSync(new URL("../src/runtime-node-observer-service.ts", import.meta.url), "utf8");
-		expect(service.match(/const healthLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(RUNTIME_NODE_HEALTH_WAIT_MS,");
-		expect(service.match(/const inventoryLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
-		expect(service.match(/const exitLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
+		// The loops take their pauses as parameters (#1489's tests pass short ones); the observer passes none, so these
+		// defaults are what runs.
+		expect(service).toContain("\tpauseMs = 5000,\n\thealthPauseMs = RUNTIME_NODE_HEALTH_WAIT_MS,\n");
+		expect(service.match(/const healthLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(healthPauseMs,");
+		expect(service.match(/const inventoryLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(pauseMs,");
+		expect(service.match(/const exitLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(pauseMs,");
+		expect(service).toMatch(
+			/runRuntimeNodeObserverLoops\(\n\t\tsignal,[\s\S]*?\n\t\t\{ report, reportHealth, reportExit \},\n\t\);/,
+		);
 		// A merge that takes the old sentence back fails here.
 		const doc = readFileSync(new URL("../../../deploy/first-node/RUNTIME-NODE-HEALTH.md", import.meta.url), "utf8");
 		expect(doc).not.toContain("Both loops wait five seconds");
