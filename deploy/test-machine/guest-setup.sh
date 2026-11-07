@@ -11,7 +11,7 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 TESTER_KEY="${1:?public key for tester}"
-PG_IMAGE='docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94'
+PG_IMAGE='docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3'
 NODE_TEST_IMAGE='docker.io/library/node:24-bookworm-slim'
 # CI pre-pulls node:22-bookworm-slim for the runtime office probes (--pull=never).
 NODE22_TEST_IMAGE='docker.io/library/node:22-bookworm-slim'

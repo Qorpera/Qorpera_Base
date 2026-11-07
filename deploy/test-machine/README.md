@@ -176,6 +176,13 @@ is the record contract 24.4 asks for. It names the `machine` the run used, what 
 the machines `passedOver`.
 `--record FILE` also writes it to a file.
 
+The hosted-db suite and the other PostgreSQL scripts run `POSTGRES_IMAGE` (`scripts/test-hosted-db.mjs`), which
+`guest-setup.sh` pulls too: PostgreSQL 17.6 on Debian's glibc, started on production's locale (ICU en-US, `POSTGRES_LOCALE`).
+Each of them checks the locale once its PostgreSQL is ready (`checkLocale`) and stops on any other: the hosted-db
+harness, `load-folder-core`, `test-identity-recovery`, `test-login-recovery-automation`, `test-runtime-cpu-allocation-ratio`
+and `test-runtime-office-delete-reason`; a test in `scripts/test-hosted-db.test.mjs` fails a script that starts the image
+without both.
+
 Several sessions can use a machine at once. Each run has its own directory and runner user, and the
 hosted-db harness names its containers per process. Slots, queue, runner users, npm caches and worktree copies
 are per machine: two machines run ten suites at once.

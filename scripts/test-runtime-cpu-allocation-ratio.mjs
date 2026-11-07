@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const container = `qorpera-cpu-ratio-${randomBytes(6).toString("hex")}`;
@@ -31,7 +31,7 @@ function concurrentSql(text) {
 }
 let started = false;
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable-fleet", "-e", "POSTGRES_DB=fleet", POSTGRES_IMAGE]);
+	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable-fleet", "-e", "POSTGRES_DB=fleet", ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
 	started = true;
 	let ready = 0;
 	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
@@ -42,6 +42,7 @@ try {
 		if (ready < 2) await new Promise((resolve) => setTimeout(resolve, 500));
 	}
 	assert.equal(ready, 2, "PostgreSQL did not become ready");
+	checkLocale(sql(LOCALE_QUERY));
 	sql(read("supabase/tests/bootstrap.sql"));
 	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
 	sql(migrations.map((name) => read(`supabase/migrations/${name}`)).join("\n"));
