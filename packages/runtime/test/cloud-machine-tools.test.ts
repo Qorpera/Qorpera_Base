@@ -90,6 +90,7 @@ function fixture(
 		cancel: vi.fn<CloudMachineCommandGateway["cancel"]>(
 			async (scope, commandId) => receipt(scope.machineId, commandId, "cancelled") as never,
 		),
+		wake: vi.fn<NonNullable<CloudMachineCommandGateway["wake"]>>(async () => false),
 	};
 	const execute = vi.fn<CloudNativeToolOperations["execute"]>(async (options) => {
 		await options.authorize(options.operation, identity, options.signal);
@@ -694,6 +695,91 @@ describe("machine tools", () => {
 				expect(f.looks()).toHaveLength(3);
 				// The machine is asked before the wait and for the answer, never while waiting.
 				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a starting machine's executor is told at once, and its word ends the worker's wait", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "starting";
+				let say = (_told: boolean) => {};
+				f.gateway.wake.mockImplementationOnce(
+					() =>
+						new Promise<boolean>((settle) => {
+							say = settle;
+						}),
+				);
+				const looking = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "starting" } };
+				const up = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "running" } };
+				f.statuses.push(looking, up);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "woken",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				expect(f.looks()).toHaveLength(1);
+				// Well before its next look.
+				await vi.advanceTimersByTimeAsync(400);
+				say(true);
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await start;
+				expect(f.content(result as never).machine.state).toBe("running");
+				expect(f.looks()).toHaveLength(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a lost word costs only the looks every few seconds", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "starting";
+				f.gateway.wake.mockRejectedValueOnce(new Error("Machine command gateway unavailable"));
+				const looking = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "starting" } };
+				const up = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "running" } };
+				f.statuses.push(looking, looking, up);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "lost",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				// The word's failure ends no wait: the next look comes at its time.
+				expect(f.looks()).toHaveLength(1);
+				await vi.advanceTimersByTimeAsync(10_000);
+				const result = await start;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("running");
+				expect(f.looks()).toHaveLength(3);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a machine in line, or one already running, is not waited on", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "waiting";
+				const lined = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "lined",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.content(lined as never).machine.state).toBe("waiting");
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				f.gateway.wake.mockClear();
+				f.started.state = "running";
+				await f.boundary.invoke("s2", "qorpera", "machine_start", {
+					operationKey: "up",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.gateway.wake).not.toHaveBeenCalled();
+				expect(f.looks()).toEqual([]);
 			} finally {
 				f.boundary.close();
 			}
