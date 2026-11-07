@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const container = `qorpera-login-recovery-${randomBytes(6).toString("hex")}`;
@@ -20,7 +20,7 @@ function docker(args, input) {
 const sql = (text) => docker(psql, text);
 let started = false;
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable", "-e", "POSTGRES_DB=recovery", POSTGRES_IMAGE]);
+	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable", "-e", "POSTGRES_DB=recovery", ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
 	started = true;
 	let ready = 0;
 	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {

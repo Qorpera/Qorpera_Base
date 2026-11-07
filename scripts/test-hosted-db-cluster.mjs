@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContainerName, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { buildContainerName, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 /** One disposable PostgreSQL for a whole hosted-db run. The migrations are replayed once, by one psql process
  * that opens a fresh session for every file (`\connect` then `\i`), exactly as one `psql` run per file did, but
@@ -30,7 +30,7 @@ export const CLUSTER_ENV = "QORPERA_HOSTED_DB_CLUSTER";
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/;
 const CONTAINER = /^qorpera-hosted-db-\d+-[0-9a-f]{8}$/;
 
-/** A suite's build is kept on the machine for later runs (a warm copy): its data directory, in a docker volume
+/** A full build is kept on the machine for later runs (a warm copy; `hostedDatabase` says which): its data directory, in a docker volume
  * `qorpera-hosted-db-warm-<link>-<seconds>-<random>`, and a volume of the same name with `-ready` after it once the
  * copy is complete. The link (`warmChain`) covers everything the build came from, so a copy is used only by a run
  * whose image, bootstrap, build scripts and first migrations are byte for byte the ones it was made from. */
@@ -176,6 +176,11 @@ function run(command, args, options = {}) {
 	return result.stdout;
 }
 
+/** Refuses a cluster not on production's locale (POSTGRES_LOCALE). `line`: its database's `datlocprovider|datlocale`. */
+export function checkLocale(line) {
+	if (line.trim() !== "i|en-US") throw new Error(`The disposable PostgreSQL is not on ICU en-US as production is: ${line.trim()}`);
+}
+
 function checkDatabase(name) {
 	if (!DATABASE.test(name)) throw new Error(`Invalid hosted database name ${name}`);
 	return name;
@@ -241,6 +246,7 @@ export class HostedDbCluster {
 			container,
 			"--env",
 			`POSTGRES_PASSWORD=${PASSWORD}`,
+			...POSTGRES_LOCALE,
 			...(admin === "postgres" ? [] : ["--env", `POSTGRES_USER=${checkDatabase(admin)}`]),
 			...(restartable ? [] : ["--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=2g"]),
 			...(warm ? ["--volume", `${checkWarmVolume(warm)}:${WARM_IN}:ro`] : []),
@@ -250,6 +256,7 @@ export class HostedDbCluster {
 		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
 			await cluster.waitForPostgres();
+			checkLocale(run("docker", cluster.psqlArgs(admin, ["-qAt"], admin), { input: "select datlocprovider::text || '|' || coalesce(datlocale, '') from pg_database where datname = current_database();" }));
 			// A warm copy of such a cluster holds this role already.
 			if (admin !== "postgres") cluster.admin("do $$ begin if not exists (select from pg_roles where rolname = 'postgres') then create role postgres login superuser; end if; end $$;");
 			run("docker", ["exec", container, "mkdir", "-p", IN_CONTAINER]);
@@ -451,7 +458,7 @@ export class HostedDbCluster {
 		const snapshots = snapshotPlan(names, snapshotBefore);
 		const snapshotAt = (applied) => {
 			const snapshot = snapshots.find((candidate) => candidate.applied === applied);
-			// CREATE DATABASE … TEMPLATE needs the template without sessions: this one moves to postgres first.
+			// CREATE DATABASE … TEMPLATE needs the template without sessions: this one moves to the bootstrap superuser's database first.
 			return snapshot && snapshot.database !== MIGRATED
 				? `\\connect ${home}\ncreate database ${snapshot.database} template ${MIGRATED};\n`
 				: "";

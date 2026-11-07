@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /**
@@ -924,6 +924,7 @@ try {
 		`POSTGRES_PASSWORD=${password}`,
 		"--env",
 		`POSTGRES_DB=${database}`,
+		...POSTGRES_LOCALE,
 		POSTGRES_IMAGE,
 		"-c",
 		"max_connections=300",

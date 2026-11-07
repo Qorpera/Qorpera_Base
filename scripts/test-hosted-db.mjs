@@ -8,10 +8,18 @@ import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile
 
 /** Debian's image, not Alpine's: PostgreSQL on musl spends as long in the kernel as on its own code, mostly page faults
  * and munmap from musl's allocator. The same 924 migrations and 49 SQL tests in one slot, alternating (7 Nov): replay
- * 57 s and 60 CPU s on Alpine, 28 s and 31 CPU s here; tests 48 s and 39 CPU s, 33 s and 25 CPU s. Production runs on glibc
- * too. The image's default en_US.utf8 is also closer to production's en_US.UTF-8 than musl's byte order. */
+ * 57 s and 60 CPU s on Alpine, 28 s and 31 CPU s here; tests 48 s and 39 CPU s, 33 s and 25 CPU s. Production's
+ * supabase/postgres:17.6.1.136 is no musl build either: its version string says x86_64-pc-linux-gnu (read 7 Nov), though
+ * the os-release in that image says Alpine. deploy/test-machine/guest-setup.sh pulls this same image. */
 export const POSTGRES_IMAGE =
 	"docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3";
+
+/** Every test PostgreSQL starts on production's locale: read from production on 7 Nov, its database has provider ICU, locale
+ * en-US (datcollate en_US.UTF-8, collation version 153.121). The image's own default is the libc provider, and libc en_US
+ * sorts text and changes case differently from ICU en-US (`_x` and `-x`, `mail_1` and `mail1`, `upper('ß')`), so a test
+ * there could pass on an order production does not give. This image's ICU is an older release (72, collation version
+ * 153.120); the provider and the locale are the same. */
+export const POSTGRES_LOCALE = ["--env", "POSTGRES_INITDB_ARGS=--locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8"];
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

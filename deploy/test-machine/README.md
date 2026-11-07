@@ -27,6 +27,10 @@ machine that does not answer is skipped, so the list may name a machine before i
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
 | Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
+The hosted-db suite and the other PostgreSQL scripts run `POSTGRES_IMAGE` (`scripts/test-hosted-db.mjs`), which
+`guest-setup.sh` pulls too: PostgreSQL 17.6 on Debian's glibc, started on production's locale (ICU en-US, `POSTGRES_LOCALE`).
+A cluster on another locale stops the run.
+
 ## Node accounting
 
 Every LXD instance on a node must be a registered allocation or enrolled infrastructure,

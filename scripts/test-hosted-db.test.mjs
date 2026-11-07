@@ -9,6 +9,7 @@ import {
 	buildContainerName,
 	expandTestFixture,
 	POSTGRES_IMAGE,
+	POSTGRES_LOCALE,
 	parseArguments,
 	SQL_TEST_DATABASES,
 	selectTests,
@@ -19,6 +20,7 @@ import {
 import {
 	bestSnapshot,
 	CLUSTER_ENV,
+	checkLocale,
 	HostedDbCluster,
 	MIGRATED,
 	newestBundleActivation,
@@ -53,6 +55,20 @@ test("uses an exact temporary container identity and digest-pinned image", () =>
 	assert.match(POSTGRES_IMAGE, /^docker\.io\/library\/postgres:[^@]+@sha256:[0-9a-f]{64}$/);
 	// Not on musl: PostgreSQL there takes about twice the CPU for the same migrations.
 	assert.doesNotMatch(POSTGRES_IMAGE, /alpine/);
+});
+
+test("a rebuilt test machine pulls the image the tests use, and every PostgreSQL they start has production's locale", () => {
+	const scripts = dirname(fileURLToPath(import.meta.url));
+	assert.ok(readFileSync(join(scripts, "..", "deploy", "test-machine", "guest-setup.sh"), "utf8").includes(`PG_IMAGE='${POSTGRES_IMAGE}'`));
+	assert.deepEqual(POSTGRES_LOCALE, ["--env", "POSTGRES_INITDB_ARGS=--locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8"]);
+	const starters = readdirSync(scripts).filter(
+		(name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs") && name !== "test-hosted-db.mjs" && /\bPOSTGRES_IMAGE\b/.test(readFileSync(join(scripts, name), "utf8")),
+	);
+	assert.ok(starters.includes("test-hosted-db-cluster.mjs") && starters.includes("load-folder-core.mjs"));
+	for (const name of starters) assert.match(readFileSync(join(scripts, name), "utf8"), /\.\.\.POSTGRES_LOCALE\b/, name);
+	// A cluster on anything else stops the run before a test sees it.
+	checkLocale("i|en-US\n");
+	for (const line of ["c|", "i|en-GB", "b|C.UTF-8", ""]) assert.throws(() => checkLocale(line), /not on ICU en-US/);
 	assert.throws(() => buildContainerName(42, "../escape"), /Invalid hosted database container identity/);
 });
 

@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { expandTestFixture, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { verifyIdentityRecoveryRoundTrip } from "./identity-recovery-round-trip.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -92,7 +92,7 @@ try {
 	volumeCreated = true;
 	docker(["run", "-d", "--rm", "--name", container, "--label", "qorpera.step2-test=identity-recovery",
 		"-e", "POSTGRES_PASSWORD=qorpera-test-only", "-e", "POSTGRES_DB=qorpera_test",
-		"--mount", `type=volume,source=${volume},target=/var/lib/postgresql/data`, POSTGRES_IMAGE]);
+		"--mount", `type=volume,source=${volume},target=/var/lib/postgresql/data`, ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
 	started = true;
 	await waitForDatabase();
 	sql(await source("supabase/tests/bootstrap.sql"));
