@@ -81,7 +81,9 @@ async function setup() {
 	const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = String(input);
 		expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
-		expect(init).toMatchObject({ redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(init).toMatchObject({ redirect: "error", credentials: "omit" });
+		// An attachment keeps "no-store"; a function call has none, as Chrome would send a CORS preflight for each.
+		expect(init?.cache).toBe(url.includes("/rest/v1/rpc/") ? undefined : "no-store");
 		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
 		if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 		if (url.endsWith("/qorpera_select_member_session_account")) return Response.json(id(81));
