@@ -39,7 +39,7 @@ import {
 	symlink,
 } from "node:fs/promises";
 import { request } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -56,6 +56,10 @@ const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_REVISION = 999_999_999;
 const START_ATTEMPTS = 120; // 500 ms apart: a role has one minute to exec its program
 const LOCK = "/run/lock/qorpera-node-update.lock";
+const RELEASE_KEY_NAME = /^[0-9a-f]{16}\.pem$/;
+const RELEASE_KEY_PEM = /^-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/=\n]+)-----END PUBLIC KEY-----\n?$/;
+const MAX_RELEASE_KEYS = 8;
+const MAX_RELEASE_KEY_BYTES = 4096;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const need = (ok, message) => {
@@ -102,17 +106,102 @@ export function parseRelease(bytes) {
 	return value;
 }
 
-/** Reads and verifies a release folder: the signature over release.json and every listed file. */
-export async function verifyReleaseFolder(folder, publicKeyPem) {
+const lstatOrNull = (path) =>
+	lstat(path).catch((error) => {
+		if (error.code === "ENOENT") return null;
+		throw error;
+	});
+const ownedSafely = (info, owner) => info.uid === owner && (info.mode & 0o022) === 0;
+
+/** One release key file, already checked by lstat: opened without following a link and without blocking, it must
+ * still be that file, and hold exactly one PEM public key, Ed25519. */
+async function readReleaseKey(path, before, owner, label) {
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	let bytes;
+	try {
+		const info = await handle.stat();
+		need(
+			info.isFile() &&
+				info.dev === before.dev &&
+				info.ino === before.ino &&
+				ownedSafely(info, owner) &&
+				info.size <= MAX_RELEASE_KEY_BYTES,
+			`RELEASE_KEYS_FILE ${label}`,
+		);
+		bytes = await handle.readFile();
+	} finally {
+		await handle.close();
+	}
+	need(bytes.length <= MAX_RELEASE_KEY_BYTES, `RELEASE_KEYS_FILE ${label}`);
+	const pem = RELEASE_KEY_PEM.exec(bytes.toString("latin1"));
+	let key = null;
+	try {
+		if (pem)
+			key = createPublicKey({
+				key: Buffer.from(pem[1].replaceAll("\n", ""), "base64"),
+				format: "der",
+				type: "spki",
+			});
+	} catch {
+		/* not a public key */
+	}
+	need(key?.asymmetricKeyType === "ed25519", `RELEASE_KEYS_TYPE ${label}`);
+	return key;
+}
+
+/** The release keys a release may verify with (README.md "Release keys"): every `<key id>.pem` directly in `folder`,
+ * plus the `legacy` key file while the two overlap. A key id is the first 16 hex characters of sha256 over the key's
+ * SPKI DER. The folders and files must belong to `owner` and not be group- or world-writable, checked without
+ * following links before anything is read. Any other entry, a bad file, more than 8 keys or no key at all refuses the
+ * whole set. Returns `[{ id, key }]`, sorted by id. */
+export async function readReleaseKeys({ folder, legacy, owner = 0 }) {
+	const files = [];
+	const folderInfo = await lstatOrNull(folder);
+	if (folderInfo) {
+		need(folderInfo.isDirectory() && ownedSafely(folderInfo, owner), "RELEASE_KEYS_FOLDER");
+		const names = (await readdir(folder)).sort();
+		need(names.length <= MAX_RELEASE_KEYS, "RELEASE_KEYS_COUNT");
+		for (const name of names) {
+			const info = await lstat(join(folder, name));
+			need(info.isFile(), `RELEASE_KEYS_ENTRY ${name}`);
+			need(ownedSafely(info, owner) && info.size <= MAX_RELEASE_KEY_BYTES, `RELEASE_KEYS_FILE ${name}`);
+			need(RELEASE_KEY_NAME.test(name), `RELEASE_KEYS_NAME ${name}`);
+			files.push({ path: join(folder, name), info, label: name });
+		}
+	}
+	const legacyInfo = await lstatOrNull(legacy);
+	if (legacyInfo) {
+		const parent = await lstat(dirname(legacy));
+		need(parent.isDirectory() && ownedSafely(parent, owner), "RELEASE_KEYS_FOLDER legacy");
+		need(legacyInfo.isFile(), "RELEASE_KEYS_ENTRY legacy");
+		need(ownedSafely(legacyInfo, owner) && legacyInfo.size <= MAX_RELEASE_KEY_BYTES, "RELEASE_KEYS_FILE legacy");
+		files.push({ path: legacy, info: legacyInfo, label: "legacy" });
+	}
+	const keys = new Map();
+	for (const { path, info, label } of files) {
+		const key = await readReleaseKey(path, info, owner, label);
+		const id = sha256(key.export({ type: "spki", format: "der" })).slice(0, 16);
+		need(label === "legacy" || label === `${id}.pem`, `RELEASE_KEYS_NAME ${label}`);
+		keys.set(id, key);
+	}
+	need(keys.size <= MAX_RELEASE_KEYS, "RELEASE_KEYS_COUNT");
+	need(keys.size > 0, "RELEASE_KEYS_NONE");
+	return [...keys.keys()].sort().map((id) => ({ id, key: keys.get(id) }));
+}
+
+/** Reads and verifies a release folder: the signature over release.json by one of the release keys, and every listed
+ * file. `keyId` names the key that verified it. */
+export async function verifyReleaseFolder(folder, keys) {
 	const bytes = await readFile(join(folder, "release.json"));
 	const signature = Buffer.from((await readFile(join(folder, "release.sig"), "utf8")).trim(), "base64");
-	need(verify(null, bytes, createPublicKey(publicKeyPem), signature), "RELEASE_SIGNATURE");
+	const keyId = keys.find(({ key }) => verify(null, bytes, key, signature))?.id;
+	need(keyId, "RELEASE_SIGNATURE");
 	const release = parseRelease(bytes);
 	for (const file of release.files) {
 		const content = await readFile(join(folder, file.name));
 		need(content.length === file.bytes && sha256(content) === file.sha256, `RELEASE_FILE_MISMATCH ${file.name}`);
 	}
-	return { release, bytes };
+	return { release, bytes, keyId };
 }
 
 /** A role changes when its program or its release values change. */
@@ -160,7 +249,8 @@ export class NodeAgent {
 		this.releases = join(this.nodeRoot, "releases");
 		this.roles = join(this.nodeRoot, "roles");
 		this.nodeConfig = join(root, "etc/qorpera-node/node.json");
-		this.releaseKey = join(root, "etc/qorpera-node/keys/release.pem");
+		this.releaseKeys = join(root, "usr/share/qorpera/release-keys");
+		this.releaseKey = join(root, "etc/qorpera-node/keys/release.pem"); // the legacy key, read until a follow-up drops it
 		this.journal = join(root, "var/lib/qorpera-node-agent/journal");
 		this.ports = ports;
 		this.owner = owner;
@@ -199,8 +289,13 @@ export class NodeAgent {
 			: parseRelease(await readFile(join(this.releases, String(revision), "release.json")));
 	}
 
-	releaseKeyPem() {
-		return readFile(this.releaseKey, "utf8");
+	/** The tests run unprivileged (`owner: null`): there the files belong to the test's own user. */
+	releaseKeySet() {
+		return readReleaseKeys({
+			folder: this.releaseKeys,
+			legacy: this.releaseKey,
+			owner: this.owner ?? process.getuid(),
+		});
 	}
 
 	/** An fsynced, never overwritten record; `revision` ties it to a release so gc can prune it with the release. */
@@ -219,14 +314,14 @@ export class NodeAgent {
 	}
 
 	async stage(source) {
-		const key = await this.releaseKeyPem();
-		const { release, bytes } = await verifyReleaseFolder(source, key);
+		const keys = await this.releaseKeySet();
+		const { release, bytes, keyId } = await verifyReleaseFolder(source, keys);
 		const current = await this.revisionOf("current");
 		need(release.previousRevision === current, `STAGE_PREVIOUS expected ${current} got ${release.previousRevision}`);
 		const target = join(this.releases, String(release.revision));
 		try {
 			await lstat(target);
-			const existing = await verifyReleaseFolder(target, key);
+			const existing = await verifyReleaseFolder(target, keys);
 			need(sha256(existing.bytes) === sha256(bytes), "STAGE_CONFLICT");
 			// A crash between rename and chmod leaves the folder writable; the launcher refuses it until this repairs it.
 			await chmod(target, 0o555);
@@ -245,7 +340,7 @@ export class NodeAgent {
 				await syncPath(join(temporary, name));
 			}
 			// The copy must be the manifest verified above, not a second one swapped into the source meanwhile.
-			const copied = await verifyReleaseFolder(temporary, key);
+			const copied = await verifyReleaseFolder(temporary, keys);
 			need(sha256(copied.bytes) === sha256(bytes), "STAGE_SOURCE_CHANGED");
 			if (this.owner !== null) await chown(temporary, this.owner, this.owner);
 			await syncPath(temporary);
@@ -258,7 +353,7 @@ export class NodeAgent {
 			await rm(temporary, { recursive: true, force: true });
 			throw error;
 		}
-		await this.record("stage", release.revision, { sourceCommit: release.sourceCommit });
+		await this.record("stage", release.revision, { sourceCommit: release.sourceCommit, keyId });
 		return { staged: release.revision, already: false };
 	}
 
@@ -275,7 +370,7 @@ export class NodeAgent {
 	}
 
 	async verifiedRelease(revision) {
-		const { release } = await verifyReleaseFolder(join(this.releases, String(revision)), await this.releaseKeyPem());
+		const { release } = await verifyReleaseFolder(join(this.releases, String(revision)), await this.releaseKeySet());
 		need(release.revision === revision, `RELEASE_FOLDER_HOLDS ${release.revision} NOT ${revision}`);
 		return release;
 	}

@@ -18,7 +18,8 @@ release 0 built from what runs now, plus new units) is the separate migration st
 /opt/qorpera-node/agent/qorpera-node-agent.mjs
 /usr/local/libexec/qorpera-node/qorpera-node-launch.py
 /etc/qorpera-node/node.json                 per-role settings (root, 0444)
-/etc/qorpera-node/keys/release.pem          the enrolled release public key (Ed25519)
+/usr/share/qorpera/release-keys/<key id>.pem   the release-key set (Ed25519 public keys; folder 0755, files 0444, root)
+/etc/qorpera-node/keys/release.pem          the legacy release key, read with the set until a follow-up drops it
 /var/lib/qorpera-node-agent/journal/        fsynced intent and receipt records, one file each (root, 0700)
 ```
 
@@ -44,6 +45,30 @@ Token files the programs read themselves keep their paths, owners and modes.
 - `make-release.mjs --spec <spec.json> --key <private PEM> --out <folder>` builds and signs one.
 - Until phase C, the release key is on the Mac next to the provenance key, a separate key, 0600. The coordinator signs
   after its go.
+
+## Release keys
+
+A release verifies when **any** key in the node's release-key set verifies its signature, so a new key can join before
+the old one leaves. The set is every `<key id>.pem` directly in `/usr/share/qorpera/release-keys`, plus the legacy
+`/etc/qorpera-node/keys/release.pem` while the two overlap. The node agent (`stage`, and every check of a staged
+release) and the orchestrator's node observer (the images the releases pin, `runtime-node-releases.ts`) read it under
+the same rules:
+- A key is an Ed25519 public key, one PEM block (`BEGIN PUBLIC KEY`) and nothing else, at most 4 KiB. Its id is the
+  first 16 hex characters of sha256 over its SPKI DER, and its file name is `<key id>.pem`.
+- The folder, the legacy key's folder and every key file are owned by root and not group- or world-writable. Each is
+  checked without following links before anything is read, and a key file is opened without following links and must
+  still be the file that was checked.
+- At most 8 distinct keys; the same key in the folder and as the legacy key counts once. No key at all means nothing
+  verifies.
+- **A bad entry refuses the whole set**, and then no release verifies: a folder that is not safe
+  (`RELEASE_KEYS_FOLDER`), more than 8 entries or keys (`RELEASE_KEYS_COUNT`), an entry that is not a regular file
+  (`RELEASE_KEYS_ENTRY`), a file that is not safe or too big (`RELEASE_KEYS_FILE`), another name or a name that is not
+  the key's id (`RELEASE_KEYS_NAME`), or anything but an Ed25519 public key (`RELEASE_KEYS_TYPE`). The message names
+  the entry, or `legacy`. No key is `RELEASE_KEYS_NONE`.
+- `stage` records the id of the key that verified the release in its journal record (`keyId`).
+
+Both run the same cases, `fixtures/release-key-cases.json`. `install-node-agent.sh` adds a key to the set (below).
+Dropping the legacy key from the code is a follow-up; deleting it on the nodes happens in a window.
 
 ## Agent commands (root)
 
@@ -206,7 +231,10 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
 `install-node-agent.sh --release-key <public PEM> --release-key-sha256 <hex from the registry>` does three things:
 - copies the agent, launcher and key into a root-only temp folder, verifies those copies against its pins (a test checks
   the pins), and installs exactly those copies (the migration helper goes next to the launcher);
-- enrolls the key;
+- enrolls the key: it refuses a key that is not an Ed25519 public key in the plain PEM form openssl writes, or one that
+  would make a ninth distinct key (the folder's keys, the legacy key and the new key, each counted once; a test checks
+  the count), and installs it as `/usr/share/qorpera/release-keys/<key id>.pem`. It writes the legacy key file only
+  when there is none, so a re-run with a new key adds that key and keeps the old one;
 - creates the folders.
 
 It changes no unit.
