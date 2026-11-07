@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { buildContainerName, checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /**
@@ -952,6 +952,7 @@ try {
 				: 0;
 		spawnSync("sleep", ["0.5"]);
 	}
+	checkLocale(psql(LOCALE_QUERY));
 	const disk = run("docker", ["exec", containerName, "sh", "-c", "df -PT /var/lib/postgresql/data | tail -1"]).trim();
 	if (/tmpfs/.test(disk)) throw new Error(`The data directory is on tmpfs, not a real disk: ${disk}`);
 	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));

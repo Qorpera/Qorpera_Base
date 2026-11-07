@@ -20,6 +20,14 @@ export const POSTGRES_IMAGE =
  * there could pass on an order production does not give. This image's ICU is an older release (72, collation version
  * 153.120); the provider and the locale are the same. */
 export const POSTGRES_LOCALE = ["--env", "POSTGRES_INITDB_ARGS=--locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8"];
+/** The query whose one row checkLocale reads: the provider and locale of the database it runs in. */
+export const LOCALE_QUERY = "select datlocprovider::text || '|' || coalesce(datlocale, '') from pg_database where datname = current_database();";
+
+/** Refuses a cluster not on production's locale (POSTGRES_LOCALE). `line`: LOCALE_QUERY's answer. Every script that starts
+ * POSTGRES_IMAGE calls it once its PostgreSQL is ready, before any migration. */
+export function checkLocale(line) {
+	if (line.trim() !== "i|en-US") throw new Error(`The disposable PostgreSQL is not on ICU en-US as production is: ${line.trim()}`);
+}
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContainerName, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { buildContainerName, checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 /** One disposable PostgreSQL for a whole hosted-db run. The migrations are replayed once, by one psql process
  * that opens a fresh session for every file (`\connect` then `\i`), exactly as one `psql` run per file did, but
@@ -176,11 +176,6 @@ function run(command, args, options = {}) {
 	return result.stdout;
 }
 
-/** Refuses a cluster not on production's locale (POSTGRES_LOCALE). `line`: its database's `datlocprovider|datlocale`. */
-export function checkLocale(line) {
-	if (line.trim() !== "i|en-US") throw new Error(`The disposable PostgreSQL is not on ICU en-US as production is: ${line.trim()}`);
-}
-
 function checkDatabase(name) {
 	if (!DATABASE.test(name)) throw new Error(`Invalid hosted database name ${name}`);
 	return name;
@@ -256,7 +251,7 @@ export class HostedDbCluster {
 		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
 			await cluster.waitForPostgres();
-			checkLocale(run("docker", cluster.psqlArgs(admin, ["-qAt"], admin), { input: "select datlocprovider::text || '|' || coalesce(datlocale, '') from pg_database where datname = current_database();" }));
+			checkLocale(run("docker", cluster.psqlArgs(admin, ["-qAt"], admin), { input: LOCALE_QUERY }));
 			// A warm copy of such a cluster holds this role already.
 			if (admin !== "postgres") cluster.admin("do $$ begin if not exists (select from pg_roles where rolname = 'postgres') then create role postgres login superuser; end if; end $$;");
 			run("docker", ["exec", container, "mkdir", "-p", IN_CONTAINER]);

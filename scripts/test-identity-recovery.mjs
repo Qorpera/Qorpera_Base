@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTestFixture, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { verifyIdentityRecoveryRoundTrip } from "./identity-recovery-round-trip.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -95,6 +95,7 @@ try {
 		"--mount", `type=volume,source=${volume},target=/var/lib/postgresql/data`, ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
 	started = true;
 	await waitForDatabase();
+	checkLocale(sql(LOCALE_QUERY));
 	sql(await source("supabase/tests/bootstrap.sql"));
 	const migrations = sortMigrationNames(await readdir(join(root, "supabase/migrations")));
 	for (const migration of migrations) sql(await source(`supabase/migrations/${migration}`));

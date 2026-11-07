@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import {
 	buildContainerName,
 	expandTestFixture,
+	checkLocale,
+	LOCALE_QUERY,
 	POSTGRES_IMAGE,
 	POSTGRES_LOCALE,
 	parseArguments,
@@ -20,7 +22,6 @@ import {
 import {
 	bestSnapshot,
 	CLUSTER_ENV,
-	checkLocale,
 	HostedDbCluster,
 	MIGRATED,
 	newestBundleActivation,
@@ -65,7 +66,12 @@ test("a rebuilt test machine pulls the image the tests use, and every PostgreSQL
 		(name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs") && name !== "test-hosted-db.mjs" && /\bPOSTGRES_IMAGE\b/.test(readFileSync(join(scripts, name), "utf8")),
 	);
 	assert.ok(starters.includes("test-hosted-db-cluster.mjs") && starters.includes("load-folder-core.mjs"));
-	for (const name of starters) assert.match(readFileSync(join(scripts, name), "utf8"), /\.\.\.POSTGRES_LOCALE\b/, name);
+	for (const name of starters) {
+		const source = readFileSync(join(scripts, name), "utf8");
+		assert.match(source, /\.\.\.POSTGRES_LOCALE\b/, name);
+		// And each refuses its cluster when the locale is not production's, before it applies anything.
+		assert.match(source, /checkLocale\(.*LOCALE_QUERY/, name);
+	}
 	// A cluster on anything else stops the run before a test sees it.
 	checkLocale("i|en-US\n");
 	for (const line of ["c|", "i|en-GB", "b|C.UTF-8", ""]) assert.throws(() => checkLocale(line), /not on ICU en-US/);
