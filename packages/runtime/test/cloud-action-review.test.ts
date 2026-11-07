@@ -1828,6 +1828,14 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 	});
 
+	it("tells the reviewer an agent's own new file is not an overwrite (7 November 2026)", () => {
+		// 7 November: a 3D worker's read of a public IKEA product page was held for a member because it saved the page to
+		// /root/retailer.html, which the reviewer said "may replace an existing file".
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"saving its own download, output or scratch file on its own machine is not overwriting, and a file of that name that might already exist is no reason to answer true",
+		);
+	});
+
 	it("gives the reviewer the mandate beside the request, and null without one", async () => {
 		const withMandate = gate({ mandate: "Job description (the agent's agent.md):\nSend the weekly newsletter." });
 		await expect(withMandate.check()).resolves.toEqual({ run: true });
