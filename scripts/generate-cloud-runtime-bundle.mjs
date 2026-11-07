@@ -7,10 +7,10 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929021199_runtime_bundle_activation_v211.sql";
-const activationVersion = 211;
-const previousActivationVersion = 210;
-const previousActivationSha256 = "6b6febb80ba7ec5ab27389dbfef96c22c722f121650f711c7d801159f56f396e";
+const activation = "supabase/migrations/20260929021299_runtime_bundle_activation_v212.sql";
+const activationVersion = 212;
+const previousActivationVersion = 211;
+const previousActivationSha256 = "423b2e44abbf5aaf5f99c162709d8222082459b8773c1cab0565491120245ff1";
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
