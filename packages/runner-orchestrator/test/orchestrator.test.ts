@@ -10,6 +10,7 @@ import {
 	type CloudFolderMaterialization,
 	type CloudFolderMaterializationPage,
 	CloudFolderRunMaterializer,
+	CloudOrchestratorPassDue,
 	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
 	type CloudRunnerOrchestrationClaim,
@@ -1982,6 +1983,288 @@ describe("cloud runner orchestrator", () => {
 
 		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
 		expect(control.renewClaim).toHaveBeenCalledWith(expect.objectContaining({ claimId }), 30);
+	});
+
+	describe("one answer for an idle pass's lists", () => {
+		const environmentId = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
+		const profileId = "18181818-1818-4818-8818-181818181818";
+		const quiet: Readonly<Record<string, boolean>> = {
+			...Object.fromEntries(CLOUD_FOLDER_DRAINS.map(({ name }) => [name, false])),
+			materialize: false,
+			routine_heads: false,
+		};
+		/** A control plane with every list, each answering "nothing" unless a test says otherwise. */
+		function folderControl(answers: Readonly<Record<string, boolean>> = quiet) {
+			const control = controlPlane();
+			vi.mocked(control.claimNext).mockResolvedValue(undefined);
+			const readPassDue = vi.fn(async () => answers);
+			const listDrain = vi.fn(
+				async (_drain: string, _after: string | undefined, _limit: number): Promise<CloudFolderDrainPage> => ({
+					items: [],
+					hasMore: false,
+				}),
+			);
+			const runDrain = vi.fn(async (): Promise<CloudFolderDrainResult> => ({ state: "done" }));
+			const listMaterialization = vi.fn(async () => ({ items: [] as string[], hasMore: false }));
+			const materialize = vi.fn(async () => ({ state: "done" as const, runIds: [] as string[] }));
+			const listDynamic = vi.fn(async () => ({ items: [], hasMore: false }));
+			control.readPassDue = readPassDue;
+			control.listFolderDrainDue = listDrain;
+			control.runFolderDrain = runDrain;
+			control.listFolderMaterializationDue = listMaterialization;
+			control.materializeFolderCompany = materialize;
+			control.listFolderDynamicRoutines = listDynamic;
+			control.restoreFolderDynamicRoutineRun = vi.fn(async () => ({ status: "gone" as const }));
+			const orchestrator = new CloudRunnerOrchestrator({
+				orchestratorId,
+				controlPlane: control,
+				providerAdapter: localAdapter().adapter,
+			});
+			const listed = () => listDrain.mock.calls.map(([drain]) => drain);
+			return {
+				control,
+				orchestrator,
+				readPassDue,
+				listDrain,
+				runDrain,
+				listMaterialization,
+				materialize,
+				listDynamic,
+				listed,
+			};
+		}
+
+		it("asks one call and no list when nothing is due, and still reconciles and claims", async () => {
+			const f = folderControl();
+			await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+			expect(f.readPassDue).toHaveBeenCalledTimes(1);
+			expect(f.listed()).toEqual([]);
+			expect(f.listMaterialization).not.toHaveBeenCalled();
+			expect(f.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
+			expect(f.control.reconcileExpired).toHaveBeenCalledTimes(1);
+			expect(f.control.retainedClaims).toHaveBeenCalledTimes(1);
+			expect(f.control.claimNext).toHaveBeenCalledTimes(1);
+			// The dynamic routines keep their own 30 s timer: the one call does not answer for them.
+			expect(f.listDynamic).toHaveBeenCalledTimes(1);
+		});
+
+		it("lists only the drain that is due while nothing has run", async () => {
+			const f = folderControl({ ...quiet, machine_checkins: true });
+			await f.orchestrator.runOnce();
+			expect(f.listed()).toEqual(["machine_checkins"]);
+			expect(f.runDrain).not.toHaveBeenCalled();
+			expect(f.listMaterialization).not.toHaveBeenCalled();
+			expect(f.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
+		});
+
+		it("asks every later list once a step ran, so a drain's work is taken in the same pass", async () => {
+			// The listener marks human tasks and a drain admits wakes the materializer takes: the answer predates both.
+			const f = folderControl({ ...quiet, listen: true });
+			f.listDrain.mockImplementation(async (drain) => ({
+				items: drain === "listen" ? [environmentId] : [],
+				hasMore: false,
+			}));
+			await f.orchestrator.runOnce();
+			const names = CLOUD_FOLDER_DRAINS.map(({ name }) => name);
+			expect(f.listed()).toEqual(names.slice(names.indexOf("listen")));
+			expect(f.runDrain).toHaveBeenCalledTimes(1);
+			expect(f.listMaterialization).toHaveBeenCalledTimes(1);
+			expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+		});
+
+		it("materializes when only the materializer is due, and lists the heads when only they are", async () => {
+			const f = folderControl({ ...quiet, materialize: true });
+			f.listMaterialization.mockResolvedValue({ items: [profileId], hasMore: false });
+			await f.orchestrator.runOnce();
+			expect(f.listed()).toEqual([]);
+			expect(f.materialize).toHaveBeenCalledTimes(1);
+			// The materialization is a step that ran: the heads, though their answer was false, are asked after it.
+			expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+			// An answer of true whose list has nothing by the time it is read runs no step: the heads stay out.
+			const empty = folderControl({ ...quiet, materialize: true });
+			await empty.orchestrator.runOnce();
+			expect(empty.listMaterialization).toHaveBeenCalledTimes(1);
+			expect(empty.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
+			const heads = folderControl({ ...quiet, routine_heads: true });
+			await heads.orchestrator.runOnce();
+			expect(heads.listed()).toEqual([]);
+			expect(heads.listMaterialization).not.toHaveBeenCalled();
+			expect(heads.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+		});
+
+		it("lists a drain the answer does not name", async () => {
+			const { events: _events, ...withoutEvents } = quiet;
+			const f = folderControl(withoutEvents);
+			await f.orchestrator.runOnce();
+			expect(f.listed()).toEqual(["events"]);
+		});
+
+		it("asks every list itself when the call fails, and reports the failure once per wait", async () => {
+			const outage = new CloudRunnerOrchestratorRequestError(503);
+			const f = folderControl();
+			const start = Date.parse("2026-11-07T06:00:00.000Z");
+			f.readPassDue.mockRejectedValue(outage);
+			vi.useFakeTimers({ toFake: ["Date"], now: start });
+			try {
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+				expect(f.listMaterialization).toHaveBeenCalledTimes(1);
+				expect(f.control.listRoutineScheduleHeads).toHaveBeenCalledTimes(1);
+				// Within the wait a pass is the pass without the call: no call, no report, every list.
+				vi.setSystemTime(start + 999);
+				f.listDrain.mockClear();
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(1);
+				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+				// The wait doubles: 1 s, then 2 s, then 4 s, as a failing drain's does.
+				vi.setSystemTime(start + 1_000);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(2);
+				vi.setSystemTime(start + 2_999);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(2);
+				vi.setSystemTime(start + 3_000);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(3);
+				vi.setSystemTime(start + 6_999);
+				await f.orchestrator.runOnce();
+				expect(f.readPassDue).toHaveBeenCalledTimes(3);
+				// An answer ends it: the pass leaves its lists out again, and the next failure waits 1 s, not 8 s.
+				vi.setSystemTime(start + 7_000);
+				f.readPassDue.mockResolvedValueOnce(quiet);
+				f.listDrain.mockClear();
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(4);
+				expect(f.listed()).toEqual([]);
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [outage] });
+				expect(f.readPassDue).toHaveBeenCalledTimes(5);
+				vi.setSystemTime(start + 8_000);
+				await f.orchestrator.runOnce();
+				expect(f.readPassDue).toHaveBeenCalledTimes(6);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("never waits longer than five minutes between tries of a failing call", async () => {
+			const f = folderControl();
+			const start = Date.parse("2026-11-07T06:00:00.000Z");
+			f.readPassDue.mockRejectedValue(new CloudRunnerOrchestratorRequestError(503));
+			vi.useFakeTimers({ toFake: ["Date"], now: start });
+			try {
+				let now = start;
+				for (let failure = 1; failure <= 12; failure++) {
+					await f.orchestrator.runOnce();
+					expect(f.readPassDue).toHaveBeenCalledTimes(failure);
+					now += Math.min(5 * 60_000, 1_000 * 2 ** (failure - 1));
+					vi.setSystemTime(now - 1);
+					await f.orchestrator.runOnce();
+					expect(f.readPassDue).toHaveBeenCalledTimes(failure);
+					vi.setSystemTime(now);
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("waits and asks every list on an answer that is not one, like any other failure", async () => {
+			const f = folderControl();
+			const invalid = new Error("Runner orchestrator returned an invalid due summary");
+			f.readPassDue.mockRejectedValueOnce(invalid);
+			await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle", reconciliationErrors: [invalid] });
+			expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+			await f.orchestrator.runOnce();
+			expect(f.readPassDue).toHaveBeenCalledTimes(1);
+		});
+
+		it("stops the pass when it is shut down during the call, without asking a list or starting a wait", async () => {
+			const f = folderControl();
+			const stop = new AbortController();
+			const stopped = new Error("stopped");
+			f.readPassDue.mockImplementationOnce(async () => {
+				stop.abort();
+				throw stopped;
+			});
+			await expect(f.orchestrator.runOnce(stop.signal)).rejects.toBe(stopped);
+			expect(f.listed()).toEqual([]);
+			expect(f.listMaterialization).not.toHaveBeenCalled();
+			expect(f.control.listRoutineScheduleHeads).not.toHaveBeenCalled();
+			expect(f.control.reconcileExpired).not.toHaveBeenCalled();
+			// No wait began: a later pass asks at once.
+			await f.orchestrator.runOnce();
+			expect(f.readPassDue).toHaveBeenCalledTimes(2);
+		});
+
+		it("reports once and does not ask again for ten minutes when the edge function does not know the call", async () => {
+			const f = folderControl();
+			const unknown = new CloudRunnerOrchestratorRequestError(400);
+			f.readPassDue.mockRejectedValue(unknown);
+			vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-07T06:00:00.000Z") });
+			try {
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({
+					status: "idle",
+					reconciliationErrors: [unknown],
+				});
+				expect(f.listed()).toEqual(CLOUD_FOLDER_DRAINS.map(({ name }) => name));
+				vi.setSystemTime(Date.parse("2026-11-07T06:09:59.000Z"));
+				await expect(f.orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+				expect(f.readPassDue).toHaveBeenCalledTimes(1);
+				vi.setSystemTime(Date.parse("2026-11-07T06:10:00.000Z"));
+				f.readPassDue.mockResolvedValue(quiet);
+				f.listDrain.mockClear();
+				await f.orchestrator.runOnce();
+				expect(f.readPassDue).toHaveBeenCalledTimes(2);
+				expect(f.listed()).toEqual([]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("clears a drain's wait when the answer says its list is empty", async () => {
+			const outage = new CloudRunnerOrchestratorRequestError(503);
+			const f = folderControl();
+			let now = new Date("2026-11-07T06:00:00.000Z");
+			const drains = new CloudFolderDrains({ now: () => now, drains: [{ name: "listen", companyLimit: 8 }] });
+			f.listDrain.mockRejectedValueOnce(outage);
+			await expect(drains.reconcile(f.control)).rejects.toMatchObject({ errors: [outage] });
+			// Waiting: neither the answer nor the list is consulted.
+			await expect(
+				drains.reconcile(f.control, undefined, new CloudOrchestratorPassDue({ listen: true })),
+			).resolves.toBeUndefined();
+			expect(f.listDrain).toHaveBeenCalledTimes(1);
+			// The wait over, an empty answer counts as a list that answered: the next failure waits 1 s again, not 2 s.
+			now = new Date("2026-11-07T06:00:01.000Z");
+			await expect(
+				drains.reconcile(f.control, undefined, new CloudOrchestratorPassDue({ listen: false })),
+			).resolves.toBeUndefined();
+			expect(f.listDrain).toHaveBeenCalledTimes(1);
+			f.listDrain.mockRejectedValueOnce(outage);
+			await expect(drains.reconcile(f.control)).rejects.toMatchObject({ errors: [outage] });
+			now = new Date("2026-11-07T06:00:02.000Z");
+			await expect(drains.reconcile(f.control)).resolves.toBeUndefined();
+			expect(f.listDrain).toHaveBeenCalledTimes(3);
+		});
+
+		it("reads the answer through the private control plane and refuses one that is not yes or no", async () => {
+			const requests: unknown[] = [];
+			const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+				requests.push(JSON.parse(String(init?.body)));
+				return Response.json({ value: { listen: true, workers: false } });
+			});
+			const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+				"https://project.supabase.co",
+				"publishable-key",
+				orchestratorId,
+				"c".repeat(43),
+				fakeFetch as typeof fetch,
+			);
+			await expect(control.readPassDue()).resolves.toEqual({ listen: true, workers: false });
+			expect(requests).toEqual([{ action: "due_summary", orchestratorId }]);
+			fakeFetch.mockImplementationOnce(async () => Response.json({ value: { listen: "yes" } }));
+			await expect(control.readPassDue()).rejects.toThrow("invalid due summary");
+			fakeFetch.mockImplementationOnce(async () => Response.json({ value: [] }));
+			await expect(control.readPassDue()).rejects.toThrow();
+		});
 	});
 
 	it("reconciles durable occurrence sources before it claims compute work", async () => {

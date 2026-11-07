@@ -142,6 +142,10 @@ Deno.serve(async (request) => {
 				p_limit: action.limit,
 			};
 			break;
+		case "due_summary":
+			rpc = "qorpera_orchestrator_due_summary";
+			args = {};
+			break;
 		case "reconcile":
 			rpc = "qorpera_reconcile_runner_orchestrator";
 			args = { p_orchestrator_id: action.orchestratorId };

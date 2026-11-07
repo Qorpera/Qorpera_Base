@@ -6,7 +6,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 /** The per-company folder drains (folder core C4, P29: deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): each name
  * the orchestrator may ask for, its due list's and one company's RPC (`(p_after_environment uuid, p_limit integer)` and
  * `(p_environment_id uuid, p_limit integer)`), and the most one company's request may take. A drain plugs in here and in
- * the orchestrator's list; an edge function without its entry answers 400, which pauses that drain alone. */
+ * the orchestrator's list; an edge function without its entry answers 400, which pauses that drain alone. It may also
+ * join qorpera_orchestrator_due_summary, which spares the idle pass its list; a drain not named there is listed as before. */
 export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; company: string; maximum: number }>>> = Object.freeze({
 	listen: Object.freeze({ due: "qorpera_folder_listen_due", company: "qorpera_folder_listen_company", maximum: 256 }),
 	// F2's worker drain (F2-5b-3): starts dispatched workers and revives their parents.
@@ -122,6 +123,7 @@ export type RunnerOrchestratorRequest =
 			profileId: string;
 			limit: number;
 	  }
+	| { action: "due_summary"; orchestratorId: string }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| {
@@ -342,6 +344,8 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				limit: integer(input.limit, "folder drain limit", FOLDER_DRAINS[drain].maximum),
 			};
 		}
+		// One answer for the ten lists of an idle pass (20260930612000).
+		case "due_summary":
 		case "reconcile":
 		case "retained":
 			return { action: input.action, orchestratorId };
