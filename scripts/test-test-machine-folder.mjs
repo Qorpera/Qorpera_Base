@@ -880,17 +880,20 @@ const receiptOf = (r) =>
 		? { state: r.state, exitCode: r.exitCode, output: r.output, totalBytes: r.log?.totalBytes, companyFolder: r.companyFolder ?? null }
 		: null;
 
+/** A `date +%s%N` answer in ms, NaN for anything else. The guest clock takes %N and cuts it to ms here: uutils date
+ * (Ubuntu 26.04) prints the nanoseconds, unpadded, for %3N. */
+export const msFromNanoseconds = (text) =>
+	/^[0-9]{19,}$/.test(text) ? Number(BigInt(text) / 1_000_000n) : Number.NaN;
+
 /** A guest's wall clock against this host's, from the fastest of a few `date` calls over `lxc exec`: `offsetMs` is the
  * guest's time minus the host's, within `uncertaintyMs`. */
 async function guestClock(project, name) {
 	let best = null;
 	for (let i = 0; i < 5; i++) {
 		const before = Date.now();
-		// Nanoseconds, cut to milliseconds here: uutils date (Ubuntu 26.04) prints the nanoseconds, unpadded, for %3N.
 		const said = await lxc(project, ["exec", name, "--", "date", "+%s%N"], { timeoutMs: 30_000 });
 		const after = Date.now();
-		const text = said.stdout.trim();
-		const guest = /^[0-9]{19,}$/.test(text) ? Number(BigInt(text) / 1_000_000n) : Number.NaN;
+		const guest = msFromNanoseconds(said.stdout.trim());
 		if (said.status !== 0 || !Number.isSafeInteger(guest)) continue;
 		const sample = { offsetMs: guest - Math.round((before + after) / 2), uncertaintyMs: Math.ceil((after - before) / 2) };
 		if (!best || sample.uncertaintyMs < best.uncertaintyMs) best = sample;
@@ -989,7 +992,7 @@ PY`;
 /** L: a write under /company at every 10 s of the guest's clock (a counter and the guest's time in ms), its last on
  * TERM (a cancel or a stop), at most 60. `now` cuts the ms from %N: uutils date (Ubuntu 26.04) prints the
  * nanoseconds, unpadded, for %3N. */
-const NOW_MS = "now() { echo $(( $(date +%s%N) / 1000000 )); }";
+export const NOW_MS = "now() { echo $(( $(date +%s%N) / 1000000 )); }";
 const LOOP_COMMAND = [
 	"f=/company/p4/loop.txt; n=0",
 	NOW_MS,

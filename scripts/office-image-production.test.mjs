@@ -33,6 +33,17 @@ test("the office image scripts parse, and so does the acceptance's guest proof",
 	execFileSync("python3", ["-I", "-c", "import ast, sys; ast.parse(sys.stdin.read())"], { input: proof, timeout: 5000 });
 });
 
+test("the acceptance dates its test in ms from %N: uutils date (Ubuntu 26.04) prints %3N unpadded", () => {
+	const dating = /^tested=\$\(date -u \+%Y-%m-%dT%H:%M:%S\.%N\)\ntested="\$\{tested:0:23\}Z"$/m;
+	const lines = read("accept-office-image.sh").match(dating)?.[0];
+	assert.ok(lines, "the acceptance dates its test from %N");
+	const before = Date.now();
+	const tested = execFileSync("bash", ["-c", `${lines}\nprintf %s "$tested"`], { encoding: "utf8", timeout: 5000 });
+	// What the office image provenance check asks of testedAt.
+	assert.equal(new Date(tested).toISOString(), tested);
+	assert.ok(Math.abs(Date.parse(tested) - before) < 5000, tested);
+});
+
 test("production builds and accepts in the host's own LXD: no stage, no alias, no network, admission on", () => {
 	const production = read("build-office-image-production.sh");
 	const accept = read("accept-office-image.sh");
