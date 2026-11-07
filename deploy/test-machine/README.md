@@ -7,7 +7,7 @@ machines (#419) are a separate product feature.
 
 | Machine | Node | Address | State |
 | --- | --- | --- | --- |
-| `node02`: `qorpera-testvm-node02` | `company41-node-02` | `tester@10.201.0.2` | since 2026-09-28; 10 vCPU since 2026-09-29 |
+| `node02`: `qorpera-testvm-node02` | `company41-node-02` | `tester@10.201.0.2` | since 2026-09-28; 10 vCPU since 2026-09-29; 24 GiB since 2026-11-07 |
 | `node01`: `qorpera-testvm-node01` | `company41-node-01` | `tester@10.201.0.3` | planned: [NODE-01.md](NODE-01.md) (design and runbook) |
 
 `scripts/run-on-node.mjs` lists both and sends each run to the one with the most free slots (below). A
@@ -17,8 +17,8 @@ machine that does not answer is skipped, so the list may name a machine before i
 
 | Item | Value |
 | --- | --- |
-| VM | `qorpera-testvm-<node>` in LXD project `testmachines` (restricted: managed disks and NICs on `testmach0` only, no containers, no low-level VM options; project limits 10 vCPU, 16 GiB, 160 GiB) |
-| Size | 10 vCPU, 16 GiB RAM, 150 GiB root disk on pool `qorpera-vm`, `boot.autostart=false`, marker `user.test-machine-purpose`. Node 2's was made at 6 vCPU for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM) and resized to 10 on 2026-09-29 (12 does not fit node 2: below). Setup records whether `/dev/kvm` is present |
+| VM | `qorpera-testvm-<node>` in LXD project `testmachines` (restricted: managed disks and NICs on `testmach0` only, no containers, no low-level VM options; project limits 10 vCPU, the VM's memory, 160 GiB) |
+| Size | 10 vCPU, 16 GiB RAM (24 GiB on node 2), 150 GiB root disk on pool `qorpera-vm`, `boot.autostart=false`, marker `user.test-machine-purpose`. Node 2's was made at 6 vCPU for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM), resized to 10 on 2026-09-29 (12 does not fit node 2: below) and to 24 GiB on 2026-11-07 for nested VM tests inside it. Setup records whether `/dev/kvm` is present |
 | Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) and api-front's pinned `envoyproxy/envoy:v1.39.1` (`deploy/sites/envoy-front-sites.test.mjs`) are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
 | Network | Bridge `testmach0` on each node (10.201.0.1/24, NAT, no IPv6; the guest guard's `testmach0` subnet), VM at 10.201.0.2 (node 2) or 10.201.0.3 (node 1) with MAC/IP filtering and port isolation. The addresses differ so that each machine's host key has its own line in `~/.ssh/known_hosts_qorpera_test_machines` |
@@ -55,17 +55,26 @@ Without either source, build it from the pin (`deploy/first-node/native-codex/RE
 Every LXD instance on a node must be a registered allocation or enrolled infrastructure,
 otherwise the node reports `unavailable` (`deploy/first-node/RUNTIME-HOST-INVENTORY.md`). Each
 VM is enrolled exactly as infrastructure (`NODE-BUILDER-COEXISTENCE.md`, "Exact builder
-enrollment"). Node 2's headroom covers operating + execution host + build space + its VM:
-4000 + 4000 + 6000 + 10000 = 24000 mCPU (the most node 2 allows: a standard 8000 mCPU slot must
-stay) and 24 + 8 + 16 + 16 = 64 GiB. Node 1's numbers are in [NODE-01.md](NODE-01.md). A VM's
-10000 mCPU / 16 GiB is charged whether it runs or not, so its node's placement budget is
-permanently that much smaller. `boot.autostart` is `false`: after a node reboot the VM stays
+enrollment"). Node 2's headroom (version 30, 2026-11-07) covers operating + execution host + its VM +
+the standby database VM + build space + one running code host: 2000 + 4000 + 10000 + 2000 + 4000 + 2000 =
+24000 mCPU (the most node 2 allows: a standard 8000 mCPU slot must stay) and 24 + 8 + 24 + 8 + 16 + 4 =
+84 GiB. Node 1's numbers are in [NODE-01.md](NODE-01.md). A VM's 10000 mCPU and memory (16 GiB, 24 GiB
+on node 2) are charged whether it runs or not, so its node's placement budget is permanently that much
+smaller. `boot.autostart` is `false`: after a node reboot the VM stays
 stopped until an operator starts it, and runs go to the other machine meanwhile.
 
 The enrollment pins the VM's physical UUID and configuration digest. Changing its LXD
 configuration, devices or limits, or rebuilding it, needs a new enrollment under an admission
 hold, run or reviewed by the coordinator. Work inside the guest (packages, Docker images, files)
 does not change the digest.
+
+On node 2, LXD 6.9 refuses every API change of the `testmachines` project (PUT and PATCH, even
+`limits.memory` alone): "features.images cannot be disabled on projects with
+storage.project.<project>.images_volume configured". The project has `features.images=false` and no
+images volume of its own, so the check falls back to the daemon-wide `storage.images_volume`. The
+2026-11-07 raise therefore wrote the project's `limits.memory` (16GiB to 24GiB) into LXD's own database
+with `lxd sql global`, one row, and read it back through the API; the VM's own limit went through the API
+as usual. Try the API first after each LXD refresh: once it accepts a project change again, use it.
 
 ## Running a suite
 
