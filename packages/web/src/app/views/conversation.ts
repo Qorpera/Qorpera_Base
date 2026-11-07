@@ -18,6 +18,7 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
@@ -281,6 +282,12 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
+	/** The wall's question being answered, in the composer. */
+	readonly #answerStrip: HTMLElement;
+	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
+	#answerShown: string | undefined;
+	/** The wall's item that question is, once Answer was pressed in this view. */
+	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
 	/** Names to mention, shown while "@" and the start of a name are typed. */
@@ -413,8 +420,12 @@ export class ConversationView {
 		this.#wall = new AgentWallPoster({
 			member: company.userId,
 			...(actions.folderImage ? { image: actions.folderImage } : {}),
-			onAnswer: () => {
-				if (!this.#composer.disabled) this.#composer.focus();
+			onAnswer: (question, item) => {
+				// A message on its way keeps the question it goes with.
+				if (this.#composer.disabled || this.#submitting) return;
+				this.#answeringItem = item;
+				company.conversation(sessionId).set({ answering: replyQuestion(question) });
+				this.#composer.focus();
 			},
 		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
@@ -447,6 +458,10 @@ export class ConversationView {
 			onkeydown: (event: KeyboardEvent) => {
 				if (this.#mentionKey(event)) return;
 				if (this.#skills.keydown(event)) return;
+				if (event.key === "Escape" && !event.isComposing && this.#answerShown) {
+					company.conversation(sessionId).set({ answering: undefined });
+					return;
+				}
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -643,9 +658,34 @@ export class ConversationView {
 				this.#setMenu(false, false);
 			}
 		});
+		this.#answerStrip = h(
+			"div",
+			{ class: "composer-answer", hidden: true },
+			h(
+				"div",
+				{ class: "composer-answer-words" },
+				h("span", { class: "composer-answer-label" }, t("Answering")),
+				this.#answerQuestion,
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "composer-answer-stop icon-button",
+					"aria-label": t("Stop answering"),
+					title: t("Stop answering"),
+					onclick: () => {
+						company.conversation(sessionId).set({ answering: undefined });
+						this.#composer.focus();
+					},
+				},
+				icon("close"),
+			),
+		);
 		this.#composerShell = h(
 			"div",
 			{ class: "composer-shell" },
+			this.#answerStrip,
 			this.#attachments.el,
 			this.#skills.field,
 			this.#more,
@@ -866,7 +906,8 @@ export class ConversationView {
 	#autosize(): void {
 		// Start with compact geometry: collapsing after measuring an expanded
 		// field changes its padding and can clip a two-line draft.
-		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
+		const taller = this.#attachments.count > 0 || this.#answerShown !== undefined;
+		this.#composerShell.classList.toggle("is-expanded", taller);
 		this.#composer.style.height = "auto";
 		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
 		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
@@ -874,10 +915,7 @@ export class ConversationView {
 		const field = getComputedStyle(this.#composer);
 		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
-		this.#composerShell.classList.toggle(
-			"is-expanded",
-			this.#composer.scrollHeight > oneLine || this.#attachments.count > 0,
-		);
+		this.#composerShell.classList.toggle("is-expanded", this.#composer.scrollHeight > oneLine || taller);
 		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
 		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
 		// The shell is border-box: its height is the field's, the attachments' and its own padding and borders.
@@ -886,7 +924,7 @@ export class ConversationView {
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height + this.#answerStrip.getBoundingClientRect().height}px`;
 		// A new size can show or hide the field's scrollbar, which moves where its lines wrap.
 		this.#skills.sync();
 	}
@@ -1686,6 +1724,20 @@ export class ConversationView {
 		];
 	}
 
+	/** A member's message; one that answers a question from the wall shows the question above the member's words. */
+	#memberBody(text: string, quotes: readonly MessageQuote[] = []): HTMLElement {
+		const reply = splitReply(text);
+		if (!reply) return h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]));
+		const shift = [...text.slice(0, reply.start)].length;
+		const own = quotes.map((quote) => ({ ...quote, start: quote.start - shift, end: quote.end - shift }));
+		return h(
+			"div",
+			{ class: "text" },
+			h("span", { class: "message-reply" }, reply.question),
+			...this.#withMentions(reply.text, own),
+		);
+	}
+
 	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
 	 * content shown as quoted. A name inside a quote names nobody. */
 	#withMentions(text: string, quotes: readonly MessageQuote[] = []): (string | HTMLElement)[] {
@@ -1739,6 +1791,7 @@ export class ConversationView {
 		const state = this.#company.conversation(this.#sessionId).get();
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
+		const answered = state.answering ? this.#answeringItem : undefined;
 		this.#submitting = true;
 		this.#syncSend();
 		void (async () => {
@@ -1755,6 +1808,7 @@ export class ConversationView {
 				if (
 					this.#cannotSend ||
 					this.#composer.value !== text ||
+					current.answering !== state.answering ||
 					current.retrySend !== retry ||
 					files.length !== currentFiles.length ||
 					files.some((file, index) => file !== currentFiles[index])
@@ -1762,6 +1816,7 @@ export class ConversationView {
 					return;
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
+					if (answered) this.#wall.answerSent(answered);
 					if (!this.#isRoom) this.#run?.messageSent();
 					void this.#execution?.refresh();
 				}
@@ -1873,6 +1928,13 @@ export class ConversationView {
 		this.#more.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
+		if (conversation.answering !== this.#answerShown) {
+			this.#answerShown = conversation.answering;
+			this.#answerStrip.hidden = !conversation.answering;
+			this.#answerQuestion.textContent = conversation.answering ?? "";
+			this.#composer.placeholder = conversation.answering ? t("Your answer…") : t("Message…");
+			this.#autosize();
+		}
 		// Until the company says who may write here, the composer's place holds a placeholder.
 		const opening = company.loading && (!company.team || !session);
 		if (opening && !this.#composerPlaceholder) {
@@ -3059,13 +3121,7 @@ export class ConversationView {
 					: item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [
-									h(
-										"div",
-										{ class: "text" },
-										...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
-									),
-								]
+							? [this.#memberBody(item.text, item.quotes)]
 							: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.

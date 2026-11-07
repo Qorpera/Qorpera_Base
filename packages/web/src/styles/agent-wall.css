@@ -53,6 +53,9 @@
 .agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; font-size: 11px; line-height: 1; color: var(--text-muted); }
 .agent-wall-part.is-done .agent-wall-mark { color: var(--ok); }
 .agent-wall-part.is-waiting .agent-wall-mark::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--agent-wall-accent); }
+.agent-wall-part.is-waiting .agent-wall-item.is-answered { color: var(--text-muted); font-weight: 400; }
+.agent-wall .is-answered .agent-wall-answer { border-color: transparent; background: transparent; color: var(--text-muted); font-weight: 400; }
+.agent-wall-part.is-waiting .is-answered .agent-wall-mark::before { background: transparent; box-shadow: inset 0 0 0 2px var(--text-muted); }
 .agent-wall-part.is-working .agent-wall-mark::before { content: ""; box-sizing: border-box; width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
 /* What waits has its answer at hand. */
 .agent-wall-item.has-answer { position: relative; }

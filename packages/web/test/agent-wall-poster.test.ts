@@ -188,6 +188,37 @@ describe("an agent's wall above its composer", () => {
 		expect(texts(next.el, ".is-done .agent-wall-text")).toEqual(["Plan written"]);
 	});
 
+	it("settles only the item answered, until it leaves the wall", () => {
+		const onAnswer = vi.fn();
+		const poster = new AgentWallPoster({ onAnswer });
+		const both = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n";
+		const first = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n";
+		const second = "# Wall\n\n## Waits on you\n- Approve the post\n  The second.\n";
+		const summary = () => poster.el.querySelector(".agent-wall-summary")?.textContent;
+		const buttons = () => [...poster.el.querySelectorAll<HTMLButtonElement>(".agent-wall-answer")];
+		poster.show(AGENT, both, TODAY);
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")?.click();
+		buttons()[1]?.click();
+		// Pressing Answer settles nothing until the answer is sent.
+		expect(summary()).toBe("2 wait on you");
+		// A press on another item meanwhile changes nothing about the answer on its way.
+		const sending = onAnswer.mock.lastCall?.[1] as string;
+		buttons()[0]?.click();
+		poster.answerSent(sending);
+		expect(buttons().map((button) => button.textContent)).toEqual(["Answer", "Answered"]);
+		expect(summary()).toBe("1 waits on you · 1 answered");
+		// The answered one goes: its answer does not pass to the other.
+		poster.show(AGENT, first, TODAY);
+		expect(buttons().map((button) => button.textContent)).toEqual(["Answer"]);
+		// The same words later are a new question.
+		poster.show(AGENT, second, TODAY);
+		expect(buttons().map((button) => button.textContent)).toEqual(["Answer"]);
+		buttons()[0]?.click();
+		poster.answerSent(onAnswer.mock.lastCall?.[1] as string);
+		// With nothing else left, the closed button still says something.
+		expect(summary()).toBe("1 answered");
+	});
+
 	it("answers what waits from the composer, when the view offers it", () => {
 		const onAnswer = vi.fn();
 		const poster = new AgentWallPoster({ onAnswer });
@@ -196,8 +227,20 @@ describe("an agent's wall above its composer", () => {
 		expect(answers).toHaveLength(1);
 		expect(answers[0]?.closest(".agent-wall-part")?.classList.contains("is-waiting")).toBe(true);
 		expect(answers[0]?.closest(".agent-wall-row")).toBeNull();
-		answers[0]?.click();
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")?.click();
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-answer")?.click();
 		expect(onAnswer).toHaveBeenCalledTimes(1);
+		const question = onAnswer.mock.calls[0]?.[0] as string;
+		expect(question.length).toBeGreaterThan(0);
+		// The question moved down to the composer.
+		expect(poster.el.classList.contains("is-folded")).toBe(true);
+		// Answered, it waits on nobody; the agent takes it off when it has read the answer.
+		poster.answerSent(onAnswer.mock.calls[0]?.[1] as string);
+		expect(poster.el.querySelector(".agent-wall-answer")?.textContent).toBe("Answered");
+		expect(poster.el.querySelector(".agent-wall-count-waiting")).toBeNull();
+		// It can still be answered again.
+		poster.el.querySelector<HTMLButtonElement>(".agent-wall-answer")?.click();
+		expect(onAnswer).toHaveBeenCalledTimes(2);
 		const without = new AgentWallPoster({ member: "someone-else" });
 		without.show(AGENT, WALL, TODAY);
 		expect(without.el.querySelector(".agent-wall-answer")).toBeNull();

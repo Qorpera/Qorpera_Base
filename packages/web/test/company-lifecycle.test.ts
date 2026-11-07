@@ -493,6 +493,32 @@ describe("answering a card", () => {
 		expect(state.interactionAnswers).toBeUndefined();
 	});
 
+	it("shows the question being answered in the composer, until the member takes it back", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false, sessions: [thread] });
+		void f.controller.loadConversation(thread.sessionId);
+		const view = new ConversationView(f.controller, thread.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const strip = view.el.querySelector<HTMLElement>(".composer-answer")!;
+		const field = view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		expect(strip.hidden).toBe(true);
+		f.controller.conversation(thread.sessionId).set({ answering: "Who first?" });
+		await settle();
+		expect(strip.hidden).toBe(false);
+		expect(strip.textContent).toContain("Answering");
+		expect(strip.textContent).toContain("Who first?");
+		expect(field.placeholder).toBe("Your answer…");
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await settle();
+		expect(strip.hidden).toBe(true);
+		expect(f.controller.conversation(thread.sessionId).get().answering).toBeUndefined();
+		expect(field.placeholder).toBe("Message…");
+	});
+
 	it("in an agent's thread, gives live controls only on the cards raised for this member", async () => {
 		const f = company();
 		f.controller.store.set({ loading: false, sessions: [thread] });
@@ -539,6 +565,23 @@ describe("conversation lifecycle regressions", () => {
 			expect(() => controller.setExecutionSponsor(session.sessionId, observed, id(80))).toThrow("unavailable");
 		},
 	);
+	it("opens a message that answers the wall's question with it, the same on a retry, and only that message", async () => {
+		const { controller, write } = company();
+		write.mockRejectedValueOnce(new Error("Lost response"));
+		const state = controller.conversation(session.sessionId, false);
+		state.set({ answering: "Who first?" });
+		expect(await controller.sendPrompt(session.sessionId, "  ")).toBe(false);
+		expect(write).not.toHaveBeenCalled();
+		expect(await controller.sendPrompt(session.sessionId, "Young couples")).toBe(false);
+		expect(state.get().answering).toBe("Who first?");
+		expect(await controller.sendPrompt(session.sessionId, "Young couples")).toBe(true);
+		expect(write.mock.calls[1]![1]).toBe(write.mock.calls[0]![1]);
+		expect(write.mock.calls[0]![2]).toBe("> Who first?\n\nYoung couples");
+		expect(write.mock.calls[1]![2]).toBe("> Who first?\n\nYoung couples");
+		expect(state.get().answering).toBeUndefined();
+		expect(await controller.sendPrompt(session.sessionId, "Thanks")).toBe(true);
+		expect(write.mock.calls[2]![2]).toBe("Thanks");
+	});
 	it("retains the exact sponsor, IDs and files on retry after newer discovery and another choice", async () => {
 		const { controller, write } = company();
 		write.mockRejectedValueOnce(new Error("Lost response"));
