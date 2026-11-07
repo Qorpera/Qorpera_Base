@@ -578,6 +578,15 @@ export function cloudAppTools(options: {
 			if (typeof input.posted !== "boolean") throw new CloudToolArgumentRefusal("posted must be true or false");
 			return { name: appName(input.name), operationKey: operationKey(input.operationKey), posted: input.posted };
 		},
+		// Its own app posts at once; another agent's or a member's goes through the automatic review. Read before the
+		// review, so its effect class is the one that runs.
+		async prepare(value, context) {
+			const request = value as unknown as { name: string };
+			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
+			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
+			return foreign ? ({ ...(value as Record<string, JsonValue>), foreignOwner: true } as JsonValue) : value;
+		},
 		refused: cloudFolderRefusal,
 		async execute(value, context) {
 			const request = value as { name: string; operationKey: string; posted: boolean };

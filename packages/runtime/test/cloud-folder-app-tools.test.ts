@@ -274,12 +274,15 @@ it("leaves another agent's app to save_app, which asks first, and lets no app mo
 	await refuses(move("drafts/note.md", "apps/sales/note.md"), "APP_NOT_YOURS");
 });
 
-it("reviews posting, and changing another's app, as delegation", async () => {
+it("posts its own app without review, and reviews posting or changing another's app as delegation", async () => {
 	const { cloudActionEffect, describeCloudAction } = await import("@qorpera/runtime/cloud-action-review");
 	const runtime = (name: string) => ({ name, source: "runtime" as const });
 	expect(cloudActionEffect(runtime("save_app"), { name: "sales" })).toBe("internal");
 	expect(cloudActionEffect(runtime("save_app"), { name: "sales", foreignOwner: true })).toBe("delegation");
-	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true })).toBe("delegation");
+	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true })).toBe("internal");
+	expect(cloudActionEffect(runtime("post_app"), { name: "sales", posted: true, foreignOwner: true })).toBe(
+		"delegation",
+	);
 	expect(describeCloudAction(runtime("post_app"), { name: "sales", posted: true }).title).toBe(
 		"Post an app for every member",
 	);
