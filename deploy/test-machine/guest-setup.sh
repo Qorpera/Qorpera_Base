@@ -11,13 +11,14 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 TESTER_KEY="${1:?public key for tester}"
-PG_IMAGE='docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94'
+PG_IMAGE='docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3'
 NODE_TEST_IMAGE='docker.io/library/node:24-bookworm-slim'
 # CI pre-pulls node:22-bookworm-slim for the runtime office probes (--pull=never).
 NODE22_TEST_IMAGE='docker.io/library/node:22-bookworm-slim'
 # api-front's image (the dbhome kit's docker-compose.dbhome-front.yml), for deploy/sites/envoy-front-sites.test.mjs
 # (--pull never; required on a machine whose versions file names it).
 ENVOY_TEST_IMAGE='docker.io/envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4'
+CODEX_SHA256=1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c
 NODE_VERSION=v24.21.0
 NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  # node-v24.21.0-linux-x64.tar.xz, nodejs.org SHASUMS256
 
@@ -157,6 +158,15 @@ visudo -cf "$sudoers"
 install -m 0440 -o root -g root "$sudoers" /etc/sudoers.d/91-test-machine-runners
 rm -f "$sudoers"
 
+log "the pinned Codex for real-binary tests (QORPERA_CODEX_FENCE_BINARY)"
+# Nothing can download it: a patched build. Push it before this script, as deploy/test-machine/README.md says. A machine
+# without the right file stays not set up, so no run lands on it; scripts/run-on-node.test.mjs ties this hash to the pin in
+# deploy/first-node/native-codex/guest-package-manifest.json.
+echo "${CODEX_SHA256}  /opt/qorpera-codex-fence/codex" | sha256sum -c - || {
+	log "/opt/qorpera-codex-fence/codex is missing or not the pinned build: push it (deploy/test-machine/README.md), then run this again"
+	exit 1
+}
+
 log "the CPU lane's kept slot (5): its lock file root's and read-only"
 # scripts/run-on-node.mjs keeps slot 5 for --front runs and opens a slot's lock file for reading where it can. A client
 # from before that change opens it for writing, so it skips the slot once the file is root's. Changed in place: a run
@@ -181,6 +191,7 @@ log "versions"
 	echo "node22_test_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$NODE22_TEST_IMAGE")"
 	echo "envoy_test_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$ENVOY_TEST_IMAGE")"
 	echo "bwrap=$(bwrap --version)"
+	echo "codex_fence_sha256=${CODEX_SHA256}"
 	echo "runners=$(getent passwd | awk -F: '/^ci[0-9][0-9]:/ {print $1}' | paste -sd, -)"
 	echo "cpus=$(nproc) mem_kib=$(awk '/MemTotal/{print $2}' /proc/meminfo)"
 	echo "kvm_device=$(test -c /dev/kvm && echo present || echo absent)"

@@ -59,12 +59,54 @@ begin
 	perform pg_temp.base_public_send(v_binding, 'progress', 'rr467-ack');
 end $$;
 
+-- A routine of Bob's (as 674 makes one), started, for section 5c: a wake run's describe takes its provider connection FOR
+-- SHARE, which a session turn's does not. Its job's token is the same known token.
+create function pg_temp.rr_rparse(p_id uuid) returns jsonb language sql as $$
+	select jsonb_build_object('kind', 'routine', 'id', p_id, 'title', 'Tick', 'status', 'active',
+		'trigger', jsonb_build_object('when', 'every', 'minutes', 5, 'starts', null), 'timezone', null, 'ends', null,
+		'runs', null, 'quiet', null, 'effort', 'medium', 'reply', 'optional', 'conclusion', null,
+		'instructions', 'Examine the authorized change.')
+$$;
+select pg_temp.base_commit(pg_temp.base_owner(), 'rr467-routine-tick', jsonb_build_array(
+	pg_temp.base_write('QorperaOS/agents/bob/routines/tick.md', 'routine',
+		E'---\n' || pg_temp.rr_rparse('92400000-0000-4000-8000-000000000467')::text || E'\n---\n',
+		pg_temp.rr_rparse('92400000-0000-4000-8000-000000000467'), pg_temp.base_version('QorperaOS/agents/bob/routines/tick.md')))) \g /dev/null
+do $$
+declare v_cursor public.qorpera_cloud_routine_schedule_cursors; v_wake uuid := extensions.gen_random_uuid();
+	v_at timestamptz := statement_timestamp() - interval '5 minutes'; v_run public.qorpera_execution_runs; v_binding jsonb; v_identity jsonb;
+	v_connection uuid;
+begin
+	select c.* into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors c
+	join public.qorpera_cloud_routines r on r.id = c.routine_id and r.current_version = c.routine_version
+	where r.id = '92400000-0000-4000-8000-000000000467';
+	perform public.qorpera_enqueue_routine_wake(v_cursor.routine_id, v_cursor.routine_version, v_wake, 'rr467-tick-1',
+		v_cursor.trigger_id, v_at, v_cursor.last_scheduled_for, v_at + interval '5 minutes', '{}');
+	perform pg_temp.base_materialize();
+	select run.* into strict v_run from public.qorpera_execution_runs run
+	where run.id = (select occurrence.run_id from public.qorpera_wake_occurrences occurrence where occurrence.id = v_wake);
+	v_binding := pg_temp.base_start(v_run.id);
+	update public.qorpera_runner_jobs
+	set lease_token_sha256 = encode(extensions.digest(convert_to(current_setting('qorpera_test.rr_token'), 'utf8'), 'sha256'), 'hex')
+	where id = (v_binding ->> 'jobId')::uuid;
+	select sponsor.provider_connection_id into strict v_connection from public.qorpera_execution_sponsor_versions sponsor
+	where sponsor.binding_id = v_run.sponsor_binding_id and sponsor.version = v_run.sponsor_version;
+	v_identity := public.qorpera_describe_native_tool_authority(v_binding) -> 'identity';
+	perform public.qorpera_begin_native_company_execution_v2(v_binding,
+		(select bundle.manifest ->> 'nativeBinarySha256' from public.qorpera_active_runtime_bundle active
+			join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id),
+		v_identity ->> 'runtimeBundleSha256', v_identity ->> 'reasoningPolicySha256',
+		'{"type":"namespace","name":"qorpera","description":"Synthetic native fixture","tools":[{"type":"function","name":"read_document","description":"Read synthetic data","inputSchema":{"type":"object","additionalProperties":false}}]}',
+		repeat('c', 64), 10);
+	perform set_config('qorpera_test.rr_wake_binding', v_binding::text, false);
+	perform set_config('qorpera_test.rr_wake_connection', v_connection::text, false);
+end $$;
+
 -- Row locks show only across connections, so 924's fixture is committed here and removed again at the end (674's
 -- harness): the test refuses to run beside other connections to this database, whose rows the cleanup could not tell
 -- from its own.
 reset role;
 select set_config(name, current_setting(name), false)
-from unnest(array['qorpera_test.base_binding','qorpera_test.rr_token']) name;
+from unnest(array['qorpera_test.base_binding','qorpera_test.rr_token','qorpera_test.rr_wake_binding','qorpera_test.rr_wake_connection']) name;
 select set_config('qorpera_test.rr_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('rr_holder', 'dbname=' || current_database());
 select dblink_connect('rr_caller', 'dbname=' || current_database());
@@ -309,19 +351,96 @@ begin
 			v_held, v_outcome, v_holding; end if;
 end $$;
 
--- 6. With the row free, the caller's same two calls answer: the 55P03s above were the wait for the row.
+-- 5b. The run's check around a tool call (20260930618000), the same way through the 8 s entry point: it asks what describe
+--     and the context read ask, so it gives up with 55P03 after about 3 s too, and its transaction has ended by the answer.
 do $$
-declare v_read jsonb; v_fence jsonb;
+declare v_held jsonb; v_outcome jsonb; v_holding boolean;
+begin
+	v_held := pg_temp.rr_hold('qorpera_native_host_call', 'qorpera_assert_company_path_reads', pg_temp.rr_context_args(), 6);
+	v_outcome := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_check_native_run', pg_temp.rr_context_args() - 'p_paths');
+	v_holding := pg_temp.rr_release();
+	perform set_config('qorpera_test.rr_check', format('%s after %s ms', v_outcome ->> 'state', v_outcome ->> 'ms'), false);
+	if v_held is distinct from '{"answer": null}'::jsonb or v_outcome ->> 'state' is distinct from '55P03'
+		or not (v_outcome ->> 'waited')::boolean or (v_outcome ->> 'ms')::numeric not between 2950 and 4500 or not v_holding
+		or v_outcome -> 'after' is distinct from '{"state": "idle", "transaction": false, "locks": 0, "blockers": 0}'::jsonb then
+		raise exception 'The run check did not give up on the held row within its bound: held %, caller %, holder still holding %',
+			v_held, v_outcome, v_holding; end if;
+end $$;
+
+-- 5c. On a wake run, the call holds nothing of describe's while it waits for the run's row. The holder takes the row
+--     through the host and stays idle in its transaction; the caller's run check waits for it. The holder, still holding
+--     the row, then takes the run's provider connection FOR UPDATE, as qorpera_prepare_routine_login may and a withdrawal
+--     of consent does: it gets it at once. With describe before the read-set check the call would hold the connection FOR
+--     SHARE while it waited, the holder would wait for the call, and one of them would die with 40P01. When the holder
+--     rolls back, the call answers.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.rr_wake_binding')::jsonb; v_args jsonb;
+	v_job text := v_binding ->> 'jobId'; v_token text := current_setting('qorpera_test.rr_token');
+	v_holder integer := current_setting('qorpera_test.rr_holder_pid')::integer;
+	v_caller integer := current_setting('qorpera_test.rr_caller_pid')::integer;
+	v_waiting boolean := false; v_start timestamptz; v_locked_ms numeric; v_locked jsonb; v_outcome jsonb;
+begin
+	v_args := jsonb_build_object('p_environment_id', '92400000-0000-4000-8000-000000000020', 'p_binding', v_binding);
+	perform dblink_exec('rr_holder', 'begin');
+	perform * from dblink('rr_holder', $q$select set_config('request.jwt.claims', '{"role":"anon"}', true),
+		set_config('request.path', '/rpc/qorpera_native_host_call', true)$q$) as c(claims text, path text);
+	perform dblink_exec('rr_holder', 'set local role anon');
+	perform * from dblink('rr_holder', format('select public.qorpera_native_host_call(%L::uuid, %L, %L, %L::jsonb)', v_job, v_token,
+		'qorpera_assert_company_path_reads', v_args || '{"p_paths": []}'::jsonb)) as call(answer jsonb);
+	perform dblink_exec('rr_holder', 'reset role');
+
+	perform * from dblink('rr_caller', $q$select set_config('request.jwt.claims', '{"role":"anon"}', false),
+		set_config('request.path', '/rpc/qorpera_native_host_call', false), set_config('statement_timeout', '8s', false)$q$)
+		as c(claims text, path text, budget text);
+	perform dblink_exec('rr_caller', 'set role anon');
+	perform dblink_send_query('rr_caller', format('select public.qorpera_native_host_call(%L::uuid, %L, %L, %L::jsonb)', v_job, v_token,
+		'qorpera_check_native_run', v_args));
+	for attempt in 1..80 loop
+		v_waiting := v_holder = any(pg_blocking_pids(v_caller));
+		exit when v_waiting;
+		perform pg_sleep(0.025);
+	end loop;
+	if not v_waiting then raise exception 'The wake run''s check did not wait for the held row'; end if;
+
+	v_start := clock_timestamp();
+	perform dblink_send_query('rr_holder', format('select to_jsonb(connection.id) from public.qorpera_provider_connections connection where connection.id = %L for update',
+		current_setting('qorpera_test.rr_wake_connection')));
+	for attempt in 1..200 loop
+		exit when dblink_is_busy('rr_holder') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	v_locked_ms := round((extract(epoch from clock_timestamp() - v_start) * 1000)::numeric);
+	v_locked := pg_temp.rr_collect('rr_holder');
+	perform dblink_exec('rr_holder', 'rollback');
+	for attempt in 1..200 loop
+		exit when dblink_is_busy('rr_caller') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	v_outcome := pg_temp.rr_collect('rr_caller');
+	perform dblink_exec('rr_caller', 'reset role');
+	perform dblink_exec('rr_caller', 'reset all');
+	perform set_config('qorpera_test.rr_wake', format('the holder took the connection in %s ms; the check then %s', v_locked_ms,
+		coalesce(v_outcome ->> 'state', 'answered')), false);
+	if v_locked -> 'result' is null or v_locked_ms >= 500 or v_outcome #>> '{result,schema}' is distinct from 'qorpera.native-tool-authority/v1' then
+		raise exception 'The wake run''s check held the connection while it waited: the holder %, after % ms; the check %', v_locked, v_locked_ms, v_outcome; end if;
+end $$;
+
+-- 6. With the row free, the caller's same three calls answer: the 55P03s above were the wait for the row.
+do $$
+declare v_read jsonb; v_fence jsonb; v_check jsonb;
 begin
 	v_read := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_assert_company_path_reads', pg_temp.rr_context_args());
 	v_fence := pg_temp.rr_host('qorpera_native_host_call_long', 'qorpera_fence_native_context', pg_temp.rr_fence_args('rr467-free'));
+	v_check := pg_temp.rr_host('qorpera_native_host_call', 'qorpera_check_native_run', pg_temp.rr_context_args() - 'p_paths');
 	if not (v_read ? 'result') or v_read -> 'result' is distinct from 'null'::jsonb or (v_read ->> 'waited')::boolean
-		or v_fence #>> '{result,schema}' is distinct from 'qorpera.native-context-fence/v1' or (v_fence ->> 'waited')::boolean then
-		raise exception 'The run-row reads did not answer with the row free: read %, fence %', v_read, v_fence; end if;
+		or v_fence #>> '{result,schema}' is distinct from 'qorpera.native-context-fence/v1' or (v_fence ->> 'waited')::boolean
+		or v_check #>> '{result,schema}' is distinct from 'qorpera.native-tool-authority/v1' or (v_check ->> 'waited')::boolean then
+		raise exception 'The run-row reads did not answer with the row free: read %, fence %, check %', v_read, v_fence, v_check; end if;
 end $$;
 select current_setting('qorpera_test.rr_statement') as rr_statement, current_setting('qorpera_test.rr_local') as rr_local,
-	current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence \gset
+	current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence,
+	current_setting('qorpera_test.rr_check') as rr_check, current_setting('qorpera_test.rr_wake') as rr_wake \gset
 \echo 467 statement_timeout: :rr_statement
-\echo 467 while the row is held: SET LOCAL lock_timeout 1s gave :rr_local; the context read gave :rr_read; the fence gave :rr_fence
+\echo 467 while the row is held: SET LOCAL lock_timeout 1s gave :rr_local; the context read gave :rr_read; the fence gave :rr_fence; the run check gave :rr_check; on a wake run :rr_wake
 
 select pg_temp.rr_cleanup();

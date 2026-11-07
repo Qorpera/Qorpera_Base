@@ -5,10 +5,11 @@ import { describe, expect, it } from "vitest";
 import { runNativeCodexFenceFailureProbe } from "./fixtures/native-codex-fence-failure-probe.ts";
 import { runNativeCodexUsageLimitProbe } from "./fixtures/native-codex-usage-limit-probe.ts";
 import { runOfficialCodexBoundaryProbe } from "./fixtures/official-codex-boundary-probe.ts";
+import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 
 // A source-built artifact is an explicit acceptance prerequisite, not an npm dependency or a paid model.
 // The standalone acceptance command is mandatory for rollout and fails rather than skipping a missing artifact.
-const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
+const binary = pinnedCodexBinary();
 describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CODEX_FENCE_BINARY)", () => {
 	it.each(["offline-probe", "provider-default", "gpt-5.6-sol"])(
 		"fences every real native result with %s",

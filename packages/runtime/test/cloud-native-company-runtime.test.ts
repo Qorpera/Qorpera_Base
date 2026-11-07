@@ -431,6 +431,15 @@ async function fixture(
 				return null;
 			}
 			if (method === "qorpera_assert_company_path_reads") return null;
+			if (method === "qorpera_check_native_run") {
+				// What the one SQL call makes, in its order (the read set first), through the same synthetic handlers.
+				await pathCall(
+					"qorpera_assert_company_path_reads",
+					{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_paths: [] },
+					signal,
+				);
+				return await control.describeToolAuthority();
+			}
 			if (method === "qorpera_fence_native_context") {
 				// What the one SQL call makes, in its order, through the same synthetic handlers.
 				const reads = { p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_paths: args.p_paths };
@@ -2439,9 +2448,9 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 	expect(budgets("qorpera_describe_company_run_context")).toEqual([10_000]);
 	expect(budgets("qorpera_read_native_wake")).toEqual([10_000]);
 	expect(budgets("qorpera_list_native_connector_tools")).toEqual([10_000]);
-	// The run's own check before a model request (the synthetic fence's checks stand for SQL's, inside one call).
-	// It takes the run's budget row, so since R1 (28 Oct 2026) it waits as long as the database may run it: 20 s.
-	expect(budgets("qorpera_assert_company_path_reads")).toContain(20_000);
+	// The run's own check around a tool call (the synthetic calls inside it stand for SQL's, in one call). It takes the
+	// run's budget row, so since R1 (28 Oct 2026) it waits as long as the database may run it: 20 s.
+	expect(budgets("qorpera_check_native_run")).toContain(20_000);
 	// So does the read of the receipts a resumed attempt in Agent notebooks starts from, which every run asks for.
 	expect(budgets("qorpera_memory_run_resume_receipts")).toEqual([20_000]);
 	// And the run's admission and its context bind, each sent once (3 Nov 2026: a run failed its admission at the old
@@ -2454,6 +2463,7 @@ it("hands the run-start reads, the connector catalog and the read-set check thei
 		"qorpera_read_native_wake",
 		"qorpera_list_native_connector_tools",
 		"qorpera_assert_company_path_reads",
+		"qorpera_check_native_run",
 		"qorpera_fence_native_context",
 		"qorpera_memory_run_resume_receipts",
 		"qorpera_begin_native_company_execution_v3",
@@ -2920,8 +2930,9 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// from the admission (M1b-4b-3), 12 before that fence, 13 before the connector catalog joined the
 	// context reads. Its receipts, which a resumed attempt in Agent notebooks starts from (20260930539000), are read
 	// beside it and add none. Since R1 (28 Oct 2026) each of the three context checks before the fence (once the
-	// tools are built, and before and after the execution's start) asks for the run's admission and then
-	// its read set, one after the other, not together: 12 before that.
+	// tools are built, and before and after the execution's start) asked for the run's admission and then
+	// its read set, one after the other, not together: 12 before that. Since 20260930618000 each of the three is one
+	// call again, with both reads in it (qorpera_check_native_run): 15 before that.
 	expect(wave("qorpera_memory_run_log_place")).toBe(6);
 	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
@@ -2929,7 +2940,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	);
 	expect(wave("qorpera_fence_native_context")).toBeGreaterThan(wave("qorpera_bind_native_company_context"));
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
-	expect(wave("qorpera_record_native_context_view")).toBe(15);
+	expect(wave("qorpera_record_native_context_view")).toBe(12);
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {

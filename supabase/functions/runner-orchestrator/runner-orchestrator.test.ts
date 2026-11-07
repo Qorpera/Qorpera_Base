@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
+import { before, describe, it } from "node:test";
 import {
 	FOLDER_DRAINS,
 	parseRunnerOrchestratorBearer,
@@ -238,6 +241,10 @@ describe("runner orchestrator boundary", () => {
 
 	it("parses the folder drains' due companies and one company's step, for a drain it knows", () => {
 		const environmentId = profileId;
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "due_summary", orchestratorId }), {
+			action: "due_summary",
+			orchestratorId,
+		});
 		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain: "listen", limit: 100 }), {
 			action: "folder_drain_due",
 			orchestratorId,
@@ -375,5 +382,109 @@ describe("runner orchestrator boundary", () => {
 		);
 		assert.equal(runnerOrchestratorRpcStatus({ code: "40001" }), 409);
 		assert.equal(runnerOrchestratorRpcStatus({ code: "55000" }), 423);
+	});
+});
+
+describe("the edge function's route for the one call", () => {
+	type RpcAnswer = { data?: unknown; error?: { code: string } };
+	type Handler = (request: Request) => Promise<Response>;
+	const calls: [string, unknown][] = [];
+	let answer: (name: string) => RpcAnswer = () => ({ data: null });
+	let handler: Handler | undefined;
+
+	// index.ts as it is, under Node: Deno and its npm specifier are stand-ins that record what it asks of PostgREST.
+	before(async () => {
+		Reflect.set(globalThis, "qorperaEdgeTestClient", () => ({
+			rpc: async (name: string, args: unknown) => {
+				calls.push([name, args]);
+				return answer(name);
+			},
+		}));
+		Reflect.set(globalThis, "Deno", {
+			env: {
+				get: (name: string) =>
+					({ SUPABASE_URL: "https://project.invalid", SUPABASE_SERVICE_ROLE_KEY: "synthetic-service-key" })[name],
+			},
+			serve: (served: Handler) => {
+				handler = served;
+			},
+		});
+		const client = "data:text/javascript,export const createClient = (...values) => globalThis.qorperaEdgeTestClient(...values);";
+		const hooks = registerHooks({
+			resolve: (specifier, context, nextResolve) =>
+				specifier.startsWith("npm:@supabase/supabase-js@") ? { url: client, shortCircuit: true } : nextResolve(specifier, context),
+		});
+		await import("./index.ts");
+		hooks.deregister();
+	});
+
+	const post = (body: unknown, bearer = token) =>
+		(handler as Handler)(
+			new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+				method: "POST",
+				headers: { authorization: `Bearer ${bearer}` },
+				body: JSON.stringify(body),
+			}),
+		);
+	const answers = (controlValid: boolean, summary: RpcAnswer) => (name: string) =>
+		name === "qorpera_runner_orchestrator_control_valid" ? { data: controlValid } : summary;
+
+	it("checks the control token first, then calls the summary with no arguments and returns its answer", async () => {
+		calls.length = 0;
+		answer = answers(true, { data: { listen: true, workers: false } });
+		const response = await post({ action: "due_summary", orchestratorId });
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "no-store");
+		assert.deepEqual(await response.json(), { value: { listen: true, workers: false } });
+		assert.deepEqual(calls, [
+			[
+				"qorpera_runner_orchestrator_control_valid",
+				{ p_orchestrator_id: orchestratorId, p_control_token_sha256: createHash("sha256").update(token).digest("hex") },
+			],
+			["qorpera_orchestrator_due_summary", {}],
+		]);
+	});
+
+	it("never reaches the summary on a refused control token", async () => {
+		calls.length = 0;
+		answer = answers(false, { data: {} });
+		const response = await post({ action: "due_summary", orchestratorId });
+		assert.equal(response.status, 401);
+		assert.deepEqual(calls.map(([name]) => name), ["qorpera_runner_orchestrator_control_valid"]);
+	});
+
+	it("maps a failed summary as any other call, and sends none of its text", async () => {
+		// PostgREST's answer for a function it does not have: the edge function ahead of the migration.
+		answer = answers(true, { error: { code: "PGRST202" } });
+		const missing = await post({ action: "due_summary", orchestratorId });
+		assert.equal(missing.status, 503);
+		assert.deepEqual(await missing.json(), { error: "Orchestrator request was rejected" });
+		answer = answers(true, { error: { code: "42501" } });
+		assert.equal((await post({ action: "due_summary", orchestratorId })).status, 401);
+	});
+
+	it("answers 400 to an action it does not know before it asks anything: what an old edge function says to the call", async () => {
+		calls.length = 0;
+		const response = await post({ action: "due_summary_from_the_future", orchestratorId });
+		assert.equal(response.status, 400);
+		assert.deepEqual(calls, []);
+	});
+
+	it("names the function the migration makes, each of whose answers reads its own list", () => {
+		const migration = readFileSync(
+			new URL("../../migrations/20260930612000_orchestrator_due_summary.sql", import.meta.url),
+			"utf8",
+		);
+		assert.match(migration, /create function public\.qorpera_orchestrator_due_summary\(\)/);
+		const lists = new Map<string, string>([
+			...Object.entries(FOLDER_DRAINS).map(([name, drain]): [string, string] => [name, drain.due]),
+			["materialize", "qorpera_folder_materialize_due"],
+			["routine_heads", "qorpera_list_routine_schedule_heads"],
+		]);
+		const answers = [...migration.matchAll(/'([a-z_]+)', public\.([a-z_]+)\(null, 1\) -> 'items' <> '\[\]'::jsonb/g)];
+		// Every list the migration reads is checked. A drain it does not name is allowed: the orchestrator lists that one itself.
+		assert.ok(answers.length > 0);
+		assert.equal(answers.length, migration.match(/\(null, 1\) -> 'items'/g)?.length);
+		for (const [, name, due] of answers) assert.equal(due, lists.get(name), `${name} reads ${due}`);
 	});
 });

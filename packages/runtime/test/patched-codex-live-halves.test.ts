@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { runNativeCodexLiveHalvesProbe } from "./fixtures/native-codex-live-halves-probe.ts";
+import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 
 // Each request's input after the prompt, by shape: r2 answers c1 after r1's reasoning, r3 answers c2 too.
 const R2 = ["reasoning", "call:c1", "output:c1"];
 const R3 = [...R2, "call:c2", "output:c2"];
 
 // The no-login halves of the live acceptance, on the pinned artifact and a scripted loopback provider.
-const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
+const binary = pinnedCodexBinary();
 describe.skipIf(!binary)("live halves on the native artifact (requires QORPERA_CODEX_FENCE_BINARY)", () => {
 	it("D1 sends Codex's own context unchanged under the run's 51-character cache key", async () => {
 		if (!binary) throw new Error("Missing pinned downstream native artifact");

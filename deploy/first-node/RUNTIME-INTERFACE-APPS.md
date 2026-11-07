@@ -72,7 +72,7 @@ Module scripts may not `import` other files in v1 (inline them or use classic sc
 | Tool | What it does | Review class |
 | --- | --- | --- |
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
-| `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `delegation`: the automatic review |
+| `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;

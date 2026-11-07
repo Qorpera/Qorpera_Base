@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -7,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import {
 	buildContainerName,
 	expandTestFixture,
+	checkLocale,
+	LOCALE_QUERY,
 	POSTGRES_IMAGE,
+	POSTGRES_LOCALE,
 	parseArguments,
 	SQL_TEST_DATABASES,
 	selectTests,
@@ -24,6 +28,7 @@ import {
 	plannedMigrations,
 	sessionPerFile,
 	snapshotPlan,
+	WARM_START,
 	warmChain,
 	warmCopy,
 	warmDatabasesToDrop,
@@ -49,6 +54,27 @@ test("sorts hosted migrations and rejects duplicate versions", () => {
 test("uses an exact temporary container identity and digest-pinned image", () => {
 	assert.equal(buildContainerName(42, "0123abcd"), "qorpera-hosted-db-42-0123abcd");
 	assert.match(POSTGRES_IMAGE, /^docker\.io\/library\/postgres:[^@]+@sha256:[0-9a-f]{64}$/);
+	// Not on musl: PostgreSQL there takes about twice the CPU for the same migrations.
+	assert.doesNotMatch(POSTGRES_IMAGE, /alpine/);
+});
+
+test("a rebuilt test machine pulls the image the tests use, and every PostgreSQL they start has production's locale", () => {
+	const scripts = dirname(fileURLToPath(import.meta.url));
+	assert.ok(readFileSync(join(scripts, "..", "deploy", "test-machine", "guest-setup.sh"), "utf8").includes(`PG_IMAGE='${POSTGRES_IMAGE}'`));
+	assert.deepEqual(POSTGRES_LOCALE, ["--env", "POSTGRES_INITDB_ARGS=--locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8"]);
+	const starters = readdirSync(scripts).filter(
+		(name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs") && name !== "test-hosted-db.mjs" && /\bPOSTGRES_IMAGE\b/.test(readFileSync(join(scripts, name), "utf8")),
+	);
+	assert.ok(starters.includes("test-hosted-db-cluster.mjs") && starters.includes("load-folder-core.mjs"));
+	for (const name of starters) {
+		const source = readFileSync(join(scripts, name), "utf8");
+		assert.match(source, /\.\.\.POSTGRES_LOCALE\b/, name);
+		// And each refuses its cluster when the locale is not production's, before it applies anything.
+		assert.match(source, /checkLocale\(.*LOCALE_QUERY/, name);
+	}
+	// A cluster on anything else stops the run before a test sees it.
+	checkLocale("i|en-US\n");
+	for (const line of ["c|", "i|en-GB", "b|C.UTF-8", ""]) assert.throws(() => checkLocale(line), /not on ICU en-US/);
 	assert.throws(() => buildContainerName(42, "../escape"), /Invalid hosted database container identity/);
 });
 
@@ -129,12 +155,38 @@ test("a warm copy's link covers the image, the bootstrap, the build scripts and 
 	assert.notEqual(warmChain(["1_a.sql", "1_b.sql", "2_b.sql", "3_c.sql"], read)[3], chain[3]);
 	// A list that goes on shares the links of its first migrations.
 	assert.deepEqual(warmChain([...names, "4_d.sql"], read).slice(0, 4), chain);
+	// A cluster with another bootstrap superuser has copies of its own.
+	assert.notEqual(warmChain(names, read, "fixture_admin")[0], chain[0]);
 	for (const builder of ["bootstrap.sql", "platform-function-defaults.sql", "test-hosted-db-cluster.mjs", "test-hosted-db.mjs"]) {
 		files.set(builder, "changed");
 		assert.notEqual(warmChain(names, read)[0], chain[0], builder);
 		files.delete(builder);
 	}
 	assert.match(warmVolumeName(chain[3], 1760000000), new RegExp(`^qorpera-hosted-db-warm-${chain[3]}-1760000000-[0-9a-f]{4}$`));
+});
+
+test("a warm start copies its data into an empty directory only, so a restarted container keeps its own", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "qorpera-warm-start-"));
+	try {
+		const warm = join(temporary, "warm");
+		const data = join(temporary, "data");
+		mkdirSync(join(warm, "data"), { recursive: true });
+		mkdirSync(data);
+		writeFileSync(join(warm, "data", "PG_VERSION"), "17\n");
+		writeFileSync(join(warm, "data", "row"), "from the copy\n");
+		const start = () => {
+			const script = WARM_START.replaceAll("/qorpera-warm", warm).replace("exec docker-entrypoint.sh postgres", "true");
+			const result = spawnSync("sh", ["-c", script], { encoding: "utf8", env: { ...process.env, PGDATA: data } });
+			assert.equal(result.status, 0, result.stderr);
+		};
+		start();
+		assert.equal(readFileSync(join(data, "row"), "utf8"), "from the copy\n");
+		writeFileSync(join(data, "row"), "written before the restart\n");
+		start();
+		assert.equal(readFileSync(join(data, "row"), "utf8"), "written before the restart\n");
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
 });
 
 test("a run starts from the complete warm copy of the most of its migrations, the newest of those, under six hours old", () => {
@@ -170,7 +222,7 @@ test("a run starts from the complete warm copy of the most of its migrations, th
 
 test("a machine keeps its newest complete warm copies for seven hours and removes unfinished ones after an hour", () => {
 	const copy = (index, seconds) => `qorpera-hosted-db-warm-${String(index).padStart(32, "0")}-${seconds}-0000`;
-	const complete = Array.from({ length: 8 }, (_, index) => copy(index, 1760000000 + index * 10));
+	const complete = Array.from({ length: 12 }, (_, index) => copy(index, 1760000000 + index * 10));
 	const volumes = [...complete.flatMap((name) => [name, `${name}-ready`]), copy(20, 1760000000), copy(21, 1760003500), "other"];
 	assert.deepEqual(warmVolumesToRemove(volumes, 1760003700), [
 		`${complete[0]}-ready`,
@@ -357,10 +409,11 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"625_kept_rows.test.sql",
-		"657_last.test.sql",
-		"658_first.test.sql",
-		"6580_longer.test.sql",
+		"508_last.test.sql",
+		"509_first.test.sql",
+		"5090_longer.test.sql",
+		"671_last.test.sql",
+		"672_first.test.sql",
 		"825_last.test.sql",
 		"826_first.test.sql",
 		"892_last.test.sql",
@@ -369,10 +422,11 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 	];
 	const split = splitTests(tests, null);
 	assert.deepEqual(split, [
-		["qorpera_test", tests.slice(0, 5)],
-		["qorpera_test_2", tests.slice(5, 8)],
-		["qorpera_test_3", tests.slice(8, 10)],
-		["qorpera_test_4", tests.slice(10)],
+		["qorpera_test", tests.slice(0, 4)],
+		["qorpera_test_2", tests.slice(4, 7)],
+		["qorpera_test_3", tests.slice(7, 9)],
+		["qorpera_test_4", tests.slice(9, 11)],
+		["qorpera_test_5", tests.slice(11)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -386,8 +440,8 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 11)],
-			["c", tests.slice(11)],
+			["b", tests.slice(2, 12)],
+			["c", tests.slice(12)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
@@ -403,6 +457,6 @@ test("the tests that keep rows for later tests stay in the first database", () =
 	assert.equal(first, "qorpera_test");
 	assert.ok(rest.length >= 1);
 	assert.deepEqual([kept, ...rest.map(([, part]) => part)].flat(), tests);
-	// The tests that keep rows (000 first, 040 and its readers up to 200, then 120, 260, 595, 625) are all 625 or below.
-	for (const test of tests.filter((name) => name < "626")) assert.ok(kept.includes(test), test);
+	// The tests that keep rows for a later one (000 first, 040 and its readers up to 200) are all 200 or below.
+	for (const test of tests.filter((name) => name < "201")) assert.ok(kept.includes(test), test);
 });

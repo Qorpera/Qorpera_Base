@@ -361,9 +361,10 @@ export function cloudActionEffect(
 		// another agent's or a member's app is theirs, so changing it is delegation (save_app's prepare says which).
 		case "save_app":
 			return args.foreignOwner === true ? "delegation" : "internal";
-		// Posting one puts it in every member's apps: delegation, like hiring (RUNTIME-INTERFACE-APPS.md §3).
+		// Posting its own app shows members its own work, which they may already read (Jonas, 7 November 2026: "yes, no
+		// review of course"); posting another agent's or a member's app is delegation (post_app's prepare says which).
 		case "post_app":
-			return "delegation";
+			return args.foreignOwner === true ? "delegation" : "internal";
 		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
 		case "update_wall":
 			return "internal";

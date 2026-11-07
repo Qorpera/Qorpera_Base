@@ -140,9 +140,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
 	"No progress": "Ingen fremgang",
-	"No progress for {minutes} minutes.": "Ingen fremgang i {minutes} minutter.",
-	"No progress for {minutes} minutes. If it looks stuck, press Stop.":
-		"Ingen fremgang i {minutes} minutter. Tryk på Stop, hvis det ser ud til at sidde fast.",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
@@ -196,8 +193,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
-	"The run ended, but one of its saves did not finish. A person must check it before the run can be tried again.":
-		"Kørslen sluttede, men noget af det, den gemte, blev ikke færdigt. En person skal tjekke det, før kørslen kan prøves igen.",
+	"The run ended before all of its work was saved. Send a message to carry on.":
+		"Kørslen sluttede, før alt dens arbejde var gemt. Send en besked for at fortsætte.",
 	"Qorpera lost contact with this run. The problem is on Qorpera's side.":
 		"Qorpera mistede forbindelsen til kørslen. Fejlen ligger hos Qorpera.",
 	"One of the run's steps got no answer in time. The problem is on Qorpera's side.":

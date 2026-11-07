@@ -161,8 +161,8 @@ end $$;
 rollback to savepoint counted;
 
 -- 4. Typed refusals are placement and are unchanged: no failure counted; node preference makes this orchestrator
--- wait 5 s, an unavailable node observation or full capacity 15 s, for this orchestrator unless another's refusal
--- is live.
+-- wait 5 s, an unavailable node observation 15 s, for this orchestrator unless another's refusal is live. Full capacity
+-- waits 2 s here (20260930602000): this run is a member's post (a wake's 15 s: test 1102).
 savepoint typed;
 update public.qorpera_runner_jobs set dispatch_failure_count = 3 where id = current_setting('qorpera_test.bo_job')::uuid;
 select pg_temp.bo_ready();
@@ -202,9 +202,9 @@ begin
 	v_row := pg_temp.bo_job();
 	perform pg_temp.base_assert(v_row.status = 'queued' and v_row.dispatch_failure_count = 3 and v_row.attempt_count = 0
 		and v_row.dispatch_refused_by = '92400000-0000-4000-8000-000000000092'
-		and v_row.dispatch_deferred_until - pg_temp.bo_released_at(v_claim) = interval '15 seconds'
+		and v_row.dispatch_deferred_until - pg_temp.bo_released_at(v_claim) = interval '2 seconds'
 		and pg_temp.bo_last_event('placement_deferred') ->> 'reason' = 'SANDBOX_CAPACITY_EXHAUSTED',
-		'full capacity makes node A''s fast host wait 15 s: ' || to_jsonb(v_row)::text);
+		'full capacity makes node A''s fast host wait 2 s for a member''s post: ' || to_jsonb(v_row)::text);
 	perform pg_temp.base_assert(pg_temp.bo_claim('59900000-0000-4000-8000-0000000000b1') #>> '{work,job_id}' = v_row.id::text,
 		'node B''s fast host still claims');
 end $$;

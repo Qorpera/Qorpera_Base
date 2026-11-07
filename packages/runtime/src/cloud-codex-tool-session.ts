@@ -607,6 +607,10 @@ class CodexBoundaryRpc {
 	#modelRequestCount = 0;
 	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
 	readonly #turnEndCallIds = new Set<string>();
+	/** Calls that end the turn only if their model response made no other call. */
+	readonly #turnEndAloneCallIds = new Set<string>();
+	/** The call ids of every tool output the agent's model requests have carried so far. */
+	readonly #fencedOutputIds = new Set<string>();
 	/** Auto-review (v130): the reviewer's own short conversations, one fresh thread
 	 * per review, in this same app-server (a second process on the same login could
 	 * race the first on token refresh). Their only tool records the verdict; their
@@ -1346,11 +1350,18 @@ class CodexBoundaryRpc {
 			this.#modelRequestCount++;
 			if (this.#modelRequests.size > TRACKED_REQUESTS)
 				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
+			// A request carries every tool output of its history, Codex's own answers too (such as an unknown tool's
+			// "unsupported call", which never reaches this host), and comes once all of a response's calls are answered. So the
+			// outputs no earlier request carried are the last model response's calls, all of them.
+			const fresh = request.outputs.map((output) => output.callId).filter((id) => !this.#fencedOutputIds.has(id));
+			for (const id of fresh) this.#fencedOutputIds.add(id);
+			if (fresh.length === 1 && this.#turnEndAloneCallIds.has(fresh[0])) this.#turnEndCallIds.add(fresh[0]);
 		}
 		this.#observeFence(request);
-		// Contract 7.1: the final send closes the turn. Once its result has been
-		// fenced, stop the provider instead of paying for a closing model round
-		// whose text is never delivered. The interrupted completion is a success.
+		// Contract 7.1: the final send closes the turn, and a worker's saved report is
+		// its last act. Once that result has been fenced, stop the provider instead of
+		// paying for a closing model round whose text is never delivered. The
+		// interrupted completion is a success.
 		if (
 			!this.#turnEndRequested &&
 			this.#activeCalls === 0 &&
@@ -1608,9 +1619,11 @@ class CodexBoundaryRpc {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
-					// The host-only marker never reaches the provider; the fence that
-					// follows this result is where the turn ends (see assertModelRequest).
-					if (completesTurn) this.#turnEndCallIds.add(callId);
+					// The host-only marker (a final send, a worker's saved report) never reaches
+					// the provider; the fence that follows this result is where the turn ends
+					// (see assertModelRequest).
+					if (completesTurn === "alone") this.#turnEndAloneCallIds.add(callId);
+					else if (completesTurn) this.#turnEndCallIds.add(callId);
 					this.#write({ id: message.id, result });
 				},
 				() => {

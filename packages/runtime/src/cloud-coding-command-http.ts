@@ -11,8 +11,10 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
+	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	parseCloudMachineWakeHttpRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
 import {
@@ -370,10 +372,11 @@ export class HttpCloudCodingCommandService {
 			const machineRoute = this.#options.machines
 				? /^\/v1\/machine-commands\/(start|read|cancel)$/.exec(request.url ?? "")
 				: null;
+			const wakeRoute = this.#options.machines?.wake && request.url === "/v1/machine-commands/wake";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute) ||
+				(!route && !machineRoute && !wakeRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -390,6 +393,11 @@ export class HttpCloudCodingCommandService {
 					controller.signal,
 				);
 			controller.signal.throwIfAborted();
+			if (wakeRoute && this.#options.machines?.wake) {
+				const told = await this.#options.machines.wake(parseCloudMachineWakeHttpRequest(body), controller.signal);
+				replyJson(reply, 200, { schema: CLOUD_MACHINE_WAKE_SCHEMA, told });
+				return;
+			}
 			if (machineRoute && this.#options.machines) {
 				try {
 					replyJson(

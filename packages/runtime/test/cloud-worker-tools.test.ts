@@ -1,10 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import type { CloudFolderTodos } from "@qorpera/runtime/cloud-folder-todos";
 import type { CloudFolderWorkers } from "@qorpera/runtime/cloud-folder-workers";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	type CloudNativeFolderReports,
+	type CloudNativeTool,
+	CloudNativeToolBoundary,
+	CloudToolRefusal,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
 	cloudWorkerToolFilter,
@@ -24,7 +35,11 @@ const workerWake = {
 } as const;
 
 /** The tools over folder writers that answer every call (the writers' own tests cover what they save). */
-async function fixture(wake: typeof parentWake | typeof workerWake = parentWake) {
+async function fixture(
+	wake: typeof parentWake | typeof workerWake = parentWake,
+	folderReports?: CloudNativeFolderReports,
+	extraTools: readonly CloudNativeTool[] = [],
+) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
@@ -45,12 +60,16 @@ async function fixture(wake: typeof parentWake | typeof workerWake = parentWake)
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudWorkerTools(binding, run.identity, wake, {
-			folderTodos: folderTodos as unknown as CloudFolderTodos,
-			folderWorkers: folderWorkers as unknown as CloudFolderWorkers,
-		}),
+		tools: [
+			...cloudWorkerTools(binding, run.identity, wake, {
+				folderTodos: folderTodos as unknown as CloudFolderTodos,
+				folderWorkers: folderWorkers as unknown as CloudFolderWorkers,
+			}),
+			...extraTools,
+		],
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
+		...(folderReports ? { folderReports } : {}),
 	});
 	// Every call the tools made to a writer.
 	const writerCalls = () =>
@@ -60,6 +79,21 @@ async function fixture(wake: typeof parentWake | typeof workerWake = parentWake)
 		);
 	return { binding, run, boundary, folderTodos, folderWorkers, writerCalls };
 }
+const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
+const savedReport = {
+	kind: "text" as const,
+	value: JSON.stringify({ schema: "qorpera.worker-report-receipt/v1", outcome: "saved" }),
+};
+const reportCall = { operationKey: "r1", outcome: "succeeded", summary: "Done." };
+/** A second tool for a response that holds another call beside the report. */
+const noteTool: CloudNativeTool = {
+	name: "read_note",
+	source: "company_file",
+	description: "Synthetic note.",
+	inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	parseArguments: () => ({}),
+	execute: async () => ({ kind: "text", value: "PUBLIC_NOTE" }),
+};
 const body = (result: { contentItems: readonly unknown[] }) =>
 	JSON.parse((result.contentItems[0] as { text: string }).text);
 const names = (boundary: CloudNativeToolBoundary) =>
@@ -486,6 +520,127 @@ describe("agent todo and worker tools", () => {
 		} finally {
 			f.run.close();
 		}
+	});
+
+	it("ends the worker's turn when its report is saved, and only then", async () => {
+		const f = await fixture(workerWake);
+		try {
+			const answer = (outcome: string, schema = "qorpera.worker-report-receipt/v1") => ({
+				kind: "text" as const,
+				value: JSON.stringify({ schema, outcome }),
+			});
+			const report = { operationKey: "r1", outcome: "succeeded", summary: "Done." };
+			// Not saved: the answer says to report again, so the model must get the next round.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("refused"));
+			const refused = await f.boundary.invoke("r_1", "qorpera", "report_work", report);
+			expect(body(refused).status).toBe("ok");
+			expect(refused.completesTurn).toBeUndefined();
+			// Another tool's answer that happens to read "saved" is not a report.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("saved", "qorpera.something-else/v1"));
+			expect((await f.boundary.invoke("r_2", "qorpera", "report_work", report)).completesTurn).toBeUndefined();
+			f.folderWorkers.report.mockResolvedValueOnce({ kind: "text", value: "not json" });
+			expect((await f.boundary.invoke("r_3", "qorpera", "report_work", report)).completesTurn).toBeUndefined();
+			// Saved, first made or replayed: the host-only marker, which never enters what the model reads.
+			f.folderWorkers.report.mockResolvedValueOnce(answer("saved"));
+			const saved = await f.boundary.invoke("r_4", "qorpera", "report_work", report);
+			expect(saved.completesTurn).toBe("alone");
+			expect(saved.contentItems[0].text).not.toContain("completesTurn");
+			// A refused call never ends the turn, whatever the tool would have answered.
+			const invalid = await f.boundary.invoke("r_5", "qorpera", "report_work", { ...report, outcome: "done" });
+			expect(body(invalid).status).toBe("denied");
+			expect(invalid.completesTurn).toBeUndefined();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("keeps the turn open when the saved report's answer tells of desktop paths the folder did not take", async () => {
+		const notSaved = [{ path: "notes/plan.md", outcome: "conflict", reason: "it changed meanwhile" }];
+		for (const [report, ends] of [
+			[{ saved: 2 }, true],
+			[{ saved: 1, notSaved }, false],
+			[{ saved: 0, refused: "the company folder refused this desktop's last changes" }, false],
+			[{ saved: 1, more: true }, false],
+		] as const) {
+			const next = vi.fn<CloudNativeFolderReports["next"]>();
+			const f = await fixture(workerWake, { next });
+			try {
+				next.mockResolvedValue({ mark: `${randomUUID()}:1`, report });
+				f.folderWorkers.report.mockResolvedValueOnce(savedReport);
+				const saved = await f.boundary.invoke("r_1", "qorpera", "report_work", reportCall);
+				expect(body(saved).companyFolder).toEqual(report);
+				expect(saved.completesTurn).toBe(ends ? "alone" : undefined);
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("takes a saved report through the session to the interrupt, and a report that was not saved past it", async () => {
+		const session = async (
+			mode:
+				| "report-ends-turn"
+				| "report-goes-on"
+				| "report-then-note"
+				| "report-after-note"
+				| "report-with-codex-answer",
+			answer: { kind: "text"; value: string },
+			folderReports?: CloudNativeFolderReports,
+		) => {
+			const root = await mkdtemp(join(tmpdir(), "q-worker-report-"));
+			const f = await fixture(workerWake, folderReports, [noteTool]);
+			try {
+				f.folderWorkers.report.mockResolvedValueOnce(answer);
+				const evidence = join(root, "evidence.json");
+				const result = await runCloudCodexToolSession({
+					command: [process.execPath, rpcFixture, mode, evidence],
+					binarySha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
+					boundary: f.boundary,
+					model: "offline-probe",
+					prompt: "Private test input",
+					signal: new AbortController().signal,
+					timeoutMs: 15_000,
+				});
+				expect(f.folderWorkers.report).toHaveBeenCalledTimes(1);
+				return { result, recorded: JSON.parse(await readFile(evidence, "utf8")) };
+			} finally {
+				f.run.close();
+				await rm(root, { recursive: true, force: true });
+			}
+		};
+		const ended = await session("report-ends-turn", savedReport);
+		expect(ended.result).toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+		expect(ended.recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+		// The host-only marker never reaches the provider.
+		expect(Object.keys(ended.recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
+		const refused = await session("report-goes-on", {
+			kind: "text",
+			value: JSON.stringify({ schema: "qorpera.worker-report-receipt/v1", outcome: "refused" }),
+		});
+		expect(refused.result).toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+		expect(refused.recorded.interrupt).toBeNull();
+		const unread = await session("report-goes-on", savedReport, {
+			next: async () => ({
+				mark: `${randomUUID()}:1`,
+				report: { saved: 0, refused: "the company folder refused this desktop's last changes" },
+			}),
+		});
+		expect(unread.recorded.interrupt).toBeNull();
+		expect(unread.recorded.reply.result.contentItems[0].text).toContain("refused this desktop");
+		// Another call in the report's response: its answer must reach the model, so the turn goes on, also through a later
+		// response of one other call.
+		const sibling = await session("report-then-note", savedReport);
+		expect(sibling.result).toMatchObject({ toolCalls: 3, fencedRequests: 3 });
+		expect(sibling.recorded.interrupt).toBeNull();
+		// A call Codex answered itself (a tool it does not have) counts as well: only the fence shows it.
+		const codexAnswered = await session("report-with-codex-answer", savedReport);
+		expect(codexAnswered.result).toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+		expect(codexAnswered.recorded.interrupt).toBeNull();
+		// A call in an earlier response is no sibling.
+		const after = await session("report-after-note", savedReport);
+		expect(after.result).toMatchObject({ toolCalls: 2, fencedRequests: 3 });
+		expect(after.recorded.earlyInterrupt).toBeNull();
+		expect(after.recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
 	});
 
 	it("lets a worker report once to its parent, with a question only when blocked", async () => {

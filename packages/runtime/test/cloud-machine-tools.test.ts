@@ -3,8 +3,12 @@ import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
-import { type CloudMachineCommandGateway, CloudMachineCommandRefusal } from "../src/cloud-machine-command-http.ts";
-import { cloudMachineTools } from "../src/cloud-machine-tools.ts";
+import {
+	type CloudMachineCommandGateway,
+	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
+} from "../src/cloud-machine-command-http.ts";
+import { CLOUD_MACHINE_START_ANSWER_MS, cloudMachineTools } from "../src/cloud-machine-tools.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import {
 	type CloudNativeToolOperations,
@@ -86,6 +90,7 @@ function fixture(
 		cancel: vi.fn<CloudMachineCommandGateway["cancel"]>(
 			async (scope, commandId) => receipt(scope.machineId, commandId, "cancelled") as never,
 		),
+		wake: vi.fn<NonNullable<CloudMachineCommandGateway["wake"]>>(async () => false),
 	};
 	const execute = vi.fn<CloudNativeToolOperations["execute"]>(async (options) => {
 		await options.authorize(options.operation, identity, options.signal);
@@ -135,6 +140,7 @@ function fixture(
 		identity,
 		binding,
 		listed,
+		receipt,
 		receiptId,
 		control,
 		gateway,
@@ -249,7 +255,21 @@ describe("machine tools", () => {
 		}
 	});
 
-	describe("a worker waiting", () => {
+	describe("a start the executor does not answer", () => {
+		const run = { operationKey: "suite:1", machine: "build-a", command: "npm test" };
+		const unanswered = () => new CloudMachineCommandUnanswered();
+		/** How the kernel answers a look: the machine running and no record of the command, unless told otherwise. */
+		const noRecord = (f: ReturnType<typeof fixture>) => ({
+			schema: "qorpera.machine-status/v1",
+			machine: f.listed[0],
+			command: null,
+		});
+		/** The call's result, as the boundary answers an outcome it does not know. */
+		const unknown = (result: { success: boolean; contentItems: { text: string }[] }) => {
+			expect(result.contentItems[0].text).not.toContain("refused");
+			expect(result.contentItems[0].text).not.toContain("start it again");
+			expect(result.contentItems[0].text).not.toContain('"commandId"');
+		};
 		beforeEach(() => {
 			vi.useFakeTimers();
 		});
@@ -257,9 +277,406 @@ describe("machine tools", () => {
 			vi.useRealTimers();
 		});
 
-		it("looks at the kernel's status until its command ends, then reads it once", async () => {
+		it("sends it again, the same start, while the kernel has no record of it", async () => {
+			const f = fixture();
+			try {
+				f.statuses.push(noRecord(f), noRecord(f));
+				f.gateway.start.mockRejectedValueOnce(unanswered()).mockRejectedValueOnce(unanswered());
+				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
+				await vi.advanceTimersByTimeAsync(3000);
+				const result = await call;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never)).toMatchObject({ commandId: f.receiptId, state: "running" });
+				expect(f.gateway.start.mock.calls.map(([scope, input]) => [scope, input])).toEqual(
+					Array(3).fill([
+						{ machineId: f.listed[0].machineId },
+						{
+							commandId: f.receiptId,
+							inputSha256: "a".repeat(64),
+							command: "npm test",
+							timeoutMs: null,
+							notify: false,
+						},
+					]),
+				);
+				// Each send after the first follows a look that asked about this command.
+				expect(f.looks().map(([, args]) => args.p_request)).toEqual(
+					Array(2).fill({ action: "status", machine: "build-a", commandId: f.receiptId }),
+				);
+				expect(f.execute.mock.calls[0][0].performMs).toBe(CLOUD_MACHINE_START_ANSWER_MS);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it.each([
+			[
+				"a record of the command, which may have started",
+				{ command: { commandId: "c", state: "running", endedAt: null } },
+			],
+			[
+				"a record of a command that already ended",
+				{ command: { commandId: "c", state: "succeeded", endedAt: "x" } },
+			],
+			["a machine no longer running", { machine: { name: "build-a", state: "stopping" }, command: null }],
+			["a machine gone", { machine: null }],
+			["a run told to stop", { machine: undefined, workStopped: true }],
+		])("sends nothing more on %s, and the outcome stays unknown", async (_label, look) => {
+			const f = fixture();
+			try {
+				f.statuses.push({ ...noRecord(f), ...look });
+				f.gateway.start.mockRejectedValueOnce(unanswered());
+				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
+				await vi.advanceTimersByTimeAsync(1000);
+				unknown((await call) as never);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				expect(f.looks()).toHaveLength(1);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it.each(["MACHINE_COMMAND_ENDED", "MACHINE_NOT_RUNNING"] as const)(
+			"never reads %s after an unanswered send as nothing started: that send proves only itself",
+			async (code) => {
+				const f = fixture();
+				try {
+					f.statuses.push(noRecord(f));
+					f.gateway.start
+						.mockRejectedValueOnce(unanswered())
+						.mockRejectedValueOnce(new CloudMachineCommandRefusal(code));
+					const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
+					await vi.advanceTimersByTimeAsync(1000);
+					const result = await call;
+					unknown(result as never);
+					expect(result.contentItems[0].text).not.toContain(code);
+					expect(f.gateway.start).toHaveBeenCalledTimes(2);
+				} finally {
+					f.boundary.close();
+				}
+			},
+		);
+
+		it("does not send again what the executor answered, a refusal or its 403, and does not look", async () => {
+			const f = fixture();
+			try {
+				f.gateway.start.mockRejectedValueOnce(new Error("Machine command gateway unavailable"));
+				unknown((await f.boundary.invoke("r1", "qorpera", "machine_run", run)) as never);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				// The first send's refusal still says nothing started.
+				f.gateway.start.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED"));
+				const refused = await f.boundary.invoke("r2", "qorpera", "machine_run", {
+					...run,
+					operationKey: "suite:2",
+				});
+				expect(f.content(refused as never).refused).toMatchObject({ reason: "MACHINE_COMMAND_ENDED" });
+				expect(f.gateway.start).toHaveBeenCalledTimes(2);
+				expect(f.looks()).toHaveLength(0);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("does not send again while it cannot look, and sends nothing more once the run stops", async () => {
+			const f = fixture();
+			try {
+				f.statuses.push(new Error("database slow"), new Error("database slow"));
+				f.gateway.start.mockRejectedValue(unanswered());
+				const call = f.boundary.invoke("r1", "qorpera", "machine_run", run);
+				await vi.advanceTimersByTimeAsync(3000);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+				expect(f.looks()).toHaveLength(2);
+				f.run.abort();
+				await call;
+				await vi.advanceTimersByTimeAsync(60_000);
+				expect(f.gateway.start).toHaveBeenCalledTimes(1);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("leaves machine_cancel as it was: an unanswered cancel is not sent again", async () => {
+			const f = fixture();
+			try {
+				f.gateway.cancel.mockRejectedValueOnce(unanswered());
+				const result = await f.boundary.invoke("r1", "qorpera", "machine_cancel", {
+					operationKey: "stop:1",
+					machine: "build-a",
+					commandId: randomUUID(),
+				});
+				unknown(result as never);
+				expect(f.gateway.cancel).toHaveBeenCalledTimes(1);
+				expect(f.execute.mock.calls[0][0].performMs).toBeUndefined();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("waits for a read as long as the gateway does, and reads once", async () => {
+			const f = fixture();
+			try {
+				const commandId = randomUUID();
+				const answer = await f.gateway.read(
+					{ machineId: f.listed[0].machineId },
+					{ commandId },
+					new AbortController().signal,
+				);
+				f.gateway.read.mockClear();
+				f.gateway.read.mockImplementationOnce(
+					() => new Promise((resolve) => setTimeout(() => resolve(answer), 20_000)),
+				);
+				const late = f.boundary.invoke("r1", "qorpera", "machine_read", { machine: "build-a", commandId });
+				await vi.advanceTimersByTimeAsync(20_000);
+				const result = await late;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never)).toMatchObject({ commandId, state: "succeeded" });
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+				// No answer at all: the agent hears so after that long, and a read is not sent again.
+				f.gateway.read.mockClear();
+				f.gateway.read.mockImplementationOnce(() => new Promise(() => undefined));
+				const never = f.boundary.invoke("r2", "qorpera", "machine_read", { machine: "build-a", commandId });
+				let settled = false;
+				void never.then(() => {
+					settled = true;
+				});
+				await vi.advanceTimersByTimeAsync(29_000);
+				expect(settled).toBe(false);
+				await vi.advanceTimersByTimeAsync(1000);
+				await never;
+				expect(settled).toBe(true);
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			} finally {
+				f.boundary.close();
+			}
+		});
+	});
+
+	describe("a worker waiting", () => {
+		/** The read before the wait finds the command still running. */
+		const running = (f: ReturnType<typeof fixture>) =>
+			f.gateway.read.mockImplementationOnce(
+				async (scope, input) => f.receipt(scope.machineId, input.commandId) as never,
+			);
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("answers at once, after one look, when the command has already ended", async () => {
 			const f = fixture(undefined, true);
 			try {
+				const read = await f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					tail: true,
+					waitSeconds: 60,
+				});
+				expect(read.contentItems[0].text).toContain("succeeded");
+				expect(f.looks()).toHaveLength(1);
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("tells a stopped worker so, without reading the machine, even when its command has ended", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.statuses.push({ schema: "qorpera.machine-status/v1", workStopped: true });
+				const read = await f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				expect(read.contentItems[0].text).toContain("WORK_STOPPED");
+				expect(f.gateway.read).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it.each(["unconfirmed", "running"])("keeps waiting while the machine says the command is %s", async (state) => {
+			const f = fixture(undefined, true);
+			try {
+				f.gateway.read.mockImplementationOnce(
+					async (scope, input) => f.receipt(scope.machineId, input.commandId, state) as never,
+				);
+				f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect((await read).contentItems[0].text).toContain("succeeded");
+				expect(f.looks()).toHaveLength(2);
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers a failed read after the wait as unconfirmed when nothing was reported", async () => {
+			const f = fixture(undefined, true);
+			try {
+				running(f);
+				f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+				f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect((await read).contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("goes on waiting when the read before the wait fails", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+				f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(5_000);
+				const result = await read;
+				expect(result.success).toBe(true);
+				expect(result.contentItems[0].text).toContain("succeeded");
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		describe("keeps what the read before the wait reported once", () => {
+			const notSaved = [{ path: "notes/plan.md", outcome: "conflict" }];
+			const reported = (f: ReturnType<typeof fixture>) =>
+				f.gateway.read.mockImplementationOnce(
+					async (scope, input) =>
+						({
+							...f.receipt(scope.machineId, input.commandId),
+							companyFolder: { company: "mounted", notSaved },
+						}) as never,
+				);
+			const answer = (f: ReturnType<typeof fixture>, key: string) =>
+				f.boundary.invoke(key, "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+
+			it("for the answer after the wait", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.gateway.read.mockImplementationOnce(
+						async (scope, input) =>
+							({
+								...f.receipt(scope.machineId, input.commandId, "succeeded"),
+								companyFolder: { company: "mounted" },
+							}) as never,
+					);
+					f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					expect(f.content((await read) as never)).toMatchObject({
+						state: "succeeded",
+						companyFolder: { company: "mounted", notSaved },
+					});
+					expect(f.gateway.read).toHaveBeenCalledTimes(2);
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when the worker's work is stopped during the wait", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.statuses.push(f.status(f.listed[0], "running"), {
+						schema: "qorpera.machine-status/v1",
+						workStopped: true,
+					});
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					expect(f.content((await read) as never)).toMatchObject({
+						refused: { reason: "WORK_STOPPED" },
+						companyFolder: { notSaved },
+					});
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when the read after the wait fails", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+					f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					const result = await read;
+					expect(result.success).toBe(true);
+					expect(f.content(result as never)).toMatchObject({
+						refused: { reason: "MACHINE_READ_UNANSWERED" },
+						companyFolder: { notSaved },
+					});
+					expect(f.gateway.read).toHaveBeenCalledTimes(2);
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when a later receipt says nothing of the folder", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					expect(f.content((await read) as never)).toMatchObject({
+						state: "succeeded",
+						companyFolder: { notSaved },
+					});
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when the machine stops during the wait and the read is refused", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.gateway.read.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING"));
+					f.statuses.push(
+						f.status(f.listed[0], "running"),
+						f.status({ ...f.listed[0], state: "stopping" }, "running"),
+					);
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					expect(f.content((await read) as never)).toMatchObject({
+						refused: { reason: "MACHINE_NOT_RUNNING" },
+						companyFolder: { notSaved },
+					});
+				} finally {
+					f.boundary.close();
+				}
+			});
+		});
+
+		it("looks at the kernel's status until its command ends, and reads it before the wait and for the answer", async () => {
+			const f = fixture(undefined, true);
+			try {
+				running(f);
 				f.statuses.push(
 					f.status(f.listed[0], "running"),
 					f.status(f.listed[0], "running"),
@@ -276,8 +693,93 @@ describe("machine tools", () => {
 				expect(result.success).toBe(true);
 				expect(result.contentItems[0].text).toContain("succeeded");
 				expect(f.looks()).toHaveLength(3);
-				// The machine is asked once, for the answer, never while waiting.
-				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+				// The machine is asked before the wait and for the answer, never while waiting.
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a starting machine's executor is told at once, and its word ends the worker's wait", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "starting";
+				let say = (_told: boolean) => {};
+				f.gateway.wake.mockImplementationOnce(
+					() =>
+						new Promise<boolean>((settle) => {
+							say = settle;
+						}),
+				);
+				const looking = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "starting" } };
+				const up = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "running" } };
+				f.statuses.push(looking, up);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "woken",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				expect(f.looks()).toHaveLength(1);
+				// Well before its next look.
+				await vi.advanceTimersByTimeAsync(400);
+				say(true);
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await start;
+				expect(f.content(result as never).machine.state).toBe("running");
+				expect(f.looks()).toHaveLength(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a lost word costs only the looks every few seconds", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "starting";
+				f.gateway.wake.mockRejectedValueOnce(new Error("Machine command gateway unavailable"));
+				const looking = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "starting" } };
+				const up = { schema: "qorpera.machine-status/v1", machine: { ...f.listed[0], state: "running" } };
+				f.statuses.push(looking, looking, up);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "lost",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				// The word's failure ends no wait: the next look comes at its time.
+				expect(f.looks()).toHaveLength(1);
+				await vi.advanceTimersByTimeAsync(10_000);
+				const result = await start;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("running");
+				expect(f.looks()).toHaveLength(3);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("a machine in line, or one already running, is not waited on", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.started.state = "waiting";
+				const lined = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "lined",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.content(lined as never).machine.state).toBe("waiting");
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				f.gateway.wake.mockClear();
+				f.started.state = "running";
+				await f.boundary.invoke("s2", "qorpera", "machine_start", {
+					operationKey: "up",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.gateway.wake).not.toHaveBeenCalled();
+				expect(f.looks()).toEqual([]);
 			} finally {
 				f.boundary.close();
 			}
@@ -310,7 +812,7 @@ describe("machine tools", () => {
 				expect(result.contentItems[0].text).toContain("running");
 				// Looks at 0, 5, 10 and at the deadline, 12 s.
 				expect(f.looks()).toHaveLength(4);
-				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
 			} finally {
 				f.boundary.close();
 			}
@@ -334,9 +836,10 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("ends when its work is stopped, without reading the machine", async () => {
+		it("ends when its work is stopped, without reading the machine again", async () => {
 			const f = fixture(undefined, true);
 			try {
+				running(f);
 				f.statuses.push(f.status(f.listed[0], "running"), {
 					schema: "qorpera.machine-status/v1",
 					workStopped: true,
@@ -350,7 +853,7 @@ describe("machine tools", () => {
 				const result = await read;
 				expect(result.success).toBe(true);
 				expect(result.contentItems[0].text).toContain("WORK_STOPPED");
-				expect(f.gateway.read).not.toHaveBeenCalled();
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
 			} finally {
 				f.boundary.close();
 			}
@@ -359,6 +862,7 @@ describe("machine tools", () => {
 		it("ends when the run is stopped", async () => {
 			const f = fixture(undefined, true);
 			try {
+				running(f);
 				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
 					machine: "build-a",
 					commandId: randomUUID(),
@@ -368,7 +872,7 @@ describe("machine tools", () => {
 				f.run.abort(new Error("run stopped"));
 				expect((await read).success).toBe(false);
 				expect(f.looks()).toHaveLength(2);
-				expect(f.gateway.read).not.toHaveBeenCalled();
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
 			} finally {
 				f.boundary.close();
 			}
@@ -775,11 +1279,11 @@ describe("machine tools", () => {
 				state,
 				exitCode: state === "succeeded" ? 0 : null,
 				output,
-				truncated: Buffer.byteLength(output) < 6000,
+				truncated: Buffer.byteLength(output) < 16000,
 				log: {
 					offset: 0,
 					nextOffset: Buffer.byteLength(output),
-					totalBytes: 6000,
+					totalBytes: 16000,
 					limitBytes: 67108864,
 					limitReached: false,
 				},
@@ -819,11 +1323,15 @@ describe("machine tools", () => {
 			folders.push({ company: "mounted", notSaved: [plan, pay] });
 			const read = async (key: string) =>
 				f.content(
-					(await f.boundary.invoke(key, "qorpera", "machine_read", { machine: "build-a", commandId })) as never,
+					(await f.boundary.invoke(key, "qorpera", "machine_read", {
+						machine: "build-a",
+						commandId,
+						limit: 8192,
+					})) as never,
 				);
 			const shown = await read("a");
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([4096, 2048]);
-			expect(shown.output).toBe("x".repeat(2048));
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([8192, 4096]);
+			expect(shown.output).toBe("x".repeat(4096));
 			expect(shown.companyFolder).toEqual({ company: "mounted", notSaved: [plan, pay] });
 			// Paths from every try, within the report's limits; the rest are counted.
 			f.gateway.read.mockClear();
@@ -838,7 +1346,7 @@ describe("machine tools", () => {
 				{ company: "mounted", notSaved: many("b") },
 			);
 			const merged = (await read("b")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
 			const listed = merged.notSaved as { path: string }[];
 			expect(listed.length).toBeGreaterThan(5);
 			expect(listed.length).toBeLessThan(CLOUD_MACHINE_FOLDER_LIMITS.notSaved);
@@ -854,7 +1362,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: still, moreStillNotSaved: 3 };
 			folders.push({ ...after, notSaved: [plan] }, { ...after, notSaved: [pay] });
 			const again = (await read("e")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
 			expect(again).toEqual({
 				company: "mounted",
 				notSaved: [plan, pay],
@@ -872,7 +1380,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: long("s", 2) };
 			folders.push({ ...after, notSaved: long("a", 3) }, { ...after, notSaved: long("b", 3) });
 			const full = (await read("f")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
 			expect(full.notSaved).toEqual([...long("a", 3), ...long("b", 3)]);
 			expect(full).not.toHaveProperty("moreNotSaved");
 			expect(full).not.toHaveProperty("stillNotSaved");

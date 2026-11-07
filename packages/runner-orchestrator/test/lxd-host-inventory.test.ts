@@ -422,6 +422,8 @@ describe("the node observer over this client (2026-09-28)", () => {
 					if (method === "qorpera_runtime_node_inventory_context") return structuredClone(context);
 					published.push(method);
 					const o = args.p_observation as Record<string, unknown>;
+					// A time-ordered id: reports land beside each other in the receipts' index.
+					expect(String(o.observationId)[14]).toBe("7");
 					return { nodeId: o.nodeId, observationId: o.observationId, observedAt: o.observedAt };
 				},
 			};

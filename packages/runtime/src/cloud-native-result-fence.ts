@@ -34,6 +34,8 @@ export const CLOUD_NATIVE_FENCE_MAX_CONNECTIONS = 2 * 2 * (2 + JOBS);
 // authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
 // alive but hung (0001-cloud-result-fence.patch), and a host that dies closes the socket at once.
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
+/** What a socket reports when its peer closed before taking our answer: on the write, the read, or a write after the end. */
+const PEER_HUNG_UP: ReadonlySet<string> = new Set(["EPIPE", "ECONNRESET", "ERR_STREAM_WRITE_AFTER_END"]);
 
 export interface CloudNativeFenceRequest {
 	schema: typeof CLOUD_NATIVE_RESULT_FENCE_SCHEMA;
@@ -148,9 +150,12 @@ export async function startCloudNativeResultFence(options: {
 	const sockets = new Set<Socket>();
 	const requestIds = new Set<string>();
 	let stopped = false;
-	const fail = (): void => {
+	/** Stops the boundary. With a site, the boundary itself failed: fixed words and no content say which path it was, as
+	 * every one ends the run with one failure code. Without one, the run ended first (its signal), which is no failure. */
+	const fail = (site?: string): void => {
 		if (stopped) return;
 		stopped = true;
+		if (site !== undefined) console.error(`Native result fence failed (site=${site})`);
 		options.boundary.close();
 		for (const socket of sockets) socket.destroy();
 		options.onFailure();
@@ -168,23 +173,25 @@ export async function startCloudNativeResultFence(options: {
 		size.writeUInt32BE(wire.length);
 		socket.end(Buffer.concat([size, wire]));
 	};
-	const compose = (socket: Socket, request: CloudNativeContextRequest): void => {
+	const compose = (socket: Socket, request: CloudNativeContextRequest, step: (site: string) => void): void => {
 		const context = options.context;
 		if (!context) throw new Error("Native context composition unavailable");
+		step("replay");
 		track(request.requestId);
+		step("binding");
 		context.assertRequest(request);
 		void Promise.resolve(context.compose?.(request, options.signal))
 			.then((composition) => {
 				if (stopped || socket.destroyed || options.signal.aborted) return;
 				context.assertRequest(request);
 				reply(socket, cloudNativeContextReply(request, composition ?? cloudNativeContextIdentity(request)));
-			}, fail)
-			.catch(fail);
+			})
+			.catch(() => fail("composition"));
 	};
 	const server = createServer((socket) => {
 		if (stopped || sockets.size >= CLOUD_NATIVE_FENCE_MAX_CONNECTIONS) {
 			socket.destroy();
-			fail();
+			fail("connection");
 			return;
 		}
 		sockets.add(socket);
@@ -193,11 +200,26 @@ export async function startCloudNativeResultFence(options: {
 		let frame: Buffer | undefined;
 		let frameBytes = 0;
 		let processing = false;
-		socket.on("error", fail);
+		let lane = "none";
+		// A peer that hung up took back its own request, and the boundary is not broken: whatever this socket already wrote
+		// had passed every check, and an answer it did not take is never used. Why Codex does it is inferred, not traced: a
+		// turn interrupted with its request open, as a reviewer's is once its verdict is in (7 Nov 2026). The line lets one
+		// occurrence say so. Any other socket error stays a failure.
+		socket.on("error", (error: NodeJS.ErrnoException) => {
+			if (PEER_HUNG_UP.has(error.code ?? ""))
+				console.error(`Native result fence: peer hung up (code=${error.code}, lane=${lane})`);
+			else fail("socket");
+		});
 		socket.on("close", () => {
 			sockets.delete(socket);
 		});
 		socket.on("data", (chunk: Buffer) => {
+			// What a throw below says went wrong, for the journal: the frame (its size, bytes or schema), a request id seen
+			// before, or a request that is not the run's (its binding, as assertSession and the composer check it).
+			let site = "frame";
+			const step = (next: string): void => {
+				site = next;
+			};
 			try {
 				if (stopped || processing) throw new Error("Native result frame after its request");
 				let offset = 0;
@@ -221,13 +243,18 @@ export async function startCloudNativeResultFence(options: {
 					typeof value === "object" &&
 					(value as { schema?: unknown }).schema === CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA
 				) {
-					compose(socket, parseCloudNativeContextRequest(value));
+					lane = "composition";
+					compose(socket, parseCloudNativeContextRequest(value), step);
 					return;
 				}
 				const request = parseRequest(value);
+				step("replay");
 				track(request.requestId);
+				step("binding");
 				options.assertSession(request);
 				const review = options.releaseReviewOutputs?.(request);
+				lane = review ? "side-thread" : request.purpose;
+				step("fence");
 				// Nothing below reaches the socket before recordContextView has returned, so when that
 				// call checks authority itself the boundary need not check first.
 				const checkedByRecord =
@@ -252,15 +279,16 @@ export async function startCloudNativeResultFence(options: {
 							turnId: request.turnId,
 							outputs: outputs.map(({ capture: _capture, ...output }) => output),
 						});
-					}, fail)
-					.catch(fail);
+					})
+					.catch(() => fail("fence"));
 			} catch {
-				fail();
+				fail(site);
 			}
 		});
 	});
-	server.on("error", fail);
-	options.signal.addEventListener("abort", fail, { once: true });
+	const runEnded = (): void => fail();
+	server.on("error", () => fail("server"));
+	options.signal.addEventListener("abort", runEnded, { once: true });
 	try {
 		await new Promise<void>((resolve, reject) => {
 			server.once("error", reject);
@@ -273,16 +301,16 @@ export async function startCloudNativeResultFence(options: {
 		options.signal.throwIfAborted();
 		if (stopped) throw new Error("Native result boundary stopped");
 	} catch {
-		options.signal.removeEventListener("abort", fail);
+		options.signal.removeEventListener("abort", runEnded);
 		server.close();
-		fail();
+		fail("listen");
 		throw new Error("Native result boundary unavailable");
 	}
 	return {
 		path,
 		async close() {
 			stopped = true;
-			options.signal.removeEventListener("abort", fail);
+			options.signal.removeEventListener("abort", runEnded);
 			for (const socket of sockets) socket.destroy();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		},

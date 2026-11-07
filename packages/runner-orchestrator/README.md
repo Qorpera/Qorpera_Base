@@ -209,10 +209,23 @@ expired claims and the provider, and re-reads its retained claims (default 2 s).
 Reconcile runs beside the claim loop, so asking for new work never waits for a
 pass; a failed reconcile blocks claims and is retried after one poll interval,
 and a failed dispatch brings the next pass forward and holds claims until it
-has succeeded.
+has succeeded. An acquisition whose release the control plane answers as
+deferred (an admission refusal, or an attempt another provider has reserved)
+brings the pass forward but holds no claims.
 `QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.
+
+A pass first asks `qorpera_orchestrator_due_summary` (migration
+`20260930612000`, action `due_summary`) which of its ten lists have anything,
+and leaves out a list the answer says is empty while nothing has run earlier in
+that pass. A step that ran makes every later list be asked, so a pass still takes
+what it admits. A list the answer does not name is asked. The call reads every
+list, so one bad list fails it, and it waits as a failing drain does: 1 s,
+doubling to 5 minutes, until an answer ends the wait. An edge function that
+predates the call answers 400, which waits ten minutes. Each failure is reported
+once, and while the call waits a pass asks every list itself, as it would without
+the call.
 
 `QORPERA_RUNNER_ORCHESTRATOR_WAKE=realtime` (off unless set) switches on push
 wake-ups. The service joins its private Supabase Realtime topic with the

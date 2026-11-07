@@ -211,6 +211,7 @@ Check node 1 `serving` and `runsServing` (drain status) and that its observer st
 lxc start qorpera-testvm-node01 --project testmachines
 for i in $(seq 60); do lxc exec qorpera-testvm-node01 --project testmachines -- true 2>/dev/null && break; sleep 2; done
 lxc exec qorpera-testvm-node01 --project testmachines -- sh -c 'echo "being set up and proven (NODE-01.md 7-9)" > /etc/qorpera-test-machine-closed'
+# First push the pinned Codex (README.md, "Real-binary tests"): guest-setup.sh refuses to finish without it.
 sha256sum guest-setup.sh   # 02c883215bd5302253f3345d98ec1816e2ec7ef95b0dade95326afc579993cfa at this change
 lxc exec qorpera-testvm-node01 --project testmachines -- bash -s -- "<public key>" < guest-setup.sh
 ```

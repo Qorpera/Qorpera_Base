@@ -23,6 +23,7 @@ import {
 	parseCodingTurnState,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
 // The executor's pauses (heartbeat, poll, busy retry) follow the fake clock too.
 // An abort rejects like Node's: an AbortError carrying the reason as its cause.
@@ -206,6 +207,43 @@ beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
 afterEach(() => vi.useRealTimers());
 
 describe("the coding executor over a session turn", () => {
+	it("hangs nothing off the signal that lasts as long as its process, and its turn's own signals gather nothing as it polls (abort-scope.ts)", async () => {
+		const most = async (polls: number) => {
+			const w = world();
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			let admitted = false;
+			let described = 0;
+			const control = withHook(w.control, (method) => {
+				if (method === "qorpera_begin_coding_turn") admitted = true;
+				if (method === "qorpera_describe_coding_turn" && admitted && ++described >= polls && !w.world.jobStatus) {
+					w.world.jobStatus = "completed";
+					w.world.submission = finish;
+				}
+			});
+			const lasting = new AbortController();
+			const watch = watchAbortSignalAny();
+			try {
+				const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+				expect(await executor.runOnce(lasting.signal)).toBe("completed");
+				expect(described).toBeGreaterThanOrEqual(polls);
+				expect(watch.on(lasting.signal)).toBe(0);
+				return watch.most();
+			} finally {
+				watch.restore();
+			}
+		};
+		expect(await most(40)).toBe(await most(3));
+	});
+
 	it("is idle when nothing is claimed", async () => {
 		const { control, host } = world();
 		vi.mocked(control.call).mockResolvedValueOnce(null);
