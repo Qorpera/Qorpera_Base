@@ -6220,18 +6220,6 @@ run that hired, set up a routine or started a worker could wait for nobody. This
    agent runs it on Qorpera's own servers when a tool for them is offered, not with an outside host (founder, 22
    October). Only that line in "Starting work" ships here; the hosting and its tool are separate work.
 
-### 2026-11-07 amendment: one call around a tool call
-
-Proposed 7 November 2026 (performance sprint, measure A3); pending founder approval. It changes how the run's check
-around a tool call is carried out, as the 2026-09-29 amendment did for the check before a model request. Every check
-still runs, in the same order, at the same points. Section 4's rule that authorization is checked again immediately
-before an effect is unchanged.
-
-The host made that check in two database calls, one after the other: the run's authority, then its read set. It now
-makes both in one call, `qorpera_check_native_run`, which makes the same two reads under the same bounds. With the
-run's row held, it gives up after about 3 seconds, as the read-set check does. A host on a database without the call
-makes the two calls.
-
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

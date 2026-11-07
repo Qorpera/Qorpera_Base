@@ -1,7 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- 20260930603000 on 924's real native run of Alice's: qorpera_check_native_run makes both of the run's checks in one call
 -- of the native host. Through the host's entry point, one check makes exactly the calls of the two it replaces, the
--- plain describe included (test 467 holds it to their 3 s wait for the run's row); a refusal from either is the call's;
+-- plain describe included (test 467 holds it to their 3 s wait for the run's row, and to the order of the run's row and a
+-- wake run's connection); a refusal from either is the call's;
 -- it is listed with the binding scope on the 8 s entry point; and only the platform's service caller reaches it. Timed
 -- beside the two separate calls at the end (printed, not checked).
 reset role;

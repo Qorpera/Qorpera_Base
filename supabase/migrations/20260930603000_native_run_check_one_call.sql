@@ -6,17 +6,23 @@
 -- that was 14,554 checks, 48 ms each at p50 (686 s), of which the database's part is about 6 ms a call; the rest is the
 -- path to the database, once for each call.
 --
--- qorpera_check_native_run makes the same two calls, in the same order, in one call of the native host. Nothing is
--- skipped or remembered: both checks run on every check, and under READ COMMITTED each sees what committed before it
--- starts. A refusal from either is the call's refusal. The two are still never in flight at once (R1): they are two
--- statements of one transaction, under one 8 s statement budget instead of 8 s each.
+-- qorpera_check_native_run makes the same two calls in one call of the native host, the read-set check first. Nothing
+-- is skipped or remembered: both checks run on every check, and under READ COMMITTED each sees what committed before it
+-- starts. A refusal from either is the call's refusal; when both would refuse, the read-set check's is the one seen. The
+-- two are still never in flight at once (R1): they are two statements of one transaction, under one 8 s statement budget
+-- instead of 8 s each.
+--
+-- The read-set check comes first because of the order of locks. It takes the run's budget row, with its own lock_timeout
+-- of 3 s (20260930540000). Describe on a wake run takes the provider connection FOR SHARE and keeps it to the end of the
+-- transaction (20260906000700). The order on every path is the run's row, then the connection, as the fence has made it
+-- since 20260930481000. The other way round this call would hold the connection while it waited for the row: a
+-- withdrawal of autonomous consent would wait for it, and a step holding the row that takes the login FOR UPDATE would
+-- deadlock with it (test 467). So the row is held through describe, a few milliseconds.
 --
 -- It must ask what the two calls ask. So describe, called directly by this entry point, reads plain as it does when it
 -- is the entry point itself (20260930487000, as 20260930499000 did for the context describe); any other caller keeps
--- the locked run check. The read-set check then takes the run's budget row with its own lock_timeout of 3 s
--- (20260930540000): with the row held, the call gives up with 55P03 after about 3 s (test 467), and the checks made are
--- exactly the two calls' (test 1103). Without this describe would wait for the row under the entry point's 8 s, and hold
--- it longer.
+-- the locked run check. With the row held the call gives up with 55P03 after about 3 s (test 467), and the checks made
+-- are exactly the two calls' (test 1103). Without this describe would make a second, locked run check.
 --
 -- Rollout: record this migration before the runtime that calls it. A runtime on a database without it falls back to
 -- the two separate calls (CloudCompanyPathGateway.checkRun), and a database without such a runtime changes nothing.
@@ -29,15 +35,16 @@ declare v_authority jsonb;
 begin
 	if auth.role() is distinct from 'service_role' or p_binding is null then
 		raise exception 'Run check requires cloud authority' using errcode = '42501'; end if;
-	v_authority := public.qorpera_describe_native_tool_authority(p_binding);
+	-- The run's row before the connection describe takes on a wake run: the order of every path.
 	perform public.qorpera_assert_company_path_reads(p_environment_id, p_binding, array[]::text[]);
+	v_authority := public.qorpera_describe_native_tool_authority(p_binding);
 	return v_authority;
 end
 $$;
 revoke all on function public.qorpera_check_native_run(uuid, jsonb) from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function public.qorpera_check_native_run(uuid, jsonb) to service_role;
 comment on function public.qorpera_check_native_run(uuid, jsonb) is
-	'The run''s check around a tool call, in one call: the authority, then the read set. Returns the authority. 20260930603000.';
+	'The run''s check around a tool call, in one call: the read set, then the authority. Returns the authority. 20260930603000.';
 
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_check_native_run', 'binding');
 

@@ -269,8 +269,8 @@ export class CloudCompanyPathGateway {
 	}
 
 	/**
-	 * The run's two checks in one database call (qorpera_check_native_run, 20260930603000): its authority, then its read
-	 * set, each made as the separate calls make it. Returns the authority as that call read it, or undefined when the
+	 * The run's two checks in one database call (qorpera_check_native_run, 20260930603000): its read set, then its
+	 * authority, each made as the separate calls make it. Returns the authority as that call read it, or undefined when the
 	 * database does not have the call yet; the caller then makes the separate calls. On the native host's entry point a
 	 * call the database does not list is refused like any other, so a refusal before the call ever answered this run
 	 * also says undefined: the separate calls then make the same checks, and a refusal of the run comes from them.

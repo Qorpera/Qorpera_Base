@@ -317,6 +317,24 @@ describe("machine tools", () => {
 			}
 		});
 
+		it("answers a failed read after the wait as unconfirmed when nothing was reported", async () => {
+			const f = fixture(undefined, true);
+			try {
+				running(f);
+				f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+				f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect((await read).contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
 		it("goes on waiting when the read before the wait fails", async () => {
 			const f = fixture(undefined, true);
 			try {
@@ -390,6 +408,42 @@ describe("machine tools", () => {
 					await vi.advanceTimersByTimeAsync(5_000);
 					expect(f.content((await read) as never)).toMatchObject({
 						refused: { reason: "WORK_STOPPED" },
+						companyFolder: { notSaved },
+					});
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when the read after the wait fails", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+					f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					const result = await read;
+					expect(result.success).toBe(true);
+					expect(f.content(result as never)).toMatchObject({
+						refused: { reason: "MACHINE_READ_UNANSWERED" },
+						companyFolder: { notSaved },
+					});
+					expect(f.gateway.read).toHaveBeenCalledTimes(2);
+				} finally {
+					f.boundary.close();
+				}
+			});
+
+			it("when a later receipt says nothing of the folder", async () => {
+				const f = fixture(undefined, true);
+				try {
+					reported(f);
+					f.statuses.push(f.status(f.listed[0], "running"), f.status(f.listed[0], "succeeded"));
+					const read = answer(f, "r1");
+					await vi.advanceTimersByTimeAsync(5_000);
+					expect(f.content((await read) as never)).toMatchObject({
+						state: "succeeded",
 						companyFolder: { notSaved },
 					});
 				} finally {

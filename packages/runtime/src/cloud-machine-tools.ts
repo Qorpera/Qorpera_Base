@@ -75,7 +75,8 @@ function carried(
 	before: CloudMachineCommandFolder | undefined,
 	folder: CloudMachineCommandFolder | undefined,
 ): CloudMachineCommandFolder | undefined {
-	if (!before || !folder) return folder;
+	if (!before) return folder;
+	if (!folder) return before;
 	const {
 		notSaved: _notSaved,
 		moreNotSaved: _more,
@@ -708,7 +709,20 @@ export function cloudMachineTools(options: {
 				if (outcome === "stopped") return told(workStopped());
 				if (answer) return answer;
 			}
-			return (await page()).content;
+			try {
+				return (await page()).content;
+			} catch (error) {
+				// The executor has spent what it reports once, on a read before this one, and a run that is still going can
+				// act on it, so it gets it now. A stopped run's goes with it: nothing would read it.
+				context.signal.throwIfAborted();
+				if (!folder?.notSaved?.length && !folder?.moreNotSaved) throw error;
+				return told(
+					refused(
+						"MACHINE_READ_UNANSWERED",
+						"this read did not answer, so how the command stands is unknown; read it again",
+					),
+				);
+			}
 		},
 	};
 
