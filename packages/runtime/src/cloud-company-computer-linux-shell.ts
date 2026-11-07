@@ -1326,12 +1326,13 @@ export async function readCompanyComputerShellPressure(): Promise<{
 /**
  * Memory safety, not a work limit. The shells share the office service's
  * memory and task limits with the service itself, every desktop and every
- * browser, and the kernel's out-of-memory stop would end the whole service
- * (the unit keeps systemd's default OOMPolicy). When what cannot be
- * reclaimed nears the memory limit, or tasks near their limit, the shell
- * holding the most ends first, with the reason on each of its commands. Only
- * a shell that is a real part of the excess ends: pressure from browsers or
- * desktops never costs an agent a small shell. Checks run while any shell is up.
+ * browser. At the memory limit the kernel kills whichever process it picks
+ * (the unit's OOMPolicy=continue keeps the rest running), and at the task
+ * limit nothing can start a thread. When what cannot be reclaimed nears the
+ * memory limit, or tasks near their limit, the shell holding the most ends
+ * first, with the reason on each of its commands. Only a shell that is a
+ * real part of the excess ends: pressure from browsers or desktops never
+ * costs an agent a small shell. Checks run while any shell is up.
  */
 export class CompanyComputerShellPressureGuard {
 	readonly #shells: () => CompanyComputerLinuxShell[];

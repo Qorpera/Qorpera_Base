@@ -50,5 +50,5 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryMax=4G
 MemorySwapMax=0
-TasksMax=512
+TasksMax=4096
 CPUQuota=200%

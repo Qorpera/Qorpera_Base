@@ -40,8 +40,8 @@ const workbenchMount = parseRecoveryDirectoryMount(
 	await readFile(`/proc/self/fdinfo/${directory.fd}`, "utf8"),
 );
 await directory.close();
-// The office unit's MemoryMax=4G, TasksMax=512 and CPUQuota=200%.
-const limits = { memoryBytes: 4294967296, pids: 512, cpuQuota: 200000, cpuPeriod: 100000 };
+// The office unit's MemoryMax=4G, TasksMax=4096 and CPUQuota=200%.
+const limits = { memoryBytes: 4294967296, pids: 4096, cpuQuota: 200000, cpuPeriod: 100000 };
 
 const shell = new CompanyComputerLinuxShell(
 	createCompanyComputerLinuxShellLauncher({

@@ -137,7 +137,7 @@ export class LxdOfficePreparationWorker {
 			.value as LxdOfficeAdoptionCopyResult;
 		if (officeDigest(copy) !== boot.copySha256) throw new Error("OFFICE_PREPARATION_COPY_CHANGED");
 		// LXD 6.9 gives the fixed workbench disk the lxd_workbench virtiofs tag.
-		// These are the pinned preparation unit's limits, not client choices.
+		// These are the pinned office units' limits (the service's and the preparation's), not client choices.
 		const request = createLxdOfficeGuestPreparationRequest({
 			binding,
 			observation,
@@ -152,7 +152,7 @@ export class LxdOfficePreparationWorker {
 				root: "/",
 				mountPoint: "/var/lib/qorpera-office",
 			},
-			limits: { memoryBytes: 4 * 1024 ** 3, pids: 512, cpuQuota: 200000, cpuPeriod: 100000 },
+			limits: { memoryBytes: 4 * 1024 ** 3, pids: 4096, cpuQuota: 200000, cpuPeriod: 100000 },
 		});
 		const bytes = Buffer.from(`${JSON.stringify(request)}\n`);
 		if (bytes.length > COMPANY_COMPUTER_PREPARATION_MAX_BYTES)

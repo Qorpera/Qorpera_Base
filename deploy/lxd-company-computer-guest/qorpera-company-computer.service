@@ -73,8 +73,12 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryMax=4G
 MemorySwapMax=0
-TasksMax=512
+# Every thread counts: six screens with a browser each used about 1,400.
+TasksMax=4096
 CPUQuota=200%
+# An out-of-memory kill ends the one process the kernel picks; the other
+# screens keep running.
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
