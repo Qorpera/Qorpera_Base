@@ -131,6 +131,8 @@ describe("bounded node health evidence", () => {
 		const publisher = new RuntimeNodeHealthPublisher(nodeId, machine, policy, { call }, collect);
 		await publisher.observe(new AbortController().signal);
 		const observation = call.mock.calls[0]![1].p_observation;
+		// A time-ordered id: reports land beside each other in the receipts' index.
+		expect((observation as { observationId: string }).observationId[14]).toBe("7");
 		expect(parseRuntimeNodeHealth(observation)).toMatchObject({
 			bootId: null,
 			cpu: null,
