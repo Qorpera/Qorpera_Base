@@ -150,11 +150,12 @@ export async function startCloudNativeResultFence(options: {
 	const sockets = new Set<Socket>();
 	const requestIds = new Set<string>();
 	let stopped = false;
-	const fail = (site: string): void => {
+	/** Stops the boundary. With a site, the boundary itself failed: fixed words and no content say which path it was, as
+	 * every one ends the run with one failure code. Without one, the run ended first (its signal), which is no failure. */
+	const fail = (site?: string): void => {
 		if (stopped) return;
 		stopped = true;
-		// Fixed words and no content: every path here ends the run with one failure code, and this says which it was.
-		console.error(`Native result fence failed (site=${site})`);
+		if (site !== undefined) console.error(`Native result fence failed (site=${site})`);
 		options.boundary.close();
 		for (const socket of sockets) socket.destroy();
 		options.onFailure();
@@ -274,7 +275,7 @@ export async function startCloudNativeResultFence(options: {
 			}
 		});
 	});
-	const runEnded = (): void => fail("run-signal");
+	const runEnded = (): void => fail();
 	server.on("error", () => fail("server"));
 	options.signal.addEventListener("abort", runEnded, { once: true });
 	try {

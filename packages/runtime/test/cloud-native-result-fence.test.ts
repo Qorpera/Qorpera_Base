@@ -434,6 +434,23 @@ describe("a peer that hangs up", () => {
 		expect(lines).toEqual(["Native result fence failed (site=socket)"]);
 	});
 
+	it("writes nothing to the journal when the run ends with a request open", async () => {
+		const f = await fixture(vi.fn(() => new Promise<void>(() => undefined)));
+		const pending = exchange(f.service.path, request());
+		await vi.waitFor(() => expect(f.assertActive).toHaveBeenCalled());
+		f.abort.abort();
+		expect(await pending).toBeUndefined();
+		await settle();
+		expect(lines).toEqual([]);
+	});
+
+	it("writes nothing to the journal when the run ends with none", async () => {
+		const f = await fixture();
+		f.abort.abort();
+		await settle();
+		expect(lines).toEqual([]);
+	});
+
 	it("does not excuse a request that breaks the protocol, and the journal says which it was", async () => {
 		const f = await fixture();
 		await hangUpAfter(f.service.path, { ...request(), outputs: [] });
