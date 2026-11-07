@@ -486,10 +486,7 @@ export interface CompanyAppsSource {
 	readonly signal: AbortSignal;
 	folder(): Folder;
 	/** `onState`: whether the hint's channel is subscribed, each time that changes. */
-	folderHints(
-		onHint: (seq: number) => void,
-		onState?: (connected: boolean) => void,
-	): { close(): Promise<void> };
+	folderHints(onHint: (seq: number) => void, onState?: (connected: boolean) => void): { close(): Promise<void> };
 }
 
 /** One folder hint shared by every reader of the open company (its pages' and its apps'): one channel, each reader's
