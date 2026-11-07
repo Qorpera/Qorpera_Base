@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "a281d687c88d3f92763879d9f87054dec603504da9df2dcda73a12f639294a8e",
+			instructions: "051a1f0426241f5024978de1f807785cfe3c4504a9a954b8c099a17436b6e459",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1533,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "ab0871f29a9d11c2320de8cab93bab55631431a7b11170e35174215aeb9872b5",
+			instructions: "f0d1dc6706eb484dd0659fa4902a64ed193fc978f26cd78d03bc3ea2ef630cd9",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "a281d687c88d3f92763879d9f87054dec603504da9df2dcda73a12f639294a8e",
+			instructions: "051a1f0426241f5024978de1f807785cfe3c4504a9a954b8c099a17436b6e459",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1600,6 +1600,7 @@ it("tells an agent to explore what is to be seen in loops, with demo videos in o
 		"start several workers at once, three to five, each with write access, its own clearly different idea",
 		"it makes its idea, looks at the result, improves what is weak, and goes round again for a few rounds",
 		"records a simple demo video of the idea",
+		"apt-get update and apt-get install -y ffmpeg, then npm install playwright and npx playwright install --with-deps chromium",
 		'show each with <video src="name.mp4" controls loop muted playsinline>, post the app with post_app',
 	])
 		expect(instructions).toContain(rule);
