@@ -21,6 +21,22 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+describe("sign-in page weight", () => {
+	it("leaves the lockup of the other theme undownloaded", () => {
+		const f = fixture();
+		f.auth(null);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		auth = new AuthController(f.cloud);
+		renderSignIn(auth, root);
+		const lockups = [...root.querySelectorAll<HTMLImageElement>(".auth-brand img")];
+		expect(lockups.map((image) => image.className)).toEqual(["lockup-on-light", "lockup-on-dark"]);
+		expect(lockups.map((image) => image.getAttribute("loading"))).toEqual(["lazy", "lazy"]);
+	});
+});
+
 describe("deployed sign-in methods", () => {
 	it("advertises only enabled providers and retains email input while settings load", async () => {
 		const f = fixture();

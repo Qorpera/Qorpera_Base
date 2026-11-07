@@ -107,13 +107,15 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"header",
 				{ class: "auth-brand" },
-				// Ink on paper, and paper on ink for the dark theme; the stylesheet shows one.
+				// Ink on paper, and paper on ink for the dark theme; the stylesheet shows one. Lazy, so the browser
+				// downloads only that one (about 90 KB each), and the other if the theme ever changes.
 				h("img", {
 					class: "lockup-on-light",
 					src: "./assets/brand/qorpera-lockup-light-800.png",
 					alt: "Qorpera",
 					width: 800,
 					height: 200,
+					loading: "lazy",
 				}),
 				h("img", {
 					class: "lockup-on-dark",
@@ -121,6 +123,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 					alt: "Qorpera",
 					width: 800,
 					height: 200,
+					loading: "lazy",
 				}),
 			),
 			h(
