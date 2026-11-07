@@ -1161,6 +1161,11 @@ describe("what the reviewer reads as the request", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"In a run no member started, never ask only because no member agreed: judge it by the mandate.",
 		);
+		// 7 November: a new UI Designer's first worker was held although the reviewer found it fit the role, "but a new
+		// agent's first run asks before delegating".
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"A new agent's first run is such a run: delegating work its job description covers, such as starting or steering a worker on it, is requested there as anywhere, and its being a first run is never a reason to ask.",
+		);
 	});
 
 	it("reads a first run's startup assignment as the platform's, never as a member's request (review 31182548)", () => {
