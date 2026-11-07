@@ -1,6 +1,6 @@
 -- @fixture 865_folder_state_tables.test.sql until "-- 1. The port of parseTableRows"
 -- Interfaces C6a, which pages a company shows (QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md §4): only Mailbox,
--- Members and Bank (20260930520000), all off until an owner or admin switches one on. Every member reads them; a contributor, a viewer, someone
+-- Members and Bank (20260930520000), Mailbox and Bank on and Members off until an owner or admin switches one (20260930583000). Every member reads them; a contributor, a viewer, someone
 -- who is not a member, another company's owner and a company being deleted switch nothing; no other page can be
 -- switched. Switching changes no data: the folder, its commits, the areas' consents and offers, the members and who
 -- pays stay as they were.
@@ -38,7 +38,7 @@ begin
 		raise exception 'Expected SQLSTATE %, got %', p_state, p_answer using errcode = 'QTF01'; end if;
 end $$;
 -- The answer for Mailbox, Members and Bank on or off.
-create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default false)
+create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default true)
 returns jsonb language sql as $$
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1', 'pages', jsonb_build_array(
 		jsonb_build_object('page', 'mailbox', 'on', p_mailbox), jsonb_build_object('page', 'members', 'on', p_members),
@@ -87,7 +87,7 @@ do $$
 declare n integer;
 begin
 	foreach n in array array[1, 2, 3, 4, 5] loop
-		if pg_temp.c6_list(n) is distinct from pg_temp.c6_pages(false, false, n in (1, 5)) then
+		if pg_temp.c6_list(n) is distinct from pg_temp.c6_pages(true, false, n in (1, 5)) then
 			raise exception 'Member %''s first list: %', n, pg_temp.c6_list(n); end if;
 	end loop;
 	perform pg_temp.c6_error(pg_temp.c6_list(99), '42501');
@@ -126,7 +126,7 @@ begin
 	v_data := pg_temp.c6_data();
 
 	r := pg_temp.c6_set(1, 'members', true);
-	if r is distinct from pg_temp.c6_pages(false, true, true) then raise exception 'The owner turns Members on: %', r; end if;
+	if r is distinct from pg_temp.c6_pages(true, true, true) then raise exception 'The owner turns Members on: %', r; end if;
 	r := pg_temp.c6_set(5, 'mailbox', true);
 	if r is distinct from pg_temp.c6_pages(true, true, true) then raise exception 'The admin turns Mailbox on: %', r; end if;
 	if pg_temp.c6_list(3) is distinct from pg_temp.c6_pages(true, true, false)
@@ -181,7 +181,7 @@ select public.qorpera_folder_enable('68800000-0000-4000-8000-000000000020') \g /
 do $$
 declare c_other constant uuid := '68800000-0000-4000-8000-000000000020';
 begin
-	if pg_temp.c6_list(101, c_other) is distinct from pg_temp.c6_pages(false, false, true) then
+	if pg_temp.c6_list(101, c_other) is distinct from pg_temp.c6_pages(true, false, true) then
 		raise exception 'The other company''s first list: %', pg_temp.c6_list(101, c_other); end if;
 	perform pg_temp.c6_error(pg_temp.c6_list(1, c_other), '42501');
 	perform pg_temp.c6_error(pg_temp.c6_set(1, 'mailbox', true, c_other), '42501');
@@ -189,7 +189,7 @@ begin
 	if pg_temp.c6_set(101, 'mailbox', true, c_other) is distinct from pg_temp.c6_pages(true, false, true) then
 		raise exception 'The other owner turns Mailbox on'; end if;
 	if pg_temp.c6_set(101, 'mailbox', false, c_other) is distinct from pg_temp.c6_pages(false, false, true)
-		or pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true) then
+		or pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true, false) then
 		raise exception 'The other company''s switch reached 634''s: %', pg_temp.c6_list(1); end if;
 end $$;
 
@@ -200,10 +200,10 @@ begin
 	update public.qorpera_profile_members set role = 'contributor'
 	where profile_id = '63400000-0000-4000-8000-000000000010' and user_id = pg_temp.c6_user(5);
 	perform pg_temp.c6_error(pg_temp.c6_set(5, 'members', false), '42501');
-	if pg_temp.c6_list(5) is distinct from pg_temp.c6_pages(true, true, false) then
+	if pg_temp.c6_list(5) is distinct from pg_temp.c6_pages(true, true, false, false) then
 		raise exception 'The former admin''s list: %', pg_temp.c6_list(5); end if;
 	insert into public.qorpera_company_deletions(profile_id) values ('63400000-0000-4000-8000-000000000010');
 	perform pg_temp.c6_error(pg_temp.c6_set(1, 'members', false), '55000');
-	if pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true) then
+	if pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true, false) then
 		raise exception 'The list while deleting: %', pg_temp.c6_list(1); end if;
 end $$;

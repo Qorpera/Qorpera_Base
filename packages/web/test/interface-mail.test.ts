@@ -163,24 +163,20 @@ const button = (root: ParentNode, text: string) =>
 	[...root.querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.textContent === text);
 
 describe("the mail need (§3 needs)", () => {
-	it("lists the Mailbox only while the company has an address, and reads its addresses again on coming back", async () => {
+	it("lists the Mailbox from the start, with or without an address, until it is switched off", async () => {
 		const { f, controller } = company();
 		const fake = mailFake(f);
 		await readMail(controller, f);
-		expect(names(controller)).not.toContain("mailbox");
+		expect(names(controller)).toContain("mailbox");
 		fake.addresses = [ADDRESS];
 		window.dispatchEvent(new Event("focus"));
-		await vi.waitFor(() => expect(names(controller)).toContain("mailbox"));
+		await vi.waitFor(() => expect(controller.store.get().mail?.addresses.length).toBe(1));
+		expect(names(controller)).toContain("mailbox");
 		// Switched off, it leaves the tab with its address still there (C6a).
 		controller.store.set({ interfacePages: mailboxOn(false) });
 		expect(names(controller)).toEqual([]);
 		controller.store.set({ interfacePages: mailboxOn(true) });
-		// A cloud without the member mail read has no mail: the need is off again.
-		(f.cloud.rpc as unknown as Mock).mockRejectedValue(
-			new CloudRpcError("qorpera_member_mail_addresses", { message: "missing", code: "PGRST202" }, 404),
-		);
-		document.dispatchEvent(new Event("visibilitychange"));
-		await vi.waitFor(() => expect(names(controller)).not.toContain("mailbox"));
+		expect(names(controller)).toContain("mailbox");
 	});
 });
 
