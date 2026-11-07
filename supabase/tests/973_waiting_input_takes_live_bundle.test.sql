@@ -124,6 +124,24 @@ select pg_temp.base_assert(not public.qorpera_repin_waiting_input(pg_temp.p973_i
 		where id = pg_temp.p973_input('92400000-0000-4000-8000-000000000035')) = current_setting('qorpera_test.p973_y'),
 	'a roll back re-pinned a newer input');
 
+-- (d) Nor is a refused turn tried again backwards (20260930582000): Eve's run under Y, refused while X is active after
+-- the roll back, stays failed.
+select pg_temp.p973_reading(30);
+select set_config('qorpera_test.p973_eve_run', (pg_temp.base_materialize() -> 'run_ids' ->> 0), true);
+select pg_temp.base_assert((select runtime_bundle_sha256 = current_setting('qorpera_test.p973_y')
+	from public.qorpera_execution_runs where id = current_setting('qorpera_test.p973_eve_run')::uuid), 'Eve''s run is not under Y');
+insert into public.qorpera_execution_run_events(run_id, event_type, payload)
+values (current_setting('qorpera_test.p973_eve_run')::uuid, 'failed',
+	'{"error":"Native provider bridge request failed (422) [code=NATIVE_BUNDLE_COMPATIBILITY:UNKNOWN]","attempt_count":1}');
+update public.qorpera_runner_jobs set status = 'failed', finished_at = statement_timestamp(),
+	last_error = 'Native provider bridge request failed (422) [code=NATIVE_BUNDLE_COMPATIBILITY:UNKNOWN]'
+	where run_id = current_setting('qorpera_test.p973_eve_run')::uuid;
+set constraints public.qorpera_runner_jobs_retry_refused_for_retired_bundle immediate;
+select pg_temp.base_assert(not exists (select 1 from public.qorpera_session_turn_requests
+	where input_id = pg_temp.p973_input('92400000-0000-4000-8000-000000000035') and status = 'queued')
+	and not public.qorpera_retry_run_refused_for_retired_bundle(current_setting('qorpera_test.p973_eve_run')::uuid),
+	'a turn refused after a roll back was tried again');
+
 -- The new helpers are the database's own.
 select pg_temp.base_assert(not has_function_privilege('authenticated','public.qorpera_repin_waiting_input(uuid)','execute')
 	and not has_function_privilege('service_role','public.qorpera_repin_waiting_input(uuid)','execute')
