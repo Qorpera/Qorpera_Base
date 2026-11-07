@@ -411,17 +411,8 @@ describe("cloud-owned native tool boundary", () => {
 		expect(full.content.text).not.toContain("whsec_0123456789");
 	});
 
-	it("keeps a page whole that leaves the envelope its reserve, with the longest call id and model a binding allows", async () => {
-		const { authority } = nativeToolAuthorityFixture();
-		const identity = {
-			...authority.identity,
-			audienceKind: "member_private" as const,
-			audienceUserId: randomUUID(),
-			staffVersion: Number.MAX_SAFE_INTEGER,
-			sponsorVersion: Number.MAX_SAFE_INTEGER,
-			providerConnectionVersion: Number.MAX_SAFE_INTEGER,
-			model: "m".repeat(160),
-		};
+	it("keeps a page whole that leaves the envelope its reserve, with the longest call id", async () => {
+		const { identity } = nativeToolAuthorityFixture().authority;
 		// What a tool sends when it has measured a page to its last byte, as fitsOneResult does.
 		const page = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 2);
 		expect(fitsOneResult(page)).toBe(true);
@@ -441,6 +432,7 @@ describe("cloud-owned native tool boundary", () => {
 		const response = await boundary.invoke("c".repeat(160), "qorpera", "company_read", { path: "a.md" });
 		const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
 		expect(result.content).toMatchObject({ text: page, truncated: false });
+		expect(result.provenance).not.toHaveProperty("identity");
 		expect(Buffer.byteLength(response.contentItems[0].text)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
 	});
 
