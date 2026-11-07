@@ -756,7 +756,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   behind becomes `blocked` at its next reconcile (the row is gone) and goes the same way.
 - The gateway's `object_stored_replication_pending` audit lines are a trace that nothing here reads (perf A7). An answered
   put's line waits in memory, at most 15 s while the NAS answers, and goes first in the next audit write, so it comes
-  before any later line about that object. A crash loses every line waiting (at most 1,000 by code), and nothing reports
+  before any later line about that object. A crash loses every line waiting (about 1,000 at worst: the cap, plus uploads in flight), and nothing reports
   that, unlike a refused write, which reports degraded and stops uploads. The put's bytes, catalog row and journal entry
   stand, and the entry goes on as above. A sync that fails after its write can repeat that write's lines, same text and
   time.

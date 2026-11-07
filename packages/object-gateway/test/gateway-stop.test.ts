@@ -96,7 +96,8 @@ describe("the gateway's clean stop", () => {
 		});
 	});
 
-	it("does not wait past its bound for a NAS that hangs", async () => {
+	// A promise that never settles and a stub exit: a call truly hung also holds Node's real exit, until the unit's kill.
+	it("says so and calls exit at its bound when the flush never settles", async () => {
 		const at = await gateway();
 		vi.spyOn(at.journal, "audit").mockImplementation(() => new Promise<void>(() => {}));
 		const started = Date.now();
