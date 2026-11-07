@@ -2638,7 +2638,8 @@ export class CompanyController {
 	 * seconds while a room is busy. */
 	readonly #refreshMentionsSoon = throttle(() => void this.refreshMentions(), 5_000);
 
-	readonly #refreshOpenConversation = debounce(() => {
+	/** A change to the open conversation shows at once: a read now, and one more for what a burst adds after it. */
+	readonly #refreshOpenConversation = throttle(() => {
 		const open = this.#openSessionId;
 		if (!open) return;
 		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
@@ -2663,8 +2664,9 @@ export class CompanyController {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
-	/** A burst of transcript events is one hint's worth of reads. */
-	readonly #sessionsChangedSoon = debounce(() => void this.#sessionsChanged(), 250);
+	/** The first hint is read at once, so an agent's message shows as soon as it is saved; the rest of a burst of
+	 * transcript events is one more read, at the end of the interval. */
+	readonly #sessionsChangedSoon = throttle(() => void this.#sessionsChanged(), 250);
 
 	/** The agents' activity moves with their events: read at most every few seconds while they write. */
 	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);

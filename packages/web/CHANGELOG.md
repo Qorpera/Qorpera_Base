@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- An agent's message shows as soon as it is saved (perf sprint 7 Nov 2026, measure A1): a live hint is read at once instead of after 250 ms and then another 400 ms; the rest of a burst is one more read at the end of the interval.
 - Small fixes from the Rumlig test (Jonas, 7 Nov 2026: "fix the issues first"). Where the chat and an app don't both fit, the app's panel covers the chat, with Close, instead of running off the window. An app says "Opening…" until its page is there. An app's link in the middle of a sentence keeps the sentence whole, with its name as a link and the card under it. Enter pressed a moment before Send opens is sent when it does, within two seconds, if the text is the same.
 - The Mailbox and Bank pages show from the start (Jonas, 7 Nov 2026; migration `20260930583000`), each with its own empty state: "The company has no email address yet" and "No bank yet". An owner or admin who switches one off keeps it off.
 - An app can show videos: `.mp4` and `.webm` in its folder, in `<video src>` or `<source src>`, each at most 12 MiB and 48 MiB in all.

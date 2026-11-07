@@ -179,8 +179,10 @@ describe("reading again after a hint", () => {
 		);
 		// Before: about 390 reads a minute for this company (every hint read every conversation,
 		// the open thread's events, inputs and coding sessions, the activity and the mentions, and
-		// the watch all of the thread and the activity every two seconds).
-		expect(total).toBeLessThan(160);
+		// the watch all of the thread and the activity every two seconds). Two hints in one moment are read at once and
+		// once more at the end of the interval, so a member sees a message as soon as it is saved: 176 here, 148 when
+		// every hint waited out a timer first.
+		expect(total).toBeLessThan(180);
 		// The waiting inputs and coding sessions are read when the open thread itself changed, not
 		// for every event anywhere; the watch reads only events.
 		expect(read.listSessionInputs ?? 0).toBeLessThanOrEqual(read.readSessionEvents ?? 0);
@@ -212,6 +214,29 @@ describe("reading again after a hint", () => {
 		expect(busy.store.get().events).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(9_000);
 		expect(inputs()).toBe(before.inputs + 1);
+	});
+
+	it("shows the open thread's new message as soon as its hint arrives, with no timer in the way", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		busy.write(open.sessionId);
+		// Only the reads' own answers land here: no timer has run.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.store.get().events).toHaveLength(1);
+	});
+
+	it("reads a burst of hints once at once and once more at its end", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		const listed = () => vi.mocked(busy.f.api.listSessions).mock.calls.length;
+		const before = listed();
+		for (let index = 0; index < 5; index++) {
+			busy.write(open.sessionId);
+			await vi.advanceTimersByTimeAsync(20);
+		}
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(listed() - before).toBe(2);
+		expect(busy.store.get().events).toHaveLength(5);
 	});
 
 	it("reads a thread's waiting inputs within ten seconds of their hint, also when no later hint comes", async () => {
@@ -391,7 +416,7 @@ describe("hints on a thread that opened at its newest events", () => {
 		// 40 new messages after the 200 it opened with; the rest of the history stays unread.
 		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1040));
 		expect(busy.store.get().hasEarlier).toBe(true);
-		expect(total).toBeLessThan(160);
+		expect(total).toBeLessThan(180);
 	});
 
 	it("catches up after Realtime returns from the newest event read, and Show earlier goes on from the window", async () => {
