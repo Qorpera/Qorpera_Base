@@ -12,6 +12,7 @@ import type { CloudFolderWorkers } from "@qorpera/runtime/cloud-folder-workers";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeFolderReports,
+	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -37,6 +38,7 @@ const workerWake = {
 async function fixture(
 	wake: typeof parentWake | typeof workerWake = parentWake,
 	folderReports?: CloudNativeFolderReports,
+	extraTools: readonly CloudNativeTool[] = [],
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -58,10 +60,13 @@ async function fixture(
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudWorkerTools(binding, run.identity, wake, {
-			folderTodos: folderTodos as unknown as CloudFolderTodos,
-			folderWorkers: folderWorkers as unknown as CloudFolderWorkers,
-		}),
+		tools: [
+			...cloudWorkerTools(binding, run.identity, wake, {
+				folderTodos: folderTodos as unknown as CloudFolderTodos,
+				folderWorkers: folderWorkers as unknown as CloudFolderWorkers,
+			}),
+			...extraTools,
+		],
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 		...(folderReports ? { folderReports } : {}),
@@ -80,6 +85,15 @@ const savedReport = {
 	value: JSON.stringify({ schema: "qorpera.worker-report-receipt/v1", outcome: "saved" }),
 };
 const reportCall = { operationKey: "r1", outcome: "succeeded", summary: "Done." };
+/** A second tool for a response that holds another call beside the report. */
+const noteTool: CloudNativeTool = {
+	name: "read_note",
+	source: "company_file",
+	description: "Synthetic note.",
+	inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	parseArguments: () => ({}),
+	execute: async () => ({ kind: "text", value: "PUBLIC_NOTE" }),
+};
 const body = (result: { contentItems: readonly unknown[] }) =>
 	JSON.parse((result.contentItems[0] as { text: string }).text);
 const names = (boundary: CloudNativeToolBoundary) =>
@@ -529,7 +543,7 @@ describe("agent todo and worker tools", () => {
 			// Saved, first made or replayed: the host-only marker, which never enters what the model reads.
 			f.folderWorkers.report.mockResolvedValueOnce(answer("saved"));
 			const saved = await f.boundary.invoke("r_4", "qorpera", "report_work", report);
-			expect(saved.completesTurn).toBe(true);
+			expect(saved.completesTurn).toBe("alone");
 			expect(saved.contentItems[0].text).not.toContain("completesTurn");
 			// A refused call never ends the turn, whatever the tool would have answered.
 			const invalid = await f.boundary.invoke("r_5", "qorpera", "report_work", { ...report, outcome: "done" });
@@ -555,7 +569,7 @@ describe("agent todo and worker tools", () => {
 				f.folderWorkers.report.mockResolvedValueOnce(savedReport);
 				const saved = await f.boundary.invoke("r_1", "qorpera", "report_work", reportCall);
 				expect(body(saved).companyFolder).toEqual(report);
-				expect(saved.completesTurn).toBe(ends ? true : undefined);
+				expect(saved.completesTurn).toBe(ends ? "alone" : undefined);
 			} finally {
 				f.run.close();
 			}
@@ -564,12 +578,12 @@ describe("agent todo and worker tools", () => {
 
 	it("takes a saved report through the session to the interrupt, and a report that was not saved past it", async () => {
 		const session = async (
-			mode: "report-ends-turn" | "report-goes-on",
+			mode: "report-ends-turn" | "report-goes-on" | "report-then-note" | "report-after-note",
 			answer: { kind: "text"; value: string },
 			folderReports?: CloudNativeFolderReports,
 		) => {
 			const root = await mkdtemp(join(tmpdir(), "q-worker-report-"));
-			const f = await fixture(workerWake, folderReports);
+			const f = await fixture(workerWake, folderReports, [noteTool]);
 			try {
 				f.folderWorkers.report.mockResolvedValueOnce(answer);
 				const evidence = join(root, "evidence.json");
@@ -608,6 +622,16 @@ describe("agent todo and worker tools", () => {
 		});
 		expect(unread.recorded.interrupt).toBeNull();
 		expect(unread.recorded.reply.result.contentItems[0].text).toContain("refused this desktop");
+		// Another call in the report's response: its answer must reach the model, so the turn goes on, also through a later
+		// response of one other call.
+		const sibling = await session("report-then-note", savedReport);
+		expect(sibling.result).toMatchObject({ toolCalls: 3, fencedRequests: 3 });
+		expect(sibling.recorded.interrupt).toBeNull();
+		// A call in an earlier response is no sibling.
+		const after = await session("report-after-note", savedReport);
+		expect(after.result).toMatchObject({ toolCalls: 2, fencedRequests: 3 });
+		expect(after.recorded.earlyInterrupt).toBeNull();
+		expect(after.recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
 	});
 
 	it("lets a worker report once to its parent, with a question only when blocked", async () => {

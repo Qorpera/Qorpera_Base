@@ -222,8 +222,9 @@ export interface CloudNativeFolderReports {
 export interface CloudDynamicToolResponse {
 	contentItems: [{ type: "inputText"; text: string }, ...Array<{ type: "inputImage"; imageUrl: string }>];
 	success: boolean;
-	/** Host-only signal to the native session, never written to the provider. */
-	completesTurn?: true;
+	/** Host-only signal to the native session, never written to the provider: the turn ends at the fence after this
+	 * result. `alone`: only when this was the model response's one call, so no other answer goes unread. */
+	completesTurn?: true | "alone";
 }
 
 export interface CloudNativeResultInput {
@@ -1241,20 +1242,24 @@ export class CloudNativeToolBoundary {
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
 		this.#issuedResults.add(fingerprint);
 		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
-		// A final send closes the turn whatever else its answer says (contract 7.1). A worker's report waits for one more
-		// round when its answer tells of desktop paths the folder did not take, or that more of that report is to come: the
-		// worker is the only one who can act on them, and this is the last result it would read.
+		// A final send closes the turn whatever else its answer says or its response holds (contract 7.1). A worker's report
+		// waits for one more round when its answer tells of desktop paths the folder did not take, or that more of that
+		// report is to come, and when its response held another call (`alone`): the worker is the only one who can act on
+		// those, and this is the last result it would read.
 		const folderUnread =
 			folder && (folder.report.notSaved || folder.report.refused !== undefined || folder.report.more);
 		const completesTurn =
-			status === "ok" &&
-			((tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")) ||
-				(tool?.source === "worker" && tool.name === "report_work" && !folderUnread)) &&
-			content.completesTurn === true;
+			status !== "ok" || content.completesTurn !== true
+				? undefined
+				: tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")
+					? (true as const)
+					: tool?.source === "worker" && tool.name === "report_work" && !folderUnread
+						? ("alone" as const)
+						: undefined;
 		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],
 			success: status === "ok",
-			...(completesTurn ? { completesTurn: true } : {}),
+			...(completesTurn ? { completesTurn } : {}),
 		};
 		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
 		return response;

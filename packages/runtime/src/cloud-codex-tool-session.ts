@@ -607,6 +607,10 @@ class CodexBoundaryRpc {
 	#modelRequestCount = 0;
 	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
 	readonly #turnEndCallIds = new Set<string>();
+	/** Calls that end the turn only if their model response made no other call. */
+	readonly #turnEndAloneCallIds = new Set<string>();
+	/** The calls made since the agent's last model request: one model response's. */
+	#responseCalls: string[] = [];
 	/** Auto-review (v130): the reviewer's own short conversations, one fresh thread
 	 * per review, in this same app-server (a second process on the same login could
 	 * race the first on token refresh). Their only tool records the verdict; their
@@ -1346,6 +1350,10 @@ class CodexBoundaryRpc {
 			this.#modelRequestCount++;
 			if (this.#modelRequests.size > TRACKED_REQUESTS)
 				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
+			// Codex asks for the next request once every call of the response is answered, so this is the whole response.
+			const calls = this.#responseCalls;
+			this.#responseCalls = [];
+			if (calls.length === 1 && this.#turnEndAloneCallIds.has(calls[0])) this.#turnEndCallIds.add(calls[0]);
 		}
 		this.#observeFence(request);
 		// Contract 7.1: the final send closes the turn, and a worker's saved report is
@@ -1600,6 +1608,7 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			this.#toolCalls++;
 			this.#activeCalls++;
+			this.#responseCalls.push(callId);
 			const boundary = this.#boundary;
 			if (!boundary) throw new Error("Native tool binding failed");
 			void boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
@@ -1612,7 +1621,8 @@ class CodexBoundaryRpc {
 					// The host-only marker (a final send, a worker's saved report) never reaches
 					// the provider; the fence that follows this result is where the turn ends
 					// (see assertModelRequest).
-					if (completesTurn) this.#turnEndCallIds.add(callId);
+					if (completesTurn === "alone") this.#turnEndAloneCallIds.add(callId);
+					else if (completesTurn) this.#turnEndCallIds.add(callId);
 					this.#write({ id: message.id, result });
 				},
 				() => {
