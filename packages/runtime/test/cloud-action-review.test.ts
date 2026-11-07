@@ -1161,6 +1161,11 @@ describe("what the reviewer reads as the request", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"In a run no member started, never ask only because no member agreed: judge it by the mandate.",
 		);
+		// 7 November: a new UI Designer's first worker was held although the reviewer found it fit the role, "but a new
+		// agent's first run asks before delegating".
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"A new agent's first run is such a run: delegating work its job description covers, such as starting or steering a worker on it, is requested there as anywhere, and its being a first run is never a reason to ask.",
+		);
 	});
 
 	it("reads a first run's startup assignment as the platform's, never as a member's request (review 31182548)", () => {
@@ -1838,6 +1843,10 @@ describe("what the reviewer reads as the mandate", () => {
 		// of its demo page held, as overwriting; the Company File keeps every earlier version.
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"changing or replacing a file in the company folder, /company on a machine, is never permanent, because the folder keeps its earlier versions",
+		);
+		// That evening, on v214: a UX Designer's copy over its own /tmp files was held as "ownership is unclear".
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"every file on the agent's own company machine outside /company, such as in /tmp or /root, is its own work, so replacing or deleting one is never deletesOrOverwrites",
 		);
 	});
 
