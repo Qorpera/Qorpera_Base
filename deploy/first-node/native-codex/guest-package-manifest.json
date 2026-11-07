@@ -122,8 +122,8 @@
     },
     {
       "file": "qorpera-native-isolation-child.mjs",
-      "bytes": 2895,
-      "sha256": "1f74854c1ec05eb202b1aa1754079d7fdba17209dda05fe125e5c544ae42899c"
+      "bytes": 3513,
+      "sha256": "9a205c30b4a5874e53fdfdb079d51548b39848cac96fe798b11ce2f4eb244239"
     },
     {
       "file": "qorpera-native-login-provider-host.service",
@@ -132,8 +132,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 3389168,
-      "sha256": "cc01e0f40107581b03412b7bd59581da3b42426f7d91d9762d4726bb0b9f5751"
+      "bytes": 3389315,
+      "sha256": "707b770c610257d1aaf59d198a585b68028b60e244df3a3df8cf7e1786b77d82"
     },
     {
       "file": "qorpera-native-provider-host.service",
