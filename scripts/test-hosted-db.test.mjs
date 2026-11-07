@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -24,6 +25,7 @@ import {
 	plannedMigrations,
 	sessionPerFile,
 	snapshotPlan,
+	WARM_START,
 	warmChain,
 	warmCopy,
 	warmDatabasesToDrop,
@@ -49,6 +51,8 @@ test("sorts hosted migrations and rejects duplicate versions", () => {
 test("uses an exact temporary container identity and digest-pinned image", () => {
 	assert.equal(buildContainerName(42, "0123abcd"), "qorpera-hosted-db-42-0123abcd");
 	assert.match(POSTGRES_IMAGE, /^docker\.io\/library\/postgres:[^@]+@sha256:[0-9a-f]{64}$/);
+	// Not on musl: PostgreSQL there takes about twice the CPU for the same migrations.
+	assert.doesNotMatch(POSTGRES_IMAGE, /alpine/);
 	assert.throws(() => buildContainerName(42, "../escape"), /Invalid hosted database container identity/);
 });
 
@@ -129,12 +133,38 @@ test("a warm copy's link covers the image, the bootstrap, the build scripts and 
 	assert.notEqual(warmChain(["1_a.sql", "1_b.sql", "2_b.sql", "3_c.sql"], read)[3], chain[3]);
 	// A list that goes on shares the links of its first migrations.
 	assert.deepEqual(warmChain([...names, "4_d.sql"], read).slice(0, 4), chain);
+	// A cluster with another bootstrap superuser has copies of its own.
+	assert.notEqual(warmChain(names, read, "fixture_admin")[0], chain[0]);
 	for (const builder of ["bootstrap.sql", "platform-function-defaults.sql", "test-hosted-db-cluster.mjs", "test-hosted-db.mjs"]) {
 		files.set(builder, "changed");
 		assert.notEqual(warmChain(names, read)[0], chain[0], builder);
 		files.delete(builder);
 	}
 	assert.match(warmVolumeName(chain[3], 1760000000), new RegExp(`^qorpera-hosted-db-warm-${chain[3]}-1760000000-[0-9a-f]{4}$`));
+});
+
+test("a warm start copies its data into an empty directory only, so a restarted container keeps its own", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "qorpera-warm-start-"));
+	try {
+		const warm = join(temporary, "warm");
+		const data = join(temporary, "data");
+		mkdirSync(join(warm, "data"), { recursive: true });
+		mkdirSync(data);
+		writeFileSync(join(warm, "data", "PG_VERSION"), "17\n");
+		writeFileSync(join(warm, "data", "row"), "from the copy\n");
+		const start = () => {
+			const script = WARM_START.replaceAll("/qorpera-warm", warm).replace("exec docker-entrypoint.sh postgres", "true");
+			const result = spawnSync("sh", ["-c", script], { encoding: "utf8", env: { ...process.env, PGDATA: data } });
+			assert.equal(result.status, 0, result.stderr);
+		};
+		start();
+		assert.equal(readFileSync(join(data, "row"), "utf8"), "from the copy\n");
+		writeFileSync(join(data, "row"), "written before the restart\n");
+		start();
+		assert.equal(readFileSync(join(data, "row"), "utf8"), "written before the restart\n");
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
 });
 
 test("a run starts from the complete warm copy of the most of its migrations, the newest of those, under six hours old", () => {
@@ -170,7 +200,7 @@ test("a run starts from the complete warm copy of the most of its migrations, th
 
 test("a machine keeps its newest complete warm copies for seven hours and removes unfinished ones after an hour", () => {
 	const copy = (index, seconds) => `qorpera-hosted-db-warm-${String(index).padStart(32, "0")}-${seconds}-0000`;
-	const complete = Array.from({ length: 8 }, (_, index) => copy(index, 1760000000 + index * 10));
+	const complete = Array.from({ length: 12 }, (_, index) => copy(index, 1760000000 + index * 10));
 	const volumes = [...complete.flatMap((name) => [name, `${name}-ready`]), copy(20, 1760000000), copy(21, 1760003500), "other"];
 	assert.deepEqual(warmVolumesToRemove(volumes, 1760003700), [
 		`${complete[0]}-ready`,

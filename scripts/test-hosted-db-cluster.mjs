@@ -35,8 +35,8 @@ const CONTAINER = /^qorpera-hosted-db-\d+-[0-9a-f]{8}$/;
  * copy is complete. The link (`warmChain`) covers everything the build came from, so a copy is used only by a run
  * whose image, bootstrap, build scripts and first migrations are byte for byte the ones it was made from. */
 const WARM = /^qorpera-hosted-db-warm-([0-9a-f]{32})-(\d{10})-([0-9a-f]{4})(-ready)?$/;
-/** How many complete copies a machine keeps, the newest. */
-const WARM_KEEP = 6;
+/** How many complete copies a machine keeps, the newest. Scripts with a bootstrap superuser of their own keep theirs too. */
+const WARM_KEEP = 10;
 /** A run starts only from a copy younger than this. The rows the migrations write carry the time of the build that
  * wrote them (now()), so a run started from a copy finds them that much older than a full replay would leave them. */
 const WARM_MAX_AGE_SECONDS = 6 * 3600;
@@ -49,8 +49,9 @@ const WARM_FORMAT = "1";
 const WARM_IN = "/qorpera-warm";
 const WARM_OUT = "/qorpera-warm-out";
 /** A warm start copies the data directory in and starts PostgreSQL on it. A copy that cannot be read leaves an empty
- * data directory, so the image initializes a fresh cluster, and `startBuilt` finds no build there. */
-const WARM_START = `if [ -d ${WARM_IN}/data ]; then cp -a ${WARM_IN}/data/. "$PGDATA"/ || find "$PGDATA" -mindepth 1 -delete; fi; exec docker-entrypoint.sh postgres`;
+ * data directory, so the image initializes a fresh cluster, and `startBuilt` finds no build there. A container restarted
+ * with its data on disk (`restartable`) keeps that data: the copy is taken only into an empty directory. */
+export const WARM_START = `if [ -d ${WARM_IN}/data ] && [ ! -s "$PGDATA/PG_VERSION" ]; then cp -a ${WARM_IN}/data/. "$PGDATA"/ || find "$PGDATA" -mindepth 1 -delete; fi; exec docker-entrypoint.sh postgres`;
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
@@ -58,16 +59,17 @@ export function migrationNames() {
 	return sortMigrationNames(readdirSync(MIGRATIONS));
 }
 
-/** chain[i] is the link of a build of the first i migrations: chain[0] covers the image, the test bootstrap and the
- * scripts that build it; chain[i] covers chain[i - 1] and migration i's name and bytes. `read` returns a file's bytes. */
-export function warmChain(names, read = readFileSync) {
+/** chain[i] is the link of a build of the first i migrations: chain[0] covers the image, the bootstrap superuser, the test
+ * bootstrap and the scripts that build it; chain[i] covers chain[i - 1] and migration i's name and bytes. `read` returns a
+ * file's bytes. */
+export function warmChain(names, read = readFileSync, admin = "postgres") {
 	const builders = [
 		join(TESTS, "bootstrap.sql"),
 		join(TESTS, PLATFORM_DEFAULTS),
 		fileURLToPath(import.meta.url),
 		join(repositoryRoot, "scripts", "test-hosted-db.mjs"),
 	];
-	let link = sha256([WARM_FORMAT, POSTGRES_IMAGE, ...builders.map((file) => sha256(read(file)))].join("\n"));
+	let link = sha256([WARM_FORMAT, POSTGRES_IMAGE, admin, ...builders.map((file) => sha256(read(file)))].join("\n"));
 	const chain = [link.slice(0, 32)];
 	for (const name of names) {
 		link = sha256(`${link}\n${name}\n${sha256(read(join(MIGRATIONS, name)))}`);
@@ -248,7 +250,8 @@ export class HostedDbCluster {
 		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
 			await cluster.waitForPostgres();
-			if (admin !== "postgres") cluster.admin("create role postgres login superuser;");
+			// A warm copy of such a cluster holds this role already.
+			if (admin !== "postgres") cluster.admin("do $$ begin if not exists (select from pg_roles where rolname = 'postgres') then create role postgres login superuser; end if; end $$;");
 			run("docker", ["exec", container, "mkdir", "-p", IN_CONTAINER]);
 			run("docker", ["cp", MIGRATIONS, `${container}:${IN_CONTAINER}/migrations`]);
 			run("docker", ["cp", join(TESTS, "bootstrap.sql"), `${container}:${IN_CONTAINER}/bootstrap.sql`]);
@@ -264,17 +267,18 @@ export class HostedDbCluster {
 	 * one: only the migrations after the copy are replayed. A copy whose databases are not what a build leaves there
 	 * means a full replay in a fresh container. A full replay keeps its build for later runs (`keep`), and the
 	 * machine's oldest copies are removed; a run that went on from a copy keeps nothing (replaying the migrations
-	 * that land in WARM_MAX_AGE_SECONDS costs less than keeping a copy). Returns the cluster and how many migrations
+	 * that land in WARM_MAX_AGE_SECONDS costs less than keeping a copy). A cluster with another bootstrap superuser
+	 * (`admin`) has copies of its own; `restartable` keeps the data on disk. Returns the cluster and how many migrations
 	 * were copied. */
-	static async startBuilt({ snapshotBefore = [], progress = true, keep = true } = {}) {
+	static async startBuilt({ snapshotBefore = [], progress = true, keep = true, restartable = false, admin = "postgres" } = {}) {
 		const names = migrationNames();
-		const chain = warmChain(names);
+		const chain = warmChain(names, readFileSync, admin);
 		const warm = warmCopy(warmVolumes(), chain, Math.floor(Date.now() / 1000));
 		if (warm) {
-			const cluster = await HostedDbCluster.start({ warm: warm.volume });
+			const cluster = await HostedDbCluster.start({ warm: warm.volume, restartable, admin });
 			let drop = null;
 			try {
-				const present = cluster.psql("postgres", "select datname from pg_database where datname like 'qorpera\\_%';", ["-qAt"]);
+				const present = cluster.psql(admin, "select datname from pg_database where datname like 'qorpera\\_%';", ["-qAt"]);
 				drop = warmDatabasesToDrop(present.split("\n").filter(Boolean), snapshotPlan(names, snapshotBefore), warm.applied);
 				if (drop) {
 					if (drop.length) cluster.admin(drop.map((database) => `drop database ${checkDatabase(database)};`).join("\n"));
@@ -289,7 +293,7 @@ export class HostedDbCluster {
 			process.stdout.write(`The warm copy ${warm.volume} does not hold the databases a build leaves; replaying every migration\n`);
 		}
 		const out = keep ? warmVolumeName(chain.at(-1)) : null;
-		const cluster = await HostedDbCluster.start({ keepIn: out });
+		const cluster = await HostedDbCluster.start({ keepIn: out, restartable, admin });
 		try {
 			cluster.build({ snapshotBefore, progress });
 		} catch (error) {
@@ -440,25 +444,26 @@ export class HostedDbCluster {
 	 * `snapshotBefore` (and before the first, and after the last) it leaves a copy for later databases. `from`: a warm
 	 * copy's migrations, which this cluster already holds with the copies before them; the build goes on after them. */
 	build({ snapshotBefore = [], progress = true, from = 0 } = {}) {
-		if (this.#admin !== "postgres") throw new Error("The shared replay runs where postgres is the bootstrap superuser");
 		const names = migrationNames();
+		// The bootstrap superuser's own database, as the image makes it: `postgres` or `admin`'s.
+		const home = this.#admin;
 		if (names.length === 0) throw new Error("No hosted database migrations were found");
 		const snapshots = snapshotPlan(names, snapshotBefore);
 		const snapshotAt = (applied) => {
 			const snapshot = snapshots.find((candidate) => candidate.applied === applied);
 			// CREATE DATABASE … TEMPLATE needs the template without sessions: this one moves to postgres first.
 			return snapshot && snapshot.database !== MIGRATED
-				? `\\connect postgres\ncreate database ${snapshot.database} template ${MIGRATED};\n`
+				? `\\connect ${home}\ncreate database ${snapshot.database} template ${MIGRATED};\n`
 				: "";
 		};
-		let text = from === 0 ? `\\connect postgres\ncreate database ${MIGRATED};\n${sessionPerFile(MIGRATED, BOOTSTRAP)}` : "";
+		let text = from === 0 ? `\\connect ${home}\ncreate database ${MIGRATED};\n${sessionPerFile(MIGRATED, BOOTSTRAP)}` : "";
 		names.forEach((name, index) => {
 			if (index < from) return;
 			text += snapshotAt(index);
 			text += sessionPerFile(MIGRATED, [`${IN_CONTAINER}/migrations/${name}`], { echo: progress });
 		});
-		text += "\\connect postgres\n";
-		this.script("postgres", text, { progress });
+		text += `\\connect ${home}\n`;
+		this.script(home, text, { progress });
 		this.snapshots = snapshots;
 		return names.length;
 	}
@@ -478,7 +483,7 @@ export class HostedDbCluster {
 		const { wanted, prefix } = plannedMigrations(names, { before, skip });
 		const snapshot = bestSnapshot(this.snapshots, prefix);
 		if (snapshot) {
-			this.admin(`create database ${name} template ${snapshot.database};`);
+			this.admin(`create database ${name} template ${snapshot.database};${this.#admin === "postgres" ? "" : ` grant all on database ${name} to postgres;`}`);
 			this.migrate(name, wanted.slice(snapshot.applied));
 			return { copied: snapshot.applied, replayed: wanted.length - snapshot.applied };
 		}
@@ -521,14 +526,21 @@ export class HostedDbCluster {
 }
 
 /** For a PostgreSQL script: its own database `name` with the migrations it asks for, in the suite's cluster
- * when it runs under the suite, otherwise in a container of its own. Two kinds of script always get their
- * own container, filled by the same one-process replay: one that restarts the server (`restartable`: data
- * on disk), and one that alters the cluster-wide `postgres` role (`alterablePostgres`: another bootstrap
- * superuser). `close()` drops the database or removes the container. */
+ * when it runs under the suite, otherwise in a container of its own, built by `startBuilt`, so from the machine's warm
+ * copy when it keeps one. Two kinds of script always get their own container: one that restarts the server
+ * (`restartable`: data on disk), and one that alters the cluster-wide `postgres` role (`alterablePostgres`: another
+ * bootstrap superuser). `close()` drops the database or removes the container. */
 export async function hostedDatabase(name, { restartable = false, alterablePostgres = false, ...options } = {}) {
 	const shared = restartable || alterablePostgres ? null : HostedDbCluster.attach();
+	const admin = alterablePostgres ? "fixture_admin" : "postgres";
+	// Snapshots where the database starts from a point of the chain or leaves a migration out; an empty one needs no build.
+	const snapshotBefore = [...(options.before ? [options.before] : []), ...(options.skip ?? [])];
 	const cluster =
-		shared ?? (await HostedDbCluster.start({ restartable, admin: alterablePostgres ? "fixture_admin" : "postgres" }));
+		shared ??
+		(options.empty
+			? await HostedDbCluster.start({ restartable, admin })
+			: // Only a cluster of its own kind keeps its build: the suite's are the copies with every snapshot it needs.
+				(await HostedDbCluster.startBuilt({ snapshotBefore, progress: false, keep: alterablePostgres, restartable, admin })).cluster);
 	try {
 		const made = cluster.create(name, options);
 		process.stdout.write(
