@@ -6,22 +6,26 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
+/** Debian's image, not Alpine's: PostgreSQL on musl spends as long in the kernel as on its own code, mostly page faults
+ * and munmap from musl's allocator. The same 924 migrations and 49 SQL tests in one slot, alternating (7 Nov): replay
+ * 57 s and 60 CPU s on Alpine, 28 s and 31 CPU s here; tests 48 s and 39 CPU s, 33 s and 25 CPU s. Production runs on glibc
+ * too. The image's default en_US.utf8 is also closer to production's en_US.UTF-8 than musl's byte order. */
 export const POSTGRES_IMAGE =
-	"docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94";
+	"docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
  * database. A database runs the tests from its first name on, in their usual order, up to the next database's;
- * the four take about the same time (100–110 s each on a test machine, 16 Oct). Every test that keeps rows for a
- * later one (000, 040 and its readers up to 200, then 120, 260, 595 and 625) stays in the first, so a test still
- * sees only rows its usual predecessors left. A test connecting to its database again uses `current_database()`,
- * not a name. */
+ * the five take about the same time (100-125 s each on a test machine, 7 Nov). The tests that keep rows for a later
+ * one, 000 and 040 and its readers up to 200, stay in the first, so a test still sees only rows its usual predecessors
+ * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "658"],
-	["qorpera_test_3", "826"],
-	["qorpera_test_4", "893"],
+	["qorpera_test_2", "509"],
+	["qorpera_test_3", "672"],
+	["qorpera_test_4", "826"],
+	["qorpera_test_5", "893"],
 ];
 
 export function sortMigrationNames(names) {

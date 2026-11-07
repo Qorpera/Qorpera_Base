@@ -357,10 +357,11 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"625_kept_rows.test.sql",
-		"657_last.test.sql",
-		"658_first.test.sql",
-		"6580_longer.test.sql",
+		"508_last.test.sql",
+		"509_first.test.sql",
+		"5090_longer.test.sql",
+		"671_last.test.sql",
+		"672_first.test.sql",
 		"825_last.test.sql",
 		"826_first.test.sql",
 		"892_last.test.sql",
@@ -369,10 +370,11 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 	];
 	const split = splitTests(tests, null);
 	assert.deepEqual(split, [
-		["qorpera_test", tests.slice(0, 5)],
-		["qorpera_test_2", tests.slice(5, 8)],
-		["qorpera_test_3", tests.slice(8, 10)],
-		["qorpera_test_4", tests.slice(10)],
+		["qorpera_test", tests.slice(0, 4)],
+		["qorpera_test_2", tests.slice(4, 7)],
+		["qorpera_test_3", tests.slice(7, 9)],
+		["qorpera_test_4", tests.slice(9, 11)],
+		["qorpera_test_5", tests.slice(11)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -386,8 +388,8 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 11)],
-			["c", tests.slice(11)],
+			["b", tests.slice(2, 12)],
+			["c", tests.slice(12)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
@@ -403,6 +405,6 @@ test("the tests that keep rows for later tests stay in the first database", () =
 	assert.equal(first, "qorpera_test");
 	assert.ok(rest.length >= 1);
 	assert.deepEqual([kept, ...rest.map(([, part]) => part)].flat(), tests);
-	// The tests that keep rows (000 first, 040 and its readers up to 200, then 120, 260, 595, 625) are all 625 or below.
-	for (const test of tests.filter((name) => name < "626")) assert.ok(kept.includes(test), test);
+	// The tests that keep rows for a later one (000 first, 040 and its readers up to 200) are all 200 or below.
+	for (const test of tests.filter((name) => name < "201")) assert.ok(kept.includes(test), test);
 });
