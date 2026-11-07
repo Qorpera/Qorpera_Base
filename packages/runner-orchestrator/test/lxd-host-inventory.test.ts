@@ -430,6 +430,7 @@ describe("the node observer over this client (2026-09-28)", () => {
 			const observer = new RuntimeNodeInventoryObserver(policy, registry, {
 				lxd,
 				host: async () => structuredClone(host),
+				healthRecord: async () => {},
 			});
 			return { state: (await observer.observe(new AbortController().signal)).state, published };
 		};
