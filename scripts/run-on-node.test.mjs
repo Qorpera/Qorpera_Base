@@ -24,9 +24,14 @@ import {
 	CLOSED,
 	CPU_SLOTS,
 	candidateMachines,
+	copyOptions,
 	customTarget,
 	DROPPED,
 	describeProbes,
+	EXTRA_MEMORY_MIB,
+	EXTRA_PAUSE_SECONDS,
+	EXTRA_PRESSURE,
+	EXTRA_SLOTS,
 	FRONT,
 	firstTaking,
 	GROW_MEMORY_MIB,
@@ -36,15 +41,18 @@ import {
 	KEPT_SLOTS,
 	MACHINES,
 	parseArgs,
+	parseSeed,
 	parseStatus,
 	pickSlot,
 	probeAll,
 	probeScript,
 	pruneScript,
 	QUEUED,
+	QUICK_LIMIT_SECONDS,
 	QUICK_SLOTS,
 	RUNNERS,
 	rankMachines,
+	roomyScript,
 	runCommandLine,
 	runOrder,
 	runScript,
@@ -52,6 +60,7 @@ import {
 	SLOT,
 	SPREAD_MS,
 	secretLooking,
+	seedScript,
 	shellQuote,
 	suiteCommand,
 	treeDigest,
@@ -168,7 +177,7 @@ test("at most five runs execute at once, four without --front, in arrival order,
 	// Without --front, slots 1-4: the fifth is kept for --front runs.
 	assert.match(script, /for candidate in \$\(seq 1 4\); do/);
 	assert.match(script, /waiting for a slot in the CPU lane \(4 runs at a time, 1 more slot kept for --front runs\), queue position \$position/);
-	assert.match(script, /in slot \$slot of 5 in the CPU lane \(/);
+	assert.match(script, /in slot \$slot of 7 in the CPU lane \(/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
 	// vCPUs / 5 workers per run (2 on 10 or 12 vCPUs), at least 1.
@@ -179,7 +188,7 @@ test("at most five runs execute at once, four without --front, in arrival order,
 });
 
 test("a hosted-db run narrowed with --only takes the quick lane", () => {
-	assert.equal(QUICK_SLOTS, 1);
+	assert.equal(QUICK_SLOTS, 2);
 	assert.equal(parseArgs(["hosted-db", "--", "--only", "001"]).quick, true);
 	assert.equal(parseArgs(["hosted-db", "--", "--only=001"]).quick, true);
 	assert.equal(parseArgs(["--machine", "node01", "hosted-db", "--", "--scripts", "--only", "001,002"]).quick, true);
@@ -189,6 +198,34 @@ test("a hosted-db run narrowed with --only takes the quick lane", () => {
 	assert.equal(parseArgs(["test"]).quick, false);
 	assert.equal(parseArgs(["npm:test:scripts", "--", "--only", "001"]).quick, false);
 	assert.equal(parseArgs(["--", "npm", "run", "test:hosted-db", "--", "--only", "001"]).quick, false);
+});
+
+test("--quick takes the quick lane with a time limit, for one short command", () => {
+	const options = parseArgs(["--quick", "--", "node", "--test", "scripts/x.test.mjs"]);
+	assert.deepEqual([options.quick, options.limit, options.plain], [true, QUICK_LIMIT_SECONDS, false]);
+	assert.equal(parseArgs(["--quick", "npm:test:scripts"]).quick, true);
+	// A suite named with --quick does not speak for the suite on the commit: it may have been stopped at the limit.
+	assert.equal(parseArgs(["--quick", "npm:test:scripts"]).plain, false);
+	assert.equal(parseArgs(["hosted-db", "--", "--only", "001"]).limit, null);
+	assert.equal(parseArgs(["--", "true"]).limit, null);
+	assert.throws(() => parseArgs(["--quick", "changed"]), /--quick is for one short command, not for changed/);
+	assert.throws(() => parseArgs(["--quick", "--front", "--", "true"]), /--front is for the CPU lane; a --quick run has the quick lane/);
+	assert.equal(runCommandLine({ command: ["true"], limit: 180 }), "timeout --kill-after=10 180 true");
+	assert.equal(runCommandLine({ command: ["true"] }), "true");
+	// A real stop, with the run's own line: exit 124 at the limit, and the suite's own exit otherwise.
+	const inner = (limit, command) => {
+		const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: runCommandLine({ command, limit }), quick: true, limit });
+		// What the session runs as the runner user, from the command on (its status file is not there: that line only complains).
+		const from = script.indexOf("start=$(date +%s%N);");
+		const body = script.slice(from, script.lastIndexOf("exit $code") + "exit $code".length).replaceAll(`'\\''`, "'");
+		return spawnSync("bash", ["-c", body], { encoding: "utf8" });
+	};
+	const stopped = inner(1, ["sleep", "30"]);
+	assert.equal(stopped.status, 124);
+	assert.match(stopped.stdout, /stopped at the quick lane's limit of 1 s: run it without --quick/);
+	const failed = inner(30, ["bash", "-c", "exit 3"]);
+	assert.equal(failed.status, 3);
+	assert.doesNotMatch(failed.stdout, /quick lane's limit/);
 });
 
 test("a quick run queues for the quick slots only, a normal run for the CPU slots only, with the same logic", () => {
@@ -203,9 +240,9 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 		quick,
 		/lock="\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \} 2>\/dev\/null \|\| continue/,
 	);
-	assert.match(quick, /for candidate in \$\(seq 1 1\); do/);
-	assert.match(quick, /waiting for a slot in the quick lane \(1 run at a time\), queue position \$position/);
-	assert.match(quick, /in slot \$slot of 1 in the quick lane \(/);
+	assert.match(quick, /for candidate in \$\(seq 1 2\); do/);
+	assert.match(quick, /waiting for a slot in the quick lane \(2 runs at a time\), queue position \$position/);
+	assert.match(quick, /in slot \$slot of 2 in the quick lane \(/);
 	assert.doesNotMatch(quick, /qorpera-test-machine-(queue|slot)|CPU lane/);
 	assert.match(cpu, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
 	assert.match(cpu, /lock="\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
@@ -213,6 +250,9 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 	// Only the lane's names and slot counts differ; the runner user and everything after the slot are shared.
 	const neutral = (script, lane, slots) =>
 		script
+			// The extra slots are the CPU lane's only.
+			.replace(`${roomyScript()}\n`, "")
+			.replace(/\t\tif \[ -z "\$slot" \] && roomy; then\n[\s\S]*?\n\t\tfi\n/, "")
 			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
 			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
 			.replaceAll(`seq 1 ${slots}`, "seq 1 N")
@@ -223,6 +263,56 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 		assert.match(script, /if \[ "\$position" = 1 \]; then/);
 		assert.match(script, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; exit 94; \}/);
+	}
+});
+
+test("past the CPU lane's slots, the first run in the queue takes an extra one only while the machine has room", () => {
+	const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const cpu = runScript(base);
+	assert.equal(spawnSync("bash", ["-n", "-c", cpu]).status, 0);
+	// After the lane's own slots, for the run the queue has come to, and only slots 6 and 7.
+	const first = cpu.indexOf('if [ "$position" = 1 ]; then');
+	const own = cpu.indexOf(`for candidate in $(seq 1 ${CPU_SLOTS - KEPT_SLOTS}); do`);
+	const extra = cpu.indexOf('if [ -z "$slot" ] && roomy; then');
+	const after = cpu.indexOf('if [ -z "$slot" ]; then', first);
+	assert.ok(first < own && own < extra && extra < after);
+	assert.equal(EXTRA_SLOTS, 2);
+	assert.match(cpu, /for candidate in \$\(seq 6 7\); do\n\t+lock="\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.match(cpu, /slot=\$candidate; touch \/run\/lock\/qorpera-test-machine-extra-started; break;/);
+	assert.doesNotMatch(runScript({ ...base, quick: true }), /roomy|extra-started/);
+	// A --front run may take one too, after every slot of its own.
+	assert.match(runScript({ ...base, front: true }), /if \[ -z "\$slot" \] && roomy; then/);
+
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const meminfo = join(temporary, "meminfo");
+		const pressure = join(temporary, "pressure");
+		const started = join(temporary, "started");
+		const roomy = () => spawnSync("bash", ["-c", `${roomyScript({ meminfo, pressure, started })}\nroomy`]).status === 0;
+		const write = (mib, some) => {
+			writeFileSync(meminfo, `MemTotal:       16293124 kB\nMemAvailable:   ${mib * 1024} kB\n`);
+			writeFileSync(pressure, `some avg10=99.00 avg60=${some}.50 avg300=31.51 total=28129063948\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n`);
+		};
+		write(EXTRA_MEMORY_MIB, EXTRA_PRESSURE - 1);
+		assert.equal(roomy(), true);
+		write(EXTRA_MEMORY_MIB - 1, EXTRA_PRESSURE - 1);
+		assert.equal(roomy(), false, "too little memory");
+		write(EXTRA_MEMORY_MIB, EXTRA_PRESSURE);
+		assert.equal(roomy(), false, "too much pressure");
+		write(EXTRA_MEMORY_MIB, EXTRA_PRESSURE - 1);
+		writeFileSync(started, "");
+		assert.equal(roomy(), false, "one started just now");
+		const long = new Date(Date.now() - (EXTRA_PAUSE_SECONDS + 5) * 1000);
+		utimesSync(started, long, long);
+		assert.equal(roomy(), true);
+		// What it cannot read means no room.
+		rmSync(pressure);
+		assert.equal(roomy(), false, "no pressure file");
+		write(EXTRA_MEMORY_MIB, EXTRA_PRESSURE - 1);
+		rmSync(meminfo);
+		assert.equal(roomy(), false, "no meminfo");
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
 	}
 });
 
@@ -383,7 +473,7 @@ test("a --front --cores run takes up to three slots, one such run per machine; a
 			/\nper=\$\(\( \$\(nproc\) \/ 5 > 0 \? \$\(nproc\) \/ 5 : 1 \)\); cores_file=\/run\/lock\/qorpera-test-machine-cores-20261016T001500-1-ab; \(umask 022; echo "\$per" >"\$cores_file"\); trap 'rm -f "\$ticket" "\$cores_file"' EXIT\n/,
 		);
 		// Before the command, after the slot and the runner user.
-		assert.ok(script.indexOf("cores_file=") > script.indexOf("in slot $slot of 5"));
+		assert.ok(script.indexOf("cores_file=") > script.indexOf("in slot $slot of 7"));
 		assert.ok(script.indexOf("cores_file=") < script.indexOf('sudo -n -u "$runner"'));
 		assert.doesNotMatch(script, /kill -0/);
 	}
@@ -435,7 +525,7 @@ test("a --front run waits ahead of every other run in the CPU lane, front runs a
 	assert.equal(spawnSync("bash", ["-n", "-c", front]).status, 0);
 	assert.equal(FRONT, "0-");
 	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
-	assert.match(front, /in slot \$slot of 5 in the CPU lane from the front of its queue \(/);
+	assert.match(front, /in slot \$slot of 7 in the CPU lane from the front of its queue \(/);
 	assert.doesNotMatch(normal.replace("kept for --front runs", ""), /queue\/0-|front/);
 	// It tries every slot, the kept one first; any other run only those before it.
 	assert.match(front, /for candidate in \$\(seq 5 -1 1\); do/);
@@ -483,7 +573,7 @@ test("a front run goes to the machine with the fewest runs in its slots and fron
 	assert.deepEqual(names([{ ...idle("node02"), busy: 5 }, { ...idle("node01"), closed: true }], true), ["node02"]);
 	assert.equal(
 		describeProbes([{ ...idle("node02"), busy: 5, waiting: 3, frontWaiting: 1 }]),
-		"node02 5/5 slots busy, 3 waiting (1 at the front), quick 0/1",
+		"node02 5/5 slots busy, 3 waiting (1 at the front), quick 0/2",
 	);
 	// The kept slot counts for front runs only: four busy runs, one of them in the kept slot, leave a run without
 	// --front one slot on node02 and none on node01; a front run one on each.
@@ -495,7 +585,7 @@ test("a front run goes to the machine with the fewest runs in its slots and fron
 	assert.deepEqual(names(kept, true), ["node01", "node02"]);
 	// A machine whose four other slots are busy has none for a run without --front, however free the kept one.
 	assert.deepEqual(names([{ ...idle("node02"), busy: 4 }, { ...idle("node01"), busy: 4, keptBusy: 1, waiting: 0 }], false), ["node01", "node02"]);
-	assert.equal(describeProbes([kept[1]]), "node02 4/5 slots busy (1 kept for --front runs), 0 waiting, quick 0/1");
+	assert.equal(describeProbes([kept[1]]), "node02 4/5 slots busy (1 kept for --front runs), 0 waiting, quick 0/2");
 });
 
 test("one test machine per node, each with its own address and so its own host key", () => {
@@ -559,13 +649,17 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 	assert.deepEqual(names([{ ...idle("node01"), setUp: false }], true), ["node01"]);
 	assert.equal(
 		describeProbes([{ ...idle("node02"), busy: 5, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
-		"node02 5/5 slots busy, 2 waiting, quick 0/1; node01 unreachable (no answer in 12 s)",
+		"node02 5/5 slots busy, 2 waiting, quick 0/2; node01 unreachable (no answer in 12 s)",
 	);
 	assert.equal(
 		describeProbes([{ ...idle("node01"), closed: true, busy: 1, arriving: 2, quickBusy: 1, quickWaiting: 2 }]),
-		"node01 closed, 1/5 slots busy, 0 waiting, 2 arriving, quick 1/1 + 2 waiting",
+		"node01 closed, 1/5 slots busy, 0 waiting, 2 arriving, quick 1/2 + 2 waiting",
 	);
-	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/5 slots busy, 0 waiting, quick 0/1");
+	assert.equal(
+		describeProbes([{ ...idle("node01"), busy: 4, extraBusy: 2 }]),
+		"node01 4/5 slots busy + 2 extra, 0 waiting, quick 0/2",
+	);
+	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/5 slots busy, 0 waiting, quick 0/2");
 });
 
 test("a quick run goes to the machine with the free quick slot, however full its CPU slots", () => {
@@ -574,6 +668,8 @@ test("a quick run goes to the machine with the free quick slot, however full its
 	const probes = [{ ...idle("node02"), quickBusy: 1 }, { ...idle("node01"), busy: 5, waiting: 4, arriving: 1 }];
 	assert.deepEqual(names(probes, true), ["node01", "node02"]);
 	assert.deepEqual(runOrder(probes, false, true), ["node01", "node02"]);
+	// A machine with runs in its extra slots has less room than one without.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4, extraBusy: 1 }, { ...idle("node01"), busy: 4 }], false), ["node01", "node02"]);
 	// Any other run ranks by the CPU lane, as before.
 	assert.deepEqual(names(probes, false), ["node02", "node01"]);
 	assert.deepEqual(runOrder(probes, false, false), ["node02", "node01"]);
@@ -633,7 +729,7 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 	// A quick run's grace starts at a free quick slot, whatever the CPU slots.
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, quickBusy: 0, quickWaiting: 0 } } }), { ...timing, quick: true });
 	assert.equal(probes[1].unreachable, "no answer within 0.15 s of node02's");
-	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, quickBusy: 1, quickWaiting: 0 } } }), { ...timing, quick: true });
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, quickBusy: 2, quickWaiting: 0 } } }), { ...timing, quick: true });
 	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
 	// A front run's grace starts at a slot free ahead of the queue, however long the queue.
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, busy: 3, frontWaiting: 0 } } }), { ...timing, front: true });
@@ -687,7 +783,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 		probe,
 		/kept_busy=0; for i in \$\(seq 5 5\); do \{ flock -n 5 \|\| kept_busy=\$\(\(kept_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"; done/,
 	);
-	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy closed=/);
+	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy closed=/);
 	// guest-setup.sh makes the kept slot's lock file root's and read-only, now and at every boot.
 	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
 	assert.match(setup, /^kept=\/run\/lock\/qorpera-test-machine-slot5\.lock$/m);
@@ -700,7 +796,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 	// The quick lane's slots and queue, which a quick run's script takes, are counted apart.
 	const quick = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", quick: true });
 	assert.match(quick, /lock="\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \}/);
-	assert.match(probe, /for i in \$\(seq 1 1\); do \{ flock -n 5 \|\| quick_busy=\$\(\(quick_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-quick-slot"\$i\.lock"; done/);
+	assert.match(probe, /for i in \$\(seq 1 2\); do \{ flock -n 5 \|\| quick_busy=\$\(\(quick_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-quick-slot"\$i\.lock"; done/);
 	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do \{ flock -n 5 \|\| quick_waiting=\$\(\(quick_waiting \+ 1\)\); \}/);
 	assert.match(probe, /echo "busy=\$busy waiting=\$waiting quick_busy=\$quick_busy quick_waiting=\$quick_waiting arriving=/);
@@ -1069,7 +1165,9 @@ test(
 		const lines = script
 			.slice(script.indexOf("mkdir -p /run/lock/"), script.indexOf("queued_s="))
 			.replaceAll("/run/lock/", `${dir}/`)
-			.replaceAll("/home/tester/arriving/", `${dir}/arriving-`);
+			.replaceAll("/home/tester/arriving/", `${dir}/arriving-`)
+			// No room for an extra slot, whatever this machine has.
+			.replaceAll("/proc/meminfo", `${dir}/no-meminfo`);
 		const session = () => {
 			mkdirSync(runDir, { recursive: true });
 			writeFileSync(join(dir, "arriving-R"), "");
@@ -1277,25 +1375,102 @@ test("a shared base copy compares contents: another checkout's same-size, same-m
 			const result = spawnSync("bash", ["-c", line]);
 			assert.equal(result.status, 0, result.stderr?.toString());
 		};
-		const upload = (root, runDir, shared) => {
-			const rsync = spawnSync("rsync", ["-a", ...baseCopyCompare(shared), `--copy-dest=${treeDir}/`, `${root}/`, `${runDir}/`]);
+		// As copyTree does, without the remote side's locks.
+		const upload = (root, runDir) => {
+			const options = copyOptions({ treeDir }).filter((option) => !option.startsWith("--rsync-path="));
+			const rsync = spawnSync("rsync", ["-a", ...options, `${root}/`, `${runDir}/`]);
 			assert.equal(rsync.status, 0, rsync.stderr?.toString());
 		};
 		mkdirSync(treeDir);
 		refresh(first, true);
 		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "aaaa\n");
 
-		upload(second, join(temporary, "run"), true);
+		upload(second, join(temporary, "run"));
 		assert.equal(readFileSync(join(temporary, "run/f.ts"), "utf8"), "bbbb\n");
 		refresh(join(temporary, "run"), true);
 		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "bbbb\n");
 
-		// Why: rsync's quick check alone takes the base copy's bytes for the other checkout's file. A checkout's own
-		// base copy keeps the quick check.
-		upload(first, join(temporary, "quick"), false);
+		// Why: rsync's quick check alone takes the base copy's bytes for the other checkout's file.
+		const quick = spawnSync("rsync", ["-a", `--copy-dest=${treeDir}/`, `${first}/`, `${join(temporary, "quick")}/`]);
+		assert.equal(quick.status, 0, quick.stderr?.toString());
 		assert.equal(readFileSync(join(temporary, "quick/f.ts"), "utf8"), "bbbb\n");
+		// Every copy compares contents, so it has the checkout's own bytes. Only the refresh of a checkout's own base copy
+		// on the machine keeps the quick check: it holds only that checkout's earlier files.
+		upload(first, join(temporary, "copied"));
+		assert.equal(readFileSync(join(temporary, "copied/f.ts"), "utf8"), "aaaa\n");
 		assert.deepEqual(baseCopyCompare(false), []);
 		assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /--checksum/);
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
+
+test("a first copy takes what it can from the base copy of the checkout that ran last, and only equal files", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const trees = join(temporary, "trees");
+		mkdirSync(trees);
+		const seedOf = (treeDir) => {
+			const result = spawnSync("bash", ["-c", seedScript(treeDir, trees)], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+			return parseSeed(result.stdout);
+		};
+		const own = join(trees, "own");
+		// No other base copy yet, and one that was never refreshed does not count.
+		assert.equal(seedOf(own), null);
+		const tree = (name, age) => {
+			mkdirSync(join(trees, name));
+			const lock = join(trees, `${name}.lock`);
+			writeFileSync(lock, "");
+			const when = new Date(Date.now() - age * 1000);
+			utimesSync(lock, when, when);
+			return join(trees, name);
+		};
+		const empty = tree("empty", 0);
+		assert.equal(seedOf(own), null);
+		// The newest by its lock file, never the checkout's own.
+		const old = tree("old", 100);
+		writeFileSync(join(old, "package.json"), "{}\n");
+		const recent = tree("recent", 50);
+		writeFileSync(join(recent, "package.json"), "{}\n");
+		assert.equal(seedOf(own), recent);
+		assert.equal(seedOf(recent), old);
+		assert.equal(seedOf(empty), recent);
+		assert.equal(parseSeed(`noise\nseed=${recent}\n`), recent);
+		// Only a plain path reaches rsync's remote command line.
+		assert.equal(parseSeed("seed=/home/x; rm -rf /\n"), null);
+
+		// Looked for in the run's other parts, then its own base copy, then the seed. Every base copy is read under a shared lock.
+		assert.deepEqual(copyOptions({ nearby: ["/runs/p1"], treeDir: "/t/own", seed: "/t/recent" }), [
+			"--checksum",
+			"--copy-dest=/runs/p1/",
+			"--copy-dest=/t/own/",
+			"--copy-dest=/t/recent/",
+			"--rsync-path=flock -s /t/own.lock flock -s /t/recent.lock rsync",
+		]);
+		assert.deepEqual(copyOptions({ treeDir: "/t/own" }), ["--checksum", "--copy-dest=/t/own/", "--rsync-path=flock -s /t/own.lock rsync"]);
+
+		// A real copy: an equal file comes from the seed, whatever its time; a same-size, same-time file with other bytes
+		// does not; a file the seed lacks is sent.
+		const source = join(temporary, "source");
+		mkdirSync(source);
+		const when = new Date("2026-10-14T21:00:00Z");
+		writeFileSync(join(source, "equal.ts"), "same\n");
+		writeFileSync(join(source, "other.ts"), "mine\n");
+		writeFileSync(join(source, "new.ts"), "new\n");
+		utimesSync(join(source, "other.ts"), when, when);
+		writeFileSync(join(recent, "equal.ts"), "same\n");
+		writeFileSync(join(recent, "other.ts"), "them\n");
+		utimesSync(join(recent, "other.ts"), when, when);
+		const run = join(temporary, "run");
+		const options = copyOptions({ treeDir: own, seed: recent }).filter((option) => !option.startsWith("--rsync-path="));
+		const rsync = spawnSync("rsync", ["-a", "--stats", ...options, `${source}/`, `${run}/`], { encoding: "utf8" });
+		assert.equal(rsync.status, 0, rsync.stderr);
+		assert.equal(readFileSync(join(run, "equal.ts"), "utf8"), "same\n");
+		assert.equal(readFileSync(join(run, "other.ts"), "utf8"), "mine\n");
+		assert.equal(readFileSync(join(run, "new.ts"), "utf8"), "new\n");
+		// Two of the three files were sent: the equal one was copied on the machine.
+		assert.match(rsync.stdout, /Number of regular files transferred: 2\b/);
 	} finally {
 		rmSync(temporary, { recursive: true, force: true });
 	}

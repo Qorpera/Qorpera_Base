@@ -27,6 +27,10 @@ machine that does not answer is skipped, so the list may name a machine before i
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
 | Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
+Real-binary tests (`QORPERA_CODEX_FENCE_BINARY`) find the pinned patched Codex at `/opt/qorpera-codex-fence/codex` on
+both machines (sha256 `1c08fd01...` in `deploy/first-node/native-codex/linux-x64-0.155.1-native-proof.json`; a file in the
+guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`.
+
 ## Node accounting
 
 Every LXD instance on a node must be a registered allocation or enrolled infrastructure,
@@ -51,6 +55,7 @@ node scripts/run-on-node.mjs changed
 node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
 node scripts/run-on-node.mjs hosted-db -- --only 810,811
+node scripts/run-on-node.mjs --quick -- node --test scripts/run-on-node.test.mjs
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts
@@ -80,8 +85,9 @@ for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
 uncommitted changes included, `node_modules` and `.git` left out. It copies them to a fresh
-directory on the VM, and only changed files cross the network (rsync `--copy-dest` against a
-per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
+directory on the VM, and only changed files cross the network: rsync compares contents and looks for each file
+in the worktree's own copy on the VM, then in the copy of the worktree that ran there last, so a new worktree's first
+copy takes about 3 s instead of about 100 s (`--checksum`, `--copy-dest`). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
 no packages), streams the output, and exits with the suite's exit code. The `test` suite is the whole
 repository's `npm test`; it first runs `npm run build:web-sdk`, because the script tests import the built
 `@qorpera/contracts` (`--build` does the same for any suite).
@@ -112,6 +118,16 @@ makes it again at boot): current clients open a slot's file for reading, while c
 for writing and so skip it. A `--front --cores` run takes more slots as they free, up to three, but only while the
 machine has at least 2 GiB available (`MemAvailable`); below that it leaves the queue until there is more. With five
 busy runs node01 had dropped to 1264 MiB.
+
+Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least
+7 GiB available, CPU pressure over the last minute (`/proc/pressure/cpu`, `some avg60`) under 20 %, and no extra slot
+taken in the last two minutes. The slots count runs while a run's CPU varies: on 7 Nov 06:25-06:45Z node01 had runs waiting
+in all 36 samples, with its CPUs idle at least 25 % in 86 % of them, because a load test in a slot mostly waits.
+
+A run you know is short takes the quick lane with `--quick`: two slots and a queue of their own, so one test file or
+a lint of a few files does not wait behind `changed` runs. `hosted-db -- --only` takes it by itself. A `--quick` run is
+stopped at 3 minutes (exit 124), so the lane stays quick. On 7 Nov 05:20-06:10Z, 26 of 61 runs in the CPU lane took under
+a minute and held 2 % of its slot time, and those waited a median of 224 s for a slot, 1079 s at most.
 
 Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
