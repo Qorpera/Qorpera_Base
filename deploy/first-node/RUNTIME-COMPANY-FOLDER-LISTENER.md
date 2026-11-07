@@ -378,17 +378,23 @@ tables and touching nothing else here.
   {name: 'events', companyLimit: 16}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
+- an idle pass spends one request on this: `qorpera_orchestrator_due_summary` (migration `20260930612000`) reads every
+  due list with limit 1, and a list it says is empty is left out while nothing has run earlier in the pass. Once a step
+  ran, every later list is asked. A drain it does not name is asked. The call reads every list, so one bad list fails it:
+  it then backs off like a drain (1 s, doubling to at most 5 minutes; a 400 pauses it for 10 minutes), and while it waits
+  a pass asks every list itself;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
 - **pause and backoff, per drain:** a 400 (an edge function without the drain) pauses that drain for 10 minutes; any
   other failure of its list, or a page whose cursor is lost or does not move forward, backs that drain off for 1 s,
-  doubling to at most 5 minutes; a full listing clears it;
+  doubling to at most 5 minutes; a full listing clears it, and so does an answer from the one call that its list is empty;
 - **backoff, per drain and company:** a company's failed request backs that company off for that drain alone, on the
   same schedule; a success clears it, and a company no longer listed is forgotten once its wait has long passed;
 - every failure goes into the pass's `RoutineWakeAdmissionErrors`, and none stops another drain, another company or
   the materializer.
 
 **Adding a drain:** the two SQL functions with their own tests; one `FOLDER_DRAINS` entry; one `CLOUD_FOLDER_DRAINS`
-entry, whose place in the list is its place in the pass (core §11 C4 puts F2's worker drain before `listen`); then
+entry, whose place in the list is its place in the pass (core §11 C4 puts F2's worker drain before `listen`); its due
+list in `qorpera_orchestrator_due_summary` (without it the drain works, and every pass lists it); then
 re-pin the Runner Orchestrator, shared execution and LXD provider artifacts (run
 `node --test scripts/package-*.test.mjs scripts/test-jitless-services.test.mjs` on a node for the values). Deploy
 order: the migration, then the edge function, then the orchestrator roll. In a rolling cut, a drain whose wakes the

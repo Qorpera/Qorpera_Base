@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, statfs } from "node:fs/promises";
 import { type CpuInfo, cpus } from "node:os";
@@ -13,6 +13,7 @@ import {
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import type { RuntimeNodeObserverRegistry } from "./runtime-node-observer.ts";
+import { timeOrderedUuid } from "./time-ordered-uuid.ts";
 
 // The first installation (deploy/first-node/NODE-OBSERVER-INSTALLATION.md) runs
 // from this fixed path, with its receipt beside it.
@@ -34,6 +35,14 @@ function officeUuid(value: unknown): string {
 		throw new Error("NODE_HEALTH_ID_INVALID");
 	return value;
 }
+/** How long the observer's health loop waits after each settled attempt. Health is diagnostics: admission,
+ * placement and release never read it, so it does not need the inventory's five seconds. A sample costs a child
+ * process (about 100 ms of CPU), one RPC and one receipt; at five seconds that was 2 % of a core per node and 200 MB
+ * of WAL a day. The latest query calls a sample stale at 60 seconds. Samples land about 21 seconds apart, so one lost
+ * report, or an observer freeze of up to about 38 seconds, stays inside that; two lost reports in a row read as stale
+ * until the next sample. */
+export const RUNTIME_NODE_HEALTH_WAIT_MS = 20_000;
+
 export interface RuntimeNodeHealth {
 	schema: "qorpera.runtime-node-health/v1";
 	nodeId: string;
@@ -317,17 +326,24 @@ export async function collectRuntimeNodeHealth(
 			return [key, sample.status === "fulfilled" ? sample.value : null];
 		}),
 	);
-	return parseRuntimeNodeHealth({
-		schema: "qorpera.runtime-node-health/v1",
+	return measuredRuntimeNodeHealth({
 		nodeId: policy.nodeId,
 		machineIdSha256: host.machineIdSha256,
 		policySha256,
 		observerPackageSha256,
 		bootId,
-		observationId: randomUUID(),
-		observedAt: new Date().toISOString(),
 		...values,
 		errors: samples.flatMap((r, index) => (r.status === "rejected" ? [ERRORS[index]!] : [])),
+	});
+}
+
+/** The report a finished measurement files: a new time-ordered id, stamped now. */
+export function measuredRuntimeNodeHealth(fields: Record<string, unknown>): RuntimeNodeHealth {
+	return parseRuntimeNodeHealth({
+		schema: "qorpera.runtime-node-health/v1",
+		...fields,
+		observationId: timeOrderedUuid(),
+		observedAt: new Date().toISOString(),
 	});
 }
 
@@ -422,7 +438,7 @@ export class RuntimeNodeHealthPublisher {
 					policySha256: this.policySha256,
 					observerPackageSha256: null,
 					bootId: null,
-					observationId: randomUUID(),
+					observationId: timeOrderedUuid(),
 					observedAt: new Date().toISOString(),
 					cpu: null,
 					memory: null,

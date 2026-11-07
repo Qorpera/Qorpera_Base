@@ -33,6 +33,7 @@ describe("the node observer's loops", () => {
 					reportExit: (state) => reported.push(`exit:${state}`),
 				},
 				1,
+				1,
 			);
 			expect(Object.values(looks).every((count) => count >= 4)).toBe(true);
 			expect(reported).toContain("inventory:ready");

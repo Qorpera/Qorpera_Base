@@ -114,6 +114,17 @@ select pg_temp.base_assert(current_setting('qorpera_test.fp_claim')::jsonb #>> '
 
 -- B's fast host is full: A's fast host and the overflow may both take it now, inside B's wait.
 select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',current_setting('qorpera_test.fp_claim')::jsonb,'SANDBOX_CAPACITY_EXHAUSTED') \g /dev/null
+-- This run is a member's post, so that wait is 2 s (20260930602000; a wake's 15 s: test 1102). The checks below need it
+-- still running, so it is held the length of a wake's, and none of them depends on how fast the database runs.
+reset role;
+select pg_temp.base_assert((select dispatch_refused_by = '64300000-0000-4000-8000-0000000000b1'
+		and dispatch_deferred_until = (select max(claim.released_at) from public.qorpera_runner_job_claims claim
+			where claim.run_id = current_setting('qorpera_test.fp_r0')::uuid) + interval '2 seconds'
+	from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.fp_r0')::uuid),
+	'A full fast host looks at a member''s post again after 2 s');
+update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp() + interval '15 seconds'
+where run_id = current_setting('qorpera_test.fp_r0')::uuid;
+set local role service_role;
 savepoint refused;
 select pg_temp.base_assert(pg_temp.fp_claim('92400000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'After the preferred node refused, the other fast host takes the run');

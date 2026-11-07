@@ -110,6 +110,10 @@ if (configuration.model_provider && evidencePath) {
 }
 const done = () => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } });
 const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null };
+// A call the model made, and the answers of the calls so far, as the fence is asked to release them.
+const call = (id, tool, args) => ({ id, method: "item/tool/call", params: { threadId, turnId, callId: id, namespace: "qorpera", tool, arguments: args } });
+const answered = [];
+const outputOf = (message) => answered.push({ kind: "function_call_output", callId: message.id, output: message.result.contentItems[0].text });
 // Auto-review (v130): a reviewer thread started while the agent's tool call is open.
 const reviewThreadId = "thread_review";
 const reviewTurnId = "turn_review";
@@ -460,6 +464,15 @@ async function handle(message) {
 			write({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId, turnId, command: "PRIVATE_APPROVAL_COMMAND" } });
 		} else if (mode === "final-send-ends-turn" || mode === "final-send-natural" || mode === "progress-send-no-end") {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "send_message", arguments: { idempotencyKey: "k1", text: "Done.", phase: mode === "progress-send-no-end" ? "progress" : "final" } } });
+		} else if (mode === "report-then-note" || mode === "final-send-then-note") {
+			// One response's two calls, the second made once the first is answered, as Codex may run them.
+			write(call("first_1", mode === "report-then-note" ? "report_work" : "send_message", mode === "report-then-note" ? { operationKey: "k1", outcome: "succeeded", summary: "Done." } : { idempotencyKey: "k1", text: "Done.", phase: "final" }));
+		} else if (mode === "report-after-note") {
+			write(call("note_1", "read_note", {}));
+		} else if (mode === "report-with-codex-answer") {
+			write(call("report_2", "report_work", { operationKey: "k1", outcome: "succeeded", summary: "Done." }));
+		} else if (mode === "report-ends-turn" || mode === "report-goes-on") {
+			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "report_work", arguments: { operationKey: "k1", outcome: "succeeded", summary: "Done." } } });
 		} else if (mode === "failed-turn") {
 			failed();
 		} else if (mode === "duplicate-id" || mode === "callback-flood") {
@@ -495,15 +508,56 @@ async function handle(message) {
 		const fenced = await fence([{ kind: "function_call_output", callId: "capture_1", output: [{ type: "input_text", text: envelope.text }, { type: "input_image", sha256 }] }]);
 		writeFileSync(evidencePath, JSON.stringify({ imageBytes: pixels.length, sha256, fenced }));
 		done();
+	} else if (message.id === "first_1") {
+		outputOf(message);
+		write(call("note_1", "read_note", {}));
+	} else if (message.id === "note_1" && mode === "final-send-then-note") {
+		outputOf(message);
+		sendEvidence.pending = fence(answered);
+		sendEvidence.fenced = await sendEvidence.pending;
+	} else if (message.id === "note_1" && mode === "report-then-note") {
+		// The report's response: the turn goes on, and a later response of one other call does not end it either.
+		outputOf(message);
+		await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		write(call("note_2", "read_note", {}));
+	} else if (message.id === "note_2") {
+		outputOf(message);
+		await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));
+		if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+		done();
+	} else if (message.id === "note_1" && mode === "report-after-note") {
+		// An earlier response's call is no sibling: the report alone in its own response ends the turn.
+		outputOf(message);
+		await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		sendEvidence.earlyInterrupt = sendEvidence.interrupt;
+		write(call("report_1", "report_work", { operationKey: "k1", outcome: "succeeded", summary: "Done." }));
+	} else if (message.id === "report_2") {
+		// The same response's other call named a tool Codex does not have: Codex answered it itself, and only the fence
+		// carries that answer.
+		outputOf(message);
+		answered.push({ kind: "function_call_output", callId: "codex_1", output: "unsupported call: qorpera.made_up" });
+		await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));
+		if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+		done();
+	} else if (message.id === "report_1") {
+		outputOf(message);
+		sendEvidence.pending = fence(answered);
+		sendEvidence.fenced = await sendEvidence.pending;
 	} else if (message.id === "public_send") {
 		sendEvidence.reply = message;
 		sendEvidence.pending = fence([{ kind: "function_call_output", callId: "send_1", output: message.result.contentItems[0].text }]);
 		sendEvidence.fenced = await sendEvidence.pending;
-		if (mode !== "final-send-ends-turn") {
+		if (mode !== "final-send-ends-turn" && mode !== "report-ends-turn") {
 			// Give a (wrong) interrupt time to arrive before completing naturally.
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			writeFileSync(evidencePath, JSON.stringify(sendEvidence));
-			if (mode === "progress-send-no-end" && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+			if ((mode === "progress-send-no-end" || mode === "report-goes-on") && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
 	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
@@ -541,7 +595,7 @@ async function handle(message) {
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });
-		if (mode === "final-send-ends-turn") {
+		if (["final-send-ends-turn", "report-ends-turn", "report-after-note", "final-send-then-note"].includes(mode)) {
 			// The interrupt arrives while the fence reply is still pending, as it does live.
 			sendEvidence.fenced = await sendEvidence.pending;
 			writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));

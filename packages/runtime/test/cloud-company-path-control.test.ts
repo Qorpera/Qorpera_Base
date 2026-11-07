@@ -69,6 +69,7 @@ describe("Company File bounded control transport", () => {
 		"qorpera_read_company_run_context",
 		"qorpera_record_native_context_view",
 		"qorpera_fence_native_context",
+		"qorpera_check_native_run",
 		"qorpera_native_presence_register",
 		"qorpera_company_presence_scope",
 		"qorpera_native_presence_subject",

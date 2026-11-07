@@ -916,6 +916,20 @@ it("ends the turn after the fence that follows a confirmed final send", async ()
 		errorCategory: null,
 	});
 });
+it("ends the turn after a final send even when its response held another call (contract 7.1)", async () => {
+	const note: CloudNativeTool = {
+		name: "read_note",
+		source: "company_file",
+		description: "Synthetic note.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		parseArguments: () => ({}),
+		execute: async () => ({ kind: "text", value: "PUBLIC_NOTE" }),
+	};
+	const { result, evidence } = run("final-send-then-note", { tools: [publicSendTool(), note] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+});
 it("still accepts a natural completion after requesting the turn end", async () => {
 	const { result, evidence } = run("final-send-natural", { tools: [publicSendTool()] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });

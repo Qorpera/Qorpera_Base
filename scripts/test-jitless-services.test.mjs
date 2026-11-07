@@ -103,10 +103,12 @@ for (const forbidGlobalFetch of [false, true]) test(`jitless packaged services s
 			assert.equal(request.headers.apikey, "synthetic-publishable");
 			assert.match(request.headers.authorization, /^Bearer [A-Za-z0-9_-]{43}$/);
 			actions.push(body.action);
-			assert(["rotate_control", "routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due",
+			assert(["rotate_control", "due_summary", "routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due",
 				"reconcile", "retained", "claim"].includes(body.action));
-			const value = ["routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due"].includes(body.action)
-				? { items: [], has_more: false } : body.action === "retained" ? [] : null;
+			// An answer that names no list: the pass still asks every list, so they stay covered here.
+			const value = body.action === "due_summary" ? {}
+				: ["routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due"].includes(body.action)
+					? { items: [], has_more: false } : body.action === "retained" ? [] : null;
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ value }));
 		});
 		const authorityPort = await listen(authority);
@@ -123,7 +125,7 @@ for (const forbidGlobalFetch of [false, true]) test(`jitless packaged services s
 			assert.equal(orchestrator.process.exitCode, null, orchestrator.output());
 			return actions.filter((action) => action === "claim").length >= 2;
 		}, "orchestrator did not complete two polling cycles");
-		assert(actions.includes("rotate_control") && actions.includes("retained") && actions.includes("reconcile"));
+		assert(actions.includes("rotate_control") && actions.includes("due_summary") && actions.includes("retained") && actions.includes("reconcile"));
 		await terminate(orchestrator);
 		await terminate(provider);
 		const state = JSON.parse(await readFile(join(root, "orchestrator-control.json"), "utf8"));

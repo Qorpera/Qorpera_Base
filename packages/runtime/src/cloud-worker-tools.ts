@@ -13,8 +13,10 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
+	type CloudToolContent,
 	type CloudToolContext,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
@@ -30,8 +32,6 @@ const TODO_STATES = ["open", "blocked", "done", "cancelled"] as const;
 const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] as const;
 /** A listing cursor: the id of the last item shown before (keyset on creation order). */
 export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** Room for the result fence's provenance around a page, as read_context reserves. */
-const PAGE_FENCE_RESERVE_BYTES = 3072;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
 	if (
@@ -89,7 +89,7 @@ function listing(a: Record<string, unknown>, states: readonly string[]): Record<
 export function fitsOneResult(text: string): boolean {
 	return (
 		Buffer.byteLength(JSON.stringify(text).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <=
-		MAX_CLOUD_TOOL_RESULT_BYTES - PAGE_FENCE_RESERVE_BYTES
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES
 	);
 }
 function paths(value: unknown, max: number, maxBytes: number): string[] {
@@ -167,6 +167,17 @@ function folderWorkerDescription(description: string): string {
 			"status lists your workers, newest first, as many as fit one result, each with the start of its summary: without todoKey, those of open todos and any that changed in the last week. Filter it with todoKey, state",
 			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary. Filter it with state",
 		);
+}
+
+/** Whether report_work's answer, first made or replayed from its receipt, says the folder saved the report. */
+function reportSaved(content: CloudToolContent): boolean {
+	if (content.kind !== "text") return false;
+	try {
+		const answer = JSON.parse(content.value) as { schema?: unknown; outcome?: unknown };
+		return answer.schema === "qorpera.worker-report-receipt/v1" && answer.outcome === "saved";
+	} catch {
+		return false;
+	}
 }
 
 export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
@@ -256,7 +267,10 @@ export function cloudWorkerTools(
 			async execute(value, context) {
 				assertContext(context);
 				// A worker reports in its results file; the folder core decides the save.
-				return folderWorkers.report(value as unknown as CloudFolderWorkerReport, context);
+				const content = await folderWorkers.report(value as unknown as CloudFolderWorkerReport, context);
+				// A saved report is the worker's last act: its answer says "stop now", and nobody reads what the model writes
+				// next. A report that was not saved says to report again, so that turn goes on.
+				return reportSaved(content) ? { ...content, completesTurn: true } : content;
 			},
 		};
 		return [report];

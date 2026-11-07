@@ -4,7 +4,7 @@ import { withAbortScope } from "./abort-scope.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { RuntimeNodeAgentExitPublisher } from "./runtime-node-agent-exit.ts";
-import { RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
+import { RUNTIME_NODE_HEALTH_WAIT_MS, RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import {
 	RuntimeNodeInventoryObserver,
@@ -168,8 +168,9 @@ export async function runRuntimeNodeObserver(
 	);
 }
 
-/** The observer's three loops, one look every `pauseMs` each. `signal` lasts as long as the process, so each look runs
- * under a scope of its own (abort-scope.ts). */
+/** The observer's three loops: inventory and agent exit one look every `pauseMs` each (placement reads them), health
+ * every `healthPauseMs` (RUNTIME_NODE_HEALTH_WAIT_MS: nothing gates on it). `signal` lasts as long as the process, so
+ * each look runs under a scope of its own (abort-scope.ts). */
 export async function runRuntimeNodeObserverLoops(
 	signal: AbortSignal,
 	looks: {
@@ -183,6 +184,7 @@ export async function runRuntimeNodeObserverLoops(
 		reportExit: (state: "healthy" | "unhealthy" | "unconfirmed") => void;
 	},
 	pauseMs = 5000,
+	healthPauseMs = RUNTIME_NODE_HEALTH_WAIT_MS,
 ): Promise<void> {
 	const { report, reportHealth, reportExit } = reports;
 	const inventoryLoop = async () => {
@@ -203,7 +205,7 @@ export async function runRuntimeNodeObserverLoops(
 			} catch {
 				if (!signal.aborted) reportHealth("unconfirmed");
 			}
-			if (!signal.aborted) await delay(pauseMs, undefined, { signal }).catch(() => {});
+			if (!signal.aborted) await delay(healthPauseMs, undefined, { signal }).catch(() => {});
 		}
 	};
 	const exitLoop = async () => {

@@ -288,8 +288,8 @@ export const AGENTS: Record<string, string> = {
 		"Modelkontoen skal forbindes igen. Arbejdsområdet er gemt; en opfølgning fortsætter den, når kontoen er forbundet.",
 	"No computer could be started for the session. The workspace is kept; a follow-up tries again.":
 		"Der kunne ikke startes en computer til sessionen. Arbejdsområdet er gemt; en opfølgning prøver igen.",
-	"One of the session's saves did not finish, and a person must check it first. The workspace is kept; a follow-up continues it after that.":
-		"Noget af det, sessionen gemte, blev ikke færdigt, og en person skal tjekke det først. Arbejdsområdet er gemt; en opfølgning fortsætter den derefter.",
+	"The session ended before all of its work was saved. The workspace is kept; a follow-up continues it.":
+		"Sessionen sluttede, før alt dens arbejde var gemt. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.":
 		"Et af sessionens trin fik ikke svar i tide. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session took too long and was stopped. The workspace is kept; a follow-up continues it.":

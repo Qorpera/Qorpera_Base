@@ -15,6 +15,8 @@ const installer=root+'/package/qorpera-node-observer-install.cjs',specPath=root+
 const installedKey='/etc/qorpera/node-observer.key',checks=[],requests=[],observations=[],errors=[],lxdReads=[],healthObservations=[];
 let registry,lxd,broken=false,stall=false,healthStall=false,collectionFault=false,healthReplies=0;
 const check=name=>{checks.push(name);console.log('PASS '+name);};
+// The health loop waits 20 seconds after each settled attempt (RUNTIME_NODE_HEALTH_WAIT_MS).
+const healthWait=40000;
 async function until(fn,label,ms=20000){const start=performance.now();while(!await fn()){assert(performance.now()-start<ms,label+' '+exec('/usr/bin/systemctl',['status',unit,'--no-pager']).stdout+' '+exec('/usr/bin/journalctl',['-u',unit,'--no-pager','-n','10']).stdout);await delay(50);}}
 function install(stage='--apply',success=true,code){const r=exec('/usr/bin/node',['--jitless','--disable-proto=throw','--disallow-code-generation-from-strings',installer,stage,'--spec',specPath],60000);assert.equal(r.status,success?0:1,JSON.stringify({error:String(r.error),signal:r.signal})+' '+r.stdout+' '+r.stderr);if(code)assert(r.stderr.includes(code),r.stderr);return r;}
 const exists=async p=>!!await lstat(p).catch(e=>{if(e.code==='ENOENT')return undefined;throw e;});
@@ -52,6 +54,13 @@ try {
 			healthObservations.push(o);if(healthStall)return;
 			healthReplies++;value={nodeId:o.nodeId,observationId:o.observationId,observedAt:o.observedAt};
 		}
+		else if(request.url==='/rest/v1/rpc/qorpera_observe_runtime_node_agent_exit'){
+			// This guest has no agent exit, so the observer reports an unhealthy one with no check.
+			const o=args.p_observation;assert.equal(o.schema,'qorpera.runtime-node-agent-exit/v1');assert.equal(o.nodeId,policy.nodeId);
+			assert.equal(o.machineIdSha256,policy.host.machineIdSha256);assert.equal(o.policySha256,spec.policySha256);
+			assert.equal(o.healthy,false);assert.equal(o.checkedAt,null);
+			value={nodeId:o.nodeId,healthy:o.healthy};
+		}
 		else {
 			assert(['/rest/v1/rpc/qorpera_observe_runtime_node','/rest/v1/rpc/qorpera_observe_runtime_node_inventory'].includes(request.url));const o=args.p_observation;
 			assert.equal(o.nodeId,policy.nodeId);assert.equal(o.machineIdSha256,policy.host.machineIdSha256);assert(o.cpuMillis>=1000&&o.memoryBytes>0);assert(Date.now()-Date.parse(o.observedAt)<15000);
@@ -82,15 +91,15 @@ try {
 	const status=await readFile(`/proc/${pid}/status`,'utf8');for(const field of ['CapInh','CapPrm','CapEff','CapBnd','CapAmb'])assert.match(status,new RegExp('^'+field+':\\s+0+$','m'));assert.match(status,/^NoNewPrivs:\s+1$/m);assert.equal(await readlink(`/proc/${pid}/ns/mnt`),await readlink('/proc/1/ns/mnt'));assert(observations.every(o=>o.state==='ready'));check('actual unprivileged systemd observer publishes complete inventory over trusted TLS');
 	await until(()=>healthReplies>0,'actual kernel health publication');check('bounded unprivileged health child reports CPU memory root disk and actual network counters with installed package provenance');
 	healthStall=true;const healthStart=healthObservations.length,inventoryStart=observations.length;
-	await until(()=>healthObservations.length>healthStart&&observations.length>inventoryStart+1,'inventory continues during diagnostic export stall');
-	healthStall=false;const oldReplies=healthReplies;await until(()=>healthReplies>oldReplies,'health export recovers');check('stalled diagnostic TLS export does not block inventory publication');
+	await until(()=>healthObservations.length>healthStart&&observations.length>inventoryStart+1,'inventory continues during diagnostic export stall',healthWait);
+	healthStall=false;const oldReplies=healthReplies;await until(()=>healthReplies>oldReplies,'health export recovers',healthWait);check('stalled diagnostic TLS export does not block inventory publication');
 	// Root-only fault injection inside this disposable guest. The running main
 	// process stays intact while its next child is deliberately nonresponsive.
 	const executable=await readFile(output+'/qorpera-node-observer.cjs');collectionFault=true;
 	try {await writeFile(output+'/qorpera-node-observer.cjs','setInterval(()=>{},1000);');const start=observations.length;
-		await until(()=>healthObservations.some(o=>o.bootId===null)&&observations.length>start,'hung child bounded without blocking inventory');}
+		await until(()=>healthObservations.some(o=>o.bootId===null)&&observations.length>start,'hung child bounded without blocking inventory',healthWait);}
 	finally {await writeFile(output+'/qorpera-node-observer.cjs',executable);}
-	await until(()=>healthObservations.at(-1)?.bootId===awaitBootId,'health collection recovery');collectionFault=false;
+	await until(()=>healthObservations.at(-1)?.bootId===awaitBootId,'health collection recovery',healthWait);collectionFault=false;
 	assert.deepEqual(await snapshot(),first);check('hung diagnostic child is killed and reaped before recovery while inventory remains independent');
 	install('--apply',false,'NODE_OBSERVER_INSTALL_SERVICE_NOT_STOPPED');assert.deepEqual(await snapshot(),first);check('running observer blocks installation');
 	const before=observations.length;ctl('restart',unit);await until(()=>observations.length>before,'restart polling');const replacement=Number(prop('MainPID'));assert.notEqual(replacement,pid);assert.deepEqual(await snapshot(),first);check('ordinary restart preserves credentials and package inodes');
