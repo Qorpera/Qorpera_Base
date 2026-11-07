@@ -173,6 +173,14 @@ export async function startCloudNativeResultFence(options: {
 		if (!context) throw new Error("Native context composition unavailable");
 		track(request.requestId);
 		context.assertRequest(request);
+		// A prewarm is declined: the socket closes with no answer, which Codex takes as a prewarm that failed
+		// (session_startup_prewarm.rs: Unavailable, the turn opens its own connection), so no request leaves. A thread's
+		// first turn waits for its prewarm, a generate=false request of the tools and base instructions alone: 1.36 s at
+		// p50 on 126 runs (7 Nov 2026), and its first turn still read nothing from the cache in 108 of them.
+		if (request.purpose === "prewarm") {
+			socket.end();
+			return;
+		}
 		void Promise.resolve(context.compose?.(request, options.signal))
 			.then((composition) => {
 				if (stopped || socket.destroyed || options.signal.aborted) return;
