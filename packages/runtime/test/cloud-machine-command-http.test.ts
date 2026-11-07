@@ -389,7 +389,7 @@ describe("a machine wake's route", () => {
 	});
 
 	it("an executor's ingress and peer listener route a wake to the router, the peer listener never forwarding", async () => {
-		const wake = vi.fn(async () => true);
+		const wake = vi.fn(async (_request: unknown, _signal: AbortSignal, _localOnly?: boolean) => true);
 		const execute = vi.fn();
 		const fake = { wake, execute } as unknown as MachineCommandRouter;
 		const asked = request();
