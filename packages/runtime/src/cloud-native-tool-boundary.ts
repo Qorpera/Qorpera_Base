@@ -223,7 +223,8 @@ export interface CloudDynamicToolResponse {
 	contentItems: [{ type: "inputText"; text: string }, ...Array<{ type: "inputImage"; imageUrl: string }>];
 	success: boolean;
 	/** Host-only signal to the native session, never written to the provider: the turn ends at the fence after this
-	 * result. `alone`: only when this was the model response's one call, so no other answer goes unread. */
+	 * result. `alone`: only when this was the model response's one call, counting the calls Codex answers itself, so no
+	 * other answer goes unread. */
 	completesTurn?: true | "alone";
 }
 

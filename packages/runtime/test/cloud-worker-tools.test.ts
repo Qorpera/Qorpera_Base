@@ -578,7 +578,12 @@ describe("agent todo and worker tools", () => {
 
 	it("takes a saved report through the session to the interrupt, and a report that was not saved past it", async () => {
 		const session = async (
-			mode: "report-ends-turn" | "report-goes-on" | "report-then-note" | "report-after-note",
+			mode:
+				| "report-ends-turn"
+				| "report-goes-on"
+				| "report-then-note"
+				| "report-after-note"
+				| "report-with-codex-answer",
 			answer: { kind: "text"; value: string },
 			folderReports?: CloudNativeFolderReports,
 		) => {
@@ -627,6 +632,10 @@ describe("agent todo and worker tools", () => {
 		const sibling = await session("report-then-note", savedReport);
 		expect(sibling.result).toMatchObject({ toolCalls: 3, fencedRequests: 3 });
 		expect(sibling.recorded.interrupt).toBeNull();
+		// A call Codex answered itself (a tool it does not have) counts as well: only the fence shows it.
+		const codexAnswered = await session("report-with-codex-answer", savedReport);
+		expect(codexAnswered.result).toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+		expect(codexAnswered.recorded.interrupt).toBeNull();
 		// A call in an earlier response is no sibling.
 		const after = await session("report-after-note", savedReport);
 		expect(after.result).toMatchObject({ toolCalls: 2, fencedRequests: 3 });

@@ -469,6 +469,8 @@ async function handle(message) {
 			write(call("first_1", mode === "report-then-note" ? "report_work" : "send_message", mode === "report-then-note" ? { operationKey: "k1", outcome: "succeeded", summary: "Done." } : { idempotencyKey: "k1", text: "Done.", phase: "final" }));
 		} else if (mode === "report-after-note") {
 			write(call("note_1", "read_note", {}));
+		} else if (mode === "report-with-codex-answer") {
+			write(call("report_2", "report_work", { operationKey: "k1", outcome: "succeeded", summary: "Done." }));
 		} else if (mode === "report-ends-turn" || mode === "report-goes-on") {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "report_work", arguments: { operationKey: "k1", outcome: "succeeded", summary: "Done." } } });
 		} else if (mode === "failed-turn") {
@@ -533,6 +535,16 @@ async function handle(message) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		sendEvidence.earlyInterrupt = sendEvidence.interrupt;
 		write(call("report_1", "report_work", { operationKey: "k1", outcome: "succeeded", summary: "Done." }));
+	} else if (message.id === "report_2") {
+		// The same response's other call named a tool Codex does not have: Codex answered it itself, and only the fence
+		// carries that answer.
+		outputOf(message);
+		answered.push({ kind: "function_call_output", callId: "codex_1", output: "unsupported call: qorpera.made_up" });
+		await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));
+		if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+		done();
 	} else if (message.id === "report_1") {
 		outputOf(message);
 		sendEvidence.pending = fence(answered);

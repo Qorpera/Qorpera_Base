@@ -609,8 +609,8 @@ class CodexBoundaryRpc {
 	readonly #turnEndCallIds = new Set<string>();
 	/** Calls that end the turn only if their model response made no other call. */
 	readonly #turnEndAloneCallIds = new Set<string>();
-	/** The calls made since the agent's last model request: one model response's. */
-	#responseCalls: string[] = [];
+	/** The call ids of every tool output the agent's model requests have carried so far. */
+	readonly #fencedOutputIds = new Set<string>();
 	/** Auto-review (v130): the reviewer's own short conversations, one fresh thread
 	 * per review, in this same app-server (a second process on the same login could
 	 * race the first on token refresh). Their only tool records the verdict; their
@@ -1350,10 +1350,12 @@ class CodexBoundaryRpc {
 			this.#modelRequestCount++;
 			if (this.#modelRequests.size > TRACKED_REQUESTS)
 				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
-			// Codex asks for the next request once every call of the response is answered, so this is the whole response.
-			const calls = this.#responseCalls;
-			this.#responseCalls = [];
-			if (calls.length === 1 && this.#turnEndAloneCallIds.has(calls[0])) this.#turnEndCallIds.add(calls[0]);
+			// A request carries every tool output of its history, Codex's own answers too (such as an unknown tool's
+			// "unsupported call", which never reaches this host), and comes once all of a response's calls are answered. So the
+			// outputs no earlier request carried are the last model response's calls, all of them.
+			const fresh = request.outputs.map((output) => output.callId).filter((id) => !this.#fencedOutputIds.has(id));
+			for (const id of fresh) this.#fencedOutputIds.add(id);
+			if (fresh.length === 1 && this.#turnEndAloneCallIds.has(fresh[0])) this.#turnEndCallIds.add(fresh[0]);
 		}
 		this.#observeFence(request);
 		// Contract 7.1: the final send closes the turn, and a worker's saved report is
@@ -1608,7 +1610,6 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			this.#toolCalls++;
 			this.#activeCalls++;
-			this.#responseCalls.push(callId);
 			const boundary = this.#boundary;
 			if (!boundary) throw new Error("Native tool binding failed");
 			void boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
