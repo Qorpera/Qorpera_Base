@@ -942,8 +942,10 @@ subscriptions, which self-limit.
 > - 50,000 Company File entries per company (the tree's storage bound). The
 >   standing counts (32 routines, 64 open todos and 4 active workers per agent,
 >   40 sidebar sections) went in bundle v95;
-> - no stall detection: a run whose harness hangs without crashing runs until
->   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
+> - a run whose harness hangs without crashing runs until Stop or until 30
+>   minutes pass with no progress, then it ends as a worker's Stop ends it,
+>   unless it has a reason to be quiet (2026-11-07 amendment, Jonas: "Yes,
+>   start there"; migration 20260930618000). It no longer keeps a company,
 >   coding or agent's machine awake: a run with no progress for 15 minutes
 >   is idle, one that hangs inside a model request two hours after the
 >   request's context view (changed in place, by the 2026-10-03 amendment
@@ -951,7 +953,7 @@ subscriptions, which self-limit.
 >   the coordinator). A run with no
 >   progress for 15 minutes, also one inside a model request, is shown as one
 >   with no progress, and a member is told (2026-10-03, session-buildup audit
->   gap 4); nothing stops it;
+>   gap 4); that notice stops nothing;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;

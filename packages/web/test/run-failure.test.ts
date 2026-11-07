@@ -77,6 +77,12 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/^The run ended, but one of its saves did not finish\./,
 		],
+		// Qorpera ended a run that went silent (20260930618000).
+		[
+			"Runner job made no progress for 30 minutes and was stopped; durable attempt output requires review",
+			"cancelled",
+			/^The run went quiet for 30 minutes, so Qorpera stopped it\. Send a message to carry on\.$/,
+		],
 		// A step cancelled from Qorpera's side was not refused (WB-001, 28 October: the database stopped answering).
 		[
 			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]; durable attempt output requires review",

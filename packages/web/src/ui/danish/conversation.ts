@@ -194,6 +194,10 @@ export const CONVERSATION: Record<string, string> = {
 	"The run could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions.":
 		"Kørslen kunne ikke hente det login, der betaler for den. Det medlem, der ejer loginnet, kan tjekke det under Indstillinger → AI-abonnementer.",
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
+	"The run went quiet for 30 minutes, so Qorpera stopped it. Send a message to carry on.":
+		"Kørslen var stille i 30 minutter, så Qorpera stoppede den. Send en besked for at fortsætte.",
+	"The session went quiet for 30 minutes, so Qorpera stopped it. The workspace is kept; a follow-up continues it.":
+		"Sessionen var stille i 30 minutter, så Qorpera stoppede den. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
 	"The run ended, but one of its saves did not finish. A person must check it before the run can be tried again.":

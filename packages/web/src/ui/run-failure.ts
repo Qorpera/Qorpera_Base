@@ -19,6 +19,7 @@ export type RunFailureKind =
 	| "timeout"
 	| "bridge"
 	| "cancelled"
+	| "stalled"
 	| "other";
 
 export function classifyRunFailure(
@@ -37,6 +38,8 @@ export function classifyRunFailure(
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
 	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
+	// Qorpera ended a run that went silent (20260930618000); a member's own Stop reads as "cancelled" below.
+	if (/made no progress for \d+ minutes/i.test(lastError ?? "")) return "stalled";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
 	// Most name Qorpera's own machinery, not a member's account, so the words inside a code never decide the class: the
 	// step stays "bridge", as it was before the code. Only its category can (the part after the colon, from the runtime's
@@ -114,6 +117,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	timeout: phrase("The run took too long and was stopped."),
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
 	cancelled: phrase("The run was stopped before it finished."),
+	stalled: phrase("The run went quiet for 30 minutes, so Qorpera stopped it. Send a message to carry on."),
 	other: phrase("The run stopped because of an internal error."),
 };
 
@@ -213,6 +217,9 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	timeout: phrase("The session took too long and was stopped. The workspace is kept; a follow-up continues it."),
 	bridge: phrase(
 		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+	),
+	stalled: phrase(
+		"The session went quiet for 30 minutes, so Qorpera stopped it. The workspace is kept; a follow-up continues it.",
 	),
 	cancelled: phrase("The session was stopped before it finished. The workspace is kept; a follow-up continues it."),
 	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
