@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { RuntimeNodeAgentExitPublisher } from "./runtime-node-agent-exit.ts";
-import { RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
+import { RUNTIME_NODE_HEALTH_WAIT_MS, RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import {
 	RuntimeNodeInventoryObserver,
@@ -174,7 +174,7 @@ export async function runRuntimeNodeObserver(
 			} catch {
 				if (!signal.aborted) reportHealth("unconfirmed");
 			}
-			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+			if (!signal.aborted) await delay(RUNTIME_NODE_HEALTH_WAIT_MS, undefined, { signal }).catch(() => {});
 		}
 	};
 	const exitLoop = async () => {

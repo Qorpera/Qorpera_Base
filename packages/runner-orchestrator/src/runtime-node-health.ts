@@ -34,6 +34,13 @@ function officeUuid(value: unknown): string {
 		throw new Error("NODE_HEALTH_ID_INVALID");
 	return value;
 }
+/** How long the observer's health loop waits after each settled attempt. Health is diagnostics: admission,
+ * placement and release never read it, so it does not need the inventory's five seconds. A sample costs a child
+ * process (about 100 ms of CPU), one RPC and one receipt, so five seconds spent 2 % of a core per node and 200 MB
+ * of WAL a day. The latest query calls a sample stale at 60 seconds: this wait, the child's five-second deadline,
+ * its one-second CPU sample and the RPC's five-second timeout must stay well under that. */
+export const RUNTIME_NODE_HEALTH_WAIT_MS = 30_000;
+
 export interface RuntimeNodeHealth {
 	schema: "qorpera.runtime-node-health/v1";
 	nodeId: string;

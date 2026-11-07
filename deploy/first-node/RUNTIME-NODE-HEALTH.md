@@ -40,7 +40,10 @@ or measurements. A five-second child deadline sends SIGKILL; ownership is retain
 until the child closes, preventing overlapping unreaped probes. A kernel-blocked
 child can remain pending after that signal. Inventory polling uses its own loop
 and HTTP adapter, so pending collection or export does not occupy admission's
-inventory publisher. Both loops wait five seconds after each settled attempt.
+inventory publisher. The inventory loop waits five seconds after each settled
+attempt. The health loop waits 30 seconds (`RUNTIME_NODE_HEALTH_WAIT_MS`): nothing
+gates on health, and the slowest settled attempt still lands inside the 60-second
+age bound below.
 
 The registry retains immutable original observations, receipt times, policy and
 package hashes. Exact replay returns the original receipt. Conflicting replay is

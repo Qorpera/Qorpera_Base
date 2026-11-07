@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	collectRuntimeNodeHealthProcess,
 	parseRuntimeNodeHealth,
+	RUNTIME_NODE_HEALTH_WAIT_MS,
 	type RuntimeNodeHealth,
 	RuntimeNodeHealthPublisher,
 	runtimeNodeCpuUsage,
@@ -109,6 +110,16 @@ describe("bounded node health evidence", () => {
 			{ ...partial, errors: ["ROOT_FILESYSTEM_UNAVAILABLE", "ROOT_FILESYSTEM_UNAVAILABLE"] },
 		])
 			expect(() => parseRuntimeNodeHealth(invalid)).toThrow();
+	});
+	it("waits 30 seconds between health samples, well inside the 60-second stale bound", () => {
+		expect(RUNTIME_NODE_HEALTH_WAIT_MS).toBe(30_000);
+		// Wait + the child's deadline + the RPC's timeout: even the slowest settled attempt leaves a margin.
+		expect(RUNTIME_NODE_HEALTH_WAIT_MS + 5_000 + 5_000).toBeLessThan(60_000);
+		const service = readFileSync(new URL("../src/runtime-node-observer-service.ts", import.meta.url), "utf8");
+		expect(service.match(/const healthLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(RUNTIME_NODE_HEALTH_WAIT_MS,");
+		// The loops placement and admission read keep their five seconds.
+		expect(service.match(/const inventoryLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
+		expect(service.match(/const exitLoop[\s\S]*?\n\t};/)?.[0]).toContain("delay(5000,");
 	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();
