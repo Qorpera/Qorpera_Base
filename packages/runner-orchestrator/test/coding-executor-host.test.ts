@@ -53,6 +53,7 @@ import {
 import type { CodingSecretMask } from "../src/coding-secret-mask.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient, LxdInstanceRecord } from "../src/lxd-client.ts";
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const mocked = vi.hoisted(() => ({
@@ -1796,6 +1797,20 @@ describe("a session between its turns", () => {
 			},
 		]);
 	});
+	it("takes a session off without hanging anything off the signal that lasts as long as its process (abort-scope.ts)", async () => {
+		const f = await fixture();
+		await released(f);
+		const lasting = new AbortController();
+		const watch = watchAbortSignalAny();
+		try {
+			await f.host.keep(lasting.signal);
+			expect(await f.host.settled()).toEqual([takenOff(f)]);
+			expect(watch.made()).toBeGreaterThan(0);
+			expect(watch.on(lasting.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
+	});
 	it("is taken off once released: running commands cancelled, stopped in the guest, unplugged under detach custody", async () => {
 		const f = await fixture();
 		const command = randomUUID();
@@ -2218,6 +2233,25 @@ describe("housekeeping of a member's machines", () => {
 		vi.mocked(f.client.replaceInstanceDevices).mockClear();
 		f.call.mockClear();
 	}
+	it("hangs nothing off the signal that lasts as long as its process, keeping or housekeeping (abort-scope.ts)", async () => {
+		const f = await fixture();
+		const lasting = new AbortController();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const watch = watchAbortSignalAny();
+		try {
+			expect(await f.host.keep(lasting.signal)).toEqual([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			]);
+			await f.host.housekeep(lasting.signal);
+			expect(watch.made()).toBeGreaterThan(0);
+			expect(watch.on(lasting.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
+	});
+
 	it("does nothing for machines not due", async () => {
 		const f = await fixture();
 		f.state.listed = [f.entry(), f.entry({ machineId: randomUUID(), live: true })];

@@ -17,6 +17,7 @@ import {
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { markCloudVaultDatabaseFailure } from "@qorpera/runtime/cloud-vault-database-failure";
 import { afterEach, expect, it, vi } from "vitest";
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -575,6 +576,63 @@ it("fetches the Digital Post of each served company that has a sync due, on its 
 	principal.digitalPostSyncsDue.mockResolvedValueOnce({ schema: "other", companyIds: [] });
 	await expect(companies.syncDigitalPost()).rejects.toThrow("Shared vault Digital Post syncs are invalid");
 	await Promise.all([without.close(), companies.close()]);
+});
+
+it("hangs nothing off the vault's closing signal, however many passes run (abort-scope.ts)", async () => {
+	const one = randomUUID();
+	const { principal } = principalFixture({
+		registered: [one],
+		due: [one],
+		bankDue: [one],
+		digitalPostDue: [one],
+	});
+	principal.authority.mockImplementation(
+		() =>
+			({
+				claimConnectorTokenRevocations: vi.fn(async (_limit: number, signal: AbortSignal) => {
+					AbortSignal.any([signal, AbortSignal.timeout(60000)]);
+					return { schema: "qorpera.connector-token-revocation-claim/v1", revocations: [] };
+				}),
+				completeConnectorTokenRevocation: vi.fn(),
+				claimEventVerifications: vi.fn(async () => ({
+					schema: "qorpera.event-verification-claim/v1",
+					deliveries: [],
+					refused: 0,
+				})),
+				finishEventVerification: vi.fn(),
+				claimBankSync: vi.fn(async () => null),
+				claimDigitalPostSync: vi.fn(async () => null),
+			}) as unknown as PostgresCloudSecretBrokerAuthority,
+	);
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke: vi.fn() },
+		bank: { balances: vi.fn(), transactions: vi.fn() },
+		digitalPost: { available: vi.fn(), letter: vi.fn(), receipt: vi.fn() },
+	});
+	await companies.refresh(new AbortController().signal);
+	vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const watch = watchAbortSignalAny();
+	try {
+		const rounds = async (count: number) => {
+			for (let round = 0; round < count; round++) {
+				await companies.revokeTokens();
+				await companies.verifyEvents();
+				await companies.syncBanks();
+				await companies.syncDigitalPost();
+			}
+			return watch.most();
+		};
+		const early = await rounds(2);
+		expect(watch.made()).toBeGreaterThan(0);
+		// A signal the vault keeps for its whole life would gather one more each round.
+		expect(await rounds(10)).toBe(early);
+	} finally {
+		watch.restore();
+		await companies.close();
+	}
 });
 
 it("runs every served company's upkeep pass in turn, and its loops until closed", async () => {
