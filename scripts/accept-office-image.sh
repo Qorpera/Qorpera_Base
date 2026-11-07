@@ -643,7 +643,9 @@ jq -e --arg receipt "$receipt" --arg manifest "$manifest" --arg uuid "$uuid" --a
 	and .closureBefore.packageManifestSha256 == $manifest and .closureBefore.uid == $id and .closureBefore.gid == $id
 	and .secretScan.hits == []' \
 	"$work/guest.json" >/dev/null || fail "the guest proof failed (exit $proof_status): $(head -c 8192 "$work/guest.json")"
-tested=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+# Milliseconds cut from %N: uutils date (Ubuntu 26.04) prints the nanoseconds, unpadded, for %3N.
+tested=$(date -u +%Y-%m-%dT%H:%M:%S.%N)
+tested="${tested:0:23}Z"
 la file pull "$vm$(jq -r .browser.screenshotPath "$work/guest.json")" "$work/screenshot.png"
 [[ $(sha256sum "$work/screenshot.png" | awk '{print $1}') == $(jq -r .browser.screenshotSha256 "$work/guest.json") ]] ||
 	fail "the pulled screenshot differs from the VM's"
