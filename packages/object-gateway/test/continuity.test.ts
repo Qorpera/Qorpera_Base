@@ -325,6 +325,133 @@ describe("cloud object outage continuity", () => {
 		expect(lines.filter((line) => line.includes("object_stored_replication_pending"))).toHaveLength(2);
 	});
 
+	it("refuses every upload at once while the audit refuses, and a flush waits for the write before it", async () => {
+		const fixture = await gateway();
+		const second = Buffer.from("second immutable object");
+		const secondHash = createHash("sha256").update(second).digest("hex");
+		const third = Buffer.from("third immutable object");
+		const thirdHash = createHash("sha256").update(third).digest("hex");
+		await fixture.upload();
+		const refused = vi
+			.spyOn(fixture.journal, "audit")
+			.mockRejectedValue(new Error("Gateway audit capacity requires operator attention"));
+		await expect(fixture.replication.flushStoredLines()).rejects.toThrow("capacity");
+		const answers = await Promise.allSettled([fixture.upload(secondHash, second), fixture.upload(thirdHash, third)]);
+		expect(answers.map((answer) => answer.status)).toEqual(["rejected", "rejected"]);
+		await expect(fixture.objects.get(profileId, secondHash, second.length)).rejects.toThrow("not found");
+		await expect(fixture.objects.get(profileId, thirdHash, third.length)).rejects.toThrow("not found");
+		refused.mockRestore();
+
+		// The first write is still going: a second flush finds no lines, and must not answer before it.
+		const write = fixture.journal.audit.bind(fixture.journal);
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const audit = vi.spyOn(fixture.journal, "audit").mockImplementationOnce(async (...events) => {
+			await held;
+			await write(...events);
+		});
+		const order: string[] = [];
+		const first = fixture.replication.flushStoredLines().then(() => order.push("first"));
+		const later = fixture.replication.flushStoredLines().then(() => order.push("later"));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(order).toEqual([]);
+		release();
+		await Promise.all([first, later]);
+		expect(order).toEqual(["first", "later"]);
+		expect(audit).toHaveBeenCalledTimes(1);
+		expect((await fixture.replication.status()).degraded).toBe(true);
+		await fixture.replication.reconcile();
+		expect((await fixture.replication.status()).degraded).toBe(false);
+	});
+
+	it("writes an object's stored line before any later line about it, with no crash in between", async () => {
+		const fixture = await gateway();
+		const events = async (): Promise<string[]> =>
+			(await readFile(join(fixture.root, "state", "audit.jsonl"), "utf-8"))
+				.trim()
+				.split("\n")
+				.map((line) => (JSON.parse(line) as { event: string }).event);
+		// The upload is at its confirm, its entry there, while a reconcile flushes, lists and waits for the object's lock.
+		let confirm = () => {};
+		const confirming = new Promise<void>((resolve) => {
+			confirm = resolve;
+		});
+		const list = fixture.journal.list.bind(fixture.journal);
+		let listed = () => {};
+		const hasListed = new Promise<void>((resolve) => {
+			listed = resolve;
+		});
+		vi.spyOn(fixture.journal, "list").mockImplementation(async (section) => {
+			const names = await list(section);
+			if (names.length > 0) listed();
+			return names;
+		});
+		const upload = fixture.replication.uploadWithAuthority(profileId, sha256, bytes, {
+			authorize: async () => undefined,
+			confirm: async () => {
+				await confirming;
+				await fixture.authority.confirmUpload(profileId, sha256, bytes.byteLength);
+			},
+		});
+		await vi.waitFor(async () => expect(await list("pending")).toHaveLength(1));
+		const pass = fixture.replication.reconcile();
+		await hasListed;
+		confirm();
+		await upload;
+		await pass;
+		expect(fixture.cloud.replicas.size).toBe(1);
+		expect(await events()).toEqual(["object_stored_replication_pending", "object_replicated"]);
+
+		// The same for the deleted-company lane's line.
+		const second = Buffer.from("second immutable object");
+		const secondHash = createHash("sha256").update(second).digest("hex");
+		await fixture.upload(secondHash, second);
+		fixture.cloud.deletion = true;
+		await fixture.replication.remove(profileId, secondHash, second.length, authorizationId);
+		expect((await events()).slice(2)).toEqual(["object_stored_replication_pending", "object_deleted"]);
+	});
+
+	it("writes the lines waiting itself at the cap, before its own bytes", async () => {
+		const fixture = await gateway();
+		const replication = new ObjectGatewayReplication(fixture.journal, fixture.objects, fixture.authority, 2);
+		const audit = vi.spyOn(fixture.journal, "audit");
+		const put = (name: string) => {
+			const body = Buffer.from(name);
+			const hash = createHash("sha256").update(body).digest("hex");
+			return replication.uploadWithAuthority(profileId, hash, body, {
+				authorize: async () => undefined,
+				confirm: () => fixture.authority.confirmUpload(profileId, hash, body.byteLength),
+			});
+		};
+		await put("one");
+		await put("two");
+		expect(audit).not.toHaveBeenCalled();
+		await put("three");
+		expect(audit).toHaveBeenCalledTimes(1);
+		expect(audit.mock.calls[0]).toHaveLength(2);
+		await replication.flushStoredLines();
+		expect(audit).toHaveBeenCalledTimes(2);
+		expect(audit.mock.calls[1]).toHaveLength(1);
+	});
+
+	it("keeps the lines when a sync fails after the write: a retry repeats them exactly and loses none", async () => {
+		const fixture = await gateway();
+		await fixture.upload();
+		const write = fixture.journal.audit.bind(fixture.journal);
+		vi.spyOn(fixture.journal, "audit").mockImplementationOnce(async (...events) => {
+			await write(...events);
+			throw new Error("injected sync failure");
+		});
+		await expect(fixture.replication.flushStoredLines()).rejects.toThrow("injected");
+		expect((await fixture.replication.status()).degraded).toBe(true);
+		await fixture.replication.flushStoredLines();
+		const lines = (await readFile(join(fixture.root, "state", "audit.jsonl"), "utf-8")).trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toBe(lines[1]);
+	});
+
 	it("does not strand a newly authorized upload of a previously cleaned immutable identity", async () => {
 		const fixture = await gateway();
 		await fixture.upload();

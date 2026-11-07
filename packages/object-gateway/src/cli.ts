@@ -8,6 +8,7 @@ import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
 import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
+import { stopGateway } from "./gateway-stop.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
@@ -212,6 +213,18 @@ if (process.argv[2] === "migrate") {
 		void maintain();
 	}, 15_000);
 	void maintain();
+	// Stored objects' audit lines are in memory at most this long, however long a maintenance pass takes.
+	let writingLines = false;
+	const storedLineWrites = setInterval(() => {
+		if (writingLines) return;
+		writingLines = true;
+		void replication
+			.flushStoredLines()
+			.catch(() => process.stderr.write("Object gateway audit lines require operator attention\n"))
+			.finally(() => {
+				writingLines = false;
+			});
+	}, 15_000);
 	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
 	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
 	let writing = false;
@@ -320,17 +333,18 @@ if (process.argv[2] === "migrate") {
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
 			clearInterval(maintenance);
+			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
 			clearInterval(bankSummaryWrites);
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
-			server.close(() => {
-				void replication
-					.flushStoredLines()
-					.catch(() => process.stderr.write("Object gateway audit lines were not written at stop\n"))
-					.finally(() => process.exit(0));
+			stopGateway({
+				close: (done) => server.close(done),
+				flush: () => replication.flushStoredLines(),
+				say: (line) => process.stderr.write(line),
+				exit: (code) => process.exit(code),
 			});
 		});
 	}

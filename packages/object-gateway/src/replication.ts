@@ -30,7 +30,7 @@ export interface BlockedObject extends LegacyObjectMigrationItem {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
-/** Stored objects' audit lines kept for the reconcile's one sync. At this many an upload writes them itself. */
+/** Stored objects' audit lines kept for one later sync. At this many an upload writes them itself. */
 const MAX_STORED_LINES = 1000;
 
 function pendingObject(value: unknown, expectedKey: string): PendingObject {
@@ -74,13 +74,21 @@ export class ObjectGatewayReplication {
 	#pendingCursor: string | undefined;
 	#lastError = false;
 	#running = false;
+	readonly #maxStoredLines: number;
 	readonly #storedLines: Record<string, unknown>[] = [];
 	#storedLinesRefused = false;
+	#auditTurn: Promise<unknown> = Promise.resolve();
 
-	constructor(journal: ObjectGatewayJournal, store: FileSystemObjectStore, authority: ObjectReplicationAuthority) {
+	constructor(
+		journal: ObjectGatewayJournal,
+		store: FileSystemObjectStore,
+		authority: ObjectReplicationAuthority,
+		maxStoredLines = MAX_STORED_LINES,
+	) {
 		this.#journal = journal;
 		this.#store = store;
 		this.#authority = authority;
+		this.#maxStoredLines = maxStoredLines;
 	}
 
 	/** Callbacks belong to the trusted gateway, never to a request body. */
@@ -97,7 +105,8 @@ export class ObjectGatewayReplication {
 		verify(bytes, object);
 		return this.#journal.exclusive(key(object), async () => {
 			// A line the audit refused stops uploads until it is written, as it did when each upload wrote its own.
-			if (this.#storedLinesRefused || this.#storedLines.length >= MAX_STORED_LINES) await this.flushStoredLines();
+			if (this.#storedLinesRefused || this.#storedLines.length >= this.#maxStoredLines)
+				await this.flushStoredLines();
 			// Recheck inside the same lane as cleanup; an earlier request is not a reusable write grant.
 			await authority.authorize();
 			const prior = await this.#journal.read(key(object));
@@ -108,8 +117,8 @@ export class ObjectGatewayReplication {
 			await authority.confirm();
 			// The answer waits for the intent and the bytes only: on the NAS each synchronous write is a disk flush. The
 			// entry stays `unconfirmed`, which the reconcile treats as it treats `replicate` (a crash just here left it so
-			// already), and the audit line goes with the reconcile's next sync. A crash before that sync loses the line, and
-			// the entry still brings the object's `object_replicated`.
+			// already). The audit line waits in memory for the next audit write (`#append`). A crash before that loses it;
+			// the bytes, the catalog row and the entry stand (RUNTIME-COMPANY-FOLDER-C1D.md §9.9).
 			this.#storedLines.push({
 				event: "object_stored_replication_pending",
 				at: new Date().toISOString(),
@@ -119,18 +128,32 @@ export class ObjectGatewayReplication {
 		});
 	}
 
-	/** Writes the stored objects' audit lines waiting, with one sync. A refusal keeps them, and refuses uploads until a
-	 * later try writes them. */
-	async flushStoredLines(): Promise<void> {
-		const lines = this.#storedLines.splice(0);
-		try {
-			if (lines.length > 0) await this.#journal.audit(...lines);
-			this.#storedLinesRefused = false;
-		} catch (error) {
-			this.#storedLines.unshift(...lines);
-			this.#storedLinesRefused = true;
-			throw error;
-		}
+	/** Writes the stored objects' audit lines waiting, with one sync, after any write already going. */
+	flushStoredLines(): Promise<void> {
+		return this.#append([]);
+	}
+
+	/** Appends `events` after the stored objects' lines waiting, in one write with one sync, one call at a time. So an
+	 * object's stored line comes before any later line about that object: its upload and whoever writes that line hold
+	 * the object's lock in turn. A refused write keeps the lines waiting and refuses uploads until a later try writes
+	 * them. A write whose sync failed may have landed, so that try can repeat its lines, same text and time. */
+	#append(events: readonly Record<string, unknown>[]): Promise<void> {
+		const turn = this.#auditTurn.then(async () => {
+			const lines = this.#storedLines.splice(0);
+			if (lines.length + events.length === 0) return;
+			try {
+				await this.#journal.audit(...lines, ...events);
+				this.#storedLinesRefused = false;
+			} catch (error) {
+				if (lines.length > 0) {
+					this.#storedLines.unshift(...lines);
+					this.#storedLinesRefused = true;
+				}
+				throw error;
+			}
+		});
+		this.#auditTurn = turn.catch(() => undefined);
+		return turn;
 	}
 
 	/** Runs `operation` under the object's lock: the one its upload, replication, cleanup and folder GC's lane take. */
@@ -208,8 +231,8 @@ export class ObjectGatewayReplication {
 		});
 	}
 
-	async audit(event: Record<string, unknown>): Promise<void> {
-		await this.#journal.audit(event);
+	audit(event: Record<string, unknown>): Promise<void> {
+		return this.#append([event]);
 	}
 
 	async remove(profileId: string, sha256: string, bytes: number, authorizationId: string): Promise<void> {
@@ -272,7 +295,7 @@ export class ObjectGatewayReplication {
 						this.#lastError = true;
 						if (error instanceof ObjectDependencyError && !error.unavailable && object.state !== "delete") {
 							await this.#journal.write(name, { ...object, state: "blocked" });
-							await this.#journal.audit({
+							await this.audit({
 								event: "replication_blocked",
 								at: new Date().toISOString(),
 								profileId: object.profileId,
@@ -327,7 +350,7 @@ export class ObjectGatewayReplication {
 		await this.#journal.write(key(object), { ...object, state: "replicate" });
 		await this.#authority.writeReplica(object.profileId, object.sha256, bytes);
 		verify(await this.#authority.readLegacyObject(object.profileId, object.sha256), object);
-		await this.#journal.audit({
+		await this.audit({
 			event: "object_replicated",
 			at: new Date().toISOString(),
 			profileId: object.profileId,
@@ -352,7 +375,7 @@ export class ObjectGatewayReplication {
 			await this.#authority.finalizeDelete(object.authorizationId, object.profileId, object.sha256, object.bytes);
 		}
 		await this.#journal.write(key(object), { ...object, state: "deleted" });
-		await this.#journal.audit({
+		await this.audit({
 			event: "object_deleted",
 			at: new Date().toISOString(),
 			profileId: object.profileId,
