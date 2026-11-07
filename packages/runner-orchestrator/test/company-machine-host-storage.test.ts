@@ -191,6 +191,8 @@ async function fixture() {
 			},
 		),
 		execInstance: vi.fn(async (_project: string, name: string, command: readonly string[]) => {
+			// The boot is usable (systemctl is-active answers 0).
+			if (command[0] === "/usr/bin/systemctl") return;
 			const [nonce, action, ...args] = command.slice(2);
 			const machineId = plans.get(name)?.machine.machineId;
 			const bootId = boots.get(name);
@@ -230,6 +232,8 @@ async function fixture() {
 		pushInstanceFile: vi.fn(async () => {}),
 	};
 	const host = new LxdCompanyMachineHost({
+		// A pass waits for every step here.
+		passHoldMs: Number.POSITIVE_INFINITY,
 		control,
 		owner: "mx-a",
 		machineIdSha256: "d".repeat(64),
