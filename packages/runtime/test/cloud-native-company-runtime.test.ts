@@ -2960,6 +2960,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// (5 November 2026) add save_app and post_app after table_write, so they moved again. The wall (5 November 2026)
 	// adds update_wall after post_app, so they moved again. Readable cards (5 November 2026) shorten ask_member's body
 	// and say how a card reads; every other tool is as on master.
+	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3002,9 +3003,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"eca70772d1c7112e41df47a6b9106d9de2e63d2fe6d8cf880e927bb437733fcc",
+		"23c8e3f9b3900169bf00f050760bda25bbe95e1b390f7167f786d2cbfca970f5",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"27455e043e4908a265712987152c406a491686e23bc8ce7f7576287864950f79",
+		"fe05f799a7ca2fdf52ed3ed946859ff5bc8c6061f55003978f30e4e521523370",
 	);
 });
