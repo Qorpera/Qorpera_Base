@@ -890,7 +890,9 @@ export class CloudMemberFolderClient {
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const token = await this.#token(requestSignal);
-				const init: RequestInit & Pick<Request, "cache"> = {
+				// No `cache` option: no browser stores the answer to a POST, and "no-store" would only make Chrome send the
+				// CORS preflight again on every call, one more round trip each time.
+				const init: RequestInit = {
 					method: "POST",
 					headers: {
 						apikey: this.#publishableKey,
@@ -900,7 +902,6 @@ export class CloudMemberFolderClient {
 					body: JSON.stringify({ p_environment_id: this.#environmentId, ...args }),
 					signal: requestSignal,
 					redirect: "error",
-					cache: "no-store",
 				};
 				const response = await this.#fetch(`${this.#controlOrigin}/rest/v1/rpc/${name}`, init);
 				if (response.status !== 200) {
@@ -922,12 +923,13 @@ export class CloudMemberFolderClient {
 	/** One object through the member folder route, checked against its hash. */
 	async #object(sha256: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		const token = await this.#token(signal);
-		const init: RequestInit & Pick<Request, "cache"> = {
+		// No `cache` option: the route answers "no-store" itself, and asking here too would only make Chrome send the CORS
+		// preflight again on every read, one more round trip each time.
+		const init: RequestInit = {
 			method: "GET",
 			headers: { authorization: `Bearer ${token}` },
 			signal,
 			redirect: "error",
-			cache: "no-store",
 		};
 		const response = await this.#fetch(
 			`${this.#objectOrigin}/v1/member-folder-objects/${this.#environmentId}/${sha256}`,
