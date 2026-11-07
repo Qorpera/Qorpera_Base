@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
-import { connect } from "node:net";
+import { connect, Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,7 @@ import {
 	startCloudNativeResultFence,
 } from "@qorpera/runtime/cloud-native-result-fence";
 import { CloudNativeToolBoundary, type CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let root: string;
 const services: Array<Awaited<ReturnType<typeof startCloudNativeResultFence>>> = [];
@@ -321,55 +321,126 @@ it("serves any number of model requests in a run, one after another", async () =
 	expect(f.onFailure).not.toHaveBeenCalled();
 });
 
-/** Sends one whole request and hangs up at once, as Codex does when a turn is interrupted with its request open. */
-function hangUpAfter(path: string, value: unknown): Promise<void> {
+/** Sends one whole request and hangs up, as Codex does when a turn is interrupted with its request open: at once, or
+ * after `unread` ms in which the answer waits for it unread. */
+function hangUpAfter(path: string, value: unknown, unread = 0): Promise<void> {
 	const body = Buffer.from(JSON.stringify(value));
 	const size = Buffer.alloc(4);
 	size.writeUInt32BE(body.length);
 	return new Promise((resolve) => {
 		const socket = connect(path);
+		socket.pause();
 		socket.on("connect", () => {
 			socket.write(Buffer.concat([size, body]), () => {
-				socket.destroy();
-				resolve();
+				setTimeout(() => {
+					socket.destroy();
+					resolve();
+				}, unread);
 			});
 		});
 		socket.on("error", () => resolve());
 	});
 }
 
-it("takes a peer's hang-up with its request open as that request's end, and goes on serving the run", async () => {
-	const f = await fixture();
-	for (let tries = 0; tries < 50; tries += 1) {
+describe("a peer that hangs up", () => {
+	const lines: string[] = [];
+	let journal: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		lines.length = 0;
+		journal = vi.spyOn(console, "error").mockImplementation((line: string) => {
+			lines.push(line);
+		});
+	});
+	afterEach(() => {
+		journal.mockRestore();
+	});
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+	/** One request hung up on, and then the run goes on: the fence answers the next. */
+	const goesOn = async (f: Awaited<ReturnType<typeof fixture>>) => {
+		expect(f.onFailure).not.toHaveBeenCalled();
+		expect(await exchange(f.service.path, { ...request(), outputs: [] })).toMatchObject({ outputs: [] });
+		expect(f.onFailure).not.toHaveBeenCalled();
+	};
+
+	it("with its request just sent ends that request, whatever the order, and the run goes on", async () => {
+		const f = await fixture();
+		for (let tries = 0; tries < 50; tries += 1) {
+			await hangUpAfter(f.service.path, request());
+			await new Promise((resolve) => setTimeout(resolve, 2));
+		}
+		await goesOn(f);
+	});
+
+	it("with its answer written and unread is told apart in the journal, and the run goes on", async () => {
+		const f = await fixture();
+		await hangUpAfter(f.service.path, request(), 30);
+		await settle();
+		// The error this change is about: without it, this one ends the run.
+		expect(lines).toEqual([expect.stringMatching(/^Native result fence: peer hung up \(code=\w+, lane=turn\)$/)]);
+		await goesOn(f);
+	});
+
+	it("during a slow authority check or record, the late answer goes nowhere and the run goes on", async () => {
+		let release: () => void = () => undefined;
+		const record = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		const f = await fixture(undefined, record);
+		await hangUpAfter(f.service.path, request());
+		await vi.waitFor(() => expect(record).toHaveBeenCalled());
+		release();
+		await settle();
+		record.mockImplementation(async () => undefined);
+		await goesOn(f);
+	});
+
+	it("on a composition request, the run goes on", async () => {
+		let release: () => void = () => undefined;
+		const compose = vi.fn(
+			() =>
+				new Promise<undefined>((resolve) => {
+					release = () => resolve(undefined);
+				}),
+		);
+		const f = await fixture(undefined, undefined, undefined, { assertRequest: vi.fn(), compose });
+		await hangUpAfter(f.service.path, contextRequest());
+		await vi.waitFor(() => expect(compose).toHaveBeenCalled());
+		release();
+		await settle();
+		await goesOn(f);
+	});
+
+	it("is the only socket error that does not fail the run", async () => {
+		const accepted: Socket[] = [];
+		const emit = Server.prototype.emit;
+		const watch = vi.spyOn(Server.prototype, "emit").mockImplementation(function (
+			this: Server,
+			event: string | symbol,
+			...args: unknown[]
+		) {
+			if (event === "connection") accepted.push(args[0] as Socket);
+			return emit.call(this, event, ...args);
+		});
+		const f = await fixture();
+		const client = connect(f.service.path);
+		client.on("error", () => undefined);
+		await vi.waitFor(() => expect(accepted).toHaveLength(1));
+		watch.mockRestore();
+		accepted[0].destroy(Object.assign(new Error("disk"), { code: "EIO" }));
+		await vi.waitFor(() => expect(f.onFailure).toHaveBeenCalledTimes(1));
+		expect(lines).toEqual(["Native result fence failed (site=socket)"]);
+	});
+
+	it("does not excuse a request that breaks the protocol, and the journal says which it was", async () => {
+		const f = await fixture();
 		await hangUpAfter(f.service.path, { ...request(), outputs: [] });
-		await new Promise((resolve) => setTimeout(resolve, 2));
-	}
-	expect(f.onFailure).not.toHaveBeenCalled();
-	expect(await exchange(f.service.path, { ...request(), outputs: [] })).toMatchObject({ outputs: [] });
-	expect(f.onFailure).not.toHaveBeenCalled();
-});
-
-it("takes a hang-up from a request whose answer comes later the same way", async () => {
-	let release: () => void = () => undefined;
-	const assertActive = vi.fn(
-		() =>
-			new Promise<void>((resolve) => {
-				release = resolve;
-			}),
-	);
-	const f = await fixture(assertActive);
-	await hangUpAfter(f.service.path, { ...request(), outputs: [] });
-	await vi.waitFor(() => expect(assertActive).toHaveBeenCalled());
-	release();
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	expect(f.onFailure).not.toHaveBeenCalled();
-});
-
-it("still fails the run on a request that breaks the protocol, after a hang-up too", async () => {
-	const f = await fixture();
-	await hangUpAfter(f.service.path, { ...request(), outputs: [] });
-	expect(await exchange(f.service.path, { ...request(), schema: "other" })).toBeUndefined();
-	expect(f.onFailure).toHaveBeenCalledTimes(1);
+		expect(await exchange(f.service.path, { ...request(), schema: "other" })).toBeUndefined();
+		expect(f.onFailure).toHaveBeenCalledTimes(1);
+		expect(lines).toContain("Native result fence failed (site=frame)");
+	});
 });
 
 it("caps a native connection flood before unbounded waiting work is created", async () => {
