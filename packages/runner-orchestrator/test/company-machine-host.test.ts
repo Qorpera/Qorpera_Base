@@ -1387,6 +1387,7 @@ describe("company machine host's wake (perf A5)", () => {
 		// And the process's end still reaches a step that outlasts its pass.
 		const short = await fixture({ passHoldMs: 10 });
 		await short.host.pass(new AbortController().signal);
+		await short.host.settled();
 		short.running();
 		let seen: AbortSignal | undefined;
 		short.client.execInstance.mockImplementation(async (_project, _name, _asked, signal?: AbortSignal) => {
