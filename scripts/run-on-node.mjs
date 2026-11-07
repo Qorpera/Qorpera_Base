@@ -415,7 +415,7 @@ export function parseSeed(output) {
 
 /** rsync's options for copying a tree to the machine. It compares contents, so a file another checkout has under the
  * same name is taken from there, whatever its time, and a same-size, same-time file with other bytes never is: a new
- * checkout's first copy took 75-116 s (7 Nov, 9 runs) when it sent all of its 105 MB, and 2.8 s from a seed. A file is
+ * checkout's first copy took 75-116 s (7 Nov, 8 runs) when it sent all of its 105 MB, and 2.8 s from a seed. A file is
  * looked for in `nearby` first (the run's other parts), then the checkout's own base copy, then the seed. Each base
  * copy is read under a shared lock; its refresh takes the exclusive one, so no file changes while it is compared. */
 export function copyOptions({ nearby = [], treeDir, seed = null }) {
