@@ -2,12 +2,13 @@
 import { createHash } from "node:crypto";
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
 	appReadablePath,
 	assembleApp,
 	type CompanyApp,
+	CompanyApps,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
@@ -318,5 +319,125 @@ describe("an app's card in a message", () => {
 		expect(card?.querySelector(".app-card-title")?.textContent).toBe("Sales this week");
 		expect(body.querySelectorAll(".app-card")).toHaveLength(1);
 		expect(body.querySelector("a")).toBeNull();
+	});
+});
+
+describe("following the company's apps from a hidden tab", () => {
+	function following() {
+		vi.useFakeTimers();
+		const folders = vi.fn(() => fakeFolder({}));
+		let hint = () => {};
+		let state = (_connected: boolean) => {};
+		const apps = new CompanyApps(
+			{
+				signal: new AbortController().signal,
+				folder: folders as never,
+				folderHints: (onHint, onState) => {
+					hint = () => onHint(2);
+					state = (connected) => onState?.(connected);
+					return { close: async () => {} };
+				},
+			},
+			() => {},
+		);
+		apps.open();
+		const showing = (shown: DocumentVisibilityState) => {
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => shown });
+			document.dispatchEvent(new Event("visibilitychange"));
+		};
+		return { apps, folders, showing, hint: () => hint(), state: (connected: boolean) => state(connected) };
+	}
+	afterEach(() => {
+		Reflect.deleteProperty(document, "visibilityState");
+		vi.useRealTimers();
+	});
+
+	it("reads on no clock while its hints work, reads on a hint, and reads what the clock skipped when it is back", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.hint();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(f.folders).toHaveBeenCalledTimes(3);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(4);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(4);
+		f.apps.dispose();
+	});
+
+	it("stays on the minute's poll while its hint's channel is down", async () => {
+		const f = following();
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.state(false);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.folders).toHaveBeenCalledTimes(3);
+		f.apps.dispose();
+	});
+
+	it("reads at once when it comes back after a whole period, though no timer fired (a frozen tab)", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		vi.setSystemTime(Date.now() + 60 * 60_000);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(2);
+		f.apps.dispose();
+	});
+
+	it("reads nothing extra when it comes back before a period has passed", async () => {
+		const f = following();
+		f.state(true);
+		await vi.advanceTimersByTimeAsync(0);
+		f.showing("hidden");
+		await vi.advanceTimersByTimeAsync(5_000);
+		f.showing("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.folders).toHaveBeenCalledTimes(1);
+		f.apps.dispose();
+	});
+
+	it("tells each reader of the shared hint whether its channel is subscribed", async () => {
+		let tell = (_connected: boolean) => {};
+		const hints = sharedFolderHints({
+			signal: new AbortController().signal,
+			folder: () => {
+				throw new Error("not read here");
+			},
+			folderHints: (_onHint, onState) => {
+				tell = (connected) => onState?.(connected);
+				return { close: async () => {} };
+			},
+		});
+		const first: boolean[] = [];
+		const second: boolean[] = [];
+		hints(
+			() => {},
+			(connected) => first.push(connected),
+		);
+		tell(true);
+		hints(
+			() => {},
+			(connected) => second.push(connected),
+		);
+		tell(false);
+		expect(first).toEqual([false, true, false]);
+		expect(second).toEqual([true, false]);
 	});
 });
