@@ -1406,6 +1406,8 @@ describe("company machine host's wake (perf A5)", () => {
 		const f = await fixture();
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 	});
+});
+
 describe("company machine host's passes over the signal that lasts as long as its process", () => {
 	it("leaves nothing on it (Node 22's AbortSignal.any walks what is there), and its end still reaches a step", async () => {
 		const f = await fixture();
