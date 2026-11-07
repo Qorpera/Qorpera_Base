@@ -239,6 +239,28 @@ describe("reading again after a hint", () => {
 		expect(busy.store.get().events).toHaveLength(5);
 	});
 
+	it("keeps the wait in a hidden tab, where a burst of hints is one read, and reads at once when someone looks again", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		let state: DocumentVisibilityState = "hidden";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+		cleanup.push(() => Reflect.deleteProperty(document, "visibilityState"));
+		const listed = () => vi.mocked(busy.f.api.listSessions).mock.calls.length;
+		const before = listed();
+		for (let index = 0; index < 5; index++) {
+			busy.write(open.sessionId);
+			await vi.advanceTimersByTimeAsync(20);
+		}
+		expect(listed()).toBe(before);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(listed() - before).toBe(1);
+		expect(busy.store.get().events).toHaveLength(5);
+		state = "visible";
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.store.get().events).toHaveLength(6);
+	});
+
 	it("reads a thread's waiting inputs within ten seconds of their hint, also when no later hint comes", async () => {
 		const busy = await company("connected", false);
 		await vi.advanceTimersByTimeAsync(40_000);
