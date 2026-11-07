@@ -67,15 +67,11 @@ describe("why a run stopped, in the member's words", () => {
 		],
 		// The run ended, but its completion was refused because a save was left unsettled (30 October): a person checks
 		// that save first, and the run never reads as lost contact.
-		[
-			COMPLETION_REFUSED,
-			"failed",
-			/^The run ended, but one of its saves did not finish\. A person must check it before the run can be tried again\.$/,
-		],
+		[COMPLETION_REFUSED, "failed", /^The run ended before all of its work was saved\. Send a message to carry on\.$/],
 		[
 			`${COMPLETION_REFUSED}; durable attempt output requires review`,
 			"failed",
-			/^The run ended, but one of its saves did not finish\./,
+			/^The run ended before all of its work was saved\./,
 		],
 		// A step cancelled from Qorpera's side was not refused (WB-001, 28 October: the database stopped answering).
 		[
@@ -307,7 +303,7 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		],
 		[
 			`${DID_NOT_FINISH}${COMPLETION_REFUSED}; durable attempt output requires review`,
-			/^One of the session's saves did not finish, and a person must check it first\./,
+			/^The session ended before all of its work was saved\./,
 		],
 		[
 			`${DID_NOT_FINISH}Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)`,
@@ -403,7 +399,7 @@ describe("a coding session's failed turn, by its code (20260930560000)", () => {
 		["NATIVE_CREDENTIAL_DOWNLOAD", /^The session could not load the login that pays for it\./],
 		["CODING_TURN_ENDED_WITHOUT_SUBMISSION", /^The session's last turn ended without saving its work/],
 		["COMPUTER_HOURS_EXHAUSTED", /^The company ran out of computer hours\./],
-		["RUN_COMPLETION_REFUSED", /^One of the session's saves did not finish, and a person must check it first\./],
+		["RUN_COMPLETION_REFUSED", /^The session ended before all of its work was saved\./],
 		// Lower-case reasons name no code: the summary decides, as before.
 		["turn_failed", /^The session stopped because of an internal error\./],
 	] as const)("%s", (code, expected) => {
