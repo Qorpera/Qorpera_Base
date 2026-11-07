@@ -427,6 +427,8 @@ export class ConversationView {
 				// A message on its way keeps the question it goes with.
 				if (this.#composer.disabled || this.#submitting) return;
 				this.#answeringItem = item;
+				// Enter was for the question before this one.
+				this.#sendSoon = undefined;
 				company.conversation(sessionId).set({ answering: replyQuestion(question) });
 				this.#composer.focus();
 			},
