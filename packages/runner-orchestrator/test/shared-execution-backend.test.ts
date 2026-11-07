@@ -1018,7 +1018,7 @@ describe("shared execution provider backend", () => {
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
 	});
 
-	it("gives a host whose run ended by itself a moment, then kills it, so the slot is soon free", async () => {
+	it("gives a host whose runner unit exited a moment, then kills it, so the slot is soon free", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);

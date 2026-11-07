@@ -67,7 +67,7 @@ const WARM_SCHEMA = "qorpera.shared-execution-warm-slot/v1";
 /** After this many failed retirements a sandbox is recorded as lost and its
  * slot is handed back; the reason stays in the archived journal. */
 const MAX_RETIRE_ATTEMPTS = 12;
-/** How long a native host whose run ended by itself gets to answer SIGTERM before it is killed. */
+/** How long a native host gets to answer SIGTERM, once its runner unit exited (its run ended, or it crashed), before it is killed. */
 const ENDED_RUN_HOST_STOP_MS = 1_000;
 /** The provider's own refusal reasons. `NODE_NOT_PREFERRED` is the control
  * plane's "defer this orchestrator only" reason: another provider on another

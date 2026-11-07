@@ -123,8 +123,8 @@ select pg_temp.base_claims('service_role');
 select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.mf_wake'),
 	'The older wake goes before a kickoff: ' || current_setting('qorpera_test.mf_claim'));
-select pg_temp.mf_hold(current_setting('qorpera_test.mf_wake')::uuid);
 select pg_temp.mf_refuse(current_setting('qorpera_test.mf_claim')::jsonb, 'SANDBOX_CAPACITY_EXHAUSTED') \g /dev/null
+select pg_temp.mf_hold(current_setting('qorpera_test.mf_wake')::uuid);
 select set_config('qorpera_test.mf_claim', pg_temp.mf_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.mf_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.mf_turn'),
 	'Then the kickoff: ' || current_setting('qorpera_test.mf_claim'));

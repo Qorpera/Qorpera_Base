@@ -71,8 +71,9 @@ shared between the service and a slot.
    `reserving`/`starting` sandbox older than ten minutes is retired.
 4. retire, in three phases so no lock is held while units stop: mark
    `stopping`; stop runner then host unit (bounded, never blocking; after a
-   run that ended by itself the host gets 1 s and is then killed, since
-   waiting out its 10 s `TimeoutStopSec` flushes nothing); then
+   runner unit exited, its run ended or it crashed, the host gets 1 s and is
+   then killed, since waiting out its 10 s `TimeoutStopSec` flushes nothing);
+   then
    verify both are down, remove the tmpfs material, empty the slot scratch,
    release the company ceiling exactly once (a reservation whose reply was
    lost is owed too: only the host call's refusal, `42501` as HTTP 401 or
