@@ -33,7 +33,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_native_context_view"
 	| "qorpera_fence_native_context"
 	| "qorpera_assert_company_path_reads"
-	// The run's check around a tool call: its authority and read set in one call (20260930603000).
+	// The run's check around a tool call: its authority and read set in one call (20260930618000).
 	| "qorpera_check_native_run"
 	| "qorpera_native_presence_register"
 	| "qorpera_company_presence_scope"
@@ -215,7 +215,7 @@ export class CloudCompanyPathGateway {
 	readonly #control: CloudCompanyPathControl;
 	/** The database has no one-call fence yet (a runtime ahead of 20260929400000). */
 	#fenceUnavailable = false;
-	/** The one-call run check: the database lacks it (a runtime ahead of 20260930603000), or it has answered this run. */
+	/** The one-call run check: the database lacks it (a runtime ahead of 20260930618000), or it has answered this run. */
 	#checkUnavailable = false;
 	#checkAnswered = false;
 
@@ -269,7 +269,7 @@ export class CloudCompanyPathGateway {
 	}
 
 	/**
-	 * The run's two checks in one database call (qorpera_check_native_run, 20260930603000): its read set, then its
+	 * The run's two checks in one database call (qorpera_check_native_run, 20260930618000): its read set, then its
 	 * authority, each made as the separate calls make it. Returns the authority as that call read it, or undefined when the
 	 * database does not have the call yet; the caller then makes the separate calls. On the native host's entry point a
 	 * call the database does not list is refused like any other, so a refusal before the call ever answered this run

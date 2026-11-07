@@ -159,7 +159,7 @@ export async function runCloudNativeRunToolSession(options: {
 				// read set. The context read takes the run's budget row (the run mutex), and each attempt waits as long
 				// as the database may run it, so a cut one has ended before the next is sent; the admission reads plain
 				// (20260930487000). Each is asked again while its answer is lost or late, until the run's authority
-				// would lapse; a refusal stops the run. Both go in one call when the database has it (20260930603000):
+				// would lapse; a refusal stops the run. Both go in one call when the database has it (20260930618000):
 				// the same two reads, the read set first so the run's row comes before a wake run's connection, one round
 				// trip instead of two (7 Nov 2026).
 				const { checkRun } = activeAdapters;

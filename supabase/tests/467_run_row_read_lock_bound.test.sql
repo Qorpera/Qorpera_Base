@@ -351,7 +351,7 @@ begin
 			v_held, v_outcome, v_holding; end if;
 end $$;
 
--- 5b. The run's check around a tool call (20260930603000), the same way through the 8 s entry point: it asks what describe
+-- 5b. The run's check around a tool call (20260930618000), the same way through the 8 s entry point: it asks what describe
 --     and the context read ask, so it gives up with 55P03 after about 3 s too, and its transaction has ended by the answer.
 do $$
 declare v_held jsonb; v_outcome jsonb; v_holding boolean;

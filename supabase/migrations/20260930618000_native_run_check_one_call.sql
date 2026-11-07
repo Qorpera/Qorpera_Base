@@ -1,4 +1,4 @@
--- 20260930603000: the run's check around each tool call, in one database call (perf sprint A3, 7 Nov 2026).
+-- 20260930618000: the run's check around each tool call, in one database call (perf sprint A3, 7 Nov 2026).
 --
 -- The native host checks a run's authority three times for a read and four or more for a change: before the call,
 -- again before its effect, and before its result goes back. Each check is two round trips, one after the other (R1, 28
@@ -30,7 +30,7 @@ set local lock_timeout = '3s';
 
 create function public.qorpera_check_native_run(p_environment_id uuid, p_binding jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
--- 20260930603000
+-- 20260930618000
 declare v_authority jsonb;
 begin
 	if auth.role() is distinct from 'service_role' or p_binding is null then
@@ -44,7 +44,7 @@ $$;
 revoke all on function public.qorpera_check_native_run(uuid, jsonb) from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function public.qorpera_check_native_run(uuid, jsonb) to service_role;
 comment on function public.qorpera_check_native_run(uuid, jsonb) is
-	'The run''s check around a tool call, in one call: the read set, then the authority. Returns the authority. 20260930603000.';
+	'The run''s check around a tool call, in one call: the read set, then the authority. Returns the authority. 20260930618000.';
 
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_check_native_run', 'binding');
 
@@ -83,7 +83,7 @@ create function pg_temp.nc_replace(p_function regprocedure, p_old text, p_new te
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930603000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+		raise exception '20260930618000 anchor differs in %: %', p_function, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
@@ -93,7 +93,7 @@ select pg_temp.nc_replace('public.qorpera_describe_native_tool_authority(jsonb)'
 $old$,
 	$new$			or (v_entry is not distinct from 'qorpera_describe_company_run_context'
 				and split_part(v_context, E'\n', 2) ~ '^PL/pgSQL function (public\.)?qorpera_describe_company_run_context\(jsonb\) line ')
-			-- 20260930603000: or the run's check around a tool call is that entry point and calls describe itself.
+			-- 20260930618000: or the run's check around a tool call is that entry point and calls describe itself.
 			or (v_entry is not distinct from 'qorpera_check_native_run'
 				and split_part(v_context, E'\n', 2) ~ '^PL/pgSQL function (public\.)?qorpera_check_native_run\(uuid,jsonb\) line '))
 $new$);
@@ -103,10 +103,10 @@ declare v_describe pg_proc; v_before record;
 begin
 	select * into strict v_describe from pg_proc where oid = 'public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure;
 	select * into strict v_before from pg_temp.nc_before;
-	if position('20260930603000' in v_describe.prosrc) = 0 or position('20260930487000' in v_describe.prosrc) = 0
+	if position('20260930618000' in v_describe.prosrc) = 0 or position('20260930487000' in v_describe.prosrc) = 0
 		or position('20260930499000' in v_describe.prosrc) = 0
 		or v_describe.prosecdef is distinct from v_before.prosecdef or v_describe.proconfig is distinct from v_before.proconfig
 		or v_describe.provolatile is distinct from v_before.provolatile or v_describe.proacl is distinct from v_before.proacl then
-		raise exception '20260930603000: describe did not change as expected'; end if;
+		raise exception '20260930618000: describe did not change as expected'; end if;
 end $$;
 drop table pg_temp.nc_before;
