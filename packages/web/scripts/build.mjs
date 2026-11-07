@@ -62,7 +62,7 @@ if (serve) {
 	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(metafile, null, 2)}\n`);
 	const layout = bundleLayout(metafile, { root, outdir: dist });
 	const versions = Object.fromEntries(VENDORED_SCRIPTS.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex").slice(0, 12)]));
-	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout, versions));
+	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout, versions, new URL(deployment.config.projectUrl).origin));
 	// Every script and stylesheet, chunks included: a deploy check can tell each file this build made.
 	const files = ["index.html", "_headers", ...deployment.notFoundPages, ...layout.files];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
