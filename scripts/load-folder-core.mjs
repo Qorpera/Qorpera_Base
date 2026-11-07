@@ -48,7 +48,8 @@ import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
  * read set's stamps current, and after a re-grant of load/big both the fence and one read-set check (the runtime's
  * qorpera_assert_company_path_reads). Then it checks the folder: no entry without its parent folder, no file whose bytes GC removed. It reports
  * each kind's latency and failures, the wakes admitted, the stop's drain latency, GC outcomes, multixact SLRU use and
- * lock waits over a second (log_lock_waits), and every deadlock from the server log with who waited for whom.
+ * lock waits past --lock-log-ms (log_lock_waits, 1 s by default), and every deadlock from the server log with who waited
+ * for whom.
  *
  * --check exits 1 on: any deadlock; any statement timeout or unexpected failure; an authority leak (a restricted read
  * that succeeded after the agent's revoke committed and before its next grant began); an entry without its parent; a
@@ -213,6 +214,13 @@ function percentile(values, fraction) {
 	if (!values.length) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
 	return sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)];
+}
+/** The largest sample, 0 for none. Math.max(...samples) overflows the stack at about 125,000 of them, which a long flat-out
+ * run reaches, and it would throw after the load and lose the results. */
+function highest(values) {
+	let most = 0;
+	for (const value of values) if (value > most) most = value;
+	return most;
 }
 
 let pool;
@@ -718,7 +726,7 @@ function deadlockCycles(lines) {
 	}
 	return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
-/** Lock waits the server logged (log_lock_waits: each wait past deadlock_timeout, 1 s), by the waiting statement. */
+/** Lock waits the server logged (log_lock_waits: each wait past deadlock_timeout, --lock-log-ms), by the waiting statement. */
 function lockWaits(lines) {
 	const counts = new Map();
 	for (let index = 0; index < lines.length; index += 1) {
@@ -871,7 +879,7 @@ function report(seconds) {
 			p50: Math.round(percentile(totals, 0.5)),
 			p95: Math.round(percentile(totals, 0.95)),
 			p99: Math.round(percentile(totals, 0.99)),
-			max: Math.round(Math.max(...totals)),
+			max: Math.round(highest(totals)),
 			queueP95: Math.round(percentile(samples.map((sample) => sample.queueMs), 0.95)),
 			gaveUp: samples.filter((sample) => sample.gaveUp).length,
 			failures,
@@ -1165,7 +1173,7 @@ try {
 		p50: Math.round(percentile(runTotals, 0.5)),
 		p95: Math.round(percentile(runTotals, 0.95)),
 		p99: Math.round(percentile(runTotals, 0.99)),
-		max: Math.round(Math.max(0, ...runTotals)),
+		max: Math.round(highest(runTotals)),
 		poolQueueP95: Math.round(percentile(runCalls.map((sample) => sample.queueMs), 0.95)),
 		failed: runCalls.filter((sample) => sample.failure && !sample.failure.expected).length,
 		byKind: Object.fromEntries(
@@ -1203,7 +1211,7 @@ try {
 			process.stdout.write(`  ${row.name}: ${row.calls} calls, self ${row.selfMs} ms, total ${row.totalMs} ms\n`);
 	}
 	process.stdout.write(`multixact SLRU (deltas): ${JSON.stringify(multixact)}; deadlocks (pg_stat_database) ${deadlocksAfter - deadlocksBefore}\n`);
-	if (waits.length) process.stdout.write("lock waits over 1 s (log_lock_waits), by the waiting call:\n");
+	if (waits.length) process.stdout.write(`lock waits over ${options.lockLogMs} ms (log_lock_waits), by the waiting call:\n`);
 	for (const [key, count] of waits.slice(0, 15)) process.stdout.write(`  ${count} x ${key}\n`);
 	if (lockHolders.size) process.stdout.write("lock holders (sampled every 0.1 s), by who held whom:\n");
 	for (const [key, entry] of [...lockHolders.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 15))
