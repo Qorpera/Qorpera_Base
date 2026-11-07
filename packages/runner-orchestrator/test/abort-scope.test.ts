@@ -34,10 +34,10 @@ describe("withAbortScope", () => {
 		const parent = new AbortController();
 		await withAbortScope(parent.signal, async (scoped) => {
 			AbortSignal.any([scoped, AbortSignal.timeout(60000)]).addEventListener("abort", () => undefined);
-			AbortSignal.any([AbortSignal.any([scoped, AbortSignal.timeout(60000)]), AbortSignal.timeout(60000)]).addEventListener(
-				"abort",
-				() => undefined,
-			);
+			AbortSignal.any([
+				AbortSignal.any([scoped, AbortSignal.timeout(60000)]),
+				AbortSignal.timeout(60000),
+			]).addEventListener("abort", () => undefined);
 			expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
 		});
 		await expect(

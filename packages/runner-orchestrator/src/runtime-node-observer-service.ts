@@ -181,7 +181,9 @@ export async function runRuntimeNodeObserver(
 	const exitLoop = async () => {
 		while (!signal.aborted) {
 			try {
-				reportExit((await withAbortScope(signal, (scoped) => exit.observe(scoped))).healthy ? "healthy" : "unhealthy");
+				reportExit(
+					(await withAbortScope(signal, (scoped) => exit.observe(scoped))).healthy ? "healthy" : "unhealthy",
+				);
 			} catch {
 				if (!signal.aborted) reportExit("unconfirmed");
 			}
