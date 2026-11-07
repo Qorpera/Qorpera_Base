@@ -43,7 +43,8 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --machine NAME             run on this machine only (node02, node01)
          --quick                    this run takes under 3 minutes (one test file, a lint of a few files): it takes the
                                     quick lane, so it never waits behind long runs, and it is stopped at 3 minutes
-                                    (exit 124). Not for changed, or for what a whole machine should wait for
+                                    (exit 124, or 137 if it would not stop), its containers removed. For a command
+                                    after -- or scripts/<file>.mjs
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it, and
                                     take the slot kept for such runs when it is free (pr-loop's batch runs,
                                     which test every approved head at once)
@@ -113,8 +114,8 @@ const SIGNAL_TURN_MS = 100;
  * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
-/** At most this many runs execute at once, each with (vCPUs / CPU_SLOTS) vitest workers, so the slots
- * together use the machine's vCPUs: 2 each on 10 or 12 vCPUs. Measured 2026-09-29: a full npm test
+/** The CPU lane's slots (past them only EXTRA_SLOTS, while the machine has room), each run with (vCPUs / CPU_SLOTS) vitest
+ * workers, so the slots together use the machine's vCPUs: 2 each on 10 or 12 vCPUs. Measured 2026-09-29: a full npm test
  * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
  * failed. Measured 2026-10-14 with 3 slots: both 10-vCPU machines had all 3 busy and 3-4 runs waiting at
  * load 4-6, ~12 GiB of 15.5 available, no memory pressure and no OOM kill. Measured 2026-10-15 with 4 slots:
@@ -148,11 +149,19 @@ export const EXTRA_PRESSURE = 20;
 export const EXTRA_PAUSE_SECONDS = 120;
 /** A hosted-db run narrowed with --only (a few SQL tests, about 15 s of work) or a --quick run takes one of QUICK_SLOTS
  * slots of its own, with its own arrival-ordered queue: on 14 Oct such runs waited 5-20 minutes behind the CPU slots'
- * 20-minute changed runs. On 7 Nov 05:20-06:10Z, 17 of 46 runs in the CPU lane took under a minute (a lint of two files
- * 0.3 s, one test file 1.4 s) and held 4 % of its slot time, and those waited 49-1226 s for a slot like any other. */
+ * 20-minute changed runs. On 7 Nov 05:20-07:25Z, 51 of 107 runs in the CPU lane took under a minute (a lint of two files
+ * 0.3 s, one test file 1.4 s) and held 1.8 % of its slot time, and those waited a median of 239 s for a slot, 1136 s at most. */
 export const QUICK_SLOTS = 2;
 /** A --quick run is stopped this long after its command starts, so the quick lane stays quick. */
 export const QUICK_LIMIT_SECONDS = 180;
+/** The first run in the quick lane's queue waits while the machine has less than this available (MiB, MemAvailable). It
+ * passes the CPU lane's queue, so it must not start where a run in a CPU slot is short of memory. */
+export const QUICK_MEMORY_MIB = 2048;
+/** The label a --quick run's containers carry (dockerLabelScript), with the run's name as its value. */
+export const RUN_LABEL = "qorpera-run";
+/** A run that failed while the machine's kernel killed processes for lack of memory (runResult). The kernel kills the
+ * biggest process, whichever run's, so such a failure says nothing about the change. */
+export const OOM_KILLED = "oom-killed";
 /** Each lane's slot count, how many of them are kept for --front runs, slot lock files and queue directory under LOCKS. */
 const LANES = {
 	cpu: { name: "CPU lane", slots: CPU_SLOTS, kept: KEPT_SLOTS, slot: "qorpera-test-machine-slot", queue: "qorpera-test-machine-queue" },
@@ -281,6 +290,8 @@ export function parseArgs(argv) {
 	if (build && !install) throw new Error("--build needs --install");
 	const only = suite === "hosted-db" && extra.some((arg) => arg === "--only" || arg.startsWith("--only="));
 	const quick = only || options.quick;
+	if (options.quick && suite && !only && !suite.startsWith("scripts/"))
+		throw new Error(`--quick is for one short command, after -- or scripts/<file>.mjs, not for ${suite}`);
 	if (quick && options.front) throw new Error(`--front is for the CPU lane; ${only ? "a hosted-db --only run" : "a --quick run"} has the quick lane`);
 	return { ...options, install, build, suite, command, quick, limit: options.quick ? QUICK_LIMIT_SECONDS : null, plain: plain(options, suite, extra) };
 }
@@ -386,7 +397,7 @@ export function pruneScript() {
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`for f in ${CORES}*; do n=\${f#${CORES}}; if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
-		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
+		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
 }
@@ -460,17 +471,20 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`export VITEST_MAX_WORKERS=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 ))`,
 		...(cores ? [`export QORPERA_RUN_CORES_FILE=${CORES}${run}`] : []),
 		`echo "workers=$VITEST_MAX_WORKERS" >>${status}`,
+		oomScript(status),
+		...(limit ? [dockerLabelScript(run)] : []),
 		"t0=$(date +%s%N)",
 		install
-			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; exit 90; }`
+			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; note_oom; exit 90; }`
 			: "true",
 		build
-			? `npm run build:web-sdk >.run-on-node-build.log 2>&1 || { tail -50 .run-on-node-build.log; echo installed=0 >>${status}; exit 90; }`
+			? `npm run build:web-sdk >.run-on-node-build.log 2>&1 || { tail -50 .run-on-node-build.log; echo installed=0 >>${status}; note_oom; exit 90; }`
 			: "true",
 		`echo "installed=1 prepare_ms=$(( ($(date +%s%N) - t0) / 1000000 ))" >>${status}`,
 		`start=$(date +%s%N); ${runCommand}; code=$?; end=$(date +%s%N)`,
 		`echo "suite_ms=$(( (end - start) / 1000000 ))" >>${status}`,
-		...(limit ? [`[ "$code" = 124 ] && echo "== run-on-node: stopped at the quick lane's limit of ${limit} s: run it without --quick"`] : []),
+		...(limit ? [limitEndScript(run, limit)] : []),
+		"note_oom",
 		'echo "== run-on-node: exit $code after $(( (end - start) / 1000000 )) ms"',
 		"exit $code",
 	].join("\n");
@@ -497,6 +511,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`\tfor t in ${queue}/*; do [ "$t" != "$ticket" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
 		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
+		...(lane === LANES.quick ? [quickMemoryLine()] : []),
 		'\tif [ "$position" = 1 ]; then',
 		`\t\tfor candidate in $(seq ${front ? `${lane.slots} -1 1` : `1 ${slots}`}); do`,
 		`\t\t\tlock="${LOCKS}/${lane.slot}$candidate.lock"; { exec 9<"$lock" || exec 9>"$lock"; } 2>/dev/null || continue`,
@@ -561,6 +576,70 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 				]
 			: []),
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+	].join("\n");
+}
+
+/** The line of a quick run's wait that keeps it from a slot while the machine has too little available: it stays first in
+ * the queue, and what it cannot read means too little. */
+export function quickMemoryLine(meminfo = "/proc/meminfo") {
+	return `\tavailable=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null); [ "\${available:-0}" -ge ${QUICK_MEMORY_MIB} ] || position="$position, under ${QUICK_MEMORY_MIB} MiB available"`;
+}
+
+/** Bash for the start of a run: `note_oom`, to call at its end, tells how many processes the machine's kernel killed for
+ * lack of memory since (`oom_kill`, /proc/vmstat), in the log and the status file. It counts the whole machine: the kernel
+ * kills the biggest process, whichever run's, and a run in another slot may be the one that used the memory. */
+export function oomScript(status, vmstat = "/proc/vmstat") {
+	const read = `awk '$1 == "oom_kill" { print $2 }' ${shellQuote(vmstat)} 2>/dev/null`;
+	return [
+		`oom_before=$(${read})`,
+		"note_oom() {",
+		`\tlocal after; after=$(${read}); [ -n "$oom_before" ] && [ -n "$after" ] && [ "$after" != "$oom_before" ] || return 0`,
+		`\techo "oom_kills=$(( after - oom_before ))" >>${status}`,
+		'\techo "== run-on-node: the kernel killed $(( after - oom_before )) processes on this machine for lack of memory during this run, this run\'s or another\'s"',
+		"}",
+	].join("\n");
+}
+
+/** What a run's exit code and status file say. A run that failed while the kernel killed for lack of memory is the
+ * machine's failure, not the change's (OOM_KILLED); one that passed all the same stays passed, with the count in its record. */
+export function runResult(status, code) {
+	if (code !== 0 && Number(status.oom_kills) > 0) return OOM_KILLED;
+	if (status.installed === "1") return code === 0 ? "passed" : "failed";
+	if (status.installed === "0") return "install-failed";
+	return code === 0 && !status.runner ? "unknown" : "setup-failed";
+}
+
+/** Bash for a --quick run's start: its `docker run` and `docker create` label their containers with the run's name, so
+ * that limitEndScript can find them. A killed docker client leaves its container running, and nothing else ties a
+ * container to a run that has ended. A `docker` first on the PATH adds the label and hands on to the next one. */
+export function dockerLabelScript(run, bin = ".run-on-node-bin") {
+	const label = `--label ${RUN_LABEL}=${run}`;
+	const shim = [
+		"#!/bin/sh",
+		'PATH="${PATH#*:}"',
+		'case "$1" in',
+		`run|create) c=$1; shift; exec docker "$c" ${label} "$@" ;;`,
+		`container) case "\${2-}" in run|create) c=$2; shift 2; exec docker container "$c" ${label} "$@" ;; esac ;;`,
+		"esac",
+		'exec docker "$@"',
+	];
+	return [
+		`mkdir -p ${bin}`,
+		`printf '%s\\n' ${shim.map(shellQuote).join(" ")} >${bin}/docker`,
+		`chmod +x ${bin}/docker`,
+		`export PATH="$PWD/${bin}:$PATH"`,
+	].join("\n");
+}
+
+/** Bash after a --quick run's command (`start`, `end`, `code` set): when the limit stopped it, it says so and removes
+ * the run's containers. timeout exits 124, or 137 when it had to send KILL; only a run that lasted the limit counts, so a
+ * command's own inner timeout is not taken for the lane's. */
+export function limitEndScript(run, limit) {
+	return [
+		`if [ $(( (end - start) / 1000000000 )) -ge ${limit} ] && { [ "$code" = 124 ] || [ "$code" = 137 ]; }; then`,
+		`\techo "== run-on-node: stopped at the quick lane's limit of ${limit} s: run it without --quick"`,
+		`\tdocker ps -aq --filter label=${RUN_LABEL}=${run} 2>/dev/null | xargs -r docker rm -f -v >/dev/null 2>&1`,
+		"fi",
 	].join("\n");
 }
 
@@ -998,7 +1077,7 @@ export function writeWhole(path, text) {
 
 /** A part's results that are no pass, the worst first: the harness's own (a machine died, a session was cut or a queue
  * timed out; no result read back), then npm ci or the build, then a failed step. A result not named here is worst. */
-const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
+const WORST_FIRST = ["setup-failed", "unknown", OOM_KILLED, "install-failed", "failed"];
 
 /** The record of a changed --parts run from its parts' records (`records`, in part order): `run` names every part's run,
  * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise the part that
@@ -1544,16 +1623,8 @@ async function main() {
 			suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 			elapsedSeconds: (finished - started) / 1000,
 			exitCode: code,
-			result:
-				status.installed === "1"
-					? code === 0
-						? "passed"
-						: "failed"
-					: status.installed === "0"
-						? "install-failed"
-						: code === 0 && !status.runner
-							? "unknown"
-							: "setup-failed",
+			result: runResult(status, code),
+			...(status.oom_kills ? { oomKills: Number(status.oom_kills) } : {}),
 			...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
 			...(status.stopped_steps ? { stoppedSteps: status.stopped_steps.split(",").filter(Boolean) } : {}),
 		};

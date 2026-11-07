@@ -28,8 +28,27 @@ machine that does not answer is skipped, so the list may name a machine before i
 | Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
 Real-binary tests (`QORPERA_CODEX_FENCE_BINARY`) find the pinned patched Codex at `/opt/qorpera-codex-fence/codex` on
-both machines (sha256 `1c08fd01...` in `deploy/first-node/native-codex/linux-x64-0.155.1-native-proof.json`; a file in the
-guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`.
+both machines (a file in the guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`. The tests
+refuse a file whose sha256 is not `nativeCompany.binarySha256` in
+`deploy/first-node/native-codex/guest-package-manifest.json`; `QORPERA_CODEX_FENCE_UNPINNED=1` lets a build that is not yet
+the pin run. Without the variable they are skipped, as before.
+
+Nothing can download this build, so a rebuilt machine gets it pushed before `guest-setup.sh`, which refuses to finish
+without the right file (the machine then counts as not set up). From the node that holds it, node 2, as root:
+
+```sh
+lxc file push --create-dirs --mode 0755 /home/company41-admin/cut-v55-a1/native-company-fence-m896/codex \
+  qorpera-testvm-node02/opt/qorpera-codex-fence/codex --project testmachines
+```
+
+Or from the other test machine, through the Mac:
+
+```sh
+ssh tester@<other> sudo -n cat /opt/qorpera-codex-fence/codex | ssh tester@<rebuilt> \
+  'sudo -n install -d /opt/qorpera-codex-fence && sudo -n tee /opt/qorpera-codex-fence/codex >/dev/null && sudo -n chmod 0755 /opt/qorpera-codex-fence/codex'
+```
+
+Without either source, build it from the pin (`deploy/first-node/native-codex/README.md`).
 
 ## Node accounting
 
@@ -101,7 +120,7 @@ every task of the user on the machine. When all runs shared `tester`, a few para
 past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
 When all 16 are busy, a run waits (up to an hour).
 
-At most five runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 5 (2 on
+The CPU lane has five slots, and each run in it runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 5 (2 on
 10 or 12 vCPUs; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the five slots together use the
 machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
 `npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
@@ -128,8 +147,14 @@ in all 36 samples, with its CPUs idle at least 25 % in 86 % of them, because a l
 
 A run you know is short takes the quick lane with `--quick`: two slots and a queue of their own, so one test file or
 a lint of a few files does not wait behind `changed` runs. `hosted-db -- --only` takes it by itself. A `--quick` run is
-stopped at 3 minutes (exit 124), so the lane stays quick. On 7 Nov 05:20-06:10Z, 26 of 61 runs in the CPU lane took under
-a minute and held 2 % of its slot time, and those waited a median of 224 s for a slot, 1079 s at most.
+stopped at 3 minutes (exit 124, or 137 if it would not stop) and its containers removed, so the lane stays quick; it takes a command after `--` or
+`scripts/<file>.mjs`, not a named suite. The first in the quick lane's queue waits while the machine has under 2 GiB
+available. On 7 Nov 05:20-07:25Z, 51 of 107 runs in the CPU lane took under a minute and held 1.8 % of its slot time, and
+those waited a median of 239 s for a slot, 1136 s at most.
+
+No run has a memory limit and the machines have no swap, so the kernel may kill the biggest process, whichever run's. A
+run records how many it killed meanwhile (`oomKills`). One that failed meanwhile has the result `oom-killed`, which posts as
+the harness's error, not the change's failure, and pr-loop does not bisect it. If these show, set `EXTRA_SLOTS` to 0.
 
 Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so

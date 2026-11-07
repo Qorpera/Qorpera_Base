@@ -28,6 +28,7 @@ import {
 	copyOptions,
 	customTarget,
 	DROPPED,
+	dockerLabelScript,
 	describeProbes,
 	EXTRA_MEMORY_MIB,
 	EXTRA_PAUSE_SECONDS,
@@ -40,7 +41,10 @@ import {
 	includeRules,
 	joinRecords,
 	KEPT_SLOTS,
+	limitEndScript,
 	MACHINES,
+	OOM_KILLED,
+	oomScript,
 	parseArgs,
 	parseSeed,
 	parseStatus,
@@ -50,12 +54,15 @@ import {
 	pruneScript,
 	QUEUED,
 	QUICK_LIMIT_SECONDS,
+	QUICK_MEMORY_MIB,
 	QUICK_SLOTS,
+	quickMemoryLine,
 	RUNNERS,
 	rankMachines,
 	roomyScript,
 	runCommandLine,
 	runOrder,
+	runResult,
 	runScript,
 	SET_UP,
 	SLOT,
@@ -70,6 +77,7 @@ import {
 	workingTreeFiles,
 	writeWhole,
 } from "./run-on-node.mjs";
+import { statusDescription, statusState } from "./run-on-node-status.mjs";
 
 test("suites map to their commands", () => {
 	assert.deepEqual(suiteCommand("test"), ["npm", "test"]);
@@ -156,7 +164,7 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
 });
 
-test("at most five runs execute at once, four without --front, in arrival order, with two vitest workers each", () => {
+test("the CPU lane has five slots, four without --front, taken in arrival order, with two vitest workers each", () => {
 	assert.equal(CPU_SLOTS, 5);
 	assert.equal(KEPT_SLOTS, 1);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
@@ -204,9 +212,13 @@ test("a hosted-db run narrowed with --only takes the quick lane", () => {
 test("--quick takes the quick lane with a time limit, for one short command", () => {
 	const options = parseArgs(["--quick", "--", "node", "--test", "scripts/x.test.mjs"]);
 	assert.deepEqual([options.quick, options.limit, options.plain], [true, QUICK_LIMIT_SECONDS, false]);
-	assert.equal(parseArgs(["--quick", "npm:test:scripts"]).quick, true);
+	assert.equal(parseArgs(["--quick", "scripts/x.mjs"]).quick, true);
 	// A suite named with --quick does not speak for the suite on the commit: it may have been stopped at the limit.
-	assert.equal(parseArgs(["--quick", "npm:test:scripts"]).plain, false);
+	assert.equal(parseArgs(["--quick", "scripts/x.mjs"]).plain, false);
+	// It passes the CPU lane's queue, so it is for one short command, not a whole suite.
+	for (const suite of ["hosted-db", "test", "npm:test:scripts"]) assert.throws(() => parseArgs(["--quick", suite]), /--quick is for one short command, after -- or scripts/);
+	assert.throws(() => parseArgs(["--quick", "hosted-db", "--", "--scripts"]), /--quick is for one short command/);
+	assert.equal(parseArgs(["--quick", "hosted-db", "--", "--only", "001"]).limit, QUICK_LIMIT_SECONDS);
 	assert.equal(parseArgs(["hosted-db", "--", "--only", "001"]).limit, null);
 	assert.equal(parseArgs(["--", "true"]).limit, null);
 	assert.throws(() => parseArgs(["--quick", "changed"]), /--quick is for one short command, not for changed/);
@@ -227,6 +239,133 @@ test("--quick takes the quick lane with a time limit, for one short command", ()
 	const failed = inner(30, ["bash", "-c", "exit 3"]);
 	assert.equal(failed.status, 3);
 	assert.doesNotMatch(failed.stdout, /quick lane's limit/);
+	// A command's own inner timeout, well before the limit, is its own.
+	const own = inner(30, ["bash", "-c", "exit 124"]);
+	assert.equal(own.status, 124);
+	assert.doesNotMatch(own.stdout, /quick lane's limit/);
+});
+
+test("a --quick run's containers carry its name, and a run the limit stopped has them removed", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const real = join(temporary, "real");
+		const calls = join(temporary, "calls");
+		mkdirSync(real);
+		// A stand-in for docker: it logs its arguments, and answers ps with one container.
+		writeFileSync(join(real, "docker"), `#!/bin/sh\necho "$*" >>${calls}\n[ "$1" = ps ] && echo c0ffee\nexit 0\n`, { mode: 0o755 });
+		const bash = (script) => {
+			const result = spawnSync("bash", ["-c", script], { cwd: temporary, encoding: "utf8", env: { PATH: `${real}:${process.env.PATH}` } });
+			assert.equal(result.status, 0, result.stderr);
+			return result.stdout;
+		};
+		const logged = () => readFileSync(calls, "utf8").trim().split("\n");
+		bash(`${dockerLabelScript("RUN-1")}\ndocker run -d --name a img sleep 1\ndocker create b\ndocker container run c\ndocker container create d\ndocker ps -q\ndocker exec a true\ndocker\ndocker container ls`);
+		assert.deepEqual(logged(), [
+			"run --label qorpera-run=RUN-1 -d --name a img sleep 1",
+			"create --label qorpera-run=RUN-1 b",
+			"container run --label qorpera-run=RUN-1 c",
+			"container create --label qorpera-run=RUN-1 d",
+			"ps -q",
+			"exec a true",
+			"",
+			"container ls",
+		]);
+		// Another step that puts its own directory first on the PATH still reaches docker through the label.
+		rmSync(calls);
+		bash(`${dockerLabelScript("RUN-1")}\nmkdir -p other\nPATH="$PWD/other:$PATH" docker run e`);
+		assert.deepEqual(logged(), ["run --label qorpera-run=RUN-1 --label qorpera-run=RUN-1 e"]);
+		// Only a run that lasted the limit and ended in timeout's exit codes.
+		const end = (seconds, code) => {
+			rmSync(calls, { force: true });
+			writeFileSync(calls, "");
+			return bash(`start=0; end=${seconds}000000000; code=${code}\n${limitEndScript("RUN-1", 180)}`);
+		};
+		for (const code of [124, 137]) {
+			assert.match(end(180, code), /stopped at the quick lane's limit of 180 s/);
+			assert.deepEqual(logged(), ["ps -aq --filter label=qorpera-run=RUN-1", "rm -f -v c0ffee"]);
+		}
+		for (const [seconds, code] of [[179, 124], [180, 1], [180, 0]]) {
+			assert.equal(end(seconds, code), "");
+			assert.deepEqual(logged(), [""]);
+		}
+		// A run killed before it could clean up is pruned with the other old containers.
+		assert.match(pruneScript(), /docker ps -aq --filter label=qorpera-run 2>\/dev\/null\); do c=/);
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
+
+test("a run that failed while the kernel killed for lack of memory is the machine's failure, not the change's", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const vmstat = join(temporary, "vmstat");
+		const status = join(temporary, "status");
+		const run = (kills) => {
+			writeFileSync(vmstat, "oom_kill_other 9\noom_kill 5\n");
+			writeFileSync(status, "");
+			const result = spawnSync("bash", ["-c", `${oomScript(status, vmstat)}\nprintf 'oom_kill ${5 + kills}\\n' >${vmstat}\nnote_oom`], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+			return { out: result.stdout, status: parseStatus(readFileSync(status, "utf8")) };
+		};
+		assert.deepEqual(run(0), { out: "", status: {} });
+		const killed = run(2);
+		assert.equal(killed.status.oom_kills, "2");
+		assert.match(killed.out, /the kernel killed 2 processes on this machine for lack of memory during this run/);
+		// What it cannot read is no finding.
+		const unread = spawnSync("bash", ["-c", `${oomScript(status, join(temporary, "none"))}\nnote_oom`], { encoding: "utf8" });
+		assert.equal(unread.status, 0);
+
+		const installed = { installed: "1", runner: "ci01" };
+		assert.equal(runResult(installed, 0), "passed");
+		assert.equal(runResult(installed, 1), "failed");
+		assert.equal(runResult({ installed: "0", runner: "ci01" }, 90), "install-failed");
+		assert.equal(runResult({ runner: "ci01" }, 91), "setup-failed");
+		assert.equal(runResult({}, 0), "unknown");
+		assert.equal(runResult({ ...installed, oom_kills: "1" }, 137), OOM_KILLED);
+		assert.equal(runResult({ installed: "0", runner: "ci01", oom_kills: "1" }, 90), OOM_KILLED);
+		// A pass stands: the killed process was another run's.
+		assert.equal(runResult({ ...installed, oom_kills: "1" }, 0), "passed");
+		// It posts as the harness's, and pr-loop bisects only "failed".
+		assert.equal(statusState(OOM_KILLED), "error");
+		assert.match(statusDescription({ result: OOM_KILLED, machine: "node01", elapsedSeconds: 60, runner: "ci01" }), /^oom-killed on node 1 in 1m00s \(ci01\): the harness, not the suite$/);
+		// In a run in parts it goes ahead of a part's own failure.
+		const part = (result) => ({ machine: "node01", run: "R", runner: "ci01", result, exitCode: 1, failedSteps: [] });
+		assert.equal(joinRecords([part("failed"), part(OOM_KILLED)], { order: [] }).result, OOM_KILLED);
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
+
+test("the first in the quick lane's queue takes no slot while the machine is short of memory", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const meminfo = join(temporary, "meminfo");
+		const position = (mib) => {
+			if (mib === null) rmSync(meminfo, { force: true });
+			else writeFileSync(meminfo, `MemTotal: 16293124 kB\nMemAvailable: ${mib * 1024} kB\n`);
+			return spawnSync("bash", ["-c", `position=1\n${quickMemoryLine(meminfo)}\necho "$position"`], { encoding: "utf8" }).stdout.trim();
+		};
+		assert.equal(position(QUICK_MEMORY_MIB), "1");
+		assert.equal(position(QUICK_MEMORY_MIB - 1), `1, under ${QUICK_MEMORY_MIB} MiB available`);
+		assert.equal(position(null), `1, under ${QUICK_MEMORY_MIB} MiB available`);
+		const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+		const quick = runScript({ ...base, quick: true });
+		assert.ok(quick.includes(quickMemoryLine()));
+		assert.ok(quick.indexOf(quickMemoryLine()) < quick.indexOf('if [ "$position" = 1 ]; then'));
+		assert.ok(!runScript(base).includes(quickMemoryLine()));
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
+
+test("a rebuilt test machine must hold the pinned Codex", () => {
+	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
+	const manifest = JSON.parse(readFileSync(new URL("../deploy/first-node/native-codex/guest-package-manifest.json", import.meta.url), "utf8"));
+	assert.match(setup, new RegExp(`^CODEX_SHA256=${manifest.nativeCompany.binarySha256}$`, "m"));
+	// The check stops the script before it writes the versions file, without which the machine counts as not set up.
+	assert.ok(setup.indexOf('echo "${CODEX_SHA256}  /opt/qorpera-codex-fence/codex" | sha256sum -c -') > 0);
+	assert.ok(setup.indexOf("sha256sum -c - || {") < setup.indexOf("| tee /etc/qorpera-test-machine-versions"));
+	assert.match(setup, /^set -euo pipefail$/m);
 });
 
 test("a quick run queues for the quick slots only, a normal run for the CPU slots only, with the same logic", () => {
@@ -253,6 +392,8 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 		script
 			// The extra slots are the CPU lane's only.
 			.replace(`${roomyScript()}\n`, "")
+			// The memory floor is the quick lane's only.
+			.replace(`${quickMemoryLine()}\n`, "")
 			.replace(/\t\tif \[ -z "\$slot" \] && roomy; then\n[\s\S]*?\n\t\tfi\n/, "")
 			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
 			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
