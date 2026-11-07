@@ -42,8 +42,42 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 				return [];
 			case "heading":
 				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];
-			case "paragraph":
-				return [h("p", null, children())];
+			case "paragraph": {
+				// An app's link among words: the sentence stays whole, with the name as a link, and the card stands under it.
+				const parts = ("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[];
+				const appOf = (part: MarkedToken) =>
+					links && part.type === "link" ? appLinkName(decodeEntities(part.href)) : undefined;
+				const apps = parts.filter((part) => appOf(part) !== undefined);
+				if (!apps.length || parts.every((part) => appOf(part) !== undefined || !part.raw.trim()))
+					return [h("p", null, children())];
+				return [
+					h(
+						"p",
+						null,
+						parts.flatMap((part): Node[] => {
+							const app = appOf(part);
+							if (app === undefined) return renderTokens([part], depth + 1, links);
+							return [
+								h(
+									"button",
+									{
+										type: "button",
+										class: "folder-link",
+										"data-app-name": app,
+										title: t("Open {name} beside the chat", { name: app }),
+									},
+									renderTokens(
+										("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[],
+										depth + 1,
+										links,
+									),
+								),
+							];
+						}),
+					),
+					...renderTokens(apps, depth + 1, links),
+				];
+			}
 			case "blockquote":
 				return [h("blockquote", null, children())];
 			case "strong":

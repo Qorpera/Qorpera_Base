@@ -23,7 +23,7 @@
 .thread-presence > .person-avatar + .person-avatar, .thread-presence > .thread-presence-more { margin-left: -5px; }
 .thread-presence-more { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 14px; background: var(--pane-strong); box-shadow: 0 0 0 2px var(--header-surface); color: var(--text-muted); font-size: 11px; font-weight: 600; }
 @keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
+.thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; container: thread-body / inline-size; }
 .thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 /* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
 .messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
@@ -935,7 +935,10 @@
 .side-panel-body { position: relative; display: flex; flex: 1; min-height: 0; background: #fff; }
 .side-panel-frame { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
 .side-panel-status { margin: auto; max-width: 34ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
+.side-panel-status.is-over { position: absolute; inset: 0; display: grid; place-content: center; max-width: none; margin: 0; background: #fff; }
 @media (max-width: 760px) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
+/* Where the chat and the panel don't both fit, the panel covers the chat and has Close, as at phone width. */
+@container thread-body (max-width: 42em) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .side-panel { animation: none; } }
 /* An app linked in a message (`app:<name>`): a card in the bubble that opens it beside the chat. */
 .app-card {

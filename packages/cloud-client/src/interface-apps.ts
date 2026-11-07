@@ -17,6 +17,9 @@ export const APP_FILE_MAX_BYTES = 512 * 1024;
 export const APP_MAX_FILES = 64;
 /** What a page of an app may load in all, its entry included. */
 export const APP_MAX_BYTES = 4 * 1024 * 1024;
+/** One video of an app, and an app's videos in all, on top of the rest (a machine writes them; no text tool does). */
+export const APP_VIDEO_FILE_MAX_BYTES = 12 * 1024 * 1024;
+export const APP_VIDEOS_MAX_BYTES = 48 * 1024 * 1024;
 export const APP_NAME_MAX_CHARS = 60;
 export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
@@ -42,7 +45,11 @@ export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 	jpeg: "image/jpeg",
 	gif: "image/gif",
 	webp: "image/webp",
+	mp4: "video/mp4",
+	webm: "video/webm",
 });
+/** The kinds that are videos. */
+export const APP_VIDEO_KINDS: ReadonlySet<string> = new Set(["mp4", "webm"]);
 /** The kinds that are text: an agent writes them with its text tools. */
 export const APP_TEXT_KINDS: ReadonlySet<string> = new Set([
 	"html",

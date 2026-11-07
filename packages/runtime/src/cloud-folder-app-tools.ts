@@ -24,6 +24,7 @@ import {
 	APP_MAX_FILES,
 	APP_READS,
 	APP_TEXT_KINDS,
+	APP_VIDEO_KINDS,
 	type AppManifest,
 	appFileKind,
 	appFolder,
@@ -500,7 +501,11 @@ export function cloudAppTools(options: {
 			reads.push(...listed.entries);
 			const sizes = new Map<string, number>();
 			for (const item of listed.entries)
-				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
+				if (
+					item.kind === "file" &&
+					APP_FILE_TYPES[appFileKind(item.path)] &&
+					!APP_VIDEO_KINDS.has(appFileKind(item.path))
+				)
 					sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
 			for (const file of request.files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
 			const total = [...sizes.values()].reduce((sum, bytes) => sum + bytes, 0);

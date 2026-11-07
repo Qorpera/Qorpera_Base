@@ -54,6 +54,8 @@ so and links the file).
 **Files.** Kinds: `.html .htm .css .js .mjs .json .txt .md .csv .svg .png .jpg .jpeg .gif .webp`. Each file at most
 512 KiB (the write tools' bound), at most 64 files, at most 4 MiB in all. Other kinds may sit in the folder (an agent's
 notes) but are never loaded into the page.
+**Videos** (Jonas, 7 November 2026: demo videos of design ideas): `.mp4 .webm`, each at most 12 MiB and 48 MiB in all, on
+top of the limits above. An agent writes them from a machine or moves them in; no text tool writes one.
 
 **How a page is put together.** The frame has no origin and no network, so the host (the web app, with the member's
 own read authority) reads the entry and the files it names and hands the frame one self-contained page:

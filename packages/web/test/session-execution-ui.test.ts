@@ -311,6 +311,21 @@ describe("room startup usage refresh", () => {
 		expect(answers().map((button) => button.textContent)).toEqual(["Answered", "Answer"]);
 		view.dispose();
 	});
+	it("sends what Enter pressed a moment before Send opened, if the text is still the same", async () => {
+		const f = setup();
+		await settle();
+		const pending = deferred<NativeExecutionConnections>();
+		f.listConnections.mockImplementationOnce(() => pending.promise);
+		refresh();
+		type(f.view, "Hello");
+		const field = f.view.el.querySelector("textarea")!;
+		expect(f.send().disabled).toBe(true);
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		pending.resolve(connections());
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+	});
 	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});

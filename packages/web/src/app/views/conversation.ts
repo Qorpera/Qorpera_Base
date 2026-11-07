@@ -286,6 +286,9 @@ export class ConversationView {
 	readonly #answerStrip: HTMLElement;
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
 	#answerShown: string | undefined;
+	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
+	 * text is still the same. */
+	#sendSoon: { text: string; until: number } | undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -1781,6 +1784,11 @@ export class ConversationView {
 
 	#submit(): void {
 		const text = this.#composer.value;
+		this.#sendSoon = undefined;
+		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
+			this.#sendSoon = { text, until: Date.now() + 2000 };
+			return;
+		}
 		if (
 			this.#submitting ||
 			(!text.trim() && !this.#attachments.count) ||
@@ -1923,6 +1931,11 @@ export class ConversationView {
 			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX ||
 			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
+		if (this.#sendSoon && !this.#send.disabled) {
+			const { text, until } = this.#sendSoon;
+			this.#sendSoon = undefined;
+			if (text === this.#composer.value && Date.now() <= until) queueMicrotask(() => this.#submit());
+		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
