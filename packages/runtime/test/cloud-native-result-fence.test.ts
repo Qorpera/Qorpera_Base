@@ -454,6 +454,32 @@ it("serves a request's composition and then its fence on one socket path", async
 	expect(f.onFailure).not.toHaveBeenCalled();
 });
 
+it("declines a prewarm: no answer and no provider request, and the run goes on", async () => {
+	const compose = vi.fn(async () => ({ input: [] }));
+	const f = await contextFixture(compose);
+	const prewarm = { ...contextRequest(), turnId: "", purpose: "prewarm", items: [] };
+	// Still bound to its thread like every request, and the socket closes without a frame.
+	expect(await exchange(f.service.path, prewarm)).toBeUndefined();
+	expect(f.assertRequest).toHaveBeenCalledTimes(1);
+	expect(f.assertRequest.mock.calls[0][0]).toMatchObject({ purpose: "prewarm" });
+	expect(compose).not.toHaveBeenCalled();
+	expect(f.onFailure).not.toHaveBeenCalled();
+	// As any request: the same id cannot come again.
+	expect(await exchange(f.service.path, prewarm)).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("composes the turn after a declined prewarm", async () => {
+	const f = await contextFixture();
+	expect(
+		await exchange(f.service.path, { ...contextRequest(), turnId: "", purpose: "prewarm", items: [] }),
+	).toBeUndefined();
+	expect(await exchange(f.service.path, contextRequest())).toMatchObject({
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	});
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
 it("fails a composition request when the run takes none", async () => {
 	const f = await fixture();
 	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();

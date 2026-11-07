@@ -8,9 +8,10 @@ export async function nativeCodexFixtureCommand(
 	codexCommand: readonly [string, ...string[]],
 	port: number,
 	compaction?: "local" | "remote-v2",
+	websockets = false,
 ): Promise<{ command: readonly [string, string]; binarySha256: string }> {
 	const wrapper = join(root, "codex-fixture.cjs");
-	const provider = `model_providers.qorpera_fixture={name="${compaction === "remote-v2" ? "OpenAI" : "Offline boundary fixture"}",base_url="http://127.0.0.1:${port}/v1",env_key="QORPERA_OFFLINE_PROBE_KEY",wire_api="responses",requires_openai_auth=false}`;
+	const provider = `model_providers.qorpera_fixture={name="${compaction === "remote-v2" ? "OpenAI" : "Offline boundary fixture"}",base_url="http://127.0.0.1:${port}/v1",env_key="QORPERA_OFFLINE_PROBE_KEY",wire_api="responses",requires_openai_auth=false${websockets ? ",supports_websockets=true" : ""}}`;
 	const compactConfig = compaction
 		? [
 				"-c",
