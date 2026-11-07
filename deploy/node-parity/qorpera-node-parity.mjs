@@ -6,9 +6,10 @@
 //
 // A node's setup here is what the runtime depends on: the Qorpera and LXD systemd units and whether they
 // run, the storage server (NFS) mounts and their options, the LXD projects, networks and storage pools,
-// the non-managed LXD instances (fast host, company machines' hosts), and the node agent's roles and the
-// NAMES of each role's fixed settings. It never prints or stores a setting's value or a credential, and
-// never reads an env file.
+// the non-managed LXD instances (fast host, company machines' hosts) with the NAMES of their configuration
+// keys, and the node agent's roles and the NAMES of each role's fixed settings. It also lists, per project,
+// the configuration key NAMES of the instances that come and go; compare leaves those out. It never prints
+// or stores a configuration or setting value or a credential, and never reads an env file.
 // The node's own label is replaced by "<node>" everywhere, so qorpera-exec-node01 and
 // qorpera-exec-node02 compare equal. The class file lists what may differ on purpose.
 
@@ -17,7 +18,8 @@ import { readdir, readFile, readlink } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-export const SETUP_SCHEMA = "qorpera.node-setup/v1";
+// v2: hosts carry their configuration key names, and `lxd.workloads` lists the rest.
+export const SETUP_SCHEMA = "qorpera.node-setup/v2";
 export const CLASS_SCHEMA = "qorpera.node-parity-class/v1";
 const LABEL = /^[a-z][a-z0-9-]{0,62}$/;
 // Instances placed by the database (runs, sign-ins, company machines, coding and test machines) come and
@@ -60,6 +62,20 @@ function uniqueMap(entries, what) {
 		map.set(key, value);
 	}
 	return Object.fromEntries([...map].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** The NAMES of an instance's configuration keys, never a value: `instance` for a key in its own
+ * configuration, `profile` for one only a profile adds. LXD's own state (`volatile.*`) is left out: LXD
+ * writes it, and it changes as an instance starts and stops. */
+function keyNames(instance) {
+	const own = instance.config ?? {};
+	const expanded = instance.expanded_config ?? instance.expandedConfig ?? {};
+	return Object.fromEntries(
+		[...new Set([...Object.keys(own), ...Object.keys(expanded)])]
+			.filter((key) => !key.startsWith("volatile."))
+			.sort((a, b) => a.localeCompare(b))
+			.map((key) => [key, Object.hasOwn(own, key) ? "instance" : "profile"]),
+	);
 }
 
 /** Turns raw observations into a comparable, value-free setup. Pure. */
@@ -110,13 +126,12 @@ export function normalizeSetup({ label, units, unitFiles, mounts, projects, netw
 	);
 	// Setup hosts only: runs, sign-ins and machines the database places carry their allocation markers,
 	// and image build machines come and go in the build space.
+	const comesAndGoes = (instance) =>
+		Object.keys(instance.config ?? {}).some((key) => PLACED.test(key)) ||
+		instance.config?.["user.qorpera.image_builder"] === "true";
 	const hosts = uniqueMap(
 		instances
-			.filter(
-				(instance) =>
-					!Object.keys(instance.config ?? {}).some((key) => PLACED.test(key)) &&
-					instance.config?.["user.qorpera.image_builder"] !== "true",
-			)
+			.filter((instance) => !comesAndGoes(instance))
 			.map((instance) => {
 				const config = instance.expanded_config ?? instance.expandedConfig ?? instance.config ?? {};
 				return [
@@ -126,10 +141,26 @@ export function normalizeSetup({ label, units, unitFiles, mounts, projects, netw
 						status: instance.status,
 						cpu: config["limits.cpu"] ?? null,
 						memory: config["limits.memory"] ?? null,
+						keys: keyNames(instance),
 					},
 				];
 			}),
 		"instance",
+	);
+	// The rest, for reading: the key names of every instance that comes and goes, merged per project, so
+	// a key set by a script, by hand or by a profile shows. A key is `profile` only if no instance of the
+	// project has it in its own configuration. Never a value, and never an instance name.
+	const workloads = new Map();
+	for (const instance of instances.filter(comesAndGoes)) {
+		const project = n(instance.project);
+		const keys = workloads.get(project) ?? new Map();
+		workloads.set(project, keys);
+		for (const [key, from] of Object.entries(keyNames(instance))) if (keys.get(key) !== "instance") keys.set(key, from);
+	}
+	const lxdWorkloads = Object.fromEntries(
+		[...workloads]
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([project, keys]) => [project, Object.fromEntries([...keys].sort(([a], [b]) => a.localeCompare(b)))]),
 	);
 	const agentRoles = Object.fromEntries(
 		Object.entries(roles)
@@ -154,7 +185,7 @@ export function normalizeSetup({ label, units, unitFiles, mounts, projects, netw
 		label,
 		services,
 		nfs,
-		lxd: { projects: lxdProjects, networks: lxdNetworks, pools: lxdPools, hosts },
+		lxd: { projects: lxdProjects, networks: lxdNetworks, pools: lxdPools, hosts, workloads: lxdWorkloads },
 		agent: { roles: agentRoles, settings },
 	};
 }
@@ -186,19 +217,34 @@ function flatten(value, path, out) {
 /** Differences between two nodes' setups, minus what the class allows. Pure.
  * A class entry in `mayDiffer` is a prefix of a difference path ("nfs › /srv/qorpera/coding",
  * "agent › roles"). `onlyOn: {"<label>": [prefix, …]}` names what only that node has: it must be
- * missing on the other node and present on it. `unusedOnlyOn` lists entries of the two nodes that
- * excused nothing, so a gap that has closed is noticed and its entry removed. */
+ * missing on the other node and present on it. A role's settings go with the role: an entry that
+ * covers `agent › roles › <role>` covers `agent › settings › <role>` too. `unusedOnlyOn` lists entries
+ * of the two nodes that excused nothing, so a gap that has closed is noticed and its entry removed.
+ * The instances that come and go (`lxd › workloads`) are listed by collect, not compared. */
 export function compareSetups(klass, a, b) {
-	for (const setup of [a, b]) if (setup?.schema !== SETUP_SCHEMA) throw new Error("INVALID_NODE_SETUP");
+	for (const setup of [a, b])
+		if (setup?.schema !== SETUP_SCHEMA || !setup.lxd || typeof setup.lxd !== "object") throw new Error("INVALID_NODE_SETUP");
 	if (a.label === b.label) throw new Error("SAME_NODE_TWICE");
 	const c = parseClass(klass);
-	const left = flatten({ services: a.services, nfs: a.nfs, lxd: a.lxd, agent: a.agent }, [], new Map());
-	const right = flatten({ services: b.services, nfs: b.nfs, lxd: b.lxd, agent: b.agent }, [], new Map());
-	const allowed = (path) => c.mayDiffer.some((prefix) => path === prefix || path.startsWith(`${prefix} › `));
+	const compared =({ services, nfs, lxd, agent }) => ({
+		services,
+		nfs,
+		lxd: { projects: lxd.projects, networks: lxd.networks, pools: lxd.pools, hosts: lxd.hosts },
+		agent,
+	});
+	const left = flatten(compared(a), [], new Map());
+	const right = flatten(compared(b), [], new Map());
+	// The paths a class entry may cover for this difference: itself, and for a role's settings its role.
+	const covered = (path) => {
+		const [top, section, role] = path.split(" › ");
+		return top === "agent" && section === "settings" && role !== undefined ? [path, `agent › roles › ${role}`] : [path];
+	};
+	const covers = (prefix, path) => covered(path).some((p) => p === prefix || p.startsWith(`${prefix} › `));
+	const allowed = (path) => c.mayDiffer.some((prefix) => covers(prefix, path));
 	const used = new Set();
 	const only = (label, path) =>
 		(c.onlyOn[label] ?? []).some((prefix) => {
-			const match = path === prefix || path.startsWith(`${prefix} › `);
+			const match = covers(prefix, path);
 			if (match) used.add(JSON.stringify([label, prefix]));
 			return match;
 		});

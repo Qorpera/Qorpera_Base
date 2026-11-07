@@ -125,6 +125,8 @@ test("reports a missing service, a mount option and a missing fast host", () => 
 		result.differences.map((d) => d.path),
 		[
 			"lxd › hosts › qn25b2/qorpera-exec-<node> › cpu",
+			"lxd › hosts › qn25b2/qorpera-exec-<node> › keys › limits.cpu",
+			"lxd › hosts › qn25b2/qorpera-exec-<node> › keys › limits.memory",
 			"lxd › hosts › qn25b2/qorpera-exec-<node> › memory",
 			"lxd › hosts › qn25b2/qorpera-exec-<node> › status",
 			"lxd › hosts › qn25b2/qorpera-exec-<node> › type",
@@ -180,7 +182,117 @@ test("build machines are left out; sizes come from the expanded configuration", 
 		o.instances[0].config = {};
 		o.instances[0].expanded_config = { "limits.cpu": "8", "limits.memory": "16GiB" };
 	});
-	assert.deepEqual(compareSetups(klass, raw("node01", 1), b).differences, []);
+	// The sizes match. Only where the keys come from differs: here a profile sets them.
+	assert.deepEqual(
+		compareSetups(klass, raw("node01", 1), b).differences.map((d) => [d.path, d.node01, d.node02]),
+		[
+			["lxd › hosts › qn25b2/qorpera-exec-<node> › keys › limits.cpu", '"instance"', '"profile"'],
+			["lxd › hosts › qn25b2/qorpera-exec-<node> › keys › limits.memory", '"instance"', '"profile"'],
+		],
+	);
+});
+
+test("the configuration key names of every instance, never a value or a placed instance's name", () => {
+	const a = raw("node01", 1, (o) => {
+		o.instances[0].config["user.hand-note"] = "HAND-VALUE";
+		o.instances[0].config["volatile.eth0.hwaddr"] = "00:16:3e:00:00:01";
+		o.instances[0].expanded_config = { ...o.instances[0].config, "security.devlxd": "false" };
+		o.instances[1].config["cloud-init.user-data"] = "PRIVATE-BOOT-DATA";
+		o.instances[1].expanded_config = { ...o.instances[1].config, "boot.mode": "PROFILE-MODE" };
+		o.instances.push(
+			{
+				project: "qn25b2",
+				name: "qorpera-1bbbb",
+				type: "virtual-machine",
+				status: "Stopped",
+				config: { "user.qorpera.acquisition_id": "y", "boot.mode": "OWN-MODE", "volatile.uuid": "z" },
+				expanded_config: {
+					"user.qorpera.acquisition_id": "y",
+					"boot.mode": "OWN-MODE",
+					"cloud-init.user-data": "PROFILE-DATA",
+					"security.secureboot": "false",
+					"volatile.uuid": "z",
+				},
+			},
+			{
+				project: "qorpera-build",
+				name: "qorpera-image-build-1",
+				type: "virtual-machine",
+				status: "Running",
+				config: { "user.qorpera.image_builder": "true", "user.qorpera.purpose": "build" },
+			},
+		);
+	});
+	assert.deepEqual(a.lxd.hosts["qn25b2/qorpera-exec-<node>"].keys, {
+		"limits.cpu": "instance",
+		"limits.memory": "instance",
+		"security.devlxd": "profile",
+		"user.hand-note": "instance",
+	});
+	// Merged per project: a name is `profile` only if no instance has it in its own configuration,
+	// whichever instance comes first.
+	assert.deepEqual(a.lxd.workloads, {
+		qn25b2: {
+			"boot.mode": "instance",
+			"cloud-init.user-data": "instance",
+			"security.secureboot": "profile",
+			"user.qorpera.acquisition_id": "instance",
+		},
+		"qorpera-build": { "user.qorpera.image_builder": "instance", "user.qorpera.purpose": "instance" },
+	});
+	const text = JSON.stringify(a);
+	for (const value of ["VALUE", "DATA", "MODE", "00:16:3e", "1aaaa", "1bbbb", "image-build", "volatile."])
+		assert.equal(text.includes(value), false, value);
+});
+
+test("compare leaves the instances that come and go out; a host's hand-made key is a difference", () => {
+	const a = raw("node01", 1, (o) => {
+		o.instances[1].config["user.qorpera.office_id"] = "x";
+		o.instances[0].config["user.hand-note"] = "x";
+	});
+	assert.deepEqual(compareSetups(klass, a, raw("node02", 2)), {
+		identical: false,
+		differences: [
+			{
+				path: "lxd › hosts › qn25b2/qorpera-exec-<node> › keys › user.hand-note",
+				node01: '"instance"',
+				node02: null,
+				allowed: false,
+			},
+		],
+		unusedOnlyOn: [],
+	});
+});
+
+test("a role's settings go with the role", () => {
+	const a = raw("node01", 1, (o) => {
+		o.nodeJson.roles.orchestrator = { fixed: { QORPERA_B: "unread" }, secretKeys: ["QORPERA_C"] };
+	});
+	const b = raw("node02", 2);
+	const paths = (entries) =>
+		compareSetups({ schema: CLASS_SCHEMA, ...entries }, a, b).differences.map((d) => [d.path, d.allowed]);
+	const settings = (allowed) => [
+		["agent › settings › orchestrator › fixed", allowed],
+		["agent › settings › orchestrator › secretKeys", allowed],
+	];
+	assert.deepEqual(paths({ mayDiffer: [] }), settings(false));
+	assert.deepEqual(paths({ mayDiffer: ["agent › roles"] }), settings(true));
+	assert.deepEqual(paths({ mayDiffer: ["agent › roles › orchestrator"] }), settings(true));
+	// Another role, or a part of the role, does not cover them.
+	assert.deepEqual(
+		paths({ mayDiffer: ["agent › roles › provider", "agent › roles › orchestrator › release"] }),
+		settings(false),
+	);
+	// A node-only role takes its settings with it, and its entry counts as used.
+	assert.deepEqual(compareSetups({ schema: CLASS_SCHEMA, onlyOn: { node01: ["agent › roles › orchestrator"] } }, a, b), {
+		identical: true,
+		differences: [],
+		unusedOnlyOn: [],
+	});
+	assert.equal(
+		compareSetups({ schema: CLASS_SCHEMA, onlyOn: { node02: ["agent › roles › orchestrator"] } }, a, b).identical,
+		false,
+	);
 });
 
 test("an onlyOn entry that excuses nothing is listed, without changing the verdict", () => {
@@ -200,6 +312,12 @@ test("refuses malformed input", () => {
 	assert.throws(() => compareSetups({ schema: "x" }, raw("node01", 1), raw("node02", 2)), /INVALID_PARITY_CLASS/);
 	assert.throws(() => compareSetups({ schema: CLASS_SCHEMA, onlyOn: { node01: "x" } }, raw("node01", 1), raw("node02", 2)), /INVALID_PARITY_CLASS/);
 	assert.throws(() => compareSetups(klass, { schema: "x" }, raw("node02", 2)), /INVALID_NODE_SETUP/);
+	// A file collected before the key names (v1) would show every host key as a difference.
+	assert.throws(
+		() => compareSetups(klass, { ...raw("node01", 1), schema: "qorpera.node-setup/v1" }, raw("node02", 2)),
+		/INVALID_NODE_SETUP/,
+	);
+	assert.throws(() => compareSetups(klass, { ...raw("node01", 1), lxd: null }, raw("node02", 2)), /INVALID_NODE_SETUP/);
 	assert.throws(() => compareSetups(klass, raw("node01", 1), raw("node01", 1)), /SAME_NODE_TWICE/);
 });
 
