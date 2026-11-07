@@ -8,6 +8,7 @@ import {
 import {
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcMissing,
+	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathVersionChanged,
 } from "@qorpera/runtime/cloud-company-path-refusal";
 import type { CloudNativeFenceRequest } from "@qorpera/runtime/cloud-native-result-fence";
@@ -191,6 +192,55 @@ describe("cloud Company File path gateway", () => {
 		await expect(f.gateway.fenceContextView(frame("request-4"), [], f.signal)).rejects.toThrow(
 			"Native context provenance was not confirmed",
 		);
+	});
+
+	it("checks the run in one call, with the run's own arguments, and answers the authority it read", async () => {
+		const f = fixture();
+		const authority = { schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA, validForMs: 30_000, identity: f.identity };
+		const check = vi.fn(async (_args: Record<string, unknown>) => authority as unknown);
+		f.overrides.set("qorpera_check_native_run", check);
+		await expect(f.gateway.checkRun(f.signal, 20_000)).resolves.toEqual(authority);
+		expect(check.mock.calls[0][0]).toEqual({ p_environment_id: f.identity.environmentId, p_binding: f.binding });
+	});
+
+	it("gives the run check back to the separate calls while the database lacks it, and never a refusal it answered past", async () => {
+		const authority = (f: ReturnType<typeof fixture>) => ({
+			schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA,
+			validForMs: 30_000,
+			identity: f.identity,
+		});
+		// PostgREST finds no such function: asked once, then not again.
+		const missing = fixture();
+		const lacking = vi.fn(async () => {
+			throw new CloudCompanyPathRpcMissing();
+		});
+		missing.overrides.set("qorpera_check_native_run", lacking);
+		await expect(missing.gateway.checkRun(missing.signal)).resolves.toBeUndefined();
+		await expect(missing.gateway.checkRun(missing.signal)).resolves.toBeUndefined();
+		expect(lacking).toHaveBeenCalledOnce();
+		// The native host's entry point refuses a call it does not list: before any answer that is the same.
+		const unlisted = fixture();
+		const refusing = vi.fn(async () => {
+			throw new CloudCompanyPathRpcRefusal("native host call is refused");
+		});
+		unlisted.overrides.set("qorpera_check_native_run", refusing);
+		await expect(unlisted.gateway.checkRun(unlisted.signal)).resolves.toBeUndefined();
+		await expect(unlisted.gateway.checkRun(unlisted.signal)).resolves.toBeUndefined();
+		expect(refusing).toHaveBeenCalledOnce();
+		// Once it has answered this run, a refusal is the run's.
+		const answered = fixture();
+		answered.overrides.set("qorpera_check_native_run", async () => authority(answered));
+		await answered.gateway.checkRun(answered.signal);
+		answered.overrides.set("qorpera_check_native_run", refusing);
+		await expect(answered.gateway.checkRun(answered.signal)).rejects.toBeInstanceOf(CloudCompanyPathRpcRefusal);
+		// Any other failure says nothing of the call: it is the caller's to ask again.
+		const lost = fixture();
+		lost.overrides.set("qorpera_check_native_run", async () => {
+			throw new Error("PRIVATE_TIMEOUT");
+		});
+		await expect(lost.gateway.checkRun(lost.signal)).rejects.toThrow("PRIVATE_TIMEOUT");
+		lost.overrides.set("qorpera_check_native_run", async () => authority(lost));
+		await expect(lost.gateway.checkRun(lost.signal)).resolves.toEqual(authority(lost));
 	});
 
 	it("fences a model request in one call and falls back only when the database lacks it", async () => {

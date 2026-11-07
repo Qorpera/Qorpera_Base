@@ -12,6 +12,7 @@ import {
 	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeFolderReports,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
@@ -22,7 +23,9 @@ import {
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const companyId = randomUUID();
 const runId = randomUUID();
@@ -406,6 +409,60 @@ describe("cloud-owned native tool boundary", () => {
 		const { result: full } = await crowded.call();
 		expect(full.content.originalBytes).toBe(Buffer.byteLength(many));
 		expect(full.content.text).not.toContain("whsec_0123456789");
+	});
+
+	it("keeps a page whole that leaves the envelope its reserve, with the longest call id and model a binding allows", async () => {
+		const { authority } = nativeToolAuthorityFixture();
+		const identity = {
+			...authority.identity,
+			audienceKind: "member_private" as const,
+			audienceUserId: randomUUID(),
+			staffVersion: Number.MAX_SAFE_INTEGER,
+			sponsorVersion: Number.MAX_SAFE_INTEGER,
+			providerConnectionVersion: Number.MAX_SAFE_INTEGER,
+			model: "m".repeat(160),
+		};
+		// What a tool sends when it has measured a page to its last byte, as fitsOneResult does.
+		const page = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 2);
+		expect(fitsOneResult(page)).toBe(true);
+		expect(fitsOneResult(`${page}x`)).toBe(false);
+		const { tool } = fixture({
+			name: "company_read",
+			execute: async () => ({ kind: "text", value: page, companyReadId: randomUUID() }),
+		});
+		const boundary = new CloudNativeToolBoundary({
+			companyId: identity.companyId,
+			runId: identity.runId,
+			identity,
+			tools: [tool],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		const response = await boundary.invoke("c".repeat(160), "qorpera", "company_read", { path: "a.md" });
+		const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
+		expect(result.content).toMatchObject({ text: page, truncated: false });
+		expect(Buffer.byteLength(response.contentItems[0].text)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
+	});
+
+	it("holds a folder report for a later result rather than cut an answer that fits without it", async () => {
+		const page = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 2);
+		const report = { saved: 1, notSaved: [{ path: `${"long/".repeat(600)}a.md`, outcome: "conflict" }] };
+		const next = vi.fn<CloudNativeFolderReports["next"]>(async () => ({ mark: `${runId}:1`, report }));
+		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: page }));
+		const { call } = fixture({ execute }, undefined, [], { next });
+		const full = await call("call_1");
+		expect(full.result.content).toMatchObject({ text: page, truncated: false });
+		expect(full.result.companyFolder).toBeUndefined();
+		// A report that was not shown is asked for again, from the same place, and comes with the next answer it fits.
+		execute.mockResolvedValue({ kind: "text", value: "short" });
+		const short = await call("call_2");
+		expect(next.mock.calls[1][0]).toBe(next.mock.calls[0][0]);
+		expect(short.result.companyFolder).toEqual(report);
+		// An answer too large for a result either way still gives the report its room.
+		execute.mockResolvedValue({ kind: "text", value: "y".repeat(MAX_CLOUD_TOOL_RESULT_BYTES) });
+		const over = await call("call_3");
+		expect(over.result.companyFolder).toEqual(report);
+		expect(over.result.content.truncated).toBe(true);
 	});
 
 	it("shows the run's desktop folder report in a call's answer, and asks past it once the model got it (F3 4f-2b)", async () => {

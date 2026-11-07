@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { type LxdHostInventoryClient, LxdUnixClient } from "./lxd-client.ts";
 import { inspectLxdHostInventorySocket } from "./lxd-office-physical-host.ts";
@@ -10,6 +9,7 @@ import {
 	reconcileRuntimeNodeInventory,
 } from "./runtime-node-inventory.ts";
 import { readNodeReleaseImages } from "./runtime-node-releases.ts";
+import { timeOrderedUuid } from "./time-ordered-uuid.ts";
 
 export type RuntimeNodeObserverMethod =
 	| "qorpera_runtime_node_inventory_context"
@@ -61,7 +61,7 @@ export class RuntimeNodeInventoryObserver {
 			const signal = AbortSignal.any([caller, AbortSignal.timeout(15000)]),
 				started = performance.now();
 			const observedAt = new Date().toISOString(),
-				observationId = randomUUID();
+				observationId = timeOrderedUuid();
 			const before = await this.#host(this.#policy, signal);
 			signal.throwIfAborted();
 			const observation = {

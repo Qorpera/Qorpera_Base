@@ -597,7 +597,7 @@ has unsaved changes (4a).
   (`HttpCompanyComputerNativeEndpoint`, a new `folder_report` operation under that run's holder credential), and adds
   the report to the result: a desktop action's result, a refused action's and any other tool's (a `company_read`, a
   connector's call) alike. So a quiet save the folder service publishes after the desktop action returned reaches the
-  run's next result, whatever the run calls next. The office service builds a run's report from the views it opened
+  run's next result with room for it, whatever the run calls next. The office service builds a run's report from the views it opened
   for that run: their commits since the last one shown and the refusals since.
   - Each ask names the last report the model got: one in a result that was the call's answer and passed the release
     checks (the run's authority and its captures). The office service drops only what was shown, so a report whose
@@ -608,7 +608,11 @@ has unsaved changes (4a).
     and reads the core at most once a second.
   - The office service packs a report into 2 KiB: how many paths were saved, at most 20 paths it did not take (with
     why) and one refusal; `more` says the rest comes in a later result. The boundary puts a report of at most 4 KiB
-    into the result before the content, and cuts the content to the room left (`MAX_CLOUD_TOOL_RESULT_BYTES`).
+    into the result before the content, and cuts the content to the room left (`MAX_CLOUD_TOOL_RESULT_BYTES`). Since
+    7 November 2026 it does so only for an answer too long for a result anyway: an answer that fits without the report
+    keeps its room, since a page's `nextOffset` sits at its end, and the report waits for the next result with room. It
+    is not lost, because it counts as shown only once a result carried it. So a run paging a long file sees a refusal
+    late by as many pages as it reads in a row.
 - **A drain's report.** At a takeover the office service keeps, under the id of the run that held the desktop, the old
   view's commits since the last one shown and the drain boundary's answer, refusals included. The same ask puts them
   into that run's next tool result, whatever its tool (while the member holds the screen the run's desktop actions are

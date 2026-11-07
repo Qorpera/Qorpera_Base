@@ -9,6 +9,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
@@ -50,8 +51,6 @@ const HOOK_REQUEST_KEYS = {
 	mailbox: ["action", "kind", "localPart", "purpose", "operationKey"],
 	change: ["action", "hook", "operationKey"],
 } as const;
-/** Room for the result fence's provenance around a piece of an event, as read_context reserves. */
-const PIECE_FENCE_RESERVE_BYTES = 3072;
 /** The room a piece always leaves its body: headers that would take more are cut. */
 const PIECE_BODY_FLOOR_BYTES = 1024;
 
@@ -70,7 +69,7 @@ function fencedBytes(value: Record<string, unknown>): number {
  * every value to the same number of characters.
  */
 function fittedEventPiece(receipt: Record<string, unknown>): Record<string, unknown> {
-	const budget = MAX_CLOUD_TOOL_RESULT_BYTES - PIECE_FENCE_RESERVE_BYTES;
+	const budget = MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
 	if (fencedBytes(receipt) <= budget) return receipt;
 	const offset = receipt.offset as number;
 	const characters = receipt.encoding === "utf8" ? [...(receipt.text as string)] : undefined;

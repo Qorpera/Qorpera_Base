@@ -212,7 +212,10 @@ through `qorpera_folder_native_run_plain`, which takes neither the mutex nor the
 lock stays, as in the locked check: for a wake run, the sponsor test takes the provider connection FOR SHARE (an
 authorization lock, kept). Describe reads only rows that admission, completion, renewal, resume and handoff write, and
 none of those ever took the mutex, so it never ordered describe against them.
-Every write still takes it, and so do the context fence and any function that calls describe as its run check (test 674).
+Every write still takes it, and so do the context fence and any function that calls describe as its run check (test 674),
+except the run's check around a tool call (`qorpera_check_native_run`, 20260930618000): describe directly under it as the
+entry point reads the same plain way. Its read-set check comes first and takes the mutex within 3 s, so the mutex comes
+before a wake run's provider connection, as on every path (tests 467, 1103).
 Since 20260930488000 the connector tool list (`qorpera_list_native_connector_tools`) reads the same way as the entry
 point: it reads only the agent's grants, their secrets, the connector operations, the agent's staff row and the
 company's members, which a run's own steps never write. It takes its grants FOR SHARE by id and then their secrets

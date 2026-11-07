@@ -18,6 +18,7 @@ import {
 } from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
@@ -1155,6 +1156,35 @@ const idle = { at: 0, cpuUsec: 0, ioBytes: 0 };
 const firstBoot = { op: "restarted", machine: id(6) };
 const recorded = (f: Fixture) =>
 	f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").map((call) => call.args.p_ended);
+
+describe("company machine host's passes over the signal that lasts as long as its process", () => {
+	it("hangs nothing off it (abort-scope.ts), and its end still reaches a step", async () => {
+		const f = await fixture();
+		const lasting = new AbortController();
+		const watch = watchAbortSignalAny();
+		try {
+			await f.host.pass(lasting.signal);
+			f.running();
+			await f.host.pass(lasting.signal);
+			await f.host.pass(lasting.signal);
+			expect(watch.made()).toBeGreaterThan(0);
+			expect(watch.on(lasting.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
+		let seen: AbortSignal | undefined;
+		f.client.execInstance.mockImplementation(async (_project, _name, _asked, signal?: AbortSignal) => {
+			seen = signal;
+			await new Promise((_settle, refuse) => signal?.addEventListener("abort", () => refuse(signal.reason)));
+		});
+		const passing = f.host.pass(lasting.signal);
+		for (let tries = 0; tries < 400 && !seen; tries++) await new Promise((settle) => setTimeout(settle, 5));
+		expect(seen?.aborted).toBe(false);
+		lasting.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await passing.catch(() => undefined);
+		expect(seen?.aborted).toBe(true);
+	});
+});
 
 describe("company machine host with the node's folder service (F3 6d)", () => {
 	it("opens the boot's own view once SQL knows the boot, and hands it to the guest on stdin alone", async () => {

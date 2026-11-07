@@ -119,11 +119,14 @@ export class ObjectGatewayJournal {
 			.sort();
 	}
 
-	async audit(event: Record<string, unknown>): Promise<void> {
+	/** Appends the events with one sync, however many. */
+	async audit(...events: Record<string, unknown>[]): Promise<void> {
 		await this.exclusive("audit", async () => {
 			await this.#directory(this.#root);
-			const encoded = `${JSON.stringify(event)}\n`;
-			if (Buffer.byteLength(encoded) > 16 * 1024) throw new Error("Gateway audit event is too large");
+			const lines = events.map((event) => `${JSON.stringify(event)}\n`);
+			if (lines.some((line) => Buffer.byteLength(line) > 16 * 1024))
+				throw new Error("Gateway audit event is too large");
+			const encoded = lines.join("");
 			const handle = await open(
 				join(this.#root, "audit.jsonl"),
 				constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,

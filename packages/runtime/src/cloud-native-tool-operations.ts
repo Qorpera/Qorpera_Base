@@ -271,6 +271,8 @@ export class CloudNativeToolOperations {
 		 * folder-v2 change that was not saved): the call is observed as denied with this category, a replay too, never
 		 * as succeeded. Read from the answer, which is all a replay has. */
 		refused?: (content: CloudToolContent) => CloudRuntimeErrorCategory | undefined;
+		/** How long `perform` may take, in all (30 s unless it says): for an effect that asks again by itself. */
+		performMs?: number;
 		signal: AbortSignal;
 		observation?: CloudRuntimeObservationSpan;
 	}): Promise<CloudToolContent> {
@@ -451,7 +453,7 @@ export class CloudNativeToolOperations {
 							signal: requestSignal,
 						}),
 					signal,
-					30_000,
+					options.performMs ?? 30_000,
 				);
 				// An effect may have happened even if this or completion fails. Its executing receipt remains a fence.
 				signal.throwIfAborted();

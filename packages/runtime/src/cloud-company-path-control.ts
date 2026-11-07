@@ -91,6 +91,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_record_native_context_view",
 			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",
+			"qorpera_check_native_run",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",
@@ -317,8 +318,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						throw new CloudCompanyPathRpcRefusal((value as { message: string }).message);
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
-					// Only the one-call fence acts on a missing function; every other call keeps its category.
-					if (method === "qorpera_fence_native_context" && response.status === 404 && postgrestError("PGRST202"))
+					// Only the one-call fence and run check act on a missing function; every other call keeps its category.
+					if (
+						(method === "qorpera_fence_native_context" || method === "qorpera_check_native_run") &&
+						response.status === 404 &&
+						postgrestError("PGRST202")
+					)
 						throw new CloudCompanyPathRpcMissing();
 					if (
 						response.status === 409 &&

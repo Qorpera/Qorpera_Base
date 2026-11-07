@@ -546,6 +546,31 @@ it("bounds an uncooperative effect and keeps its outcome uncertain", async () =>
 	expect([...f.ledger.values()][0].state).toBe("executing");
 });
 
+it("gives an effect the time it asks for, settles its receipt, and bounds it there", async () => {
+	vi.useFakeTimers();
+	const f = await fixture();
+	let answer: (output: Awaited<ReturnType<typeof f.perform>>) => void = () => undefined;
+	f.perform.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const result = f.execute({ performMs: 300_000 });
+	await vi.advanceTimersByTimeAsync(299_000);
+	answer({ content: { kind: "json", value: { changed: true } } });
+	await expect(result).resolves.toEqual({ kind: "json", value: { changed: true } });
+	expect([...f.ledger.values()][0].state).toBe("completed");
+
+	const other = await fixture();
+	other.perform.mockImplementationOnce(async () => new Promise<never>(() => undefined));
+	const bounded = expect(other.execute({ performMs: 300_000 })).rejects.toThrow("outcome unconfirmed");
+	await vi.advanceTimersByTimeAsync(300_000);
+	await bounded;
+	expect(other.perform.mock.calls[0][1].signal.aborted).toBe(true);
+	expect([...other.ledger.values()][0].state).toBe("executing");
+});
+
 it.each([
 	{ tool: 7 },
 	{ toolVersion: 1 },

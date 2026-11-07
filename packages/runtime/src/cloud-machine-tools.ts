@@ -17,20 +17,25 @@ import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
+	CloudMachineCommandUnanswered,
 	cloudMachineCommandHead,
 	cloudMachineCommandRefusal,
 } from "./cloud-machine-command-http.ts";
 import {
+	CLOUD_TOOL_REQUEST_MAX_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	CloudControlRefusalRelay,
 	type CloudNativeTool,
+	type CloudToolContent,
 	type CloudToolContext,
 	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -45,6 +50,12 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
+/** How long machine_run's start may take, in all, with its sends again: the limit of one tool request. */
+export const CLOUD_MACHINE_START_ANSWER_MS = CLOUD_TOOL_REQUEST_MAX_MS;
+/** How long machine_read waits: what the gateway and the executor give one request, not the 5 s of a database read. It
+ * crosses the executor and the machine (0.7 s when all is well), and one given up sooner costs the agent a model round
+ * to ask again. A read leaves nothing open, so it is not sent again. */
+export const CLOUD_MACHINE_READ_MS = 30_000;
 /** How often a waiting worker looks at the machine's status again. */
 const WAIT_STEP_MS = 5000;
 
@@ -72,7 +83,8 @@ function carried(
 	before: CloudMachineCommandFolder | undefined,
 	folder: CloudMachineCommandFolder | undefined,
 ): CloudMachineCommandFolder | undefined {
-	if (!before || !folder) return folder;
+	if (!before) return folder;
+	if (!folder) return before;
 	const {
 		notSaved: _notSaved,
 		moreNotSaved: _more,
@@ -160,7 +172,7 @@ export const CLOUD_MACHINE_READ_DESCRIPTION =
 	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused). " +
 	FOLDER_REPORT;
 /** A worker waits for its commands within its own run. */
-export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCRIPTION} waitSeconds (1 to 300) first waits until the command ends or that time passes, then reads; no model turn is spent.`;
+export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCRIPTION} waitSeconds (1 to 300) waits until the command ends or that time passes, and answers at once when it has already ended; no model turn is spent.`;
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION = `Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result. ${FOLDER_REPORT}`;
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
 	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server, unless a waiting machine needs that disk; otherwise, or if that server is full or gone, it starts fresh with an empty disk. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
@@ -272,6 +284,48 @@ export function cloudMachineTools(options: {
 		if (result.schema !== "qorpera.machine-status/v1") throw new Error("Machine status differs");
 		return result as { workStopped?: true; machine?: MachineView | null; command?: { state: string } | null };
 	};
+	/**
+	 * machine_run's start, sent again as it was only while the executor gives no answer AND the kernel has no record of
+	 * the command: the case an executor's freeze leaves, a start that never reached the database, whose open receipt
+	 * would refuse everything the run does after it (four runs on 6 and 7 Nov 2026).
+	 *
+	 * A record means the start may have reached the machine, and then a send again could report what it did not do, or
+	 * reach a command that already ended and open its folder window for good. So at the first record, or a machine no
+	 * longer running, this stops and the outcome stays unknown, as it always did. Only a first send's refusal says
+	 * nothing started; after any unanswered send a refusal proves only that that send started nothing, so it too leaves
+	 * the outcome unknown. What the executor did answer (a refusal, its 403) is never sent again. The command id is the
+	 * receipt's on every send, the guest runs it at most once, and each send is authorized on the executor as the first.
+	 */
+	const startWhileUnrecorded = async (
+		machine: string,
+		commandId: string,
+		send: () => Promise<CloudMachineCommandReceipt>,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> => {
+		const unknown = () => new Error("Machine command outcome unknown");
+		for (let sends = 0; ; ) {
+			try {
+				return await send();
+			} catch (error) {
+				signal.throwIfAborted();
+				if (error instanceof CloudMachineCommandUnanswered) sends += 1;
+				else if (sends === 0) throw error;
+				else throw unknown();
+			}
+			for (let waits = sends - 1; ; waits += 1) {
+				await pause(Math.min(15_000, 1000 * 2 ** Math.min(waits, 4)), signal);
+				let now: Awaited<ReturnType<typeof status>>;
+				try {
+					now = await status(machine, commandId, signal);
+				} catch {
+					signal.throwIfAborted();
+					continue;
+				}
+				if (now.workStopped || now.machine?.state !== "running" || now.command !== null) throw unknown();
+				break;
+			}
+		}
+	};
 	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped. No model
 	 * turn is spent. A failed look is only a failed look; the answer comes after the wait either way. */
 	const waitUntil = async (
@@ -305,7 +359,8 @@ export function cloudMachineTools(options: {
 				/[<>&\u2028\u2029]/g,
 				(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
 			),
-		) <= 4096;
+		) <=
+		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
 	const receipt = (value: CloudMachineCommandReceipt, machine: string) => {
 		let shown: CloudMachineCommandReceipt = value;
 		// A handle without a preview is still a complete, honest cursor.
@@ -552,21 +607,28 @@ export function cloudMachineTools(options: {
 				},
 				signal: context.signal,
 				observation: context.observation,
+				performMs: CLOUD_MACHINE_START_ANSWER_MS,
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
 				perform: async (_operation, effect) => {
 					let started: CloudMachineCommandReceipt;
 					try {
-						started = await options.gateway.start(
-							scope,
-							{
-								commandId: effect.receiptId,
-								inputSha256: effect.inputSha256,
-								command: String(input.command),
-								timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
-								notify: input.notify === true,
-							},
+						started = await startWhileUnrecorded(
+							machine.name,
+							effect.receiptId,
+							() =>
+								options.gateway.start(
+									scope,
+									{
+										commandId: effect.receiptId,
+										inputSha256: effect.inputSha256,
+										command: String(input.command),
+										timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
+										notify: input.notify === true,
+									},
+									effect.signal,
+								),
 							effect.signal,
 						);
 					} catch (error) {
@@ -638,41 +700,86 @@ export function cloudMachineTools(options: {
 						state: machine.state,
 					},
 				);
-			// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
-			// or the time passed. It looks at the kernel's status, not at the machine; the read below answers.
+			// What the executor reports once stays with the answer, whichever read it came on, a refusal or a stop too: it
+			// spends a report when it tells it (6e-2a).
+			let folder: CloudMachineCommandFolder | undefined;
+			const told = (answer: CloudToolContent): CloudToolContent =>
+				folder === undefined || answer.kind !== "text"
+					? answer
+					: {
+							kind: "text",
+							value: cloudToolJsonText({
+								...(JSON.parse(answer.value) as Record<string, JsonValue>),
+								companyFolder: folder as unknown as JsonValue,
+							}),
+						};
+			const page = async (): Promise<{ content: CloudToolContent; ended: boolean }> => {
+				let limit = Number(query.limit ?? 4096);
+				for (;;) {
+					let read: unknown;
+					try {
+						read = await cloudToolRequest(
+							(signal) =>
+								options.gateway.read(
+									{ machineId: machine.machineId },
+									parseCloudCodingCommandRead({ ...query, limit }),
+									signal,
+								),
+							context.signal,
+							CLOUD_MACHINE_READ_MS,
+						);
+					} catch (error) {
+						return { content: told(commandGone(error, machine.name)), ended: true };
+					}
+					const got = parseCloudMachineCommandReceipt(read);
+					check(context);
+					folder = carried(folder, got.companyFolder);
+					const shown: CloudMachineCommandReceipt = folder ? { ...got, companyFolder: folder } : got;
+					if (fits({ machine: machine.name, ...shown }))
+						return {
+							content: receipt(shown, machine.name),
+							// Running and unconfirmed may yet go either way (the tool's own words).
+							ended: got.state !== "running" && got.state !== "unconfirmed",
+						};
+					if (limit === 4) throw new Error("Machine command page exceeds result budget");
+					limit = Math.max(4, Math.floor(limit / 2));
+				}
+			};
 			if (waitSeconds !== undefined) {
+				// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
+				// or the time passed. It looks at the kernel's status, which also says whether its work was stopped. A
+				// command may have ended long before the kernel hears of it, and most short ones have by the time the
+				// model reads them (7 Nov 2026): after the first look that finds it running, the machine is asked once.
+				// That read is a look too: if it fails, the wait goes on. The read below answers otherwise.
+				let asked = false;
+				let answer: CloudToolContent | undefined;
 				const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
 					const now = await status(machine.name, String(query.commandId), context.signal);
 					if (now.workStopped) return "stopped";
-					return now.machine?.state !== "running" || now.command?.state !== "running";
+					if (now.machine?.state !== "running" || now.command?.state !== "running") return true;
+					if (asked) return false;
+					asked = true;
+					const first = await page();
+					if (first.ended) answer = first.content;
+					return first.ended;
 				});
 				check(context);
-				if (outcome === "stopped") return workStopped();
+				if (outcome === "stopped") return told(workStopped());
+				if (answer) return answer;
 			}
-			let limit = Number(query.limit ?? 4096);
-			let folder: CloudMachineCommandFolder | undefined;
-			for (;;) {
-				let read: unknown;
-				try {
-					read = await cloudToolRequest(
-						(signal) =>
-							options.gateway.read(
-								{ machineId: machine.machineId },
-								parseCloudCodingCommandRead({ ...query, limit }),
-								signal,
-							),
-						context.signal,
-					);
-				} catch (error) {
-					return commandGone(error, machine.name);
-				}
-				const got = parseCloudMachineCommandReceipt(read);
-				check(context);
-				folder = carried(folder, got.companyFolder);
-				const page: CloudMachineCommandReceipt = folder ? { ...got, companyFolder: folder } : got;
-				if (fits({ machine: machine.name, ...page })) return receipt(page, machine.name);
-				if (limit === 4) throw new Error("Machine command page exceeds result budget");
-				limit = Math.max(4, Math.floor(limit / 2));
+			try {
+				return (await page()).content;
+			} catch (error) {
+				// The executor has spent what it reports once, on a read before this one, and a run that is still going can
+				// act on it, so it gets it now. A stopped run's goes with it: nothing would read it.
+				context.signal.throwIfAborted();
+				if (!folder?.notSaved?.length && !folder?.moreNotSaved) throw error;
+				return told(
+					refused(
+						"MACHINE_READ_UNANSWERED",
+						"this read did not answer, so how the command stands is unknown; read it again",
+					),
+				);
 			}
 		},
 	};

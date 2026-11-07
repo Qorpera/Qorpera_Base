@@ -47,6 +47,11 @@ export interface CloudNativeRunToolAdapters {
 	/** Revalidate the context's path/audience read set, not only run admission. `timeoutMs` is the caller's
 	 * budget for the read, all the way to the transport. */
 	assertContext: (signal: AbortSignal, timeoutMs?: number) => Promise<void>;
+	/**
+	 * `assertContext` and run admission in one database call (qorpera_check_native_run): returns the run's authority as
+	 * that call read it, or undefined when the database does not have the call yet.
+	 */
+	checkRun?: (signal: AbortSignal, timeoutMs: number) => Promise<unknown>;
 	recordContextView: (
 		frame: CloudNativeFenceRequest,
 		outputs: readonly CloudNativeFencedResult[],
@@ -154,14 +159,27 @@ export async function runCloudNativeRunToolSession(options: {
 				// read set. The context read takes the run's budget row (the run mutex), and each attempt waits as long
 				// as the database may run it, so a cut one has ended before the next is sent; the admission reads plain
 				// (20260930487000). Each is asked again while its answer is lost or late, until the run's authority
-				// would lapse; a refusal stops the run.
-				await run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
-				await run.retry(
-					(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_RUN_ROW_READ_MS),
-					signal,
-					CLOUD_RUN_ROW_READ_MS,
-					CLOUD_RUN_ROW_READ_MS,
-				);
+				// would lapse; a refusal stops the run. Both go in one call when the database has it (20260930618000):
+				// the same two reads, the read set first so the run's row comes before a wake run's connection, one round
+				// trip instead of two (7 Nov 2026).
+				const { checkRun } = activeAdapters;
+				if (
+					!checkRun ||
+					!(await run.assertActiveWith(
+						(requestSignal) => checkRun(requestSignal, CLOUD_RUN_ROW_READ_MS),
+						signal,
+						CLOUD_RUN_ROW_READ_MS,
+						CLOUD_RUN_ROW_READ_MS,
+					))
+				) {
+					await run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
+					await run.retry(
+						(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_RUN_ROW_READ_MS),
+						signal,
+						CLOUD_RUN_ROW_READ_MS,
+						CLOUD_RUN_ROW_READ_MS,
+					);
+				}
 				observation?.finish("succeeded");
 			} catch (error) {
 				observation?.finish("denied", {

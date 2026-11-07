@@ -375,7 +375,9 @@ Each `machine_run`, `machine_read` and `machine_cancel` receipt carries `company
   retirement, with the cause), or a refused open (the starter's authority, or the core's words);
 - `heldBack`: why the output and the end are not shown yet (the reasons in "Boundaries" above);
 - `notSaved`: the files the folder let go unsaved from the machine, with the outcome and reason, once, on the boot's
-  next receipt whose output leaves; at most 8, the rest counted in `moreNotSaved`;
+  next receipt whose output leaves; at most 8, the rest counted in `moreNotSaved`. A worker's `machine_read` with
+  `waitSeconds` may spend it on its read before the wait: the call's answer carries it, whatever comes of the wait, unless
+  the run itself is stopped during the wait, when it goes with the run;
 - `stillNotSaved`: the files the folder did not save that the machine's view keeps pending for the next boundary to try
   again (a write the core refused, or a conflict whose bytes the receipt did not keep), on every such receipt while the
   view's newest boundary still reports them so; at most 8, the rest counted in `moreStillNotSaved`. A file still on its

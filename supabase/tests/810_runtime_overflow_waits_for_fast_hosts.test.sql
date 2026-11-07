@@ -60,6 +60,21 @@ select pg_temp.base_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a
 	'After 10 s the fresh-VM path takes the refused run even while the other fast host has not refused it');
 rollback to savepoint refused;
 
+-- 20260930602000: a member's run waits 2 s after a full fast host's refusal, and that refusal stays recent for 15 s. So
+-- once both fast hosts have refused, the overflow may still take the run after their waits have ended.
+select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('92400000-0000-4000-8000-000000000092')::text,true) \g /dev/null
+select pg_temp.fp_refuse('92400000-0000-4000-8000-000000000092',current_setting('qorpera_test.fp_claim')::jsonb,'SANDBOX_CAPACITY_EXHAUSTED') \g /dev/null
+reset role;
+update public.qorpera_runner_jobs set dispatch_deferred_until = statement_timestamp() - interval '1 second'
+where run_id = current_setting('qorpera_test.fp_r0')::uuid;
+select pg_temp.base_assert(public.qorpera_runtime_refused_recently(current_setting('qorpera_test.fp_r0')::uuid,'92400000-0000-4000-8000-000000000092')
+	and public.qorpera_runtime_refused_recently(current_setting('qorpera_test.fp_r0')::uuid,'64300000-0000-4000-8000-0000000000b1'),
+	'The fast hosts'' refusals are still recent after their waits');
+set local role service_role;
+select pg_temp.base_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+	'The fresh-VM path may take the run once both fast hosts have refused, their 2 s waits over');
+rollback to savepoint refused;
+
 -- Unchanged: work a fast host does not serve (NODE_NOT_PREFERRED) goes to the overflow at once, even while
 -- another fast host has not refused it.
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('92400000-0000-4000-8000-000000000092')::text,true) \g /dev/null
