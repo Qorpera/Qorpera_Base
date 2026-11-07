@@ -500,8 +500,17 @@ export class CloudCodingExecutor {
 			// Coded reasons: whatever the abort interrupts reports why (errorCode).
 			watchdog = globalThis.setTimeout(() => stop.abort(new Error("CODING_EXECUTOR_LEASE_EXPIRED")), milliseconds);
 		};
-		const call = (method: (typeof CODING_EXECUTOR_RPCS)[number], args: Record<string, unknown>, checked = active) =>
-			this.#control.call(method, args, AbortSignal.any([checked, AbortSignal.timeout(10000)]));
+		// Each call under a scope of its own: the turn's signals last as long as the turn, and a turn of hours polls
+		// thousands of times (abort-scope.ts).
+		const call = (
+			method: (typeof CODING_EXECUTOR_RPCS)[number],
+			args: Record<string, unknown>,
+			checked = active,
+			ms = 10000,
+		) =>
+			withAbortScope(checked, (scoped) =>
+				this.#control.call(method, args, AbortSignal.any([scoped, AbortSignal.timeout(ms)])),
+			);
 		try {
 			const claimed = claim;
 			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
@@ -523,18 +532,20 @@ export class CloudCodingExecutor {
 						const sent = Date.now();
 						const left = by - sent;
 						if (left < 1) throw new Error("Coding lease renewal ran out of time");
-						const attempt = AbortSignal.any([checked, AbortSignal.timeout(Math.min(10000, left))]);
 						let until: unknown;
 						try {
-							until = await answerBefore(
-								() =>
-									this.#control.call(
-										"qorpera_heartbeat_coding_session",
-										{ ...args, p_lease_seconds: LEASE_SECONDS },
-										attempt,
-									),
-								attempt,
-							);
+							until = await withAbortScope(checked, (scoped) => {
+								const attempt = AbortSignal.any([scoped, AbortSignal.timeout(Math.min(10000, left))]);
+								return answerBefore(
+									() =>
+										this.#control.call(
+											"qorpera_heartbeat_coding_session",
+											{ ...args, p_lease_seconds: LEASE_SECONDS },
+											attempt,
+										),
+									attempt,
+								);
+							});
 						} catch (error) {
 							if (checked.aborted || error instanceof CodingControlRefused) throw error;
 							failures++;
@@ -560,11 +571,7 @@ export class CloudCodingExecutor {
 					const attemptMs = Math.max(1, Math.min(10000, by - Date.now()));
 					let value: unknown;
 					try {
-						value = await call(
-							"qorpera_describe_coding_turn",
-							args,
-							AbortSignal.any([active, AbortSignal.timeout(attemptMs)]),
-						);
+						value = await call("qorpera_describe_coding_turn", args, active, attemptMs);
 					} catch (error) {
 						const pause = CODING_RETRY_PAUSES_MS[Math.min(failures, 2)];
 						if (active.aborted || error instanceof CodingControlRefused || Date.now() + pause >= by) throw error;

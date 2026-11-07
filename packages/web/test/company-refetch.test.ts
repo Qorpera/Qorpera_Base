@@ -554,3 +554,101 @@ describe("hints on a thread that opened at its newest events", () => {
 		expect(busy.store.get().events).toHaveLength(1000);
 	});
 });
+
+describe("a hidden tab", () => {
+	const showing = (state: DocumentVisibilityState) => {
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+		cleanup.push(() => Reflect.deleteProperty(document, "visibilityState"));
+	};
+	const back = () => {
+		showing("visible");
+		document.dispatchEvent(new Event("visibilitychange"));
+	};
+
+	it("reads on no clock while hints are live, and its first moment back reads what the clock skipped", async () => {
+		const busy = await company("connected", false);
+		showing("hidden");
+		const before = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		// 7 Nov 2026: one tab left open sent 19 requests a minute all night, with nobody looking.
+		expect(busy.rpcs()).toEqual(before);
+		// A hint still reads what it names.
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(busy.store.get().events).toHaveLength(busy.events.get(open.sessionId)!.length);
+		const hinted = busy.rpcs();
+		back();
+		await vi.advanceTimersByTimeAsync(0);
+		const now = busy.rpcs();
+		expect(now.listStaffActivity).toBe((hinted.listStaffActivity ?? 0) + 1);
+		expect(now.companyWaitingForHours).toBe((hinted.companyWaitingForHours ?? 0) + 1);
+		// Back on the clock: the next tick reads as before.
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(busy.rpcs().companyWaitingForHours).toBe((now.companyWaitingForHours ?? 0) + 1);
+	});
+
+	it("reads nothing extra when it comes back before the clock was due", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(30_000);
+		showing("hidden");
+		await vi.advanceTimersByTimeAsync(5_000);
+		const before = busy.rpcs();
+		back();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.rpcs()).toEqual(before);
+	});
+
+	it("reads at once when it comes back after a whole clock period, though no timer fired (a frozen tab)", async () => {
+		const busy = await company("connected", false);
+		showing("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		const before = busy.rpcs();
+		// The page freezes: its timers do not run, and only the wall clock moves on.
+		vi.setSystemTime(Date.now() + 60 * 60_000);
+		back();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.rpcs().listStaffActivity).toBe((before.listStaffActivity ?? 0) + 1);
+		expect(busy.rpcs().companyWaitingForHours).toBe((before.companyWaitingForHours ?? 0) + 1);
+	});
+
+	it("goes back on the clock when its channel fails while hidden, though the badge still says live", async () => {
+		const busy = await company("connected", false);
+		showing("hidden");
+		busy.status("CHANNEL_ERROR");
+		// A failure while hidden is held back from the badge (realtime.ts).
+		expect(busy.controller.store.get().realtime).toBe("connected");
+		const before = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(busy.rpcs().companyWaitingForHours).toBeGreaterThan(before.companyWaitingForHours ?? 0);
+		// Subscribed again: it catches up on what it missed, and rests.
+		busy.status("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(1_000);
+		const rested = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(busy.rpcs()).toEqual(rested);
+	});
+
+	it("stays on the clock without live hints, the recovery path", async () => {
+		const busy = await company("degraded", false);
+		showing("hidden");
+		const before = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(busy.rpcs().companyWaitingForHours).toBeGreaterThan(before.companyWaitingForHours ?? 0);
+		expect(busy.rpcs().getTeam).toBeGreaterThan(before.getTeam ?? 0);
+	});
+
+	it("does not watch a working agent, and goes on watching once it is back", async () => {
+		const busy = await company("connected");
+		showing("hidden");
+		await vi.advanceTimersByTimeAsync(5_000);
+		const before = busy.rpcs();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(busy.rpcs()).toEqual(before);
+		back();
+		await vi.advanceTimersByTimeAsync(0);
+		const seen = busy.rpcs().listStaffActivity ?? 0;
+		expect(seen).toBeGreaterThan(before.listStaffActivity ?? 0);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(busy.rpcs().listStaffActivity ?? 0).toBeGreaterThan(seen);
+	});
+});

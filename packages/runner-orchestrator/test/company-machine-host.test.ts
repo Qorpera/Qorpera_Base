@@ -18,6 +18,7 @@ import {
 } from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
@@ -1410,20 +1411,20 @@ describe("company machine host's wake (perf A5)", () => {
 });
 
 describe("company machine host's passes over the signal that lasts as long as its process", () => {
-	it("leaves nothing on it (Node 22's AbortSignal.any walks what is there), and its end still reaches a step", async () => {
+	it("hangs nothing off it (abort-scope.ts), and its end still reaches a step", async () => {
 		const f = await fixture();
 		const lasting = new AbortController();
-		const dependants = () => {
-			const key = Object.getOwnPropertySymbols(lasting.signal).find((symbol) =>
-				String(symbol).includes("kDependantSignals"),
-			);
-			return key ? ((lasting.signal as unknown as Record<symbol, Set<unknown> | undefined>)[key]?.size ?? 0) : 0;
-		};
-		await f.host.pass(lasting.signal);
-		f.running();
-		await f.host.pass(lasting.signal);
-		await f.host.pass(lasting.signal);
-		expect(dependants()).toBe(0);
+		const watch = watchAbortSignalAny();
+		try {
+			await f.host.pass(lasting.signal);
+			f.running();
+			await f.host.pass(lasting.signal);
+			await f.host.pass(lasting.signal);
+			expect(watch.made()).toBeGreaterThan(0);
+			expect(watch.on(lasting.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
 		let seen: AbortSignal | undefined;
 		f.client.execInstance.mockImplementation(async (_project, _name, _asked, signal?: AbortSignal) => {
 			seen = signal;

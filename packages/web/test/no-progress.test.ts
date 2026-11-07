@@ -77,26 +77,17 @@ describe("a run with no progress for 15 minutes", () => {
 		expect(parse({ no_progress_minutes: 15 })).toThrow();
 	});
 
-	it("says so in the agent's thread while the run works on, and stops saying it once it progresses", async () => {
+	it("says nothing about it in the agent's thread, and the run is still shown as working (Jonas, 7 Nov 2026)", async () => {
 		const f = setup();
-		await f.show([working]);
+		await f.show([{ ...working, ...stall }]);
 		expect(f.notice()).toBe(false);
-		await f.show([{ ...working, ...stall }]);
-		expect(f.notice()).toBe(true);
-		// The number is the cloud's.
-		await f.show([{ ...working, ...stall, noProgressMinutes: 20 }]);
-		expect(f.view.el.textContent).toContain("No progress for 20 minutes.");
-		await f.show([{ ...working, ...stall }]);
-		// The run is still shown as working: nothing is stopped or failed.
+		expect(f.view.el.textContent).not.toContain("No progress");
 		expect(f.company.agentState(staff.id)).toBe("working");
 		expect(f.view.el.querySelector(".thread-activity")).not.toBeNull();
-		await f.show([{ ...working, phase: "writing" }]);
-		expect(f.notice()).toBe(false);
 		// A queued run has no stall to show, whatever a row says.
 		await f.show([{ ...working, jobStatus: "queued", activity: "waiting", ...stall }]);
 		expect(f.company.noProgress(staff.id)).toBe(undefined);
 		await f.show([{ ...working, activity: "needs_attention", jobStatus: "failed", ...stall }]);
 		expect(f.company.noProgress(staff.id)).toBe(undefined);
-		expect(f.notice()).toBe(false);
 	});
 });

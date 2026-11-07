@@ -96,6 +96,17 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 describe("account metadata refresh transport", () => {
+	it("asks about the accounts the caller just read, not the cloud again", async () => {
+		const f = setup();
+		const pending = f.client.refreshAccountMetadata!(undefined, false, accounts);
+		await f.guestStarted.promise;
+		expect(f.list).not.toHaveBeenCalled();
+		f.finish();
+		await pending;
+		await f.client.refreshAccountMetadata!();
+		expect(f.list).toHaveBeenCalledTimes(1);
+	});
+
 	it("coalesces refreshes, uses isolated capability transport and awaits guest completion", async () => {
 		const f = setup();
 		const first = f.client.refreshAccountMetadata!(),
