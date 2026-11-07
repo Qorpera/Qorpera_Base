@@ -30,10 +30,15 @@
 -- * Freezing waits for the anti-wraparound vacuum, which these settings do not affect, at 200 million transactions: about 440
 --   days at the rate of 7 November (1.77 million in 94 hours). It is one page when it comes.
 -- * The visibility map stays unset. Nothing reads these tables by index only: they are one page.
--- If pruning is held back (a long transaction, a stuck replication slot), the table spills past its page and the dead count
--- climbs. It reaches 500 in 13 minutes to an hour on the five busy tables and in about 8 hours on the two meter tables. Vacuum
--- then comes back, and once the hold ends it frees the spilled pages for reuse. The spill is small: about 0.9 MB an hour on
--- qorpera_runtime_node_observations (estimated). Not tested: this needs a real hold and days of autovacuum on a live database.
+-- If a long transaction holds pruning back, the table spills past its page, about 0.7 MB an hour on
+-- qorpera_runtime_node_observations. (A stuck replication slot would do the same only with hot_standby_feedback on; it is
+-- off.) The dead count reaches 500 in 13 minutes to an hour on the five busy tables and in about 8 hours on the two meter
+-- tables. Vacuum then comes back, but it can free nothing during the hold. When the hold ends, the next read prunes the
+-- pages and the count usually falls below 500 before the next check, so vacuum does not run and the spilled pages stay
+-- allocated. What pruning leaves in the count adds up across holds, and past 500 vacuum runs and frees the pages for reuse:
+-- about 2 MB on qorpera_runtime_node_observations by then (computed).
+-- Measured on a test database, with autovacuum checking every 10 s (production: 60 s): a hold of 700 updates left 42 pages on
+-- that table, vacuum did not run afterwards, and a second hold grew it to 53 pages instead of reusing them.
 --
 -- ALTER TABLE ... SET (autovacuum_*) takes SHARE UPDATE EXCLUSIVE: readers and writers carry on. A running autovacuum on
 -- the table gives way, so the wait is short; the lock timeout stops the migration rather than queue behind anything else.
