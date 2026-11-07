@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CompanyApps, sharedFolderHints } from "../src/app/interface-apps.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { deferred, fixture, profileA, settle, userA } from "./fixtures.ts";
 
@@ -9,10 +10,13 @@ import { deferred, fixture, profileA, settle, userA } from "./fixtures.ts";
 
 const realtime = vi.hoisted(() => {
 	const order: string[] = [];
+	/** The channel's status callback, as the last subscribe gave it. */
+	const joined = { status: (_status: string): void => {} };
 	const channel = {
 		on: () => channel,
-		subscribe: () => {
+		subscribe: (status?: (status: string) => void) => {
 			order.push("subscribe");
+			if (status) joined.status = status;
 			return channel;
 		},
 	};
@@ -27,7 +31,7 @@ const realtime = vi.hoisted(() => {
 			return "ok";
 		},
 	};
-	return { order, client };
+	return { order, client, joined };
 });
 
 vi.mock("@supabase/supabase-js", async (original) => ({
@@ -40,6 +44,8 @@ afterEach(() => {
 	for (const stop of stops.splice(0)) stop.abort();
 	realtime.order.splice(0);
 	vi.restoreAllMocks();
+	vi.useRealTimers();
+	Reflect.deleteProperty(document, "visibilityState");
 });
 
 function company() {
@@ -86,5 +92,33 @@ describe("the Company File's hint channel", () => {
 		await closing;
 		await settle();
 		expect(realtime.order).toEqual([]);
+	});
+
+	it("tells a hidden tab's apps poll whether the real channel is subscribed: it rests only while it is", async () => {
+		vi.useFakeTimers();
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+		const files = company();
+		// Each read of the apps asks for the folder first; the read that fails here keeps what was read before.
+		const reads = vi.fn((): never => {
+			throw new Error("No folder in this test");
+		});
+		const apps = new CompanyApps(
+			{ signal: files.signal, folder: reads, folderHints: sharedFolderHints(files) },
+			() => {},
+		);
+		apps.open();
+		await settle();
+		expect(reads).toHaveBeenCalledTimes(1);
+		// Not subscribed yet: the minute's poll reads.
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(reads).toHaveBeenCalledTimes(2);
+		realtime.joined.status("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(reads).toHaveBeenCalledTimes(2);
+		// The channel fails: hints may be missed, so the poll reads again.
+		realtime.joined.status("CHANNEL_ERROR");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(reads).toHaveBeenCalledTimes(3);
+		apps.dispose();
 	});
 });
