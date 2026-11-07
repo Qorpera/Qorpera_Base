@@ -3,12 +3,18 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AGENT_MODELS } from "@qorpera/cloud-client/company-state-files";
 import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+	CLOUD_ACTION_REVIEW_MODEL,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
+import {
+	CLOUD_CODEX_MODEL_CATALOG_CLIENT_VERSION,
+	CLOUD_CODEX_MODEL_CATALOG_MODELS,
+} from "@qorpera/runtime/cloud-codex-model-catalog.generated";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
 	CodexLineReader,
@@ -32,7 +38,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
-import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
+import { COMPACT_MODEL, MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -480,6 +486,40 @@ async function planRoot(token = "plan-access-1", mode = 0o600): Promise<string> 
 	await writeFile(join(identity, "chatgpt-plan", "access-token"), token, { mode });
 	return identity;
 }
+
+describe("the pinned model catalog", () => {
+	const pinnedSlugs = CLOUD_CODEX_MODEL_CATALOG_MODELS.map((model) => JSON.parse(model).slug as string);
+
+	it("is in place when a Codex login's process starts, beside its home", async () => {
+		const { result, evidence } = run("response-first");
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const seen = JSON.parse(await readFile(`${evidence}.catalog`, "utf8"));
+		expect(seen).toMatchObject({ keys: ["models"], mode: 0o400, codexHomeEntries: [] });
+		expect(seen.slugs).toEqual(pinnedSlugs);
+	});
+
+	it("refuses a process that did not apply it", async () => {
+		await expect(run("catalog-dropped").result).rejects.toThrow("configuration was not applied");
+	});
+
+	it("is not for a plan run, whose Codex asks OpenAI's API", async () => {
+		const { result, evidence } = run("response-first", { identityRoot: await planRoot() });
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		await expect(stat(`${evidence}.catalog`)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("is the pinned Codex version's and names every model a run may use", async () => {
+		const source = JSON.parse(
+			await readFile(new URL("../../../deploy/first-node/native-codex/source.json", import.meta.url), "utf8"),
+		);
+		expect(CLOUD_CODEX_MODEL_CATALOG_CLIENT_VERSION).toBe(source.version);
+		expect(pinnedSlugs).toEqual(expect.arrayContaining([...AGENT_MODELS, CLOUD_ACTION_REVIEW_MODEL, COMPACT_MODEL]));
+	});
+
+	it("holds no checklist guidance, which Codex removes only from a catalog it fetched", () => {
+		expect(CLOUD_CODEX_MODEL_CATALOG_MODELS.join("")).not.toContain("update_plan");
+	});
+});
 
 describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 	it("calls OpenAI's API with the plan's token from the token command, at standard speed, with an empty Codex home", async () => {

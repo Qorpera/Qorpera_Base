@@ -93,6 +93,18 @@ for (let index = 0; index < args.length; index++) {
 		? { enabled: false, direct_only_tool_namespaces: ["qorpera"], excluded_tool_namespaces: ["skills"] }
 		: value.startsWith("{") ? toml(value) : JSON.parse(value);
 }
+// The pinned model catalog, as Codex would read it at start.
+if (configuration.model_catalog_json && evidencePath) {
+	const fs = require("node:fs");
+	const path = configuration.model_catalog_json;
+	const catalog = JSON.parse(fs.readFileSync(path, "utf8"));
+	fs.writeFileSync(`${evidencePath}.catalog`, JSON.stringify({
+		keys: Object.keys(catalog),
+		slugs: catalog.models.map((model) => model.slug),
+		mode: fs.statSync(path).mode & 0o777,
+		codexHomeEntries: fs.readdirSync(process.env.CODEX_HOME),
+	}));
+}
 // A ChatGPT plan run: what the configured provider would send as its bearer, by its token command (run as
 // Codex runs it) or its environment variable.
 if (configuration.model_provider && evidencePath) {
@@ -207,6 +219,7 @@ async function handle(message) {
 		if (mode === "plan-provider-dropped") delete configuration.model_provider;
 		if (mode === "plan-provider-on-codex") configuration.model_provider = "qorpera_chatgpt_plan";
 		if (mode === "test-provider") configuration.model_provider = "fixture_provider";
+		if (mode === "catalog-dropped") delete configuration.model_catalog_json;
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });

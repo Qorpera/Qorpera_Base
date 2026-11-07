@@ -13,6 +13,7 @@ import {
 	type CloudActionReviewChannel,
 	type CloudActionReviewer,
 } from "./cloud-action-review.ts";
+import { CLOUD_CODEX_MODEL_CATALOG_MODELS } from "./cloud-codex-model-catalog.generated.ts";
 import { CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY } from "./cloud-native-capture-images.ts";
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
@@ -373,6 +374,14 @@ export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundary
 	CLOUD_RUNTIME_MODEL_POLICY.effort,
 );
 
+/**
+ * What a Codex login's process knows about the models: the catalog the provider serves this Codex version, pinned with
+ * the bundle (deploy/first-node/native-codex/README.md, "Model catalog"). Without it every process asks for the catalog
+ * twice, and `thread/start` waits for its own answer: 0.4 to 5 s on 111 runs (7 Nov 2026), Codex's 5 s limit included,
+ * after which it silently falls back to the older catalog in the binary.
+ */
+const MODEL_CATALOG_TEXT = `{"models":[${CLOUD_CODEX_MODEL_CATALOG_MODELS.join(",")}]}`;
+
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native boundary protocol");
 	return value as Record<string, unknown>;
@@ -499,10 +508,13 @@ function verifyConfiguration(
 	value: unknown,
 	effort: CloudRuntimeReasoningEffort,
 	serviceTier: CloudRuntimeServiceTier,
-	plan?: CloudCodexChatGptPlan,
+	plan: CloudCodexChatGptPlan | undefined,
+	modelCatalog: string | undefined,
 ): void {
 	const config = object(object(value).config);
 	if (!verifyChatGptPlanProvider(config, plan)) throw new Error("Native boundary configuration was not applied");
+	if ((config.model_catalog_json ?? undefined) !== modelCatalog)
+		throw new Error("Native boundary configuration was not applied");
 	const features = object(config.features);
 	const skills = object(config.skills);
 	const orchestrator = object(config.orchestrator);
@@ -1867,6 +1879,9 @@ async function startCloudCodexProcess(
 				mkdir(path, { mode: 0o700 }),
 			),
 		);
+		// Beside the Codex home, which stays auth-only. A plan run's Codex keeps asking OpenAI's API, whose catalog this is not.
+		const modelCatalog = plan ? undefined : join(root, "config", "model-catalog.json");
+		if (modelCatalog) await writeFile(modelCatalog, MODEL_CATALOG_TEXT, { mode: 0o400, flag: "wx" });
 		signal.throwIfAborted();
 		progress.stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
@@ -1918,6 +1933,7 @@ async function startCloudCodexProcess(
 			"--listen",
 			"stdio://",
 			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan).flatMap((config) => ["-c", config]),
+			...(modelCatalog ? ["-c", `model_catalog_json=${JSON.stringify(modelCatalog)}`] : []),
 		];
 		progress.stage = "codex-process-start";
 		if (inputs.isolation) {
@@ -1983,6 +1999,7 @@ async function startCloudCodexProcess(
 			inputs.effort,
 			inputs.serviceTier,
 			plan,
+			modelCatalog,
 		);
 		progress.stage = "codex-skills";
 		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
