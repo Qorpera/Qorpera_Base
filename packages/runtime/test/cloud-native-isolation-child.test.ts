@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,10 +12,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const CHILD = fileURLToPath(new URL("../src/cloud-native-isolation-child.ts", import.meta.url));
 /** Larger than a Unix socket's send buffer (212,992 bytes by default), as a PNG in a tool result is. */
 const LARGE_MESSAGE_BYTES = 1024 * 1024;
-/** The pinned Codex, where a machine has it: the test machines do. */
-const CODEX = [process.env.QORPERA_CODEX_FENCE_BINARY, "/opt/qorpera-codex-fence/codex"].find(
-	(path): path is string => path !== undefined && existsSync(path),
-);
+/** The pinned Codex build's sha256, as the runner image pins it. */
+const CODEX_PIN: string = JSON.parse(
+	readFileSync(
+		new URL("../../../deploy/first-node/native-codex/guest-package-manifest.json", import.meta.url),
+		"utf8",
+	),
+).nativeCompany.binarySha256;
+/** The pinned Codex: the file QORPERA_CODEX_FENCE_BINARY names, else, on a test machine (run-on-node's set-up marker),
+ * where the test machines keep it. There the test must run: a missing file or another build fails it, never skips it.
+ * Elsewhere, with neither, it skips. QORPERA_CODEX_FENCE_UNPINNED=1 runs a build that is not yet the pin. */
+const CODEX =
+	process.env.QORPERA_CODEX_FENCE_BINARY ||
+	(existsSync("/etc/qorpera-test-machine-versions") ? "/opt/qorpera-codex-fence/codex" : undefined);
 const O_NONBLOCK = 0o4000;
 
 /**
@@ -127,9 +137,18 @@ describe.skipIf(process.platform !== "linux")("the native entry", () => {
 	it.skipIf(!CODEX)(
 		"keeps the real Codex answering after a message larger than its socket's buffer",
 		async () => {
+			const codex = CODEX as string;
+			expect(existsSync(codex), `${codex} is missing: push the pinned Codex (deploy/test-machine/README.md)`).toBe(
+				true,
+			);
+			if (process.env.QORPERA_CODEX_FENCE_UNPINNED !== "1") {
+				const hash = createHash("sha256");
+				for await (const chunk of createReadStream(codex)) hash.update(chunk as Buffer);
+				expect(hash.digest("hex"), `${codex} is not the pinned build`).toBe(CODEX_PIN);
+			}
 			const entry = spawn(
 				process.execPath,
-				[await built(), join(root, "relay.sock"), CODEX as string, "app-server", "--listen", "stdio://"],
+				[await built(), join(root, "relay.sock"), codex, "app-server", "--listen", "stdio://"],
 				{
 					cwd: root,
 					detached: true,
