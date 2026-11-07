@@ -79,8 +79,8 @@ const STARTING_LOOK_LIMIT_MS = 5000;
 /** A boot that reached these runs commands: systemd's basic system is up (sockets too, so a first `docker` waits for its
  * daemon instead of failing) and the network answers. */
 const BOOT_USABLE = ["/usr/bin/systemctl", "is-active", "--quiet", "basic.target", "network-online.target"];
-/** How long a new boot whose agent answers waits to be usable before it is marked running all the same (a boot that never
- * gets there runs as it always did). */
+/** How long a new boot waits to be usable, counted from when its agent first answered, before it is marked running all the
+ * same (a boot that never gets there runs as it always did). */
 const BOOT_USABLE_GRACE_MS = 60000;
 /** How often a starting boot's looks may ask for a pass. */
 const STARTING_WAKES = 3;
@@ -441,6 +441,8 @@ export class LxdCompanyMachineHost {
 			wakes: number;
 			/** Its step failed for another reason than not being up yet: only the passes look at it. */
 			failing: boolean;
+			/** When its agent first answered: BOOT_USABLE_GRACE_MS counts from then. */
+			answered?: number;
 		}
 	>();
 	/** The starting guests being looked at now (#lookAtStarting). */
@@ -686,6 +688,7 @@ export class LxdCompanyMachineHost {
 			entry: e,
 			wakes: known?.wakes ?? 0,
 			failing: errorCode(error) === "COMPANY_MACHINE_HELPER_DIFFERS",
+			...(known?.answered === undefined ? {} : { answered: known.answered }),
 		};
 		this.#starting.set(e.placementId, starting);
 		if (Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) && !starting.failing)
@@ -747,12 +750,18 @@ export class LxdCompanyMachineHost {
 			return this.#unready(e, error);
 		}
 		// A new boot is marked running once it is usable (BOOT_USABLE: commands find the network and Docker's socket), for
-		// BOOT_USABLE_GRACE_MS at most from when it was first seen starting.
+		// BOOT_USABLE_GRACE_MS at most from when its agent first answered.
 		if (e.bootId !== prepared.bootId && !(await this.#usable(e, signal))) {
 			const known = this.#starting.get(e.placementId);
-			const since = known?.since ?? Date.now();
-			if (Date.now() - since < BOOT_USABLE_GRACE_MS) {
-				this.#starting.set(e.placementId, { since, entry: e, wakes: known?.wakes ?? 0, failing: false });
+			const answered = known?.answered ?? Date.now();
+			if (Date.now() - answered < BOOT_USABLE_GRACE_MS) {
+				this.#starting.set(e.placementId, {
+					since: known?.since ?? answered,
+					entry: e,
+					wakes: known?.wakes ?? 0,
+					failing: false,
+					answered,
+				});
 				return { placementId: e.placementId, step: "guest", state: "pending" };
 			}
 		}
@@ -1372,7 +1381,6 @@ export class LxdCompanyMachineHost {
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
 		this.#guests.delete(e.placementId);
 		this.#starting.delete(e.placementId);
-		this.#endedAt.delete(e.placementId);
 		this.#folders.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.

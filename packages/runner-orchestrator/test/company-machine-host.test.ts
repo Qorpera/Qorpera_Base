@@ -1525,6 +1525,18 @@ describe("company machine host's wake (perf A5)", () => {
 			expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
 			clock.mockReturnValue(now + 60001);
 			expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+			// The minute counts from when the agent first answered, not from the first pass that found the boot starting:
+			// a slow boot is still checked (review N2).
+			clock.mockReturnValue(now);
+			const slow = await fixture();
+			const late2 = booting(slow);
+			expect(await slow.host.pass(slow.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			clock.mockReturnValue(now + 61000);
+			late2.agent = true;
+			expect(await slow.host.pass(slow.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+			expect(slow.methods()).not.toContain("qorpera_mark_company_machine_running");
+			clock.mockReturnValue(now + 121001);
+			expect(await slow.host.pass(slow.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 		} finally {
 			clock.mockRestore();
 		}
