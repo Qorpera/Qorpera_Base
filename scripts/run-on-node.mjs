@@ -48,7 +48,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     take the slot kept for such runs when it is free (pr-loop's batch runs,
                                     which test every approved head at once)
          --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
-                                    first and alone (default: one step at a time). With --front the run takes
+                                    first and alone (default: 2, what one slot gives). With --front the run takes
                                     up to 3 slots as they free (one such run per machine), each only while the
                                     machine has 2 GiB available; otherwise it keeps to its one slot's cores
          --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
@@ -132,6 +132,10 @@ export const KEPT_SLOTS = 1;
  * (MiB, MemAvailable): in proof run 20261016T144011 five busy runs left node01 1264 MiB. The coordinator's decision of
  * 16 Oct. */
 export const GROW_MEMORY_MIB = 2048;
+/** A changed run's steps run side by side within this many cores, unless --cores says otherwise: what one slot gives. Steps
+ * that mostly wait then wait together. The same 11 steps on node02 under full load (7 Nov): one at a time 1106 s, side by
+ * side 893 s; pr-loop's batches have run this way since 16 Oct. */
+export const CHANGED_CORES = 2;
 /** Past the CPU lane's slots, the first run in its queue may take one of EXTRA_SLOTS more, while the machine has room
  * (roomyScript): the slots count runs, and a run's CPU varies. On 7 Nov 06:25-06:45Z node01 had runs waiting in 36 of 36
  * samples, with its CPUs idle at least 25 % in 86 % of them (a load test in a slot mostly waits). The memory bound and the
@@ -266,7 +270,7 @@ export function parseArgs(argv) {
 		if (suite === "changed") {
 			if (extra.length) throw new Error("changed takes no suite arguments");
 			// The plan, and with it the command and the build, is made from git in main().
-			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], quick: false, plain: plain(options, suite, extra) };
+			return { ...options, cores: options.cores ?? CHANGED_CORES, install: options.install ?? true, build: options.build, suite, command: [], quick: false, plain: plain(options, suite, extra) };
 		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.

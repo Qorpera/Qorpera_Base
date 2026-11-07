@@ -80,7 +80,9 @@ workflows and run at least what those ran for the same change:
 - shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
   `packages/contracts`, `packages/company`) and any path no rule knows: every step.
 
-A moved file counts at both paths. Every step runs even when an earlier one fails. The full `test` suite is
+A moved file counts at both paths. Every step runs even when an earlier one fails. Steps run side by side within two
+cores, what one slot gives, longest first (`--cores N` for another number); their tree-wide parts (lint, typecheck, the
+checks, the web release build) run first and alone. Each step's output is printed whole when it ends. The full `test` suite is
 for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,

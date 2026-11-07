@@ -21,6 +21,7 @@ import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
+	CHANGED_CORES,
 	CLOSED,
 	CPU_SLOTS,
 	candidateMachines,
@@ -317,7 +318,11 @@ test("past the CPU lane's slots, the first run in the queue takes an extra one o
 });
 
 test("--cores runs changed's steps side by side and is only for changed", () => {
-	assert.equal(parseArgs(["changed"]).cores, null);
+	// Side by side within what one slot gives, unless the run says otherwise.
+	assert.equal(parseArgs(["changed"]).cores, CHANGED_CORES);
+	assert.equal(CHANGED_CORES, 2);
+	assert.equal(parseArgs(["--cores", "1", "changed"]).cores, 1);
+	assert.equal(parseArgs(["hosted-db"]).cores, null);
 	const options = parseArgs(["--front", "--cores", "6", "changed"]);
 	assert.deepEqual([options.cores, options.front, options.plain], [6, true, true]);
 	for (const value of ["0", "x", "1.5", "100", "-2"]) assert.throws(() => parseArgs(["--cores", value, "changed"]), /Invalid --cores/, value);
@@ -509,7 +514,7 @@ test("--sudo hands the command the vitest workers and a --cores run's cores file
 		}).stdout.trim();
 	const sudoCores = { ...parseArgs(["--sudo", "--env", "X=a b", "--cores", "6", "changed"]), command };
 	assert.equal(run(runCommandLine(sudoCores)), "2 /run/lock/c a b");
-	assert.equal(run(runCommandLine({ ...parseArgs(["--sudo", "--env", "X=a b", "changed"]), command })), "2 none a b");
+	assert.equal(run(runCommandLine({ ...parseArgs(["--sudo", "--env", "X=a b", "hosted-db"]), command })), "2 none a b");
 	assert.equal(run(runCommandLine({ ...parseArgs(["--env", "X=a b", "--cores", "6", "changed"]), command })), "2 /run/lock/c a b");
 	assert.equal(runCommandLine({ command: ["npm", "test"] }), "npm test");
 });
