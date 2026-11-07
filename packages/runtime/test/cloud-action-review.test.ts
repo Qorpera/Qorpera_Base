@@ -2411,9 +2411,11 @@ describe("the review step", () => {
 		});
 		// 7 November: a Product Lead whose app save was denied no longer had its exact arguments after the founder asked
 		// again; it may make the same action once with what it has now.
-		expect((await declined.check()).text).toContain(
-			"or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.",
-		);
+		expect(await declined.check()).toMatchObject({
+			text: expect.stringContaining(
+				"or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.",
+			),
+		});
 		expect(declined.review).not.toHaveBeenCalled();
 		const used = gate({ begin: { state: "used", reviewId: "review-6" } });
 		expect(await used.check()).toEqual({ run: false, text: expect.stringMatching(/^APPROVAL_USED: /) });
@@ -3455,7 +3457,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 				expect(workerWorkCheck({ tool: worker, parsed: { action } }, held, new Set()), guard).toEqual(held);
 			}
 		}
-		for (const parsed of [{ action: "stop" }, {}, null, "dispatch"] as const)
+		for (const parsed of [{ action: "stop" }, {}, null, "dispatch"] as JsonValue[])
 			expect(workerWorkCheck({ tool: worker, parsed }, refused, new Set())).toEqual(refused);
 		expect(
 			workerWorkCheck(
