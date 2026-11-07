@@ -110,7 +110,7 @@ No reserve, release, suspend or observe function is copied or patched.
 - Node receipts are kept for seven days (`20260930004000`, see `RUNTIME-NODE-CAPACITY.md`, "Receipt
   retention"), but never past the meter: the retention cut is at most `metered_until` minus one day,
   so a meter that falls more than six days behind holds the deletes back instead of losing reports
-  it has not read.
+  it has not read. Thinning after two days (`20260930615100`) has the same hold.
 - Every report that carries an inventory is read, including node-level `unavailable` ones (they
   still list every entry). Times come from `received_at`, the database's clock.
 - Per machine counted on that node:
