@@ -314,6 +314,34 @@ it("counts a video as a file of its app, but not toward the bytes of the rest", 
 	);
 });
 
+it("counts pictures with videos, and refuses a change to an app holding a file too big to open", async () => {
+	// 7 November 2026: Rumlig's demo app held 10 MB pages and 0.5-0.8 MB renders; it saved, and never opened.
+	const app = 'name = "Demos"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
+	const renders = await fixture({
+		folders: ["apps"],
+		files: {
+			"apps/demos/app.toml": app,
+			"apps/demos/index.html": PAGE,
+			"apps/demos/room.jpg": "x".repeat(5 * 1024 * 1024),
+			"apps/demos/walk.mp4": "x".repeat(3 * 1024 * 1024),
+		},
+	});
+	// A 5 MiB render (past the 4 MiB of pages and code) and a 3 MiB video are within the pictures' and videos' bounds.
+	await renders.call("save_app", save("demos", "media-1", null, [{ path: "notes.txt", text: "notes" }]));
+	const page = await fixture({
+		folders: ["apps"],
+		files: {
+			"apps/demos/app.toml": app,
+			"apps/demos/index.html": PAGE,
+			"apps/demos/studio.html": "x".repeat(600 * 1024),
+		},
+	});
+	await refuses(
+		page.call("save_app", save("demos", "media-2", null, [{ path: "notes.txt", text: "notes" }])),
+		"APP_FILE_TOO_LARGE",
+	);
+});
+
 it("posts only the manifest it checked: an app made or changed in between is refused, never posted unreviewed", async () => {
 	const f = await fixture({ folders: ["apps"], files: { "apps/sales/index.html": PAGE } });
 	const me = f.identity.staffAgentId.toLowerCase();

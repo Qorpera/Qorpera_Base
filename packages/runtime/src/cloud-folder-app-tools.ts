@@ -22,9 +22,11 @@ import {
 	APP_MANIFEST_MAX_BYTES,
 	APP_MAX_BYTES,
 	APP_MAX_FILES,
+	APP_MEDIA_KINDS,
 	APP_READS,
 	APP_TEXT_KINDS,
-	APP_VIDEO_KINDS,
+	APP_VIDEO_FILE_MAX_BYTES,
+	APP_VIDEOS_MAX_BYTES,
 	type AppManifest,
 	appFileKind,
 	appFolder,
@@ -315,7 +317,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members what you made (results, a test, a prototype, a dashboard), opened beside the chat. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open beside the chat. Keep operationKey for the same change, and use a new one for any other change.`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members what you made (results, a test, a prototype, a dashboard), opened beside the chat. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open beside the chat. Keep operationKey for the same change, and use a new one for any other change.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -504,14 +506,27 @@ export function cloudAppTools(options: {
 				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
 					sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
 			for (const file of request.files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
-			// A video counts as a file, and toward the videos' own bound, which the page's reader holds it to.
-			const total = [...sizes].reduce(
-				(sum, [path, bytes]) => (APP_VIDEO_KINDS.has(appFileKind(path)) ? sum : sum + bytes),
-				0,
-			);
-			if (listed.next !== null || sizes.size > APP_MAX_FILES || total > APP_MAX_BYTES)
+			// A picture or video counts as a file, and toward the pictures' and videos' own bound, which the page's reader
+			// holds it to; every file to its own bound, since the page's reader shows no app with one past it (7 November
+			// 2026: a machine wrote 10 MB pages into an app that then never opened).
+			const media = (path: string) => APP_MEDIA_KINDS.has(appFileKind(path));
+			const total = [...sizes].reduce((sum, [path, bytes]) => (media(path) ? sum : sum + bytes), 0);
+			const mediaTotal = [...sizes].reduce((sum, [path, bytes]) => (media(path) ? sum + bytes : sum), 0);
+			if (
+				listed.next !== null ||
+				sizes.size > APP_MAX_FILES ||
+				total > APP_MAX_BYTES ||
+				mediaTotal > APP_VIDEOS_MAX_BYTES
+			)
 				throw new CloudToolRefusal(
-					`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files and ${APP_MAX_BYTES / 1024 / 1024} MiB in all; remove files with company_delete first`,
+					`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files, ${APP_MAX_BYTES / 1024 / 1024} MiB of pages and code, and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB of pictures and videos; remove files with company_delete first`,
+				);
+			const over = [...sizes].find(([path, bytes]) =>
+				media(path) ? bytes > APP_VIDEO_FILE_MAX_BYTES : bytes > APP_FILE_MAX_BYTES,
+			);
+			if (over)
+				throw new CloudToolRefusal(
+					`APP_FILE_TOO_LARGE: ${over[0]} is ${Math.ceil(over[1] / 1024)} KiB; a page or code file loads at most ${APP_FILE_MAX_BYTES / 1024} KiB and a picture or video at most ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB, so the app would not open. Put pictures in their own files, not inside a page, and make it smaller or remove it with company_delete`,
 				);
 			const byKey = new Map(listed.entries.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
 			for (const folderPath of foldersOf(request.files.map((file) => file.path))) {
