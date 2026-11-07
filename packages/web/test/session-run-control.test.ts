@@ -44,7 +44,8 @@ describe("member cloud run control transport", () => {
 		expect(f.fetch).toHaveBeenCalledTimes(2);
 		const [url, request] = f.fetch.mock.calls[1]!;
 		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_cancel_session_run");
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		expect(request?.cache).toBeUndefined();
 		expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request?.body as string)).toEqual({ p_session_id: session.sessionId, p_run_id: id(90) });
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
