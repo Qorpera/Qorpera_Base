@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	collectRuntimeNodeHealthProcess,
+	measuredRuntimeNodeHealth,
 	parseRuntimeNodeHealth,
 	type RuntimeNodeHealth,
 	RuntimeNodeHealthPublisher,
@@ -109,6 +110,19 @@ describe("bounded node health evidence", () => {
 			{ ...partial, errors: ["ROOT_FILESYSTEM_UNAVAILABLE", "ROOT_FILESYSTEM_UNAVAILABLE"] },
 		])
 			expect(() => parseRuntimeNodeHealth(invalid)).toThrow();
+	});
+	it("gives a measured report a new time-ordered id and keeps everything else", () => {
+		vi.useFakeTimers({ now: Date.parse(until) });
+		try {
+			const report = measuredRuntimeNodeHealth(sample());
+			expect(report.observationId[14]).toBe("7");
+			expect(report.observationId.replaceAll("-", "").slice(0, 12)).toBe(
+				Date.parse(until).toString(16).padStart(12, "0"),
+			);
+			expect({ ...report, observationId: sample().observationId }).toEqual(sample());
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();

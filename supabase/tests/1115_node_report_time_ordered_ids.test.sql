@@ -1,6 +1,8 @@
 begin;
 -- The node observer's reports now carry time-ordered ids (UUID version 7, packages/runner-orchestrator/src/time-ordered-uuid.ts).
--- Both database functions that take them accept such an id, repeat its answer on replay, and keep it in order.
+-- This checks that the database lets such an id through, not the observer. qorpera_observe_runtime_node takes one and repeats
+-- its answer on replay. qorpera_assert_runtime_node_health, the health report's check, accepts one; the report itself is not
+-- filed here. qorpera_observe_runtime_node_inventory is not called: it only casts the id and passes it to the first.
 create function pg_temp.ok(p_value boolean, p_message text) returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%', p_message; end if; end $$;
 insert into public.qorpera_runtime_nodes(id, machine_id_sha256, label, version, cpu_millis, memory_bytes,

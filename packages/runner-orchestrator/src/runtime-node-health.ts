@@ -318,17 +318,24 @@ export async function collectRuntimeNodeHealth(
 			return [key, sample.status === "fulfilled" ? sample.value : null];
 		}),
 	);
-	return parseRuntimeNodeHealth({
-		schema: "qorpera.runtime-node-health/v1",
+	return measuredRuntimeNodeHealth({
 		nodeId: policy.nodeId,
 		machineIdSha256: host.machineIdSha256,
 		policySha256,
 		observerPackageSha256,
 		bootId,
-		observationId: timeOrderedUuid(),
-		observedAt: new Date().toISOString(),
 		...values,
 		errors: samples.flatMap((r, index) => (r.status === "rejected" ? [ERRORS[index]!] : [])),
+	});
+}
+
+/** The report a finished measurement files: a new time-ordered id, stamped now. */
+export function measuredRuntimeNodeHealth(fields: Record<string, unknown>): RuntimeNodeHealth {
+	return parseRuntimeNodeHealth({
+		schema: "qorpera.runtime-node-health/v1",
+		...fields,
+		observationId: timeOrderedUuid(),
+		observedAt: new Date().toISOString(),
 	});
 }
 
