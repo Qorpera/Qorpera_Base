@@ -10,14 +10,18 @@
 -- materializer call). Plain SQL functions are also planned anew on every nested call.
 --
 -- Nothing changes in what any function answers (test 1111 compares the old and the new text on many worlds):
--- 1. The due list leaves out work whose login has no room, by the check the company's scan uses, once per sponsor version
---    and only for work that is otherwise due. Such a call could only answer 'idle', which writes and locks nothing.
+-- 1. The due list leaves out work whose login has no room, by the check the company's scan uses. Such a call could only
+--    answer 'idle', which writes and locks nothing. The check comes last: only for companies the page can name, in page
+--    order until the page is full, each company's sponsor version once, stopping at its first with room. A check that
+--    fails counts as "no wait", so one bad row never stops the list: that company reaches its own call, where the scan's
+--    same check fails for it alone, as before.
 -- 2. qorpera_native_account_remaining works out each company's wall once, not once for each of the login's companies.
 -- 3. qorpera_native_account_usage_limit_reset_company starts from the signals that can hold this connection, not from all
 --    of them, and asks once per signal's login whether a later reading showed room.
 -- 4. It, the wall reading's reset and the sibling list become PL/pgSQL, so each session keeps their plans.
 -- Every function keeps its signature, ACL and security definer; each body names this migration, for deploy guards.
 -- Undo: restore the previous text of the six functions (20260930548000, 575000, 577000, 20260930538000 for the due list).
+-- The two helpers this adds can stay.
 
 set local lock_timeout = '3s';
 
@@ -237,8 +241,24 @@ begin
 	return coalesce(v_remaining, -1);
 end $$;
 
+-- 1. The due list's check for one sponsor version: the scan's own check, which may not stop the list. A check that fails
+-- says "no wait", so the company is listed and its own qorpera_folder_materialize_company fails for it alone (its scan
+-- makes the same check) and reports the error; a cancel or a timeout is not caught.
+create function public.qorpera_folder_due_sponsor_waits(p_binding_id uuid, p_version bigint)
+returns boolean
+language plpgsql stable security definer set search_path = '' as $$
+begin
+	-- 20260930611000
+	return public.qorpera_sponsor_waits_for_usage_limit(p_binding_id, p_version);
+exception when others then
+	return false;
+end $$;
+revoke all on function public.qorpera_folder_due_sponsor_waits(uuid, bigint)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- 1. The due list: work whose login has no room is not due (the check the company's scan makes, 20260930575000). The check
--- is last, and once per sponsor version, so a pass costs little however much work waits.
+-- is last, so a pass costs little however much work waits: only the companies the page can name, in page order until the
+-- page is full.
 create or replace function public.qorpera_folder_materialize_due(p_after_profile_id uuid default null, p_limit integer default 100)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_items jsonb; v_next uuid; v_has_more boolean; v_now timestamptz := clock_timestamp();
@@ -280,24 +300,22 @@ begin
 				where run.session_id = wake.session_id and run.source_kind in ('session_turn', 'wake', 'room_delivery')
 					and job.status in ('queued', 'leased')
 					and (session.staff_agent_id is not null or run.staff_agent_id = wake.staff_agent_id))
-	), sponsor as materialized (
-		select distinct work.sponsor_binding_id, work.sponsor_version from work
-	), waiting as materialized (
-		-- 20260930611000: work at its login's usage limit is not due; the company's scan would leave it queued and answer
-		-- idle. Without this every pass called every such company, for as long as the limit held.
-		select sponsor.sponsor_binding_id, sponsor.sponsor_version from sponsor
-		where public.qorpera_sponsor_waits_for_usage_limit(sponsor.sponsor_binding_id, sponsor.sponsor_version)
-	), due as (
-		select distinct work.profile_id from work
-		where not exists (select 1 from waiting where waiting.sponsor_binding_id = work.sponsor_binding_id
-			and waiting.sponsor_version = work.sponsor_version)
+	), listable as (
+		select company.profile_id from (select distinct work.profile_id from work) as company
+		join public.qorpera_company_files as file on file.profile_id = company.profile_id and file.core = 'folder-v2'
+		where (p_after_profile_id is null or company.profile_id > p_after_profile_id)
+			and not public.qorpera_company_execution_paused(company.profile_id)
+			and not public.qorpera_company_at_zero(company.profile_id, v_now)
+		order by company.profile_id
 	), page as (
-		select due.profile_id from due
-		join public.qorpera_company_files as file on file.profile_id = due.profile_id and file.core = 'folder-v2'
-		where (p_after_profile_id is null or due.profile_id > p_after_profile_id)
-			and not public.qorpera_company_execution_paused(due.profile_id)
-			and not public.qorpera_company_at_zero(due.profile_id, v_now)
-		order by due.profile_id
+		-- 20260930611000: work at its login's usage limit is not due; the company's scan would leave it queued and answer
+		-- idle. Without this every pass called every such company, for as long as the limit held. Each row of work is one
+		-- company's one sponsor version. Offset 0 keeps this a check per listable company, in page order, up to the limit;
+		-- as a join it could check every company's sponsors first.
+		select listable.profile_id from listable
+		where exists (select 1 from work where work.profile_id = listable.profile_id
+			and not public.qorpera_folder_due_sponsor_waits(work.sponsor_binding_id, work.sponsor_version) offset 0)
+		order by listable.profile_id
 		limit p_limit + 1
 	), visible as (
 		select * from page order by profile_id limit p_limit
@@ -319,6 +337,7 @@ begin
 		'public.qorpera_native_account_wall_reading_reset(uuid)'::regprocedure,
 		'public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,
 		'public.qorpera_native_account_window_room(uuid,bigint)'::regprocedure,
+		'public.qorpera_folder_due_sponsor_waits(uuid,bigint)'::regprocedure,
 		'public.qorpera_native_account_remaining_company(uuid,bigint)'::regprocedure,
 		'public.qorpera_native_account_remaining(uuid,bigint)'::regprocedure]
 	loop

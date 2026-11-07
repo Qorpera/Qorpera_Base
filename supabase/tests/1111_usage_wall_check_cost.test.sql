@@ -3,9 +3,13 @@
 -- 2026: 193,463 of the materializer's 193,994 calls fell in the day one login's wall held and answered 'idle', at 170 ms
 -- each, because the due list did not know the wall and one check ran up to 72 company walls for a login in 8 companies.
 -- 1. On many generated worlds the new text answers exactly as the previous text, kept here as pg_temp.d1_old_*.
--- 2. A connection on this one's credential capsule still closes it through a sibling, the one case the new text must name.
--- 3. One check works out each company's wall once, and the due list checks each sponsor version once.
--- 4. The due list agrees with the company's scan: work at a wall is not due, other work and work with room are.
+-- 2. Cases the rewritten wall must keep, each with its answer: company logins with no owner, a later reading of a revoked
+-- connection, of an old version or of another member, a reading at exactly the signal's time, and a connection on this
+-- one's credential capsule, which closes it through a sibling.
+-- 3. One check works out each company's wall once.
+-- 4. The due list agrees with the company's scan: work at a wall is not due.
+-- 5. The due list's check is last, and one that fails stops only its own company.
+-- 6. Work paid by another login or another sponsor version is due beside it, and it goes on once its login has room.
 
 -- The previous text (20260930548000, 20260930575000, 20260930577000), with its names changed and its comments left out.
 create function pg_temp.d1_old_sibling(p_connection_id uuid)
@@ -213,16 +217,20 @@ $$;
 -- The checks start here.
 -- 1. The world: four companies, two members, three logins. Connection 1's version 2 is on capsule 1, and connection 8 holds
 -- the same capsule; connection 12 holds connection 2's. Connection 6 is another provider's and 9 an API key's, 7 is
--- revoked and 10's version too. Connection 13 holds connection 6's capsule, which no login links.
+-- revoked and 10's version too. Connection 13 holds connection 6's capsule, which no login links. Connections 14 and 15 are
+-- company logins, with no owner, and 16 is a revoked connection of the first member in the first company, and 17 one with
+-- its version's authorization revoked.
 set local session_replication_role = replica;
 select pg_temp.d1_connection(1, 1, 1), pg_temp.d1_connection(2, 2, 1), pg_temp.d1_connection(3, 1, 1), pg_temp.d1_connection(4, 2, 1),
 	pg_temp.d1_connection(5, 1, 2), pg_temp.d1_connection(6, 1, 1, 'anthropic'), pg_temp.d1_connection(7, 3, 1, 'openai', 'revoked'),
 	pg_temp.d1_connection(8, 1, 1), pg_temp.d1_connection(9, 1, 1), pg_temp.d1_connection(10, 4, 1), pg_temp.d1_connection(11, 4, 1),
-	pg_temp.d1_connection(12, 2, 1), pg_temp.d1_connection(13, 1, 1, 'anthropic') \g /dev/null
+	pg_temp.d1_connection(12, 2, 1), pg_temp.d1_connection(13, 1, 1, 'anthropic'), pg_temp.d1_connection(14, 1, null),
+	pg_temp.d1_connection(15, 1, null), pg_temp.d1_connection(16, 1, 1, 'openai', 'revoked'), pg_temp.d1_connection(17, 1, 1) \g /dev/null
 select pg_temp.d1_version(1, 1, 101), pg_temp.d1_version(1, 2, 1, 1), pg_temp.d1_version(2, 1, 2, 1), pg_temp.d1_version(3, 1, 3, 2),
 	pg_temp.d1_version(4, 1, 4, 2), pg_temp.d1_version(5, 1, 5, 3), pg_temp.d1_version(6, 1, 6), pg_temp.d1_version(7, 1, 7, 1),
 	pg_temp.d1_version(8, 1, 1), pg_temp.d1_version(9, 1, null), pg_temp.d1_version(10, 1, 10, 1, 'revoked'),
-	pg_temp.d1_version(11, 1, 11, 2), pg_temp.d1_version(12, 1, 2), pg_temp.d1_version(13, 1, 6) \g /dev/null
+	pg_temp.d1_version(11, 1, 11, 2), pg_temp.d1_version(12, 1, 2), pg_temp.d1_version(13, 1, 6), pg_temp.d1_version(14, 1, 14),
+	pg_temp.d1_version(15, 1, 15), pg_temp.d1_version(16, 1, 16), pg_temp.d1_version(17, 1, 17, null, 'revoked') \g /dev/null
 select pg_temp.base_assert((select count(*) = 4 from public.qorpera_account_login_sibling_connections(pg_temp.d1_id(1, 1))),
 	'connection 1 has the login''s other companies: 2 and 12 on capsule 2, and 7 and 10');
 
@@ -270,7 +278,7 @@ declare v_round integer; v_i integer; v_pair record; v_seen jsonb; v_total jsonb
 	v_observed interval[] := array[interval '1 minute', '30 minutes', '5 hours', '7 hours', '3 days', '9 days'];
 	v_resets interval[] := array[null, null, null, interval '2 hours', '-1 hour', '1 day'];
 	v_kinds text[] := array['usage_limit', 'usage_limit', 'usage_limit', 'usage_limit', 'rate_limited', 'provider_outage'];
-	v_connections integer[] := array[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+	v_connections integer[] := array[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 begin
 	perform setseed(0.1111);
 	for v_round in 1 .. 30 loop
@@ -285,7 +293,7 @@ begin
 			end if;
 		end loop;
 		for v_i in 1 .. floor(random() * 12)::integer loop
-			perform pg_temp.d1_signal(v_connections[1 + floor(random() * 13)::integer], 1 + floor(random() * 2)::bigint,
+			perform pg_temp.d1_signal(v_connections[1 + floor(random() * 17)::integer], 1 + floor(random() * 2)::bigint,
 				statement_timestamp() - v_observed[1 + floor(random() * 6)::integer],
 				statement_timestamp() + v_resets[1 + floor(random() * 6)::integer],
 				v_kinds[1 + floor(random() * 6)::integer]);
@@ -301,10 +309,96 @@ begin
 		'the generated worlds were too plain: ' || v_total::text);
 end $$;
 
--- 2. Connection 8 holds connection 1's capsule, so it is no sibling of connection 1, but it is one of connection 2, which
+-- 2. The cases that decide a wall, each with its answer, on the new text and the previous one. All signals name a reset an
+-- hour ahead unless said otherwise, and readings name account 'e' or 'd'.
+create function pg_temp.d1_clear() returns void language sql as $$
+	delete from public.qorpera_native_provider_account_metadata where connection_id::text like '11110001-%';
+	delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
+$$;
+-- A reading at p_at: with room, or with its one window full.
+create function pg_temp.d1_read(p_n integer, p_version bigint, p_identity text, p_at timestamptz, p_used numeric) returns void
+language sql as $$
+	select pg_temp.d1_reading(p_n, p_version, p_identity, jsonb_build_object('observedAt', p_at,
+		'windows', jsonb_build_array(pg_temp.d1_window(p_used))))
+$$;
+-- The wall of a connection, the same in both texts, is held (to the signal's reset) or not.
+create function pg_temp.d1_expect(p_n integer, p_held boolean, p_case text) returns void language plpgsql as $$
+declare v_new timestamptz := public.qorpera_native_account_usage_limit_reset_company(pg_temp.d1_id(1, p_n));
+	v_old timestamptz := pg_temp.d1_old_reset_company(pg_temp.d1_id(1, p_n));
+begin
+	perform pg_temp.base_assert(v_new is not distinct from v_old, p_case || ': the texts differ: ' || coalesce(v_old::text, 'none')
+		|| ' then, ' || coalesce(v_new::text, 'none') || ' now');
+	perform pg_temp.base_assert((v_new is not null) = p_held, p_case || ': the wall is ' || coalesce(v_new::text, 'none'));
+end $$;
+create function pg_temp.d1_blocked(p_n integer, p_version bigint, p_at timestamptz) returns void language sql as $$
+	select pg_temp.d1_signal(p_n, p_version, p_at, statement_timestamp() + interval '1 hour')
+$$;
+create function pg_temp.d1_cases() returns void language plpgsql as $$
+declare v_at timestamptz := date_trunc('second', statement_timestamp()) - interval '10 minutes';
+begin
+	-- Company logins have no owner: a signal on one holds the other of the same account in the company.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(14, 1, repeat('d', 64), v_at, 100);
+	perform pg_temp.d1_read(15, 1, repeat('d', 64), v_at, 100);
+	perform pg_temp.d1_blocked(15, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(14, true, 'a company login''s signal on the other company login of its account');
+	-- And a later reading with room on the other company login of the account ends it.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(14, 1, repeat('d', 64), v_at, 100);
+	perform pg_temp.d1_read(15, 1, repeat('d', 64), v_at, 30);
+	perform pg_temp.d1_blocked(14, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(14, false, 'a later reading with room of the other company login');
+	-- A later reading with room on a revoked connection ends nothing.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 100);
+	perform pg_temp.d1_read(16, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(3, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(3, true, 'a later reading of a revoked connection');
+	-- Nor does one on a version whose authorization is revoked, or on an API key's connection.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 100);
+	perform pg_temp.d1_read(17, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(3, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(3, true, 'a later reading of a revoked version');
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 100);
+	perform pg_temp.d1_read(9, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(3, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(3, true, 'a later reading of an API key''s connection');
+	-- Nor does one on another member's login of the account.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 100);
+	perform pg_temp.d1_read(5, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(3, 1, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(3, true, 'a later reading of another member''s login');
+	-- Nor one on a version the connection has moved on from.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(1, 2, repeat('e', 64), v_at, 100);
+	perform pg_temp.d1_read(1, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(1, 2, v_at - interval '1 hour');
+	perform pg_temp.d1_expect(1, true, 'a later reading of an old version');
+	-- A reading at exactly the signal's time is not later: the wall holds. A microsecond later it ends.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_blocked(3, 1, v_at);
+	perform pg_temp.d1_expect(3, true, 'a reading at the signal''s time');
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at + interval '1 microsecond', 30);
+	perform pg_temp.d1_expect(3, false, 'a reading just after the signal');
+	-- Two signals around a reading with room: the older ended, the newer holds, to its own reset.
+	perform pg_temp.d1_clear();
+	perform pg_temp.d1_read(3, 1, repeat('e', 64), v_at, 30);
+	perform pg_temp.d1_signal(3, 1, v_at - interval '1 hour', statement_timestamp() + interval '5 hours');
+	perform pg_temp.d1_signal(3, 1, v_at + interval '1 minute', statement_timestamp() + interval '1 hour');
+	perform pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset_company(pg_temp.d1_id(1, 3))
+			= statement_timestamp() + interval '1 hour'
+		and pg_temp.d1_old_reset_company(pg_temp.d1_id(1, 3)) = statement_timestamp() + interval '1 hour',
+		'the reading ended the wrong signal');
+end $$;
+select pg_temp.d1_cases() \g /dev/null
+
+-- Connection 8 holds connection 1's capsule, so it is no sibling of connection 1, but it is one of connection 2, which
 -- is. Its wall alone sets connection 2's, and so closes connection 1 through it, with no wall of connection 1's own.
-delete from public.qorpera_native_provider_account_metadata where connection_id::text like '11110001-%';
-delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
+select pg_temp.d1_clear() \g /dev/null
 select pg_temp.d1_signal(8, 1, statement_timestamp() - interval '1 minute', statement_timestamp() + interval '1 day') \g /dev/null
 select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.d1_id(1, 1)) is null
 	and public.qorpera_native_account_usage_limit_reset(pg_temp.d1_id(1, 2)) is not null
@@ -319,8 +413,8 @@ select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_te
 	and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 6), 1) = -1,
 	'a capsule''s other holder closed a connection with no sibling');
 
--- 3. A login in 8 companies, as on production: each company's wall is worked out once, not 72 times. Its readings name a
--- wall for days and signals from 5 hours to a week old stand on each connection, also at the wall.
+-- 3. A login in 8 companies, as on production. With no wall in force (no reading names a reset, and the signals, 13 to 165
+-- hours old with none of their own, have run out) each company's wall is worked out once, not 72 times.
 do $$
 declare v_n integer; v_i integer;
 begin
@@ -345,6 +439,21 @@ begin
 	perform pg_temp.base_assert(v_old = v_new and v_new = -1, 'the login''s room differs: ' || v_old || ' then, ' || v_new || ' now');
 	perform pg_temp.base_assert(v_old_company = 72, 'the previous text ran ' || v_old_company || ' company walls, not 72');
 	perform pg_temp.base_assert(v_new_company = 8, 'one check ran ' || v_new_company || ' company walls, not one per company');
+end $$;
+-- At a wall (a reading now names a reset ahead, so all those signals hold) the previous text ran one per company and this
+-- one stops at the first.
+select pg_temp.d1_reading(21, 1, repeat('c', 64), pg_temp.d1_usage(3)) \g /dev/null
+do $$
+declare v_old_company bigint := pg_temp.d1_calls('d1_old_reset_company');
+	v_new_company bigint := pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company');
+begin
+	perform pg_temp.base_assert(pg_temp.d1_old_remaining(pg_temp.d1_id(1, 21), 1) = 0
+		and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = 0, 'the login at its wall has room');
+	perform pg_temp.base_assert(pg_temp.d1_calls('d1_old_reset_company') - v_old_company = 8,
+		'at a wall the previous text ran ' || (pg_temp.d1_calls('d1_old_reset_company') - v_old_company) || ' company walls, not 8');
+	perform pg_temp.base_assert(pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company') - v_new_company = 1,
+		'at a wall one check ran ' || (pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company') - v_new_company)
+			|| ' company walls, not 1');
 end $$;
 
 -- 4. The due list and the scan. Login A's fresh reading is full, so it has no room. Dana's kickoff (a turn request) and the
@@ -377,6 +486,11 @@ $$;
 create function pg_temp.d1_wake(p_setting text) returns public.qorpera_wake_occurrences language sql as $$
 	select * from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.' || p_setting)::uuid
 $$;
+-- This company's work is the only work, whatever earlier tests in this database left, so the counts below are exact.
+set local session_replication_role = replica;
+delete from public.qorpera_wake_occurrences where status = 'queued' and profile_id <> '92400000-0000-4000-8000-000000000010';
+delete from public.qorpera_session_turn_requests where status = 'queued' and profile_id <> '92400000-0000-4000-8000-000000000010';
+set local session_replication_role = origin;
 insert into public.qorpera_native_provider_account_metadata(connection_id,connection_version,provider_account_usage)
 values (pg_temp.d1_a(), 2, jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
 	'windows', jsonb_build_array(pg_temp.d1_window(100, interval '2 days'))))
@@ -407,7 +521,98 @@ begin
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'idle', 'the scan took work at its login''s limit: ' || v_pass::text);
 end $$;
 
--- A wake paid by login B, with room, is due though A's work waits in the same company, and only it goes on.
+-- 5. The check is last. Companies 901 and 902 have a wake due on a sponsor of their own, and so do 903, paused, and 904, not
+-- on folder-v2; they sort before this company, whose only sponsor is at its limit.
+create function pg_temp.d1_company(p_n integer, p_file boolean, p_paused boolean) returns void language plpgsql as $$
+declare v_wake public.qorpera_wake_occurrences := pg_temp.d1_wake('d1_post_1'); v_profile uuid := pg_temp.d1_id(2, p_n);
+begin
+	perform set_config('session_replication_role', 'replica', true);
+	insert into public.qorpera_wake_occurrences
+	select (jsonb_populate_record(null::public.qorpera_wake_occurrences, to_jsonb(v_wake) || jsonb_build_object(
+		'id', extensions.gen_random_uuid(), 'profile_id', v_profile, 'sponsor_binding_id', pg_temp.d1_id(8, p_n),
+		'session_id', null, 'occurrence_key', 'd1-' || p_n))).*;
+	if p_file then
+		insert into public.qorpera_company_files
+		select (jsonb_populate_record(null::public.qorpera_company_files, to_jsonb(file) || jsonb_build_object(
+			'environment_id', extensions.gen_random_uuid(), 'profile_id', v_profile,
+			'canonical_workspace_id', extensions.gen_random_uuid()))).*
+		from public.qorpera_company_files as file where file.profile_id = '92400000-0000-4000-8000-000000000010';
+	end if;
+	if p_paused then
+		insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
+		values (v_profile, '92400000-0000-4000-8000-000000000001');
+	end if;
+	perform set_config('session_replication_role', 'origin', true);
+end $$;
+-- One page of the list, with how many checks it made.
+create function pg_temp.d1_page(p_after uuid, p_limit integer) returns jsonb language plpgsql as $$
+declare v_before bigint := pg_temp.d1_calls('qorpera_folder_due_sponsor_waits'); v_due jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v_due := public.qorpera_folder_materialize_due(p_after, p_limit);
+	reset role;
+	return v_due || jsonb_build_object('checks', pg_temp.d1_calls('qorpera_folder_due_sponsor_waits') - v_before);
+end $$;
+create function pg_temp.d1_items(p_companies integer[]) returns jsonb language sql immutable as $$
+	select coalesce(jsonb_agg(jsonb_build_object('profile_id', pg_temp.d1_id(2, n)) order by n), '[]'::jsonb) from unnest(p_companies) as n
+$$;
+select pg_temp.d1_company(901, true, false), pg_temp.d1_company(902, true, false), pg_temp.d1_company(903, true, true),
+	pg_temp.d1_company(904, false, false) \g /dev/null
+do $$
+declare v_page jsonb;
+begin
+	-- The paused company and the one not on folder-v2 cost nothing.
+	v_page := pg_temp.d1_page(null, 100);
+	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901, 902]) and (v_page ->> 'checks')::integer = 3,
+		'a whole page: ' || v_page::text);
+	-- A page of one stops when it knows there is more, before this company's sponsor.
+	v_page := pg_temp.d1_page(null, 1);
+	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901]) and (v_page ->> 'has_more')::boolean
+		and v_page ->> 'next_after_profile_id' = pg_temp.d1_id(2, 901)::text and (v_page ->> 'checks')::integer = 2,
+		'a page of one: ' || v_page::text);
+	-- Companies before the cursor cost nothing.
+	v_page := pg_temp.d1_page(pg_temp.d1_id(2, 902), 100);
+	perform pg_temp.base_assert(v_page -> 'items' = '[]'::jsonb and (v_page ->> 'checks')::integer = 1,
+		'a page after the cursor: ' || v_page::text);
+end $$;
+
+-- A check that fails stops only its own company. No writer lets in a reading whose windows are no array; this one is written
+-- by hand. The check itself still fails, the list does not: it names the company, whose own call fails alone with the
+-- check's error, and the others stay listed.
+update public.qorpera_native_provider_account_metadata
+set provider_account_usage = jsonb_build_object('observedAt', statement_timestamp(), 'windows', '"x"'::jsonb)
+where connection_id = pg_temp.d1_a() and connection_version = 2;
+do $$
+declare v_page jsonb; v_pass jsonb; v_error text;
+begin
+	begin
+		perform public.qorpera_sponsor_waits_for_usage_limit(pg_temp.d1_a_binding(), 1);
+		raise exception 'the check did not fail on the bad reading';
+	exception when sqlstate '22023' then null;
+	end;
+	v_page := pg_temp.d1_page(null, 100);
+	perform pg_temp.base_assert(v_page -> 'items' @> pg_temp.d1_items(array[901, 902]) and pg_temp.d1_listed(),
+		'a failing check stopped the list or hid its company: ' || v_page::text);
+	begin
+		v_pass := pg_temp.base_materialize();
+		raise exception 'the company''s own call did not fail: %', v_pass;
+	exception when sqlstate '22023' then v_error := sqlerrm;
+	end;
+	perform pg_temp.base_assert(v_error is not null, 'the company''s own call did not fail with the check''s error');
+end $$;
+-- As the orchestrator may run it, in a read-only transaction.
+savepoint d1_read_only;
+set local transaction_read_only = on;
+select pg_temp.base_assert(pg_temp.d1_listed(), 'a failing check stopped the list in a read-only transaction');
+rollback to savepoint d1_read_only;
+update public.qorpera_native_provider_account_metadata
+set provider_account_usage = jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
+	'windows', jsonb_build_array(pg_temp.d1_window(100, interval '2 days')))
+where connection_id = pg_temp.d1_a() and connection_version = 2;
+select pg_temp.base_assert(not pg_temp.d1_listed(), 'the mended reading has room');
+
+-- 6. A wake paid by login B, with room, is due though A's work waits in the same company, and only it goes on.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.d1_login',public.qorpera_begin_native_provider_login(
@@ -441,6 +646,22 @@ reset role;
 insert into public.qorpera_native_provider_account_metadata(connection_id,connection_version,provider_account_usage)
 values (pg_temp.d1_b(), 2, jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
 	'windows', jsonb_build_array(pg_temp.d1_window(20))));
+-- The check is of the sponsor version, not of the binding: a wake on a second version of A's binding, paid by B, is due while
+-- the first version's work waits.
+set local session_replication_role = replica;
+insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id,
+	provider_connection_version, allow_autonomous, created_by_user_id)
+select binding_id, 2, sponsor_kind, pg_temp.d1_b(), 2, allow_autonomous, created_by_user_id
+from public.qorpera_execution_sponsor_versions where binding_id = pg_temp.d1_a_binding() and version = 1;
+update public.qorpera_wake_occurrences set sponsor_version = 2 where id = current_setting('qorpera_test.d1_post_2')::uuid;
+set local session_replication_role = origin;
+select pg_temp.base_assert(pg_temp.d1_listed(), 'the second sponsor version''s room did not count: ' || pg_temp.d1_due()::text);
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences set sponsor_version = 1 where id = current_setting('qorpera_test.d1_post_2')::uuid;
+delete from public.qorpera_execution_sponsor_versions where binding_id = pg_temp.d1_a_binding() and version = 2;
+set local session_replication_role = origin;
+select pg_temp.base_assert(not pg_temp.d1_listed(), 'the first sponsor version''s work did not wait: ' || pg_temp.d1_due()::text);
+
 select set_config('qorpera_test.d1_post_b', pg_temp.base_post('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000032', 'And yours?', pg_temp.d1_b_binding(), 1) ->> 0, true) \g /dev/null
 do $$
@@ -472,10 +693,17 @@ begin
 		'the waiting work did not go on: ' || v_pass::text);
 end $$;
 
--- The new helper is the database's own, as the others are.
-select pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_native_account_window_room(uuid,bigint)', 'execute')
-	and not has_function_privilege('authenticated', 'public.qorpera_native_account_window_room(uuid,bigint)', 'execute')
-	and not has_function_privilege('service_role', 'public.qorpera_native_account_window_room(uuid,bigint)', 'execute'),
-	'the window room helper is postgres-only');
+-- The new helpers are the database's own, as the others are.
+do $$
+declare v_fn text;
+begin
+	foreach v_fn in array array['public.qorpera_native_account_window_room(uuid,bigint)',
+		'public.qorpera_folder_due_sponsor_waits(uuid,bigint)'] loop
+		perform pg_temp.base_assert(not has_function_privilege('anon', v_fn, 'execute')
+			and not has_function_privilege('authenticated', v_fn, 'execute')
+			and not has_function_privilege('service_role', v_fn, 'execute')
+			and not has_function_privilege('qorpera_secret_broker', v_fn, 'execute'), v_fn || ' is postgres-only');
+	end loop;
+end $$;
 
 rollback;
