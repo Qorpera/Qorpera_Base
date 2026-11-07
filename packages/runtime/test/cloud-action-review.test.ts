@@ -2407,6 +2407,11 @@ describe("the review step", () => {
 			run: false,
 			text: expect.stringMatching(/^REVIEW_DENIED: This exact action was declined/),
 		});
+		// 7 November: a Product Lead whose app save was denied no longer had its exact arguments after the founder asked
+		// again; it may make the same action once with what it has now.
+		expect((await declined.check()).text).toContain(
+			"or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.",
+		);
 		expect(declined.review).not.toHaveBeenCalled();
 		const used = gate({ begin: { state: "used", reviewId: "review-6" } });
 		expect(await used.check()).toEqual({ run: false, text: expect.stringMatching(/^APPROVAL_USED: /) });

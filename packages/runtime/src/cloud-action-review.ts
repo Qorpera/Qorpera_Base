@@ -1516,7 +1516,7 @@ export class CloudActionReviewGate {
 		if (begin.state === "approved") return approved(begin.reviewId);
 		if (begin.state === "declined")
 			return denied(
-				"REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.",
+				"REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.",
 				begin.reviewId,
 			);
 		if (begin.state === "used")
@@ -1619,7 +1619,7 @@ export class CloudActionReviewGate {
 		if (recorded.decision === "allow") return approved(recorded.reviewId);
 		if (recorded.decision === "deny")
 			return denied(
-				`REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
+				`REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.`,
 				recorded.reviewId,
 			);
 		if (recorded.decision !== "ask") throw new Error("Action review response is invalid");
@@ -1713,7 +1713,7 @@ export class CloudActionReviewGate {
 			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")
 				return denied(
-					`APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way. Only if the member later asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
+					`APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way. Only if the member later asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.`,
 					reviewId,
 				);
 			if (state.state === "used")
