@@ -460,6 +460,8 @@ async function handle(message) {
 			write({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId, turnId, command: "PRIVATE_APPROVAL_COMMAND" } });
 		} else if (mode === "final-send-ends-turn" || mode === "final-send-natural" || mode === "progress-send-no-end") {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "send_message", arguments: { idempotencyKey: "k1", text: "Done.", phase: mode === "progress-send-no-end" ? "progress" : "final" } } });
+		} else if (mode === "report-ends-turn" || mode === "report-goes-on") {
+			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "report_work", arguments: { operationKey: "k1", outcome: "succeeded", summary: "Done." } } });
 		} else if (mode === "failed-turn") {
 			failed();
 		} else if (mode === "duplicate-id" || mode === "callback-flood") {
@@ -499,11 +501,11 @@ async function handle(message) {
 		sendEvidence.reply = message;
 		sendEvidence.pending = fence([{ kind: "function_call_output", callId: "send_1", output: message.result.contentItems[0].text }]);
 		sendEvidence.fenced = await sendEvidence.pending;
-		if (mode !== "final-send-ends-turn") {
+		if (mode !== "final-send-ends-turn" && mode !== "report-ends-turn") {
 			// Give a (wrong) interrupt time to arrive before completing naturally.
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			writeFileSync(evidencePath, JSON.stringify(sendEvidence));
-			if (mode === "progress-send-no-end" && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+			if ((mode === "progress-send-no-end" || mode === "report-goes-on") && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
 	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
@@ -541,7 +543,7 @@ async function handle(message) {
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });
-		if (mode === "final-send-ends-turn") {
+		if (mode === "final-send-ends-turn" || mode === "report-ends-turn") {
 			// The interrupt arrives while the fence reply is still pending, as it does live.
 			sendEvidence.fenced = await sendEvidence.pending;
 			writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));

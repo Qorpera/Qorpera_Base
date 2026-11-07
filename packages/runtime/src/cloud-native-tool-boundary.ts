@@ -156,7 +156,8 @@ export interface CloudNativeTool {
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
-	/** Host-only: a confirmed final public send, or a worker's saved report. The turn ends after this result is fenced. */
+	/** Host-only: a confirmed final public send, or a worker's saved report (unless its answer tells of desktop paths the
+	 * folder did not take). The turn ends after this result is fenced. */
 	completesTurn?: boolean;
 	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
 	 * converted), handed to the model right after the envelope. */
@@ -1240,10 +1241,15 @@ export class CloudNativeToolBoundary {
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
 		this.#issuedResults.add(fingerprint);
 		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+		// A final send closes the turn whatever else its answer says (contract 7.1). A worker's report waits for one more
+		// round when its answer tells of desktop paths the folder did not take, or that more of that report is to come: the
+		// worker is the only one who can act on them, and this is the last result it would read.
+		const folderUnread =
+			folder && (folder.report.notSaved || folder.report.refused !== undefined || folder.report.more);
 		const completesTurn =
 			status === "ok" &&
 			((tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")) ||
-				(tool?.source === "worker" && tool.name === "report_work")) &&
+				(tool?.source === "worker" && tool.name === "report_work" && !folderUnread)) &&
 			content.completesTurn === true;
 		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],

@@ -1348,9 +1348,10 @@ class CodexBoundaryRpc {
 				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
 		}
 		this.#observeFence(request);
-		// Contract 7.1: the final send closes the turn. Once its result has been
-		// fenced, stop the provider instead of paying for a closing model round
-		// whose text is never delivered. The interrupted completion is a success.
+		// Contract 7.1: the final send closes the turn, and a worker's saved report is
+		// its last act. Once that result has been fenced, stop the provider instead of
+		// paying for a closing model round whose text is never delivered. The
+		// interrupted completion is a success.
 		if (
 			!this.#turnEndRequested &&
 			this.#activeCalls === 0 &&
@@ -1608,8 +1609,9 @@ class CodexBoundaryRpc {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
-					// The host-only marker never reaches the provider; the fence that
-					// follows this result is where the turn ends (see assertModelRequest).
+					// The host-only marker (a final send, a worker's saved report) never reaches
+					// the provider; the fence that follows this result is where the turn ends
+					// (see assertModelRequest).
 					if (completesTurn) this.#turnEndCallIds.add(callId);
 					this.#write({ id: message.id, result });
 				},
