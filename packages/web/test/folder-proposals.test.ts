@@ -242,6 +242,10 @@ describe("a proposal's changes in plain words", () => {
 		expect(proposalChange(unit({ op: "move", path: "clients/a-plan.md", to: "clients/b-plan.md" }), false)).toBe(
 			"Rename “A plan” to “B plan”",
 		);
+		// Names that read the same keep their file names (7 November 2026).
+		expect(proposalChange(unit({ op: "move", path: "render/room.blend", to: "render/room.blend1" }), false)).toBe(
+			"Rename “room.blend” to “room.blend1”",
+		);
 		expect(proposalChange(unit({ op: "move", path: "clients/plan.md", to: "archive/2026/plan.md" }), false)).toBe(
 			"Move “Plan” to “2026”",
 		);

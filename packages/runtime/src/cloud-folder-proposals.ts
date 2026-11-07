@@ -240,13 +240,22 @@ function changeOf(unit: CloudCompanyFolderProposalUnit, createsAgent: boolean): 
 		return {
 			text:
 				parentOf(unit.to) === parent
-					? `Rename “${name}” to “${cloudActionFileName(unit.to)}”`
+					? renamed(unit.path, unit.to)
 					: `Move “${name}” to “${parentOf(unit.to) ? cloudActionFileName(parentOf(unit.to)) : "the top of the Company File"}”`,
 			title: "Move in the Company File",
 			target: name,
 			details: [],
 		};
 	return { text: `Change “${name}”`, title: "Change the Company File", target: name, details: [] };
+}
+
+/** A rename's words: the names as people say them, or the file names themselves when those read the same (7 November
+ * 2026: Blender's room.blend to room.blend1 read "Rename “Room” to “Room”"). */
+function renamed(from: string, to: string): string {
+	const said = [cloudActionFileName(from), cloudActionFileName(to)];
+	if (said[0] !== said[1]) return `Rename “${said[0]}” to “${said[1]}”`;
+	const base = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path;
+	return `Rename “${base(from)}” to “${base(to)}”`;
 }
 
 /** A path as the context shows it. */
