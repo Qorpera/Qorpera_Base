@@ -503,7 +503,8 @@ end $$;
 -- a new room.blend; the next save deletes room.blend1). Another view's file, a file the view did not last change, and a
 -- file under QorperaOS/ still park.
 do $$
-declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); c jsonb := pg_temp.box(x -> 'actor'); r jsonb;
+declare x jsonb := pg_temp.agent_run(); y jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor');
+	c jsonb := pg_temp.box(y -> 'actor'); r jsonb;
 begin
 	perform pg_temp.expect(pg_temp.vcommit(b, 'own-1', jsonb_build_array(jsonb_build_object('op','write','path','own-room.blend',
 		'file', pg_temp.stage('scene 1', pg_temp.vactor(b))))), 1, 'saved');
@@ -518,7 +519,7 @@ begin
 	r := pg_temp.vcommit(b, 'own-3', jsonb_build_array(pg_temp.deletes('own-room.blend1')));
 	perform pg_temp.expect(r, 1, 'saved');
 	if pg_temp.present('own-room.blend1') then raise exception 'A view''s own delete changed nothing'; end if;
-	-- Another view of the same run: the file is not its own, so it parks.
+	-- Another view (another run's box): the file is not its own, so it parks.
 	r := pg_temp.vcommit(c, 'own-4', jsonb_build_array(pg_temp.deletes('own-room.blend')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	-- A member's file (rr12.txt, written by the member) still parks, as in 1.

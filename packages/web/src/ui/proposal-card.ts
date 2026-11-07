@@ -69,7 +69,13 @@ export function proposalChange(unit: FolderProposalUnit, createsAgent: boolean):
 			: t("Delete “{name}”", { name });
 	if (unit.op === "move" && unit.to !== undefined) {
 		const to = parentOf(unit.to);
-		if (to === parent) return t("Rename “{name}” to “{to}”", { name, to: readableFileName(unit.to) });
+		if (to === parent) {
+			// Names that read the same keep their file names (7 November 2026: Blender's room.blend to room.blend1).
+			const toName = readableFileName(unit.to);
+			if (toName !== name) return t("Rename “{name}” to “{to}”", { name, to: toName });
+			const base = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path;
+			return t("Rename “{name}” to “{to}”", { name: base(unit.path), to: base(unit.to) });
+		}
 		return to
 			? t("Move “{name}” to “{to}”", { name, to: readableFileName(to) })
 			: t("Move “{name}” to the top of the Company File", { name });
