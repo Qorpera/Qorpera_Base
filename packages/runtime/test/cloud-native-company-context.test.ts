@@ -1984,3 +1984,43 @@ it("reads an answered card the history no longer holds by its id, and lets read_
 		quiet.mockRestore();
 	}
 });
+
+/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
+const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+
+it("cuts webhook signing secrets out of the continuation the context shows, as read_context's pages have them cut", () => {
+	const f = nativeCompanyContextFixture();
+	// A machine event's continuation with a command's output that printed a signing secret twice: once in the first
+	// 4 KiB, and once past it, where #1468 (20260930617000) now shows the text instead of a read_context page.
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [
+			{ outputTail: `${"a".repeat(1000)} ${FAKE_WEBHOOK_SECRET} ${"b".repeat(7000)}` },
+			{ outputTail: `export STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET}\n${"c".repeat(12000)}` },
+		],
+	});
+	const whole = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...whole,
+		content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+	};
+	expect(text.indexOf(FAKE_WEBHOOK_SECRET)).toBeLessThan(4096);
+	expect(text.lastIndexOf(FAKE_WEBHOOK_SECRET)).toBeGreaterThan(4096);
+	expect(text.lastIndexOf(FAKE_WEBHOOK_SECRET)).toBeLessThan(16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const promptText = composeCloudNativeCompanyPrompt(context);
+	expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+	expect(promptText).not.toMatch(/whsec_[A-Za-z0-9+/=]{10,}/);
+	const shown = JSON.parse(promptText).continuation;
+	expect(shown.content.text.split("whsec_[REDACTED]")).toHaveLength(3);
+	// Only the text: the handle read_context reads on from is the source's own.
+	expect({ ...shown.content, text: undefined }).toEqual({ ...context.continuation?.content, text: undefined });
+	// The rest of the text is unchanged.
+	expect(shown.content.text).toBe(
+		context.continuation?.content.text.replaceAll(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"),
+	);
+	// A continuation without one is shown as it is, and so is a bare or short whsec_, as the boundary leaves them.
+	f.context.continuation = f.source("continuation", f.binding.runId, '{"note":"whsec_ whsec_short"}');
+	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(plain)).continuation).toEqual(plain.continuation);
+});
