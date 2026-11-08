@@ -184,14 +184,26 @@ begin
 	perform pg_temp.same(public.qorpera_live_hint_topic_profile(pg_temp.topic('10', 'a1'), null)::text, null, 'no user');
 end $$;
 
--- The audience functions restate the five tables' read policies (qorpera_live_hint_*_topics) and the rule functions
--- those call: the policies (each permissive or restrictive SELECT or ALL policy, its roles and its expression), the
--- tables' RLS and their SELECT grant to authenticated, and the bodies of qorpera_can_read_session,
--- qorpera_can_read_profile and qorpera_member_role are pinned here. A change to any of them fails until the topics
--- functions follow it and this pin is renewed (perf T3 review F2): a new rule the matrix below has no row for cannot
--- slip by.
+-- The audience functions restate the five tables' read policies (qorpera_live_hint_*_topics), so everything those
+-- policies read as the member is pinned here, transitively (perf T3 review F2): the five tables and
+-- qorpera_profile_members, whose own policy the agents' policy meets when it reads a member's row as the member (each
+-- permissive or restrictive SELECT or ALL policy, its roles and its expression; the tables' RLS and their SELECT grant to
+-- authenticated); and the rule functions they call, qorpera_can_read_session, qorpera_can_read_profile and, inside it,
+-- qorpera_member_role (body, SECURITY DEFINER, settings: a definer reads its tables as owner, so their policies do not
+-- join the rule while it stays one). A policy that starts to read another table or call another function fails the
+-- second check; a function's new call changes its pinned body. auth.uid() is the platform's and not pinned (its body
+-- differs between this database and production). Any change fails until the topics functions follow it and this pin
+-- is renewed: a new rule the matrix has no row for cannot slip by.
 do $$
-declare v_got text; v_path text := current_setting('search_path');
+declare
+	v_path text := current_setting('search_path');
+	v_tables regclass[] := array['public.qorpera_shared_sessions', 'public.qorpera_profile_staff',
+		'public.qorpera_profile_access_state', 'public.qorpera_company_files', 'public.qorpera_company_sidebar_revisions',
+		'public.qorpera_profile_members']::regclass[];
+	v_functions regprocedure[] := array['public.qorpera_can_read_session(uuid)', 'public.qorpera_can_read_profile(uuid)',
+		'public.qorpera_member_role(uuid)']::regprocedure[];
+	v_got text;
+	v_unpinned text;
 begin
 	-- Expressions print fully qualified under an empty path, the same in any database (production's gave these values,
 	-- 8 Nov 2026).
@@ -204,13 +216,23 @@ begin
 				coalesce(p.qual, '')), ' ' order by p.policyname collate "C") from pg_policies as p
 				where p.schemaname = 'public' and p.tablename = c.relname and p.cmd in ('SELECT', 'ALL')), ''))),
 		' ' order by c.relname collate "C")
-	into v_got from pg_class as c where c.relnamespace = 'public'::regnamespace and c.relname in ('qorpera_shared_sessions',
-		'qorpera_profile_staff', 'qorpera_profile_access_state', 'qorpera_company_files', 'qorpera_company_sidebar_revisions');
-	v_got := v_got || ' ' || (select string_agg(format('%s:%s', p.oid::regprocedure, md5(p.prosrc)), ' ' order by p.oid::regprocedure::text collate "C")
-		from pg_proc as p where p.oid in ('public.qorpera_can_read_session(uuid)'::regprocedure,
-			'public.qorpera_can_read_profile(uuid)'::regprocedure, 'public.qorpera_member_role(uuid)'::regprocedure));
+	into v_got from pg_class as c where c.oid = any(v_tables);
+	v_got := v_got || ' ' || (select string_agg(format('%s:%s:%s:%s', p.oid::regprocedure, md5(p.prosrc), p.prosecdef,
+			coalesce(p.proconfig::text, '')), ' ' order by p.oid::regprocedure::text collate "C")
+		from pg_proc as p where p.oid = any(v_functions));
+	select string_agg(distinct case when d.refclassid = 'pg_class'::regclass then d.refobjid::regclass::text
+			else d.refobjid::regprocedure::text end, ', ')
+	into v_unpinned
+	from pg_policy as policy join pg_depend as d on d.classid = 'pg_policy'::regclass and d.objid = policy.oid
+	where policy.polcmd in ('r', '*') and policy.polrelid = any(v_tables)
+		and d.refclassid in ('pg_class'::regclass, 'pg_proc'::regclass)
+		and not (d.refclassid = 'pg_class'::regclass and d.refobjid = any(v_tables::oid[]))
+		and not (d.refclassid = 'pg_proc'::regclass and d.refobjid = any(v_functions::oid[] || 'auth.uid()'::regprocedure::oid));
 	perform set_config('search_path', v_path, true);
-	if v_got is distinct from 'qorpera_company_files:t:f:t:1:b7c3cc631d7204235197056fa97cbb62 qorpera_company_sidebar_revisions:t:f:t:1:1392c4b3fd7be0456ac9438393abcceb qorpera_profile_access_state:t:f:t:1:6d3c0adfe942ad68cdb16e25ecb9ab2b qorpera_profile_staff:t:f:t:1:ee916f8775b447ff8af7fcaa0a930664 qorpera_shared_sessions:t:f:t:1:4be9b455854a1fa0e533096d442cddc6 public.qorpera_can_read_profile(uuid):f58257824eac0982bbc53b7836c3084f public.qorpera_can_read_session(uuid):24f66c23dc5ddb914c600abd67e0e913 public.qorpera_member_role(uuid):1535250ccedfa65b7f931725a322f9e6' then
+	if v_unpinned is not null then
+		raise exception 'A read policy of the live hints'' tables now reads %: pin it here and update qorpera_live_hint_*_topics (20260930653000)', v_unpinned;
+	end if;
+	if v_got is distinct from 'qorpera_company_files:t:f:t:1:b7c3cc631d7204235197056fa97cbb62 qorpera_company_sidebar_revisions:t:f:t:1:1392c4b3fd7be0456ac9438393abcceb qorpera_profile_access_state:t:f:t:1:6d3c0adfe942ad68cdb16e25ecb9ab2b qorpera_profile_members:t:f:t:1:459ba2bfe0c12316aab4a81c0d42a18d qorpera_profile_staff:t:f:t:1:ee916f8775b447ff8af7fcaa0a930664 qorpera_shared_sessions:t:f:t:1:4be9b455854a1fa0e533096d442cddc6 public.qorpera_can_read_profile(uuid):f58257824eac0982bbc53b7836c3084f:t:{"search_path=\"\""} public.qorpera_can_read_session(uuid):24f66c23dc5ddb914c600abd67e0e913:t:{"search_path=\"\""} public.qorpera_member_role(uuid):1535250ccedfa65b7f931725a322f9e6:t:{"search_path=\"\""}' then
 		raise exception 'A read policy of the live hints'' tables or a rule it calls changed: update qorpera_live_hint_*_topics (20260930653000) to the new rule, then this pin. got %', v_got;
 	end if;
 end $$;
@@ -234,17 +256,14 @@ do $$ begin
 		'one hint per topic and resource, however many rows moved');
 end $$;
 
--- Row by row, member by member: a change reaches exactly the members the row's policy shows it to.
-do $$
+-- Row by row, member by member: a change to each row of A and B reaches exactly the members the row's policy shows it
+-- to, read as Realtime read it (as the member, the row by its key).
+create function pg_temp.matrix() returns void language plpgsql as $$
 declare
 	v_row record;
-	v_user uuid;
 	v_want text;
 	v_got text;
 begin
-	-- R's private session is R's alone; A2's is A2's. The agent soft-deleted below is no one's.
-	update public.qorpera_profile_staff set deleted_at = clock_timestamp(), deleted_by_user_id = '11530000-0000-4000-8000-0000000000a1'
-	where staff_agent_id = '11530000-0000-4000-8000-000000000041';
 	for v_row in
 		select 'qorpera_shared_sessions' as tbl, 'sessions' as event, profile_id, format('id = %L', id) as key from public.qorpera_shared_sessions
 		where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011')
@@ -270,6 +289,13 @@ begin
 			and (substring(topic from 14 for 36)::uuid <> v_row.profile_id or event <> v_row.event)), '0',
 			format('%s %s hints nothing else', v_row.tbl, v_row.key));
 	end loop;
+end $$;
+do $$
+begin
+	-- R's private session is R's alone; A2's is A2's. The agent soft-deleted below is no one's.
+	update public.qorpera_profile_staff set deleted_at = clock_timestamp(), deleted_by_user_id = '11530000-0000-4000-8000-0000000000a1'
+	where staff_agent_id = '11530000-0000-4000-8000-000000000041';
+	perform pg_temp.matrix();
 	-- The matrix covered the cases that differ.
 	perform pg_temp.same((select count(*)::text from public.qorpera_shared_sessions
 		where profile_id = '11530000-0000-4000-8000-000000000010' and audience_kind = 'member_private'), '2', 'two private sessions');
@@ -367,8 +393,9 @@ do $$ begin
 end $$;
 rollback to savepoint live_removed;
 
--- A company being deleted: files and the sidebar reach no one (qorpera_can_read_profile); sessions, agents and access
--- rows still do, as their policies say.
+-- A company being deleted: files, the sidebar and agents reach no one (qorpera_can_read_profile, directly or through
+-- the members table's own policy, which the agents' policy reads as the member); sessions and the access row's own
+-- account still do, as their policies say.
 savepoint live_deleting;
 do $$ begin
 	insert into public.qorpera_company_deletions (profile_id, requested_by_user_id)
@@ -379,8 +406,13 @@ do $$ begin
 	update public.qorpera_shared_sessions set updated_at = updated_at where id = '11530000-0000-4000-8000-000000000033';
 	update public.qorpera_profile_access_state set updated_at = updated_at where profile_id = '11530000-0000-4000-8000-000000000011'
 		and user_id = '11530000-0000-4000-8000-0000000000b1';
+	update public.qorpera_profile_staff set updated_at = updated_at where profile_id = '11530000-0000-4000-8000-000000000011';
 	perform pg_temp.flush();
 	perform pg_temp.same(pg_temp.hints(), 'B/B1:access B/B1:sessions B/X:sessions', 'a company being deleted');
+	perform pg_temp.same(pg_temp.sees('qorpera_profile_staff', 'staff_agent_id = ''11530000-0000-4000-8000-000000000042''',
+		'11530000-0000-4000-8000-0000000000b1')::text, 'false', 'B1 no longer reads B''s agent');
+	-- And every row of both companies, member by member, while B is being deleted.
+	perform pg_temp.matrix();
 	perform pg_temp.same(pg_temp.sees('qorpera_profile_access_state', 'user_id = ''11530000-0000-4000-8000-0000000000b1''',
 		'11530000-0000-4000-8000-0000000000c1')::text, 'false', 'X no longer reads B1''s access row');
 end $$;

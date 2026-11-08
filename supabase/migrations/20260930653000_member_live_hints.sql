@@ -107,12 +107,15 @@ returns text[] language sql stable set search_path = '' as $$
 	where member.profile_id = p_profile_id
 		and (p_audience_kind = 'company' or (p_audience_kind = 'member_private' and member.user_id = p_audience_user_id))
 $$;
--- qorpera_profile_staff_member_read: a member of the company, while the agent is not deleted.
+-- qorpera_profile_staff_member_read: a member of the company, while the agent is not deleted. The policy finds the
+-- member's row in qorpera_profile_members as the member, so that table's own read policy (qorpera_can_read_profile)
+-- applies too: not while the company is being deleted (perf T3 review F7).
 create function public.qorpera_live_hint_staff_topics(p_profile_id uuid, p_deleted boolean)
 returns text[] language sql stable set search_path = '' as $$
 	select coalesce(array_agg(public.qorpera_live_hint_topic(member.profile_id, member.user_id)), '{}')
 	from public.qorpera_profile_members as member
 	where member.profile_id = p_profile_id and p_deleted is false
+		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = p_profile_id)
 $$;
 -- qorpera_profile_access_state_subject_or_member_read: the row's own account, or whoever passes qorpera_can_read_profile.
 create function public.qorpera_live_hint_access_topics(p_profile_id uuid, p_user_id uuid)
