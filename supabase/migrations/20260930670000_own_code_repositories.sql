@@ -12,7 +12,9 @@
 -- no token, no push and no pull request.
 --
 -- 1. qorpera_coding_repository_valid takes host qorpera too, with lower-case owner and name (a name never ends with a
---    dot): they name a folder, and the folder tells names apart without case. GitHub's rules are unchanged.
+--    dot): they name a folder, and the folder tells names apart without case. Its default branch is always main, so a
+--    repository has one identity: one grant (an operator's turning off holds for it whole) and one main/. GitHub's
+--    rules are unchanged.
 -- 2. qorpera_company_state_worker_rules: a dispatch on a repository kept in Qorpera needs no repository grant first
 --    (every agent of the company may work on the company's own code, as on its other files): the dispatch writes the
 --    agent's grant (3), which the session's later steps check as they check a GitHub one; a grant an operator turned off
@@ -30,7 +32,8 @@
 -- 4. qorpera_complete_coding_turn: a session on a repository kept in Qorpera never reports a pull request. Its
 --    succeeded turn may report where its commit landed, as its one artifact {kind: landed, state, branch, headSha,
 --    mainSha}; the agent's report carries it as `landed`, and its summary ends with one line from the platform that
---    says so, which the results file the agent reads keeps.
+--    says so, which the results file the agent reads keeps: the session's own words are cut by bytes to leave room for
+--    it within 4000 bytes.
 -- Every changed body carries the marker 20260930670000.
 
 set local lock_timeout = '3s';
@@ -49,6 +52,8 @@ returns boolean language sql immutable set search_path = '' as $$
 				and p_repository ->> 'name' ~ '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$'
 			when 'qorpera' then p_repository ->> 'owner' ~ '^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$'
 				and p_repository ->> 'name' ~ '^[a-z0-9_]([a-z0-9_.-]{0,98}[a-z0-9_-])?$'
+				-- One repository, one default branch: its identity, its grant and its main/ are one (review 1544 r1).
+				and p_repository ->> 'baseBranch' = 'main'
 			else false end
 		and jsonb_typeof(p_repository -> 'baseBranch') = 'string'
 		and p_repository ->> 'baseBranch' ~ '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$'
@@ -173,6 +178,9 @@ end $do$;
 do $do$
 declare v_definition text := pg_get_functiondef(
 		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure);
+	v_declare_old text := $old$v_report jsonb; v_failure jsonb;$old$;
+	v_declare_new text := $new$v_report jsonb; v_failure jsonb;
+	v_landed text; -- 20260930670000$new$;
 	v_check_old text := $old$		or (p_checks is not null and jsonb_typeof(p_checks) <> 'array') or (p_artifacts is not null and jsonb_typeof(p_artifacts) <> 'array')$old$;
 	v_check_new text := $new$		or (p_checks is not null and jsonb_typeof(p_checks) <> 'array') or (p_artifacts is not null and jsonb_typeof(p_artifacts) <> 'array')
 		-- 20260930670000: a repository kept in Qorpera has no pull request; its succeeded turn may say where it landed,
@@ -190,12 +198,19 @@ declare v_definition text := pg_get_functiondef(
 	v_summary_new text := $new$	if v_worker.state <> 'active' then raise exception 'Worker was cancelled or has already reported' using errcode = '55000'; end if;
 	-- 20260930670000: the platform's own line on where the commit landed, after the session's summary (cut to fit).
 	if p_artifacts is not null then
-		v_summary := left(v_summary, 3800) || E'\n\n' || 'Qorpera landed this commit on ' || (p_artifacts -> 0 ->> 'branch')
+		v_landed := E'\n\n' || 'Qorpera landed this commit on ' || (p_artifacts -> 0 ->> 'branch')
 			|| case p_artifacts -> 0 ->> 'state' when 'merged' then ', merged with what it got meanwhile'
 				when 'unchanged' then ', which already held it' else '' end
 			|| ': ' || (p_artifacts -> 0 ->> 'branch') || ' is at ' || left(p_artifacts -> 0 ->> 'mainSha', 12)
 			|| ', and the files are in the company folder at code/' || (v_session.repository ->> 'owner') || '/'
 			|| (v_session.repository ->> 'name') || '/main/.';
+		-- The whole summary stays within the 4000 bytes the results file keeps (review 1544 r1 F3): the session's own
+		-- words are cut by bytes, whole characters only, so the platform's line is always there.
+		while octet_length(v_summary) > 4000 - octet_length(v_landed) loop
+			v_summary := left(v_summary, length(v_summary)
+				- greatest(1, (octet_length(v_summary) - (4000 - octet_length(v_landed))) / 4));
+		end loop;
+		v_summary := v_summary || v_landed;
 	end if;$new$;
 	v_report_old text := $old$		|| case when p_options is not null then jsonb_build_object('options', p_options) else '{}'::jsonb end
 		-- 20260930551000: a failed turn's reason, which the settle trigger copies to the turn's outcome.$old$;
@@ -208,8 +223,9 @@ begin
 		raise exception '20260930670000 is already in qorpera_complete_coding_turn'; end if;
 	if (length(v_definition) - length(replace(v_definition, v_check_old, ''))) / length(v_check_old) <> 1
 		or (length(v_definition) - length(replace(v_definition, v_summary_old, ''))) / length(v_summary_old) <> 1
-		or (length(v_definition) - length(replace(v_definition, v_report_old, ''))) / length(v_report_old) <> 1 then
+		or (length(v_definition) - length(replace(v_definition, v_report_old, ''))) / length(v_report_old) <> 1
+		or (length(v_definition) - length(replace(v_definition, v_declare_old, ''))) / length(v_declare_old) <> 1 then
 		raise exception '20260930670000 anchor differs in qorpera_complete_coding_turn'; end if;
-	execute replace(replace(replace(v_definition, v_check_old, v_check_new), v_summary_old, v_summary_new),
-		v_report_old, v_report_new);
+	execute replace(replace(replace(replace(v_definition, v_check_old, v_check_new), v_summary_old, v_summary_new),
+		v_report_old, v_report_new), v_declare_old, v_declare_new);
 end $do$;

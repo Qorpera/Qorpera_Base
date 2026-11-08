@@ -399,7 +399,12 @@ export function cloudWorkerTools(
 							maxLength: 100,
 							description: "On qorpera, a short lowercase name, such as shop.",
 						},
-						baseBranch: { type: "string", minLength: 1, maxLength: 200 },
+						baseBranch: {
+							type: "string",
+							minLength: 1,
+							maxLength: 200,
+							description: "On qorpera, always main.",
+						},
 					},
 				},
 				text: { type: "string", minLength: 1, maxLength: 4000 },
@@ -509,7 +514,7 @@ export function cloudWorkerTools(
 							parseCloudCodingRepository(repository);
 						} catch {
 							throw new CloudToolArgumentRefusal(
-								"A repository kept in Qorpera has a lowercase owner (letters, digits, hyphens) and a lowercase name (letters, digits, hyphens, dots, underscores; not ending with a dot), such as owner company and name shop",
+								"A repository kept in Qorpera has a lowercase owner (letters, digits, hyphens), a lowercase name (letters, digits, hyphens, dots, underscores; not ending with a dot) and baseBranch main, such as owner company and name shop",
 							);
 						}
 					Object.assign(request, {

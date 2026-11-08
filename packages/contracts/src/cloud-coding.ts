@@ -133,9 +133,12 @@ export function parseCloudCodingBranch(value: unknown): string {
 	return value;
 }
 
+/** The one default branch of every repository kept in Qorpera: one repository, one `main/`, whatever a dispatch says. */
+export const CLOUD_CODING_QORPERA_BASE_BRANCH = "main";
+
 /** A repository's identity. On GitHub its owner and name as GitHub allows them. In Qorpera both are lower case, since
  * they name the folder `code/<owner>/<name>/` and the folder tells names apart without case; a name never ends with a
- * dot. */
+ * dot; and the default branch is always `main`, so one repository has one identity and one `main/`. */
 export function parseCloudCodingRepository(value: unknown): CloudCodingRepository {
 	const input = closed(value, ["host", "owner", "name", "baseBranch"]);
 	const valid =
@@ -148,7 +151,8 @@ export function parseCloudCodingRepository(value: unknown): CloudCodingRepositor
 				typeof input.owner === "string" &&
 				/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(input.owner) &&
 				typeof input.name === "string" &&
-				/^[a-z0-9_](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?$/.test(input.name);
+				/^[a-z0-9_](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?$/.test(input.name) &&
+				input.baseBranch === CLOUD_CODING_QORPERA_BASE_BRANCH;
 	if (!valid) throw new Error("INVALID_CODING_REPOSITORY");
 	return Object.freeze({
 		host: input.host as CloudCodingRepositoryHost,

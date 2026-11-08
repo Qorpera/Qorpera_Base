@@ -201,6 +201,9 @@ describe("a repository kept in Qorpera (own code storage, slice 1)", () => {
 			{ ...kept, owner: "-company" },
 			{ ...kept, name: ".shop" },
 			{ ...kept, host: "gitlab.com" },
+			// One repository, one default branch (review 1544 r1 F2): never another branch of the same repository.
+			{ ...kept, baseBranch: "master" },
+			{ ...kept, baseBranch: "dev" },
 		])
 			expect(() => parseCloudCodingRepository(bad)).toThrow("INVALID_CODING_REPOSITORY");
 		// GitHub's own rules are unchanged: mixed case and a trailing dot.

@@ -874,6 +874,14 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 			baseSha: started.baseSha,
 			restored: [],
 		});
+		// One default branch: another branch of the same repository is no repository kept in Qorpera, so it never resets
+		// main/ to an empty start (review 1544 r1 F2).
+		await expect(startCodeArea(c.job, { repository: { ...kept, baseBranch: "master" } })).rejects.toThrow(
+			"INVALID_CODING_REPOSITORY",
+		);
+		expect(await f.git(c.repo, "--git-dir=.", "for-each-ref", "--format=%(refname)", "refs/heads")).toBe(
+			"refs/heads/main",
+		);
 		// main/ lost (a start or landing stopped between the branch and main/): put back at the branch.
 		await rm(join(c.code, "main"), { recursive: true });
 		await rm(join(c.repo, "worktrees/main"), { recursive: true });

@@ -29,8 +29,11 @@ begin
 		and not public.qorpera_coding_repository_valid(pg_temp.own_repo('company', 'shop.'))
 		and not public.qorpera_coding_repository_valid(pg_temp.own_repo('-company'))
 		and not public.qorpera_coding_repository_valid(pg_temp.own_repo() || '{"host":"gitlab.com"}')
-		and not public.qorpera_coding_repository_valid(pg_temp.own_repo() || '{"baseBranch":"a..b"}'),
-		'upper case, a trailing dot, a leading hyphen, another host and a bad branch are refused');
+		and not public.qorpera_coding_repository_valid(pg_temp.own_repo() || '{"baseBranch":"a..b"}')
+		-- One repository, one default branch (review 1544 r1): its identity, grant and main/ are one.
+		and not public.qorpera_coding_repository_valid(pg_temp.own_repo() || '{"baseBranch":"dev"}')
+		and public.qorpera_coding_repository_valid(pg_temp.c3_repo() || '{"baseBranch":"dev"}'),
+		'upper case, a trailing dot, a leading hyphen, another host, a bad branch and another branch in Qorpera are refused');
 end $$;
 
 -- 2. Enrolment and the grant ------------------------------------------------------------------------------------------
@@ -92,7 +95,7 @@ end $$;
 -- 3. One place under code/, and a grant turned off ---------------------------------------------------------------------
 do $$
 declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'QorperaOS/agents/alice/todos/fix-login/place';
-	v_brief jsonb;
+	v_brief jsonb; v_result jsonb;
 begin
 	perform pg_temp.base_claims('service_role');
 	-- The company's GitHub repository Qorpera/Qorpera_Base is at code/qorpera/qorpera_base.
@@ -112,6 +115,14 @@ begin
 	v_brief := pg_temp.own_brief('91170000-0000-4000-8000-0000000000b3');
 	perform pg_temp.c3_refused(pg_temp.c3_dispatch(v_alice, 'own-refuse-5', v_folder, v_brief), v_brief,
 		'This agent''s work on that repository was turned off');
+	-- The same repository on another branch is no way around it: no such repository (review 1544 r1 F1).
+	v_result := pg_temp.c3_dispatch(v_alice, 'own-refuse-6', v_folder,
+		pg_temp.own_brief('91170000-0000-4000-8000-0000000000b3', pg_temp.own_repo() || '{"baseBranch":"dev"}'));
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'refused'
+		and not exists (select 1 from public.qorpera_runtime_workers where id = '91170000-0000-4000-8000-0000000000b3')
+		and (select count(*) from public.qorpera_coding_repository_grants g
+			where g.environment_id = '92400000-0000-4000-8000-000000000020' and g.repository ->> 'host' = 'qorpera') = 1,
+		'another branch: ' || v_result::text);
 	perform pg_temp.base_assert(not (select g.enabled from public.qorpera_coding_repository_grants g
 		where g.environment_id = '92400000-0000-4000-8000-000000000020' and g.staff_agent_id = '92400000-0000-4000-8000-000000000030'
 			and g.repository = pg_temp.own_repo()), 'still off');
@@ -154,12 +165,15 @@ begin
 		null, %L)$q$, '91170000-0000-4000-8000-0000000000b1', v_token, jsonb_build_array(v_landed)),
 		'22023', 'Coding turn result is invalid');
 	-- The landing: the session's record keeps it, the agent's report carries it, and the summary says it in one line.
+	-- The session's own words fill almost all of their 4000 bytes, two bytes a character: they are cut by bytes, whole
+	-- characters only, so the platform's line always fits (review 1544 r1 F3).
 	perform public.qorpera_complete_coding_turn('91170000-0000-4000-8000-0000000000b1', v_token, 'succeeded',
-		'The shop has a cart.', null, null, null, jsonb_build_array(v_landed));
+		'The shop has a cart. ' || repeat('å', 1980), null, null, null, jsonb_build_array(v_landed));
 	w := pg_temp.c3_worker('91170000-0000-4000-8000-0000000000b1'); s := pg_temp.c3_session(w.id);
 	perform pg_temp.base_assert(w.state = 'succeeded' and s.phase = 'completed' and s.pull_request is null
 		and s.artifacts = jsonb_build_array(v_landed) and w.result -> 'landed' = v_landed and w.result -> 'pullRequest' = 'null'
-		and w.result ->> 'summary' = E'The shop has a cart.\n\nQorpera landed this commit on main, merged with what it got '
+		and octet_length(w.result ->> 'summary') <= 4000 and w.result ->> 'summary' like 'The shop has a cart. ååå%'
+		and w.result ->> 'summary' like E'%å\n\nQorpera landed this commit on main, merged with what it got '
 			|| 'meanwhile: main is at cccccccccccc, and the files are in the company folder at code/company/shop/main/.',
 		'the landed turn: ' || to_jsonb(w)::text);
 	perform pg_temp.base_assert((select e.body ->> 'summary' from public.qorpera_coding_session_events e where e.worker_id = w.id
