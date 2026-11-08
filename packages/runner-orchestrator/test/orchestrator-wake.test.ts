@@ -68,18 +68,47 @@ function runner(work: CloudRunnerWork): CloudRunnerInstance {
 	};
 }
 
+/** A queue that also answers the one pass summary call (all lists quiet unless `passDue` says otherwise). */
+class SummaryQueue extends FakeClaimQueue {
+	passDue: () => Promise<Readonly<Record<string, boolean>>> = async () => ({});
+	async readPassDue(): Promise<Readonly<Record<string, boolean>>> {
+		return this.passDue();
+	}
+}
+
 /** An orchestrator over a queue the test fills, with a provider whose starts take `acquireMs`. */
 function loop(
 	options: {
 		wake?: CloudRunnerWakeSource;
 		pollIntervalMs?: number;
+		reconcileIntervalMs?: number;
 		wakeBackstopMs?: number;
 		wakeActiveMs?: number;
+		wakePassGapMs?: number;
 		dispatchConcurrency?: number;
 		acquireMs?: number;
+		reconcileDelayMs?: number;
+		/** The pass summary call's answer; `false` for a control plane without the call. */
+		passDue?: false | (() => Promise<Readonly<Record<string, boolean>>>);
 	} = {},
 ) {
-	const queue = new FakeClaimQueue(orchestratorId);
+	let queue: FakeClaimQueue;
+	if (options.passDue === false) queue = new FakeClaimQueue(orchestratorId);
+	else {
+		const summary = new SummaryQueue(orchestratorId);
+		if (options.passDue) summary.passDue = options.passDue;
+		queue = summary;
+	}
+	queue.reconcileDelayMs = options.reconcileDelayMs ?? 0;
+	// Each pass ends with reconcileExpired, which holds the pass for reconcileDelayMs.
+	const passes: Array<{ start: number; end?: number }> = [];
+	const reconcileExpired = FakeClaimQueue.prototype.reconcileExpired.bind(queue);
+	vi.spyOn(queue, "reconcileExpired").mockImplementation(async (...args) => {
+		const pass: { start: number; end?: number } = { start: performance.now() };
+		passes.push(pass);
+		await reconcileExpired(...args);
+		pass.end = performance.now();
+	});
 	const claimNext = vi.spyOn(queue, "claimNext");
 	const acquired: string[] = [];
 	const errors: unknown[] = [];
@@ -107,10 +136,11 @@ function loop(
 	const stop = new AbortController();
 	const running = orchestrator.run(stop.signal, {
 		pollIntervalMs: options.pollIntervalMs ?? 20,
-		reconcileIntervalMs: 60_000,
+		reconcileIntervalMs: options.reconcileIntervalMs ?? 60_000,
 		shutdownGraceMs: 100,
 		...(options.wake ? { wake: options.wake, wakeBackstopMs: options.wakeBackstopMs ?? 400 } : {}),
 		...(options.wakeActiveMs !== undefined ? { wakeActiveMs: options.wakeActiveMs } : {}),
+		...(options.wakePassGapMs !== undefined ? { wakePassGapMs: options.wakePassGapMs } : {}),
 		onError: (error) => errors.push(error),
 	});
 	cleanup.push(async () => {
@@ -118,7 +148,7 @@ function loop(
 		await running;
 	});
 	const calls = () => claimNext.mock.calls.length;
-	return { queue, acquired, errors, starts, calls };
+	return { queue, acquired, errors, starts, calls, passes };
 }
 
 describe("node WebSocket client", () => {
@@ -467,5 +497,122 @@ describe("claim loop with wake-ups", () => {
 		await until(() => f.acquired.length === 1);
 		expect(f.queue.claimed.get(runId(1))! - queuedAt).toBeLessThan(300);
 		expect(f.errors).toEqual([]);
+	});
+});
+
+describe("reconcile passes with wake-ups", () => {
+	// The loop's reconcile interval is 60 s, so every pass after the first is one a wake-up brought forward.
+	it("starts the next pass on a wake-up instead of waiting for the reconcile interval", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 100 });
+		await until(() => f.queue.reconcilePasses === 1);
+		await sleep(300);
+		expect(f.queue.reconcilePasses).toBe(1);
+		const firedAt = performance.now();
+		wake.fire();
+		await until(() => f.queue.reconcilePasses === 2, 1000);
+		expect(performance.now() - firedAt).toBeLessThan(150);
+		expect(f.errors).toEqual([]);
+	});
+
+	it("keeps passes it brings forward at least the gap apart, however many wake-ups arrive", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 200 });
+		await until(() => f.queue.reconcilePasses === 1);
+		const before = f.queue.reconcilePasses;
+		const started = performance.now();
+		while (performance.now() - started < 1000) {
+			wake.fire();
+			await sleep(5);
+		}
+		await sleep(250);
+		const elapsed = performance.now() - started;
+		const added = f.queue.reconcilePasses - before;
+		// About 200 wake-ups in a second: one pass per 200 ms gap, never one per wake-up.
+		expect(added).toBeGreaterThanOrEqual(3);
+		expect(added).toBeLessThanOrEqual(Math.ceil(elapsed / 200) + 1);
+	});
+
+	it("follows a pass that was running when the wake-up came with another as soon as it ends", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 0, reconcileDelayMs: 300 });
+		await sleep(100);
+		// The first pass is still in reconcileExpired: it may have listed before the row the wake-up announces.
+		expect(f.queue.reconcilePasses).toBe(0);
+		wake.fire();
+		await until(() => f.queue.reconcilePasses === 1);
+		const firstEnded = performance.now();
+		await until(() => f.queue.reconcilePasses === 2, 1000);
+		expect(performance.now() - firstEnded).toBeLessThan(450);
+	});
+
+	it("leaves the reconcile interval alone without wake-ups", async () => {
+		const f = loop({});
+		await until(() => f.queue.reconcilePasses === 1);
+		await sleep(400);
+		expect(f.queue.reconcilePasses).toBe(1);
+	});
+
+	/** Wake-ups every 5 ms for `ms`, then the rests between the passes (one's end to the next one's start). */
+	async function restsUnderWakeUps(f: ReturnType<typeof loop>, wake: ManualWake, ms: number): Promise<number[]> {
+		await until(() => f.passes.length >= 1 && f.passes[0]!.end !== undefined);
+		const started = performance.now();
+		while (performance.now() - started < ms) {
+			wake.fire();
+			await sleep(5);
+		}
+		const done = f.passes.filter((pass) => pass.end !== undefined);
+		return done.slice(1).map((pass, index) => pass.start - done[index]!.end!);
+	}
+
+	it("rests the gap after a long pass, however many wake-ups arrive during it", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 200, reconcileDelayMs: 300 });
+		const rests = await restsUnderWakeUps(f, wake, 1600);
+		// Passes of 300 ms with wake-ups throughout: one follow-up each, never back to back.
+		expect(rests.length).toBeGreaterThanOrEqual(2);
+		for (const rest of rests) expect(rest).toBeGreaterThanOrEqual(180);
+	});
+
+	it("brings no pass sooner than the reconcile interval while the summary call fails", async () => {
+		const wake = new ManualWake();
+		const f = loop({
+			wake,
+			wakeBackstopMs: 20,
+			wakePassGapMs: 50,
+			reconcileIntervalMs: 400,
+			passDue: async () => {
+				throw new Error("summary unavailable");
+			},
+		});
+		// Each such pass asks every list itself: wake-ups must not raise their rate.
+		const rests = await restsUnderWakeUps(f, wake, 1500);
+		expect(rests.length).toBeGreaterThanOrEqual(2);
+		for (const rest of rests) expect(rest).toBeGreaterThanOrEqual(350);
+		expect(f.errors.some((error) => error instanceof Error && error.message === "summary unavailable")).toBe(true);
+	});
+
+	it("brings no pass sooner than the reconcile interval when the control plane has no summary call", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 50, reconcileIntervalMs: 400, passDue: false });
+		const rests = await restsUnderWakeUps(f, wake, 1500);
+		expect(rests.length).toBeGreaterThanOrEqual(2);
+		for (const rest of rests) expect(rest).toBeGreaterThanOrEqual(350);
+	});
+
+	it("lets a pass that starts on its own take the place of one a wake-up was waiting for", async () => {
+		const wake = new ManualWake();
+		// The interval (600 ms) is shorter than the gap (1500 ms): the pass the wake-up waits for is never needed.
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 1500, reconcileIntervalMs: 600 });
+		await until(() => f.passes.length === 1 && f.passes[0]!.end !== undefined);
+		await sleep(100);
+		wake.fire();
+		await sleep(2000);
+		const starts = f.passes.map((pass) => pass.start);
+		expect(starts.length).toBeGreaterThanOrEqual(3);
+		// Without the hand-over the wake-up's own pass lands 1.5 s after the first, between two interval passes.
+		for (let index = 1; index < starts.length; index++) {
+			expect(starts[index]! - starts[index - 1]!).toBeGreaterThanOrEqual(550);
+		}
 	});
 });
