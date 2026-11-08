@@ -75,11 +75,14 @@ function loop(
 		pollIntervalMs?: number;
 		wakeBackstopMs?: number;
 		wakeActiveMs?: number;
+		wakePassGapMs?: number;
 		dispatchConcurrency?: number;
 		acquireMs?: number;
+		reconcileDelayMs?: number;
 	} = {},
 ) {
 	const queue = new FakeClaimQueue(orchestratorId);
+	queue.reconcileDelayMs = options.reconcileDelayMs ?? 0;
 	const claimNext = vi.spyOn(queue, "claimNext");
 	const acquired: string[] = [];
 	const errors: unknown[] = [];
@@ -111,6 +114,7 @@ function loop(
 		shutdownGraceMs: 100,
 		...(options.wake ? { wake: options.wake, wakeBackstopMs: options.wakeBackstopMs ?? 400 } : {}),
 		...(options.wakeActiveMs !== undefined ? { wakeActiveMs: options.wakeActiveMs } : {}),
+		...(options.wakePassGapMs !== undefined ? { wakePassGapMs: options.wakePassGapMs } : {}),
 		onError: (error) => errors.push(error),
 	});
 	cleanup.push(async () => {
@@ -467,5 +471,59 @@ describe("claim loop with wake-ups", () => {
 		await until(() => f.acquired.length === 1);
 		expect(f.queue.claimed.get(runId(1))! - queuedAt).toBeLessThan(300);
 		expect(f.errors).toEqual([]);
+	});
+});
+
+describe("reconcile passes with wake-ups", () => {
+	// The loop's reconcile interval is 60 s, so every pass after the first is one a wake-up brought forward.
+	it("starts the next pass on a wake-up instead of waiting for the reconcile interval", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 100 });
+		await until(() => f.queue.reconcilePasses === 1);
+		await sleep(300);
+		expect(f.queue.reconcilePasses).toBe(1);
+		const firedAt = performance.now();
+		wake.fire();
+		await until(() => f.queue.reconcilePasses === 2, 1000);
+		expect(performance.now() - firedAt).toBeLessThan(150);
+		expect(f.errors).toEqual([]);
+	});
+
+	it("keeps passes it brings forward at least the gap apart, however many wake-ups arrive", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 200 });
+		await until(() => f.queue.reconcilePasses === 1);
+		const before = f.queue.reconcilePasses;
+		const started = performance.now();
+		while (performance.now() - started < 1000) {
+			wake.fire();
+			await sleep(5);
+		}
+		await sleep(250);
+		const elapsed = performance.now() - started;
+		const added = f.queue.reconcilePasses - before;
+		// About 200 wake-ups in a second: one pass per 200 ms gap, never one per wake-up.
+		expect(added).toBeGreaterThanOrEqual(3);
+		expect(added).toBeLessThanOrEqual(Math.ceil(elapsed / 200) + 1);
+	});
+
+	it("follows a pass that was running when the wake-up came with another as soon as it ends", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 20, wakePassGapMs: 0, reconcileDelayMs: 300 });
+		await sleep(100);
+		// The first pass is still in reconcileExpired: it may have listed before the row the wake-up announces.
+		expect(f.queue.reconcilePasses).toBe(0);
+		wake.fire();
+		await until(() => f.queue.reconcilePasses === 1);
+		const firstEnded = performance.now();
+		await until(() => f.queue.reconcilePasses === 2, 1000);
+		expect(performance.now() - firstEnded).toBeLessThan(450);
+	});
+
+	it("leaves the reconcile interval alone without wake-ups", async () => {
+		const f = loop({});
+		await until(() => f.queue.reconcilePasses === 1);
+		await sleep(400);
+		expect(f.queue.reconcilePasses).toBe(1);
 	});
 });

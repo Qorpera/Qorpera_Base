@@ -467,6 +467,10 @@ export interface CloudRunnerOrchestratorLoopOptions {
 	/** After a claim that found work or a failed dispatch, how long to keep polling at the fast rate (default
 	 * 30 s): retries and placement deferrals (5 and 15 s) end by time and send no wake-up. */
 	wakeActiveMs?: number;
+	/** A wake-up also brings the next reconcile pass forward, since a wake occurrence (a member's room post, a
+	 * coworker's message) or a conversation's next input becomes a job only in a pass. Passes it brings forward
+	 * start at least this long after the pass before them (default 500 ms), however many wake-ups arrive. */
+	wakePassGapMs?: number;
 	onError?: (error: unknown) => void;
 }
 
@@ -2530,6 +2534,10 @@ export class CloudRunnerOrchestrator {
 		) {
 			throw new Error("Orchestrator wake-up backstop is outside the supported range");
 		}
+		const wakePassGapMs = options.wakePassGapMs ?? 500;
+		if (wake && (!Number.isSafeInteger(wakePassGapMs) || wakePassGapMs < 0 || wakePassGapMs > 60_000)) {
+			throw new Error("Orchestrator wake-up pass gap is outside the supported range");
+		}
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
 		// Reconcile runs in its own lane: renewing control, the occurrence reconcilers, expired claims and
@@ -2573,15 +2581,36 @@ export class CloudRunnerOrchestrator {
 			unannouncedSince: undefined as number | undefined,
 		};
 		const slowPolling = (): boolean => wake?.listening === true && performance.now() >= wakes.fastUntil;
+		// A wake-up also brings the next pass forward: a wake occurrence (a room post, a coworker's message) or a
+		// conversation's next input once its run ended becomes a job only in a pass, which otherwise waits up to
+		// reconcileIntervalMs (production, 7 Nov 2026: a room post's job came p50 0.7 s, at most 2.3 s, after its
+		// wake occurrence). Passes brought forward start at least wakePassGapMs after the pass before them, so a
+		// flood of wake-ups (each job a pass creates sends one) adds at most one pass per gap. A pass running when
+		// the wake-up arrives is followed by another at once, since it may have listed before the new row.
+		const passes = { lastStartedAt: Number.NEGATIVE_INFINITY, timer: undefined as NodeJS.Timeout | undefined };
+		const bringPassForward = (): void => {
+			if (passes.timer || signal.aborted) return;
+			const gap = wakePassGapMs - (performance.now() - passes.lastStartedAt);
+			if (gap <= 0) {
+				reconcileTimer.wake();
+				return;
+			}
+			passes.timer = setTimeout(() => {
+				passes.timer = undefined;
+				reconcileTimer.wake();
+			}, gap);
+		};
 		const unsubscribe = wake?.subscribe(() => {
 			wakes.announced = true;
 			wakes.sequence++;
 			wakes.unannouncedSince = undefined;
 			claimTimer.wake();
+			bringPassForward();
 		});
 		const reconcileLane = (async (): Promise<void> => {
 			while (!signal.aborted) {
 				const pass = ++reconcile.started;
+				passes.lastStartedAt = performance.now();
 				let delayMs = reconcileIntervalMs;
 				try {
 					const claimsWereOpen = !reconcile.failed && reconcile.succeeded >= reconcile.required;
@@ -2666,6 +2695,7 @@ export class CloudRunnerOrchestrator {
 			}
 		}
 		unsubscribe?.();
+		if (passes.timer) clearTimeout(passes.timer);
 		let timer: NodeJS.Timeout | undefined;
 		await Promise.race([
 			Promise.allSettled([...inFlight, reconcileLane]),
