@@ -167,14 +167,16 @@ begin
 	-- The landing: the session's record keeps it, the agent's report carries it, and the summary says it in one line.
 	-- The session's own words fill almost all of their 4000 bytes, two bytes a character: they are cut by bytes, whole
 	-- characters only, so the platform's line always fits (review 1544 r1 F3).
-	-- Its lines that read as the results file's headings (## Files) are one byte longer there (r2 F1): counted too.
+	-- Its lines that read as the results file's headings (## Files) are one byte longer there (r2 F1), whatever ends
+	-- them (r3: a bare carriage return is a line break there too): counted too.
 	perform public.qorpera_complete_coding_turn('91170000-0000-4000-8000-0000000000b1', v_token, 'succeeded',
-		'The shop has a cart. ' || repeat(E'## Files\n', 40) || repeat('å', 1800), null, null, null, jsonb_build_array(v_landed));
+		'The shop has a cart. ' || repeat(E'## Files\n', 20) || repeat(E'## Files\r', 20) || repeat('å', 1800), null, null,
+		null, jsonb_build_array(v_landed));
 	w := pg_temp.c3_worker('91170000-0000-4000-8000-0000000000b1'); s := pg_temp.c3_session(w.id);
 	perform pg_temp.base_assert(w.state = 'succeeded' and s.phase = 'completed' and s.pull_request is null
 		and s.artifacts = jsonb_build_array(v_landed) and w.result -> 'landed' = v_landed and w.result -> 'pullRequest' = 'null'
 		and octet_length(w.result ->> 'summary') + cardinality(string_to_array(w.result ->> 'summary', E'\n')) <= 4000
-		and w.result ->> 'summary' like 'The shop has a cart. ## Files%'
+		and w.result ->> 'summary' like 'The shop has a cart. ## Files%' and strpos(w.result ->> 'summary', E'\r') = 0
 		and w.result ->> 'summary' like E'%å\n\nQorpera landed this commit on main, merged with what it got '
 			|| 'meanwhile: main is at cccccccccccc, and the files are in the company folder at code/company/shop/main/.',
 		'the landed turn: ' || to_jsonb(w)::text);

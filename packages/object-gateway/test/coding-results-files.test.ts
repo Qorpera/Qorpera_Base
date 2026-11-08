@@ -160,11 +160,13 @@ describe("coding results claims", () => {
 		// gets here) leave room for its line; that line, last, must reach results.md whole.
 		const landed =
 			"\n\nQorpera landed this commit on main: main is at cccccccccccc, and the files are in the company folder at code/company/shop/main/.";
-		let words = `The shop has a cart. ${"## Files\n".repeat(40)}`;
-		const budget = () => bytesOf(words + landed) + (words + landed).split("\n").length;
+		// The database makes every line break \n first, as the writer does (a bare \r too), then counts.
+		let words = `The shop has a cart. ${"## Files\n".repeat(20)}${"## Files\r".repeat(20)}`;
+		const normal = () => (words + landed).replace(/\r\n?/g, "\n");
+		const budget = () => bytesOf(normal()) + normal().split("\n").length;
 		while (budget() < 4000) words += "å";
 		while (budget() > 4000) words = words.slice(0, -1);
-		const file = parsed({ summary: words + landed, pullRequest: null });
+		const file = parsed({ summary: normal(), pullRequest: null });
 		expect(file.parse.summary.endsWith(landed.trim())).toBe(true);
 		expect(file.parse.summary).toContain("### Files");
 		expect(bytesOf(file.parse.summary)).toBeLessThanOrEqual(4000);
