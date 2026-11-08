@@ -38,6 +38,10 @@ import {
 	firstTaking,
 	GROW_MEMORY_MIB,
 	growScript,
+	HISTORY,
+	HISTORY_DAYS,
+	HISTORY_SCHEMA,
+	historyScript,
 	includeRules,
 	joinRecords,
 	KEPT_SLOTS,
@@ -395,7 +399,8 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 			.replace(`${roomyScript()}\n`, "")
 			// The memory floor and the shorter wait are the quick lane's only.
 			.replace(`${quickMemoryLine()}\n`, "")
-			.replace(/-ge (1200|7200) \] && \{ echo "== run-on-node: no [^"]*"; exit 94; \}/, "WAIT")
+			.replace(/-ge (1200|7200) \] && \{ echo "== run-on-node: no [^"]*"; note_history 94; exit 94; \}/, "WAIT")
+			.replace(/"lane":"(quick|cpu)"/, "LANE")
 			.replace(/\t\tif \[ -z "\$slot" \] && roomy; then\n[\s\S]*?\n\t\tfi\n/, "")
 			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
 			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
@@ -407,10 +412,10 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 		assert.match(script, /if \[ "\$position" = 1 \]; then/);
 	}
-	assert.match(cpu, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; exit 94; \}/);
+	assert.match(cpu, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; note_history 94; exit 94; \}/);
 	// A quick run gives up sooner: it is short, so a long wait means no room.
 	assert.equal(QUICK_WAIT_SECONDS, 1200);
-	assert.match(quick, /-ge 1200 \] && \{ echo "== run-on-node: no quick slot with room for 20 minutes"; exit 94; \}/);
+	assert.match(quick, /-ge 1200 \] && \{ echo "== run-on-node: no quick slot with room for 20 minutes"; note_history 94; exit 94; \}/);
 });
 
 test("past the CPU lane's slots, the first run in the queue takes an extra one only while the machine has room", () => {
@@ -677,7 +682,7 @@ test("a --front run waits ahead of every other run in the CPU lane, front runs a
 	assert.equal(FRONT, "0-");
 	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
 	assert.match(front, /in slot \$slot of 7 in the CPU lane from the front of its queue \(/);
-	assert.doesNotMatch(normal.replace("kept for --front runs", ""), /queue\/0-|front/);
+	assert.doesNotMatch(normal.replace("kept for --front runs", "").replace('"front":false', ""), /queue\/0-|front/);
 	// It tries every slot, the kept one first; any other run only those before it.
 	assert.match(front, /for candidate in \$\(seq 5 -1 1\); do/);
 	assert.match(front, /waiting for a slot in the CPU lane \(5 runs at a time\), queue position \$position/);
@@ -687,7 +692,9 @@ test("a --front run waits ahead of every other run in the CPU lane, front runs a
 			.replace("queue/0-$(date", "queue/$(date")
 			.replace(" from the front of its queue", "")
 			.replace("seq 5 -1 1", "seq 1 4")
-			.replace("(5 runs at a time)", "(4 runs at a time, 1 more slot kept for --front runs)"),
+			.replace("(5 runs at a time)", "(4 runs at a time, 1 more slot kept for --front runs)")
+			// Its run history line says it came from the front.
+			.replace('"front":true', '"front":false'),
 		normal,
 	);
 	// The wait's own order (ls | sort, then the ticket's line): front tickets first, in any collation, then the rest.
@@ -1409,6 +1416,141 @@ test("a part starts in the first slot offered on a machine none of its run's oth
 	assert.equal(pickSlot([busy, earlier], ["node01", "node02"], 1_000).take, earlier);
 	assert.equal(SPREAD_MS, 15_000);
 });
+
+test("a run's session leaves one line in the machine's run history: times, slot and exit code, never its command", () => {
+	const dir = mkdtempSync(join(tmpdir(), "run-on-node-history-"));
+	try {
+		const history = join(dir, "history");
+		const status = join(dir, "status");
+		writeFileSync(status, "runner=ci03 slot=2 queued_s=12 load=1.25 uncapped=0\nworkers=2\ninstalled=1 prepare_ms=4100\nsuite_ms=530200\n");
+		const line = (options, vars, code) => {
+			const script = historyScript({ status, dir: history, copySeconds: 2.345, ...options });
+			const result = spawnSync("bash", ["-c", `set -uo pipefail\n${script}\n${vars}\nnote_history ${code}; echo "after $?"`], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stdout, "after 0\n", "writing the history never fails the session");
+			const files = readdirSync(history);
+			assert.equal(files.length, 1);
+			assert.match(files[0], /^[0-9]{8}\.jsonl$/);
+			const lines = readFileSync(join(history, files[0]), "utf8").trim().split("\n");
+			const text = lines.at(-1);
+			assert.ok(text.startsWith(`{"schema":"${HISTORY_SCHEMA}",`), text);
+			return { text, json: JSON.parse(text), lines: lines.length };
+		};
+		const before = Math.floor(Date.now() / 1000);
+		const ran = line(
+			{ run: "20261108T001806-80753-f97ed2ea-p1", lane: "cpu", front: true, suite: "changed" },
+			"runner=ci03; slot=2; queued=1794091250; queued_s=12",
+			0,
+		);
+		const { endedAt, host, ...rest } = ran.json;
+		assert.deepEqual(rest, {
+			schema: HISTORY_SCHEMA,
+			run: "20261108T001806-80753-f97ed2ea-p1",
+			lane: "cpu",
+			front: true,
+			suite: "changed",
+			copyMs: 2345,
+			slot: 2,
+			runner: "ci03",
+			queuedAt: 1794091250,
+			queuedSeconds: 12,
+			prepareMs: 4100,
+			suiteMs: 530200,
+			installed: 1,
+			oomKills: null,
+			load: 1.25,
+			exitCode: 0,
+		});
+		assert.ok(endedAt >= before && endedAt <= before + 60, `ended at ${endedAt}`);
+		assert.match(host, /^([A-Za-z0-9.-]{1,63})$/);
+		// A command after -- is kept as `command`, never its words; an odd suite name as `other`. A run that gave up waiting
+		// has no slot, runner or status file yet, and says so.
+		rmSync(status);
+		const gaveUp = line({ run: "R2", lane: "quick", suite: null }, "slot=; queued=1794091250", 94);
+		assert.equal(gaveUp.lines, 2);
+		assert.deepEqual([gaveUp.json.suite, gaveUp.json.lane, gaveUp.json.slot, gaveUp.json.runner, gaveUp.json.suiteMs, gaveUp.json.exitCode], [
+			"command",
+			"quick",
+			null,
+			null,
+			null,
+			94,
+		]);
+		const odd = line({ run: "R3", lane: "cpu", suite: "scripts/x.mjs; rm -rf /" }, "runner='ci03\"'; slot=x", 1);
+		assert.deepEqual([odd.json.suite, odd.json.runner, odd.json.slot, odd.json.exitCode], ["other", null, null, 1]);
+		assert.doesNotMatch(readFileSync(join(history, readdirSync(history)[0]), "utf8"), /rm -rf|ci03""|\\"/);
+		// A history it cannot write leaves the run alone.
+		const blocked = spawnSync("bash", ["-c", `${historyScript({ run: "R", status, lane: "cpu", copySeconds: 0, dir: "/proc/no-such-dir" })}\nnote_history 0; echo "after $?"`], {
+			encoding: "utf8",
+		});
+		assert.deepEqual([blocked.status, blocked.stdout, blocked.stderr], [0, "after 0\n", ""]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+// GNU date: the test machines' (-d and %N, which the session scripts use).
+const gnuDate = /^[0-9]{9}$/.test(spawnSync("date", ["-u", "-d", "-1 day", "+%N"], { encoding: "utf8" }).stdout?.trim() ?? "");
+
+test("every run's session writes its history line when it ends or gives up, and keeps the run's exit code", { skip: gnuDate ? false : "no GNU date here; the test machines have it" }, () => {
+	const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	for (const options of [{}, { quick: true }, { front: true, cores: 6 }, { claim: true }]) {
+		const script = runScript({ ...base, ...options });
+		assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+		assert.ok(script.indexOf("note_history() {") < script.indexOf("ticket="), "defined before the queue");
+		assert.match(script, new RegExp(`mkdir -p ${HISTORY} 2>/dev/null`));
+		assert.match(script, /\nsudo -n -u "\$runner" -H bash -c '[\s\S]*'\ncode=\$\?; note_history "\$code"; exit "\$code"$/);
+		assert.match(script, /note_history 94; exit 94; \}/);
+		assert.match(script, /no runner user free for an hour"; note_history 92; exit 92; \}/);
+	}
+	// The session's last lines, with the runner user's sudo replaced by a plain call: the run's exit code stands, and the
+	// line carries its suite time.
+	const dir = mkdtempSync(join(tmpdir(), "run-on-node-history-end-"));
+	try {
+		const runDir = join(dir, "run");
+		mkdirSync(runDir);
+		for (const [command, code] of [
+			["true", 0],
+			["(exit 3)", 3],
+		]) {
+			const script = runScript({ ...base, run: `R${code}`, runDir, runCommand: command, suite: "hosted-db", quick: true }).replaceAll(HISTORY, join(dir, "h"));
+			const definitions = script.slice(script.indexOf("history_value() {"), script.indexOf("\treturn 0\n}", script.indexOf("note_history() {")) + "\treturn 0\n}".length);
+			const tail = script.slice(script.indexOf('sudo -n -u "$runner"'));
+			const body = `set -uo pipefail\nsudo() { while [ "$1" != bash ]; do shift; done; "$@"; }\n${definitions}\nrunner=ci01; slot=1; queued=$(date +%s); queued_s=0\necho "runner=$runner slot=1" >${runDir}/.run-on-node-status\n${tail}`;
+			const result = spawnSync("bash", ["-c", body], { encoding: "utf8" });
+			assert.equal(result.status, code, result.stderr);
+			const [file] = readdirSync(join(dir, "h"));
+			const last = JSON.parse(readFileSync(join(dir, "h", file), "utf8").trim().split("\n").at(-1));
+			assert.deepEqual([last.run, last.suite, last.lane, last.runner, last.exitCode, last.installed], [`R${code}`, "hosted-db", "quick", "ci01", code, 1]);
+			assert.ok(Number.isInteger(last.suiteMs) && last.suiteMs >= 0);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test(
+	"cleanup removes run history days older than 30 days by the date in their name",
+	{ skip: gnuDate ? false : "no GNU date here; the test machines have it" },
+	() => {
+		assert.equal(HISTORY_DAYS, 30);
+		const line = pruneScript()
+			.split("\n")
+			.find((each) => each.startsWith("hcut="));
+		assert.ok(line);
+		const dir = mkdtempSync(join(tmpdir(), "run-on-node-history-prune-"));
+		try {
+			const day = (ago) => new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10).replaceAll("-", "");
+			const names = [`${day(40)}.jsonl`, `${day(31)}.jsonl`, `${day(29)}.jsonl`, `${day(0)}.jsonl`, "notes.txt"];
+			for (const name of names) writeFileSync(join(dir, name), "{}\n");
+			const result = spawnSync("bash", ["-c", line.replaceAll(HISTORY, dir)], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+			assert.deepEqual(readdirSync(dir).sort(), [names[2], names[3], "notes.txt"].sort());
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
 
 test("the status file reads back runner, install and times", () => {
 	assert.deepEqual(parseStatus("runner=ci03\ninstalled=1 prepare_ms=1200\nsuite_ms=900\n"), {
