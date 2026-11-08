@@ -913,9 +913,9 @@
 .interface-change-undo:disabled { color: var(--text-muted); cursor: default; }
 .interface-change-status { flex-basis: 100%; }
 .interface-change-status.failed { color: var(--danger); }
-/* The side panel beside the thread (views/app-panel.ts; Jonas, 5 November 2026): an agent's app or a Company File page,
- * in the agent sheet's shape but standing beside the thread, which stays as it is and usable. At phone width it covers
- * the thread, with Close. */
+/* The side panel beside the thread (views/app-panel.ts; Jonas, 5 November 2026): a Company File page, in the agent
+ * sheet's shape but standing beside the thread, which stays as it is and usable. At phone width it covers the thread,
+ * with Close. Its page variant (`.is-page`) is an agent's app on its own page: the whole main area, the header slim. */
 .thread-body.has-beside > .thread-conversation { flex: 1 1 0; min-width: 300px; }
 .side-panel {
 	position: relative; z-index: 5; display: flex; flex: 0 1 min(54%, 820px); flex-direction: column; min-width: 0; min-height: 0;
@@ -940,7 +940,15 @@
 /* Where the chat and the panel don't both fit, the panel covers the chat and has Close, as at phone width. */
 @container thread-body (max-width: 42em) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .side-panel { animation: none; } }
-/* An app linked in a message (`app:<name>`): a card in the bubble that opens it beside the chat. */
+/* An app's own page fills the main area, at full width and height, with no sheet's edge, shadow or slide. */
+.side-panel.is-page { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border-left: 0; box-shadow: none; animation: none; }
+.side-panel.is-page .side-panel-header { padding-left: 8px; }
+.side-panel.is-page .side-panel-title { margin: 0; font-size: 14px; line-height: inherit; }
+a.side-panel-button { color: var(--text-muted); text-decoration: none; }
+a.side-panel-button:hover { text-decoration: none; }
+@media (max-width: 760px) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
+@container thread-body (max-width: 42em) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
+/* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */
 .app-card {
 	display: flex; align-items: center; gap: 12px; width: min(100%, 360px); margin: 6px 0; padding: 10px 14px 10px 10px;
 	border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;

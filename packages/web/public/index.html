@@ -9,12 +9,45 @@
 <link rel="icon" type="image/svg+xml" href="./assets/brand/favicon.svg">
 <link rel="icon" type="image/png" sizes="96x96" href="./assets/brand/qorpera-icon-96.png">
 <link rel="apple-touch-icon" href="./assets/brand/qorpera-icon-180.png">
-<!-- Sets the light or dark theme before the first paint. -->
+<!-- Sets the light or dark theme before the first paint, and which first screen below stands. -->
 <script src="./theme.js"></script>
 <link rel="stylesheet" href="./app.css">
 </head>
 <body>
-<div id="app" class="app" aria-live="polite"></div>
+<div id="app" class="app" aria-live="polite"><!--
+  The app's first screens as it draws them while it loads, shown from the moment the stylesheet
+  is in until main.js draws its own (src/ui/boot.ts, src/styles/boot.css). The head script picks
+  one; none shows when it cannot tell. No images: nothing here downloads.
+--><div class="boot" aria-hidden="true" inert>
+<div class="boot-sign-in"><div class="auth"><section class="auth-panel">
+<header class="auth-brand"><span class="skeleton boot-lockup"></span></header>
+<div class="auth-body">
+<h1><span class="skeleton boot-line"></span></h1>
+<p class="auth-lead"><span class="skeleton boot-line"></span></p>
+<div class="auth-form"><label><span><span class="skeleton boot-line"></span></span></label><span class="skeleton boot-field"></span><span class="skeleton boot-primary"></span></div>
+</div>
+<footer class="auth-foot"><span class="skeleton boot-line"></span></footer>
+</section><aside class="auth-art"></aside></div></div>
+<div class="boot-hub"><div class="frame"><header class="topbar topbar-plain"></header><div class="body"><main class="main">
+<section class="hub"><div class="hub-inner hub-pick">
+<h1 class="hub-title"><span class="skeleton boot-line"></span></h1>
+<p class="hub-lead"><span class="skeleton boot-line"></span></p>
+<div class="skeleton-group company-grid skeleton-companies"><span class="visually-hidden"></span><div class="skeleton-company-card"><span class="skeleton skeleton-company-stage"></span><span class="skeleton skeleton-line skeleton-company-name"></span></div><div class="skeleton-company-card"><span class="skeleton skeleton-company-stage"></span><span class="skeleton skeleton-line skeleton-company-name"></span></div><div class="skeleton-company-card"><span class="skeleton skeleton-company-stage"></span><span class="skeleton skeleton-line skeleton-company-name"></span></div></div>
+</div></section>
+</main></div></div></div>
+<div class="boot-thread"><div class="frame has-thread"><header class="topbar topbar-company"></header><div class="body">
+<aside class="rail">
+<div class="rail-toolbar"><span class="skeleton skeleton-rail-search"></span></div>
+<div class="rail-scroll"><div class="skeleton-group skeleton-rail"><span class="visually-hidden"></span><div class="skeleton-rail-cofounder"><span class="skeleton skeleton-disc skeleton-cofounder-figure"></span><span class="skeleton skeleton-line skeleton-cofounder-name"></span></div><div class="skeleton-rail-row"><span class="skeleton skeleton-disc skeleton-rail-figure"></span><div class="skeleton-stack"><span class="skeleton skeleton-line skeleton-w-40"></span><span class="skeleton skeleton-line skeleton-small skeleton-w-58"></span></div></div><div class="skeleton-rail-row"><span class="skeleton skeleton-disc skeleton-rail-figure"></span><div class="skeleton-stack"><span class="skeleton skeleton-line skeleton-w-28"></span><span class="skeleton skeleton-line skeleton-small skeleton-w-46"></span></div></div><div class="skeleton-rail-row"><span class="skeleton skeleton-disc skeleton-rail-figure"></span><div class="skeleton-stack"><span class="skeleton skeleton-line skeleton-w-46"></span><span class="skeleton skeleton-line skeleton-small skeleton-w-52"></span></div></div><div class="skeleton-rail-row"><span class="skeleton skeleton-disc skeleton-rail-figure"></span><div class="skeleton-stack"><span class="skeleton skeleton-line skeleton-w-34"></span><span class="skeleton skeleton-line skeleton-small skeleton-w-40"></span></div></div><div class="skeleton-rail-row"><span class="skeleton skeleton-disc skeleton-rail-figure"></span><div class="skeleton-stack"><span class="skeleton skeleton-line skeleton-w-52"></span><span class="skeleton skeleton-line skeleton-small skeleton-w-34"></span></div></div></div></div>
+<div class="rail-footer skeleton-rail-account"><span class="skeleton skeleton-disc skeleton-account-chip"></span><span class="skeleton skeleton-line skeleton-account-name"></span></div>
+</aside>
+<main class="main"><section class="thread thread-skeleton"><div class="thread-body"><div class="thread-conversation">
+<header class="thread-header"><button type="button" class="mobile-navigation-toggle icon-button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon"><path d="M3 5h18v14H3Z"></path><path d="M9 5v14"></path></svg></button><div class="skeleton-identity"><span class="skeleton skeleton-disc skeleton-identity-figure"></span><span class="skeleton skeleton-line skeleton-identity-name"></span></div></header>
+<div class="messages"><div class="skeleton-group skeleton-messages"><span class="visually-hidden"></span><div class="skeleton-message skeleton-message-agent skeleton-w-52"><span class="skeleton skeleton-bubble"></span></div><div class="skeleton-message skeleton-message-agent skeleton-w-34"><span class="skeleton skeleton-bubble"></span></div><div class="skeleton-message skeleton-message-mine skeleton-w-40"><span class="skeleton skeleton-bubble"></span></div><div class="skeleton-message skeleton-message-agent skeleton-w-62"><span class="skeleton skeleton-bubble"></span></div><div class="skeleton-message skeleton-message-agent skeleton-w-28"><span class="skeleton skeleton-bubble"></span></div></div></div>
+<footer class="composer skeleton-composer"><span class="skeleton skeleton-composer-field"></span></footer>
+</div></div></section></main>
+</div></div></div>
+</div></div>
 <noscript>Qorpera needs JavaScript to reach the company cloud.</noscript>
 <!-- The approved agent visual system, vendored under assets/avatars. Classic
      scripts run in order before the deferred module, so the globals exist. -->

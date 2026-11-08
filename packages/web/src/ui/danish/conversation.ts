@@ -238,14 +238,15 @@ export const CONVERSATION: Record<string, string> = {
 	"Conversation between two agents": "Samtale mellem to agenter",
 	"Only the two agents write here": "Kun de to agenter skriver her",
 
-	// An app or a page beside the chat (app/views/app-panel.ts) and an app's card in a message (ui/markdown.ts)
+	// An app on its own page or a page beside the chat (app/views/app-panel.ts) and an app's card in a message
+	// (ui/markdown.ts)
 	"Beside the chat": "Ved siden af chatten",
 	"Show in Storage": "Vis i Lager",
 	"Made by {name}": "Lavet af {name}",
 	"Made by an agent": "Lavet af en agent",
 	"A page of the Company File": "En side i Virksomhedsfilen",
 	"Qorpera never asks for passwords here": "Qorpera beder aldrig om adgangskoder her",
-	"No app is called {name}.": "Ingen app hedder {name}.",
+	"This app isn't in the company anymore.": "Appen er ikke i virksomheden længere.",
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
@@ -253,8 +254,7 @@ export const CONVERSATION: Record<string, string> = {
 	"App: {name}": "App: {name}",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
-	"Open {name} beside the chat": "Åbn {name} ved siden af chatten",
-	"App · opens beside the chat": "App · åbner ved siden af chatten",
+	"App · opens on its own page": "App · åbner på sin egen side",
 	App: "App",
 	"1 message": "1 besked",
 	"{count}+ messages": "{count}+ beskeder",

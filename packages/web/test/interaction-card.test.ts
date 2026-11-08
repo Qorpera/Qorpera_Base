@@ -273,7 +273,7 @@ describe("a visual choice", () => {
 		expect(card.querySelector(".interaction-options")).toBeNull();
 		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture img")).toHaveLength(2));
 		expect(image.mock.calls.map(([path]) => path)).toEqual(["sketches/duo.svg", "sketches/pair.svg"]);
-		// An app's option shows its name, and its link opens it beside the chat.
+		// An app's option shows its name, and its link opens the app's own page.
 		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("bundle-demo");
 		expect(card.querySelector(".choice-apps .app-card")).not.toBeNull();
 		boxes[1]?.click();

@@ -147,7 +147,7 @@ function visualChoices(
 			});
 		return box;
 	});
-	// An app's option opens the app beside the chat from its link: the box itself picks.
+	// An app's option opens the app's own page from its link: the box itself picks.
 	const apps = options
 		.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
 		.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? ""));
