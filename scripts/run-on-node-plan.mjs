@@ -243,9 +243,9 @@ export const STEPS = [
 	},
 	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
 	// step it was the long part in most of pr-loop's batches in parts (152-335 s, 16 Oct): its rest is CPU-bound, about
-	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards:
-	// 277 and 275 s of the rest's 552 s of test time, and 175 and 123 s of the waiting files' 298 s (batch qmvbe0ra4).
-	// `seconds`: half the whole step's.
+	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards,
+	// split by time since perf T10 (packages/runner-orchestrator/vitest.config.ts): by vitest's hash of each path one half
+	// had 573 s of the rest's file time and the other 397 s (8 Nov). `seconds`: half the whole step's.
 	...[1, 2].map((half) => ({
 		name: `runner-orchestrator-${half}`,
 		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
