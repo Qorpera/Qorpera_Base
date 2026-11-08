@@ -22,6 +22,8 @@ import {
 	type CloudToolResult,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
+	redactCloudWebhookSecrets,
+	redactCloudWebhookSecretsIn,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
@@ -409,6 +411,45 @@ describe("cloud-owned native tool boundary", () => {
 		const { result: full } = await crowded.call();
 		expect(full.content.originalBytes).toBe(Buffer.byteLength(many));
 		expect(full.content.text).not.toContain("whsec_0123456789");
+	});
+
+	// Made up for these tests: never real secrets. Each encoding the rule had missed (the review of #1528, F4).
+	it.each([
+		["URL-encoded inside", "k=whsec_T7fakeNotASecret%2BAAAA%2FBBBB%3D%3D;", "k=whsec_[REDACTED];"],
+		["URL-encoded in the first ten", "k=whsec_T7f%2BakeNotASecret;", "k=whsec_[REDACTED];"],
+		["URL-encoded prefix", "k=whsec%5FT7fakeNotASecret;", "k=whsec_[REDACTED];"],
+		["JSON-escaped slash (PHP)", '"whsec_T7f\\/akeNotASecret\\/AA"', '"whsec_[REDACTED]"'],
+		["JSON-escaped plus (.NET)", '"whsec_T7f\\u002BakeNotASecret"', '"whsec_[REDACTED]"'],
+		["JSON-escaped prefix", '"whsec\\u005fT7fakeNotASecret"', '"whsec_[REDACTED]"'],
+		["escaped twice, inside a JSON string", '"whsec_T7f\\\\/ake\\\\u002BNotASecret"', '"whsec_[REDACTED]"'],
+	])("cuts a webhook signing secret written %s out of an answer", async (_name, text, cut) => {
+		expect(redactCloudWebhookSecrets(text)).toBe(cut);
+		const { call } = fixture({ execute: async () => ({ kind: "text", value: `Config: ${text}` }) });
+		const { result } = await call();
+		expect(result.content.text).toBe(`Config: ${cut}`);
+	});
+
+	it("leaves JSON valid where it cuts an escaped secret, and leaves what is not one", () => {
+		const value = {
+			php: "whsec_T7f\\/akeNotASecret",
+			net: "whsec_T7fakeNot\u0001ASecretAAAA",
+			quoted: 'whsec_T7fakeNotASecret"end',
+			slashes: "whsec_T7fakeNotA\\\\/Secret",
+			bare: "whsec_ and whsec_short",
+		};
+		const serialized = JSON.stringify(value);
+		const cut = redactCloudWebhookSecrets(serialized);
+		expect(cut).not.toContain("T7fake");
+		const parsed = JSON.parse(cut);
+		expect(parsed.bare).toBe("whsec_ and whsec_short");
+		expect(parsed.quoted).toBe('whsec_[REDACTED]"end');
+		// The same cut over each text of a value, its keys included.
+		expect(redactCloudWebhookSecretsIn({ [value.php]: [value.php, 1, null, { a: value.quoted }] })).toEqual({
+			"whsec_[REDACTED]": ["whsec_[REDACTED]", 1, null, { a: 'whsec_[REDACTED]"end' }],
+		});
+		// A cut text never matches again, and never grows.
+		expect(redactCloudWebhookSecrets(cut)).toBe(cut);
+		expect(cut.length).toBeLessThanOrEqual(serialized.length);
 	});
 
 	it("keeps a page whole that leaves the envelope its reserve, with the longest call id", async () => {

@@ -18,6 +18,7 @@ import {
 	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import { CLOUD_RUNTIME_CONSTITUTION, CLOUD_RUNTIME_CONSTITUTION_VERSION } from "./cloud-runtime-constitution.ts";
 import {
@@ -761,6 +762,54 @@ export async function composeCloudRoomRequest(
 	return [{ input, ...(question ? { question } : {}) }];
 }
 
+/** The most of its continuation a run is shown at its start: the context's excerpt and the pages after it. */
+const CONTINUATION_SHOWN_BYTES = 32 * 1024;
+
+/** The continuation as the run is shown it: up to 32 KiB, the context's excerpt (4 KiB, or 16 KiB under 20260930617000)
+ * and the pages after it read as read_context reads them, alongside the run's other start reads (perf sprint T7, 8 Nov
+ * 2026). The protocol has a run read the whole continuation before anything else (delivery.beforeWork
+ * read_continuation), and runs do: from 7 Nov 11:30Z to 23:21Z, 47 runs paged one past 16 KiB with read_context, all as
+ * their first act, 105 model rounds of about 4.2 s. The text is the source's own, from offset 0, so read_context reads
+ * on from the nextOffset shown, as from any page, and the composer cuts webhook signing secrets out of it as the tool
+ * boundary cuts them out of a page. A page that cannot be read, or a whole text that does not join to the source by its
+ * length and hash, leaves the context's excerpt; it never fails the run. Nothing is read for a continuation the context
+ * already shows whole. */
+export async function composeCloudContinuation(
+	context: CloudNativeCompanyContext,
+	control: CloudCompanyPathControl,
+	binding: CloudNativeToolBinding,
+	signal: AbortSignal,
+): Promise<CloudCompanyContextSource | null> {
+	const shown = context.continuation;
+	if (!shown || shown.content.nextOffset === null) return shown;
+	let text = shown.content.text;
+	let nextOffset: number | null = shown.content.nextOffset;
+	try {
+		// A page holds text (the parser refuses an empty one that goes on), so each read moves on; the database reads 4
+		// bytes at least.
+		for (
+			let limit = Math.min(REQUEST_PAGE_BYTES, CONTINUATION_SHOWN_BYTES - Buffer.byteLength(text));
+			nextOffset !== null && limit >= 4;
+			limit = Math.min(REQUEST_PAGE_BYTES, CONTINUATION_SHOWN_BYTES - Buffer.byteLength(text))
+		) {
+			const page = await readCloudContextPage(control, binding, shown, nextOffset, limit, signal);
+			text += page.content.text;
+			nextOffset = page.content.nextOffset;
+		}
+		if (
+			nextOffset === null &&
+			(Buffer.byteLength(text) !== shown.content.originalBytes ||
+				createHash("sha256").update(text).digest("hex") !== shown.content.sha256)
+		)
+			throw new Error("Context source changed");
+		return { ...shown, content: { ...shown.content, text, nextOffset, truncated: nextOffset !== null } };
+	} catch (error) {
+		signal.throwIfAborted();
+		console.error(`A continuation's page was not read (${cloudRuntimeErrorCategory(error, signal)})`);
+		return shown;
+	}
+}
+
 /** A card of the run's own conversation, by its id, as its history would show it with the first 16 KiB of its text
  * (qorpera_read_company_run_card, 20260930525000): for a card answer whose card the history no longer holds. */
 async function readCloudRunCard(
@@ -978,7 +1027,14 @@ export function composeCloudNativeCompanyPrompt(
 					: [],
 		},
 	});
-	const prompt = escapeCloudNativeContextJson(json);
+	// A webhook signing secret is cut out of all of it, as the tool boundary cuts one out of every tool result (E3c-2):
+	// every source shown here (current inputs, the request, history, the job record and description, the continuation)
+	// and the wake's payload. Text past a source's excerpt is read as a read_context page, cut; the excerpt now is too.
+	// The cut is made in the serialized, escaped message, as Codex is sent it, so a handle stays the source's (sha256,
+	// offsets and lengths are the whole text's) and read_context reads on from it, and the session's own cut of what it
+	// sends finds nothing more: the context hash names what Codex gets. The rule never ends inside an escape and never
+	// matches a quote, so the JSON stays valid.
+	const prompt = redactCloudWebhookSecrets(escapeCloudNativeContextJson(json));
 	if (Buffer.byteLength(prompt) > 768 * 1024) {
 		// The whole profile is composed (15.1). A notebook another writer grew past this bound
 		// degrades memory to unavailable; memory never fails the run.

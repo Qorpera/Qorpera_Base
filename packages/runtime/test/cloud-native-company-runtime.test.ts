@@ -823,6 +823,93 @@ it.each(["available", "unavailable"])(
 	},
 );
 
+it.each([true, false])(
+	"starts a run with its continuation shown to 32 KiB, read before the model starts and in its context hash (perf T7; page read: %s)",
+	async (readable) => {
+		const f = await fixture("company-silent");
+		// The second page holds a value shaped like a webhook signing secret (made up: never a real one), which the run
+		// would have read cut, as a read_context page.
+		const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+		const text = JSON.stringify({
+			schema: "qorpera.worker-completion-continuation/v1",
+			results: `${"c".repeat(20000)} STRIPE_WEBHOOK_SECRET=${fake} ${"d".repeat(5000)}`,
+		});
+		const whole = f.source("continuation", f.binding.runId, text);
+		const excerpt = {
+			...whole,
+			content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+		};
+		f.context.continuation = excerpt;
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method !== "qorpera_read_company_run_context") return original(method, args, signal);
+			expect(args).toEqual({
+				p_binding: f.binding,
+				p_source_kind: "continuation",
+				p_source_id: f.binding.runId,
+				p_expected_sha256: whole.content.sha256,
+				p_offset: 16384,
+				p_limit: 16384,
+			});
+			if (!readable) throw new Error("Cloud tool authority unavailable");
+			return { ...whole, content: { ...whole.content, text: text.slice(16384), offset: 16384, truncated: true } };
+		});
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		} finally {
+			error.mockRestore();
+		}
+		const raw = await readFile(f.evidence, "utf8");
+		expect(raw).not.toContain(fake);
+		const evidence = JSON.parse(raw);
+		const promptText: string = evidence.turnParameters.input[0].text;
+		// Two pages hold it whole: the run is shown all of it at once, with the secret cut out as a page has it, and the
+		// whole text's handle. A page that cannot be read leaves the context's excerpt, which read_context reads on from,
+		// and the run goes on.
+		const cut = { ...whole, content: { ...whole.content, text: text.replace(fake, "whsec_[REDACTED]") } };
+		expect(JSON.parse(promptText).continuation).toEqual(readable ? cut : excerpt);
+		const methods = f.pathCall.mock.calls.map(([method]) => method);
+		expect(methods.filter((method) => method === "qorpera_read_company_run_context")).toHaveLength(1);
+		expect(methods.indexOf("qorpera_read_company_run_context")).toBeLessThan(
+			methods.indexOf("qorpera_bind_native_company_context"),
+		);
+		// The run's context, bound before the model starts, is the context the run was shown.
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+	},
+);
+it("starts a run whose continuation printed a webhook signing secret without the secret in what Codex gets", async () => {
+	const f = await fixture("company-silent");
+	// Made up for this test: never a real secret.
+	const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [{ outputTail: `${"o".repeat(8000)}\nSTRIPE_WEBHOOK_SECRET=${fake}\n${"p".repeat(12000)}` }],
+	});
+	const whole = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...whole,
+		content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+	};
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const raw = await readFile(f.evidence, "utf8");
+	const evidence = JSON.parse(raw);
+	expect(raw).not.toContain(fake);
+	const promptText: string = evidence.turnParameters.input[0].text;
+	expect(JSON.parse(promptText).continuation.content).toMatchObject({
+		sha256: whole.content.sha256,
+		nextOffset: 16384,
+		// The continuation's text is JSON, so the line break is the two characters \n.
+		text: expect.stringContaining("STRIPE_WEBHOOK_SECRET=whsec_[REDACTED]\\n"),
+	});
+	// The context bound before the model starts is the one shown, redacted.
+	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+	const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+	expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+});
+
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1615,6 +1702,47 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 	expect(heads[1]).toBe(heads[0]);
 });
 
+it.each(["vision", "job", "profile"] as const)(
+	"cuts a webhook signing secret out of the head's %s part before it is hashed and sent, keeping the part's version",
+	async (part) => {
+		const f = await fixture("company-dynamic");
+		// Made up for this test: never a real secret.
+		const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+		const vision = part === "vision" ? `# Vision\nWebhook: ${fake}\n` : "# Vision\nCalm books for small firms.\n";
+		const profile =
+			part === "profile" ? `- (2026-09-01) The Stripe secret is ${fake}\n` : "- (2026-09-01) I am Nora\n";
+		f.context.jobSpecification = f.source(
+			"job_spec",
+			f.context.identity.staffAgentId,
+			part === "job" ? `Keep the books. Our hook signs with ${fake}.` : "Keep the books.",
+		);
+		f.folderFiles.set("QorperaOS/vision/vision.md", vision);
+		f.folderFiles.set("QorperaOS/agents/nora/memory/profile.md", profile);
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const raw = await readFile(f.evidence, "utf8");
+		expect(raw).not.toContain(fake);
+		const evidence = JSON.parse(raw);
+		const head = headLine(evidence.threadParameters.developerInstructions);
+		const shown = (JSON.parse(head).parts as { part: string; text: string; version?: string }[]).find(
+			(item) => item.part === part,
+		);
+		expect(shown?.text).toContain("whsec_[REDACTED]");
+		// The part names the version that was read, as before.
+		if (part === "vision") expect(shown?.version).toBe(folderVersion("QorperaOS/vision/vision.md", vision));
+		if (part === "profile")
+			expect(shown?.version).toBe(folderVersion("QorperaOS/agents/nora/memory/profile.md", profile));
+		// The context bound and released before the model starts is what the run was shown.
+		const promptText: string = evidence.turnParameters.input[0].text;
+		const composed = createHash("sha256").update(`${head}\n\n${promptText}`).digest("hex");
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+		expect(start.p_context_sha256).toBe(composed);
+		const released = f.folderReleases.find((release) =>
+			(release.p_reads as { path: string }[]).some((read) => read.path === "QorperaOS/vision/vision.md"),
+		);
+		expect(released?.p_output_sha256).toBe(composed);
+	},
+);
+
 it("leaves a head part that does not fit out whole, names it, and keeps the rest", async () => {
 	const f = await fixture("company-dynamic");
 	// More than a trusted read holds as text: the head names it with the size that read found.
@@ -1928,6 +2056,8 @@ async function memoryTreeFixture(
 		bare?: boolean;
 		release?: Error;
 		record?: Error;
+		/** Text added to the first line, as a member's pasted words could be in a summary. */
+		lineExtra?: string;
 	} = {},
 ) {
 	const f = await fixture(options.mode ?? "company-context");
@@ -1944,7 +2074,7 @@ async function memoryTreeFixture(
 			const path = `${root}/${memoryBlockPath(l, k)}`;
 			let block = blocks.findIndex((item) => item.path === path);
 			if (block < 0) block = blocks.push({ path, version: randomUUID() }) - 1;
-			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}`, block });
+			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}${l + k === 0 ? (options.lineExtra ?? "") : ""}`, block });
 		}
 	let views = 0;
 	const thread = {
@@ -2069,6 +2199,30 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 			conversationId: f.context.identity.sessionId as string,
 		}),
 	);
+});
+
+it("cuts a webhook signing secret out of the conversation view before it is released, recorded and sent", async () => {
+	// Made up for this test: never a real secret.
+	const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+	const f = await memoryTreeFixture({ lineExtra: ` (pasted: ${fake})` });
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const raw = await readFile(f.evidence, "utf8");
+	expect(raw).not.toContain(fake);
+	const evidence = JSON.parse(raw);
+	const instructions: string = evidence.threadParameters.developerInstructions;
+	expect(instructions).toContain(MEMORY_LINE);
+	expect(instructions).toContain("(pasted: whsec_[REDACTED])");
+	// The lines are released under the context the run starts with, and what is recorded holds no secret either.
+	const calls = f.pathCall.mock.calls;
+	const methods = calls.map(([method]) => method);
+	const start = calls[methods.indexOf("qorpera_bind_native_company_context")]![1] as { p_context_sha256: string };
+	const release = (calls[methods.indexOf("qorpera_memory_release")]![1] as { p_request: { outputSha256: string } })
+		.p_request;
+	expect(release.outputSha256).toBe(start.p_context_sha256);
+	const viewRecord = (
+		calls[methods.indexOf("qorpera_memory_view_record")]![1] as { p_request: Record<string, unknown> }
+	).p_request;
+	expect(JSON.stringify(viewRecord)).not.toContain(fake);
 });
 
 it("shows a group-chat run the chat's summary tree, with the agent's own thread as a branch", async () => {

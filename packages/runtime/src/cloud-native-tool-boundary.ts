@@ -74,10 +74,34 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
-/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
- * replaces it, so a cut answer never grows. */
-const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), also as text carries it
+ * encoded: URL-encoded (`%2B`, `%2F`, `%3D`, the prefix's `%5F`, as the company computer's guard reads it), and
+ * JSON-escaped, once or twice (`\/` as PHP writes it, `+` as .NET does, and the same inside a serialized JSON
+ * string, where its backslash is doubled). Each unit after the prefix is one character or one whole escape, and ten
+ * of them at least, so a match is never shorter than what replaces it (a cut text never grows), and it never ends in
+ * the middle of an escape: a cut JSON text stays valid JSON. Its characters are never a quote. SQL keeps the same rule
+ * for a context source's whole text before it is paged (`qorpera_redact_webhook_secrets`, 20260930657200). */
+const WEBHOOK_SECRET =
+	/whsec(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9+/=]|%[0-9A-Fa-f]{2}|\\{1,2}(?:\/|u[0-9A-Fa-f]{4})){10,}/g;
 const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
+/** Text with every webhook signing secret cut out, as every text tool result has it (E3c-2), and as everything else
+ * the host sends Codex has it: the context message, the developer instructions, every turn's input. */
+export function redactCloudWebhookSecrets(text: string): string {
+	return text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+}
+/** A JSON value with the same cut in each of its texts, its keys included. */
+export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
+	if (typeof value === "string") return redactCloudWebhookSecrets(value);
+	if (Array.isArray(value)) return value.map(redactCloudWebhookSecretsIn);
+	if (value && typeof value === "object")
+		return Object.fromEntries(
+			Object.entries(value).map(([key, item]) => [
+				redactCloudWebhookSecrets(key),
+				redactCloudWebhookSecretsIn(item),
+			]),
+		);
+	return value;
+}
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A result asks the run's desktop folder report (F3 4f-2b) for this long at most, and shows one this big at most. */
@@ -1187,7 +1211,7 @@ export class CloudNativeToolBoundary {
 			throw new Error("Invalid cloud tool content");
 		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
 		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
-		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+		const text = redactCloudWebhookSecrets(raw);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
@@ -1288,7 +1312,7 @@ function cloudCompanyFolderReport(value: unknown): CloudCompanyFolderReport | un
 		(more !== undefined && more !== true)
 	)
 		return undefined;
-	const words = (text: string): string => text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+	const words = redactCloudWebhookSecrets;
 	const paths: { path: string; outcome: string; reason?: string }[] = [];
 	for (const entry of (notSaved ?? []) as unknown[]) {
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;

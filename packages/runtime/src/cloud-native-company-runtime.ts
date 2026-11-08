@@ -60,6 +60,7 @@ import {
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
+	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
@@ -88,6 +89,7 @@ import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	cloudToolJsonText,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
@@ -361,6 +363,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
 			roomRequest.catch(() => undefined);
+			// A continuation past the context's excerpt is shown to 32 KiB, the pages after it read alongside the reads below, as
+			// the run would read it first (perf sprint T7). It never fails the run.
+			const continuationShown = composeCloudContinuation(context, this.#paths, binding, signal);
+			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
@@ -537,14 +543,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							})
 						: null;
 					openingSignal.throwIfAborted();
-					const head = composeCloudAgentHead(context, vision, memory);
+					// The head (vision, job description, notebook facts) and the views hold text members and agents wrote: a
+					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
+					// cuts one out of every tool result and the composer out of the context message (E3c-2). The session cuts
+					// all it sends Codex again, for any source added later.
+					const composedHead = composeCloudAgentHead(context, vision, memory);
+					const head = { ...composedHead, text: redactCloudWebhookSecrets(composedHead.text) };
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
 					requestSources = request.flatMap((entry) => [entry.input, ...(entry.question ? [entry.question] : [])]);
+					// The same source, shown further: read_context admits it by its id and hash, as before.
+					const continuation = await continuationShown;
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
-					const views = view?.views ?? "";
+					const views = redactCloudWebhookSecrets(view?.views ?? "");
 					const prompt = composeCloudNativeCompanyPrompt(
-						context,
+						{ ...context, continuation },
 						wake,
 						initialPresence,
 						memory,
