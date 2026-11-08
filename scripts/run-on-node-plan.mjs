@@ -56,8 +56,9 @@ export const beside = (first, second, label) =>
 /** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
  * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
  * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. With `shard`
- * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: by a hash of each file's path,
- * so the same share on every machine), and the commands for 1/n to n/n together run every file once. */
+ * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: the same share on every
+ * machine; by a hash of each file's path, or by measured time where the package's vitest config says so, as
+ * runner-orchestrator's does), and the commands for 1/n to n/n together run every file once. */
 const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
 	const share = shard ? ` --shard=${shard}` : "";
 	return [
@@ -243,9 +244,9 @@ export const STEPS = [
 	},
 	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
 	// step it was the long part in most of pr-loop's batches in parts (152-335 s, 16 Oct): its rest is CPU-bound, about
-	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards:
-	// 277 and 275 s of the rest's 552 s of test time, and 175 and 123 s of the waiting files' 298 s (batch qmvbe0ra4).
-	// `seconds`: half the whole step's.
+	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards,
+	// split by time since perf T10 (packages/runner-orchestrator/vitest.config.ts): by vitest's hash of each path one half
+	// had 573 s of the rest's file time and the other 397 s (8 Nov). `seconds`: half the whole step's.
 	...[1, 2].map((half) => ({
 		name: `runner-orchestrator-${half}`,
 		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
