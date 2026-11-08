@@ -823,6 +823,54 @@ it.each(["available", "unavailable"])(
 	},
 );
 
+it.each([true, false])(
+	"starts a run with its continuation shown to 32 KiB, read before the model starts and in its context hash (perf T7; page read: %s)",
+	async (readable) => {
+		const f = await fixture("company-silent");
+		const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "c".repeat(25000) });
+		const whole = f.source("continuation", f.binding.runId, text);
+		const excerpt = {
+			...whole,
+			content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+		};
+		f.context.continuation = excerpt;
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method !== "qorpera_read_company_run_context") return original(method, args, signal);
+			expect(args).toEqual({
+				p_binding: f.binding,
+				p_source_kind: "continuation",
+				p_source_id: f.binding.runId,
+				p_expected_sha256: whole.content.sha256,
+				p_offset: 16384,
+				p_limit: 16384,
+			});
+			if (!readable) throw new Error("Cloud tool authority unavailable");
+			return { ...whole, content: { ...whole.content, text: text.slice(16384), offset: 16384, truncated: true } };
+		});
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		} finally {
+			error.mockRestore();
+		}
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const promptText: string = evidence.turnParameters.input[0].text;
+		// Two pages hold it whole: the run is shown all of it at once. A page that cannot be read leaves the context's
+		// excerpt, which read_context reads on from, and the run goes on.
+		expect(JSON.parse(promptText).continuation).toEqual(readable ? whole : excerpt);
+		const methods = f.pathCall.mock.calls.map(([method]) => method);
+		expect(methods.filter((method) => method === "qorpera_read_company_run_context")).toHaveLength(1);
+		expect(methods.indexOf("qorpera_read_company_run_context")).toBeLessThan(
+			methods.indexOf("qorpera_bind_native_company_context"),
+		);
+		// The run's context, bound before the model starts, is the context the run was shown.
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+	},
+);
+
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);

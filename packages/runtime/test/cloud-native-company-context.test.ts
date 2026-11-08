@@ -18,6 +18,7 @@ import {
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
+	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
@@ -1983,4 +1984,171 @@ it("reads an answered card the history no longer holds by its id, and lets read_
 	} finally {
 		quiet.mockRestore();
 	}
+});
+
+/** A continuation as the context shows it: the source's first `shown` characters, with the whole text's length and hash. */
+function continuationExcerpt(
+	f: ReturnType<typeof nativeCompanyContextFixture>,
+	text: string,
+	shown: number,
+): CloudCompanyContextSource {
+	const whole = f.source("continuation", f.binding.runId, text);
+	const excerpt = [...text].slice(0, shown).join("");
+	return excerpt.length < [...text].length
+		? { ...whole, content: { ...whole.content, text: excerpt, nextOffset: shown, truncated: true } }
+		: whole;
+}
+
+/** The page read_context reads of a continuation from `offset`, up to `limit` bytes, as qorpera_read_company_run_context
+ * answers it (ASCII text here, so characters and bytes count alike). */
+function continuationPage(
+	f: ReturnType<typeof nativeCompanyContextFixture>,
+	text: string,
+	offset: number,
+	limit: number,
+): CloudCompanyContextSource {
+	const whole = f.source("continuation", f.binding.runId, text);
+	const end = Math.min(text.length, offset + limit);
+	return {
+		...whole,
+		content: {
+			...whole.content,
+			text: text.slice(offset, end),
+			offset,
+			nextOffset: end < text.length ? end : null,
+			truncated: true,
+		},
+	};
+}
+
+it("shows a continuation past 16 KiB to 32 KiB, its next page read as read_context reads it, and read_context reads on (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "w".repeat(40000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	f.context.initialAcknowledgementSatisfied = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	// One page, from where the context's excerpt ends, of the same source by its hash: what the run's first
+	// read_context call asks for.
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.[0]).toBe("qorpera_read_company_run_context");
+	expect(call.mock.calls[0]?.[1]).toEqual({
+		p_binding: f.binding,
+		p_source_kind: "continuation",
+		p_source_id: f.binding.runId,
+		p_expected_sha256: createHash("sha256").update(text).digest("hex"),
+		p_offset: 16384,
+		p_limit: 16384,
+	});
+	// The source's own first 32 KiB, from offset 0, with the handle read_context goes on from.
+	expect(shown?.content).toEqual({
+		text: text.slice(0, 32768),
+		originalBytes: Buffer.byteLength(text),
+		sha256: createHash("sha256").update(text).digest("hex"),
+		offset: 0,
+		nextOffset: 32768,
+		truncated: true,
+	});
+	expect({ ...shown, content: undefined }).toEqual({ ...context.continuation, content: undefined });
+	// The prompt shows it where the continuation always was; the run is still told to read it first.
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt({ ...context, continuation: shown }));
+	expect(prompt.continuation).toEqual(shown);
+	expect(prompt.delivery.beforeWork).toBe("read_continuation");
+	// read_context admits the same source by its id and hash, reads on from the nextOffset shown, and the run then
+	// holds the whole text, as it did after reading it page by page from 16 KiB.
+	const read = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const tool = cloudCompanyContextTool(context, f.binding, { call: read });
+	const result = await tool.execute(
+		tool.parseArguments({
+			sourceKind: "continuation",
+			id: f.binding.runId,
+			sha256: shown?.content.sha256 as string,
+			offset: shown?.content.nextOffset as number,
+			limit: 16384,
+		}),
+		{
+			companyId: context.identity.companyId,
+			runId: f.binding.runId,
+			callId: "continuation-page",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+		},
+	);
+	const rest = JSON.parse(String(result.value)).content;
+	expect(rest.offset).toBe(32768);
+	expect(`${shown?.content.text}${rest.text}`).toBe(text.slice(0, rest.nextOffset ?? text.length));
+});
+
+it("shows a continuation two pages hold whole, and reads nothing for one the context shows whole or for none (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-stream/v1", reports: "r".repeat(25000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	expect(call).toHaveBeenCalledTimes(1);
+	// The whole source, exactly as a continuation the context shows whole: nothing is left to read.
+	expect(shown).toEqual(f.source("continuation", f.binding.runId, text));
+	// A continuation the context shows whole, and no continuation, read nothing.
+	f.context.continuation = continuationExcerpt(f, "x".repeat(16000), 16384);
+	const whole = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(await composeCloudContinuation(whole, { call }, f.binding, new AbortController().signal)).toBe(
+		whole.continuation,
+	);
+	f.context.continuation = null;
+	const none = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(await composeCloudContinuation(none, { call }, f.binding, new AbortController().signal)).toBeNull();
+	expect(call).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the context's continuation excerpt when its next page cannot be read or does not join to it (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "v".repeat(25000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		// The read fails: the run starts with the excerpt, which read_context reads on from.
+		const failing = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+			throw new Error("Cloud tool authority unavailable");
+		});
+		expect(await composeCloudContinuation(context, { call: failing }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// A page that says it is the last but leaves text out does not join to the source by its length and hash.
+		const short = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			...continuationPage(f, text, 16384, 4000),
+			content: { ...continuationPage(f, text, 16384, 4000).content, nextOffset: null },
+		}));
+		expect(await composeCloudContinuation(context, { call: short }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// A page of another text (the continuation changed since the context was read) is refused as read_context
+		// refuses it.
+		const other = vi.fn<CloudCompanyPathControl["call"]>(async () => continuationPage(f, `${text} `, 16384, 16384));
+		expect(await composeCloudContinuation(context, { call: other }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// Only the category is logged, never the text.
+		for (const [message] of error.mock.calls) expect(String(message)).not.toContain("vvvv");
+		expect(error).toHaveBeenCalledTimes(3);
+	} finally {
+		error.mockRestore();
+	}
+	// An aborted run stops instead of starting with the excerpt.
+	const aborted = new AbortController();
+	const hanging = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+		aborted.abort(new Error("run cancelled"));
+		throw new Error("aborted");
+	});
+	await expect(composeCloudContinuation(context, { call: hanging }, f.binding, aborted.signal)).rejects.toThrow(
+		"run cancelled",
+	);
 });

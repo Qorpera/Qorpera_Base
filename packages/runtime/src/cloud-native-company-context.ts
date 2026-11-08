@@ -761,6 +761,46 @@ export async function composeCloudRoomRequest(
 	return [{ input, ...(question ? { question } : {}) }];
 }
 
+/** The continuation as the run is shown it: up to two pages, its context's first 16 KiB and the next page read as
+ * read_context reads one, alongside the run's other start reads (perf sprint T7, 8 Nov 2026). The protocol has a run read
+ * the whole continuation before anything else (delivery.beforeWork read_continuation), and runs do: from 7 Nov 11:30Z to
+ * 23:21Z, 47 runs paged one past 16 KiB with read_context, all as their first act, 105 model rounds of about 4.2 s.
+ * The text is the source's own, from offset 0, so read_context reads on from the nextOffset shown, as from any page. A
+ * page that cannot be read, or that does not join to the source by its length and hash, leaves the context's excerpt;
+ * it never fails the run. Nothing is read for a continuation the context already shows whole. */
+export async function composeCloudContinuation(
+	context: CloudNativeCompanyContext,
+	control: CloudCompanyPathControl,
+	binding: CloudNativeToolBinding,
+	signal: AbortSignal,
+): Promise<CloudCompanyContextSource | null> {
+	const shown = context.continuation;
+	if (!shown || shown.content.nextOffset === null) return shown;
+	try {
+		const page = await readCloudContextPage(
+			control,
+			binding,
+			shown,
+			shown.content.nextOffset,
+			REQUEST_PAGE_BYTES,
+			signal,
+		);
+		const text = shown.content.text + page.content.text;
+		const nextOffset = page.content.nextOffset;
+		if (
+			nextOffset === null &&
+			(Buffer.byteLength(text) !== shown.content.originalBytes ||
+				createHash("sha256").update(text).digest("hex") !== shown.content.sha256)
+		)
+			throw new Error("Context source changed");
+		return { ...shown, content: { ...shown.content, text, nextOffset, truncated: nextOffset !== null } };
+	} catch (error) {
+		signal.throwIfAborted();
+		console.error(`A continuation's page was not read (${cloudRuntimeErrorCategory(error, signal)})`);
+		return shown;
+	}
+}
+
 /** A card of the run's own conversation, by its id, as its history would show it with the first 16 KiB of its text
  * (qorpera_read_company_run_card, 20260930525000): for a card answer whose card the history no longer holds. */
 async function readCloudRunCard(
