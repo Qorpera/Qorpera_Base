@@ -2190,3 +2190,59 @@ it("cuts webhook signing secrets out of the continuation the context shows, as r
 	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(plain)).continuation).toEqual(plain.continuation);
 });
+
+it.each(["currentInputs", "history", "request", "job", "jobSpecification", "continuation", "wake.payload"] as const)(
+	"cuts a webhook signing secret out of %s in the prompt, and keeps the source's handle",
+	(where) => {
+		const f = nativeCompanyContextFixture();
+		const text = `Paste from the terminal: STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET} (and more text)`;
+		const secretSource = (sourceKind: CloudCompanyContextSource["sourceKind"], id: string) =>
+			f.source(sourceKind, id, text);
+		let request: Parameters<typeof composeCloudNativeCompanyPrompt>[9] = [];
+		if (where === "currentInputs") f.context.currentInputs = [secretSource("input", f.context.currentInputs[0].id)];
+		if (where === "history") f.context.history = [secretSource("history", f.context.history[0].id)];
+		if (where === "job") f.context.job = secretSource("job", f.binding.runId);
+		if (where === "jobSpecification") f.context.jobSpecification = secretSource("job_spec", f.context.agent.id);
+		if (where === "continuation") f.context.continuation = secretSource("continuation", f.binding.runId);
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const postId = randomUUID();
+		const room = roomWake(context, postId);
+		const wake = where === "wake.payload" ? { ...room, payload: { ...room.payload, note: text } } : room;
+		if (where === "request") request = [{ input: historyEntry(postId, 2, text, context.identity.requesterUserId) }];
+		const promptText = composeCloudNativeCompanyPrompt(
+			context,
+			wake,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			request,
+		);
+		expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+		const prompt = JSON.parse(promptText);
+		const shown =
+			where === "wake.payload"
+				? { content: { text: prompt.wake.payload.note } }
+				: where === "request"
+					? prompt.request[0].input
+					: where === "jobSpecification"
+						? prompt.hireOverlay.jobSpecification
+						: where === "currentInputs" || where === "history"
+							? prompt[where][0]
+							: prompt[where];
+		expect(shown.content.text).toBe(text.replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"));
+		// The handle is the whole text's, as read_context and the run's checks know it.
+		if (where !== "wake.payload") {
+			const original = createHash("sha256").update(text).digest("hex");
+			expect(shown.content).toMatchObject({
+				sha256: original,
+				originalBytes: Buffer.byteLength(text),
+				offset: 0,
+				nextOffset: null,
+			});
+		}
+	},
+);
