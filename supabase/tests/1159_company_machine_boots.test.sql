@@ -7,10 +7,15 @@
 -- 2. The same boot marked again: no row.
 -- 3. A new boot while the last is still marked running (the guest restarted): a row marked restarted, with the old ask.
 -- 4. A stop, and a member's wake on the disk it kept: the stop clears running_at as before, and the wake's boot gets a row
---    with the new ask, by the member, placed before the ask. The earlier rows stay.
+--    with the new ask, by the member, placed before the ask. The earlier rows stay. After another stop and wake, the
+--    guest reporting the same boot id again marks the machine running as before and adds no row.
 -- 5. A boot kept out (no boot id): no row.
--- 6. At a boot, this machine's rows over 30 days old go; another machine's stay.
--- 7. Row security, privileges and the marker. The fixture is removed at the end.
+-- 6. At any machine's boot, rows over 30 days old go, of any machine, the oldest first and at most 50 a time.
+-- 7. A move to a new disk with no new start (a folder retirement): its boot answered no ask, so it is marked restarted,
+--    not taken for a slow new-disk wake.
+-- 8. Row security, privileges and the marker; the mark function under a private owner shaped as production's postgres
+--    (no superuser, bypasses row security, reaches every older table): without the migration's grant its boot fails
+--    42501, with it the mark runs. The fixture is removed at the end.
 
 create function pg_temp.check(p_ok boolean, p_message text) returns void language plpgsql as $$
 begin if p_ok is distinct from true then raise exception 'Machine boots: %', p_message; end if; end
@@ -78,6 +83,30 @@ create function pg_temp.suspend() returns jsonb language sql as $$
 	select public.qorpera_suspend_company_machine(p.id, p.owner, public.qorpera_company_machine_binding_text(p.binding),
 		p.machine_id_sha256) from pg_temp.placement() p
 $$;
+create function pg_temp.release() returns jsonb language sql as $$
+	select public.qorpera_release_company_machine(p.id, p.owner, public.qorpera_company_machine_binding_text(p.binding),
+		p.machine_id_sha256) from pg_temp.placement() p
+$$;
+-- The kernel stops the machine, the executor powers it off, and a member starts it again on the disk it kept, as
+-- 20260928259050's qorpera_member_manage_company_machine starts a machine that is not running; the executor gets its room.
+create function pg_temp.stop_and_wake() returns void language plpgsql as $$
+declare v_result jsonb;
+begin
+	perform public.qorpera_set_company_machine_desired(pg_temp.machine(), 'stopped', 'kernel');
+	v_result := pg_temp.custody('stop');
+	perform pg_temp.check(v_result ->> 'intent' = 'stop', 'the executor may stop it: ' || v_result::text);
+	v_result := pg_temp.suspend();
+	perform pg_temp.check(v_result ->> 'state' = 'suspended', 'powered off, its room given back: ' || v_result::text);
+	perform pg_temp.check((pg_temp.placement()).running_at is null and (pg_temp.placement()).boot_id is null,
+		'the stop clears the running boot as before');
+	update public.qorpera_company_machines set desired_state = 'running', desired_by = 'member', wanted_at = clock_timestamp(),
+		last_used_at = clock_timestamp(), updated_at = clock_timestamp()
+	where id = '11590000-0000-4000-8000-0000000000a1';
+	update public.qorpera_company_machine_placements set stop_authorized_at = null where id = (pg_temp.placement()).id;
+	perform pg_temp.observe('11590000-0000-4000-8000-000000000410', repeat('5b', 32));
+	v_result := pg_temp.custody('run');
+	perform pg_temp.check(v_result ->> 'intent' = 'run', 'the executor gets its room back: ' || v_result::text);
+end $$;
 create function pg_temp.boot(p_boot uuid) returns public.qorpera_company_machine_boots language sql as $$
 	select * from public.qorpera_company_machine_boots where machine_id = '11590000-0000-4000-8000-0000000000a1' and boot_id = p_boot
 $$;
@@ -118,49 +147,66 @@ select pg_temp.check(pg_temp.boots() = 2 and (pg_temp.boot('11590000-0000-4000-8
 	'b2 is a restart, with the old ask: ' || pg_temp.rows());
 
 -- 4. The kernel stops it, the executor powers it off, and a member wakes it on the disk it kept.
-select public.qorpera_set_company_machine_desired(pg_temp.machine(), 'stopped', 'kernel') \g /dev/null
-select pg_temp.custody('stop') as stop_custody \gset
-select pg_temp.check(:'stop_custody'::jsonb ->> 'intent' = 'stop', 'the executor may stop it: ' || :'stop_custody');
-select pg_temp.check(pg_temp.suspend() ->> 'state' = 'suspended', 'powered off, its room given back');
-select pg_temp.check((pg_temp.placement()).running_at is null and (pg_temp.placement()).boot_id is null and pg_temp.boots() = 2,
-	'the stop clears the running boot as before; the rows stay: ' || pg_temp.rows());
--- The member's Start, as 20260928259050's qorpera_member_manage_company_machine starts a machine that is not running.
-update public.qorpera_company_machines set desired_state = 'running', desired_by = 'member', wanted_at = clock_timestamp(),
-	last_used_at = clock_timestamp(), updated_at = clock_timestamp()
-where id = '11590000-0000-4000-8000-0000000000a1';
-update public.qorpera_company_machine_placements set stop_authorized_at = null where id = (pg_temp.placement()).id;
-select pg_temp.observe('11590000-0000-4000-8000-000000000410', repeat('5b', 32));
-select pg_temp.custody('run') as run_custody \gset
-select pg_temp.check(:'run_custody'::jsonb ->> 'intent' = 'run', 'the executor gets its room back: ' || :'run_custody');
+select pg_temp.stop_and_wake();
+select pg_temp.check(pg_temp.boots() = 2, 'the rows stay through a stop: ' || pg_temp.rows());
 select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b3') ->> 'state' = 'running', 'the machine runs in boot b3');
 select pg_temp.check(pg_temp.boots() = 3 and (select b.asked_at = m.wanted_at and b.asked_at > (pg_temp.boot('11590000-0000-4000-8000-0000000000b2')).ready_at
 		and b.placed_at < b.asked_at and b.ready_at = p.running_at and b.asked_by = 'member' and not b.restarted
 	from pg_temp.boot('11590000-0000-4000-8000-0000000000b3') b, pg_temp.machine() m, pg_temp.placement() p),
 	'b3 answered the member''s wake, on the disk it kept: ' || pg_temp.rows());
+-- Stopped and woken again, the guest reports b3 once more: it runs, as before this migration, and b3 keeps its one row.
+select pg_temp.stop_and_wake();
+select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b3') ->> 'state' = 'running'
+		and (pg_temp.placement()).boot_id = '11590000-0000-4000-8000-0000000000b3' and (pg_temp.placement()).running_at is not null,
+	'a boot id the placement had before marks the machine running');
+select pg_temp.check(pg_temp.boots() = 3 and (pg_temp.boot('11590000-0000-4000-8000-0000000000b3')).asked_at
+		< (pg_temp.machine()).wanted_at, 'and adds no row: ' || pg_temp.rows());
 
 -- 5. A boot kept out writes nothing.
 select pg_temp.check(pg_temp.running(null) ->> 'state' = 'kept' and pg_temp.boots() = 3, 'no boot id: kept, and no row');
 
--- 6. Rows over 30 days old go at the machine's next boot; another machine's stay.
+-- 6. Rows over 30 days old go at any machine's boot, whichever machine they are of (a removed one never boots again),
+--    the oldest first, at most 50 a boot.
 update public.qorpera_company_machine_boots set ready_at = ready_at - interval '31 days'
 where machine_id = '11590000-0000-4000-8000-0000000000a1' and boot_id in ('11590000-0000-4000-8000-0000000000b1',
 	'11590000-0000-4000-8000-0000000000b2');
 set session_replication_role = replica;
 insert into public.qorpera_company_machine_boots(machine_id, placement_id, profile_id, boot_id, asked_at, placed_at, ready_at, asked_by, restarted)
-values ('11590000-0000-4000-8000-0000000000a2', '11590000-0000-4000-8000-0000000000c2', '64800000-0000-4000-8000-000000000010',
-	'11590000-0000-4000-8000-0000000000b9', clock_timestamp() - interval '41 days', clock_timestamp() - interval '41 days',
-	clock_timestamp() - interval '40 days', 'agent', false);
+select '11590000-0000-4000-8000-0000000000a2', '11590000-0000-4000-8000-0000000000c2', '64800000-0000-4000-8000-000000000010',
+	extensions.gen_random_uuid(), clock_timestamp() - interval '41 days', clock_timestamp() - interval '41 days',
+	clock_timestamp() - interval '40 days' - make_interval(secs => n), 'agent', false
+from generate_series(1, 60) n;
 set session_replication_role = origin;
+create function pg_temp.expired() returns bigint language sql as $$
+	select count(*) from public.qorpera_company_machine_boots where ready_at < clock_timestamp() - interval '30 days'
+		and machine_id in ('11590000-0000-4000-8000-0000000000a1', '11590000-0000-4000-8000-0000000000a2')
+$$;
+select pg_temp.check(pg_temp.expired() = 62, 'two of this machine''s rows and 60 of a removed machine''s are over 30 days old');
 select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b4') ->> 'state' = 'running', 'the machine runs in boot b4');
-select pg_temp.check(pg_temp.boots() = 2 and (pg_temp.boot('11590000-0000-4000-8000-0000000000b1')).id is null
-		and (pg_temp.boot('11590000-0000-4000-8000-0000000000b2')).id is null
-		and (pg_temp.boot('11590000-0000-4000-8000-0000000000b3')).id is not null
-		and (pg_temp.boot('11590000-0000-4000-8000-0000000000b4')).restarted,
-	'b1 and b2, over 30 days old, are gone; b3 and b4 stay: ' || pg_temp.rows());
-select pg_temp.check(exists (select 1 from public.qorpera_company_machine_boots where machine_id = '11590000-0000-4000-8000-0000000000a2'),
-	'another machine''s old row is not this boot''s to remove');
+select pg_temp.check(pg_temp.expired() = 12 and (pg_temp.boot('11590000-0000-4000-8000-0000000000b1')).id is not null
+		and (select count(*) from public.qorpera_company_machine_boots where machine_id = '11590000-0000-4000-8000-0000000000a2') = 10,
+	'one boot removes 50 expired rows, the oldest first (the removed machine''s): ' || pg_temp.expired());
+select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b5') ->> 'state' = 'running', 'the machine runs in boot b5');
+select pg_temp.check(pg_temp.expired() = 0 and pg_temp.boots() = 3 and (pg_temp.boot('11590000-0000-4000-8000-0000000000b3')).id is not null
+		and (pg_temp.boot('11590000-0000-4000-8000-0000000000b4')).restarted and (pg_temp.boot('11590000-0000-4000-8000-0000000000b5')).restarted,
+	'the next boot removes the rest; b3, b4 and b5 stay: ' || pg_temp.rows());
 
--- 7. Row security, privileges and the marker.
+-- 7. A move to a new disk with no new start: the running placement is retired, as 20260928559200's
+--    qorpera_retire_company_machine retires one (its commands end lost), and the machine is placed again.
+create temp table boots_moved_from as select (pg_temp.placement()).id as placement_id, (pg_temp.machine()).wanted_at;
+select public.qorpera_end_company_machine_commands(pg_temp.machine(), 'lost') \g /dev/null
+update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = (pg_temp.placement()).id;
+select pg_temp.observe('11590000-0000-4000-8000-000000000410', repeat('5b', 32));
+select public.qorpera_admit_executor_machines('mx-1159a', repeat('5b', 32)) \g /dev/null
+select pg_temp.check((pg_temp.placement()).id <> (select placement_id from boots_moved_from)
+	and public.qorpera_company_machine_placement_reserved((pg_temp.placement()).id), 'the machine has a new placement with room');
+select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b6') ->> 'state' = 'running', 'the machine runs in boot b6');
+select pg_temp.check((select b.restarted and b.asked_at = (select wanted_at from boots_moved_from) and b.placed_at > b.asked_at
+		and b.placement_id = (pg_temp.placement()).id
+	from pg_temp.boot('11590000-0000-4000-8000-0000000000b6') b),
+	'b6 on the new disk answered no ask (an earlier boot did): marked restarted, not a slow wake: ' || pg_temp.rows());
+
+-- 8. Row security, privileges and the marker.
 select pg_temp.check((select relrowsecurity from pg_class where oid = 'public.qorpera_company_machine_boots'::regclass),
 	'the boots have no row security');
 select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) r(role)
@@ -174,6 +220,51 @@ select pg_temp.check((select prosecdef and proconfig = array['search_path=""'] f
 		where oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure)
 	and position('20260930659000' in pg_get_functiondef('public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure)) > 0,
 	'the patched function is still security definer with an empty search path, and names this migration');
+
+select pg_temp.check((select bool_and(has_table_privilege(pg_get_userbyid(p.proowner), 'public.qorpera_company_machine_boots', privilege))
+	from pg_proc p cross join unnest(array['SELECT','INSERT','UPDATE','DELETE']) privilege
+	where p.oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure),
+	'the mark function''s owner reaches the boots');
+
+-- The mark function under a private owner shaped as production's postgres: no superuser, bypasses row security, owns
+-- or reaches every table and function from before this migration but not the boots. The migration's own block (copied
+-- here as it is) is what makes its boot work.
+begin;
+create role qorpera_test_1159_owner nologin nosuperuser bypassrls;
+grant usage on schema public, extensions, auth to qorpera_test_1159_owner;
+grant all on all tables in schema public to qorpera_test_1159_owner;
+grant execute on all functions in schema public, extensions, auth to qorpera_test_1159_owner;
+revoke all on public.qorpera_company_machine_boots from qorpera_test_1159_owner;
+alter function public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid) owner to qorpera_test_1159_owner;
+do $$ begin
+	perform pg_temp.running('11590000-0000-4000-8000-0000000000b8');
+	raise exception 'Machine boots: a private owner without the grant marked a boot';
+exception when insufficient_privilege then
+	perform pg_temp.check(sqlerrm like '%qorpera_company_machine_boots%', 'refused on the boots: ' || sqlerrm);
+end $$;
+select pg_temp.check((pg_temp.placement()).boot_id = '11590000-0000-4000-8000-0000000000b6', 'the refused mark left the boot as it was');
+do $$ declare v_owner name := (select pg_get_userbyid(proowner) from pg_proc
+	where oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure);
+begin
+	if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
+		raise exception 'qorpera_mark_company_machine_running has an API owner'; end if;
+	if v_owner is distinct from current_user then
+		execute format('grant select, insert, update, delete on public.qorpera_company_machine_boots to %I', v_owner); end if;
+	-- Row security has no policy here, so the owner must own the table or pass row security, as for the machine tables.
+	if not (has_table_privilege(v_owner, 'public.qorpera_company_machine_boots', 'select')
+			and has_table_privilege(v_owner, 'public.qorpera_company_machine_boots', 'insert')
+			and has_table_privilege(v_owner, 'public.qorpera_company_machine_boots', 'update')
+			and has_table_privilege(v_owner, 'public.qorpera_company_machine_boots', 'delete'))
+		or not (v_owner = (select pg_get_userbyid(relowner) from pg_class where oid = 'public.qorpera_company_machine_boots'::regclass)
+			or exists (select 1 from pg_roles where rolname = v_owner and (rolsuper or rolbypassrls))) then
+		raise exception 'The owner of qorpera_mark_company_machine_running (%) cannot keep the boots', v_owner; end if;
+end $$;
+select pg_temp.check(pg_temp.running('11590000-0000-4000-8000-0000000000b8') ->> 'state' = 'running'
+		and (pg_temp.boot('11590000-0000-4000-8000-0000000000b8')).restarted, 'with the grant, the private owner marks b8 and keeps its row');
+rollback;
+select pg_temp.check((select pg_get_userbyid(proowner) from pg_proc
+		where oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure) <> 'qorpera_test_1159_owner'
+	and not exists (select 1 from pg_roles where rolname = 'qorpera_test_1159_owner'), 'the owner probe is rolled back');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
