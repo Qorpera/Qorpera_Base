@@ -135,6 +135,15 @@ export function stubFigureMotion(dispose: () => void = () => {}) {
 	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
 }
 
+/** The table each pushed hint event is about (migration 20260930653000). */
+const HINT_TABLES: ReadonlyMap<string, string> = new Map([
+	["sessions", "qorpera_shared_sessions"],
+	["staff", "qorpera_profile_staff"],
+	["access", "qorpera_profile_access_state"],
+	["company-file", "qorpera_company_files"],
+	["sidebar", "qorpera_company_sidebar_revisions"],
+]);
+
 export function fixture() {
 	let authCallback: ((event: AuthChangeEvent, session: Session | null) => void) | undefined;
 	let currentUser: User | null = userA;
@@ -148,11 +157,14 @@ export function fixture() {
 					token_type: "bearer",
 				}
 			: null;
+	/** A company's hint, by the table it is about: by postgres_changes the binding names the table, by push the event
+	 * names its resource. */
 	const hints = new Map<string, () => void>();
 	const unsubscribe = vi.fn();
 	const channel = {
-		on: vi.fn((_kind: string, filter: { table: string }, callback: () => void) => {
-			hints.set(filter.table, callback);
+		on: vi.fn((_kind: string, filter: { table?: string; event?: string }, callback: () => void) => {
+			const table = filter.table ?? (filter.event === undefined ? undefined : HINT_TABLES.get(filter.event));
+			if (table) hints.set(table, callback);
 			return channel;
 		}),
 		subscribe: vi.fn(() => channel),

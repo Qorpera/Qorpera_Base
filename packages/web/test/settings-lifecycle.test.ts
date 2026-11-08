@@ -1799,6 +1799,8 @@ describe("settings session lifecycle", () => {
 		const f = await setup(fixtureState);
 		open(f.root);
 		click(f.root, "#settings-tab-company");
+		// The company's private hint channel joins once Realtime holds the member's token.
+		await vi.advanceTimersByTimeAsync(0);
 		const channel = vi.mocked(f.cloud.supabase.channel).mock.results[0]!.value;
 		vi.mocked(channel.subscribe).mock.calls[0]![0]!(REALTIME_SUBSCRIBE_STATES.SUBSCRIBED);
 		await vi.advanceTimersByTimeAsync(60_000);

@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import {
+	liveHintTopic,
 	RESUBSCRIBE_DELAYS_MS,
 	RESUME_GRACE_MS,
 	type RealtimePhase,
+	type RealtimeResource,
+	subscribeCompanyRealtime,
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
 } from "../src/cloud/realtime.ts";
@@ -374,7 +377,7 @@ describe("the company's live badge recovers without a new tab", () => {
 				}),
 				status: undefined as Status | undefined,
 			};
-			if (topic.startsWith(`qorpera-profile-${profileA.profileId}-`)) channels.push(channel);
+			if (topic === liveHintTopic(profileA.profileId, userA.id)) channels.push(channel);
 			return channel as never;
 		});
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
@@ -403,7 +406,7 @@ describe("the company's live badge recovers without a new tab", () => {
 
 	it("goes from degraded back to connected after the automatic resubscription", async () => {
 		const f = fixture();
-		// The company's own hints channel; the sidebar (and anything else) opens channels of its own.
+		// The company's own hints channel (its push topic); anything else opens channels of its own.
 		const channels: { status?: Status }[] = [];
 		vi.mocked(f.cloud.supabase.channel).mockImplementation((topic: string) => {
 			const channel = {
@@ -414,7 +417,7 @@ describe("the company's live badge recovers without a new tab", () => {
 				}),
 				status: undefined as Status | undefined,
 			};
-			if (topic.startsWith(`qorpera-profile-${profileA.profileId}-`)) channels.push(channel);
+			if (topic === liveHintTopic(profileA.profileId, userA.id)) channels.push(channel);
 			return channel as never;
 		});
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
@@ -435,5 +438,248 @@ describe("the company's live badge recovers without a new tab", () => {
 		} finally {
 			controller.stop();
 		}
+	});
+});
+
+/* 8 Nov 2026 (perf T3): the company's hints come by push on the member's own private topic, at once after their commit
+ * (5 ms on a test machine, against 246 ms by postgres_changes, which also keeps Realtime polling the database). A
+ * database without the topic refuses the join; the hints then come by postgres_changes as before. */
+
+/** A client that hands back the channel it holds for a topic, as Supabase's does, until that channel is removed. */
+function pushCloud() {
+	const made: (FakeChannel & {
+		params?: unknown;
+		bindings: [string, Record<string, string>, (message: unknown) => void][];
+	})[] = [];
+	const order: string[] = [];
+	let held: typeof made = [];
+	const setAuth = vi.fn(async () => {
+		order.push("setAuth");
+	});
+	const removeChannel = vi.fn(async (channel: FakeChannel) => {
+		order.push(`remove ${made.indexOf(channel as (typeof made)[number])}`);
+		held = held.filter((each) => each !== channel);
+		return "ok";
+	});
+	const cloud = {
+		supabase: {
+			channel: vi.fn((topic: string, params?: unknown) => {
+				const existing = held.find((each) => each.topic === `realtime:${topic}`);
+				if (existing) return existing;
+				const channel: (typeof made)[number] = {
+					topic: `realtime:${topic}`,
+					state: "errored",
+					params,
+					bindings: [],
+					on: vi.fn((kind: string, filter: Record<string, string>, callback: (message: unknown) => void) => {
+						channel.bindings.push([kind, filter, callback]);
+						return channel;
+					}),
+					subscribe: vi.fn((status: Status) => {
+						channel.status = status;
+						order.push(`subscribe ${made.indexOf(channel)}`);
+						return channel;
+					}),
+				};
+				made.push(channel);
+				held.push(channel);
+				return channel;
+			}),
+			getChannels: () => held,
+			removeChannel,
+			realtime: { setAuth, connect: vi.fn(), isConnected: () => true },
+		},
+	} as unknown as Cloud;
+	return { cloud, made, order, removeChannel, setAuth };
+}
+
+const refusal = (topic: string) =>
+	new Error(`Unauthorized: You do not have permissions to read from this Channel topic: ${topic}`);
+
+describe("a company's hints by push", () => {
+	const topic = liveHintTopic(profileA.profileId, userA.id);
+
+	it("joins the member's own private topic once Realtime holds the token, and each event names what to read again", async () => {
+		const { cloud, made, order, setAuth } = pushCloud();
+		const token = deferred<void>();
+		setAuth.mockImplementationOnce(async () => {
+			order.push("setAuth");
+			await token.promise;
+		});
+		const changes: RealtimeResource[] = [];
+		const health: RealtimePhase[] = [];
+		const subscription = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			(resource) => changes.push(resource),
+			(phase) => health.push(phase),
+		);
+		// A join without the member's token would be refused, after Realtime's 5 s backoff.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(made).toHaveLength(0);
+		token.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(order).toEqual(["setAuth", "subscribe 0"]);
+		expect(topic).toBe(`qorpera-live-${profileA.profileId}-${userA.id}`);
+		expect(made[0]!.topic).toBe(`realtime:${topic}`);
+		expect(made[0]!.params).toEqual({ config: { private: true } });
+		// Broadcasts only: nothing that keeps Realtime polling the database.
+		expect(made[0]!.bindings.map(([kind, filter]) => [kind, filter.event])).toEqual([
+			["broadcast", "sessions"],
+			["broadcast", "staff"],
+			["broadcast", "access"],
+			["broadcast", "company-file"],
+			["broadcast", "sidebar"],
+		]);
+		made[0]!.status!("SUBSCRIBED");
+		expect(health).toEqual(["connecting", "connected"]);
+		expect(subscription.live()).toBe(true);
+		const fire = (event: string) => made[0]!.bindings.find(([, filter]) => filter.event === event)![2]({ event });
+		for (const event of ["sessions", "staff", "access", "company-file"]) fire(event);
+		expect(changes).toEqual(["sessions", "staff", "access", "company-file"]);
+		// The sidebar's hints count from when the sidebar was read, as its own channel did.
+		fire("sidebar");
+		expect(changes).toHaveLength(4);
+		const sidebar = vi.fn();
+		const following = subscription.followSidebar(sidebar);
+		fire("sidebar");
+		expect(sidebar).toHaveBeenCalledTimes(1);
+		expect(changes).toHaveLength(4);
+		expect(following.live()).toBe(true);
+		// No channel of its own while the company's topic carries them.
+		expect(made).toHaveLength(1);
+		subscription.stop();
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
+	});
+
+	it("listens by postgres_changes, as before, where the database refuses the topic", async () => {
+		const { cloud, made } = pushCloud();
+		const health: RealtimePhase[] = [];
+		const changes: RealtimeResource[] = [];
+		const subscription = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			(resource) => changes.push(resource),
+			(phase) => health.push(phase),
+		);
+		const sidebar = vi.fn();
+		subscription.followSidebar(sidebar);
+		await vi.advanceTimersByTimeAsync(0);
+		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		// At once the company's and the sidebar's postgres_changes channels, each on a topic of its own.
+		expect(made).toHaveLength(3);
+		const company = made.find((each) => each.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`))!;
+		const ownSidebar = made.find((each) => each.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`))!;
+		expect(company.bindings.map(([kind, filter]) => [kind, filter.table, filter.filter])).toEqual(
+			[
+				"qorpera_shared_sessions",
+				"qorpera_profile_staff",
+				"qorpera_profile_access_state",
+				"qorpera_company_files",
+			].map((table) => ["postgres_changes", table, `profile_id=eq.${profileA.profileId}`]),
+		);
+		expect(ownSidebar.bindings[0]![1].table).toBe("qorpera_company_sidebar_revisions");
+		// The refused channel is removed, and nothing joins the topic again.
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
+		expect(made.filter((each) => each.topic === `realtime:${topic}`)).toHaveLength(1);
+		company.status!("SUBSCRIBED");
+		// A refusal is no outage: the badge never said degraded.
+		expect(health).toEqual(["connecting", "connected"]);
+		company.bindings[0]![2]({});
+		ownSidebar.bindings[0]![2]({});
+		expect(changes).toEqual(["sessions"]);
+		expect(sidebar).toHaveBeenCalledTimes(1);
+		// It stays on postgres_changes: a later failure replaces that channel the old way.
+		company.status!("CHANNEL_ERROR", transport());
+		expect(health.at(-1)).toBe("degraded");
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(made).toHaveLength(4);
+		expect(made.at(-1)!.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`)).toBe(true);
+		subscription.stop();
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(ownSidebar);
+	});
+
+	it("opens the sidebar's own channel when it falls back after the sidebar was read", async () => {
+		const { cloud, made } = pushCloud();
+		const subscription = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(made).toHaveLength(2);
+		const sidebar = vi.fn();
+		const following = subscription.followSidebar(sidebar);
+		expect(made).toHaveLength(3);
+		expect(made[2]!.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`)).toBe(true);
+		expect(following.live()).toBe(false);
+		made[2]!.status!("SUBSCRIBED");
+		expect(following.live()).toBe(true);
+		following.stop();
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[2]);
+	});
+
+	it("waits for a channel still leaving the same topic, as a company closed just before leaves one", async () => {
+		const { cloud, made, order, removeChannel } = pushCloud();
+		const first = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		// The first one's leave has not finished when the company opens again.
+		const leave = deferred<string>();
+		removeChannel.mockImplementationOnce(async () => {
+			order.push("remove 0");
+			return leave.promise;
+		});
+		first.stop();
+		const second = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		// It removes the held channel again rather than take it back, then joins on a new one.
+		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "remove 0", "setAuth", "subscribe 1"]);
+		expect(made).toHaveLength(2);
+		expect(made[1]!.topic).toBe(`realtime:${topic}`);
+		expect(made[1]!.subscribe).toHaveBeenCalledTimes(1);
+		leave.resolve("ok");
+		second.stop();
+	});
+
+	it("replaces a failed push channel only once the failed one is gone, and stays on push", async () => {
+		const { cloud, made, order } = pushCloud();
+		subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		made[0]!.status!("SUBSCRIBED");
+		made[0]!.status!("CHANNEL_ERROR", transport());
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "setAuth", "subscribe 1"]);
+		expect(made[1]!.topic).toBe(`realtime:${topic}`);
+		// Closed by the server (a token refresh that no longer reads the topic): the next try joins the topic again,
+		// and only a refused join moves it off push.
+		made[1]!.status!("CLOSED");
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(made).toHaveLength(3);
+		expect(made[2]!.topic).toBe(`realtime:${topic}`);
 	});
 });
