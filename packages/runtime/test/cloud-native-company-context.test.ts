@@ -1631,7 +1631,8 @@ it("makes concepts in four steps, looks at pictures, and writes to coworkers in 
 		"make several clearly different directions as still pictures of the key moments, not built apps",
 		"look at them as a demanding designer would, against the brief, the moodboard and the best reference",
 		"Passing tests is not done",
-		"A concept is its own interface app, saved with concept = true and a cover picture",
+		"A concept is its own interface app, so the founders can open each one on its own.",
+		"A concept's directions are the exception to what follows: their workers make still pictures, not videos or an app",
 		"never logs, check counts or file lists, because the founders read these threads",
 	])
 		expect(instructions).toContain(rule);
