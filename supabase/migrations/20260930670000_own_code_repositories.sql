@@ -204,11 +204,13 @@ declare v_definition text := pg_get_functiondef(
 			|| ': ' || (p_artifacts -> 0 ->> 'branch') || ' is at ' || left(p_artifacts -> 0 ->> 'mainSha', 12)
 			|| ', and the files are in the company folder at code/' || (v_session.repository ->> 'owner') || '/'
 			|| (v_session.repository ->> 'name') || '/main/.';
-		-- The whole summary stays within the 4000 bytes the results file keeps (review 1544 r1 F3): the session's own
-		-- words are cut by bytes, whole characters only, so the platform's line is always there.
-		while octet_length(v_summary) > 4000 - octet_length(v_landed) loop
-			v_summary := left(v_summary, length(v_summary)
-				- greatest(1, (octet_length(v_summary) - (4000 - octet_length(v_landed))) / 4));
+		-- The whole summary stays within the 4000 bytes the results file keeps (review 1544 r1 F3, r2 F1): the session's
+		-- own words are cut by bytes, whole characters only, so the platform's line is always there. The results writer
+		-- (object-gateway codingResultsText) may add one '#' to each of its lines that would read as a heading, so each
+		-- line of them is counted one byte more.
+		while octet_length(v_summary) + cardinality(string_to_array(v_summary, E'\n')) > 4000 - octet_length(v_landed) loop
+			v_summary := left(v_summary, length(v_summary) - greatest(1, (octet_length(v_summary)
+				+ cardinality(string_to_array(v_summary, E'\n')) - (4000 - octet_length(v_landed))) / 4));
 		end loop;
 		v_summary := v_summary || v_landed;
 	end if;$new$;
