@@ -56,8 +56,9 @@ export const beside = (first, second, label) =>
 /** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
  * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
  * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. With `shard`
- * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: by a hash of each file's path,
- * so the same share on every machine), and the commands for 1/n to n/n together run every file once. */
+ * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: the same share on every
+ * machine; by a hash of each file's path, or by measured time where the package's vitest config says so, as
+ * runner-orchestrator's does), and the commands for 1/n to n/n together run every file once. */
 const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
 	const share = shard ? ` --shard=${shard}` : "";
 	return [
