@@ -152,6 +152,20 @@ export function landConflict(baseBranch: string, paths: readonly string[]): stri
 	const more = paths.length > shown.length ? ` and ${paths.length - shown.length} more` : "";
 	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${shown.length ? `, in ${shown.join(", ")}${more}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
+/** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
+ * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
+function recoveryRequired(error: unknown): boolean {
+	return error instanceof Error && /RECOVERY_REQUIRED(?::|$)/.test(error.message);
+}
+/** A workspace that could not be prepared for a reason the host does not name: the turn did not start, nothing changed,
+ * and the step's own code, when it is one, travels in the summary for the agent and the session's card. */
+export function prepareUnfinished(error: unknown): string {
+	const code =
+		error instanceof Error && /^[A-Z][A-Z0-9_]{2,80}(?::[A-Z0-9_]{1,80})?$/.test(error.message)
+			? error.message
+			: "CODING_PREPARE_UNFINISHED";
+	return `Preparing the session's workspace did not finish, so the coding turn did not start. Nothing was changed; a follow-up tries again. [code=${code}]`;
+}
 /** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
 export const PUBLICATION_UNFINISHED =
 	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
@@ -653,6 +667,22 @@ export class CloudCodingExecutor {
 					await complete("failed", error.summary);
 					return "failed";
 				}
+				if (!(error instanceof CodingMachineUnavailable) && !active.aborted && !recoveryRequired(error)) {
+					// Any other failure before the model ran (8 Nov 2026, Lærdom: the vault refused the session's
+					// environment) fails the turn now, saying so with its code, instead of leaving the lease to lapse as "the
+					// executor stopped responding". Only once what the turn attached came off: a machine that could not be
+					// unplugged, or one the host says needs recovery, still lapses (the recovery path).
+					this.#reported("turn", error);
+					end();
+					try {
+						await this.#host.detachSession(claimed, active);
+					} catch (detachError) {
+						this.#reported("stop", detachError);
+						return "recovery-required";
+					}
+					await complete("failed", prepareUnfinished(error));
+					return "failed";
+				}
 				if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
 				// Nothing ran yet: unplug whatever was attached, then wait in the queue.
 				try {
@@ -721,7 +751,12 @@ export class CloudCodingExecutor {
 			// 3. What the harness left behind decides the outcome; prose never does.
 			const submission = turn.submission;
 			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
-				await progress({ p_phase: "publishing", p_last_step: "Publishing the draft pull request" });
+				await progress({
+					p_phase: "publishing",
+					// A repository kept in Qorpera has no pull request: its work lands (own code storage).
+					p_last_step:
+						claimed.repository.host === "qorpera" ? "Landing the change" : "Publishing the draft pull request",
+				});
 				let publication: CodingExecutorPublication;
 				try {
 					publication = await this.#host.publish(claimed, submission, active);
