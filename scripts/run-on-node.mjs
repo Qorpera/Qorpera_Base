@@ -415,9 +415,9 @@ export function pruneScript() {
 }
 
 /** Bash for the start of a run's session: `note_history CODE` appends the run's line to the machine's run history
- * (HISTORY), with what the session knows then. Called when the run ends, and when it gives up waiting for a slot or a
- * runner user. Every value is a fixed word, a validated name or a number, so the line is always valid JSON: the run's
- * name, lane and suite (`changed`, `test`, `hosted-db`, `npm:<script>`, `scripts/<file>.mjs`; `command` for a command
+ * (HISTORY), with what the session knows then. Called when the run ends, when it gives up waiting for a slot or a
+ * runner user, and when it cannot hand the runner user its directory (exit 93). Every value is a fixed word, a
+ * validated name or a number, so the line is always valid JSON: the run's name, lane and suite (`changed`, `test`, `hosted-db`, `npm:<script>`, `scripts/<file>.mjs`; `command` for a command
  * after --, whose words are never kept), the machine, slot, runner user, copy time, when it started waiting and for how
  * long, install and suite time from the status file, the kernel's OOM kills, the load at its start, when it ended and
  * its exit code. A run that cannot write it still runs: the history is only a record. */
@@ -609,7 +609,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		// The load at start and uncapped test processes (older clients run suites as tester) explain a slow
 		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
-		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
+		`sudo -n chown -R "$runner:$runner" ${runDir} || { note_history 93; exit 93; }`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots + extra} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		...(cores
 			? [

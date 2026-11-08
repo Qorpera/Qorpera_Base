@@ -162,7 +162,7 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	assert.match(script, /exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"/);
 	assert.match(script, /flock -n 8; then runner=\$candidate/);
 	assert.match(script, /for candidate in ci01 ci02 .* ci16; do/);
-	assert.match(script, /sudo -n chown -R "\$runner:\$runner" \/home\/tester\/runs\/R \|\| exit 93/);
+	assert.match(script, /sudo -n chown -R "\$runner:\$runner" \/home\/tester\/runs\/R \|\| \{ note_history 93; exit 93; \}/);
 	assert.match(script, /sudo -n -u "\$runner" -H bash -c '/);
 	const inner = script.slice(script.indexOf("bash -c '"));
 	assert.ok(inner.indexOf("npm ci") < inner.indexOf("build:web-sdk") && inner.indexOf("build:web-sdk") < inner.indexOf("npm test"));
@@ -1502,6 +1502,7 @@ test("every run's session writes its history line when it ends or gives up, and 
 		assert.match(script, /\nsudo -n -u "\$runner" -H bash -c '[\s\S]*'\ncode=\$\?; note_history "\$code"; exit "\$code"$/);
 		assert.match(script, /note_history 94; exit 94; \}/);
 		assert.match(script, /no runner user free for an hour"; note_history 92; exit 92; \}/);
+		assert.match(script, /\|\| \{ note_history 93; exit 93; \}/);
 	}
 	// The session's last lines, with the runner user's sudo replaced by a plain call: the run's exit code stands, and the
 	// line carries its suite time.
@@ -1524,6 +1525,17 @@ test("every run's session writes its history line when it ends or gives up, and 
 			assert.deepEqual([last.run, last.suite, last.lane, last.runner, last.exitCode, last.installed], [`R${code}`, "hosted-db", "quick", "ci01", code, 1]);
 			assert.ok(Number.isInteger(last.suiteMs) && last.suiteMs >= 0);
 		}
+		// The runner user cannot be handed the run's directory: the harness's 93, and its line says so.
+		const script = runScript({ ...base, run: "R93", runDir, suite: "test" }).replaceAll(HISTORY, join(dir, "h"));
+		const definitions = script.slice(script.indexOf("history_value() {"), script.indexOf("\treturn 0\n}", script.indexOf("note_history() {")) + "\treturn 0\n}".length);
+		const chown = script.split("\n").find((line) => line.startsWith("sudo -n chown -R"));
+		const result = spawnSync("bash", ["-c", `set -uo pipefail\nsudo() { return 1; }\n${definitions}\nrunner=ci02; slot=2; queued=$(date +%s); queued_s=5\n${chown}\necho unreachable`], {
+			encoding: "utf8",
+		});
+		assert.deepEqual([result.status, result.stdout], [93, ""], result.stderr);
+		const [file] = readdirSync(join(dir, "h"));
+		const last = JSON.parse(readFileSync(join(dir, "h", file), "utf8").trim().split("\n").at(-1));
+		assert.deepEqual([last.run, last.runner, last.slot, last.queuedSeconds, last.exitCode], ["R93", "ci02", 2, 5, 93]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
