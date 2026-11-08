@@ -710,9 +710,10 @@ export function mountApplication(
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			// A start that failed keeps saying so; a redraw (a route change) never blanks it again.
+			// A start that failed keeps saying so; a redraw (a route change) never blanks it again. index.html's
+			// first screen (ui/boot.ts) stands until the app knows which screen to draw.
 			if (startError) replace(root!, startError);
-			else replace(root!, blankSkeleton(t("Connecting to the cloud")));
+			else if (!root!.querySelector(":scope > .boot")) replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
 		if (!authState.session) {
