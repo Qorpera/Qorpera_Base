@@ -39,11 +39,14 @@
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
-/* The open page: its name in the selection blue and a dot under it, as a dock marks a running app; no tile behind
- * the emblem. */
-.rail-app::after { content: ""; width: 4px; height: 4px; margin-top: -1px; border-radius: 50%; background: transparent; transition: background-color var(--motion-fast) ease; }
-.rail-app.active { color: var(--rail-selection); }
-.rail-app.active::after { background: var(--rail-selection); }
+/* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
+ * 2026). The emblem turns white with its cuts in the selection colour, so an emblem of that same colour still shows. */
+.rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-app.active .interface-emblem :is([fill]:not([fill="none"], [fill="#ffffff"])) { fill: #fff; }
+.rail-app.active .interface-emblem :is([stroke]:not([stroke="#ffffff"])) { stroke: #fff; }
+.rail-app.active .interface-emblem [fill="#ffffff"] { fill: var(--rail-selection); }
+.rail-app.active .interface-emblem [stroke="#ffffff"] { stroke: var(--rail-selection); }
+.rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-app-stand { position: relative; display: grid; }
 .rail-app .interface-emblem { width: 34px; height: 34px; transition: transform var(--motion-base) var(--ease-spring); }
