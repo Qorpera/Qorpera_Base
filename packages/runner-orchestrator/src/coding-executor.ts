@@ -152,9 +152,10 @@ export function landConflict(baseBranch: string, paths: readonly string[]): stri
 	const more = paths.length > shown.length ? ` and ${paths.length - shown.length} more` : "";
 	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${shown.length ? `, in ${shown.join(", ")}${more}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
-/** Whether a failure says the session's machine needs recovery before anything else runs on it. */
+/** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
+ * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
 function recoveryRequired(error: unknown): boolean {
-	return error instanceof Error && /RECOVERY_REQUIRED$/.test(error.message);
+	return error instanceof Error && /RECOVERY_REQUIRED(?::|$)/.test(error.message);
 }
 /** A workspace that could not be prepared for a reason the host does not name: the turn did not start, nothing changed,
  * and the step's own code, when it is one, travels in the summary for the agent and the session's card. */

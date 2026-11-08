@@ -516,15 +516,23 @@ describe("the coding executor over a session turn", () => {
 	});
 
 	it("a failed workspace preparation unplugs what the turn plugged and asks for recovery, never completion", async () => {
-		const w = world();
-		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
-		const executor = new CloudCodingExecutor({ control: w.control, host: w.host, owner: "exec-test", turnPollMs: 1 });
-		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
-		// The host unplugs only a session this turn plugged and never attached.
-		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
-		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
-		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		// With or without a detail after the code, as an LXD refusal gives it (coding-executor-host.ts).
+		for (const code of ["CODING_HOST_VM_RECOVERY_REQUIRED", "CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403"]) {
+			const w = world();
+			vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error(code));
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+			// The host unplugs only a session this turn plugged and never attached.
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+			expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		}
 	});
 
 	it("a workspace that failed for another reason fails the turn at once with its code, once what it attached came off", async () => {
