@@ -14,6 +14,7 @@ import {
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
+	PUBLICATION_UNFINISHED,
 	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
@@ -382,6 +383,32 @@ describe("the coding executor over a session turn", () => {
 			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 			expect(w.host.detachSession).not.toHaveBeenCalled();
 		}
+	});
+
+	it("a publication that fails for another reason fails the turn and says so, instead of letting the lease lapse", async () => {
+		const w = world();
+		const report = vi.fn();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new Error("CODING_GIT_RECONCILIATION_REQUIRED"));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(PUBLICATION_UNFINISHED);
+		expect(completion.p_pull_request).toBeNull();
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODING_GIT_RECONCILIATION_REQUIRED" }));
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
 	it("a question blocks the session with its choices and leaves it standing by", async () => {

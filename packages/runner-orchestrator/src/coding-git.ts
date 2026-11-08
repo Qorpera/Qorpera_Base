@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
 import { type CodingPushCarrier, CodingPushRefused } from "./coding-executor.ts";
@@ -13,6 +14,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA = /^[0-9a-f]{40}$/;
 const MAX_BUNDLE = 64 * 1024 ** 2;
 const MAX_PREREQUISITES = 64;
+/** The pauses between reads of the pushed branch while GitHub still shows its old head: about 7.5 s in all. */
+export const CODING_PUSH_CONFIRM_PAUSES_MS: readonly number[] = Object.freeze([250, 500, 1000, 2000, 4000]);
 /** The push check's bounds (5j-5 b). A 64 MiB bundle inflates to far more than it holds; the check reads at most 256
  * MiB of objects, framing included, which the mask takes at about 10 MiB/s with 30 values, well inside a long step.
  * The names are kept until the check ends, so their list is bounded too. */
@@ -84,6 +87,8 @@ export interface CodingGitPushOptions {
 	runGit?: CodingBrokerGitRunner;
 	/** The session's secret values (F3 5j-5 b): a push that carries one is refused. Without them, nothing is checked. */
 	secrets?: CodingSecretMask;
+	/** Tests only: the pauses between reads of the pushed branch (CODING_PUSH_CONFIRM_PAUSES_MS). */
+	confirmPausesMs?: readonly number[];
 }
 
 /** Closed process transport: no shell, inherited environment, error body or
@@ -519,8 +524,16 @@ export async function pushCloudCodingBundle(
 			["push", "--porcelain", "--no-verify", "--recurse-submodules=no", remote, `${input.headSha}:${ref}`],
 			true,
 		);
-		if ((await inspectRemote()).head !== input.headSha) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
-		return { branch, headSha: input.headSha };
+		// GitHub may answer the read right after a push from a copy that has not seen it yet (8 Nov 2026, session
+		// 27038e92: the push landed, the next ls-remote showed the old head, and the turn was given up). The branch is
+		// read again a few times while it still shows the head it had before the push; any other head is no lag.
+		for (const pause of [...(options.confirmPausesMs ?? CODING_PUSH_CONFIRM_PAUSES_MS), null]) {
+			const after = (await inspectRemote()).head;
+			if (after === input.headSha) return { branch, headSha: input.headSha };
+			if (after !== observed.head || pause === null) break;
+			await setTimeout(pause, undefined, { signal: options.signal });
+		}
+		throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
 	}

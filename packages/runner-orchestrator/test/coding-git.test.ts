@@ -68,13 +68,21 @@ async function fixture() {
 	let remoteBase = baseSha;
 	let remoteHead: string | null = null,
 		loseReply = false,
-		noEffect = false;
+		noEffect = false,
+		// Reads after a push that still show the branch's earlier head (a GitHub copy that has not seen the push yet).
+		lag = 0,
+		staleReads = 0,
+		staleHead: string | null = null;
 	const calls: CodingBrokerGitCommand[] = [];
 	const runGit = vi.fn(async (command: CodingBrokerGitCommand): Promise<string> => {
 		calls.push(command);
-		if (command.args.includes("ls-remote"))
-			return `${remoteBase}\trefs/heads/main\n${remoteHead ? `${remoteHead}\t${ref}\n` : ""}`;
+		if (command.args.includes("ls-remote")) {
+			const shown = staleReads > 0 ? (staleReads--, staleHead) : remoteHead;
+			return `${remoteBase}\trefs/heads/main\n${shown ? `${shown}\t${ref}\n` : ""}`;
+		}
 		if (command.args.includes("push")) {
+			staleHead = remoteHead;
+			staleReads = lag;
 			if (!noEffect) remoteHead = command.args.at(-1)?.split(":")[0] ?? null;
 			if (loseReply) throw new Error(`untrusted stderr ${token}`);
 			return "ok\n";
@@ -105,6 +113,7 @@ async function fixture() {
 		journalRoot: root,
 		signal: new AbortController().signal,
 		runGit,
+		confirmPausesMs: [1, 1, 1],
 		assertAuthorized: vi.fn(async () => undefined),
 		withRepositoryToken: async (repository, use) => {
 			expect(repository).toEqual(input.repository);
@@ -124,6 +133,9 @@ async function fixture() {
 		},
 		setRemote: (head: string | null) => {
 			remoteHead = head;
+		},
+		lagReads: (reads: number) => {
+			lag = reads;
 		},
 		loseReply: (effect = true) => {
 			loseReply = true;
@@ -234,6 +246,49 @@ describe("credential-isolated coding Git publication", () => {
 		);
 		expect(await pushCloudCodingBundle(f.input, f.bundle, f.options)).toEqual({ branch, headSha: f.input.headSha });
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+	});
+	it("reads the branch again while GitHub still shows its head from before the push", async () => {
+		const f = await fixture();
+		f.lagReads(2);
+		expect(await pushCloudCodingBundle(f.input, f.bundle, f.options)).toEqual({ branch, headSha: f.input.headSha });
+		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+		// Before the push, then two stale reads and the one that shows the push.
+		expect(f.calls.filter((call) => call.args.includes("ls-remote"))).toHaveLength(4);
+	});
+	it("gives up when the pushed branch never shows the push, and never pushes again", async () => {
+		const f = await fixture();
+		f.lagReads(10);
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toThrow(
+			/^CODING_GIT_RECONCILIATION_REQUIRED$/,
+		);
+		// One read before the push, then one per pause and a last one.
+		expect(f.calls.filter((call) => call.args.includes("ls-remote"))).toHaveLength(5);
+		// Once GitHub shows it, the same publication is confirmed without a second push.
+		f.lagReads(0);
+		expect(await pushCloudCodingBundle(f.input, f.bundle, f.options)).toEqual({ branch, headSha: f.input.headSha });
+		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+	});
+	it("does not wait for a branch that moved to another head after the push", async () => {
+		const f = await fixture();
+		const other = "c".repeat(40);
+		const runGit = f.options.runGit as CodingBrokerGitRunner;
+		let pushed = false,
+			readsAfter = 0;
+		f.options.runGit = async (command) => {
+			if (command.args.includes("push")) {
+				pushed = true;
+				return "ok\n";
+			}
+			if (pushed && command.args.includes("ls-remote")) {
+				readsAfter++;
+				return `${f.input.baseSha}\trefs/heads/main\n${other}\t${ref}\n`;
+			}
+			return runGit(command);
+		};
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toThrow(
+			/^CODING_GIT_RECONCILIATION_REQUIRED$/,
+		);
+		expect(readsAfter).toBe(1);
 	});
 	it("retains an ambiguous nonobserved push even when remote remains unchanged", async () => {
 		const f = await fixture();
