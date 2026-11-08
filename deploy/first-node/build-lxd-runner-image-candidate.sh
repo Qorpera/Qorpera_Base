@@ -92,7 +92,9 @@ if lxc info "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 
 	fi
 	builder_precreated=true
 fi
-if [[ $(lxc config get core.https_address) != "" ]]; then
+# Only the loopback listener for the services' own client certificates may exist.
+loopback_listener='^((127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4})?$'
+if [[ ! $(lxc config get core.https_address) =~ ${loopback_listener} ]]; then
 	echo "The LXD daemon unexpectedly exposes a remote listener." >&2
 	exit 1
 fi

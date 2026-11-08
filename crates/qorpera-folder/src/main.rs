@@ -1,9 +1,9 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, cache, command, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, command, link, lxd, lxd_https, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use std::time::Duration;
 const USAGE: &str = "Usage:
   qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--owner-uid <uid> --owner-gid <gid>] [--state-dir /run/qorpera-folder/<viewId>] [--local-dir <dir>] [--cache-dir <dir>]
   qorpera-folder publish --view-file <file> [--state-dir /run/qorpera-folder/<viewId>] [--final] [--json] [--connect vsock:2:5250]
-  qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
+  qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-https <dir> | --lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
   qorpera-folder version
@@ -325,15 +325,25 @@ fn print_report(report: &proto::Report, json: bool) -> ExitCode {
 
 
 fn bridge(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["listen", "service", "per-machine", "lxd-socket"])?;
+	let o = options(args, &["listen", "service", "per-machine", "lxd-https", "lxd-socket"])?;
 	let service = o.get("service").ok_or_else(|| Usage("--service is required".into()))?;
 	if !service.starts_with("unix:") {
 		return Err(Usage("--service must be unix:<socket>".into()));
 	}
 	let listen = o.get("listen").cloned().unwrap_or_else(|| format!("vsock:any:{}", proto::VSOCK_PORT));
 	let per_machine: usize = number(&o, "per-machine", bridge::PER_MACHINE)?;
-	let lxd_socket = o.get("lxd-socket").cloned().unwrap_or_else(|| lxd::SOCKET.to_string());
-	match bridge::run(&listen, service, per_machine.max(1), &lxd_socket) {
+	let lxd = match (o.get("lxd-https"), o.get("lxd-socket")) {
+		(Some(_), Some(_)) => return Err(Usage("--lxd-https and --lxd-socket exclude each other".into())),
+		(Some(root), None) => match lxd_https::Https::read(Path::new(root)) {
+			Ok(https) => lxd::Transport::Https(https),
+			Err(e) => {
+				eprintln!("qorpera-folder bridge: {e}");
+				return Ok(ExitCode::FAILURE);
+			}
+		},
+		(None, socket) => lxd::Transport::Socket(socket.cloned().unwrap_or_else(|| lxd::SOCKET.to_string())),
+	};
+	match bridge::run(&listen, service, per_machine.max(1), lxd) {
 		Ok(()) => Ok(ExitCode::SUCCESS),
 		Err(e) => {
 			eprintln!("qorpera-folder bridge: {e}");

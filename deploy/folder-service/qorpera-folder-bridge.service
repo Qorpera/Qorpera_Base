@@ -8,11 +8,11 @@ After=qorpera-folder-service.socket
 Type=exec
 User=qorpera-folder-bridge
 Group=qorpera-folder-bridge
-# Holds no credential and reads nothing a machine sends: for each connection it asks LXD which running machine has
-# the CID (one fixed read request), names it to the service, and passes bytes through. LXD's socket group is
-# root-equivalent; it is here, not in the service, so the process that parses machine input never has it.
-SupplementaryGroups=lxd
-ExecStart=/opt/qorpera-folder-service/qorpera-folder bridge --service unix:/run/qorpera-folder/service.sock --listen vsock:any:5250 --lxd-socket /var/snap/lxd/common/lxd/unix.socket
+# Reads nothing a machine sends: for each connection it asks LXD which running machine has the CID (one fixed read
+# request), names it to the service, and passes bytes through. Its one credential is its own client certificate on
+# LXD's pinned loopback listener (/etc/qorpera-lxd-ids, the node step enrolls it); it is here, not in the service, so
+# the process that parses machine input never has it. No LXD socket group.
+ExecStart=/opt/qorpera-folder-service/qorpera-folder bridge --service unix:/run/qorpera-folder/service.sock --listen vsock:any:5250 --lxd-https /etc/qorpera-lxd-ids
 Restart=always
 RestartSec=2s
 TimeoutStopSec=10s
@@ -39,7 +39,9 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictAddressFamilies=AF_UNIX AF_VSOCK AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
 MemoryMax=512M
 MemorySwapMax=0
 

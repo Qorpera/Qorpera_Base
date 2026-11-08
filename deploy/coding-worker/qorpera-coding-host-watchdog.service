@@ -9,10 +9,10 @@ StartLimitIntervalSec=0
 Type=oneshot
 # The executor's own account: it reads the leases the executor writes under
 # /run/qorpera-coding-host (0700) and the executor's configuration for its LXD
-# project, and only stops VMs. It never needs SQL, the NAS or the network.
+# project, and only stops VMs. It never needs SQL or the NAS. Its only network is
+# LXD's loopback listener, where LXD knows it by the executor's client certificate.
 User=qorpera-coding-executor
 Group=qorpera-coding-executor
-SupplementaryGroups=lxd
 ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-host-watchdog.mjs
 LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
 # A pass gives up after 45 s, each stop after 30 s.
@@ -25,7 +25,9 @@ ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
 CapabilityBoundingSet=
 UMask=0077
 MemoryMax=256M

@@ -268,8 +268,6 @@ rm -rf "$WORK/push/coding-image" "$WORK/push/code-host"
 lx exec "$VM" -- env PATH=/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin bash -euo pipefail -c '
 	touch /etc/qorpera-throwaway-vm
 	install -m 0755 /root/push/node/node /usr/local/bin/node
-	# Before LXD: its socket then belongs to group lxd, which the executor joins.
-	groupadd -f lxd
 	cd /root/push/snaps
 	snap ack snapd_*.assert && snap install snapd_*.snap >/dev/null
 	snap ack core26_*.assert && snap install core26_*.snap >/dev/null

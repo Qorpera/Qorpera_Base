@@ -167,8 +167,10 @@ verify_host() {
 	for held_package in nodejs zfsutils-linux; do
 		apt-mark showhold | grep -Fxq "${held_package}"
 	done
-	[[ -z $(lxc config get core.https_address) ]]
-	! ss -lnt | awk 'NR > 1 { print $4 }' | grep -Eq '(^|:)(8443)$'
+	# Only the loopback listener for the services' own client certificates may exist.
+	local loopback_listener='^((127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4})?$'
+	[[ $(lxc config get core.https_address) =~ ${loopback_listener} ]]
+	[[ -z $(ss -lnt | awk 'NR > 1 && $4 ~ /:8443$/ && $4 !~ /^(127\.0\.0\.1|\[::1\]):8443$/ { print $4 }') ]]
 	[[ $(lxc storage show "${LXD_POOL}" | awk '$1 == "driver:" { print $2 }') == zfs ]]
 	[[ $(lxc storage get "${LXD_POOL}" source) == qorpera-azure-step2 ]]
 	[[ $(lxc network get "${LXD_NETWORK}" ipv4.nat) == true ]]

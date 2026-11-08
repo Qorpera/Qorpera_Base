@@ -266,7 +266,9 @@ describe("the coding executor's unit", () => {
 			new URL("../../../deploy/coding-worker/qorpera-coding-executor.service", import.meta.url),
 			"utf8",
 		);
-		expect(unit).toMatch(/^SupplementaryGroups=lxd qorpera-agent-plug$/m);
+		// LXD knows the executor by its own client certificate, never by the socket's group (V2-D1).
+		expect(unit).toMatch(/^SupplementaryGroups=qorpera-agent-plug$/m);
+		expect(unit).not.toMatch(/^SupplementaryGroups=.*\blxd\b/m);
 		const writable = [...unit.matchAll(/^ReadWritePaths=(.+)$/gm)].flatMap(([, paths]) => paths.split(" "));
 		expect(writable.sort()).toEqual([
 			"/var/lib/qorpera-agent-exit/clients",

@@ -6,7 +6,7 @@
 //! The bridge reads nothing a machine sends: every byte is passed through as it is.
 
 use crate::frame::{kind, write_frame};
-use crate::lxd::Machines;
+use crate::lxd::{Machines, Transport};
 use crate::proto::Bridge;
 use crate::transport::{connect, Listener, Stream};
 use std::collections::HashMap;
@@ -22,13 +22,13 @@ pub const PER_MACHINE: usize = 512;
 /// CIDs 0–2 are the hypervisor, the local loopback and the host itself; no machine has them.
 const FIRST_GUEST_CID: u32 = 3;
 
-pub fn run(listen: &str, service: &str, per_machine: usize, lxd_socket: &str) -> io::Result<()> {
+pub fn run(listen: &str, service: &str, per_machine: usize, lxd: Transport) -> io::Result<()> {
 	let listener = Listener::bind(listen)?;
 	if !matches!(listener, Listener::Vsock(_)) {
 		return Err(io::Error::new(io::ErrorKind::InvalidInput, "the bridge listens on vsock only"));
 	}
 	eprintln!("qorpera-folder bridge: {listen} -> {service}");
-	let machines = Arc::new(Machines::new(lxd_socket));
+	let machines = Arc::new(Machines::new(lxd));
 	let open: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 	loop {
 		let (stream, cid) = match listener.accept() {

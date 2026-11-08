@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
 import { LxdExecutionHostIdentities } from "./lxd-execution-host-identity.ts";
+import { readLxdHttpsAccess } from "./lxd-https.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
 	HttpLxdNativeLoginGateway,
@@ -234,7 +235,7 @@ interface ProviderRuntime {
 	loginGateway?: HttpLxdNativeLoginGateway;
 }
 
-function runtime(): ProviderRuntime {
+async function runtime(): Promise<ProviderRuntime> {
 	const kind = process.env.QORPERA_RUNNER_PROVIDER_BACKEND ?? "process";
 	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig(), nodeHttpFetch) };
 	if (kind === "lxd") {
@@ -251,8 +252,12 @@ function runtime(): ProviderRuntime {
 				runnerImageCosignBundleSha256: required("QORPERA_EPHEMERAL_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256"),
 			},
 		);
+		// The provider's own client certificate on LXD's loopback listener, not the socket's group (V2-D1). An
+		// environment that still names the socket is an old one: refuse it rather than ignore what it asks for.
+		if (process.env.QORPERA_LXD_SOCKET !== undefined)
+			throw new Error("QORPERA_LXD_SOCKET is retired: the provider reaches LXD only over its pinned listener");
 		const client = new LxdUnixClient(
-			process.env.QORPERA_LXD_SOCKET ?? "/var/snap/lxd/common/lxd/unix.socket",
+			await readLxdHttpsAccess(),
 			integer("QORPERA_LXD_OPERATION_TIMEOUT_SECONDS", 120),
 		);
 		return {
@@ -273,7 +278,7 @@ function runtime(): ProviderRuntime {
 }
 
 async function main(): Promise<void> {
-	const current = runtime();
+	const current = await runtime();
 	const network = providerNetwork();
 	const service = new HttpCloudRunnerProviderService(
 		current.backend,

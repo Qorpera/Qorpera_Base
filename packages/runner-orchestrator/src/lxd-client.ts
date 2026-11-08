@@ -21,9 +21,10 @@ import {
 } from "@qorpera/contracts";
 import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
+import { LxdHttpsAccess, type LxdHttpsConnection } from "./lxd-https.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
-import { NodeWebSocket } from "./node-websocket.ts";
+import { NodeWebSocket, type NodeWebSocketHandlers } from "./node-websocket.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
@@ -1523,11 +1524,20 @@ export class LxdUnixClient
 		LxdOfficeResetClient,
 		LxdOfficeResetSuccessorClient
 {
-	readonly #socketPath: string;
+	/** LXD's socket path (root's tools, the office workers until their policy moves), or a service's own pinned
+	 * access to its loopback HTTPS listener (lxd-https.ts). Never both, and never one in place of the other. */
+	readonly #transport: string | LxdHttpsAccess;
 	readonly #operationTimeoutSeconds: number;
 
-	constructor(socketPath = "/var/snap/lxd/common/lxd/unix.socket", operationTimeoutSeconds = 120) {
-		if (!socketPath.startsWith("/") || /[\0\r\n]/.test(socketPath)) throw new Error("LXD socket path is invalid");
+	constructor(
+		transport: string | LxdHttpsAccess = "/var/snap/lxd/common/lxd/unix.socket",
+		operationTimeoutSeconds = 120,
+	) {
+		if (
+			!(transport instanceof LxdHttpsAccess) &&
+			(typeof transport !== "string" || !transport.startsWith("/") || /[\0\r\n]/.test(transport))
+		)
+			throw new Error("LXD socket path is invalid");
 		if (
 			!Number.isSafeInteger(operationTimeoutSeconds) ||
 			operationTimeoutSeconds < 1 ||
@@ -1535,8 +1545,45 @@ export class LxdUnixClient
 		) {
 			throw new Error("LXD operation timeout is invalid");
 		}
-		this.#socketPath = socketPath;
+		this.#transport = transport;
 		this.#operationTimeoutSeconds = operationTimeoutSeconds;
+	}
+
+	/** Where node:http connects. Over HTTPS the connection is pinned, and the request waits for it. */
+	#target(
+		signal?: AbortSignal,
+	): { socketPath: string } | { host: string; port: number; createConnection: LxdHttpsConnection } {
+		const transport = this.#transport;
+		return typeof transport === "string"
+			? { socketPath: transport }
+			: { host: transport.host, port: transport.port, createConnection: transport.connection(signal) };
+	}
+
+	/** An operation's websocket: `ws:` over the socket, `wss:` over the pinned listener. Its host is only the Host
+	 * header; the connection goes where #target says. */
+	async #websocket(
+		operation: string,
+		secret: string,
+		handlers: NodeWebSocketHandlers,
+		signal: AbortSignal,
+	): Promise<NodeWebSocket> {
+		const transport = this.#transport;
+		const path = `${operation}/websocket?secret=${encodeURIComponent(secret)}`;
+		if (typeof transport === "string")
+			return NodeWebSocket.connect(new URL(`ws://lxd${path}`), handlers, EXEC_STREAM_CONNECT_MS, {
+				socketPath: transport,
+				signal,
+			});
+		const host = transport.host === "::1" ? "[::1]" : transport.host;
+		return NodeWebSocket.connect(
+			new URL(`wss://${host}:${transport.port}${path}`),
+			handlers,
+			EXEC_STREAM_CONNECT_MS,
+			{
+				createConnection: transport.connection(signal),
+				signal,
+			},
+		);
 	}
 
 	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
@@ -1561,9 +1608,19 @@ export class LxdUnixClient
 			const environment = record(server.environment, "office server environment");
 			if (requireInventory && !strings(server.api_extensions, "server extensions").includes("instance_all_projects"))
 				throw new Error("all-project inventory unsupported");
+			const transport = this.#transport;
+			// LXD names how it knows the caller (V2-B1): its socket, or over HTTPS this service's own client
+			// certificate (V2-B3), never a CA-issued one. Over HTTPS the server is the pinned one (V2-A3).
+			if (
+				typeof transport === "string"
+					? server.auth_user_method !== "unix"
+					: server.auth_user_method !== "tls" ||
+						server.auth_user_name !== transport.identitySha256 ||
+						environment.certificate_fingerprint !== transport.serverCertificateSha256
+			)
+				throw new Error("unexpected caller or server");
 			if (
 				server.auth !== "trusted" ||
-				server.auth_user_method !== "unix" ||
 				server.api_version !== "1.0" ||
 				server.api_status !== "stable" ||
 				server.public !== false ||
@@ -3355,7 +3412,7 @@ export class LxdUnixClient
 				const request = httpRequest(
 					{
 						method: "GET",
-						socketPath: this.#socketPath,
+						...this.#target(checked),
 						signal: checked,
 						path: projectPath(
 							`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
@@ -3600,8 +3657,9 @@ export class LxdUnixClient
 		checked.addEventListener("abort", aborted, { once: true });
 		try {
 			for (const stream of [stdout, stderr, input]) {
-				const socket = await NodeWebSocket.connect(
-					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+				const socket = await this.#websocket(
+					envelope.operation,
+					stream.secret,
 					{
 						// A text message is the stream's end; LXD sends it once the command's side has closed.
 						message: () => {
@@ -3622,9 +3680,8 @@ export class LxdUnixClient
 							if (stream !== input && !stream.ended) fail(new Error("LXD exec stream ended before its output"));
 						},
 					},
-					EXEC_STREAM_CONNECT_MS,
 					// The deadline and the signal also stop a handshake LXD has not answered yet.
-					{ socketPath: this.#socketPath, signal: checked },
+					checked,
 				);
 				sockets.push(socket);
 				if (failure || checked.aborted) {
@@ -3741,8 +3798,9 @@ export class LxdUnixClient
 		const handshake = AbortSignal.any([signal, callEnd.signal]);
 		try {
 			for (const stream of streams) {
-				const socket = await NodeWebSocket.connect(
-					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+				const socket = await this.#websocket(
+					envelope.operation,
+					stream.secret,
 					{
 						// A text message is the stream's end; LXD sends it once the command's side has closed.
 						message: () => {
@@ -3767,9 +3825,8 @@ export class LxdUnixClient
 								fail(new Error("LXD exec pipe ended before its output"));
 						},
 					},
-					EXEC_STREAM_CONNECT_MS,
 					// The signal and the call's end also stop a handshake LXD has not answered yet.
-					{ socketPath: this.#socketPath, signal: handshake },
+					handshake,
 				);
 				sockets.push(socket);
 				if (failure || signal.aborted) {
@@ -3892,7 +3949,7 @@ export class LxdUnixClient
 				{
 					method,
 					path,
-					socketPath: this.#socketPath,
+					...this.#target(signal),
 					headers: payload ? { ...headers, "content-length": String(payload.byteLength) } : headers,
 					signal,
 				},

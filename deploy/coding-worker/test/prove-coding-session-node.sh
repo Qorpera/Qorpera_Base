@@ -58,9 +58,47 @@ modprobe br_netfilter
 grep -q '^br_netfilter ' /proc/modules || fail "the node has no br_netfilter: a machine's card cannot start"
 pass "the node's LXD has a pool and the coding image; qagent0 is up, with bridge netfilter"
 
-# The executor, as the service unit makes it: its own user in group lxd (LXD's socket is root:lxd).
-useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --groups lxd "$EXECUTOR"
-[[ $(stat -c %G /var/snap/lxd/common/lxd/unix.socket) == lxd ]] || fail "LXD's socket is not in group lxd"
+# LXD's loopback listener and its pin, as the node step sets them: a service reaches LXD only there, with a client
+# certificate of its own, never through the socket's group (V2-A1, V2-A2). The pin is the server certificate's SHA-256.
+lxc config set core.https_address 127.0.0.1:8443 </dev/null
+install -d -m 0755 -o root -g root /etc/qorpera-lxd-ids
+pin=$(openssl x509 -in /var/snap/lxd/common/lxd/server.crt -outform DER | sha256sum | awk '{print $1}')
+printf '{"schema":"qorpera.lxd-listener/v1","origin":"https://127.0.0.1:8443","certificateSha256":"%s"}\n' "$pin" \
+	>/etc/qorpera-lxd-ids/listener.json
+chmod 0644 /etc/qorpera-lxd-ids/listener.json
+# The server certificate's public key, for curl's pin (curl pins a key, not a certificate).
+key_pin=sha256//$(openssl x509 -in /var/snap/lxd/common/lxd/server.crt -pubkey -noout | openssl pkey -pubin -outform DER |
+	openssl dgst -sha256 -binary | base64)
+# An account's identity: its own key (root's, readable by the account's group alone) and certificate, which LXD
+# knows as a fine-grained identity in a group of its own, never as a legacy trusted certificate (V2-E3). The group's
+# server-wide grant is the proof's alone: the executor's is admin, since the code hosts' projects it makes at run time
+# get no grant of their own yet (a v2 item of its own), and the bridge's only reads. On a node, the node step's
+# enrollment grants each identity its rows of the access contract.
+enroll() {
+	local account=$1 grant=$2 folder=/etc/qorpera-lxd-ids/$1
+	install -d -m 0750 -o root -g "$account" "$folder"
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$account" \
+		-keyout "$folder/client.key" -out "$folder/client.crt" 2>/dev/null
+	chown root:"$account" "$folder/client.key"
+	chmod 0440 "$folder/client.key"
+	chmod 0444 "$folder/client.crt"
+	lxc auth group create "p3-$account" </dev/null >/dev/null
+	lxc auth group permission add "p3-$account" server "$grant" </dev/null >/dev/null
+	lxc auth identity create "tls/$account" "$folder/client.crt" --group "p3-$account" </dev/null >/dev/null
+}
+# What LXD answers an account on the listener, with that account's identity: "trusted" when it knows the account.
+lxd_auth() {
+	runuser -u "$1" -- curl -sS --max-time 5 --tlsv1.3 -k --pinnedpubkey "$key_pin" --cert "/etc/qorpera-lxd-ids/$1/client.crt" \
+		--key "/etc/qorpera-lxd-ids/$1/client.key" https://127.0.0.1:8443/1.0 | grep -oE '"auth":"[a-z]+"' || true
+}
+
+# The executor, as the service unit makes it: its own user, in no LXD group, with its own identity on the listener.
+useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$EXECUTOR"
+enroll "$EXECUTOR" admin
+[[ $(lxd_auth "$EXECUTOR") == '"auth":"trusted"' ]] || fail "LXD does not know the executor by its certificate"
+if runuser -u "$EXECUTOR" -- curl -sS --max-time 5 --unix-socket /var/snap/lxd/common/lxd/unix.socket http://lxd/1.0 >/dev/null 2>&1; then
+	fail "the executor's user reaches LXD's socket"
+fi
 install -d -m 0700 -o root -g root /etc/qorpera
 # The Git broker's sandbox needs unprivileged user namespaces, which Ubuntu's AppArmor restricts (as on the nodes,
 # whose installer clears the restriction): cleared here inside the throwaway node only.
@@ -71,7 +109,7 @@ if ! runuser -u "$EXECUTOR" -- bwrap --unshare-all --ro-bind / / true 2>/dev/nul
 	fi
 	runuser -u "$EXECUTOR" -- bwrap --unshare-all --ro-bind / / true || fail "bubblewrap cannot sandbox as $EXECUTOR"
 fi
-pass "the executor's user reaches LXD and its Git sandbox works"
+pass "the executor's user reaches LXD by its own certificate on the loopback listener, not the socket, and its Git sandbox works"
 
 # The custody NAS: the node exports a folder to itself over NFSv4.2 and mounts it the way a node mounts its NAS.
 install -d -m 0755 /srv/nas
@@ -137,6 +175,9 @@ if [[ -d $PUSH/folder ]]; then
 	# The service, the bridge and the guest agent run /usr/bin/node.
 	[[ -x /usr/bin/node ]] || install -m 0755 /usr/local/bin/node /usr/bin/node
 	bash "$PUSH/folder/service/install-folder-service.sh" >/dev/null || fail "install-folder-service.sh failed"
+	# The bridge asks LXD which machine has a CID with its own identity on the listener (the installer made its account).
+	enroll qorpera-folder-bridge viewer
+	[[ $(lxd_auth qorpera-folder-bridge) == '"auth":"trusted"' ]] || fail "LXD does not know the folder bridge by its certificate"
 	(
 		cd /etc/p3-github
 		openssl req -newkey rsa:2048 -nodes -subj "/CN=p3-supabase.test" -keyout supabase.key -out supabase.csr 2>/dev/null

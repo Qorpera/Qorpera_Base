@@ -39,12 +39,17 @@ test("Azure pilot LXD bootstrap pins the existing VM and network boundary", asyn
 	assert.match(source, /dpkg-query --show --showformat='\$\{Version\}' zfsutils-linux/);
 	assert.match(source, /apt-mark hold nodejs zfsutils-linux/);
 	assert.match(source, /snap refresh --hold=forever lxd/);
-	assert.match(source, /lxc config unset core\.https_address/);
+	// The loopback listener for the services' own certificates stays; any other address refuses the host.
+	assert.doesNotMatch(source, /core\.https_address \S+:|config (set|unset) core\.https_address/);
+	assert.match(source, /loopback_listener='\^\(\(127\\\.0\\\.0\\\.1\|\\\[::1\\\]\):\[1-9\]\[0-9\]\{0,4\}\)\?\$'/);
+	assert.match(source, /\[\[ ! \$\(lxc config get core\.https_address\) =~ \$\{loopback_listener\} \]\]/);
+	assert.doesNotMatch(source, /usermod -aG lxd/);
+	assert.match(source, /if \[\[ -n \$\(getent group lxd \| cut -d: -f4\) \]\]; then/);
 	assert.match(source, /security\.mac_filtering=true/);
 	assert.match(source, /security\.ipv4_filtering=true/);
 	assert.match(source, /security\.ipv6_filtering=true/);
 	assert.match(source, /security\.port_isolation=true/);
 	assert.match(source, /boot\.mode=uefi-secureboot/);
 	assert.match(source, /security\.devlxd=false/);
-	assert.match(source, /\(\^\|:\)\(8443\)\$/);
+	assert.match(source, /\$4 ~ \/:8443\$\/ && \$4 !~ \/\^\(127\\\.0\\\.0\\\.1\|\\\[::1\\\]\):8443\$\//);
 });

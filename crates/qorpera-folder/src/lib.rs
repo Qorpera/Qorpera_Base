@@ -12,6 +12,7 @@ pub mod index;
 pub mod link;
 pub mod local;
 pub mod lxd;
+pub mod lxd_https;
 pub mod mount;
 pub mod peers;
 pub mod proto;

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCodingHostWatchdog } from "../../packages/runner-orchestrator/src/coding-host-lease.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
+import { readLxdHttpsAccess } from "../../packages/runner-orchestrator/src/lxd-https.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 
@@ -33,8 +34,9 @@ export async function runCodingHostWatchdogMain(environment: NodeJS.ProcessEnv =
 	if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.()) throw new Error("UNPRIVILEGED_LINUX_REQUIRED");
 	if (!environment.CREDENTIALS_DIRECTORY) throw new Error("CODING_CREDENTIALS_REQUIRED");
 	const project = codingHostWatchdogProject(JSON.parse(await readCodingServiceCredential(environment.CREDENTIALS_DIRECTORY, "qorpera-coding-executor-config")));
-	// Each stop waits at most 30 seconds for LXD, the pass 45: the unit gives it 60.
-	const outcomes = await runCodingHostWatchdog({ client: new LxdUnixClient(undefined, 30), project, signal: AbortSignal.timeout(45_000) });
+	// Each stop waits at most 30 seconds for LXD, the pass 45: the unit gives it 60. LXD knows this account by the
+	// executor's own client certificate on its loopback listener, not by the socket's group (V2-D1).
+	const outcomes = await runCodingHostWatchdog({ client: new LxdUnixClient(await readLxdHttpsAccess(), 30), project, signal: AbortSignal.timeout(45_000) });
 	for (const outcome of outcomes)
 		console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-host-watchdog-error" : "coding-host-watchdog", ...outcome }));
 	return outcomes.some((outcome) => outcome.state === "failed") ? 1 : 0;
