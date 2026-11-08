@@ -1265,13 +1265,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
-			const sha = await resolveCloudCodingBase(claim.repository, {
-				journalRoot: root,
-				signal,
-				assertAuthorized: authorize,
-				withRepositoryToken: this.#repositoryToken(claim),
-				runGit: this.#options.runGit,
-			});
+			const sha =
+				claim.repository.host === "qorpera"
+					? await this.#startRepository(claim, authorize, signal)
+					: await resolveCloudCodingBase(claim.repository, {
+							journalRoot: root,
+							signal,
+							assertAuthorized: authorize,
+							withRepositoryToken: this.#repositoryToken(claim),
+							runGit: this.#options.runGit,
+						});
 			await publish(
 				root,
 				baseName,
@@ -1289,6 +1292,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		)
 			throw new Error("CODING_HOST_BASE_CHANGED");
 		return { root, baseSha };
+	}
+	/** The base of a session on a repository kept in Qorpera (own code storage, slice 1): the repository made empty when
+	 * it is not there yet, by the company's code host, and its default branch's commit. Only the folder model with code
+	 * hosts keeps repositories; without them the turn fails before the model runs, saying so. No token is asked for. */
+	async #startRepository(
+		claim: CodingSessionClaim,
+		authorize: () => Promise<void>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const repositories = this.#options.folder?.repositories;
+		if (!repositories?.start)
+			throw new CodingWorkspaceFailed(
+				"CODING_REPOSITORY_NOT_HERE",
+				"This coding service keeps no repositories in the company folder, so the session could not start. Nothing was changed.",
+			);
+		return (await repositories.start({ claim, assertAuthorized: () => authorize() }, signal)).baseSha;
 	}
 	/** A turn on the folder model (5g-6a): the machine runs and its LXD agent answers, the session's repositories are
 	 * made ready in the company folder and published there, and then the session is attached in SQL and its view mounted
@@ -1807,6 +1826,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const root = await this.#directory("git"),
 			token = this.#repositoryToken(claim);
 		const folder = this.#options.folder;
+		// Only the folder model keeps repositories in Qorpera (its base came from the code host): never a push to GitHub.
+		if (claim.repository.host === "qorpera" && !(folder && ready.folder))
+			throw new Error("CODING_REPOSITORY_NOT_HERE");
 		let bundle: Buffer;
 		if (folder && ready.folder) {
 			// What the machine's views have pending is saved first: the export reads the session's work from the folder, so
@@ -1845,6 +1867,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (refusal) throw new CodingSaveRefused(refusal === "unchecked");
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
+			// A repository kept in Qorpera (own code storage, slice 1): the commit lands on its default branch in the
+			// company folder. Nothing is pushed, no token is asked for, and there is no pull request. What the session
+			// saved was checked for its secret values by the folder's save check above.
+			if (claim.repository.host === "qorpera") {
+				const repositories = folder.repositories;
+				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
+				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
+				const landed = await repositories.land(
+					this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
+					submission.headSha,
+					signal,
+				);
+				return { pullRequest: null, noChange: false, landed };
+			}
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(
 				this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
 				submission.headSha,

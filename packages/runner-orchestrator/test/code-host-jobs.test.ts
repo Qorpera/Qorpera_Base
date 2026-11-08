@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	addCodeWorktree,
 	CODE_AREA_CONFIG,
+	CODE_AREA_IN_QORPERA_REF,
 	type CodeCommitSource,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
@@ -17,8 +18,10 @@ import {
 	collectCodeGarbage,
 	exportCodeBranch,
 	inspectCodeArea,
+	landCodeBranch,
 	readCodeAreaBase,
 	seedCodeArea,
+	startCodeArea,
 	withCodeCommit,
 } from "../src/code-host-jobs.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
@@ -825,5 +828,154 @@ describe("code host companies", () => {
 		expect(named(b.log, `${join(f.root, "a")}/`)).toBe(false);
 		expect(named(a.log, a.companyRoot)).toBe(true);
 		expect(named(b.log, b.companyRoot)).toBe(true);
+	});
+});
+
+describe("code host: a repository kept in Qorpera (own code storage, slice 1)", () => {
+	const kept = { host: "qorpera" as const, owner: "qorpera", name: "example", baseBranch: "main" };
+	/** A session's worktree on the kept repository, and a commit there. */
+	async function session(
+		f: Awaited<ReturnType<typeof fixture>>,
+		c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>,
+		baseSha: string,
+	) {
+		const workerId = randomUUID();
+		await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
+		const tree = join(c.code, "worktrees", workerId);
+		const commit = async (files: Record<string, string>, message = "change") => {
+			for (const [path, content] of Object.entries(files)) {
+				await mkdir(dirname(join(tree, path)), { recursive: true });
+				await writeFile(join(tree, path), content);
+			}
+			await f.git(tree, "add", "--all");
+			await f.git(tree, "commit", "--quiet", "-m", message);
+			return f.git(tree, "rev-parse", "HEAD");
+		};
+		return { workerId, tree, commit };
+	}
+
+	it("starts empty: one commit of no files on the default branch, its mark, and main/ at it; again, the same", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const started = await startCodeArea(c.job, { repository: kept });
+		expect(started.state).toBe("started");
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(started.baseSha);
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", CODE_AREA_IN_QORPERA_REF)).toBe(started.baseSha);
+		expect(await f.git(c.repo, "--git-dir=.", "ls-tree", started.baseSha)).toBe("");
+		expect(await f.git(c.repo, "--git-dir=.", "log", "-1", "--format=%an <%ae> %s", started.baseSha)).toBe(
+			"Qorpera <code@qorpera.com> Start example",
+		);
+		expect(await readFile(join(c.repo, "config"), "utf8")).toBe(CODE_AREA_CONFIG);
+		expect(await readdir(join(c.code, "main"))).toEqual([".git"]);
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${started.baseSha}\n`);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expect(await startCodeArea(c.job, { repository: kept })).toEqual({
+			state: "present",
+			baseSha: started.baseSha,
+			restored: [],
+		});
+		// One default branch: another branch of the same repository is no repository kept in Qorpera, so it never resets
+		// main/ to an empty start (review 1544 r1 F2).
+		await expect(startCodeArea(c.job, { repository: { ...kept, baseBranch: "master" } })).rejects.toThrow(
+			"INVALID_CODING_REPOSITORY",
+		);
+		expect(await f.git(c.repo, "--git-dir=.", "for-each-ref", "--format=%(refname)", "refs/heads")).toBe(
+			"refs/heads/main",
+		);
+		// main/ lost (a start or landing stopped between the branch and main/): put back at the branch.
+		await rm(join(c.code, "main"), { recursive: true });
+		await rm(join(c.repo, "worktrees/main"), { recursive: true });
+		expect((await startCodeArea(c.job, { repository: kept })).baseSha).toBe(started.baseSha);
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${started.baseSha}\n`);
+	});
+
+	it("never holds a GitHub copy and a repository kept in Qorpera in one code area", async () => {
+		const f = await fixture(),
+			github = await f.company("github"),
+			own = await f.company("own");
+		await seedCodeArea(github.job, {
+			repository: f.repository,
+			baseSha: f.baseSha,
+			bundle: await f.bundle("refs/heads/main"),
+		});
+		await expect(startCodeArea(github.job, { repository: kept })).rejects.toMatchObject({
+			code: "CODE_HOST_AREA_FROM_GITHUB",
+		});
+		await startCodeArea(own.job, { repository: kept });
+		await expect(
+			seedCodeArea(own.job, {
+				repository: f.repository,
+				baseSha: f.baseSha,
+				bundle: await f.bundle("refs/heads/main"),
+			}),
+		).rejects.toMatchObject({ code: "CODE_HOST_AREA_IN_QORPERA" });
+		// The jobs of one kind refuse the other kind's repository outright.
+		await expect(startCodeArea(own.job, { repository: f.repository })).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		await expect(
+			seedCodeArea(own.job, { repository: kept, baseSha: f.baseSha, bundle: await f.bundle("refs/heads/main") }),
+		).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		await expect(
+			landCodeBranch(github.job, { repository: f.repository, workerId: randomUUID(), headSha: f.baseSha }),
+		).rejects.toThrow("INVALID_CODE_HOST_JOB");
+	});
+
+	it("lands a session's work: a fast-forward, a merge when main moved on, unchanged again, and a conflict lands nothing", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha),
+			second = await session(f, c, baseSha),
+			third = await session(f, c, baseSha);
+		const one = await first.commit({ "index.html": "<p>shop</p>\n" }, "shop");
+		expect(await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: one })).toEqual({
+			state: "fast-forward",
+			mainSha: one,
+			restored: [],
+		});
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
+		// Landing the same commit again changes nothing.
+		expect((await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: one })).state).toBe(
+			"unchanged",
+		);
+		// A session that began before the first landed: its other file is merged with main.
+		const two = await second.commit({ "cart.js": "export const cart = [];\n" }, "cart");
+		const merged = await landCodeBranch(c.job, { repository: kept, workerId: second.workerId, headSha: two });
+		expect(merged.state).toBe("merged");
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(merged.mainSha);
+		expect(await f.git(c.repo, "--git-dir=.", "log", "-1", "--format=%P %an", merged.mainSha)).toBe(
+			`${one} ${two} Qorpera`,
+		);
+		expect((await readdir(join(c.code, "main"))).sort()).toEqual([".git", "cart.js", "index.html"]);
+		// A session that changed the same file another way: refused with its path, and main stays.
+		const three = await third.commit({ "index.html": "<p>store</p>\n" }, "store");
+		await expect(
+			landCodeBranch(c.job, { repository: kept, workerId: third.workerId, headSha: three }),
+		).rejects.toMatchObject({ code: "CODE_HOST_LAND_CONFLICT", paths: ["index.html"] });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(merged.mainSha);
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
+		// The session merges main itself, and its next landing is a fast-forward.
+		await f.git(third.tree, "merge", "--quiet", "-X", "theirs", "-m", "merge main", "main").catch(() => undefined);
+		const resolved = await third.commit({ "index.html": "<p>store</p>\n" }, "resolve");
+		expect(
+			(await landCodeBranch(c.job, { repository: kept, workerId: third.workerId, headSha: resolved })).state,
+		).toBe("fast-forward");
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>store</p>\n");
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("refuses a commit its session's branch does not hold, and a code area that was never started", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		await expect(
+			landCodeBranch(c.job, { repository: kept, workerId: randomUUID(), headSha: f.baseSha }),
+		).rejects.toMatchObject({ code: "CODE_HOST_NOT_SEEDED" });
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const a = await session(f, c, baseSha),
+			b = await session(f, c, baseSha);
+		const theirs = await b.commit({ "b.txt": "b\n" });
+		await expect(
+			landCodeBranch(c.job, { repository: kept, workerId: a.workerId, headSha: theirs }),
+		).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_MOVED" });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
 	});
 });

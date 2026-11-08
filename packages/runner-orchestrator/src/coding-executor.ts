@@ -46,6 +46,16 @@ export class CodingMachineUnavailable extends Error {
  * time, or its node is not set up for the machine. The turn's model never ran: the turn fails at once, under its lease,
  * with `summary` (what happened, in the member's and the agent's words, and the code), instead of leaving its lease to
  * lapse as if the executor had stopped. The message is the fixed code alone, which is all a log shows. */
+/** A landing that conflicts with the default branch of a repository kept in Qorpera: nothing landed, and the session
+ * merges the default branch itself (own code storage, slice 1). */
+export class CodingLandConflict extends Error {
+	readonly paths: readonly string[];
+	constructor(paths: readonly string[]) {
+		super("CODING_LAND_CONFLICT");
+		this.name = "CodingLandConflict";
+		this.paths = Object.freeze([...paths]);
+	}
+}
 export class CodingWorkspaceFailed extends Error {
 	readonly summary: string;
 	constructor(code: string, summary: string, options?: ErrorOptions) {
@@ -136,6 +146,15 @@ const GIT_WAY_OUT =
 /** The reasons a publication held by a refused save fails its turn with: what to change, never the value or the path. */
 const SAVE_REFUSAL = `The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and \`git add\` them) or the message, ${GIT_WAY_OUT}, then commit again.`;
 const SAVE_UNCHECKED = `The save was refused: a file this session wrote in the company folder could not be checked for the session's secret values. It was not saved, and nothing was published. If it is in a git repository's storage, ${GIT_WAY_OUT}, then commit and finish again. Otherwise remove the file or make it smaller, and finish again. If nothing needs changing, finish again: the check may have been busy.`;
+/** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
+export function landConflict(baseBranch: string, paths: readonly string[]): string {
+	const shown = paths.slice(0, 20).map((path) => JSON.stringify(path));
+	const more = paths.length > shown.length ? ` and ${paths.length - shown.length} more` : "";
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${shown.length ? `, in ${shown.join(", ")}${more}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+}
+/** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
+export const PUBLICATION_UNFINISHED =
+	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -221,6 +240,9 @@ export interface CodingExecutorPublication {
 	readonly pullRequest: CloudCodingPullRequest | null;
 	/** True only after a trusted comparison against the pinned original head. */
 	readonly noChange: boolean;
+	/** A repository kept in Qorpera (own code storage, slice 1): where the submitted commit landed on its default
+	 * branch. It has no pull request. */
+	readonly landed?: { readonly state: "fast-forward" | "merged" | "unchanged"; readonly mainSha: string };
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -419,7 +441,7 @@ export class CloudCodingExecutor {
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
-	readonly #report: ((stage: "turn" | "stop" | "defer", error: unknown) => void) | undefined;
+	readonly #report: ((stage: "turn" | "stop" | "defer" | "publish", error: unknown) => void) | undefined;
 	readonly #turns = new Set<Promise<CodingTurnOutcome>>();
 	constructor(options: {
 		control: CodingExecutorControl;
@@ -428,7 +450,7 @@ export class CloudCodingExecutor {
 		turnPollMs?: number;
 		/** Observability only: which stage failed and with what error, before
 		 * recovery. Never decides anything; the kernel receipts do. */
-		report?: (stage: "turn" | "stop" | "defer", error: unknown) => void;
+		report?: (stage: "turn" | "stop" | "defer" | "publish", error: unknown) => void;
 	}) {
 		if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner)) throw new Error("Invalid coding executor owner");
 		this.#control = options.control;
@@ -438,7 +460,7 @@ export class CloudCodingExecutor {
 		this.#report = options.report;
 	}
 	/** Observability must never change the outcome: a throwing reporter is ignored. */
-	#reported(stage: "turn" | "stop" | "defer", error: unknown): void {
+	#reported(stage: "turn" | "stop" | "defer" | "publish", error: unknown): void {
 		try {
 			this.#report?.(stage, error);
 		} catch {
@@ -704,26 +726,54 @@ export class CloudCodingExecutor {
 				try {
 					publication = await this.#host.publish(claimed, submission, active);
 				} catch (error) {
-					if (!(error instanceof CodingPushRefused || error instanceof CodingSaveRefused) || active.aborted)
-						throw error;
-					// Nothing went out, and the same work would be refused again (but for a check the node was too busy for):
-					// the turn fails with what to change, and the session's next turn can finish again.
+					if (active.aborted) throw error;
 					end();
-					await complete(
-						"failed",
-						error instanceof CodingSaveRefused
-							? error.unchecked
-								? SAVE_UNCHECKED
-								: SAVE_REFUSAL
-							: pushRefusal(error),
-					);
+					if (error instanceof CodingLandConflict) {
+						// Nothing landed: the session merges the default branch itself and finishes again.
+						await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+						return "failed";
+					}
+					if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
+						// Nothing went out, and the same work would be refused again (but for a check the node was too busy
+						// for): the turn fails with what to change, and the session's next turn can finish again.
+						await complete(
+							"failed",
+							error instanceof CodingSaveRefused
+								? error.unchecked
+									? SAVE_UNCHECKED
+									: SAVE_REFUSAL
+								: pushRefusal(error),
+						);
+						return "failed";
+					}
+					// Any other publication failure while the turn still holds its lease (8 Nov 2026, session 27038e92: a
+					// push GitHub had not shown yet) fails the turn now, saying so, instead of leaving the lease to lapse
+					// as "the executor stopped responding". The work stays on the session's branch, and every publication
+					// step checks what an earlier one did, so a later finish hands the same commit in again.
+					this.#reported("publish", error);
+					await complete("failed", PUBLICATION_UNFINISHED);
 					return "failed";
 				}
-				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");
+				if (!publication.pullRequest && !publication.noChange && !publication.landed)
+					throw new Error("Coding publication unconfirmed");
 				end();
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
+					// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
+					...(publication.landed
+						? {
+								p_artifacts: [
+									{
+										kind: "landed",
+										state: publication.landed.state,
+										branch: claimed.repository.baseBranch,
+										headSha: submission.headSha,
+										mainSha: publication.landed.mainSha,
+									},
+								],
+							}
+						: {}),
 				});
 				return "completed";
 			}

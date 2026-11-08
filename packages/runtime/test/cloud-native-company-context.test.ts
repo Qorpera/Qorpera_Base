@@ -330,7 +330,7 @@ it.each([
 		"# Standing work",
 		"When a routine wakes you for your own work",
 		"When a member stopped your work, it stays stopped",
-		"A coding session cannot push, open a pull request or send messages itself",
+		"A coding session cannot push, merge, open a pull request or send messages itself",
 		"# Writing to people",
 	])
 		expect(instructions.includes(staff)).toBe(continues);
@@ -1526,7 +1526,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "00d853143f23be6d08cd6c05a17a5fe83263e08bc815c903e28adbd6033ce38d",
+			instructions: "2c850b42c55559042e945cc71fec99152c497b48fbcfa56bb958bc90b402340a",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1542,7 +1542,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "00d853143f23be6d08cd6c05a17a5fe83263e08bc815c903e28adbd6033ce38d",
+			instructions: "2c850b42c55559042e945cc71fec99152c497b48fbcfa56bb958bc90b402340a",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1719,7 +1719,10 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"It is the only work that needs a repository, and its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
 		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.
-		"A coding session cannot push, open a pull request or send messages itself: when a member asks to push, open a PR or report its link, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked; the system then pushes the branch, opens the draft PR and brings you its link.",
+		"A coding session cannot push, merge, open a pull request or send messages itself: when a member asks for any of that, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked;",
+		// Own code storage, slice 1 (8 Nov 2026): the company's code is kept in Qorpera, and members hear outcomes only.
+		"Keep the company's code in Qorpera: start a new repository there yourself, without asking anyone, unless the code already lives on GitHub.",
+		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
 		// The 2026-10-22 amendment, items 5 and 6 (Jonas, 22 October): a conversation is the members' quick way in and

@@ -40,6 +40,25 @@ export interface CodingFolderRepositories {
 	/** The bundle of the session's work from its base to `headSha`, or null when there is none. It may reject with
 	 * CODE_HOST_EXPORT_DIFFERS when the worktree's head is not `headSha`. */
 	export(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<Buffer | null>;
+	/** A repository kept in Qorpera (host `qorpera`, own code storage slice 1): made empty when it is not there yet, and
+	 * its default branch's commit, which a session's first turn pins as its base. Absent: no repository is kept here. */
+	start?(session: CodingFolderStart, signal: AbortSignal): Promise<{ baseSha: string }>;
+	/** The session's submitted commit landed on the default branch of a repository kept in Qorpera. Rejects with
+	 * CodingLandConflict (coding-executor.ts) when it conflicts with the default branch. */
+	land?(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingLanded>;
+}
+
+/** What a start needs: the claim, and its run authority (no base yet, no worktree, no token). */
+export interface CodingFolderStart {
+	readonly claim: CodingSessionClaim;
+	assertAuthorized(signal: AbortSignal): Promise<void>;
+}
+
+/** Where a session's work landed in a repository kept in Qorpera. */
+export interface CodingLanded {
+	readonly state: "fast-forward" | "merged" | "unchanged";
+	/** The default branch's commit after the landing. */
+	readonly mainSha: string;
 }
 
 /** Where a coding machine mounts its session's view of the company folder, and where the session's commands start
