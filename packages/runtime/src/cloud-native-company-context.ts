@@ -762,13 +762,18 @@ export async function composeCloudRoomRequest(
 	return [{ input, ...(question ? { question } : {}) }];
 }
 
-/** The continuation as the run is shown it: up to two pages, its context's first 16 KiB and the next page read as
- * read_context reads one, alongside the run's other start reads (perf sprint T7, 8 Nov 2026). The protocol has a run read
- * the whole continuation before anything else (delivery.beforeWork read_continuation), and runs do: from 7 Nov 11:30Z to
- * 23:21Z, 47 runs paged one past 16 KiB with read_context, all as their first act, 105 model rounds of about 4.2 s.
- * The text is the source's own, from offset 0, so read_context reads on from the nextOffset shown, as from any page. A
- * page that cannot be read, or that does not join to the source by its length and hash, leaves the context's excerpt;
- * it never fails the run. Nothing is read for a continuation the context already shows whole. */
+/** The most of its continuation a run is shown at its start: the context's excerpt and the pages after it. */
+const CONTINUATION_SHOWN_BYTES = 32 * 1024;
+
+/** The continuation as the run is shown it: up to 32 KiB, the context's excerpt (4 KiB, or 16 KiB under 20260930617000)
+ * and the pages after it read as read_context reads them, alongside the run's other start reads (perf sprint T7, 8 Nov
+ * 2026). The protocol has a run read the whole continuation before anything else (delivery.beforeWork
+ * read_continuation), and runs do: from 7 Nov 11:30Z to 23:21Z, 47 runs paged one past 16 KiB with read_context, all as
+ * their first act, 105 model rounds of about 4.2 s. The text is the source's own, from offset 0, so read_context reads
+ * on from the nextOffset shown, as from any page, and the composer cuts webhook signing secrets out of it as the tool
+ * boundary cuts them out of a page. A page that cannot be read, or a whole text that does not join to the source by its
+ * length and hash, leaves the context's excerpt; it never fails the run. Nothing is read for a continuation the context
+ * already shows whole. */
 export async function composeCloudContinuation(
 	context: CloudNativeCompanyContext,
 	control: CloudCompanyPathControl,
@@ -777,17 +782,20 @@ export async function composeCloudContinuation(
 ): Promise<CloudCompanyContextSource | null> {
 	const shown = context.continuation;
 	if (!shown || shown.content.nextOffset === null) return shown;
+	let text = shown.content.text;
+	let nextOffset: number | null = shown.content.nextOffset;
 	try {
-		const page = await readCloudContextPage(
-			control,
-			binding,
-			shown,
-			shown.content.nextOffset,
-			REQUEST_PAGE_BYTES,
-			signal,
-		);
-		const text = shown.content.text + page.content.text;
-		const nextOffset = page.content.nextOffset;
+		// A page holds text (the parser refuses an empty one that goes on), so each read moves on; the database reads 4
+		// bytes at least.
+		for (
+			let limit = Math.min(REQUEST_PAGE_BYTES, CONTINUATION_SHOWN_BYTES - Buffer.byteLength(text));
+			nextOffset !== null && limit >= 4;
+			limit = Math.min(REQUEST_PAGE_BYTES, CONTINUATION_SHOWN_BYTES - Buffer.byteLength(text))
+		) {
+			const page = await readCloudContextPage(control, binding, shown, nextOffset, limit, signal);
+			text += page.content.text;
+			nextOffset = page.content.nextOffset;
+		}
 		if (
 			nextOffset === null &&
 			(Buffer.byteLength(text) !== shown.content.originalBytes ||

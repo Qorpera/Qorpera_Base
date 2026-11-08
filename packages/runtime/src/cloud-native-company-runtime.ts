@@ -362,7 +362,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
 			roomRequest.catch(() => undefined);
-			// A continuation past the context's 16 KiB is shown to 32 KiB, its next page read alongside the reads below, as
+			// A continuation past the context's excerpt is shown to 32 KiB, the pages after it read alongside the reads below, as
 			// the run would read it first (perf sprint T7). It never fails the run.
 			const continuationShown = composeCloudContinuation(context, this.#paths, binding, signal);
 			continuationShown.catch(() => undefined);

@@ -827,7 +827,13 @@ it.each([true, false])(
 	"starts a run with its continuation shown to 32 KiB, read before the model starts and in its context hash (perf T7; page read: %s)",
 	async (readable) => {
 		const f = await fixture("company-silent");
-		const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "c".repeat(25000) });
+		// The second page holds a value shaped like a webhook signing secret (made up: never a real one), which the run
+		// would have read cut, as a read_context page.
+		const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+		const text = JSON.stringify({
+			schema: "qorpera.worker-completion-continuation/v1",
+			results: `${"c".repeat(20000)} STRIPE_WEBHOOK_SECRET=${fake} ${"d".repeat(5000)}`,
+		});
 		const whole = f.source("continuation", f.binding.runId, text);
 		const excerpt = {
 			...whole,
@@ -854,11 +860,15 @@ it.each([true, false])(
 		} finally {
 			error.mockRestore();
 		}
-		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const raw = await readFile(f.evidence, "utf8");
+		expect(raw).not.toContain(fake);
+		const evidence = JSON.parse(raw);
 		const promptText: string = evidence.turnParameters.input[0].text;
-		// Two pages hold it whole: the run is shown all of it at once. A page that cannot be read leaves the context's
-		// excerpt, which read_context reads on from, and the run goes on.
-		expect(JSON.parse(promptText).continuation).toEqual(readable ? whole : excerpt);
+		// Two pages hold it whole: the run is shown all of it at once, with the secret cut out as a page has it, and the
+		// whole text's handle. A page that cannot be read leaves the context's excerpt, which read_context reads on from,
+		// and the run goes on.
+		const cut = { ...whole, content: { ...whole.content, text: text.replace(fake, "whsec_[REDACTED]") } };
+		expect(JSON.parse(promptText).continuation).toEqual(readable ? cut : excerpt);
 		const methods = f.pathCall.mock.calls.map(([method]) => method);
 		expect(methods.filter((method) => method === "qorpera_read_company_run_context")).toHaveLength(1);
 		expect(methods.indexOf("qorpera_read_company_run_context")).toBeLessThan(

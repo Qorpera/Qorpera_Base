@@ -2151,6 +2151,8 @@ it("keeps the context's continuation excerpt when its next page cannot be read o
 	await expect(composeCloudContinuation(context, { call: hanging }, f.binding, aborted.signal)).rejects.toThrow(
 		"run cancelled",
 	);
+});
+
 /** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
 const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
 
@@ -2246,3 +2248,33 @@ it.each(["currentInputs", "history", "request", "job", "jobSpecification", "cont
 		}
 	},
 );
+
+it("fills a continuation from a 4 KiB excerpt to 32 KiB in two reads, and cuts a secret out of a page it read (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	// Under 20260930657100 the context shows 4 KiB; the second page here holds a made-up secret.
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [{ outputTail: `${"e".repeat(9000)} STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET} ${"g".repeat(30000)}` }],
+	});
+	f.context.continuation = continuationExcerpt(f, text, 4096);
+	f.context.initialAcknowledgementSatisfied = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	// Two reads, as read_context would make them, up to 32 KiB in all and never past it.
+	expect(call.mock.calls.map(([, args]) => [args.p_offset, args.p_limit])).toEqual([
+		[4096, 16384],
+		[20480, 12288],
+	]);
+	expect(shown?.content).toMatchObject({ text: text.slice(0, 32768), offset: 0, nextOffset: 32768, truncated: true });
+	// What the model sees: the page's secret cut out, as a read_context page has it, and the source's own handle.
+	const promptText = composeCloudNativeCompanyPrompt({ ...context, continuation: shown });
+	expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+	const prompt = JSON.parse(promptText);
+	expect(prompt.continuation.content).toEqual({
+		...shown?.content,
+		text: text.slice(0, 32768).replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"),
+	});
+});
