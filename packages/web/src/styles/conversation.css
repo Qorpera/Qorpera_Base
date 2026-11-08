@@ -1023,6 +1023,8 @@ a.side-panel-button:hover { text-decoration: none; }
 		border-bottom: 1px solid var(--border); background: var(--sidebar-surface); box-shadow: 0 18px 40px rgb(18 18 17 / 14%);
 	}
 	.concepts.is-menu-open .concepts-panel { display: flex; }
+	/* The concept stays in the stage, under the menu, not over the page as a side panel is at this width. */
+	.side-panel.is-concept { position: relative; inset: auto; z-index: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
 /* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */

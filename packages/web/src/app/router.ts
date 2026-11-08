@@ -50,18 +50,12 @@ export function parseRoute(hash: string): Route {
 		const section = parts[2];
 		const id = parts[3];
 		if (!section) return { name: "company", profileId, section: "home" };
-		if (section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
-			return { name: "company", profileId, section: "interface", id };
-		}
-		// An app's folder name keeps the same rule as a page's (cloud-client isInterfaceName).
-		if (section === "a" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
-			return { name: "company", profileId, section: "app", id };
-		}
-		if (section === "concepts") {
-			if (id !== undefined && id.length <= 64 && INTERFACE_NAME.test(id))
-				return { name: "company", profileId, section: "concepts", id };
-			return { name: "company", profileId, section: "concepts" };
-		}
+		// A page's, an app's and a concept's names keep one rule (cloud-client isInterfaceName). This parse is in
+		// theme.js too (ui/boot.ts), whose size is pinned: keep it short.
+		const named = id !== undefined && id.length <= 64 && INTERFACE_NAME.test(id);
+		if (section === "i" && named) return { name: "company", profileId, section: "interface", id };
+		if (section === "a" && named) return { name: "company", profileId, section: "app", id };
+		if (section === "concepts") return { name: "company", profileId, section: "concepts", ...(named && { id }) };
 		if ((section === "chat" || section === "staff") && id) {
 			return { name: "company", profileId, section, id };
 		}

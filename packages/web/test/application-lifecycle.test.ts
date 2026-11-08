@@ -1262,7 +1262,7 @@ describe("account and route ownership", () => {
 		await draw();
 		const entry = f.root.querySelector<HTMLAnchorElement>(".rail .rail-apps-drawer a.rail-concepts");
 		expect(entry?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/concepts`);
-		expect(entry?.textContent).toBe("Concepts");
+		expect(entry?.querySelector(".rail-app-name")?.textContent).toBe("Concepts");
 		// The concepts have no icon of their own; the posted app that is no concept keeps its own.
 		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/shop-b"]`)).toBeNull();
 		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/sales-board"]`)).not.toBeNull();
