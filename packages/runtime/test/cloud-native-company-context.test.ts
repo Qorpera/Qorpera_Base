@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
+			instructions: "282ee612e86a47ca521435c6024ed3520e54ea98842d19fcad573b00d1e3e701",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1533,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "0fc30ec213e757e7cc6c8b5a86a54b30d589ec912c752fb77d9026c1961b9402",
+			instructions: "a9c26d70bc62824edd0468dfe2353a7d529f06072034141010b97447b5c6ff24",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
+			instructions: "282ee612e86a47ca521435c6024ed3520e54ea98842d19fcad573b00d1e3e701",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1602,14 +1602,15 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"As soon as the vision names a product, hire the people who build it",
 		"once the product is clear, add the people who build it",
 		"Write the product in the vision as the founders describe it, at their ambition",
-		"The first thing they show the founders is the vision realized as a prototype of the finished product, at its full ambition",
+		"The first thing they show the founders is concepts: the vision realized as the finished product, at its full ambition. This is vision alignment through concepts",
 	])
 		expect(cofounder).toContain(rule);
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"The first demos prototype the vision realized: the finished product at the founders' full ambition, never a sketch of early work",
+		"The first things the company shows the founders are concepts: the vision realized as the finished product at the founders' full ambition, never a sketch of early work. This is vision alignment through concepts",
+		"Call them concepts, never demos, in what you say and in an app's title, such as the product's name followed by \"concepts\"",
 		"how the founders check that the company understood them and how the idea's potential is put to the test",
-		"A demo or prototype shows the company's own product as its customers will use it",
+		"A concept, like any prototype of the product, shows the company's own product as its customers will use it",
 		"on the platform it will run on, such as a phone app or a desktop or web application, at the quality the product promises",
 		"(for 3D, rendering in Blender on a machine), never a diagram or a toy in its place",
 		"choose what a strong team in that field would use",
@@ -1669,9 +1670,9 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"A file they asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
 	);
-	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app beside the chat.
+	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app; since 8 November it opens as a page of its own.
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open beside the chat. Link it in your message as [Title](app:<name>) instead of pasting long text",
+		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open as a page of its own. Link it in your message as [Title](app:<name>) instead of pasting long text",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",
