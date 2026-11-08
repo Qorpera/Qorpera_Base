@@ -46,7 +46,7 @@ import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
-import { AppPanel, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
+import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -188,38 +188,43 @@ export function mountApplication(
 		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
-	/** Shows an app or a page beside the open chat; with none open, opens the app's owner's chat (or the Co-Founder's)
-	 * and shows it there. Again on what is shown already, it reads it again. */
+	/** Shows a Company File page beside the open chat. Again on what is shown already, it reads it again. */
 	function openSide(target: SidePanelTarget): void {
-		const controller = company;
-		if (!controller || !sidePanel) return;
-		if (conversation?.el.isConnected) {
-			const shown = conversation.beside;
-			if (shown instanceof AppPanel && sameTarget(shown.target, target)) {
-				void shown.reload(true);
-				shown.focus();
-				return;
-			}
-			conversation.showBeside(sidePanel(target));
+		if (!conversation?.el.isConnected || !sidePanel) return;
+		const shown = conversation.beside;
+		if (shown instanceof AppPanel && sameTarget(shown.target, target)) {
+			void shown.reload(true);
+			shown.focus();
 			return;
 		}
-		pendingSide = target;
-		const owner =
-			target.kind === "app" ? companyApps?.apps.find((app) => app.name === target.name)?.manifest?.owner : undefined;
-		const agent = owner ? controller.staffById(owner) : undefined;
-		navigate(
-			agent && agent.id !== controller.cofounderId()
-				? { name: "company", profileId: controller.profile.profileId, section: "staff", id: agent.id }
-				: { name: "company", profileId: controller.profile.profileId, section: "home" },
-		);
+		conversation.showBeside(sidePanel(target));
+	}
+	/** Opens an agent's app as a page of its own (`#/c/{id}/a/{name}`); on its own page already, it reads it again. */
+	function openApp(name: string): void {
+		const controller = company;
+		if (!controller) return;
+		const route = currentRoute();
+		if (
+			appPage &&
+			route.name === "company" &&
+			route.profileId === controller.profile.profileId &&
+			route.section === "app" &&
+			route.id === name
+		) {
+			void appPage.reload(true);
+			appPage.focus();
+			return;
+		}
+		navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: name });
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
-	// stays where it was below Settings. Storage answers the links in the documents it shows itself.
+	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
+	// card, in a message, on a wall or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
 			event.preventDefault();
-			openSide({ kind: "app", name: app.dataset.appName });
+			openApp(app.dataset.appName);
 			return;
 		}
 		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
@@ -227,8 +232,8 @@ export function mountApplication(
 		if (path === undefined || event.defaultPrevented) return;
 		event.preventDefault();
 		const fromConversation = conversation !== undefined && main.contains(link);
-		// An HTML page in an agent's message opens beside the chat, live, as an app does.
-		if (fromConversation && sidePanel && /\.html?$/i.test(path)) {
+		// An HTML page in an agent's message opens beside the chat, live.
+		if (fromConversation && conversation?.el.isConnected && sidePanel && /\.html?$/i.test(path)) {
 			openSide({ kind: "page", path });
 			return;
 		}
@@ -339,10 +344,12 @@ export function mountApplication(
 	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
 	 * the open company has now (it is made again when the company opens again). */
 	const wallListeners = new Set<() => void>();
-	/** Makes the side panel of an app or page for the open company: set while one is drawn. */
+	/** Makes the side panel of a Company File page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
-	/** An app or page asked for while no chat was open: shown beside the chat once it is. */
-	let pendingSide: SidePanelTarget | undefined;
+	/** The agent's app on its own page (`#/c/{id}/a/{name}`), while that route shows. */
+	let appPage: AppPanel | undefined;
+	/** The open company's last conversation, where an app's page leads back to. */
+	let appReturn: string | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
@@ -472,6 +479,8 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
+		appPage?.dispose();
+		appPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -492,7 +501,9 @@ export function mountApplication(
 		companyApps?.dispose();
 		companyApps = undefined;
 		sidePanel = undefined;
-		pendingSide = undefined;
+		appPage?.dispose();
+		appPage = undefined;
+		appReturn = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
@@ -919,39 +930,36 @@ export function mountApplication(
 				current,
 			).folder();
 		};
-		// An agent's app or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with the member's
-		// own folder client, under the company's checks.
+		// An agent's app on its page, or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with
+		// the member's own folder client, under the company's checks.
+		const panelHost = (beside: boolean): AppPanelHost => ({
+			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+			agents: () =>
+				controller.store
+					.get()
+					.staff.filter((agent) => agent.employmentStatus === "active")
+					.map((agent) => {
+						const now = controller.agentState(agent.id);
+						return {
+							name: agent.displayName,
+							role: agent.role,
+							working: now === "working" || now === "writing",
+						};
+					}),
+			readApps: () => companyApps?.read() ?? Promise.resolve([]),
+			apps: () => companyApps?.apps ?? [],
+			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
+			onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+			// Beside the chat, as a folder link in it: closing Storage gives the composer focus again.
+			openInStorage: (path) => {
+				const open = settings;
+				openSettings("storage", path);
+				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
+			},
+			budgetKey: controller.profile.profileId,
+		});
 		sidePanel = (target) =>
-			new AppPanel(
-				{
-					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
-					agents: () =>
-						controller.store
-							.get()
-							.staff.filter((agent) => agent.employmentStatus === "active")
-							.map((agent) => {
-								const now = controller.agentState(agent.id);
-								return {
-									name: agent.displayName,
-									role: agent.role,
-									working: now === "working" || now === "writing",
-								};
-							}),
-					readApps: () => companyApps?.read() ?? Promise.resolve([]),
-					apps: () => companyApps?.apps ?? [],
-					agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
-					onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
-					// As a folder link in the chat: closing Storage gives the composer focus again.
-					openInStorage: (path) => {
-						const open = settings;
-						openSettings("storage", path);
-						if (settings && settings !== open) settingsFromConversation = conversation !== undefined;
-					},
-					budgetKey: controller.profile.profileId,
-				},
-				target,
-				() => conversation?.closeBeside(true),
-			);
+			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
 		// The member's erases of single messages under a caller's checks (summary trees M3c).
 		const messageErases = (current: () => void) => {
 			current();
@@ -1082,6 +1090,8 @@ export function mountApplication(
 			closeSettings(false);
 			conversation?.dispose();
 			newConversation?.dispose();
+			appPage?.dispose();
+			appPage = undefined;
 			// Revoked access ends every retained screen connection, not only the shown one.
 			computerPanels?.dispose();
 			navigationOpen = false;
@@ -1232,7 +1242,7 @@ export function mountApplication(
 			offers.open();
 			pages.open();
 			void reader.open();
-			// The agents' apps, for the apps drawer and the panel beside the chat (RUNTIME-INTERFACE-APPS.md §4).
+			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
 			const apps = new CompanyApps(shared, (next) => {
 				if (companyApps !== apps) return;
 				controller.store.set({ apps: next });
@@ -1299,7 +1309,11 @@ export function mountApplication(
 		}
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
-		if (route.section !== "chat" && route.section !== "staff" && route.section !== "home") pendingSide = undefined;
+		if (route.section === "chat") appReturn = routeHash(route);
+		if (route.section !== "app" || (appPage && !sameTarget(appPage.target, { kind: "app", name: route.id ?? "" }))) {
+			appPage?.dispose();
+			appPage = undefined;
+		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1589,12 +1603,45 @@ export function mountApplication(
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
 					agentPage = undefined;
-				// An app asked for from the apps drawer while no chat was open: beside the chat it opened.
-				if (pendingSide && sidePanel) {
-					const target = pendingSide;
-					pendingSide = undefined;
-					conversation.showBeside(sidePanel(target));
+				return;
+			}
+			case "app": {
+				// An agent's app as a page of its own, in the frame the app's own folder fills (Jonas, 8 November 2026). It
+				// stays as it is through the company's redraws; its page follows the folder itself.
+				if (appPage && main.contains(appPage.el)) return;
+				const home = `#/c/${controller.profile.profileId}`;
+				// A deep link or a reload: the page waits for the company's first read, so its header names the agent that
+				// made it and the app's first `agents()` gets the whole roster (the staff read may land after the folder's).
+				if (state.loading) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
 				}
+				if (!companyApps) {
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", t("This can't be opened right now.")),
+							h("a", { href: home }, t("Back to the company")),
+						),
+					);
+					return;
+				}
+				appPage?.dispose();
+				appPage = new AppPanel(
+					panelHost(false),
+					{ kind: "app", name: route.id ?? "" },
+					{
+						kind: "page",
+						back: appReturn
+							? { href: appReturn, label: t("Back to the conversation") }
+							: { href: home, label: t("Back to the company") },
+					},
+				);
+				replace(main, appPage.el);
+				if (!frame.inert) appPage.focus();
 				return;
 			}
 			case "staff": {

@@ -30,7 +30,7 @@ import { type AgentState, type CompanyController, isAgentPairSession } from "../
 import type { CompanyApp } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
-import type { Route } from "../router.ts";
+import { appHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -904,7 +904,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
-		if (section === "interface" && !parts.appsOpen) setAppsOpen(parts, profileId, true);
+		if ((section === "interface" || section === "app") && !parts.appsOpen) setAppsOpen(parts, profileId, true);
 	}
 	const appsOpen = hasApps && parts.appsOpen;
 	parts.apps.hidden = !hasApps;
@@ -1349,16 +1349,20 @@ function drawInterfaces(
 		else element.removeAttribute("aria-current");
 		return element;
 	});
-	// An agent's app opens beside the chat (app/application.ts answers its data-app-name), not as a page of its own.
+	// An agent's app opens as a page of its own, `#/c/{id}/a/{name}`, as the pages do.
+	const activeApp = route.name === "company" && route.section === "app" ? route.id : undefined;
 	for (const app of apps) {
 		const manifest = app.manifest;
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
 		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, manifest.colour]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : agentAppIcon(app.name, manifest);
+		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
 		element.style.setProperty("--i", String(elements.length));
+		element.classList.toggle("active", app.name === activeApp);
+		if (app.name === activeApp) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
 		elements.push(element);
 	}
 	parts.interfaceRows = rows;
@@ -1399,14 +1403,14 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 	);
 }
 
-/** An agent's posted app in the drawer: its emblem with its name under it, a button that opens it beside the chat. */
-function agentAppIcon(name: string, manifest: AppManifest): HTMLElement {
+/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. */
+function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 	return h(
-		"button",
+		"a",
 		{
-			type: "button",
 			class: "rail-app",
-			"data-app-name": name,
+			href,
+			draggable: "false",
 			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
