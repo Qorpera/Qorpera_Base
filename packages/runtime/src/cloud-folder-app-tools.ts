@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { AGENT_COLOURS } from "@qorpera/cloud-client/company-state-shared";
 import {
+	APP_COVER_KINDS,
 	APP_DEFAULT_ENTRY,
 	APP_FILE_MAX_BYTES,
 	APP_FILE_TYPES,
@@ -86,6 +87,9 @@ interface ManifestInput {
 	readonly colour: AppManifest["colour"];
 	readonly entry: string | null;
 	readonly reads: AppManifest["reads"] | null;
+	/** Null keeps what the app has (false for a new app). */
+	readonly concept: boolean | null;
+	readonly cover: string | null;
 }
 
 interface SaveRequest {
@@ -119,7 +123,7 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 	if (value === null) return null;
 	if (value === undefined || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("manifest must be an object, or null to keep the app's manifest as it is");
-	const keys = ["title", "about", "emblem", "colour", "entry", "reads"];
+	const keys = ["title", "about", "emblem", "colour", "entry", "reads", "concept", "cover"];
 	if (Object.keys(value).some((key) => !keys.includes(key)))
 		throw new CloudToolArgumentRefusal(`manifest takes ${keys.join(", ")}`);
 	const choice = <T extends string>(raw: JsonValue | undefined, label: string, options: readonly T[]): T | null => {
@@ -135,6 +139,17 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 			throw new CloudToolArgumentRefusal("manifest.entry must be a relative path to an .html file of the app");
 		entry = relative;
 	}
+	let cover: string | null = null;
+	if (value.cover !== undefined && value.cover !== null) {
+		const relative = typeof value.cover === "string" ? appRelativePath(value.cover) : null;
+		if (relative === null || !APP_COVER_KINDS.has(appFileKind(relative)))
+			throw new CloudToolArgumentRefusal(
+				"manifest.cover must be a relative path to a .png, .jpg or .webp picture of the app",
+			);
+		cover = relative;
+	}
+	if (value.concept !== undefined && value.concept !== null && typeof value.concept !== "boolean")
+		throw new CloudToolArgumentRefusal("manifest.concept must be true or false");
 	let reads: AppManifest["reads"] | null = null;
 	if (value.reads !== undefined && value.reads !== null) {
 		if (
@@ -151,6 +166,8 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 		colour: choice(value.colour, "manifest.colour", AGENT_COLOURS),
 		entry,
 		reads,
+		concept: typeof value.concept === "boolean" ? value.concept : null,
+		cover,
 	};
 }
 
@@ -317,7 +334,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members what you made (results, a test, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Keep operationKey for the same change, and use a new one for any other change.`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members what you made (results, a test, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -336,6 +353,8 @@ export function cloudAppTools(options: {
 						colour: { type: ["string", "null"], enum: [...AGENT_COLOURS, null] },
 						entry: { type: ["string", "null"], maxLength: 1024 },
 						reads: { type: ["array", "null"], items: { type: "string", enum: [...APP_READS] } },
+						concept: { type: ["boolean", "null"] },
+						cover: { type: ["string", "null"], maxLength: 1024 },
 					},
 				},
 				files: {
@@ -406,6 +425,8 @@ export function cloudAppTools(options: {
 					owner,
 					posted: false,
 					reads: request.manifest.reads ?? [],
+					concept: request.manifest.concept ?? false,
+					cover: request.manifest.cover,
 				};
 				if (!request.files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
 					throw new CloudToolRefusal(
@@ -474,6 +495,8 @@ export function cloudAppTools(options: {
 					owner: before?.owner ?? owner,
 					posted: before?.posted ?? false,
 					reads: request.manifest.reads ?? before?.reads ?? [],
+					concept: request.manifest.concept ?? before?.concept ?? false,
+					cover: request.manifest.cover ?? before?.cover ?? null,
 				};
 				entry = manifest.entry;
 				const textOut = writeAppManifest(manifest);

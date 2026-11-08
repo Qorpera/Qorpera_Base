@@ -355,6 +355,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			owner: ada.id,
 			posted: true,
 			reads: [],
+			concept: false,
+			cover: null,
 		};
 		controller.store.set({
 			apps: [
@@ -386,6 +388,58 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(app().classList.contains("active")).toBe(true);
 		draw(home);
 		expect(app().hasAttribute("aria-current")).toBe(false);
+	});
+
+	it("shows the company's concepts as one Concepts entry, posted or not, leading to the Concepts viewer", () => {
+		const { element, draw, controller } = rail(home);
+		const manifest = {
+			name: "Shop",
+			about: null,
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+			concept: true,
+			cover: null,
+		};
+		controller.store.set({
+			apps: [
+				{ name: "shop-a", path: "apps/shop-a", manifest, problems: [], version: null, changed: 2 },
+				{
+					name: "shop-b",
+					path: "apps/shop-b",
+					manifest: { ...manifest, name: "Shop B", posted: false },
+					problems: [],
+					version: null,
+					changed: 3,
+				},
+				{
+					name: "sales-board",
+					path: "apps/sales-board",
+					manifest: { ...manifest, name: "Sales board", concept: false },
+					problems: [],
+					version: null,
+				},
+			],
+		});
+		draw();
+		// Not one icon per concept: one entry for them all, after the posted apps.
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
+			["Concepts", `#/c/${profileA.profileId}/concepts`],
+		]);
+		const entry = () => element.querySelector<HTMLAnchorElement>(".rail-app.rail-concepts")!;
+		expect(entry().title).toBe("2 concepts");
+		expect(entry().hasAttribute("aria-current")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "concepts", id: "shop-a" });
+		expect(entry().getAttribute("aria-current")).toBe("page");
+		// No concept: no entry.
+		controller.store.set({ apps: [] });
+		draw(home);
+		expect(element.querySelector(".rail-concepts")).toBeNull();
 	});
 
 	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {

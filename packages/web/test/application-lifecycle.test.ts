@@ -14,6 +14,7 @@ import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
 import { markdown } from "../src/ui/markdown.ts";
 import {
 	deferred,
@@ -1121,6 +1122,319 @@ describe("account and route ownership", () => {
 		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
 		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(back.getAttribute("aria-label")).toBe("Back to the conversation");
+	});
+
+	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */
+	function withConcepts() {
+		const fake = withApp();
+		// The folder's change hints, to send by hand.
+		const hints: ((seq: number) => void)[] = [];
+		vi.mocked(WebCompanyFiles.prototype.folderHints).mockImplementation((onHint) => {
+			hints.push(onHint);
+			return { close: async () => {} } as never;
+		});
+		fake.put(
+			"apps/shop-a/app.toml",
+			`name = "Shop A"\nabout = "A calm shop"\nowner = "${staff.id}"\nconcept = true\n`,
+		);
+		fake.put("apps/shop-a/index.html", "<p>Shop A</p>");
+		fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\nposted = true\n');
+		fake.put("apps/shop-b/index.html", "<p>Shop B</p>");
+		/** Tells the open company its folder changed, and lets the apps and the viewer read it. */
+		const changed = async () => {
+			for (const hint of hints) hint(fake.seq);
+			await vi.advanceTimersByTimeAsync(3000);
+			await draw();
+			await draw();
+		};
+		return Object.assign(fake, { changed });
+	}
+	/** Whose the open concept is and the password line: a strip of the side panel outside the list that folds. */
+	const conceptGuard = (root: HTMLElement) => {
+		const guard = root.querySelector<HTMLElement>(".concepts > .concepts-side > .concepts-guard");
+		expect(guard?.closest(".concepts-panel")).toBeNull();
+		expect(guard?.hidden).toBe(false);
+		return guard?.textContent;
+	};
+	const concepts = (root: HTMLElement) => root.querySelector<HTMLElement>("main > section.concepts");
+	const conceptItems = (root: HTMLElement) =>
+		[...root.querySelectorAll<HTMLAnchorElement>(".concepts-side a.concepts-item")].map((item) => [
+			item.querySelector(".concepts-item-title")?.textContent,
+			item.getAttribute("href"),
+			item.getAttribute("aria-current"),
+		]);
+	const conceptFrame = (root: HTMLElement) =>
+		root.querySelector<HTMLIFrameElement>(".concepts-stage > .side-panel.is-concept iframe.side-panel-frame");
+
+	it("opens the Concepts viewer full screen from a deep link, at the newest concept, with no chrome over it", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		expect(view).not.toBeNull();
+		// Full screen: no rail, no top bar, no chat.
+		expect(f.root.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+		expect(f.root.querySelector(".frame")?.classList.contains("has-concepts")).toBe(true);
+		expect(f.root.querySelector(".thread")).toBeNull();
+		// The side panel: the way back to the company, the heading and one item per concept, the newest first and open.
+		const back = view.querySelector<HTMLAnchorElement>("a.concepts-back")!;
+		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(back.textContent).toBe(profileA.profileName);
+		expect(back.getAttribute("aria-label")).toBe(`Back to ${profileA.profileName}`);
+		expect(view.querySelector(".concepts-heading")?.textContent).toBe("Concepts");
+		expect(conceptItems(f.root)).toEqual([
+			["Shop B", `#/c/${profileA.profileId}/concepts/shop-b`, "page"],
+			["Shop A", `#/c/${profileA.profileId}/concepts/shop-a`, null],
+		]);
+		const a = view.querySelector(`a.concepts-item[href$="/shop-a"]`)!;
+		expect(a.querySelector(".concepts-item-about")?.textContent).toBe("A calm shop");
+		expect(a.querySelector(".concepts-item-by")?.textContent).toBe("Made by Fixture agent");
+		expect(a.querySelector(".concepts-thumb svg.interface-emblem")).not.toBeNull();
+		// The concept's frame fills the stage, with no header bar over it; the panel says no password is asked for.
+		expect(conceptFrame(f.root)?.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(view.querySelector(".concepts-stage .side-panel-header")).toBeNull();
+		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
+		// The posted app that is no concept is not listed.
+		expect(view.querySelector(`a.concepts-item[href$="/sales-board"]`)).toBeNull();
+		// The company's redraws keep the viewer and its frame as they are.
+		const frame = conceptFrame(f.root);
+		await vi.advanceTimersByTimeAsync(2000);
+		await draw();
+		expect(concepts(f.root)).toBe(view);
+		expect(conceptFrame(f.root)).toBe(frame);
+		// Leaving the route brings the rail back.
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		await draw();
+		expect(view.isConnected).toBe(false);
+		expect(f.root.querySelector<HTMLElement>(".rail")?.hidden).toBe(false);
+		expect(f.root.querySelector(".frame")?.classList.contains("has-concepts")).toBe(false);
+	});
+
+	it("opens the concept a deep link names and switches concepts in place from the side panel", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts/shop-a`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
+		const first = conceptFrame(f.root)!;
+		expect(first.title).toBe("App: Shop A");
+		const item = view.querySelector<HTMLAnchorElement>(`a.concepts-item[href$="/shop-b"]`)!;
+		location.hash = item.getAttribute("href")!;
+		await draw();
+		await draw();
+		// The same viewer and side panel, the same item element; only the stage's frame is new.
+		expect(concepts(f.root)).toBe(view);
+		expect(view.querySelector(`a.concepts-item[href$="/shop-b"]`)).toBe(item);
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual(["page", null]);
+		expect(first.isConnected).toBe(false);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		// A concept that is gone says so, and offers the newest.
+		location.hash = `#/c/${profileA.profileId}/concepts/gone`;
+		await draw();
+		await draw();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(view.querySelector(".concepts-status a")?.getAttribute("href")).toBe(
+			`#/c/${profileA.profileId}/concepts/shop-b`,
+		);
+	});
+
+	it("keeps the missing concept's offer on the concept that is newest now", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts/gone`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		const offer = () => view.querySelector(".concepts-status a")?.getAttribute("href");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
+		// The newest one is taken away: the same words, but the offer moves to the one that is newest now.
+		fake.remove("apps/shop-b");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		// The last one goes too: nothing is offered.
+		fake.remove("apps/shop-a");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(view.querySelector(".concepts-status a")).toBeNull();
+	});
+
+	it("shows a cover made, replaced or read again after a failure, by its file's version", async () => {
+		const made: string[] = [];
+		const forgotten: string[] = [];
+		let failNext = false;
+		// jsdom has no object URLs: each picture gets a numbered one.
+		Object.defineProperty(URL, "createObjectURL", {
+			configurable: true,
+			value: () => {
+				if (failNext) {
+					failNext = false;
+					throw new Error("No picture");
+				}
+				made.push(`blob:cover-${made.length + 1}`);
+				return made.at(-1);
+			},
+		});
+		Object.defineProperty(URL, "revokeObjectURL", {
+			configurable: true,
+			value: (url: string) => forgotten.push(url),
+		});
+		try {
+			const fake = withConcepts();
+			fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\ncover = "cover.webp"\n');
+			const f = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			const thumb = () => f.root.querySelector<HTMLElement>(`a.concepts-item[href$="/shop-b"] .concepts-thumb`)!;
+			const shown = () => thumb().querySelector("img")?.getAttribute("src") ?? null;
+			// Named but not there yet: the emblem.
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			// Made, without a change to app.toml: it shows at the folder's next change.
+			fake.put("apps/shop-b/cover.webp", "first");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-1");
+			// Replaced: the new picture, and the old one let go.
+			fake.put("apps/shop-b/cover.webp", "second");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			expect(forgotten).toEqual(["blob:cover-1"]);
+			// A change the folder has no news of reads nothing again.
+			await fake.changed();
+			expect(made).toHaveLength(2);
+			// A read that fails keeps what was shown, and is tried again at the next change.
+			fake.put("apps/shop-b/cover.webp", "third");
+			failNext = true;
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-3");
+			// Taken away: the emblem again.
+			fake.remove("apps/shop-b/cover.webp");
+			await fake.changed();
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			expect(forgotten).toEqual(["blob:cover-1", "blob:cover-2", "blob:cover-3"]);
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("folds the side panel to a strip and keeps that for the viewer", async () => {
+		localStorage.removeItem("qorpera.web.concepts-collapsed");
+		try {
+			withConcepts();
+			const f = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			const view = concepts(f.root)!;
+			const fold = view.querySelector<HTMLButtonElement>("button.concepts-collapse")!;
+			expect(view.classList.contains("is-collapsed")).toBe(false);
+			expect(fold.getAttribute("aria-label")).toBe("Hide the concepts");
+			expect(fold.getAttribute("aria-expanded")).toBe("true");
+			fold.click();
+			expect(view.classList.contains("is-collapsed")).toBe(true);
+			expect(fold.getAttribute("aria-label")).toBe("Show the concepts");
+			expect(fold.getAttribute("aria-expanded")).toBe("false");
+			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("1");
+			// The concept stays open while the panel folds, and whose it is and the password line stay in the strip.
+			expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+			expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			// Opened again, it is folded still.
+			dispose?.();
+			dispose = undefined;
+			document.body.replaceChildren();
+			const again = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			expect(concepts(again.root)?.classList.contains("is-collapsed")).toBe(true);
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			concepts(again.root)!.querySelector<HTMLButtonElement>("button.concepts-collapse")!.click();
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("0");
+		} finally {
+			localStorage.removeItem("qorpera.web.concepts-collapsed");
+		}
+	});
+
+	it("never styles away whose a concept is or the password line: open, folded or at phone width", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss;
+		document.head.append(style);
+		try {
+			const rules = (list: CSSRuleList): { selector: string; rule: CSSStyleRule; media: string }[] =>
+				[...list].flatMap((rule) =>
+					rule instanceof CSSStyleRule
+						? [{ selector: rule.selectorText, rule, media: "" }]
+						: rule instanceof CSSMediaRule
+							? rules(rule.cssRules).map((entry) => ({ ...entry, media: rule.media.mediaText }))
+							: [],
+				);
+			// The strip and what holds it: the viewer and its side panel.
+			const holds = (selector: string) =>
+				selector.split(",").some((part) => /\.concepts-(guard|side)\b|\.concepts(?![\w-])\s*$/.test(part.trim()));
+			const all = rules(style.sheet!.cssRules);
+			const hiding = all.filter(
+				({ selector, rule }) =>
+					holds(selector) &&
+					!selector.includes("[hidden]") &&
+					(rule.style.display === "none" ||
+						rule.style.visibility === "hidden" ||
+						rule.style.opacity === "0" ||
+						rule.style.height === "0px" ||
+						rule.style.width === "0px"),
+			);
+			expect(hiding.map(({ selector, media }) => `${media} ${selector}`)).toEqual([]);
+			// It has a rule of its own in each of the three layouts.
+			const guard = all.filter(({ selector }) => selector.includes(".concepts-guard"));
+			expect(guard.some(({ selector, media }) => media === "" && selector === ".concepts-guard")).toBe(true);
+			expect(guard.some(({ selector, media }) => media === "" && selector.includes(".is-collapsed"))).toBe(true);
+			expect(guard.some(({ media }) => media.includes("max-width: 760px"))).toBe(true);
+		} finally {
+			style.remove();
+		}
+	});
+
+	it("shows one Concepts entry in the rail and opens a concept's app link in the Concepts viewer", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const entry = f.root.querySelector<HTMLAnchorElement>(".rail .rail-apps-drawer a.rail-concepts");
+		expect(entry?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/concepts`);
+		expect(entry?.querySelector(".rail-app-name")?.textContent).toBe("Concepts");
+		// The concepts have no icon of their own; the posted app that is no concept keeps its own.
+		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/shop-b"]`)).toBeNull();
+		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/sales-board"]`)).not.toBeNull();
+		// A concept's card in a chat opens the Concepts viewer at it, which leads back to the conversation.
+		const prose = markdown("See [Shop A](app:shop-a).");
+		f.root.querySelector(".thread")!.append(prose);
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		await draw();
+		await draw();
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
+		expect(concepts(f.root)?.querySelector("a.concepts-back")?.getAttribute("href")).toBe(
+			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
+		);
+		// A concept's own app link opens the Concepts viewer at it; an app that is no concept keeps its page.
+		location.hash = `#/c/${profileA.profileId}/a/shop-b`;
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		location.hash = `#/c/${profileA.profileId}/a/sales-board`;
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		expect(appPage(f.root)?.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
+		expect(concepts(f.root)).toBeNull();
 	});
 
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {

@@ -25,6 +25,8 @@ describe("interface apps", () => {
 				owner: null,
 				posted: false,
 				reads: [],
+				concept: false,
+				cover: null,
 			},
 		});
 		const full = parseAppManifest(
@@ -41,6 +43,8 @@ describe("interface apps", () => {
 				owner: OWNER,
 				posted: true,
 				reads: ["tables", "todos"],
+				concept: false,
+				cover: null,
 			},
 		});
 	});
@@ -67,8 +71,30 @@ describe("interface apps", () => {
 			owner: OWNER,
 			posted: false,
 			reads: ["files" as const],
+			concept: false,
+			cover: null,
 		};
 		expect(parseAppManifest(writeAppManifest(manifest))).toEqual({ ok: true, manifest });
+		// A concept with its cover writes both, and reads back as itself.
+		const concept = { ...manifest, concept: true, cover: "shots/cover.webp" };
+		const written = writeAppManifest(concept);
+		expect(written).toContain('concept = true\ncover = "shots/cover.webp"\n');
+		expect(parseAppManifest(written)).toEqual({ ok: true, manifest: concept });
+		// Not a concept and no cover: neither line is written.
+		expect(writeAppManifest(manifest)).not.toMatch(/concept|cover/);
+	});
+
+	it("reads concept and cover, and refuses a cover that is no picture of the app", () => {
+		const parsed = parseAppManifest('name = "Shop"\nconcept = true\ncover = "./cover.PNG"\n');
+		expect(parsed.ok && parsed.manifest).toMatchObject({ concept: true, cover: "cover.PNG" });
+		for (const cover of ["cover.jpg", "img/cover.jpeg", "cover.webp"])
+			expect(parseAppManifest(`name = "Shop"\ncover = "${cover}"\n`).ok).toBe(true);
+		const bad = parseAppManifest('name = "Shop"\nconcept = "yes"\ncover = "../cover.png"\n');
+		expect(bad.ok).toBe(false);
+		if (!bad.ok) expect(bad.problems.map((problem) => problem.line)).toEqual([2, 3]);
+		for (const cover of ["cover.gif", "cover.svg", "index.html", "/cover.png", "https://x.test/a.png", ""])
+			expect(parseAppManifest(`name = "Shop"\ncover = "${cover}"\n`).ok).toBe(false);
+		expect(parseAppManifest('name = "Shop"\ncover = 1\n').ok).toBe(false);
 	});
 
 	it("sets posted in place", () => {

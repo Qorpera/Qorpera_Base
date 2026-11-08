@@ -48,6 +48,8 @@ write, with the tools they already have, and need no migration.
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
 | `reads` | list of `files`, `tables`, `todos`, `agents` | `[]` | the live sources the app may read (§5) |
+| `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
+| `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
 
 Unknown keys, bad types and bad values are problems; an app whose manifest has problems is not shown (its card says
 so and links the file).

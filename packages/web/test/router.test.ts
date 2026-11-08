@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appHash, parseRoute, routeHash } from "../src/app/router.ts";
+import { appHash, conceptsHash, parseRoute, routeHash } from "../src/app/router.ts";
 import { profileA } from "./fixtures.ts";
 
 describe("company routes", () => {
@@ -39,6 +39,24 @@ describe("company routes", () => {
 				name: "company",
 				profileId: profileA.profileId,
 				section: "home",
+			});
+	});
+
+	it("opens the Concepts viewer at its newest concept, or at the concept it names", () => {
+		const newest = parseRoute(`#/c/${profileA.profileId}/concepts`);
+		expect(newest).toEqual({ name: "company", profileId: profileA.profileId, section: "concepts" });
+		expect(routeHash(newest)).toBe(`#/c/${profileA.profileId}/concepts`);
+		const named = parseRoute(`#/c/${profileA.profileId}/concepts/shop-a`);
+		expect(named).toEqual({ name: "company", profileId: profileA.profileId, section: "concepts", id: "shop-a" });
+		expect(routeHash(named)).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		expect(conceptsHash(profileA.profileId)).toBe(`#/c/${profileA.profileId}/concepts`);
+		expect(conceptsHash(profileA.profileId, "shop-a")).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		// A name no app folder has opens the newest concept.
+		for (const bad of ["Shop", "shop_a", "-shop", "x".repeat(65)])
+			expect(parseRoute(`#/c/${profileA.profileId}/concepts/${bad}`)).toEqual({
+				name: "company",
+				profileId: profileA.profileId,
+				section: "concepts",
 			});
 	});
 
