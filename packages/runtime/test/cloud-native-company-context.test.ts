@@ -1534,7 +1534,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "724692edddcc822037978e3ff2e262509f15bac1cb4f8323c161bb5e8978feef",
+			instructions: "a2c305f672bf166fb4c37d867f2b11e38549f20fa7eab527f46aabb0d6ab8f59",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1635,6 +1635,23 @@ it("works out the solution before the brief, whatever example the founders showe
 		expect(instructions).toContain(rule);
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
 		"Before the brief, the Co-Founder has the team work out the solution",
+	);
+});
+
+it("decides one full product as the solution, starting narrow in market, never in product (8 November 2026)", () => {
+	// Dekora, 8 November: Strategy listed image generation, editing and shopping as options and proposed selling
+	// generated pictures first, putting off real items until a cheaper test proved demand, in heavily hedged text.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"The solution is one product, decided: the one that meets the need in full, not a menu of options for later and not a first version made the quick way.",
+		"Where to start narrows the market and the suppliers, never the product",
+		"until a lesser product proves demand, because testing a lesser product tests the wrong thing",
+		"say once, in one line, what still has to be checked, instead of hedging every paragraph",
+		"check it against what the founders said they want, and update it when they say more",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The solution is one product that meets the need in full: where to start narrows the market and the suppliers, never the product.",
 	);
 });
 
