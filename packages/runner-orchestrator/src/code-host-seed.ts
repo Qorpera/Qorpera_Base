@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, isUuid, parseGitHubCodingRepository } from "@qorpera/contracts";
 import {
 	addCodeWorktree,
 	type CodeAreaSeeded,
@@ -70,7 +70,7 @@ export async function withCodeAreaSeed<T>(
 		(value.have !== null && (typeof value.have !== "string" || !SHA.test(value.have)))
 	)
 		throw new Error("INVALID_CODE_HOST_JOB");
-	const repository = parseCloudCodingRepository(value.repository),
+	const repository = parseGitHubCodingRepository(value.repository),
 		{ baseSha, have } = value;
 	const authorize = async (): Promise<void> => {
 		signal.throwIfAborted();
@@ -225,7 +225,7 @@ export async function attachCodeSession(
 		!SHA.test(value.baseSha)
 	)
 		throw new Error("INVALID_CODE_HOST_JOB");
-	const repository = parseCloudCodingRepository(value.repository),
+	const repository = parseGitHubCodingRepository(value.repository),
 		{ workerId, baseSha } = value;
 	const area = await inspectCodeArea(job, { repository, commit: baseSha });
 	const seeded =

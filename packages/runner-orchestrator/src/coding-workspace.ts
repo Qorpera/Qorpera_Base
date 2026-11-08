@@ -5,7 +5,7 @@ import {
 	type CloudCodingPullRequest,
 	type CloudCodingRepository,
 	parseCloudCodingPullRequest,
-	parseCloudCodingRepository,
+	parseGitHubCodingRepository,
 } from "@qorpera/contracts";
 
 export interface CloudCodingDraftPublication {
@@ -72,7 +72,10 @@ export async function publishCloudCodingDraftPullRequest(
 	value: CloudCodingDraftPublication,
 	options: CloudCodingPublisherOptions,
 ): Promise<CloudCodingPullRequest> {
-	const input = Object.freeze({ ...structuredClone(value), repository: parseCloudCodingRepository(value.repository) });
+	const input = Object.freeze({
+		...structuredClone(value),
+		repository: parseGitHubCodingRepository(value.repository),
+	});
 	if (
 		Object.keys(input).sort().join() !== "body,headSha,repository,title,workerId" ||
 		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.workerId) ||

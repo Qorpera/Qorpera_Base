@@ -11,6 +11,7 @@ import {
 	CodingControlRefused,
 	type CodingExecutorControl,
 	type CodingExecutorHost,
+	CodingLandConflict,
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
@@ -383,6 +384,60 @@ describe("the coding executor over a session turn", () => {
 			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 			expect(w.host.detachSession).not.toHaveBeenCalled();
 		}
+	});
+
+	it("a commit landed in a repository kept in Qorpera completes the turn with where it landed, and no pull request", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockResolvedValueOnce({
+			pullRequest: null,
+			noChange: false,
+			landed: { state: "merged", mainSha: "c".repeat(40) },
+		});
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion).toMatchObject({
+			p_outcome: "succeeded",
+			p_summary: "Tests passed",
+			p_pull_request: null,
+			p_artifacts: [{ kind: "landed", state: "merged", branch: "main", headSha, mainSha: "c".repeat(40) }],
+		});
+	});
+
+	it("a landing that conflicts fails the turn with the paths and the way out", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandConflict(["index.html", "src/cart.js"]));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(
+			'The change was not landed: it conflicts with what main got since this session began, in "index.html", "src/cart.js". Nothing changed on main. Run git merge main on the session\'s branch, resolve the conflicts, run the checks, commit and finish again.',
+		);
+		expect(completion.p_artifacts).toBeNull();
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
 	it("a publication that fails for another reason fails the turn and says so, instead of letting the lease lapse", async () => {

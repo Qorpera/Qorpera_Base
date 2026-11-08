@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `CloudCodingRepository.host` is `"github.com" | "qorpera"` (`CLOUD_CODING_REPOSITORY_HOSTS`; own code storage, slice 1). A repository kept in Qorpera has a lower-case owner (`^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$`) and name (`^[a-z0-9_]([a-z0-9_.-]{0,98}[a-z0-9_-])?$`), which name its folder; GitHub's rules are unchanged. `parseGitHubCodingRepository` refuses any other host, for every step that reaches GitHub; `parseCloudCodingPullRequest` refuses a repository kept in Qorpera; `cloudCodingRepositoryInQorpera` says which it is.
 
 ### Breaking Changes
 

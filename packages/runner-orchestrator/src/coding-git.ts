@@ -4,7 +4,7 @@ import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
 import { type CodingPushCarrier, CodingPushRefused } from "./coding-executor.ts";
 import { type CodingGitSandboxOptions, codingGitSandboxPlan, codingGitSocketFilter } from "./coding-git-sandbox.ts";
 import type { CodingSecretMask, CodingSecretMaskStream } from "./coding-secret-mask.ts";
@@ -328,7 +328,7 @@ export async function pushCloudCodingBundle(
 		bundle.byteLength > MAX_BUNDLE
 	)
 		throw new Error("INVALID_CODING_GIT_PUSH");
-	const input = Object.freeze({ ...value, repository: parseCloudCodingRepository(value.repository) });
+	const input = Object.freeze({ ...value, repository: parseGitHubCodingRepository(value.repository) });
 	const bytes = Buffer.from(bundle);
 	const prerequisites = bundlePrerequisites(bytes);
 	const branch = `qorpera/coding/${input.workerId}`,
