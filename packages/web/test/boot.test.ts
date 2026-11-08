@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
-import { parseRoute } from "../src/app/router.ts";
 import { AUTH_STORAGE_KEY } from "../src/cloud/client.ts";
 import { applyBoot, type BootView, bootView, STORED_SESSION_KEY } from "../src/ui/boot.ts";
 import { companyCardsSkeleton, railSkeleton, threadSkeleton } from "../src/ui/skeleton.ts";
@@ -22,47 +21,38 @@ function outline(node: Element): string {
 	return `<${node.tagName.toLowerCase()}${classes ? `.${classes}` : ""}>${[...node.children].map(outline).join("")}</>`;
 }
 
-/** The first screen application.ts draw() shows for a signed-in member at this route, before any read. */
-function drawnFirst(hash: string): BootView | "none" {
-	const route = parseRoute(hash);
-	if (route.name === "hub") return "hub";
-	if (route.name !== "company") return "none";
-	return ["home", "chat", "staff", "new"].includes(route.section) ? "thread" : "none";
-}
-
 describe("which first screen stands while main.js loads", () => {
-	it("is the one the app draws first, for every kind of address", () => {
-		const hashes = [
-			"",
-			"#",
-			"#/",
-			"#/account",
-			"#/account/x",
-			"#/new",
-			"#/new?idea=Bakery",
-			"#/new/x",
-			`#/found/${COMPANY}`,
-			"#/found/not-a-company",
-			`#/c/${COMPANY}`,
-			`#/c/${COMPANY.toUpperCase()}`,
-			`#/c/${COMPANY}/chat/abc`,
-			`#/c/${COMPANY}/chat`,
-			`#/c/${COMPANY}/staff/abc`,
-			`#/c/${COMPANY}/new`,
-			`#/c/${COMPANY}/file`,
-			`#/c/${COMPANY}/team`,
-			`#/c/${COMPANY}/meet`,
-			`#/c/${COMPANY}/i/sales-board`,
-			`#/c/${COMPANY}/i/Not_A_Name`,
-			`#/c/${COMPANY}/i`,
-			`#/c/${COMPANY}/anything`,
-			"#/c/not-a-company",
-			"#/elsewhere",
+	it("is the one application.ts draws first, for every kind of address", () => {
+		// The company's thread placeholder for its home, a chat and a new chat; the company list for the hub and any
+		// address the router does not know; none where the first screen is not a placeholder of these three.
+		const expected: [string, BootView | undefined][] = [
+			["", "hub"],
+			["#", "hub"],
+			["#/", "hub"],
+			["#/elsewhere", "hub"],
+			["#/new/x", "hub"],
+			["#/found/not-a-company", "hub"],
+			["#/c/not-a-company", "hub"],
+			["#/account", undefined],
+			["#/account/x", undefined],
+			["#/new", undefined],
+			["#/new?idea=Bakery", undefined],
+			[`#/found/${COMPANY}`, undefined],
+			[`#/c/${COMPANY}`, "thread"],
+			[`#/c/${COMPANY.toUpperCase()}`, "thread"],
+			[`#/c/${COMPANY}/chat/abc`, "thread"],
+			[`#/c/${COMPANY}/chat`, "thread"],
+			[`#/c/${COMPANY}/staff/abc`, "thread"],
+			[`#/c/${COMPANY}/new`, "thread"],
+			[`#/c/${COMPANY}/anything`, "thread"],
+			[`#/c/${COMPANY}/i`, "thread"],
+			[`#/c/${COMPANY}/i/Not_A_Name`, "thread"],
+			[`#/c/${COMPANY}/i/sales-board`, undefined],
+			[`#/c/${COMPANY}/file`, undefined],
+			[`#/c/${COMPANY}/team`, undefined],
+			[`#/c/${COMPANY}/meet`, undefined],
 		];
-		for (const hash of hashes) {
-			const view = bootView(`https://app.example/${hash}`, true);
-			expect(view ?? "none", hash).toBe(drawnFirst(hash));
-		}
+		for (const [hash, view] of expected) expect(bootView(`https://app.example/${hash}`, true), hash).toBe(view);
 	});
 
 	it("shows the sign-in page without a stored session, and nothing while a sign-in callback is finished", () => {

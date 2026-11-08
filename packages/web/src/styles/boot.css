@@ -14,7 +14,11 @@
 .boot .rail { --rail-width: min(calc(var(--boot-rail, 369) * var(--px)), max(240px, 40vw)); }
 :root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 456) * var(--px)), max(240px, 40vw)); }
 
-/* A grey line where a line of text will stand; its line box keeps the text's own height. */
+/* A grey line where a line of text will stand; its line box keeps the text's own height (line heights here are
+ * multiples of the font size, whatever the face). The sign-in page's lines are set in the system face: a line box in
+ * Source Sans 3 would fetch that font beside main.js on a slow line and hold the real page back (about 0.1 s at
+ * 1.6 Mbit/s, measured); the app fetches it when it draws the page, as before. */
+.boot .auth { font-family: var(--font-sans); }
 .boot .boot-line { display: inline-block; vertical-align: middle; height: 0.62em; border-radius: 6px; }
 .boot .auth-body h1 .boot-line { width: 3.4em; }
 .boot .auth-lead .boot-line { width: 17em; max-width: 100%; }

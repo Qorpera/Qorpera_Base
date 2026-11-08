@@ -3,6 +3,7 @@
  * (theme.ts) picks the one the app will draw, before the first paint, so the page shows it as soon as the stylesheet is
  * in, not an empty page until main.js has run. The app's first draw replaces it (app/application.ts). It reads only
  * whether a session is stored, never the session. Anything it cannot tell shows no placeholder, as before. */
+import { parseRoute } from "../app/router.ts";
 
 /** Auth's storage key (cloud/client.ts AUTH_STORAGE_KEY), here so the head script stays free of the SDK. */
 export const STORED_SESSION_KEY = "qorpera-web-auth/v1";
@@ -21,14 +22,12 @@ const CALLBACK = [
 ];
 /** qorpera.com's idea (application.ts WEBSITE_KEYS): the page goes to the new-company box. */
 const WEBSITE = ["ide", "idea", "kind"];
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export type BootView = "sign-in" | "hub" | "thread";
 
-/** The first screen for this address, as app/router.ts parseRoute and application.ts draw() choose it; undefined
- * where the placeholder could be wrong (a sign-in callback, the new-company box, the account page, a founding table,
- * a company page other than a thread). */
+/** The first screen for this address, as application.ts draw() chooses it before any read (its route from
+ * app/router.ts); undefined where the placeholder could be wrong: a sign-in callback, qorpera.com's idea, the
+ * new-company box, the account page, a founding table, a company page other than a thread. */
 export function bootView(href: string, signedIn: boolean): BootView | undefined {
 	const url = new URL(href);
 	const fragment = new URLSearchParams(url.hash.slice(1));
@@ -39,25 +38,12 @@ export function bootView(href: string, signedIn: boolean): BootView | undefined 
 		return undefined;
 	if (!signedIn) return "sign-in";
 	if (WEBSITE.some((key) => url.searchParams.has(key))) return undefined;
-	const parts = (url.hash.replace(/^#\/?/, "").split("?")[0] ?? "").split("/").filter(Boolean);
-	const [first, second, section, id] = parts;
-	if (first === "c" && second && UUID.test(second)) {
-		// application.ts draws the thread's placeholder for a company's home, a chat and a new chat; a page's or the
-		// meeting's for the rest. A section parseRoute does not know is the home.
-		const page =
-			(section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) ||
-			section === "file" ||
-			section === "team" ||
-			section === "meet";
-		return page ? undefined : "thread";
-	}
-	if (
-		first === "account" ||
-		(first === "new" && parts.length === 1) ||
-		(first === "found" && second && UUID.test(second))
-	)
-		return undefined;
-	return "hub";
+	const route = parseRoute(url.hash);
+	if (route.name === "hub") return "hub";
+	// A company opening shows the thread's placeholder for its home, a chat and a new chat; a page's otherwise.
+	if (route.name !== "company") return undefined;
+	const section = route.section;
+	return section === "home" || section === "chat" || section === "staff" || section === "new" ? "thread" : undefined;
 }
 
 /** Runs in the head script before the first paint. */

@@ -92,8 +92,9 @@ test("theme.js restores appearance before paint without the dictionary", async (
 	const { layout, text } = await built;
 	const inputs = inputsOf(layout, [layout.theme]);
 	assert.deepEqual(inputs.filter((path) => /src\/ui\/(?:danish\/|preferences\.ts$)/.test(path)), []);
-	// About 1.2 KB of appearance and 1.2 KB that picks index.html's first screen (src/ui/boot.ts); about 1 KB on the wire.
-	assert.ok(text[layout.theme].length < 3072, `theme.js is ${text[layout.theme].length} bytes`);
+	// About 1.2 KB of appearance and 1.9 KB that picks index.html's first screen with the app's own router
+	// (src/ui/boot.ts); about 1.3 KB on the wire, one packet either way.
+	assert.ok(text[layout.theme].length < 3584, `theme.js is ${text[layout.theme].length} bytes`);
 	const stored = { "qorpera.web.theme": "dark", "qorpera.web.composer-color": "green", "qorpera.web.ui-size": "small" };
 	const root = { dataset: {} };
 	const context = {
