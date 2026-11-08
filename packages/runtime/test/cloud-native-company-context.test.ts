@@ -1602,14 +1602,15 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"As soon as the vision names a product, hire the people who build it",
 		"once the product is clear, add the people who build it",
 		"Write the product in the vision as the founders describe it, at their ambition",
-		"The first thing they show the founders is the vision realized as a prototype of the finished product, at its full ambition",
+		"The first thing they show the founders is concepts: the vision realized as the finished product, at its full ambition. This is vision alignment through concepts",
 	])
 		expect(cofounder).toContain(rule);
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"The first demos prototype the vision realized: the finished product at the founders' full ambition, never a sketch of early work",
+		"The first things the company shows the founders are concepts: the vision realized as the finished product at the founders' full ambition, never a sketch of early work. This is vision alignment through concepts",
+		'Call them concepts, never demos, in what you say and in an app\'s title, such as "Rumlig concepts"',
 		"how the founders check that the company understood them and how the idea's potential is put to the test",
-		"A demo or prototype shows the company's own product as its customers will use it",
+		"A concept shows the company's own product as its customers will use it",
 		"on the platform it will run on, such as a phone app or a desktop or web application, at the quality the product promises",
 		"(for 3D, rendering in Blender on a machine), never a diagram or a toy in its place",
 		"choose what a strong team in that field would use",
