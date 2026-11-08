@@ -60,6 +60,7 @@ import {
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
+	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
@@ -362,6 +363,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
 			roomRequest.catch(() => undefined);
+			// A continuation past the context's excerpt is shown to 32 KiB, the pages after it read alongside the reads below, as
+			// the run would read it first (perf sprint T7). It never fails the run.
+			const continuationShown = composeCloudContinuation(context, this.#paths, binding, signal);
+			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
@@ -547,10 +552,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
 					requestSources = request.flatMap((entry) => [entry.input, ...(entry.question ? [entry.question] : [])]);
+					// The same source, shown further: read_context admits it by its id and hash, as before.
+					const continuation = await continuationShown;
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
 					const views = redactCloudWebhookSecrets(view?.views ?? "");
 					const prompt = composeCloudNativeCompanyPrompt(
-						context,
+						{ ...context, continuation },
 						wake,
 						initialPresence,
 						memory,
