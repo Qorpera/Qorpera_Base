@@ -17,7 +17,7 @@
       "qorpera.native-context-composition/v1",
       "qorpera.native-prompt-cache-key/v1"
     ],
-    "patchSha256": "1148d8eced8187ab6063d3d442c6fac6e851702e3e0cdccad90aa9e4b608bfab",
+    "patchSha256": "b7eab8423d4198e16bb893ef300ae162d1c9218642a61efe5d13f88666c6349a",
     "cargoLock": {
       "upstreamSha256": "81eb29f6276d5b3d1b39f1588a26059dadfbba717952247efeb8a575f271f569",
       "normalizedSha256": "df88a71b82843c6f092610fb07589f7a40032ddc25f50718354546ca541eb9b7",
@@ -26,8 +26,8 @@
   },
   "artifact": {
     "file": "codex",
-    "bytes": 318891312,
-    "sha256": "1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c",
+    "bytes": 318813136,
+    "sha256": "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4",
     "target": "x86_64-unknown-linux-gnu",
     "profile": "release",
     "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
@@ -35,7 +35,7 @@
       "tool": "rust-llvm-objcopy",
       "toolchain": "1.95.0",
       "operation": "strip-debug",
-      "inputSha256": "f76e53d0c08d13ce753f6147052c534f710da29def5196828cfacb11a282fbb7",
+      "inputSha256": "39957f97ccc22b418f734845eed913970367ff05cc2f967964d2afe311e8d891",
       "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
     }
   },
