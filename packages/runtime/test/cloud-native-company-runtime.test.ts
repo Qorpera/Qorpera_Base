@@ -2972,6 +2972,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// adds update_wall after post_app, so they moved again. Readable cards (5 November 2026) shorten ask_member's body
 	// and say how a card reads; every other tool is as on master.
 	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
+	// On 8 November 2026 save_app's description says an app opens as a page of its own, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
