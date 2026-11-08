@@ -70,8 +70,11 @@ co-location boundary inside the provisioned computer. The public hosted
 `native-provider-login` function forwards official login authority only and is
 not an execution proxy.
 
-The included LXD provider is the Step 2 host adapter. It talks only to LXD's
-local Unix socket, always submits `type: virtual-machine`, and rejects the
+The included LXD provider is the Step 2 host adapter. It talks to LXD only over
+LXD's loopback HTTPS listener with its own client certificate, and only after the
+listener's certificate matches the pinned SHA-256 (`lxd-https.ts`; root's tools and
+the office workers keep the local Unix socket). It always submits
+`type: virtual-machine`, and rejects the
 Step 3 `company_computer` worker class. Before creating a guest it durably binds
 the immutable run ID to the provisioned runner, exact image fingerprint,
 project, profile, storage pool, Compute Identity volume, post-boot bootstrap
@@ -154,8 +157,9 @@ authority.
 For the first node, `npm run pack:lxd-provider` emits the Node.js service, a
 provenance tool, and a SHA-256 manifest under `.artifacts/lxd-provider`. The host
 installer in `deploy/first-node/install-lxd-provider-host.sh` installs that
-artifact and the hardened systemd unit, verifies LXD socket access as the
-dedicated provider account, and deliberately leaves the unit disabled while
+artifact and the hardened systemd unit, verifies that the dedicated provider
+account reaches the pinned LXD listener with its own identity, and deliberately
+leaves the unit disabled while
 `/etc/qorpera/lxd-provider.env` is absent. Copy and populate the example only
 after the pinned signed guest image and real control-plane secrets exist; do not
 enable the unit with placeholders.
@@ -266,8 +270,9 @@ creation or activation. The signed image, NAS mount identity, adoption and cloud
 startup/activation protocol remain required.
 
 `LxdUnixClient.readInstanceFile` implements the bounded file-read capability
-needed by that inspection and bootstrap readback. It uses the Unix socket,
-preserves LXD owner/mode metadata, rejects directory/symlink responses, does not
+needed by that inspection and bootstrap readback. It uses the client's
+transport (the Unix socket or the pinned loopback listener), preserves LXD
+owner/mode metadata, rejects directory/symlink responses, does not
 follow redirects, and enforces a 64 KiB maximum plus a five-second total deadline.
 The caller still verifies the content, root ownership, expected digest and current
 physical/cloud binding; file metadata alone is not an attestation. This follows

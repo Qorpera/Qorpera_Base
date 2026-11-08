@@ -9,9 +9,9 @@ ConditionPathExists=/etc/qorpera/lxd-provider.env
 Type=exec
 User=qorpera-provider
 Group=qorpera-provider
-SupplementaryGroups=lxd
+# No LXD socket group: LXD knows this account by its own client certificate on the loopback listener
+# (/etc/qorpera-lxd-ids, the node step enrolls it).
 EnvironmentFile=-/etc/qorpera/lxd-provider.env
-ExecStartPre=/usr/bin/test -S /var/snap/lxd/common/lxd/unix.socket
 ExecStart=/usr/bin/node --jitless /opt/qorpera/runner-provider/qorpera-lxd-provider.mjs
 Restart=on-failure
 RestartSec=5s

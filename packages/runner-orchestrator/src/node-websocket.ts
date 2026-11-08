@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { type ClientRequestArgs, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 
@@ -19,6 +19,9 @@ export interface NodeWebSocketHandlers {
 export interface NodeWebSocketOptions {
 	/** Connect over this Unix socket (a `ws:` URL; its host is then only the Host header). */
 	readonly socketPath?: string;
+	/** Connect with this (a `wss:` URL; its host is then only the Host header), for a connection that checks its
+	 * server itself, such as LXD's pinned listener (lxd-https.ts). The signal below must stop it too. */
+	readonly createConnection?: ClientRequestArgs["createConnection"];
 	/** Stops a handshake still pending: its request is destroyed and the connect rejects at once. */
 	readonly signal?: AbortSignal;
 }
@@ -57,8 +60,10 @@ export class NodeWebSocket {
 		if (url.protocol !== "wss:" && url.protocol !== "ws:") throw new Error("WebSocket URL must use ws: or wss:");
 		const secure = url.protocol === "wss:";
 		if (options.socketPath !== undefined && secure) throw new Error("A Unix socket WebSocket URL must use ws:");
+		const { createConnection, signal } = options;
+		if (createConnection !== undefined && (!secure || options.socketPath !== undefined))
+			throw new Error("A WebSocket URL with its own connection must use wss:");
 		const key = randomBytes(16).toString("base64");
-		const { signal } = options;
 		return new Promise((resolve, reject) => {
 			if (signal?.aborted) {
 				reject(new Error("WebSocket handshake was stopped"));
@@ -67,7 +72,7 @@ export class NodeWebSocket {
 			const request = (secure ? httpsRequest : httpRequest)({
 				protocol: secure ? "https:" : "http:",
 				...(options.socketPath === undefined
-					? { hostname: url.hostname, port: url.port || (secure ? 443 : 80) }
+					? { hostname: url.hostname, port: url.port || (secure ? 443 : 80), createConnection }
 					: { socketPath: options.socketPath, hostname: url.hostname }),
 				path: `${url.pathname}${url.search}`,
 				method: "GET",

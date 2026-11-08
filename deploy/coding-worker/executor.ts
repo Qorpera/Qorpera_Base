@@ -21,6 +21,7 @@ import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/c
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
 import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder-control.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
+import { readLxdHttpsAccess } from "../../packages/runner-orchestrator/src/lxd-https.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
@@ -254,8 +255,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner })) : null;
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
-	const lxd = new LxdUnixClient();
-	const codeHosts = config.codeHost ? new LxdCodeHosts({ client: new LxdUnixClient(), policy: config.codeHost, log: logCodeHost }) : undefined;
+	// LXD knows this account by its own client certificate on the loopback listener, not by the socket's group (V2-D1).
+	const access = await readLxdHttpsAccess();
+	const lxd = new LxdUnixClient(access);
+	const codeHosts = config.codeHost ? new LxdCodeHosts({ client: new LxdUnixClient(access), policy: config.codeHost, log: logCodeHost }) : undefined;
 	// Each company's code host jobs, one at a time: its sessions' worktrees on the folder model.
 	const codeHostJobs = codeHosts ? new CodeHostJobs({ hosts: codeHosts, client: lxd, control, log: logCodeHost }) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
@@ -317,7 +320,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	process.on("SIGINT", shutdown);
 	const machineHost = config.machines ? new LxdCompanyMachineHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
-		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
+		policy: config.machines.policy, client: new LxdUnixClient(access), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
 	}) : undefined;

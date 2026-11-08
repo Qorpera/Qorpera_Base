@@ -83,22 +83,23 @@ fi
 if ! getent passwd "${PROVIDER_USER}" >/dev/null; then
 	useradd --system --create-home --home-dir /var/lib/qorpera-provider --shell /usr/sbin/nologin "${PROVIDER_USER}"
 fi
-usermod -aG lxd "${PROVIDER_USER}"
 install -d -o root -g root -m 0755 /etc/qorpera
 install -d -o "${PROVIDER_USER}" -g "${PROVIDER_USER}" -m 0700 \
 	/var/lib/qorpera-provider \
 	/var/lib/qorpera-provider/runs
 
 # The snap may enroll the installing sudo user. LXD group membership is root-
-# equivalent, so the dedicated provider is the only permitted non-root member.
+# equivalent, and the provider reaches LXD with its own client certificate on
+# the loopback listener, so the group keeps no non-root member at all; a re-run
+# also takes out a provider an older bootstrap added.
 IFS=',' read -r -a lxd_members <<<"$(getent group lxd | cut -d: -f4)"
 for member in "${lxd_members[@]}"; do
-	if [[ -n ${member} && ${member} != "${PROVIDER_USER}" ]]; then
+	if [[ -n ${member} ]]; then
 		gpasswd -d "${member}" lxd >/dev/null
 	fi
 done
 
-if [[ $(getent group lxd | cut -d: -f4) != "${PROVIDER_USER}" ]]; then
+if [[ -n $(getent group lxd | cut -d: -f4) ]]; then
 	echo "The lxd group has unexpected non-root administrators." >&2
 	exit 1
 fi
@@ -158,9 +159,15 @@ cluster: null
 EOF
 fi
 
-# The daemon must remain Unix-socket-only. This is deliberately not `lxc config
-# set core.https_address`; remote LXD administration is outside the architecture.
-lxc config unset core.https_address >/dev/null 2>&1 || true
+# Besides its Unix socket, the daemon may listen only on loopback, where each
+# service presents its own client certificate. The node step sets that listener;
+# this script neither sets nor removes it. Remote LXD administration is outside
+# the architecture, so any other address refuses the host.
+loopback_listener='^((127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4})?$'
+if [[ ! $(lxc config get core.https_address) =~ ${loopback_listener} ]]; then
+	echo "The LXD HTTPS listener is not loopback-only; refusing the host boundary." >&2
+	exit 1
+fi
 
 if lxc project show "${LXD_PROJECT}" >/dev/null 2>&1; then
 	project_networks=$(lxc project get "${LXD_PROJECT}" features.networks)
@@ -264,7 +271,7 @@ if [[ $(stat -c %G /var/snap/lxd/common/lxd/unix.socket) != lxd ]]; then
 	exit 1
 fi
 
-if ss -lnt | awk 'NR > 1 { print $4 }' | grep -Eq '(^|:)(8443)$'; then
+if [[ -n $(ss -lnt | awk 'NR > 1 && $4 ~ /:8443$/ && $4 !~ /^(127\.0\.0\.1|\[::1\]):8443$/ { print $4 }') ]]; then
 	echo "A public LXD HTTPS listener is present; refusing the host boundary." >&2
 	exit 1
 fi

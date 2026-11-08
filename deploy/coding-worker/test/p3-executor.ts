@@ -37,6 +37,7 @@ import { CodingFolderSecretKey } from "../../../packages/runner-orchestrator/src
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
 import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-client.ts";
+import { readLxdHttpsAccess } from "../../../packages/runner-orchestrator/src/lxd-https.ts";
 import { HttpCloudCodingCommandService } from "../../../packages/runtime/src/cloud-coding-command-http.ts";
 import { BrokerCodingEnvironment } from "../coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "../command-authority.ts";
@@ -180,11 +181,13 @@ async function main(): Promise<void> {
 	const lines = createInterface({ input: process.stdin });
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
-	const lxd = new LxdUnixClient();
+	// LXD knows the executor by its own client certificate on the loopback listener, as executor.ts reaches it.
+	const access = await readLxdHttpsAccess();
+	const lxd = new LxdUnixClient(access);
 	// The code host is three levels deep too, on one CPU: its agent took about 2 minutes in phase B's run 2 and more
 	// than production's 2-minute wait in run 3.
 	const codeHosts = config.codeHost
-		? new LxdCodeHosts({ client: new LxdUnixClient(), policy: config.codeHost, log: logCodeHost, agentWaitMs: 600_000 })
+		? new LxdCodeHosts({ client: new LxdUnixClient(access), policy: config.codeHost, log: logCodeHost, agentWaitMs: 600_000 })
 		: undefined;
 	const codeHostJobs = codeHosts ? new CodeHostJobs({ hosts: codeHosts, client: lxd, control, log: logCodeHost }) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];

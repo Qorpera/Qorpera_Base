@@ -2,10 +2,10 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_ARTIFACT_SHA256="711c6bcbc6ea0c1805f946718f79a55aa21a48da8d3764d5b712c3f2699479de"
+EXPECTED_ARTIFACT_SHA256="7fc40f109bb7c9b219c766c64d96531b362bb17d6baf671cc55528b4c5fa747f"
 EXPECTED_PROVENANCE_TOOL_SHA256="316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec"
-EXPECTED_UNIT_SHA256="18f6799fe72a840f795335a099d48be7b82690e7cd38cce3a2eda7b5020966c8"
-EXPECTED_ENV_EXAMPLE_SHA256="433ba03d877d3e702b5716ded5210b63887b21b4a1ea36f940eba17c865e2350"
+EXPECTED_UNIT_SHA256="9410cb691c43d93a143e9ba9a31e069b171d73212af4d3b852196d05c54ff9d7"
+EXPECTED_ENV_EXAMPLE_SHA256="c2673dd266e3f5493de23fccab6403b06162601b30da7cdf0a85a9a5e5fa16b1"
 STAGING_ROOT="/home/company41-admin/step2-lxd"
 ARTIFACT_SOURCE="${STAGING_ROOT}/qorpera-lxd-provider.mjs"
 PROVENANCE_TOOL_SOURCE="${STAGING_ROOT}/qorpera-lxd-image-provenance.mjs"
@@ -85,9 +85,12 @@ install -o root -g root -m 0600 "${ENV_EXAMPLE_SOURCE}" /etc/qorpera/lxd-provide
 
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-lxd-provider.mjs"
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-lxd-image-provenance.mjs"
+# The account reaches LXD only with its own client certificate on the loopback listener, whose certificate is pinned:
+# the request goes out only after the handshake gave the pinned certificate, and LXD must name the account by its own.
 if ! runuser -u "${PROVIDER_USER}" -- /usr/bin/node -e \
-	"const http = require('node:http'); const request = http.get({ socketPath: '/var/snap/lxd/common/lxd/unix.socket', path: '/1.0' }, response => { response.resume(); response.on('end', () => process.exit(response.statusCode === 200 ? 0 : 1)); }); request.on('error', () => process.exit(1)); request.setTimeout(5000, () => request.destroy());"; then
-	echo "The dedicated provider account cannot reach the local LXD socket." >&2
+	"setTimeout(() => process.exit(1), 10000); const fs = require('node:fs'); const http = require('node:http'); const tls = require('node:tls'); const { createHash, X509Certificate } = require('node:crypto'); const root = '/etc/qorpera-lxd-ids'; const account = process.argv[1]; const listener = JSON.parse(fs.readFileSync(root + '/listener.json', 'utf8')); const origin = new URL(listener.origin); const cert = fs.readFileSync(root + '/' + account + '/client.crt'); const identity = new X509Certificate(cert).fingerprint256.replaceAll(':', '').toLowerCase(); const pinned = (_options, done) => { const socket = tls.connect({ host: origin.hostname.replace(/^\[|\]$/g, ''), port: Number(origin.port), cert, key: fs.readFileSync(root + '/' + account + '/client.key'), minVersion: 'TLSv1.3', rejectUnauthorized: false, checkServerIdentity: () => undefined }); socket.once('error', error => done(error)); socket.once('secureConnect', () => { if (createHash('sha256').update(socket.getPeerCertificate(true).raw).digest('hex') === listener.certificateSha256) done(null, socket); else { socket.destroy(); done(new Error('unpinned')); } }); }; const request = http.get({ path: '/1.0', headers: { host: origin.host }, createConnection: pinned }, response => { let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; }); response.on('end', () => { let server = {}; try { server = JSON.parse(body).metadata ?? {}; } catch {} process.exit(response.statusCode === 200 && server.auth === 'trusted' && server.auth_user_method === 'tls' && server.auth_user_name === identity && server.environment?.certificate_fingerprint === listener.certificateSha256 ? 0 : 1); }); }); request.on('error', () => process.exit(1));" \
+	"${PROVIDER_USER}"; then
+	echo "The dedicated provider account cannot reach the pinned LXD listener with its own identity." >&2
 	exit 1
 fi
 
@@ -163,7 +166,6 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		'QORPERA_SUPABASE_SERVICE_KEY=preflight-service-key' \
 		'QORPERA_SUPABASE_PUBLISHABLE_KEY=preflight-publishable-key' \
 		'QORPERA_RUNNER_PROVIDER_STATE_ROOT=/var/lib/qorpera-provider/runs' \
-		'QORPERA_LXD_SOCKET=/var/snap/lxd/common/lxd/unix.socket' \
 		'QORPERA_LXD_OPERATION_TIMEOUT_SECONDS=10' \
 		'QORPERA_LXD_PROJECT=qorpera-runners' \
 		'QORPERA_LXD_JOB_PROFILE=qorpera-job-v1' \
@@ -240,7 +242,7 @@ state_tmp=$(mktemp)
 	else
 		echo "configuration=absent-fail-closed"
 	fi
-	echo "lxd_socket_access=provider-user-verified"
+	echo "lxd_access=provider-identity-verified"
 	echo "runtime_preflight=${runtime_preflight}"
 } >"${state_tmp}"
 install -o root -g root -m 0644 "${state_tmp}" "${STATE_LOG}"

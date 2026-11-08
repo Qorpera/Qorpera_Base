@@ -101,8 +101,12 @@ test("packages the folder service, the folder program, the units and the install
 		assert.match(service, /^LoadCredential=qorpera-supabase-service-key:\/etc\/qorpera-folder-service\/supabase-key$/m);
 		assert.match(service, /^RequiresMountsFor=\/srv\/qorpera\/canonical$/m);
 		const bridge = await readFile(join(destination, "qorpera-folder-bridge.service"), "utf8");
-		assert.match(bridge, /^RestrictAddressFamilies=AF_UNIX AF_VSOCK$/m);
-		assert.match(bridge, /^SupplementaryGroups=lxd$/m);
+		// LXD knows the bridge by its own client certificate on the pinned loopback listener, never by the socket's group.
+		assert.match(bridge, /^RestrictAddressFamilies=AF_UNIX AF_VSOCK AF_INET$/m);
+		assert.match(bridge, /^IPAddressDeny=any$/m);
+		assert.match(bridge, /^IPAddressAllow=localhost$/m);
+		assert.match(bridge, / --lxd-https \/etc\/qorpera-lxd-ids$/m);
+		assert.ok(!/SupplementaryGroups|lxd-socket/.test(bridge), "the bridge never holds LXD's group");
 		assert.ok(!/LoadCredential/.test(bridge), "the bridge holds no credential");
 		const socket = await readFile(join(destination, "qorpera-folder-service.socket"), "utf8");
 		assert.match(socket, /^SocketMode=0660$/m);

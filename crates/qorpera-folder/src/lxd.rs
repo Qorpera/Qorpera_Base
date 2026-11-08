@@ -7,9 +7,13 @@
 //!   meanwhile wait for it), and at most one a second: a CID missing from a listing under a second old is answered
 //!   "none" without asking again.
 //!
+//! The bridge asks over LXD's pinned loopback HTTPS listener with its own client certificate (`lxd_https`), not as
+//! a member of the socket's group. Root's socket (`--lxd-socket`) stays for root tools and tests.
+//!
 //! The bridge reads nothing a machine sends, so the account that may ask LXD (which is root-equivalent on the node)
 //! never parses machine input.
 
+use crate::lxd_https::Https;
 use crate::proto::{Lookup, Machine};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -20,6 +24,8 @@ use std::time::{Duration, Instant};
 pub const SOCKET: &str = "/var/snap/lxd/common/lxd/unix.socket";
 /// The largest answer read from LXD: every instance on the node with its configuration.
 const MAX_ANSWER: u64 = 64 * 1024 * 1024;
+/// The largest HTTP head read from LXD.
+const MAX_HEAD: usize = 16 * 1024;
 const CONFIRMED_FOR: Duration = Duration::from_secs(2);
 const LIST_AT_MOST_EVERY: Duration = Duration::from_secs(1);
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -37,8 +43,16 @@ struct State {
 	listed: Option<Instant>,
 }
 
+/// How the bridge reaches LXD.
+pub enum Transport {
+	/// The bridge's own way (WS15 V2-A1): its client certificate on the pinned loopback listener.
+	Https(Https),
+	/// Root's socket, for root tools and tests.
+	Socket(String),
+}
+
 pub struct Machines {
-	socket: String,
+	transport: Transport,
 	state: Mutex<State>,
 	done: Condvar,
 	/// Requests made to LXD (for tests and the log).
@@ -46,8 +60,8 @@ pub struct Machines {
 }
 
 impl Machines {
-	pub fn new(socket: &str) -> Machines {
-		Machines { socket: socket.to_string(), state: Mutex::new(State::default()), done: Condvar::new(), asked: Mutex::new(0) }
+	pub fn new(transport: Transport) -> Machines {
+		Machines { transport, state: Mutex::new(State::default()), done: Condvar::new(), asked: Mutex::new(0) }
 	}
 
 	pub fn asked(&self) -> u64 {
@@ -151,27 +165,91 @@ impl Machines {
 	/// The status and body of one request.
 	fn get(&self, path: &str) -> std::io::Result<(u16, Vec<u8>)> {
 		*self.asked.lock().unwrap() += 1;
-		let mut s = UnixStream::connect(&self.socket)?;
-		s.set_read_timeout(Some(TIMEOUT))?;
-		s.set_write_timeout(Some(TIMEOUT))?;
-		// HTTP/1.0: LXD then answers with the whole body and closes, never chunked.
-		s.write_all(format!("GET {path} HTTP/1.0\r\nHost: lxd\r\n\r\n").as_bytes())?;
-		let mut answer = Vec::new();
-		s.take(MAX_ANSWER + 1).read_to_end(&mut answer)?;
-		if answer.len() as u64 > MAX_ANSWER {
-			return Err(std::io::Error::other("LXD answer is too large"));
+		match &self.transport {
+			Transport::Https(https) => exchange(&mut https.connect()?, &https.host(), path),
+			Transport::Socket(socket) => {
+				let mut s = UnixStream::connect(socket)?;
+				s.set_read_timeout(Some(TIMEOUT))?;
+				s.set_write_timeout(Some(TIMEOUT))?;
+				exchange(&mut s, "lxd", path)
+			}
 		}
-		let split =
-			answer.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| std::io::Error::other("no HTTP head"))?;
-		let line = answer[..split].split(|&b| b == b'\n').next().unwrap_or_default();
-		let status = line
-			.strip_prefix(b"HTTP/1.")
-			.and_then(|rest| rest.get(2..5))
-			.and_then(|code| std::str::from_utf8(code).ok())
-			.and_then(|code| code.parse::<u16>().ok())
-			.ok_or_else(|| std::io::Error::other("no HTTP status"))?;
-		Ok((status, answer[split + 4..].to_vec()))
 	}
+}
+
+/// One HTTP/1.0 request and its answer's status and body. LXD then answers with the whole body, never chunked. With
+/// a Content-Length the body ends there, even if the connection stays open; without one, at the close.
+fn exchange(s: &mut (impl Read + Write), host: &str, path: &str) -> std::io::Result<(u16, Vec<u8>)> {
+	s.write_all(format!("GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n").as_bytes())?;
+	s.flush()?;
+	let mut answer = Vec::new();
+	let mut chunk = [0u8; 8192];
+	let split = loop {
+		if let Some(at) = answer.windows(4).position(|w| w == b"\r\n\r\n") {
+			break at;
+		}
+		if answer.len() > MAX_HEAD {
+			return Err(std::io::Error::other("LXD's HTTP head is too large"));
+		}
+		match s.read(&mut chunk) {
+			Ok(0) => return Err(std::io::Error::other("no HTTP head")),
+			Ok(n) => answer.extend_from_slice(&chunk[..n]),
+			Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+			Err(e) => return Err(e),
+		}
+	};
+	if split > MAX_HEAD {
+		return Err(std::io::Error::other("LXD's HTTP head is too large"));
+	}
+	let head = std::str::from_utf8(&answer[..split]).map_err(|_| std::io::Error::other("LXD's HTTP head is not text"))?;
+	let mut lines = head.split("\r\n");
+	let status = lines
+		.next()
+		.and_then(|line| line.strip_prefix("HTTP/1."))
+		.and_then(|rest| rest.get(2..5))
+		.filter(|code| code.bytes().all(|b| b.is_ascii_digit()))
+		.and_then(|code| code.parse::<u16>().ok())
+		.ok_or_else(|| std::io::Error::other("no HTTP status"))?;
+	let mut length: Option<u64> = None;
+	for line in lines {
+		let (name, value) = line.split_once(':').ok_or_else(|| std::io::Error::other("an HTTP header without a colon"))?;
+		if name.eq_ignore_ascii_case("transfer-encoding") {
+			return Err(std::io::Error::other("LXD's answer has a transfer encoding"));
+		}
+		if name.eq_ignore_ascii_case("content-length") {
+			let value = value.trim_matches([' ', '\t']);
+			let value = Some(value)
+				.filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+				.and_then(|v| v.parse::<u64>().ok())
+				.ok_or_else(|| std::io::Error::other("LXD's Content-Length is not a number"))?;
+			if length.is_some_and(|l| l != value) {
+				return Err(std::io::Error::other("LXD's answer has two different Content-Lengths"));
+			}
+			length = Some(value);
+		}
+	}
+	let mut body = answer.split_off(split + 4);
+	match length {
+		Some(length) => {
+			if length > MAX_ANSWER {
+				return Err(std::io::Error::other("LXD answer is too large"));
+			}
+			if body.len() as u64 > length {
+				return Err(std::io::Error::other("LXD's answer is longer than its Content-Length"));
+			}
+			Read::take(&mut *s, length - body.len() as u64).read_to_end(&mut body)?;
+			if (body.len() as u64) < length {
+				return Err(std::io::Error::other("LXD's answer ended early"));
+			}
+		}
+		None => {
+			Read::take(&mut *s, MAX_ANSWER + 1 - body.len() as u64).read_to_end(&mut body)?;
+			if body.len() as u64 > MAX_ANSWER {
+				return Err(std::io::Error::other("LXD answer is too large"));
+			}
+		}
+	}
+	Ok((status, body))
 }
 
 /// The instance as a machine if it is running with this CID and has every field.
@@ -291,7 +369,7 @@ mod tests {
 			},
 			Duration::from_millis(50),
 		);
-		let machines = Arc::new(Machines::new(&socket));
+		let machines = Arc::new(Machines::new(Transport::Socket(socket)));
 		let threads: Vec<_> = (0..64)
 			.map(|i| {
 				let machines = machines.clone();
@@ -330,7 +408,7 @@ mod tests {
 			},
 			Duration::from_millis(100),
 		);
-		let machines = Arc::new(Machines::new(&socket));
+		let machines = Arc::new(Machines::new(Transport::Socket(socket)));
 		assert_eq!(machines.lookup(42).0, Lookup::Found);
 		std::thread::sleep(CONFIRMED_FOR + Duration::from_millis(50));
 		let threads: Vec<_> = (0..32)
@@ -355,7 +433,7 @@ mod tests {
 			},
 			Duration::ZERO,
 		);
-		let machines = Machines::new(&socket);
+		let machines = Machines::new(Transport::Socket(socket));
 		machines.state.lock().unwrap().known.insert(
 			42,
 			Known { machine: exec(), confirmed: Instant::now() - CONFIRMED_FOR - Duration::from_millis(1) },
@@ -384,12 +462,101 @@ mod tests {
 			},
 			Duration::ZERO,
 		);
-		let machines = Machines::new(&socket);
+		let machines = Machines::new(Transport::Socket(socket));
 		assert_eq!(machines.lookup(42).0, Lookup::Found);
 		std::thread::sleep(CONFIRMED_FOR + Duration::from_millis(50));
 		assert_eq!(machines.lookup(42), (Lookup::None, None));
 		std::thread::sleep(LIST_AT_MOST_EVERY + Duration::from_millis(50));
 		assert_eq!(machines.lookup(42), (Lookup::Unavailable, None));
-		assert_eq!(Machines::new("/nonexistent/lxd.sock").lookup(42), (Lookup::Unavailable, None));
+		let nowhere = Machines::new(Transport::Socket("/nonexistent/lxd.sock".into()));
+		assert_eq!(nowhere.lookup(42), (Lookup::Unavailable, None));
+	}
+
+	/// An answer that arrives `step` bytes at a time. Past its end the wire is closed, or stays open (a read then
+	/// fails, as a read timeout would).
+	struct Wire {
+		answer: Vec<u8>,
+		at: usize,
+		step: usize,
+		open: bool,
+		sent: Vec<u8>,
+	}
+
+	impl Read for Wire {
+		fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+			if self.at >= self.answer.len() {
+				return if self.open { Err(std::io::ErrorKind::WouldBlock.into()) } else { Ok(0) };
+			}
+			let n = self.step.min(buf.len()).min(self.answer.len() - self.at);
+			buf[..n].copy_from_slice(&self.answer[self.at..self.at + n]);
+			self.at += n;
+			Ok(n)
+		}
+	}
+
+	impl Write for Wire {
+		fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+			self.sent.extend_from_slice(buf);
+			Ok(buf.len())
+		}
+
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	fn wire(answer: &str, step: usize, open: bool) -> Wire {
+		Wire { answer: answer.as_bytes().to_vec(), at: 0, step, open, sent: Vec::new() }
+	}
+
+	#[test]
+	fn an_answer_ends_at_its_content_length_or_at_the_close_and_anything_else_is_refused() {
+		// The listener may keep the connection open after the body: its Content-Length ends it.
+		let mut open = wire("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\nhello", 7, true);
+		assert_eq!(exchange(&mut open, "127.0.0.1:8443", "/1.0/x").unwrap(), (200, b"hello".to_vec()));
+		assert_eq!(open.sent, b"GET /1.0/x HTTP/1.0\r\nHost: 127.0.0.1:8443\r\n\r\n");
+		let read = |answer: &str, step: usize, open: bool| {
+			exchange(&mut wire(answer, step, open), "lxd", "/1.0").map_err(|e| e.to_string())
+		};
+		assert_eq!(read("HTTP/1.1 404 Not Found\r\ncontent-length: 2\r\n\r\n{}", 7, true), Ok((404, b"{}".to_vec())));
+		assert_eq!(read("HTTP/1.0 200 OK\r\n\r\nto the end", 7, false), Ok((200, b"to the end".to_vec())));
+		assert_eq!(read("HTTP/1.0 200 OK\r\nContent-Length: 2\r\nContent-Length:\t2 \r\n\r\nok", 7, true), Ok((200, b"ok".to_vec())));
+		let long_head = format!("HTTP/1.0 200 OK\r\nX: {}\r\n\r\n", "a".repeat(MAX_HEAD));
+		for (answer, step, refused) in [
+			("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n", 7, "transfer encoding"),
+			("HTTP/1.0 200 OK\r\nContent-Length: 9\r\n\r\nshort", 7, "ended early"),
+			("HTTP/1.0 200 OK\r\nContent-Length: 1\r\n\r\nlonger", 4096, "longer than its Content-Length"),
+			("HTTP/1.0 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok", 7, "two different"),
+			("HTTP/1.0 200 OK\r\nContent-Length: +2\r\n\r\nok", 7, "not a number"),
+			("HTTP/1.0 200 OK\r\nContent-Length: \r\n\r\nok", 7, "not a number"),
+			("HTTP/1.0 200 OK\r\nContent-Length: 67108865\r\n\r\nok", 7, "too large"),
+			("HTTP/1.0 200 OK\r\nno colon\r\n\r\nok", 7, "without a colon"),
+			("HTTP/1.0 200 OK\r\n", 7, "no HTTP head"),
+			("NOT-HTTP\r\n\r\n", 7, "no HTTP status"),
+			("HTTP/1.0 +20 OK\r\n\r\n", 7, "no HTTP status"),
+			(long_head.as_str(), 4096, "head is too large"),
+		] {
+			let got = read(answer, step, false);
+			assert!(got.as_ref().is_err_and(|e| e.contains(refused)), "{answer:.60}: {got:?}");
+		}
+	}
+
+	#[test]
+	fn the_bridge_asks_over_the_pinned_listener_with_its_own_certificate() {
+		use crate::lxd_https::tests::{stand_in, Scratch};
+		let scratch = Scratch::new(&std::env::temp_dir());
+		let (https, heard) = stand_in(
+			&scratch.0,
+			|_| format!("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}", answer(EXEC)).into_bytes(),
+			None,
+		);
+		let identity = https.identity();
+		let machines = Machines::new(Transport::Https(https));
+		assert_eq!(machines.lookup(42), (Lookup::Found, Some(exec())));
+		let seen = heard.recv_timeout(Duration::from_secs(10)).unwrap();
+		let request = String::from_utf8(seen.request).unwrap();
+		let expected = "GET /1.0/instances?all-projects=true&recursion=1 HTTP/1.0\r\nHost: 127.0.0.1:";
+		assert!(request.starts_with(expected), "{request}");
+		assert_eq!(seen.client, Some(identity));
 	}
 }

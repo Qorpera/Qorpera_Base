@@ -52,8 +52,8 @@ test("Azure signed-guest acceptance proves fail-closed synthetic boundaries and 
 	assert.match(source, /Refusing to remove an unrecognized instance/);
 	assert.match(source, /! mountpoint -q \/var\/lib\/qorpera\/identity/);
 	assert.match(source, /\[\[ ! -e \/qorpera\/company-live \]\]/);
-	assert.match(source, /core\.https_address/);
-	assert.match(source, /\(\^\|:\)\(8443\)\$/);
+	assert.match(source, /\[\[ \$\(lxc config get core\.https_address\) =~ \$\{loopback_listener\} \]\]/);
+	assert.match(source, /\$4 ~ \/:8443\$\/ && \$4 !~ \/\^\(127\\\.0\\\.0\\\.1\|\\\[::1\\\]\):8443\$\//);
 	assert.match(source, /snap list lxd \| awk 'NR == 2 \{ print \$NF \}'/);
 	assert.match(source, /apt-mark showhold \| grep -Fxq "\$\{held_package\}"/);
 	assert.match(source, /AZURE_STEP2_SIGNED_GUEST_VERIFIER_STAGED/);

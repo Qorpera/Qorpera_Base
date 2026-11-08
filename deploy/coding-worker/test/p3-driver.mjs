@@ -131,14 +131,17 @@ const GUEST_LOOK = [
 	"true",
 ].join("; echo ----; ");
 
-// In the node, for diagnose(): whether the bridge's account, under the bridge's own sandbox, can ask LXD which
-// machine has a CID (lxd.rs answers "unavailable" for any failure, and nothing logs it).
+// In the node, for diagnose(): whether the bridge's account, under the bridge's own sandbox and with its own identity
+// on LXD's pinned loopback listener, can ask LXD which machine has a CID (lxd.rs answers "unavailable" for any
+// failure, and nothing logs it).
+const BRIDGE_IDS = "/etc/qorpera-lxd-ids";
 const BRIDGE_LOOK = [
-	"stat -c '%U:%G %a' /var/snap/lxd/common/lxd/unix.socket",
+	`stat -c '%n %U:%G %a' ${BRIDGE_IDS} ${BRIDGE_IDS}/listener.json ${BRIDGE_IDS}/qorpera-folder-bridge ${BRIDGE_IDS}/qorpera-folder-bridge/client.crt ${BRIDGE_IDS}/qorpera-folder-bridge/client.key`,
+	`[ "$(openssl x509 -in /var/snap/lxd/common/lxd/server.crt -outform DER | sha256sum | cut -c1-64)" = "$(grep -oE '[0-9a-f]{64}' ${BRIDGE_IDS}/listener.json)" ] && echo "the listener pin is LXD's certificate" || echo "the listener pin is not LXD's certificate"`,
 	"id qorpera-folder-bridge",
 	"systemctl show -p ActiveState -p MainPID -p NRestarts qorpera-folder-bridge",
 	"grep -E '^(Uid|Gid|Groups)' /proc/$(systemctl show -p MainPID --value qorpera-folder-bridge)/status",
-	"systemd-run --wait --pipe --quiet -p User=qorpera-folder-bridge -p Group=qorpera-folder-bridge -p SupplementaryGroups=lxd -p ProtectSystem=strict -p PrivateDevices=yes -p NoNewPrivileges=yes curl -sS --max-time 5 --unix-socket /var/snap/lxd/common/lxd/unix.socket 'http://lxd/1.0/instances?all-projects=true&recursion=1' 2>&1 | grep -oE '\"(name|project|status|volatile.vsock_id)\":\"[^\"]*\"|^curl.*' | head -n 40",
+	`origin=$(grep -oE 'https://[^"]+' ${BRIDGE_IDS}/listener.json); key=$(openssl x509 -in /var/snap/lxd/common/lxd/server.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64); systemd-run --wait --pipe --quiet -p User=qorpera-folder-bridge -p Group=qorpera-folder-bridge -p ProtectSystem=strict -p PrivateDevices=yes -p NoNewPrivileges=yes -p IPAddressDeny=any -p IPAddressAllow=localhost curl -sS --max-time 5 --tlsv1.3 -k --pinnedpubkey "sha256//$key" --cert ${BRIDGE_IDS}/qorpera-folder-bridge/client.crt --key ${BRIDGE_IDS}/qorpera-folder-bridge/client.key "$origin/1.0/instances?all-projects=true&recursion=1" 2>&1 | grep -oE '"(name|project|status|volatile.vsock_id)":"[^"]*"|^curl.*' | head -n 40`,
 	"true",
 ].join("; echo ----; ");
 
@@ -1245,7 +1248,7 @@ function gatewayFor(turn) {
 // mount of its own, which the storage's mount check refuses (OFFICE_HOST_MOUNT_MISMATCH, master run 5).
 function executorSandbox() {
 	return [
-		"User=qorpera-coding-executor", "Group=qorpera-coding-executor", "SupplementaryGroups=lxd",
+		"User=qorpera-coding-executor", "Group=qorpera-coding-executor",
 		"RuntimeDirectory=qorpera-coding-host", "RuntimeDirectoryMode=0700", "RuntimeDirectoryPreserve=yes",
 		"ReadWritePaths=/mnt/qorpera-nas",
 		"LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json",
