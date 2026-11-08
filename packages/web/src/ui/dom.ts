@@ -336,20 +336,42 @@ export function spinner(label = t("Loading")): HTMLElement {
 /* The company logo. A company's picture is its logo, and the cloud carries
  * none (CLIENT-CONTRACT.md request 10 asks for a logo field, either a named
  * figure or an uploaded image). Until it exists, a company wears a placeholder
- * figure derived from its profile id, which survives a rename. The Crown is
- * left out: it is the Co-Founder's. */
+ * figure and colour derived from its profile id, which survive a rename. The
+ * Crown is left out: it is the Co-Founder's. The colour is one of the
+ * palette's bright colours (avatar-appearance.js), never Charcoal or Gray, so
+ * the hub is not a row of black figures (Jonas, 8 November 2026). */
 const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "ghost"] as const;
 export type CompanyFigure = (typeof COMPANY_FIGURES)[number];
-const COMPANY_INK = "#312f2d";
+export const COMPANY_COLORS = [
+	"#87674c",
+	"#ff365e",
+	"#f96e2d",
+	"#fcb51b",
+	"#00c878",
+	"#00bfb3",
+	"#2047bd",
+	"#b83ff5",
+	"#ff2994",
+] as const;
+
+function seedHash(seed: string, multiplier: bigint): bigint {
+	let value = 0n;
+	for (const character of seed)
+		value = (value * multiplier + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
+	return value;
+}
 
 export function companyFigure(seed: string): CompanyFigure {
-	let value = 0n;
-	for (const character of seed) value = (value * 33n + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
-	return COMPANY_FIGURES[Number(value % BigInt(COMPANY_FIGURES.length))] ?? "planet";
+	return COMPANY_FIGURES[Number(seedHash(seed, 33n) % BigInt(COMPANY_FIGURES.length))] ?? "planet";
+}
+
+/** A second hash, so a company's colour does not follow its figure. */
+export function companyColor(seed: string): string {
+	return COMPANY_COLORS[Number(seedHash(seed, 131n) % BigInt(COMPANY_COLORS.length))] ?? COMPANY_COLORS[0];
 }
 
 export function companyLogo(seed: string, className = ""): HTMLElement {
-	const logo = figureElement(companyFigure(seed), COMPANY_INK, { still: true });
+	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	return logo;
 }
