@@ -1619,6 +1619,25 @@ it("builds the founders' product at their ambition, and demos the product itself
 		expect(instructions).toContain(rule);
 });
 
+it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {
+	// Jonas, 8 November: a founder who only shows a post's AI-made picture and asks for "an app like this" must still
+	// get a product that works at scale; the platform derives it, without the founder knowing software.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Before the concepts comes the solution.",
+		"treat what they show as the need, never as the way to build it, and never ask them how to build it",
+		"write it in plain words in strategy/solution.md before the brief",
+		"how the strongest companies in the field build it, and why the quick ways fail",
+		"the foundation that follows, such as the data, the catalog of real items and how every item is prepared",
+		"Have people with the expertise research it, hiring them if the company lacks them",
+		"the product in one sentence, who it is for, how it works from the solution,",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"Before the brief, the Co-Founder has the team work out the solution",
+	);
+});
+
 it("makes concepts in four steps, looks at pictures, and writes to coworkers in plain words (8 November 2026)", () => {
 	// Jonas, 8 November: the agents jumped to building, researched only in text and never judged how anything looks,
 	// and their threads read as test reports.
