@@ -21,6 +21,7 @@ import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextRequest,
+	cloudNativeContextReply,
 } from "@qorpera/runtime/cloud-native-context-composition";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
@@ -272,6 +273,51 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	expect(recorded.mode).toBe(0o400);
 	expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("project_doc_max_bytes=0");
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
+const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+
+it("cuts webhook signing secrets out of the instructions file and the thread's instructions it sends Codex", async () => {
+	const { result, evidence } = run("bootstrap", { runtimeInstructions: `HOST_LAW ${FAKE_WEBHOOK_SECRET} END` });
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	// The file and the thread's instructions stay the same bytes.
+	expect(recorded.bootstrap).toBe(recorded.threadParameters.developerInstructions);
+	expect(recorded.bootstrap).toContain("HOST_LAW whsec_[REDACTED] END");
+});
+
+it("cuts webhook signing secrets out of every turn input it sends Codex, whatever composed it", async () => {
+	const { result, evidence } = run("model-selection", {
+		opening: async () => ({
+			prompt: `Private test input ${FAKE_WEBHOOK_SECRET}`,
+			runtimeInstructions: `Opening law ${FAKE_WEBHOOK_SECRET}`,
+		}),
+	});
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(recorded.turnParameters.input[0].text).toBe("Private test input whsec_[REDACTED]");
+	expect(recorded.threadParameters.developerInstructions).toContain("Opening law whsec_[REDACTED]");
+});
+
+it("cuts webhook signing secrets out of a work message it hands Codex, and keeps Codex's own items by position", () => {
+	const request = {
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: randomUUID(),
+		threadId: randomUUID(),
+		turnId: randomUUID(),
+		purpose: "turn",
+		model: "offline-probe",
+		items: [{ kind: "message", role: "user", callId: null, bytes: 10 }],
+	} as unknown as CloudNativeContextRequest;
+	const work = JSON.stringify({ schema: "qorpera.run-work/v1", lines: [`printed ${FAKE_WEBHOOK_SECRET}`] });
+	const reply = cloudNativeContextReply(request, { input: [{ keep: 0 }, { work }] });
+	expect(JSON.stringify(reply)).not.toContain(FAKE_WEBHOOK_SECRET);
+	expect(reply.input).toEqual([{ keep: 0 }, { work: work.replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]") }]);
 });
 
 it.each(["capture-image", "missing-capture-image"])(

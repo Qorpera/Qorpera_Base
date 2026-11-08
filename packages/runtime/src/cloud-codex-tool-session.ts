@@ -44,6 +44,7 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	type CloudNativeFencedResult,
 	type CloudNativeToolBoundary,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -1444,7 +1445,12 @@ class CodexBoundaryRpc {
 
 	#write(message: unknown): void {
 		if (this.#closed || this.#failure) return;
-		const text = JSON.stringify(message);
+		// Every message the host sends Codex passes here: the thread's instructions, every turn's input, the reviewer's
+		// and the compactor's requests, and every tool answer. A webhook signing secret is cut out of all of it, as the
+		// tool boundary cuts one out of a result (E3c-2), so no source, today's or a later one, reaches the model with
+		// one. What was cut already is left as it is (the rule never matches its own mark), and the rule matches no quote
+		// or backslash, so the message stays the same JSON.
+		const text = redactCloudWebhookSecrets(JSON.stringify(message));
 		if (
 			Buffer.byteLength(text) >
 			(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
@@ -2366,9 +2372,11 @@ export async function runCloudCodexToolSession(options: {
 		// Generate one host-owned bootstrap and explicitly load these exact bytes.
 		// Ambient project/home instruction discovery remains disabled: a Company
 		// File or restored auth home must never add a second platform prompt.
-		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
-			.filter(Boolean)
-			.join("\n");
+		// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
+		// file and the thread's instructions are the same bytes.
+		const nativeInstructions = redactCloudWebhookSecrets(
+			[CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions].filter(Boolean).join("\n"),
+		);
 		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		stage = "codex-thread-start";
 		await rpc.startThread();
