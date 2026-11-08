@@ -1638,6 +1638,23 @@ it("works out the solution before the brief, whatever example the founders showe
 	);
 });
 
+it("decides one full product as the solution, starting narrow in market, never in product (8 November 2026)", () => {
+	// Dekora, 8 November: Strategy listed image generation, editing and shopping as options and proposed selling
+	// generated pictures first, putting off real items until a cheaper test proved demand, in heavily hedged text.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"The solution is one product, decided: the one that meets the need in full, not a menu of options for later and not a first version made the quick way.",
+		"Where to start narrows the market and the suppliers, never the product",
+		"until a lesser product proves demand, because testing a lesser product tests the wrong thing",
+		"say once, in one line, what still has to be checked, instead of hedging every paragraph",
+		"check it against what the founders said they want, and update it when they say more",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The solution is one product that meets the need in full: where to start narrows the market and the suppliers, never the product.",
+	);
+});
+
 it("makes concepts in four steps, looks at pictures, and writes to coworkers in plain words (8 November 2026)", () => {
 	// Jonas, 8 November: the agents jumped to building, researched only in text and never judged how anything looks,
 	// and their threads read as test reports.
