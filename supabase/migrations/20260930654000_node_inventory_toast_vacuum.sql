@@ -22,9 +22,11 @@
 -- on a few index pages. The full page images were mostly written by the thinning's own deletes minutes before.
 --
 -- The heap is left at PostgreSQL's default on purpose, for now. Its primary key holds the random observation ids of the
--- reports filed before 7 November 11:14Z (time-ordered ids since v211), and an index vacuum touches nearly every page of
--- that key while it holds deleted random ids: hourly, that would add about 6 MB of WAL an hour until those reports are
--- gone (thinned by 9 November 11:14Z, deleted by the seven-day retention by 14 November 11:14Z).
+-- reports filed before 7 November 11:14Z (time-ordered ids since v211), and an index vacuum rewrites most pages of that key
+-- while it holds deleted random ids. Lab on a test machine, 130,000 reports: one index vacuum after an hour's thinning wrote
+-- 4.0 MB of WAL on random ids (0.15 MB on time-ordered ids), after a day's 7.1 MB. Vacuuming the heap after each run would
+-- add about 2 MB of WAL an hour per receipt table until those reports are gone (thinned by 9 November 11:14Z, deleted by the
+-- seven-day retention by 14 November 11:14Z).
 --
 -- TOAST options are stored on the TOAST table (pg_class.reloptions of pg_toast.pg_toast_<oid>); the table's own
 -- reloptions stay unset. ALTER TABLE ... SET (toast.autovacuum_*) takes SHARE UPDATE EXCLUSIVE: the observers' inserts and
