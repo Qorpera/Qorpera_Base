@@ -2162,9 +2162,10 @@ it("cuts a webhook signing secret out of the conversation view before it is rele
 	const release = (calls[methods.indexOf("qorpera_memory_release")]![1] as { p_request: { outputSha256: string } })
 		.p_request;
 	expect(release.outputSha256).toBe(start.p_context_sha256);
-	const record = (calls[methods.indexOf("qorpera_memory_view_record")]![1] as { p_request: Record<string, unknown> })
-		.p_request;
-	expect(JSON.stringify(record)).not.toContain(fake);
+	const viewRecord = (
+		calls[methods.indexOf("qorpera_memory_view_record")]![1] as { p_request: Record<string, unknown> }
+	).p_request;
+	expect(JSON.stringify(viewRecord)).not.toContain(fake);
 });
 
 it("shows a group-chat run the chat's summary tree, with the agent's own thread as a branch", async () => {
