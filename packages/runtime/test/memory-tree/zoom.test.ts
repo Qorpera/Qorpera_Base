@@ -263,8 +263,9 @@ describe("memory zoom tool", () => {
 				next = start + size;
 			}
 			expect(next).toBe(1024);
+			// Folded: fewer rows than messages, as many as one 32 KiB result holds.
 			expect(rows.length).toBeGreaterThan(8);
-			expect(rows.length).toBeLessThan(200);
+			expect(rows.length).toBeLessThan(1024);
 			expect(blocks.length).toBeGreaterThan(1);
 			expect(f.releases()).toEqual([release(shown, blocks)]);
 		} finally {
@@ -342,7 +343,7 @@ describe("memory zoom tool", () => {
 	});
 
 	it("pages a long message in pieces that each reach the model whole, each from where the last stopped", async () => {
-		const long = Array.from({ length: 700 }, (_, n) => `Line ${n}: ${TRICKY}${"word ".repeat(n % 9)}`).join("");
+		const long = Array.from({ length: 2800 }, (_, n) => `Line ${n}: ${TRICKY}${"word ".repeat(n % 9)}`).join("");
 		const f = await fixture((request) => answer(request, 12, { event: event(9, { text: long }) }));
 		try {
 			const body = `9|Jonas (2026-10-04 09:12 UTC): ${long}`;

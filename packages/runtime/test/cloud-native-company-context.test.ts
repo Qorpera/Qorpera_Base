@@ -824,7 +824,8 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 		"Invalid cloud context source",
 	);
 	// A 16 KiB page is fitted to the result fence: the model always receives nextOffset,
-	// counted in code points, also for the last page of a source (SQL nextOffset null).
+	// counted in code points, also for the last page of a source (SQL nextOffset null). At the 32 KiB fence a page of
+	// plain or four-byte characters comes whole; one whose characters escape past the fence is cut.
 	const take = (units: string[], from: number, maxBytes: number) => {
 		let count = 0;
 		let bytes = 0;
@@ -884,12 +885,14 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 		expect(fenced).toMatchObject({ status: "ok", content: { truncated: false } });
 		const returned = JSON.parse(fenced.content.text);
 		const length = [...returned.content.text].length;
-		expect(length).toBeGreaterThan(256);
-		expect(length).toBeLessThan(size);
+		if (unit === "<" || unit === '"') {
+			expect(length).toBeGreaterThan(256);
+			expect(length).toBeLessThan(size);
+		} else expect(length).toBe(size);
 		expect(returned.content).toMatchObject({
 			sha256: source.content.sha256,
 			offset: inline,
-			nextOffset: inline + length,
+			nextOffset: length < size || !last ? inline + length : null,
 			truncated: true,
 		});
 		expect(returned.content.text).toBe(units.slice(inline, inline + length).join(""));

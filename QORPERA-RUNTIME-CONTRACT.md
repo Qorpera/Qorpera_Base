@@ -6276,6 +6276,35 @@ each step. It now leaves the envelope.
      Company File read shows up to about 7 KiB of plain text in one result, instead of about 5.7 KiB.
    - That means fewer model rounds for the same reading.
 
+### 2026-11-08 amendment: one tool result holds up to 32 KiB
+
+> **Proposed, not approved.** Built in the performance sprint's round 2 (measure T2), as a draft PR. Jonas decides.
+> It goes live only with the release that carries the rebuilt Codex pin and its runtime bundle together, after its
+> migration. It amends the 2026-10-21 amendment's item 5 ("The result fence stays at 8 KiB") and the native boundary's
+> 8 KiB envelope bound. Nothing else changes: every check on a result stays, and each result stays one host-issued
+> envelope.
+
+1. **The bound.** One tool result's envelope, escaping and provenance included, is at most 32 KiB (32,768 bytes), not
+   8 KiB. The patched Codex's result fence refuses a larger one, the runtime fits every result to it, and the run's
+   context view and run log check it (migration `20260930652000`).
+   - `company_read` asks for up to 32 KiB a call and shows as much as fits one result: about 31 KiB of plain text,
+     less where characters need escaping. It was about 7 KiB.
+   - Every other tool that pages to one result (`machine_read`, `read_context`, `zoom`, `read_event`, skills, coding
+     commands) shows more per page by the same rule, within its own limit.
+   - Codex's history keeps each issued result whole: the governed session's fixed `tool_output_token_limit=65536`
+     replaces the model's own truncation policy, whatever the model's metadata says. Unchanged here.
+2. **What the provider sees.** Larger tool outputs, in fewer requests per run. The `company_read` tool's schema
+   names the new maximum (`limit` up to 32,768) in its description. Nothing else: the same Codex version, request
+   kinds, headers, prewarm, model list calls, cache key and compaction.
+3. **Why.** A model round has a floor of about 2.7 s that does not grow with the prompt, so each page a run reads
+   costs a round. In the runs of 7 November, continuation pages were about 4 % of run time and replaying the same
+   reads at 32 KiB removes about nine in ten of them; in the reading-heavy founding runs of 5–6 November it was
+   about 11 % of run time (perf sprint A3). Each removed round also no longer resends the whole prompt.
+4. **Rolling.** The migration first: larger bounds harm no runtime at 8 KiB. Then the bundle that pins the rebuilt
+   Codex and raises the runtime's bound, with the images and hosts that carry that binary, together. A runtime ahead
+   of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
+   stays.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

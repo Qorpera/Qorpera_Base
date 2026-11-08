@@ -325,7 +325,7 @@ describe("company_search", () => {
 		// One hit too long for a result is still shown, cut, and the search goes on after it.
 		const long = folderSearchText(
 			{
-				hits: [hit(`${"<".repeat(900)}.md`, 1, "&".repeat(1000)), hit("next.md", 1, "x")],
+				hits: [hit(`${"<".repeat(4000)}.md`, 1, "&".repeat(2000)), hit("next.md", 1, "x")],
 				searched: 2,
 				binary: 0,
 				reads: [],
@@ -339,7 +339,7 @@ describe("company_search", () => {
 		// So is a link whose target is too long for it: the target is cut, and says so.
 		const far = folderSearchText(
 			{
-				hits: [link(`${"<".repeat(300)}/l`, "&".repeat(4095)), hit("next.md", 1, "x")],
+				hits: [link(`${"<".repeat(1500)}/l`, "&".repeat(4095)), hit("next.md", 1, "x")],
 				searched: 0,
 				binary: 0,
 				reads: [],
@@ -348,7 +348,7 @@ describe("company_search", () => {
 			seal,
 		);
 		expect(fitsOneResult(far)).toBe(true);
-		expect(far).toMatch(/^<{300}\/l -> "&+"… \(target cut\)\n/);
+		expect(far).toMatch(/^<{1500}\/l -> "&+"… \(target cut\)\n/);
 		expect(sealed.at(-1)).toMatchObject({ path: "next.md" });
 	});
 

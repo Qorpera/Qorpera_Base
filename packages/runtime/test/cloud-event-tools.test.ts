@@ -291,7 +291,8 @@ describe("agent event tools", () => {
 			from: "Ada Lovelace <ada@example.test>",
 			to: ["agents@northwind.qorpera.mail"],
 			subject: 'Quarterly "numbers" & <notes>',
-			text: Array.from({ length: 1500 }, (_, n) => `Line ${n}: ${tricky}${"plain words ".repeat(n % 7)}`).join(""),
+			// Mostly characters the fence escapes to six bytes, so a database piece of 16,000 of them needs several results.
+			text: Array.from({ length: 1500 }, (_, n) => `Line ${n}: ${tricky}${"<&> ".repeat(n % 7)}`).join(""),
 			html: Array.from({ length: 400 }, (_, n) => `<p class="x">Para ${n} &amp; ${tricky}</p>`).join(""),
 			attachments: [{ filename: "notes.pdf", contentType: "application/pdf", size: 123456 }],
 		};
@@ -309,8 +310,8 @@ describe("agent event tools", () => {
 				const pieces = await readAll(f);
 				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
 				const characters = [...body.toString("utf8")].length;
-				// The database alone would have given far fewer, larger pieces: the runtime cut every one but the last.
-				expect(pieces.length).toBeGreaterThan(Math.ceil(characters / 16000) * 2);
+				// The database alone would have given fewer, larger pieces: the runtime cut them.
+				expect(pieces.length).toBeGreaterThan(Math.ceil(characters / 16000));
 				for (const [place, piece] of pieces.entries()) {
 					expect(piece.encoding).toBe("utf8");
 					expect(piece.total).toBe(characters);
@@ -332,7 +333,14 @@ describe("agent event tools", () => {
 				expect(Buffer.concat(pieces.map((piece) => Buffer.from(piece.data as string, "base64"))).equals(body)).toBe(
 					true,
 				);
-				expect(pieces.length).toBeGreaterThan(Math.ceil(body.length / 24576) * 2);
+				// Each database piece is 24 KiB of bytes, 32 KiB as base64: the runtime cut every one but the last, after
+				// whole bytes, and the next began where it stopped.
+				expect(pieces.length).toBeGreaterThanOrEqual(Math.ceil(body.length / 24576));
+				for (const piece of pieces.slice(0, -1)) {
+					const bytes = Buffer.from(piece.data as string, "base64").length;
+					expect(bytes).toBeLessThan(24576);
+					expect(bytes % 3).toBe(0);
+				}
 				for (const piece of pieces) {
 					expect(piece.encoding).toBe("base64");
 					expect(piece.total).toBe(body.length);
@@ -343,12 +351,14 @@ describe("agent event tools", () => {
 		});
 
 		it("cuts headers too long to leave the body room, every value to one length, and still reads it all fast", async () => {
-			// As long as the intake keeps them: each value at most 2048 characters, all within 8 KiB of JSON.
+			// As long as the intake keeps them: each value at most 2048 characters, all within 8 KiB of JSON. Characters the
+			// fence escapes to six bytes, so they pass one 32 KiB result.
 			const headers = {
 				"delivered-to": "agents@northwind.qorpera.mail",
-				from: '"<&>'.repeat(512),
-				subject: "&<\u2028\u2029".repeat(256),
-				"user-agent": "é".repeat(2048),
+				from: "<".repeat(2048),
+				subject: "&\u2028".repeat(512),
+				"user-agent": ">".repeat(2048),
+				"x-mailer": "é".repeat(256),
 			};
 			const body = Buffer.from(JSON.stringify({ ...mail, text: mail.text.slice(0, 20000), html: "" }), "utf8");
 			const f = await delivery(body, headers);

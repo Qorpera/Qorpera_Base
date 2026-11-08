@@ -1565,7 +1565,7 @@ new file mode 100644
 index 000000000..08528e6d6
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,390 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -1645,7 +1645,8 @@ index 000000000..08528e6d6
 +    const SCHEMA: &str = "qorpera.native-result-fence/v1";
 +    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 +    const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
-+    const MAX_RESULT_BYTES: usize = 8 * 1024;
++    // One host-issued envelope: about 8,200 of the 12,000 tokens Codex's history keeps of a tool output (10,000 and 20 %).
++    const MAX_RESULT_BYTES: usize = 32 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
 +    // Not a budget: a backstop against a host that is alive but hung. The host decides when a model
@@ -1960,7 +1961,7 @@ new file mode 100644
 index 000000000..380de0692
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,444 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -2061,7 +2062,7 @@ index 000000000..380de0692
 +        "missing" => response["outputs"] = json!([]),
 +        "extra" => response["instructions"] = json!("overwrite instructions"),
 +        "bare" => response["outputs"][0]["output"] = json!("unfenced"),
-+        "oversized" => response["outputs"][0]["output"] = json!("x".repeat(8193)),
++        "oversized" => response["outputs"][0]["output"] = json!("x".repeat(32 * 1024 + 1)),
 +        "nonce" => response["requestId"] = json!("stale-request"),
 +        "image_missing" => {
 +            response["outputs"][0]
@@ -2140,10 +2141,11 @@ index 000000000..380de0692
 +#[test]
 +fn maximum_capture_envelope_keeps_native_context_bounded() {
 +    // The host sends canonical JSON, whose embedded quotation marks are escaped
-+    // again in a model request. Exercise that expansion at the 8 KiB result cap.
++    // again in a model request. Exercise that expansion at the 32 KiB result cap:
++    // about 18,300 tokens of the context window, the image counted once.
 +    let mut value = serde_json::to_value(capture_history().unwrap()).unwrap();
-+    let text = json!({"text": "\"".repeat(4080)}).to_string();
-+    assert!((8100..=8192).contains(&text.len()));
++    let text = json!({"text": "\"".repeat(16_376)}).to_string();
++    assert!((32_700..=32 * 1024).contains(&text.len()));
 +    value[0]["output"][0]["text"] = json!(text);
 +    let small: Vec<ResponseItem> = serde_json::from_value(value.clone()).unwrap();
 +    // Synthetic bytes test accounting only; PNG validity is covered separately.
@@ -2155,7 +2157,7 @@ index 000000000..380de0692
 +        tokens,
 +        crate::context_manager::estimate_item_token_count(&small[0])
 +    );
-+    assert!((1001..10_000).contains(&tokens));
++    assert!((1001..20_000).contains(&tokens));
 +}
 +
 +#[tokio::test]
@@ -2210,7 +2212,7 @@ index 000000000..380de0692
 +                    .unwrap()
 +                    .push(json!({"type":"input_text","text":"extra"}));
 +            }
-+            "text" => value[0]["output"][0]["text"] = json!("x".repeat(8193)),
++            "text" => value[0]["output"][0]["text"] = json!("x".repeat(32 * 1024 + 1)),
 +            _ => panic!("unknown capture fault"),
 +        }
 +        let mut input: Vec<ResponseItem> = serde_json::from_value(value).unwrap();
@@ -2360,6 +2362,49 @@ index 000000000..380de0692
 +    assert_eq!(fence(&mut input, &metadata(), &path).await, Ok(()));
 +    let request = host.await.unwrap().unwrap();
 +    assert_eq!(request["outputs"].as_array().unwrap().len(), 300);
++}
++
++#[tokio::test]
++async fn an_envelope_at_the_result_bound_is_fenced_and_kept_whole_one_byte_more_is_not() {
++    // 32 KiB, the most the host issues for one result. Codex's history keeps 10,000
++    // tokens of a tool output and 20 % more, at 4 bytes a token, so it records it whole.
++    let envelope = |text: &str| {
++        json!({"schema":"qorpera.cloud-tool-result/v1","trust":"untrusted_data",
++            "provenance":{"callId":"call-1"},"content":text})
++        .to_string()
++    };
++    let text = "x".repeat(32 * 1024 - envelope("").len());
++    assert_eq!(envelope(&text).len(), 32 * 1024);
++    for (extra, fenced) in [("", true), ("x", false)] {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("f.sock");
++        let mut input: Vec<ResponseItem> = serde_json::from_value(json!([
++            {"type":"function_call","call_id":"call-1","name":"unsupported","arguments":"{}"},
++            {"type":"function_call_output","call_id":"call-1","output":format!("{text}{extra}")}
++        ]))
++        .unwrap();
++        let original = input.clone();
++        let listener = UnixListener::bind(&path).unwrap();
++        let host = tokio::spawn(reply(listener, "none"));
++        let result = fence(&mut input, &metadata(), &path).await;
++        host.await.unwrap().unwrap();
++        if !fenced {
++            assert_eq!(result, Err(()));
++            assert_eq!(input, original);
++            continue;
++        }
++        assert_eq!(result, Ok(()));
++        assert_eq!(
++            serde_json::to_value(&input[1]).unwrap()["output"],
++            json!(envelope(&text))
++        );
++        let mut history = crate::context_manager::ContextManager::new();
++        history.record_items(
++            [&input[1]],
++            codex_protocol::protocol::TruncationPolicy::Tokens(10_000),
++        );
++        assert_eq!(history.raw_items().next(), Some(&input[1]));
++    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
 index 5d5fa3a0a..1e15fed86 100644

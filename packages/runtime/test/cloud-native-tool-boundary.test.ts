@@ -499,7 +499,7 @@ describe("cloud-owned native tool boundary", () => {
 
 	it("fits the content to what the folder report leaves, and escapes and redacts the report's words", async () => {
 		const secret = "whsec_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op5+/=";
-		const text = "x".repeat(9000);
+		const text = "x".repeat(MAX_CLOUD_TOOL_RESULT_BYTES);
 		const report = {
 			saved: 1,
 			notSaved: [{ path: `<b>&${secret}`, outcome: "refused", reason: `it held ${secret}` }],
@@ -513,7 +513,7 @@ describe("cloud-owned native tool boundary", () => {
 			notSaved: [{ path: "<b>&whsec_[REDACTED]", outcome: "refused", reason: "it held whsec_[REDACTED]" }],
 			refused: "\u2028whsec_[REDACTED]",
 		});
-		expect(result.content).toMatchObject({ truncated: true, originalBytes: 9000 });
+		expect(result.content).toMatchObject({ truncated: true, originalBytes: MAX_CLOUD_TOOL_RESULT_BYTES });
 		expect(result.content.includedBytes).toBeGreaterThan(0);
 		expect(Buffer.byteLength(response.contentItems[0].text)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
 		expect(response.contentItems[0].text).not.toMatch(/[<>&\u2028]|Ab12Cd34/);

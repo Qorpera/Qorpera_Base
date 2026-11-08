@@ -297,7 +297,8 @@ it("cuts a row's cells when one row does not fit a result whole", async () => {
 		...Array.from({ length: 29 }, (_, n) => [`c${String(n + 1).padStart(2, "0")}`, "text"] as const),
 	] as const;
 	const header = columns.map(([column]) => column).join(",");
-	const row = (key: string) => [key, ...Array.from({ length: 29 }, () => "w".repeat(300))].join(",");
+	// Each < escapes to six bytes: about 52 KB of cells, past one 32 KiB result.
+	const row = (key: string) => [key, ...Array.from({ length: 29 }, () => "<".repeat(300))].join(",");
 	const f = await fixture({
 		files: {
 			"QorperaOS/tables/wide/table.toml": tableFile("Wide", 'key = ["k"]', columns),

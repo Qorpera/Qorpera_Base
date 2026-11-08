@@ -28,7 +28,11 @@ import {
 } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
-export const MAX_CLOUD_TOOL_RESULT_BYTES = 8 * 1024;
+/** One tool result's envelope, as the patched Codex's result fence bounds it (`MAX_RESULT_BYTES`, 32 KiB since perf
+ * sprint T2; it was 8 KiB). The runtime bundle pins that binary, so the two move together: a runtime past its binary
+ * would have every larger result refused at the fence. The context view and the run log check the same bound
+ * (20260930652000). It is about 8,200 of the 12,000 tokens Codex's history keeps of one tool output. */
+export const MAX_CLOUD_TOOL_RESULT_BYTES = 32 * 1024;
 /** Room a tool leaves in MAX_CLOUD_TOOL_RESULT_BYTES for the envelope around its answer, which it measures with one more
  * level of escaping: the envelope takes 591 bytes, and 722 with the longest call id. A page that would not fit is cut
  * at its end, where its nextOffset sits, so a tool cuts it first. */
@@ -567,7 +571,7 @@ export class CloudNativeToolBoundary {
 		this.#signal.throwIfAborted();
 		const seen = new Set<string>();
 		// No count of outputs: only their size is bounded, by the reply frame they
-		// must fit in (many tiny outputs grow into 8 KiB envelopes).
+		// must fit in (many tiny outputs grow into envelopes of up to one result's bound).
 		let released = 0;
 		const release = (result: CloudNativeFencedResult): CloudNativeFencedResult => {
 			released += Buffer.byteLength(result.output);
@@ -1055,7 +1059,7 @@ export class CloudNativeToolBoundary {
 				this.#signal,
 			);
 			const response = await reported("ok", content);
-			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
+			// The envelope may omit a restricted path when it is fitted to one result. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
 			if (

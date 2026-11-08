@@ -1309,14 +1309,14 @@ describe("machine tools", () => {
 				commandId,
 			});
 			expect(f.content(cancelled as never).companyFolder).toEqual(none);
-			// Each page is as long as the read asks: the first is too large for the result, so the read asks again. The
-			// executor said its paths not saved on the first page only.
+			// Each page is as long as the read asks: the first is too large for the result (each < escapes to six bytes), so
+			// the read asks again. The executor said its paths not saved on the first page only.
 			const folders: Record<string, unknown>[] = [];
 			// What a try after those reports: the paths still not saved, which every try says again.
 			let after: Record<string, unknown> = { company: "mounted" };
 			f.gateway.read.mockImplementation(
 				async (_scope, input) =>
-					page("succeeded", "x".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
+					page("succeeded", "<".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
 			);
 			const plan = { path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" };
 			const pay = { path: "people/pay.md", outcome: "denied" };
@@ -1331,7 +1331,7 @@ describe("machine tools", () => {
 				);
 			const shown = await read("a");
 			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([8192, 4096]);
-			expect(shown.output).toBe("x".repeat(4096));
+			expect(shown.output).toBe("<".repeat(4096));
 			expect(shown.companyFolder).toEqual({ company: "mounted", notSaved: [plan, pay] });
 			// Paths from every try, within the report's limits; the rest are counted.
 			f.gateway.read.mockClear();

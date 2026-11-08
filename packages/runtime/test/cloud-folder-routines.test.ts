@@ -633,7 +633,8 @@ it("lists the routines from the index as many as fit, with a cursor, or one whol
 	expect(first.next).toContain("company_read");
 	expect(one).not.toHaveProperty("next");
 	// One routine too long for one tool result: its instructions are cut, at a character, to fit, and marked.
-	const huge = "Ré ".repeat(7000).trim();
+	// Within the routine's 32 KiB of instructions, escaped past one 32 KiB result.
+	const huge = "<é> ".repeat(5000).trim();
 	const g = await fixture({ files: { [`${ROUTINES}/huge.md`]: file({ instructions: huge }) } });
 	const cut = await g.routines().list({ routineKey: "huge" }, g.context, fitsOneResult);
 	expect(fitsOneResult(String(cut.value))).toBe(true);

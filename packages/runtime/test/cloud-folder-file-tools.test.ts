@@ -125,30 +125,29 @@ it("leaves a code point cut by the window for the next one, and refuses bytes th
 	expect(past.companyReadId).toBe(f.releases[2]?.p_release_id);
 });
 
-it("refuses an answer that cannot reach the model whole, before releasing anything", async () => {
-	// Each & is escaped to six bytes by the fence: even the smallest answer for this path would be cut.
-	const name = `d/${"&".repeat(1300)}.md`;
+it("shows the answer for the longest path the folder takes whole, every byte of it escaped six-fold", async () => {
+	// Each & is escaped to six bytes by the fence: 4,096 of them took three 8 KiB results, and an answer that cannot
+	// reach the model whole is still refused before anything is released (COMPANY_FILE_ANSWER_TOO_LONG). At 32 KiB the
+	// longest path fits, in a read and in a listing.
+	const name = `d/${"&".repeat(4094)}`;
+	expect(Buffer.byteLength(name)).toBe(4096);
 	const f = await fixture({ files: { [name]: "x" } });
-	await refuses(
-		f.call("company_read", { path: name, offset: 0, limit: 4 }),
-		CloudToolRefusal,
-		"COMPANY_FILE_ANSWER_TOO_LONG",
-	);
-	await refuses(
-		f.call("company_list", { path: "d", after: null, limit: 5 }),
-		CloudToolRefusal,
-		"COMPANY_FILE_ANSWER_TOO_LONG",
-	);
-	expect(f.releases).toHaveLength(0);
+	const read = await f.call("company_read", { path: name, offset: 0, limit: 4 });
+	expect(fitsOneResult(String(read.value))).toBe(true);
+	expect(parse(read)).toMatchObject({ path: name, text: "x", nextOffset: null });
+	const listed = await f.call("company_list", { path: "d", after: null, limit: 5 });
+	expect(fitsOneResult(String(listed.value))).toBe(true);
+	expect(parse(listed).entries.map((entry: { path: string }) => entry.path)).toEqual([name]);
+	expect(f.releases).toHaveLength(2);
 });
 
 it("cuts a window whose answer would not fit one result, so the model sees all it is released for", async () => {
-	const f = await fixture({ files: { "angles.md": "<".repeat(4096) } });
-	const content = await f.call("company_read", { path: "angles.md", offset: 0, limit: 4096 });
+	const f = await fixture({ files: { "angles.md": "<".repeat(8192) } });
+	const content = await f.call("company_read", { path: "angles.md", offset: 0, limit: 8192 });
 	const answer = parse(content);
 	expect(fitsOneResult(String(content.value))).toBe(true);
 	expect(answer.bytesRead).toBeGreaterThan(0);
-	expect(answer.bytesRead).toBeLessThan(4096);
+	expect(answer.bytesRead).toBeLessThan(8192);
 	expect(answer.text).toBe("<".repeat(answer.bytesRead));
 	expect(answer.nextOffset).toBe(answer.bytesRead);
 	expect(f.releases[0]?.p_output_sha256).toBe(sha(String(content.value)));
@@ -284,7 +283,7 @@ it("lists a folder page by page, releasing the folder and every entry shown", as
 
 it("shows a wide page as the entries that fit one result, going on after the last shown", async () => {
 	const files: Record<string, string> = {};
-	for (let index = 0; index < 50; index++) files[`wide/${String(index).padStart(2, "0")}-${"x".repeat(200)}.md`] = "x";
+	for (let index = 0; index < 50; index++) files[`wide/${String(index).padStart(2, "0")}-${"x".repeat(800)}.md`] = "x";
 	const f = await fixture({ files });
 	const content = await f.call("company_list", { path: "wide", after: null, limit: 50 });
 	const page = parse(content);
@@ -352,7 +351,7 @@ it("reads a link's target in windows that each fit one result, however much its 
 		let offset: number | null = 0;
 		let windows = 0;
 		while (offset !== null) {
-			const content = await f.call("company_read", { path: "docs/latest", offset, limit: 4096 });
+			const content = await f.call("company_read", { path: "docs/latest", offset, limit: 1000 });
 			expect(fitsOneResult(String(content.value))).toBe(true);
 			const answer = parse(content);
 			expect(answer).toMatchObject({ kind: "symlink", offset, totalBytes: 4095 });
@@ -365,6 +364,10 @@ it("reads a link's target in windows that each fit one result, however much its 
 		expect(windows).toBeGreaterThan(3);
 		// Each window is released as shown.
 		expect(f.releases).toHaveLength(windows);
+		// The longest target fits one result whole, escaped: up to seven bytes a byte, under 32 KiB.
+		const whole = await f.call("company_read", { path: "docs/latest", offset: 0, limit: 4096 });
+		expect(fitsOneResult(String(whole.value))).toBe(true);
+		expect(parse(whole)).toMatchObject({ target, nextOffset: null });
 	}
 	// A window that starts inside a character is not text, one that ends inside one stops before it, and one past the
 	// end is empty.
@@ -390,7 +393,7 @@ it("reads a link's target in windows that each fit one result, however much its 
 it("cuts a listed link's target, and a first link's further when its path is long", async () => {
 	const long = "\u0001".repeat(4095);
 	// Its path, escaped and shown twice (the entry and next), leaves less than 512 bytes of the target room.
-	const wide = `docs/${"&".repeat(300)}`;
+	const wide = `docs/${"&".repeat(2350)}`;
 	const f = await fixture({ files: { "docs/b.md": "b" }, links: { [wide]: long, "docs/a": long, "docs/c": "b.md" } });
 	const first = await f.call("company_list", { path: "docs", after: null, limit: 50 });
 	expect(fitsOneResult(String(first.value))).toBe(true);
@@ -430,10 +433,12 @@ it("cuts a listed link's target, and a first link's further when its path is lon
 });
 
 it("names as much of a long link's target as fits when it refuses to write over the link", async () => {
-	const f = await fixture({ links: { "docs/long": "\u0001".repeat(4095) } });
-	const expectedVersion = f.links.get("docs/long")?.version as string;
+	// The longest target escapes to about 28 KiB: with a long path it no longer fits one result.
+	const long = `docs/${"&".repeat(1000)}`;
+	const f = await fixture({ links: { [long]: "\u0001".repeat(4095) } });
+	const expectedVersion = f.links.get(long)?.version as string;
 	const refused = await f.call("company_write", {
-		path: "docs/long",
+		path: long,
 		operationKey: "write-1",
 		expectedVersion,
 		text: "x",
@@ -913,16 +918,17 @@ it("tells the model the company's work is stopped, or the folder unavailable, an
 });
 
 // The 21 October 2026 amendment "how agents start work and use the company folder", item 5.
-it("reads a window of up to 8 KiB, shown as far as one result holds, and writes a file of up to 512 KiB", async () => {
-	const prose = "Sales by region and month. ".repeat(400);
+it("reads a window of up to 32 KiB, shown as far as one result holds, and writes a file of up to 512 KiB", async () => {
+	const prose = "Sales by region and month. ".repeat(1600);
 	const f = await fixture({ files: { "sales/notes.md": prose }, folders: ["sales"] });
-	const content = await f.call("company_read", { path: "sales/notes.md", offset: 0, limit: 8192 });
+	const content = await f.call("company_read", { path: "sales/notes.md", offset: 0, limit: 32768 });
 	const answer = parse(content);
 	expect(fitsOneResult(String(content.value))).toBe(true);
-	expect(answer.bytesRead).toBeGreaterThan(4096);
+	// Plain prose: about 31 KiB of it in one result (about 7 KiB at the 8 KiB fence).
+	expect(answer.bytesRead).toBeGreaterThan(30 * 1024);
 	expect(answer.text).toBe(prose.slice(0, answer.bytesRead));
 	expect(answer.nextOffset).toBe(answer.bytesRead);
-	expect(() => f.tool("company_read").parseArguments({ path: "sales/notes.md", offset: 0, limit: 8193 })).toThrow(
+	expect(() => f.tool("company_read").parseArguments({ path: "sales/notes.md", offset: 0, limit: 32769 })).toThrow(
 		CloudToolArgumentRefusal,
 	);
 	const page = `<!doctype html><html><body>${"<div>row</div>\n".repeat(30000)}</body></html>`;

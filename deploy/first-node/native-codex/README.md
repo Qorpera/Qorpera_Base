@@ -42,7 +42,8 @@ including when reconstruction has replaced pixels with summaries. Arbitrary
 provider-message media cannot acquire authority through this path.
 
 The result fence sends every tool output of a model request's history to the
-host, which returns each as a host-issued envelope of at most 8 KiB. Since bundle
+host, which returns each as a host-issued envelope of at most 32 KiB (8 KiB until
+perf sprint T2, 8 Nov 2026). Since bundle
 v104 a request may carry any number of outputs: the frame is bounded at 64 MiB
 each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
 more than any model context holds.
@@ -141,9 +142,14 @@ The host owns the closed provenance envelope and rechecks live run authority
 before releasing results. Only an exact host-issued same-call envelope may
 pass through unchanged. An attacker-supplied envelope is data, not authority.
 Raw result text is private and is never a public send. Each final serialized
-envelope is capped at 8 KiB, with original byte count, hash and truncation.
-This can exceed 1,000 tokens and requires manual payload-budget review; it
-cannot exceed the upstream 10,000-token item ceiling under a byte-level bound.
+envelope is capped at 32 KiB, with original byte count, hash and truncation.
+That is about 8,200 tokens at Codex's 4 bytes a token. Codex records each tool
+output in its history under the model's truncation policy, but the governed
+session's fixed configuration sets `tool_output_token_limit=65536`
+(`CLOUD_CODEX_BOUNDARY_FIXED_CONFIG`), which replaces it: about 78,000 tokens
+in tokens mode, 256 KiB in bytes mode (a model Codex has no metadata for), so an
+issued 32 KiB envelope is never cut there. The fence bounds every output again
+before each request.
 
 ## Usage-limit codes (Sign in with ChatGPT)
 

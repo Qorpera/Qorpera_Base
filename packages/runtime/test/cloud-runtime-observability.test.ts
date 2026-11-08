@@ -682,7 +682,7 @@ describe("tool outcome diagnostics", () => {
 		const { metrics, rows } = observer();
 		const execute = vi.fn(async () => ({
 			kind: "json" as const,
-			value: { schema: "qorpera.company-path-result/v1", state: "proposed", path: "<".repeat(4096) },
+			value: { schema: "qorpera.company-path-result/v1", state: "proposed", path: "<".repeat(8192) },
 		}));
 		const boundary = new CloudNativeToolBoundary({
 			companyId: randomUUID(),

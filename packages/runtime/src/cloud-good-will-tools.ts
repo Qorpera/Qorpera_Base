@@ -95,7 +95,7 @@ function paymentLine(value: unknown): string {
 	});
 }
 
-/** The tool result's room (8 KiB) less its envelope. */
+/** Within one tool result's room, less its envelope: what the 8 KiB fence left, kept when it grew to 32 KiB. */
 const LIST_BYTES = 6000;
 
 /** The month's line first, then the payments from `offset` that fit, and where the rest starts. */

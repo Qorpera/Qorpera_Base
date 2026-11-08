@@ -1835,7 +1835,7 @@ describe("the tool boundary with a work log", () => {
 				narrow: input.resultPaths.includes("restricted/PRIVATE_PATH.md"),
 			}));
 			const f = fixture({ log: { protection: { ...protection, narrow } } });
-			const value = { a: "PRIVATE_CONTENT".repeat(1500), z: { path: "restricted/PRIVATE_PATH.md" } };
+			const value = { a: "PRIVATE_CONTENT".repeat(3000), z: { path: "restricted/PRIVATE_PATH.md" } };
 			vi.mocked(f.readTool.execute).mockResolvedValueOnce(
 				kind === "json" ? { kind: "json", value } : { kind: "text", value: JSON.stringify(value) },
 			);
