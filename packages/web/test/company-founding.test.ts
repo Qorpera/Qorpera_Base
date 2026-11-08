@@ -881,6 +881,56 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		hub.dispose();
 	});
 
+	it("deletes a company a founder right-clicks, after the typed name, and drops its tile", async () => {
+		const { api } = fixture();
+		const deleted = vi.spyOn(api, "deleteProfile").mockResolvedValue();
+		const leave = vi.spyOn(api, "leaveProfile").mockResolvedValue();
+		const hub = new HubController(api, me);
+		await hub.refresh();
+		renderHub(hub, container, { userId: me, name: "Anna Holm" });
+		hub.store.subscribe(() => renderHub(hub, container, { userId: me, name: "Anna Holm" }));
+		const card = container.querySelector<HTMLElement>(`a.company-card[data-profile-id="${profileA.profileId}"]`)!;
+		card.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+		const item = [...document.querySelectorAll<HTMLElement>("[role^=menuitem]")].find(
+			(row) => row.textContent?.trim() === "Delete company",
+		);
+		expect(item).toBeDefined();
+		item!.click();
+		await settle();
+		const dialog = document.querySelector<HTMLElement>(".modal")!;
+		expect(dialog.textContent).toContain(`Delete ${profileA.profileName}?`);
+		const confirm = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Delete company",
+		)!;
+		expect(confirm.disabled).toBe(true);
+		const typed = dialog.querySelector<HTMLInputElement>("input")!;
+		typed.value = profileA.profileName;
+		typed.dispatchEvent(new Event("input"));
+		vi.mocked(api.listProfiles).mockResolvedValue([]);
+		confirm.click();
+		await settle();
+		expect(deleted).toHaveBeenCalledWith(profileA.profileId);
+		expect(leave).not.toHaveBeenCalled();
+		expect(container.querySelector(`[data-profile-id="${profileA.profileId}"]`)).toBeNull();
+		hub.dispose();
+	});
+
+	it("offers Leave company, not Delete, on a company you do not found", async () => {
+		const { api } = fixture();
+		vi.mocked(api.listProfiles).mockResolvedValue([{ ...profileA, role: "contributor" }]);
+		const hub = new HubController(api, me);
+		await hub.refresh();
+		renderHub(hub, container, { userId: me, name: "Anna Holm" });
+		const card = container.querySelector<HTMLElement>(`a.company-card[data-profile-id="${profileA.profileId}"]`)!;
+		card.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+		const rows = [...document.querySelectorAll<HTMLElement>("[role^=menuitem]")].map((row) =>
+			row.textContent?.trim(),
+		);
+		expect(rows).toEqual(["Leave company"]);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		hub.dispose();
+	});
+
 	it("names a table after its idea's first sentence, in its own words and with no full stop", () => {
 		expect(companyNameFromIdea("A webshop with ceramics.")).toBe("A webshop with ceramics");
 		expect(companyNameFromIdea("en café med takeaway\nog mere")).toBe("En café med takeaway");

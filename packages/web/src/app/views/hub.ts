@@ -3,6 +3,7 @@ import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import { CompanyFoundingApi, type FoundingTableEntry } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
@@ -140,6 +141,31 @@ export class HubController {
 		// Finish an older request before starting the authoritative post-removal read.
 		await this.#refresh;
 		await this.refresh();
+	}
+
+	/** Right-click on a company tile: a founder deletes the company, anyone else leaves it, as the
+	 * company's own settings do (views/team.ts). The cloud decides; a refusal shows on the hub. */
+	async removeCompany(profile: HostedProfile): Promise<void> {
+		if (this.#disposed) return;
+		const deleting = profile.role === "owner";
+		const confirmed = await confirmDialog(
+			deleting
+				? t("Delete {company}? Type the company name to confirm.", { company: profile.profileName })
+				: t("Leave {company}? You lose access until someone invites you again.", { company: profile.profileName }),
+			deleting ? t("Delete company") : t("Leave"),
+			true,
+			deleting ? profile.profileName : undefined,
+		);
+		if (!confirmed || this.#disposed) return;
+		this.store.set({ error: undefined });
+		try {
+			if (deleting) await this.#api.deleteProfile(profile.profileId);
+			else await this.#api.leaveProfile(profile.profileId);
+		} catch (error) {
+			if (!this.#disposed) this.store.set({ error: describeError(error) });
+			return;
+		}
+		await this.companyRemoved(profile.profileId);
 	}
 
 	async #load(): Promise<void> {
@@ -461,6 +487,33 @@ function welcomeInvitations(hub: HubController): HTMLElement[] {
 	];
 }
 
+/** A company tile's right-click menu: Delete company for a founder, Leave company for anyone else.
+ * Shift with a mouse right-click keeps the browser's own menu (Open in new tab, Copy link). */
+function openCompanyMenu(hub: HubController, event: MouseEvent): void {
+	if (event.shiftKey && (event.clientX || event.clientY)) return;
+	const card = (event.target as Element).closest<HTMLElement>("[data-profile-id]");
+	const profile = hub.store.get().profiles.find((item) => item.profileId === card?.dataset.profileId);
+	if (!card || !profile) return;
+	event.preventDefault();
+	const deleting = profile.role === "owner";
+	const point = menuPoint(event, card);
+	openContextMenu({
+		label: profile.profileName,
+		x: point.x,
+		y: point.y,
+		opener: card,
+		findOpener: () => document.querySelector<HTMLElement>(`.company-card[data-profile-id="${profile.profileId}"]`),
+		items: [
+			{
+				label: deleting ? t("Delete company") : t("Leave company"),
+				icon: deleting ? "trash" : "signout",
+				danger: true,
+				select: () => void hub.removeCompany(profile),
+			},
+		],
+	});
+}
+
 export function renderHub(hub: HubController, container: HTMLElement, viewer?: Viewer): void {
 	const state = hub.store.get();
 	// Placeholders stand in only for the first read; a refresh keeps what the page shows.
@@ -475,7 +528,12 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 	const first = viewer?.name.trim().split(/\s+/)[0];
 	const tiles = [
 		...state.profiles.map((profile) =>
-			tile("a", { class: "company-card", href: `#/c/${profile.profileId}` }, profile.profileId, profile.profileName),
+			tile(
+				"a",
+				{ class: "company-card", href: `#/c/${profile.profileId}`, "data-profile-id": profile.profileId },
+				profile.profileId,
+				profile.profileName,
+			),
 		),
 		...state.tables.filter((table) => table.myState === "joined").map((table) => tableTile(hub, table)),
 		...state.tables.filter((table) => table.myState === "invited").map((table) => tableTile(hub, table)),
@@ -506,7 +564,15 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 					: null,
 				firstRead
 					? companyCardsSkeleton()
-					: h("nav", { class: "company-grid", "aria-label": t("Your companies") }, ...tiles),
+					: h(
+							"nav",
+							{
+								class: "company-grid",
+								"aria-label": t("Your companies"),
+								oncontextmenu: (event: MouseEvent) => openCompanyMenu(hub, event),
+							},
+							...tiles,
+						),
 			),
 		),
 	);
