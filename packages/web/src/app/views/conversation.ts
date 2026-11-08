@@ -357,7 +357,7 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
-	/** What stands beside the thread: an interface app or a page (views/app-panel.ts). */
+	/** What stands beside the thread: a page of the Company File (views/app-panel.ts). */
 	#beside: { readonly el: HTMLElement; dispose(): void; focus(): void } | undefined;
 	/** The chip that opened the transcript; focus returns there when it closes. */
 	#pairOpener: HTMLElement | undefined;
@@ -1045,7 +1045,7 @@ export class ConversationView {
 	}
 
 	/** Stands `panel` beside the thread, in place of what stood there: the thread stays as it is, and usable (Jonas,
-	 * 5 November 2026: an agent's app sits in the chat and pops out beside it). */
+	 * 5 November 2026). A Company File page linked in a message stands here; an agent's app opens on its own page. */
 	showBeside(panel: { readonly el: HTMLElement; dispose(): void; focus(): void }): void {
 		if (this.#disposed) {
 			panel.dispose();

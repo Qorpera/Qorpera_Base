@@ -15,8 +15,9 @@ Company File preview already uses (`packages/web/src/ui/page-frame.ts`).
 ## 1. What an app is
 
 A small web page an agent makes to show members something: a result, a test, a prototype, a dashboard. It lives in
-the Company File as ordinary files. A member opens it in a side panel next to the chat, from a card in the agent's
-message or from the apps drawer once it is posted.
+the Company File as ordinary files. A member opens it as a page of its own, `#/c/<profileId>/a/<name>`, from a card
+in the agent's message or from the apps drawer once it is posted (Jonas, 8 November 2026: an app is a whole product
+prototype, so it gets the page, not a side panel).
 
 ## 2. Format
 
@@ -92,17 +93,20 @@ plain and readable by someone who is not an expert. Post an app when every membe
 
 ## 4. Web
 
-- **Side panel.** PR #1430's agent sheet, generalised: `AppPanel` stands beside the conversation inside
-  `.thread-body` (not over it, no dim, not modal), the conversation stays mounted and usable. Header: emblem, title,
-  "Made by <owner> · Qorpera never asks for passwords here", Reload, Show in Storage, Close. Escape (in the panel or
-  in the page) closes it. One panel per thread; opening another app replaces it. At phone width it covers the thread,
-  with Close.
+- **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
+  Bank show (`AppPanel` placed as a page). Slim header: the way back (to the conversation it was opened from, else
+  the company), emblem, title, "Made by <owner> · Qorpera never asks for passwords here", Reload, Show in Storage. A
+  deep link or reload opens the company, then the app; an app that is gone says "This app isn't in the company
+  anymore."
+- **Side panel.** PR #1430's agent sheet, generalised: `AppPanel` placed beside the conversation inside
+  `.thread-body` (not over it, no dim, not modal), the conversation stays mounted and usable. It shows `folder:`
+  links to `.html` files (a plain page, no manifest), never an app. Header as the app page's, with Close instead of
+  the way back; Escape (in the panel or in the page) closes it. At phone width it covers the thread, with Close.
 - **Chat card.** A link `app:<name>` in an agent's message draws as a card in the bubble (emblem, title, about,
-  "App · opens beside the chat"), which opens the panel; once the company's apps are read, the card shows the app's
-  own emblem and line. `folder:` links to `.html` files open in the panel too (a plain page, no manifest).
-- **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer. A press opens the app in the panel
-  beside the open chat; with no chat open it opens the owner's chat with the app beside it.
-- **Changes.** The panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
+  "App · opens on its own page"), which opens the app's page; once the company's apps are read, the card shows the
+  app's own emblem and line. Wall posters and choice cards draw the same card.
+- **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
+- **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
   unchanged one is told `qorpera-app-change` (§5).
 

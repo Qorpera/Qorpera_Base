@@ -14,6 +14,7 @@ import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
+import { markdown } from "../src/ui/markdown.ts";
 import {
 	deferred,
 	fixture,
@@ -1025,6 +1026,80 @@ describe("account and route ownership", () => {
 		await vi.advanceTimersByTimeAsync(120_000);
 		await draw();
 		expect(reads()).toBe(changed);
+	});
+
+	/** The company's folder with one posted app, `apps/sales-board/`, made by the fixture's agent. */
+	function withApp() {
+		const fake = folderFake({ seed: [] });
+		fake.put("apps/sales-board/app.toml", `name = "Sales board"\nowner = "${staff.id}"\nposted = true\n`);
+		fake.put("apps/sales-board/index.html", "<p>Sales this week</p>");
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		return fake;
+	}
+	const appPage = (root: HTMLElement) => root.querySelector<HTMLElement>("main > .side-panel.is-page");
+
+	it("opens an agent's app as a page of its own from a deep link, and says when the app is gone", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page).not.toBeNull();
+		// The whole main area: no chat, and nothing beside one.
+		expect(f.root.querySelector(".thread, .thread-body.has-beside")).toBeNull();
+		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
+		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
+			"Made by Fixture agent · Qorpera never asks for passwords here",
+		);
+		expect(page.querySelector(".side-panel-body iframe.side-panel-frame")?.getAttribute("sandbox")).toBe(
+			"allow-scripts",
+		);
+		expect(page.querySelector('[aria-label="Reload"]')).not.toBeNull();
+		expect(page.querySelector('[aria-label="Show in Storage"]')).not.toBeNull();
+		// Opened straight from a link, it leads back to the company; it has no Close, as a page has none.
+		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
+		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(back.getAttribute("aria-label")).toBe("Back to the company");
+		expect(page.querySelector('[aria-label="Close"]')).toBeNull();
+		// The rail's icon for it is a link to this page, marked as the open one.
+		const icon = f.root.querySelector<HTMLAnchorElement>(
+			`.rail a.rail-app[href="#/c/${profileA.profileId}/a/sales-board"]`,
+		);
+		expect(icon?.getAttribute("aria-current")).toBe("page");
+		// The company's redraws keep the page as it is.
+		await vi.advanceTimersByTimeAsync(2000);
+		await draw();
+		expect(appPage(f.root)).toBe(page);
+		location.hash = `#/c/${profileA.profileId}/a/gone`;
+		await draw();
+		await draw();
+		expect(page.isConnected).toBe(false);
+		expect(appPage(f.root)?.querySelector(".side-panel-status")?.textContent).toBe(
+			"This app isn't in the company anymore.",
+		);
+	});
+
+	it("opens an app's card in a chat as the app's page, which leads back to the conversation", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("See [Sales board](app:sales-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		// Not beside the chat: the chat is gone, and the app has the page.
+		expect(f.root.querySelector(".thread")).toBeNull();
+		const page = appPage(f.root)!;
+		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
+		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
+		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(back.getAttribute("aria-label")).toBe("Back to the conversation");
 	});
 
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
