@@ -94,6 +94,13 @@ const LOCKS = "/run/lock";
 /** A marker per run from its first SSH call until it takes a queue ticket, so probes count runs that are still
  * being copied (seconds, a minute for a first copy) and a burst of starts does not all choose one machine. */
 const ARRIVING = `${HOME}/arriving`;
+/** The machine's run history: one line per run, appended by its session when it ends (historyScript), one file per UTC day,
+ * kept HISTORY_DAYS days (pruneScript). Times, slot, runner user and exit code only: never the command, its arguments or
+ * the environment. Before it, a run left nothing behind once its directory was removed, so test and CI time had no
+ * history (perf sprint, 8 Nov 2026, C1 on the scoreboard). */
+export const HISTORY = `${HOME}/run-history`;
+export const HISTORY_SCHEMA = "qorpera.run-on-node-history/v1";
+export const HISTORY_DAYS = 30;
 /** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
  * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
  * writes last, counts as closed too: its runner users may not exist yet. */
@@ -389,19 +396,59 @@ export function treeDigest(root, files) {
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
  * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
- * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, and the cores files of --cores runs killed
- * before they could remove them (/run/lock is a small tmpfs every lock lives on). */
+ * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, the cores files of --cores runs killed
+ * before they could remove them (/run/lock is a small tmpfs every lock lives on), and run history days older than
+ * HISTORY_DAYS, by the date in their name. */
 export function pruneScript() {
 	return [
 		"set -u",
 		`mkdir -p ${HOME}/runs ${HOME}/trees`,
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
+		`hcut=$(date -u -d '-${HISTORY_DAYS} days' +%Y%m%d); for f in ${HISTORY}/*.jsonl; do n=$(basename "$f" .jsonl); if [[ "$n" =~ ^[0-9]{8}$ && "$n" < "$hcut" ]]; then rm -f -- "$f"; fi; done`,
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`for f in ${CORES}*; do n=\${f#${CORES}}; if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
+	].join("\n");
+}
+
+/** Bash for the start of a run's session: `note_history CODE` appends the run's line to the machine's run history
+ * (HISTORY), with what the session knows then. Called when the run ends, when it gives up waiting for a slot or a
+ * runner user, and when it cannot hand the runner user its directory (exit 93). Every value is a fixed word, a
+ * validated name or a number, so the line is always valid JSON: the run's name, lane and suite (`changed`, `test`, `hosted-db`, `npm:<script>`, `scripts/<file>.mjs`; `command` for a command
+ * after --, whose words are never kept), the machine, slot, runner user, copy time, when it started waiting and for how
+ * long, install and suite time from the status file, the kernel's OOM kills, the load at its start, when it ended and
+ * its exit code. A run that cannot write it still runs: the history is only a record. */
+export function historyScript({ run, status, lane, front = false, suite = null, copySeconds, dir = HISTORY }) {
+	const label = suite === null ? "command" : /^[A-Za-z0-9:_./-]{1,80}$/.test(suite) ? suite : "other";
+	const fixed = [
+		`"schema":${JSON.stringify(HISTORY_SCHEMA)}`,
+		`"run":${JSON.stringify(String(run))}`,
+		`"lane":${JSON.stringify(lane)}`,
+		`"front":${front === true}`,
+		`"suite":${JSON.stringify(label)}`,
+		`"copyMs":${Number.isFinite(copySeconds) ? Math.round(copySeconds * 1000) : null}`,
+	].join(",");
+	const number = "^(0|[1-9][0-9]{0,14})([.][0-9]{1,6})?$";
+	return [
+		"history_value() {",
+		`\tlocal x=""; [ -r ${status} ] && x=$(tr ' ' '\\n' <${status} | grep -E "^$1=" | cut -d= -f2 | tail -n 1)`,
+		`\t[[ "$x" =~ ${number} ]] && echo "$x" || echo null`,
+		"}",
+		"note_history() {",
+		"\tlocal code=$1 host runner_=null slot_=null queued_at_=null queued_s_=null",
+		'\t[[ "$code" =~ ^[0-9]{1,3}$ ]] || code=null',
+		'\thost=$(hostname -s 2>/dev/null); [[ "$host" =~ ^[A-Za-z0-9.-]{1,63}$ ]] || host=unknown',
+		'\t[[ "${runner:-}" =~ ^ci[0-9]{2}$ ]] && runner_="\\"$runner\\""',
+		'\t[[ "${slot:-}" =~ ^[0-9]{1,3}$ ]] && slot_=$slot',
+		'\t[[ "${queued:-}" =~ ^[0-9]{1,12}$ ]] && queued_at_=$queued',
+		'\t[[ "${queued_s:-}" =~ ^[0-9]{1,12}$ ]] && queued_s_=$queued_s',
+		`\tmkdir -p ${shellQuote(dir)} 2>/dev/null || return 0`,
+		`\t{ flock -w 2 3; printf '{%s,"host":"%s","slot":%s,"runner":%s,"queuedAt":%s,"queuedSeconds":%s,"prepareMs":%s,"suiteMs":%s,"installed":%s,"oomKills":%s,"load":%s,"endedAt":%s,"exitCode":%s}\\n' ${shellQuote(fixed)} "$host" "$slot_" "$runner_" "$queued_at_" "$queued_s_" "$(history_value prepare_ms)" "$(history_value suite_ms)" "$(history_value installed)" "$(history_value oom_kills)" "$(history_value load)" "$(date +%s)" "$code" >&3; } 2>/dev/null 3>>${shellQuote(dir)}/"$(date -u +%Y%m%d).jsonl"`,
+		"\treturn 0",
+		"}",
 	].join("\n");
 }
 
@@ -462,7 +509,7 @@ export function runCommandLine({ command, env = [], sudo = false, cores = null, 
  * A `claim` session (a part that waits on several machines) says QUEUED and SLOT, and starts only on a "go" line; when its
  * input ends first, it leaves the queue or frees its slot, removes its run directory and exits DROPPED.
  * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null, claim = false, limit = null }) {
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null, claim = false, limit = null, suite = null }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const lane = quick ? LANES.quick : LANES.cpu;
 	const queue = `${LOCKS}/${lane.queue}`;
@@ -493,6 +540,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 	].join("\n");
 	return [
 		"set -uo pipefail",
+		historyScript({ run, status, lane: lane === LANES.quick ? "quick" : "cpu", front, suite, copySeconds }),
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
 		`flock -w 60 ${treeDir}.lock ${["rsync", "-a", "--delete", ...baseCopyCompare(shared), `${runDir}/`, `${treeDir}/`].join(" ")} || echo "== run-on-node: base copy refresh skipped"`,
 		// Arrival-ordered queue for the lane's slots: a ticket per waiting run, its name sorting by arrival.
@@ -534,8 +582,8 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		'\tif [ -z "$slot" ]; then',
 		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${slots} run${slots === 1 ? "" : "s"} at a time${front || !lane.kept ? "" : `, ${lane.kept} more slot${lane.kept === 1 ? "" : "s"} kept for --front runs`}), queue position $position" && shown=$position`,
 		lane === LANES.quick
-			? `\t\t[ $(( $(date +%s) - queued )) -ge ${QUICK_WAIT_SECONDS} ] && { echo "== run-on-node: no quick slot with room for ${QUICK_WAIT_SECONDS / 60} minutes"; exit 94; }`
-			: '\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
+			? `\t\t[ $(( $(date +%s) - queued )) -ge ${QUICK_WAIT_SECONDS} ] && { echo "== run-on-node: no quick slot with room for ${QUICK_WAIT_SECONDS / 60} minutes"; note_history 94; exit 94; }`
+			: '\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; note_history 94; exit 94; }',
 		// A claim session's input ends once its part has started elsewhere (read's status 1; a timeout's is over 128).
 		claim ? `\t\tread -r -t 2 _; [ $? -gt 128 ] || { rm -rf ${runDir}; exit ${DROPPED}; }` : "\t\tsleep 2",
 		"\tfi",
@@ -551,7 +599,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		"\tdone",
 		'\tif [ -z "$runner" ]; then',
 		'\t\t[ "$waited" = 0 ] && echo "== run-on-node: every runner user is busy; waiting"',
-		'\t\twaited=$((waited + 1)); [ "$waited" -ge 3600 ] && { echo "== run-on-node: no runner user free for an hour"; exit 92; }',
+		'\t\twaited=$((waited + 1)); [ "$waited" -ge 3600 ] && { echo "== run-on-node: no runner user free for an hour"; note_history 92; exit 92; }',
 		"\t\tsleep 1",
 		"\tfi",
 		"done",
@@ -561,7 +609,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		// The load at start and uncapped test processes (older clients run suites as tester) explain a slow
 		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
-		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
+		`sudo -n chown -R "$runner:$runner" ${runDir} || { note_history 93; exit 93; }`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots + extra} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		...(cores
 			? [
@@ -581,6 +629,8 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 				]
 			: []),
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+		// Its line in the machine's run history, then its exit code as the session's.
+		"code=$?; note_history \"$code\"; exit \"$code\"",
 	].join("\n");
 }
 
@@ -1437,6 +1487,7 @@ async function main() {
 			cores: options.cores,
 			claim,
 			limit: options.limit,
+			suite: options.suite,
 		});
 	}
 
