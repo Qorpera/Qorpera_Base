@@ -6,20 +6,31 @@ import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../interface-apps.ts";
 
-/* The side panel beside a conversation (Jonas, 5 November 2026: agents' apps "sit in the chat and pop out in a side
- * panel", like Claude's artifacts): PR #1430's agent sheet, standing beside the thread instead of over it. The thread
- * stays as it is, usable, and the panel shows an interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an
- * HTML page of the Company File, live in the locked frame (ui/app-frame.ts).
+/* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
+ * in the locked frame (ui/app-frame.ts), in one of two places:
+ * - An app is a page of its own, `#/c/{id}/a/{name}` (Jonas, 8 November 2026: an app is a whole product prototype and
+ *   opens as Mailbox and Bank do, never in a panel beside the chat). Its slim header has the way back.
+ * - A Company File page linked in a message stands beside the conversation (Jonas, 5 November 2026: PR #1430's agent
+ *   sheet, standing beside the thread instead of over it). The thread stays as it is, usable; Escape, in the panel or
+ *   in its page, and Close put it away.
+ * Either way:
  * - Its header is drawn here, outside the frame, and always says whose app it is and that Qorpera never asks for a
  *   password in it, so a page that draws a sign-in can't pass for this app's own (security review r1, H2).
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
- *   changed, shows it afresh; any other change tells the page that what it reads may have changed.
- * - Escape, in the panel or in its page, and Close put it away. */
+ *   changed, shows it afresh; any other change tells the page that what it reads may have changed. */
 
-/** What the panel shows: an app by its name, or a page of the Company File by its path. */
-export type SidePanelTarget =
+/** What is shown: an app by its name, or a page of the Company File by its path. */
+export type AppPanelTarget =
 	| { readonly kind: "app"; readonly name: string }
 	| { readonly kind: "page"; readonly path: string };
+
+/** What stands beside a chat: a page of the Company File. An app opens as a page of its own. */
+export type SidePanelTarget = Extract<AppPanelTarget, { kind: "page" }>;
+
+/** Where it stands: beside the chat, with Close, or as a page of its own, with the way back. */
+export type AppPanelPlacement =
+	| { readonly kind: "beside"; readonly onClose: () => void }
+	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } };
 
 /** What the panel needs from the open company. */
 export interface AppPanelHost extends AppBridgeHost {
@@ -39,7 +50,7 @@ export interface AppPanelHost extends AppBridgeHost {
 /** Changes in the folder put the page together again at most this often. */
 const CHANGE_MS = 1500;
 
-export function sameTarget(a: SidePanelTarget, b: SidePanelTarget): boolean {
+export function sameTarget(a: AppPanelTarget, b: AppPanelTarget): boolean {
 	return (
 		a.kind === b.kind &&
 		(a.kind === "app" ? a.name === (b as typeof a).name : a.path === (b as { path: string }).path)
@@ -48,14 +59,15 @@ export function sameTarget(a: SidePanelTarget, b: SidePanelTarget): boolean {
 
 export class AppPanel {
 	readonly el: HTMLElement;
-	readonly target: SidePanelTarget;
+	readonly target: AppPanelTarget;
 	readonly #host: AppPanelHost;
 	readonly #lifetime = new AbortController();
 	readonly #emblem = h("span", { class: "side-panel-emblem", "aria-hidden": "true" });
-	readonly #title = h("strong", { class: "side-panel-title" });
+	readonly #title: HTMLElement;
 	readonly #by = h("span", { class: "side-panel-by" });
 	readonly #body = h("div", { class: "side-panel-body" });
-	readonly #close: HTMLButtonElement;
+	/** What takes the focus when the panel opens: Close beside the chat, the way back on a page. */
+	readonly #first: HTMLElement;
 	#frame: AppFrame | undefined;
 	#page: string | undefined;
 	#path: string | undefined;
@@ -63,7 +75,7 @@ export class AppPanel {
 	#again = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
-	constructor(host: AppPanelHost, target: SidePanelTarget, onClose: () => void) {
+	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
 		this.target = target;
 		const control = (name: string, label: string, onclick: () => void) =>
@@ -72,32 +84,50 @@ export class AppPanel {
 				{ type: "button", class: "side-panel-button", title: label, "aria-label": label, onclick },
 				icon(name),
 			);
-		this.#close = control("close", t("Close"), () => onClose()) as HTMLButtonElement;
-		this.el = h(
-			"aside",
-			{ class: "side-panel", "aria-label": t("Beside the chat"), tabindex: "-1" },
-			h(
-				"header",
-				{ class: "side-panel-header" },
-				this.#emblem,
-				h("span", { class: "side-panel-copy" }, this.#title, this.#by),
-				control("reload", t("Reload"), () => void this.reload(true)),
-				control("folder", t("Show in Storage"), () => {
-					if (this.#path) host.openInStorage(this.#path);
-				}),
-				this.#close,
-			),
-			this.#body,
-		);
-		this.el.addEventListener(
-			"keydown",
-			(event: KeyboardEvent) => {
-				if (event.key !== "Escape" || event.defaultPrevented) return;
-				event.preventDefault();
-				onClose();
-			},
-			{ signal: this.#lifetime.signal },
-		);
+		const actions = [
+			control("reload", t("Reload"), () => void this.reload(true)),
+			control("folder", t("Show in Storage"), () => {
+				if (this.#path) host.openInStorage(this.#path);
+			}),
+		];
+		if (placement.kind === "page") {
+			// The page's own heading: the app's name, once, at the top of the page.
+			this.#title = h("h1", { class: "side-panel-title" });
+			this.#first = h(
+				"a",
+				{
+					class: "side-panel-button side-panel-back",
+					href: placement.back.href,
+					title: placement.back.label,
+					"aria-label": placement.back.label,
+				},
+				icon("back"),
+			);
+			this.el = h(
+				"section",
+				{ class: "side-panel is-page", tabindex: "-1" },
+				h("header", { class: "side-panel-header" }, this.#first, ...this.#headerCopy(), ...actions),
+				this.#body,
+			);
+		} else {
+			this.#title = h("strong", { class: "side-panel-title" });
+			this.#first = control("close", t("Close"), () => placement.onClose());
+			this.el = h(
+				"aside",
+				{ class: "side-panel", "aria-label": t("Beside the chat"), tabindex: "-1" },
+				h("header", { class: "side-panel-header" }, ...this.#headerCopy(), ...actions, this.#first),
+				this.#body,
+			);
+			this.el.addEventListener(
+				"keydown",
+				(event: KeyboardEvent) => {
+					if (event.key !== "Escape" || event.defaultPrevented) return;
+					event.preventDefault();
+					placement.onClose();
+				},
+				{ signal: this.#lifetime.signal },
+			);
+		}
 		this.#lifetime.signal.addEventListener(
 			"abort",
 			host.onFolderChange(() => this.#changed()),
@@ -113,7 +143,7 @@ export class AppPanel {
 	}
 
 	focus(): void {
-		this.#close.focus({ preventScroll: true });
+		this.#first.focus({ preventScroll: true });
 	}
 
 	dispose(): void {
@@ -142,6 +172,10 @@ export class AppPanel {
 				}
 			});
 		return this.#loading;
+	}
+
+	#headerCopy(): HTMLElement[] {
+		return [this.#emblem, h("span", { class: "side-panel-copy" }, this.#title, this.#by)];
 	}
 
 	/** At most once each CHANGE_MS, however often the folder changes (a busy company changes it every second). */
@@ -185,7 +219,10 @@ export class AppPanel {
 			const apps = fresh || !this.#frame ? await this.#host.readApps(signal) : this.#host.apps();
 			const app = apps.find((entry) => entry.name === target.name);
 			if (signal.aborted) return;
-			if (!app) return this.#status(t("No app is called {name}.", { name: target.name }));
+			if (!app) {
+				this.#path = undefined;
+				return this.#status(t("This app isn't in the company anymore."));
+			}
 			this.#path = app.path;
 			const manifest = app.manifest;
 			if (!manifest) {

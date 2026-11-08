@@ -2278,3 +2278,21 @@ it("fills a continuation from a 4 KiB excerpt to 32 KiB in two reads, and cuts a
 		text: text.slice(0, 32768).replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"),
 	});
 });
+
+it.each([
+	["URL-encoded", "whsec_T7f%2BakeNotASecret%2F%3D"],
+	["JSON-escaped (PHP)", "whsec_T7f\\/akeNotASecret"],
+	["JSON-escaped (.NET)", "whsec_T7f\\u002BakeNotASecret"],
+])(
+	"cuts a webhook signing secret written %s out of the context message, where its escapes are doubled",
+	(_name, secret) => {
+		const f = nativeCompanyContextFixture();
+		f.context.currentInputs = [f.source("input", f.context.currentInputs[0].id, `The key: ${secret} (pasted)`)];
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const promptText = composeCloudNativeCompanyPrompt(context);
+		expect(promptText).not.toContain("T7f");
+		const shown = JSON.parse(promptText).currentInputs[0];
+		expect(shown.content.text).toBe("The key: whsec_[REDACTED] (pasted)");
+		expect(shown.content.sha256).toBe(context.currentInputs[0].content.sha256);
+	},
+);

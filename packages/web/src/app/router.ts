@@ -3,8 +3,10 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment). */
-export type CompanySection = "home" | "chat" | "staff" | "file" | "team" | "new" | "meet" | "interface";
+/** "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment).
+ * "app" is an agent's interface app (`apps/<name>/` of the Company File) as a page of its own, `#/c/{id}/a/{name}`
+ * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). */
+export type CompanySection = "home" | "chat" | "staff" | "file" | "team" | "new" | "meet" | "interface" | "app";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -39,6 +41,10 @@ export function parseRoute(hash: string): Route {
 		if (section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
 			return { name: "company", profileId, section: "interface", id };
 		}
+		// An app's folder name keeps the same rule as a page's (cloud-client isInterfaceName).
+		if (section === "a" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
+			return { name: "company", profileId, section: "app", id };
+		}
 		if ((section === "chat" || section === "staff") && id) {
 			return { name: "company", profileId, section, id };
 		}
@@ -64,10 +70,16 @@ export function routeHash(route: Route): string {
 		case "company":
 			if (route.section === "home") return `#/c/${route.profileId}`;
 			if (route.section === "interface") return `#/c/${route.profileId}/i/${route.id ?? ""}`;
+			if (route.section === "app") return appHash(route.profileId, route.id ?? "");
 			return route.id
 				? `#/c/${route.profileId}/${route.section}/${route.id}`
 				: `#/c/${route.profileId}/${route.section}`;
 	}
+}
+
+/** The page of the agent's app `name` in the company `profileId`. */
+export function appHash(profileId: string, name: string): string {
+	return `#/c/${profileId}/a/${name}`;
 }
 
 export function navigate(route: Route, replaceEntry = false): void {

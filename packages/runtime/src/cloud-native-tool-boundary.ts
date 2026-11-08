@@ -74,14 +74,33 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
-/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
- * replaces it, so a cut answer never grows. */
-const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), also as text carries it
+ * encoded: URL-encoded (`%2B`, `%2F`, `%3D`, the prefix's `%5F`, as the company computer's guard reads it), and
+ * JSON-escaped, once or twice (`\/` as PHP writes it, `+` as .NET does, and the same inside a serialized JSON
+ * string, where its backslash is doubled). Each unit after the prefix is one character or one whole escape, and ten
+ * of them at least, so a match is never shorter than what replaces it (a cut text never grows), and it never ends in
+ * the middle of an escape: a cut JSON text stays valid JSON. Its characters are never a quote. SQL keeps the same rule
+ * for a context source's whole text before it is paged (`qorpera_redact_webhook_secrets`, 20260930657200). */
+const WEBHOOK_SECRET =
+	/whsec(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9+/=]|%[0-9A-Fa-f]{2}|\\{1,2}(?:\/|u[0-9A-Fa-f]{4})){10,}/g;
 const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
-/** Text with every webhook signing secret cut out, as every text tool result has it (E3c-2): also the context's text
- * that a run would otherwise read as a read_context page, such as its continuation past the first 4 KiB. */
+/** Text with every webhook signing secret cut out, as every text tool result has it (E3c-2), and as everything else
+ * the host sends Codex has it: the context message, the developer instructions, every turn's input. */
 export function redactCloudWebhookSecrets(text: string): string {
 	return text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+}
+/** A JSON value with the same cut in each of its texts, its keys included. */
+export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
+	if (typeof value === "string") return redactCloudWebhookSecrets(value);
+	if (Array.isArray(value)) return value.map(redactCloudWebhookSecretsIn);
+	if (value && typeof value === "object")
+		return Object.fromEntries(
+			Object.entries(value).map(([key, item]) => [
+				redactCloudWebhookSecrets(key),
+				redactCloudWebhookSecretsIn(item),
+			]),
+		);
+	return value;
 }
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;

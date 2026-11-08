@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute } from "../src/app/router.ts";
+import { appHash, parseRoute, routeHash } from "../src/app/router.ts";
 import { profileA } from "./fixtures.ts";
 
 describe("company routes", () => {
@@ -26,6 +26,20 @@ describe("company routes", () => {
 			profileId: profileA.profileId,
 			section: "home",
 		});
+	});
+
+	it("opens an agent's app as a page of its own, by its folder's name", () => {
+		const route = parseRoute(`#/c/${profileA.profileId}/a/sales-board`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "app", id: "sales-board" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		expect(appHash(profileA.profileId, "sales-board")).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		// An app's folder is named as a page's: anything else, or no name, is the company home.
+		for (const bad of ["Sales", "sales_board", "-sales", "", "x".repeat(65)])
+			expect(parseRoute(`#/c/${profileA.profileId}/a/${bad}`)).toEqual({
+				name: "company",
+				profileId: profileA.profileId,
+				section: "home",
+			});
 	});
 
 	it("opens the Company File for its removed history page", () => {

@@ -344,6 +344,50 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-app")).toBeNull();
 	});
 
+	it("links an agent's posted app to its own page, opens the drawer for it and marks it open there", () => {
+		const { element, draw, controller } = rail(home);
+		const manifest = {
+			name: "Sales board",
+			about: "This week's sales",
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+		};
+		controller.store.set({
+			apps: [
+				{ name: "sales-board", path: "apps/sales-board", manifest, problems: [], version: null },
+				// Not posted: it stays off the drawer.
+				{
+					name: "draft",
+					path: "apps/draft",
+					manifest: { ...manifest, name: "Draft", posted: false },
+					problems: [],
+					version: null,
+				},
+			],
+		});
+		draw();
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
+		]);
+		// A link, as the pages' icons are: no button the chat answers beside itself.
+		expect(element.querySelector(".rail-apps-drawer [data-app-name], .rail-apps-drawer button.rail-app")).toBeNull();
+		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[href$="/a/sales-board"]`)!;
+		expect(app().title).toBe("Sales board · This week's sales");
+		expect(app().hasAttribute("aria-current")).toBe(false);
+		expect(drawer(element).classList.contains("is-open")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "app", id: "sales-board" });
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(app().getAttribute("aria-current")).toBe("page");
+		expect(app().classList.contains("active")).toBe(true);
+		draw(home);
+		expect(app().hasAttribute("aria-current")).toBe(false);
+	});
+
 	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {
 		const { element } = rail(home);
 		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;

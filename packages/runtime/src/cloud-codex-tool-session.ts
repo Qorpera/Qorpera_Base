@@ -44,6 +44,8 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	type CloudNativeFencedResult,
 	type CloudNativeToolBoundary,
+	redactCloudWebhookSecrets,
+	redactCloudWebhookSecretsIn,
 } from "./cloud-native-tool-boundary.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -1391,9 +1393,15 @@ class CodexBoundaryRpc {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
+		// Every request the host makes of Codex passes here: the agent's, the reviewer's and the compactor's threads and
+		// turns, their instructions and every turn's input. A webhook signing secret is cut out of each text in it, as
+		// the tool boundary cuts one out of every tool answer (E3c-2, the only other text the host sends Codex), so no
+		// source, today's or a later one, reaches the model with one. A text cut already where it was composed comes
+		// through as it is, so a hash taken of it there still names what Codex is sent.
+		const cut = redactCloudWebhookSecretsIn(params);
 		return new Promise((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
-			this.#write({ id, method, params });
+			this.#write({ id, method, params: cut });
 		});
 	}
 
@@ -2366,9 +2374,11 @@ export async function runCloudCodexToolSession(options: {
 		// Generate one host-owned bootstrap and explicitly load these exact bytes.
 		// Ambient project/home instruction discovery remains disabled: a Company
 		// File or restored auth home must never add a second platform prompt.
-		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
-			.filter(Boolean)
-			.join("\n");
+		// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
+		// file and the thread's instructions are the same bytes.
+		const nativeInstructions = redactCloudWebhookSecrets(
+			[CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions].filter(Boolean).join("\n"),
+		);
 		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		stage = "codex-thread-start";
 		await rpc.startThread();

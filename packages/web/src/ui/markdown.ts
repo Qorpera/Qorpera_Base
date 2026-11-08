@@ -64,7 +64,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 										type: "button",
 										class: "folder-link",
 										"data-app-name": app,
-										title: t("Open {name} beside the chat", { name: app }),
+										title: t("Open {name}", { name: app }),
 									},
 									renderTokens(
 										("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[],
@@ -148,7 +148,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
 						: children();
-				// An agent's interface app (`app:<name>`): a card the app answers by opening the app beside the chat
+				// An agent's interface app (`app:<name>`): a card the app answers by opening the app's own page
 				// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
 				if (app !== undefined)
@@ -159,14 +159,14 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 								type: "button",
 								class: "app-card",
 								"data-app-name": app,
-								title: t("Open {name} beside the chat", { name: app }),
+								title: t("Open {name}", { name: app }),
 							},
 							h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", null, 30)),
 							h(
 								"span",
 								{ class: "app-card-copy" },
 								h("strong", { class: "app-card-title" }, content),
-								h("small", { class: "app-card-note" }, t("App · opens beside the chat")),
+								h("small", { class: "app-card-note" }, t("App · opens on its own page")),
 							),
 						),
 					];

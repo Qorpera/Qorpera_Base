@@ -320,6 +320,15 @@ describe("an app's card in a message", () => {
 		expect(body.querySelectorAll(".app-card")).toHaveLength(1);
 		expect(body.querySelector("a")).toBeNull();
 	});
+
+	it("says the card and the link open the app's own page, not a panel beside the chat", () => {
+		const prose = markdown("See [Sales this week](app:sales-board) for the numbers.");
+		const [link, card] = prose.querySelectorAll<HTMLButtonElement>("[data-app-name]");
+		expect(link?.title).toBe("Open sales-board");
+		expect(card?.title).toBe("Open sales-board");
+		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App · opens on its own page");
+		expect(prose.textContent).not.toContain("beside the chat");
+	});
 });
 
 describe("following the company's apps from a hidden tab", () => {
