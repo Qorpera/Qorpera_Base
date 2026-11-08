@@ -13,7 +13,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
-import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
+import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import {
 	deferred,
@@ -1078,6 +1078,27 @@ describe("account and route ownership", () => {
 		expect(appPage(f.root)?.querySelector(".side-panel-status")?.textContent).toBe(
 			"This app isn't in the company anymore.",
 		);
+	});
+
+	it("waits for the company's staff before a deep-linked app's page names its maker and answers its roster", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		const staffRead = deferred<HostedStaffAgent[]>();
+		vi.mocked(f.api.listStaff).mockReturnValue(staffRead.promise);
+		await draw();
+		await draw();
+		// The membership and the folder are read; the staff are not yet: no page with a nameless maker.
+		expect(f.api.listStaff).toHaveBeenCalled();
+		expect(appPage(f.root)).toBeNull();
+		expect(f.root.querySelector("main > .page .skeleton-page")).not.toBeNull();
+		staffRead.resolve([staff]);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
+			"Made by Fixture agent · Qorpera never asks for passwords here",
+		);
+		expect(page.querySelector("iframe.side-panel-frame")).not.toBeNull();
 	});
 
 	it("opens an app's card in a chat as the app's page, which leads back to the conversation", async () => {

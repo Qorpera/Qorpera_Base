@@ -1610,21 +1610,23 @@ export function mountApplication(
 				// stays as it is through the company's redraws; its page follows the folder itself.
 				if (appPage && main.contains(appPage.el)) return;
 				const home = `#/c/${controller.profile.profileId}`;
+				// A deep link or a reload: the page waits for the company's first read, so its header names the agent that
+				// made it and the app's first `agents()` gets the whole roster (the staff read may land after the folder's).
+				if (state.loading) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
 				if (!companyApps) {
-					// A deep link or a reload: the apps are read once the member's access to the folder is.
-					if (state.loading) {
-						if (!main.querySelector(":scope > .page > .skeleton-page"))
-							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
-					} else
-						replace(
-							main,
-							h(
-								"section",
-								{ class: "page" },
-								notice("danger", t("This can't be opened right now.")),
-								h("a", { href: home }, t("Back to the company")),
-							),
-						);
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", t("This can't be opened right now.")),
+							h("a", { href: home }, t("Back to the company")),
+						),
+					);
 					return;
 				}
 				appPage?.dispose();
