@@ -45,7 +45,7 @@ write, with the tools they already have, and need no migration.
 | `emblem` | one of the interface emblems | `board` | the drawer icon |
 | `colour` | one of the agent colours | none | the emblem's colour |
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
-| `owner` | agent handle | the creating agent | who made it; the drawer opens its chat |
+| `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
 | `reads` | list of `files`, `tables`, `todos`, `agents` | `[]` | the live sources the app may read (§5) |
 
