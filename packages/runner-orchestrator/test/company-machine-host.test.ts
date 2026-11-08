@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TimerOptions } from "node:timers";
+import type * as TimersPromises from "node:timers/promises";
 import {
 	type CloudMachineCommandReceipt,
 	cloudMachineFolderBytes,
@@ -22,6 +24,18 @@ import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
+// The host waits 500 ms before it looks again at a machine whose LXD effect it just dispatched (reconcileCodingMachine
+// answers "pending" after every create, start, stop and delete). Here LXD's fake settles each one at once, so that wait
+// was 128 of this file's 157 s (256 waits, 8 Nov). It is 5 ms here: the host still waits and looks again as often; only
+// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real.
+vi.mock("node:timers/promises", async (importOriginal) => {
+	const timers = await importOriginal<typeof TimersPromises>();
+	return {
+		...timers,
+		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) =>
+			timers.setTimeout(delay === 500 ? 5 : delay, value, options),
+	};
+});
 vi.mock("../src/coding-storage.ts", () => ({
 	createCodingNasStorage: () => ({
 		get controlPath() {

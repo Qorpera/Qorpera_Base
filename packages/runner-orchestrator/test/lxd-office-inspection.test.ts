@@ -7,6 +7,7 @@ import { rootCertificates } from "node:tls";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -221,9 +222,12 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 			response.writeHead(200);
 			response.flushHeaders();
 		});
-		await expect(
-			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
-		).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
+		const deadlines = await withShortDeadline(5000, () =>
+			expect(
+				f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
+			).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED"),
+		);
+		expect(deadlines).toBeGreaterThan(0);
 		expect(f.calls).toHaveLength(1);
 		await expect(
 			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", AbortSignal.abort()),
@@ -321,7 +325,10 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 				response.writeHead(200);
 				response.flushHeaders();
 			});
-			await expect(f[method]()).rejects.toThrow(`LXD_OFFICE_${method.toUpperCase()}_UNCONFIRMED`);
+			const deadlines = await withShortDeadline(5000, () =>
+				expect(f[method]()).rejects.toThrow(`LXD_OFFICE_${method.toUpperCase()}_UNCONFIRMED`),
+			);
+			expect(deadlines).toBeGreaterThan(0);
 			expect(f.calls).toHaveLength(1);
 		},
 		10000,
