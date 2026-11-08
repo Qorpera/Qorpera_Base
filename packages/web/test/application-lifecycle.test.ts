@@ -14,6 +14,7 @@ import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
 import { markdown } from "../src/ui/markdown.ts";
 import {
 	deferred,
@@ -1126,6 +1127,12 @@ describe("account and route ownership", () => {
 	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */
 	function withConcepts() {
 		const fake = withApp();
+		// The folder's change hints, to send by hand.
+		const hints: ((seq: number) => void)[] = [];
+		vi.mocked(WebCompanyFiles.prototype.folderHints).mockImplementation((onHint) => {
+			hints.push(onHint);
+			return { close: async () => {} } as never;
+		});
 		fake.put(
 			"apps/shop-a/app.toml",
 			`name = "Shop A"\nabout = "A calm shop"\nowner = "${staff.id}"\nconcept = true\n`,
@@ -1133,8 +1140,22 @@ describe("account and route ownership", () => {
 		fake.put("apps/shop-a/index.html", "<p>Shop A</p>");
 		fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\nposted = true\n');
 		fake.put("apps/shop-b/index.html", "<p>Shop B</p>");
-		return fake;
+		/** Tells the open company its folder changed, and lets the apps and the viewer read it. */
+		const changed = async () => {
+			for (const hint of hints) hint(fake.seq);
+			await vi.advanceTimersByTimeAsync(3000);
+			await draw();
+			await draw();
+		};
+		return Object.assign(fake, { changed });
 	}
+	/** Whose the open concept is and the password line: a strip of the side panel outside the list that folds. */
+	const conceptGuard = (root: HTMLElement) => {
+		const guard = root.querySelector<HTMLElement>(".concepts > .concepts-side > .concepts-guard");
+		expect(guard?.closest(".concepts-panel")).toBeNull();
+		expect(guard?.hidden).toBe(false);
+		return guard?.textContent;
+	};
 	const concepts = (root: HTMLElement) => root.querySelector<HTMLElement>("main > section.concepts");
 	const conceptItems = (root: HTMLElement) =>
 		[...root.querySelectorAll<HTMLAnchorElement>(".concepts-side a.concepts-item")].map((item) => [
@@ -1173,7 +1194,7 @@ describe("account and route ownership", () => {
 		// The concept's frame fills the stage, with no header bar over it; the panel says no password is asked for.
 		expect(conceptFrame(f.root)?.getAttribute("sandbox")).toBe("allow-scripts");
 		expect(view.querySelector(".concepts-stage .side-panel-header")).toBeNull();
-		expect(view.querySelector(".concepts-note")?.textContent).toBe("Qorpera never asks for passwords here");
+		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
 		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
 		// The posted app that is no concept is not listed.
 		expect(view.querySelector(`a.concepts-item[href$="/sales-board"]`)).toBeNull();
@@ -1221,6 +1242,88 @@ describe("account and route ownership", () => {
 		);
 	});
 
+	it("keeps the missing concept's offer on the concept that is newest now", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts/gone`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		const offer = () => view.querySelector(".concepts-status a")?.getAttribute("href");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
+		// The newest one is taken away: the same words, but the offer moves to the one that is newest now.
+		fake.remove("apps/shop-b");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		// The last one goes too: nothing is offered.
+		fake.remove("apps/shop-a");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(view.querySelector(".concepts-status a")).toBeNull();
+	});
+
+	it("shows a cover made, replaced or read again after a failure, by its file's version", async () => {
+		const made: string[] = [];
+		const forgotten: string[] = [];
+		let failNext = false;
+		// jsdom has no object URLs: each picture gets a numbered one.
+		Object.defineProperty(URL, "createObjectURL", {
+			configurable: true,
+			value: () => {
+				if (failNext) {
+					failNext = false;
+					throw new Error("No picture");
+				}
+				made.push(`blob:cover-${made.length + 1}`);
+				return made.at(-1);
+			},
+		});
+		Object.defineProperty(URL, "revokeObjectURL", {
+			configurable: true,
+			value: (url: string) => forgotten.push(url),
+		});
+		try {
+			const fake = withConcepts();
+			fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\ncover = "cover.webp"\n');
+			const f = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			const thumb = () => f.root.querySelector<HTMLElement>(`a.concepts-item[href$="/shop-b"] .concepts-thumb`)!;
+			const shown = () => thumb().querySelector("img")?.getAttribute("src") ?? null;
+			// Named but not there yet: the emblem.
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			// Made, without a change to app.toml: it shows at the folder's next change.
+			fake.put("apps/shop-b/cover.webp", "first");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-1");
+			// Replaced: the new picture, and the old one let go.
+			fake.put("apps/shop-b/cover.webp", "second");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			expect(forgotten).toEqual(["blob:cover-1"]);
+			// A change the folder has no news of reads nothing again.
+			await fake.changed();
+			expect(made).toHaveLength(2);
+			// A read that fails keeps what was shown, and is tried again at the next change.
+			fake.put("apps/shop-b/cover.webp", "third");
+			failNext = true;
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-3");
+			// Taken away: the emblem again.
+			fake.remove("apps/shop-b/cover.webp");
+			await fake.changed();
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			expect(forgotten).toEqual(["blob:cover-1", "blob:cover-2", "blob:cover-3"]);
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
 	it("folds the side panel to a strip and keeps that for the viewer", async () => {
 		localStorage.removeItem("qorpera.web.concepts-collapsed");
 		try {
@@ -1238,8 +1341,9 @@ describe("account and route ownership", () => {
 			expect(fold.getAttribute("aria-label")).toBe("Show the concepts");
 			expect(fold.getAttribute("aria-expanded")).toBe("false");
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("1");
-			// The concept stays open while the panel folds.
+			// The concept stays open while the panel folds, and whose it is and the password line stay in the strip.
 			expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+			expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
 			// Opened again, it is folded still.
 			dispose?.();
 			dispose = undefined;
@@ -1248,10 +1352,50 @@ describe("account and route ownership", () => {
 			await draw();
 			await draw();
 			expect(concepts(again.root)?.classList.contains("is-collapsed")).toBe(true);
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
 			concepts(again.root)!.querySelector<HTMLButtonElement>("button.concepts-collapse")!.click();
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("0");
 		} finally {
 			localStorage.removeItem("qorpera.web.concepts-collapsed");
+		}
+	});
+
+	it("never styles away whose a concept is or the password line: open, folded or at phone width", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss;
+		document.head.append(style);
+		try {
+			const rules = (list: CSSRuleList): { selector: string; rule: CSSStyleRule; media: string }[] =>
+				[...list].flatMap((rule) =>
+					rule instanceof CSSStyleRule
+						? [{ selector: rule.selectorText, rule, media: "" }]
+						: rule instanceof CSSMediaRule
+							? rules(rule.cssRules).map((entry) => ({ ...entry, media: rule.media.mediaText }))
+							: [],
+				);
+			// The strip and what holds it: the viewer and its side panel.
+			const holds = (selector: string) =>
+				selector.split(",").some((part) => /\.concepts-(guard|side)\b|\.concepts(?![\w-])\s*$/.test(part.trim()));
+			const all = rules(style.sheet!.cssRules);
+			const hiding = all.filter(
+				({ selector, rule }) =>
+					holds(selector) &&
+					!selector.includes("[hidden]") &&
+					(rule.style.display === "none" ||
+						rule.style.visibility === "hidden" ||
+						rule.style.opacity === "0" ||
+						rule.style.height === "0px" ||
+						rule.style.width === "0px"),
+			);
+			expect(hiding.map(({ selector, media }) => `${media} ${selector}`)).toEqual([]);
+			// It has a rule of its own in each of the three layouts.
+			const guard = all.filter(({ selector }) => selector.includes(".concepts-guard"));
+			expect(guard.some(({ selector, media }) => media === "" && selector === ".concepts-guard")).toBe(true);
+			expect(guard.some(({ selector, media }) => media === "" && selector.includes(".is-collapsed"))).toBe(true);
+			expect(guard.some(({ media }) => media.includes("max-width: 760px"))).toBe(true);
+		} finally {
+			style.remove();
 		}
 	});
 

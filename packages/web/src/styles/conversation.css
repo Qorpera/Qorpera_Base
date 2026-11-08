@@ -1000,7 +1000,13 @@ a.side-panel-button:hover { text-decoration: none; }
 .concepts-foot { flex: none; padding: 8px 12px 12px; border-top: 1px solid var(--border); }
 .concepts-foot:empty { display: none; }
 .concepts-actions { display: flex; gap: 2px; margin-left: -4px; }
-.concepts-note { margin: 4px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.35; }
+/* Whose the open concept is and that Qorpera never asks for passwords in it (security review r1, H2): a strip outside
+ * the list, never folded away, in every layout. Only an empty viewer, with no concept open, has none. */
+.concepts-guard {
+	flex: none; margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--border);
+	color: var(--text-muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere;
+}
+.concepts-guard[hidden] { display: none; }
 .concepts-stage { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
 .side-panel.is-concept { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border: 0; box-shadow: none; animation: none; }
 .concepts-status { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: auto; max-width: 36ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
@@ -1010,6 +1016,11 @@ a.side-panel-button:hover { text-decoration: none; }
 .concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; padding: 10px 0; }
 .concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 32px; margin: 0; padding: 0; }
 .concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
+/* Along the folded strip, read upward, under the way back. */
+.concepts.is-collapsed .concepts-guard {
+	flex: 1 1 auto; min-height: 0; margin-top: auto; padding: 12px 0; border-top: 0;
+	overflow: hidden; writing-mode: vertical-rl; transform: rotate(180deg); align-self: center;
+}
 @media (max-width: 760px) {
 	.concepts { flex-direction: column; }
 	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -1025,6 +1036,11 @@ a.side-panel-button:hover { text-decoration: none; }
 	.concepts.is-menu-open .concepts-panel { display: flex; }
 	/* The concept stays in the stage, under the menu, not over the page as a side panel is at this width. */
 	.side-panel.is-concept { position: relative; inset: auto; z-index: auto; }
+	/* Under the top bar, across it, folded or not. */
+	.concepts-guard, .concepts.is-collapsed .concepts-guard {
+		flex: none; margin: 0; padding: 4px 12px 6px; border-top: 1px solid var(--border);
+		writing-mode: horizontal-tb; transform: none; align-self: stretch;
+	}
 }
 @media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
 /* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */

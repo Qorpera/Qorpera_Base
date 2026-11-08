@@ -13,10 +13,17 @@ import { AppPanel, type AppPanelHost } from "./app-panel.ts";
  * - Full screen: Qorpera's own rail is away on this route (app/application.ts). The selected concept's frame fills all
  *   but a slim side panel in Qorpera's light look, with no header over it (AppPanel's "concept" placement).
  * - The side panel has the way back to the company, the concepts (cover or emblem, title, `about`, who made it) and,
- *   for the open one, Reload, Show in Storage and that Qorpera never asks for passwords in it (security review r1,
- *   H2: a page that draws a sign-in can't pass for Qorpera's own).
+ *   for the open one, Reload and Show in Storage.
+ * - Whose the open concept is and that Qorpera never asks for passwords in it stand in a strip of the side panel that
+ *   never folds away: under the list, along the folded strip, and under the phone's top bar (security review r1, H2,
+ *   and #1539 round 1: a page that draws a sign-in can't pass for Qorpera's own).
+ * - A cover is read by its file's version: a cover made or replaced shows once the folder says it changed, and a read
+ *   that failed is tried again then.
  * - An item is a link to its concept's route: pressing it switches the concept in place, the panel as it is.
  * - The panel folds to a thin strip (kept per viewer in this browser); at phone width it is a top bar with a menu. */
+
+/** Changes in the folder look at the covers again at most this often. */
+const CHANGE_MS = 1500;
 
 /** Whether the panel is folded, kept for the viewer in this browser. */
 const COLLAPSED_KEY = "qorpera.web.concepts-collapsed";
@@ -51,6 +58,15 @@ export interface ConceptsHost {
 
 type Concept = ReturnType<typeof companyConcepts>[number];
 
+/** A cover as shown: the version of its file that was read, and its picture's URL (null: the emblem shows). */
+interface Cover {
+	readonly version: string | null;
+	readonly url: string | null;
+}
+
+/** A concept's cover's path in the company's folder, or null for none. */
+const coverPath = (concept: Concept) => (concept.manifest.cover ? `${concept.path}/${concept.manifest.cover}` : null);
+
 export class ConceptsView {
 	readonly el: HTMLElement;
 	readonly #host: ConceptsHost;
@@ -62,6 +78,8 @@ export class ConceptsView {
 	readonly #menu: HTMLButtonElement;
 	readonly #list = h("ul", { class: "concepts-list" });
 	readonly #foot = h("div", { class: "concepts-foot" });
+	/** Whose the open concept is, and that Qorpera never asks for passwords in it: never folded away. */
+	readonly #guard = h("p", { class: "concepts-guard" });
 	readonly #stage = h("div", { class: "concepts-stage" });
 	/** The concepts as last read. */
 	#apps: readonly CompanyApp[] = [];
@@ -73,9 +91,12 @@ export class ConceptsView {
 	#shownList = "";
 	#collapsed = storedCollapsed();
 	#menuOpen = false;
-	/** Each cover's picture by its path and the manifest's version, read once. */
-	readonly #covers = new Map<string, Promise<string | null>>();
-	readonly #urls = new Set<string>();
+	/** Each cover by its path, as last read. */
+	readonly #covers = new Map<string, Cover>();
+	/** The covers being read, and those to read again when that read ends. */
+	readonly #coverReads = new Set<string>();
+	readonly #coverAgain = new Set<string>();
+	#timer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(host: ConceptsHost, apps: readonly CompanyApp[], name: string | undefined) {
 		this.#host = host;
@@ -116,6 +137,7 @@ export class ConceptsView {
 					h("nav", { "aria-label": t("Concepts") }, this.#list),
 					this.#foot,
 				),
+				this.#guard,
 			),
 			this.#stage,
 		);
@@ -131,6 +153,18 @@ export class ConceptsView {
 		);
 		// A press on an item at phone width shows its concept: the menu closes over it.
 		this.#list.addEventListener("click", () => this.#setMenuOpen(false), { signal: this.#lifetime.signal });
+		// A change in the folder may be a cover made, replaced or taken away: its file's version says so.
+		this.#lifetime.signal.addEventListener(
+			"abort",
+			host.panel.onFolderChange(() => {
+				if (this.#timer !== undefined) return;
+				this.#timer = setTimeout(() => {
+					this.#timer = undefined;
+					this.#checkCovers();
+				}, CHANGE_MS);
+			}),
+			{ once: true },
+		);
 		this.#draw();
 		// The company's first read may still be on its way: until it is in, no concept is said to be missing.
 		void host.panel.readApps(this.#lifetime.signal).then(
@@ -165,6 +199,7 @@ export class ConceptsView {
 	/** Reads the open concept again. */
 	reload(): void {
 		void this.#panel?.reload(true);
+		this.#checkCovers();
 	}
 
 	focus(): void {
@@ -174,10 +209,11 @@ export class ConceptsView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		clearTimeout(this.#timer);
 		this.#panel?.dispose();
 		this.#panel = undefined;
-		for (const url of this.#urls) forgetPictureUrl(url);
-		this.#urls.clear();
+		for (const cover of this.#covers.values()) if (cover.url) forgetPictureUrl(cover.url);
+		this.#covers.clear();
 		this.el.remove();
 	}
 
@@ -226,7 +262,14 @@ export class ConceptsView {
 		this.#menu.setAttribute("aria-expanded", String(this.#menuOpen));
 		this.#drawList(concepts, selected);
 		this.#drawFoot(selected);
+		this.#drawGuard(selected);
 		this.#drawStage(concepts, selected);
+	}
+
+	#drawGuard(selected: Concept | undefined): void {
+		this.#guard.hidden = !selected;
+		const text = selected ? `${this.#made(selected)} · ${t("Qorpera never asks for passwords here")}` : "";
+		if (this.#guard.textContent !== text) this.#guard.textContent = text;
 	}
 
 	#drawList(concepts: readonly Concept[], selected: Concept | undefined): void {
@@ -245,6 +288,7 @@ export class ConceptsView {
 		if (model !== this.#shownList) {
 			this.#shownList = model;
 			replace(this.#list, ...concepts.map((concept) => h("li", null, this.#item(concept))));
+			this.#checkCovers();
 		}
 		for (const item of this.#list.querySelectorAll<HTMLAnchorElement>("a.concepts-item")) {
 			if (item.dataset.concept === selected?.name) item.setAttribute("aria-current", "page");
@@ -259,33 +303,8 @@ export class ConceptsView {
 
 	#item(concept: Concept): HTMLElement {
 		const manifest = concept.manifest;
-		const thumb = h(
-			"span",
-			{ class: "concepts-thumb", "aria-hidden": "true" },
-			interfaceEmblem(manifest.emblem, manifest.colour, 28),
-		);
-		if (manifest.cover) {
-			const path = `${concept.path}/${manifest.cover}`;
-			const key = `${path}\n${concept.version ?? ""}`;
-			let url = this.#covers.get(key);
-			if (!url) {
-				url = this.#host
-					.picture(path, this.#lifetime.signal)
-					.then(async (blob) => {
-						if (!blob || this.#lifetime.signal.aborted) return null;
-						const shown = await pictureUrl(blob);
-						this.#urls.add(shown);
-						return shown;
-					})
-					.catch(() => null);
-				this.#covers.set(key, url);
-			}
-			void url.then((shown) => {
-				if (!shown || this.#lifetime.signal.aborted) return;
-				thumb.classList.add("has-cover");
-				replace(thumb, h("img", { src: shown, alt: "", draggable: "false" }));
-			});
-		}
+		const thumb = h("span", { class: "concepts-thumb", "aria-hidden": "true" });
+		this.#paintThumb(thumb, concept);
 		return h(
 			"a",
 			{
@@ -304,6 +323,74 @@ export class ConceptsView {
 				h("small", { class: "concepts-item-by" }, this.#made(concept)),
 			),
 		);
+	}
+
+	/** A thumb shows its concept's cover as last read, or its emblem. */
+	#paintThumb(thumb: HTMLElement, concept: Concept): void {
+		const path = coverPath(concept);
+		const url = path ? (this.#covers.get(path)?.url ?? null) : null;
+		if (url) {
+			if (thumb.querySelector("img")?.getAttribute("src") === url) return;
+			thumb.classList.add("has-cover");
+			replace(thumb, h("img", { src: url, alt: "", draggable: "false" }));
+		} else if (thumb.classList.contains("has-cover") || !thumb.firstChild) {
+			thumb.classList.remove("has-cover");
+			replace(thumb, interfaceEmblem(concept.manifest.emblem, concept.manifest.colour, 28));
+		}
+	}
+
+	#paintThumbs(): void {
+		const concepts = this.#concepts();
+		for (const item of this.#list.querySelectorAll<HTMLElement>("a.concepts-item")) {
+			const concept = concepts.find((entry) => entry.name === item.dataset.concept);
+			const thumb = item.querySelector<HTMLElement>(".concepts-thumb");
+			if (concept && thumb) this.#paintThumb(thumb, concept);
+		}
+	}
+
+	/** Looks at each concept's cover again: one that is new, changed, gone, or whose read failed is read now. */
+	#checkCovers(): void {
+		const paths = new Set(this.#concepts().flatMap((concept) => coverPath(concept) ?? []));
+		for (const path of paths) this.#checkCover(path);
+		// A cover no concept names any more lets its picture go.
+		for (const [path, cover] of this.#covers)
+			if (!paths.has(path)) {
+				this.#covers.delete(path);
+				if (cover.url) forgetPictureUrl(cover.url);
+			}
+	}
+
+	#checkCover(path: string): void {
+		if (this.#coverReads.has(path)) {
+			this.#coverAgain.add(path);
+			return;
+		}
+		const signal = this.#lifetime.signal;
+		this.#coverReads.add(path);
+		void (async () => {
+			const entry = (await this.#host.panel.folder().read(path, signal)).entry;
+			const version = entry?.kind === "file" ? entry.version : null;
+			const known = this.#covers.get(path);
+			// The picture shown is the file as it is now. A cover with no picture yet, or none that could be shown, is
+			// read again.
+			if (known?.url && known.version === version) return;
+			const blob = version === null ? null : await this.#host.picture(path, signal);
+			const url = blob ? await pictureUrl(blob) : null;
+			if (signal.aborted) {
+				if (url) forgetPictureUrl(url);
+				return;
+			}
+			this.#covers.set(path, { version, url });
+			this.#paintThumbs();
+			if (known?.url) forgetPictureUrl(known.url);
+		})()
+			.catch(() => {
+				/* What was shown stands; the next change in the folder tries again. */
+			})
+			.finally(() => {
+				this.#coverReads.delete(path);
+				if (this.#coverAgain.delete(path) && !signal.aborted) this.#checkCover(path);
+			});
 	}
 
 	#drawFoot(selected: Concept | undefined): void {
@@ -328,7 +415,6 @@ export class ConceptsView {
 				control("reload", t("Reload"), () => this.reload()),
 				control("folder", t("Show in Storage"), () => this.#host.panel.openInStorage(selected.path)),
 			),
-			h("p", { class: "concepts-note" }, t("Qorpera never asks for passwords here")),
 		);
 	}
 
@@ -348,17 +434,18 @@ export class ConceptsView {
 			: this.#asked !== undefined
 				? t("This concept isn't in the company anymore.")
 				: t("The company has no concepts yet.");
-		const shown = this.#stage.querySelector(":scope > .concepts-status > p");
-		if (shown?.textContent === text) return;
+		// The newest concept it offers changes with the concepts, its text with the route.
+		const newest = this.#read && this.#asked !== undefined ? concepts[0]?.name : undefined;
+		const key = `${text}\n${newest ?? ""}`;
+		const shown = this.#stage.querySelector<HTMLElement>(":scope > .concepts-status");
+		if (shown?.dataset.shown === key) return;
 		replace(
 			this.#stage,
 			h(
 				"div",
-				{ class: "concepts-status" },
+				{ class: "concepts-status", dataset: { shown: key } },
 				h("p", null, text),
-				this.#read && this.#asked !== undefined && concepts.length > 0
-					? h("a", { href: conceptsHash(this.#host.profileId, concepts[0]?.name) }, t("Open the newest concept"))
-					: null,
+				newest ? h("a", { href: conceptsHash(this.#host.profileId, newest) }, t("Open the newest concept")) : null,
 			),
 		);
 	}
