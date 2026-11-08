@@ -94,10 +94,10 @@ plain and readable by someone who is not an expert. Post an app when every membe
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
-  Bank show (`AppPanel` placed as a page). Slim header: the way back (to the conversation it was opened from, else
+  Bank show (`AppPanel` placed as a page). Slim header: the way back (to the company's last open conversation, else
   the company), emblem, title, "Made by <owner> · Qorpera never asks for passwords here", Reload, Show in Storage. A
-  deep link or reload opens the company, then the app; an app that is gone says "This app isn't in the company
-  anymore."
+  deep link or reload opens the company, waits for its first read, then the app; an app that is gone says "This app
+  isn't in the company anymore."
 - **Side panel.** PR #1430's agent sheet, generalised: `AppPanel` placed beside the conversation inside
   `.thread-body` (not over it, no dim, not modal), the conversation stays mounted and usable. It shows `folder:`
   links to `.html` files (a plain page, no manifest), never an app. Header as the app page's, with Close instead of
