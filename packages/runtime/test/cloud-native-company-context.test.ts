@@ -1619,6 +1619,27 @@ it("builds the founders' product at their ambition, and demos the product itself
 		expect(instructions).toContain(rule);
 });
 
+it("makes concepts in four steps, looks at pictures, and writes to coworkers in plain words (8 November 2026)", () => {
+	// Jonas, 8 November: the agents jumped to building, researched only in text and never judged how anything looks,
+	// and their threads read as test reports.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Concepts are made in four steps, none skipped",
+		"write the concept brief in plain words in strategy/concept-brief.md and put it on your wall for the founders",
+		"screenshots of their real screens saved as image files in research/moodboard/",
+		"Research that is only text does not count as looking.",
+		"make several clearly different directions as still pictures of the key moments, not built apps",
+		"look at them as a demanding designer would, against the brief, the moodboard and the best reference",
+		"Passing tests is not done",
+		"A concept is its own interface app, saved with concept = true and a cover picture",
+		"never logs, check counts or file lists, because the founders read these threads",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The Co-Founder writes the concept brief with the founders before anything is built",
+	);
+});
+
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
