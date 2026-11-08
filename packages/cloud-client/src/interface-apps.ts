@@ -4,7 +4,7 @@ import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
 /* Interface apps (deploy/first-node/RUNTIME-INTERFACE-APPS.md, Jonas 5 November 2026): a small web page an agent makes
  * to show members something, kept as ordinary files in `apps/<name>/` of the Company File with an `app.toml` manifest.
- * The web runs it in the Company File's locked frame (packages/web/src/ui/page-frame.ts) and shows it beside the chat.
+ * The web runs it in the Company File's locked frame (packages/web/src/ui/page-frame.ts) and shows it as a page of its own.
  * This module is the format both sides read: names, the manifest's parser, which files an app may load, and the one
  * edit a reviewed post makes (`setAppPosted`). Browser-safe. */
 

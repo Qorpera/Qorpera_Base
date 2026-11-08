@@ -1525,7 +1525,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e82f62c1f2bae3b9d6cb640b3fc47a14ac31ce33324602c1efd8d842602d89bc",
+			instructions: "5a22ca150ad30aefa79814fc7331bd0225446d9d1d6af55395f2319720a5fde4",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1533,7 +1533,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "7623b498c876de075691f3482da2f4e460eb882254cdf29888ebd74fcde0035a",
+			instructions: "7cfcdef6bbecac80fa75bfc9829a2a0ce47b4181ec70e53fb96d4376b8ee5173",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1541,7 +1541,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e82f62c1f2bae3b9d6cb640b3fc47a14ac31ce33324602c1efd8d842602d89bc",
+			instructions: "5a22ca150ad30aefa79814fc7331bd0225446d9d1d6af55395f2319720a5fde4",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1670,9 +1670,9 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"A file they asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
 	);
-	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app beside the chat.
+	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app; since 8 November it opens as a page of its own.
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open beside the chat. Link it in your message as [Title](app:<name>) instead of pasting long text",
+		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open as a page of its own. Link it in your message as [Title](app:<name>) instead of pasting long text",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",
