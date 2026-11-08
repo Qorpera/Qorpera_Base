@@ -92,7 +92,9 @@ test("theme.js restores appearance before paint without the dictionary", async (
 	const { layout, text } = await built;
 	const inputs = inputsOf(layout, [layout.theme]);
 	assert.deepEqual(inputs.filter((path) => /src\/ui\/(?:danish\/|preferences\.ts$)/.test(path)), []);
-	assert.ok(text[layout.theme].length < 2048, `theme.js is ${text[layout.theme].length} bytes`);
+	// About 1.2 KB of appearance and 2 KB that picks index.html's first screen with the app's own router and keeps its
+	// shapes' breath (src/ui/boot.ts); about 1.4 KB on the wire, one packet either way.
+	assert.ok(text[layout.theme].length < 3584, `theme.js is ${text[layout.theme].length} bytes`);
 	const stored = { "qorpera.web.theme": "dark", "qorpera.web.composer-color": "green", "qorpera.web.ui-size": "small" };
 	const root = { dataset: {} };
 	const context = {
@@ -112,6 +114,32 @@ test("theme.js restores appearance before paint without the dictionary", async (
 		window: { matchMedia: () => ({ matches: true }), dispatchEvent() {} },
 	});
 	assert.deepEqual(device.dataset, { theme: "dark", composerColor: "blue", uiSize: "big" });
+	// It also names index.html's first screen (src/ui/boot.ts): a stored session at a company's address is its thread,
+	// with the member's rail width; nothing stored is the sign-in page.
+	const company = "0f8fad5b-d9cb-469f-a165-70867728950e";
+	const member = { dataset: {}, style: { setProperty(name, value) { this[name] = value; } } };
+	const listened = [];
+	runInNewContext(text[layout.theme], {
+		...context,
+		URL,
+		URLSearchParams,
+		location: { href: `https://app.example/#/c/${company}` },
+		localStorage: { getItem: (key) => ({ "qorpera-web-auth/v1": "{}", "qorpera.web.rail-width.v4": "400" })[key] ?? null },
+		document: { documentElement: member, querySelectorAll: () => [], addEventListener: (type) => listened.push(type) },
+	});
+	assert.equal(member.dataset.boot, "thread");
+	assert.equal(member.style["--boot-rail"], "400");
+	// Its shapes breathe on the document's clock (the app's own rule, src/ui/skeleton.ts).
+	assert.deepEqual(listened, ["animationstart"]);
+	const visitor = { dataset: {}, style: { setProperty() {} } };
+	runInNewContext(text[layout.theme], {
+		...context,
+		URL,
+		URLSearchParams,
+		location: { href: "https://app.example/" },
+		document: { documentElement: visitor, querySelectorAll: () => [], addEventListener() {} },
+	});
+	assert.equal(visitor.dataset.boot, "sign-in");
 });
 
 test("index.html points at the hashed files and preloads what main.js imports", async () => {

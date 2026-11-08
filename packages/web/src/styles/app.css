@@ -12,6 +12,7 @@
 @import "./agent-routines.css";
 @import "./dark.css";
 @import "./motion.css";
+@import "./boot.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */

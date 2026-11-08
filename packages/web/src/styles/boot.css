@@ -1,0 +1,31 @@
+/* index.html's static first screens (ui/boot.ts). The head script names the one the app will draw on <html>
+ * (data-boot); only that one is shown, from the moment this stylesheet is in, until main.js replaces #app's
+ * contents with the app's own. They are the app's own markup and classes (ui/skeleton.ts, views/signin.ts,
+ * views/hub.ts), so each shape stands where the app draws its own; the rules here only add what a static page
+ * cannot get from a script: the rail's width (ui/rail-layout.ts) and grey lines where text will stand. */
+.boot { display: contents; }
+.boot > div { display: none; }
+:root[data-boot="sign-in"] .boot > .boot-sign-in,
+:root[data-boot="hub"] .boot > .boot-hub,
+:root[data-boot="thread"] .boot > .boot-thread { display: contents; }
+
+/* RailLayout's width: the member's stored one or the size's default, at most two fifths of the window and never
+ * under 240 (design pixels; --px is the scale). */
+.boot .rail { --rail-width: min(calc(var(--boot-rail, 369) * var(--px)), max(240px, 40vw)); }
+:root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 456) * var(--px)), max(240px, 40vw)); }
+
+/* A grey line where a line of text will stand; its line box keeps the text's own height (line heights here are
+ * multiples of the font size, whatever the face). The sign-in page's lines are set in the system face: a line box in
+ * Source Sans 3 would fetch that font beside main.js on a slow line and hold the real page back (about 0.1 s at
+ * 1.6 Mbit/s, measured); the app fetches it when it draws the page, as before. */
+.boot .auth { font-family: var(--font-sans); }
+.boot .boot-line { display: inline-block; vertical-align: middle; height: 0.62em; border-radius: 6px; }
+.boot .auth-body h1 .boot-line { width: 3.4em; }
+.boot .auth-lead .boot-line { width: 17em; max-width: 100%; }
+.boot .auth-form .boot-line { width: 2.8em; }
+.boot .auth-foot .boot-line { width: 26em; max-width: 100%; }
+.boot .boot-lockup { width: 136px; height: 34px; border-radius: 8px; }
+.boot .boot-field { height: 46px; border-radius: 8px; }
+.boot .boot-primary { height: 46px; margin-top: 6px; border-radius: 8px; }
+.boot .hub-title .boot-line { width: 9.5em; }
+.boot .hub-lead .boot-line { width: 7em; }
