@@ -765,6 +765,32 @@ describe("machine tools", () => {
 			}
 		});
 
+		it("takes a read that fails after the wait's end for the read after it: no second read (review-1499 F3)", async () => {
+			const f = fixture(undefined, true);
+			try {
+				// The executor never answers the first look's read: it fails at the read's 30 s, past the 12 s wait.
+				f.gateway.read.mockImplementationOnce(() => new Promise(() => undefined));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 12,
+				});
+				let settled = false;
+				void read.then(() => {
+					settled = true;
+				});
+				await vi.advanceTimersByTimeAsync(29_000);
+				expect(settled).toBe(false);
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(settled).toBe(true);
+				// As a failed read after the wait answers when nothing was reported.
+				expect((await read).contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
 		it("a starting machine's executor is told at once, and its word ends the worker's wait", async () => {
 			const f = fixture(undefined, true);
 			try {

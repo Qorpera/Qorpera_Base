@@ -779,6 +779,8 @@ export function cloudMachineTools(options: {
 					limit = Math.max(4, Math.floor(limit / 2));
 				}
 			};
+			// A read during the wait that failed after the wait's end: it stands for the read after the wait.
+			let late: { error: unknown } | undefined;
 			if (waitSeconds !== undefined) {
 				// A worker waits until its command ended, its machine stopped or the time passed. Each look asks the
 				// kernel's status first, which also says whether its work was stopped. The kernel hears of a command's
@@ -787,15 +789,21 @@ export function cloudMachineTools(options: {
 				// that finds the command running asks the machine too, and an ended command is answered at the next look
 				// rather than one look after that pass. A read is a look too: if it fails, the wait goes on. No read
 				// starts with less than WAIT_READ_LEAST_MS left, as the read below answers then, and a read that outlives
-				// the wait (a slow executor) is the answer, so a wait runs over by one read at most (review-1499 F3).
-				// The read below answers otherwise.
+				// the wait (a slow executor) answers or fails for it, so a wait runs over by one read at most
+				// (review-1499 F3). The read below answers otherwise.
 				let answer: CloudToolContent | undefined;
 				const outcome = await waitUntil(Number(waitSeconds), context.signal, async (deadline) => {
 					const now = await status(machine.name, String(query.commandId), context.signal);
 					if (now.workStopped) return "stopped";
 					if (now.machine?.state !== "running" || now.command?.state !== "running") return true;
 					if (deadline - Date.now() < WAIT_READ_LEAST_MS) return false;
-					const read = await page();
+					let read: Awaited<ReturnType<typeof page>>;
+					try {
+						read = await page();
+					} catch (error) {
+						if (Date.now() >= deadline) late = { error };
+						throw error;
+					}
 					if (read.ended || Date.now() >= deadline) answer = read.content;
 					return read.ended;
 				});
@@ -804,6 +812,7 @@ export function cloudMachineTools(options: {
 				if (answer) return answer;
 			}
 			try {
+				if (late) throw late.error;
 				return (await page()).content;
 			} catch (error) {
 				// The executor has spent what it reports once, on a read before this one, and a run that is still going can
