@@ -3,7 +3,7 @@ import { relative } from "node:path";
 /** Seconds each slow test file of this package took on a quiet test machine (the whole package in one vitest, 4 workers,
  * node02, 7-8 Nov; the deadline files and company-machine-host as they are since perf T10). `--shard=k/n` splits the
  * files by these (timedShare, vitest.config.ts) and each vitest starts its slowest files first. A file not named here
- * counts as UNLISTED_SECONDS (the 131 such files took 21 s together). A wrong or missing entry costs balance only: shares
+ * counts as UNLISTED_SECONDS (the other 136 took about 21 s together). A wrong or missing entry costs balance only: shares
  * 1/n to n/n still run every file exactly once. */
 export const TEST_FILE_SECONDS: Readonly<Record<string, number>> = {
 	"test/lxd-office-boot-successor-worker.test.ts": 55,
