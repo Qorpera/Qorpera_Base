@@ -2611,6 +2611,11 @@ export class CloudRunnerOrchestrator {
 			while (!signal.aborted) {
 				const pass = ++reconcile.started;
 				passes.lastStartedAt = performance.now();
+				// This pass starts after every wake-up so far, so one still waiting for its gap needs no pass of its own.
+				if (passes.timer) {
+					clearTimeout(passes.timer);
+					passes.timer = undefined;
+				}
 				let delayMs = reconcileIntervalMs;
 				try {
 					const claimsWereOpen = !reconcile.failed && reconcile.succeeded >= reconcile.required;
