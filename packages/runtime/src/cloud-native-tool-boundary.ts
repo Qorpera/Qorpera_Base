@@ -78,6 +78,11 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * replaces it, so a cut answer never grows. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
 const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
+/** Text with every webhook signing secret cut out, as every text tool result has it (E3c-2): also the context's text
+ * that a run would otherwise read as a read_context page, such as its continuation past the first 4 KiB. */
+export function redactCloudWebhookSecrets(text: string): string {
+	return text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+}
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A result asks the run's desktop folder report (F3 4f-2b) for this long at most, and shows one this big at most. */
@@ -1187,7 +1192,7 @@ export class CloudNativeToolBoundary {
 			throw new Error("Invalid cloud tool content");
 		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
 		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
-		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+		const text = redactCloudWebhookSecrets(raw);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
@@ -1288,7 +1293,7 @@ function cloudCompanyFolderReport(value: unknown): CloudCompanyFolderReport | un
 		(more !== undefined && more !== true)
 	)
 		return undefined;
-	const words = (text: string): string => text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+	const words = redactCloudWebhookSecrets;
 	const paths: { path: string; outcome: string; reason?: string }[] = [];
 	for (const entry of (notSaved ?? []) as unknown[]) {
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;

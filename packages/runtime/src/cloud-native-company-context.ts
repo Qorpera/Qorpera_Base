@@ -18,6 +18,7 @@ import {
 	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import { CLOUD_RUNTIME_CONSTITUTION, CLOUD_RUNTIME_CONSTITUTION_VERSION } from "./cloud-runtime-constitution.ts";
 import {
@@ -990,7 +991,15 @@ export function composeCloudNativeCompanyPrompt(
 		coworkers: context.coworkers.map((coworker) => withFolder(coworker, folders)),
 		coworkersTruncated: context.coworkersTruncated,
 		job: context.job,
-		continuation: context.continuation,
+		// Its text past 4 KiB was a read_context page until 20260930617000 showed 16 KiB here, and the tool boundary cuts a
+		// webhook signing secret out of every page: so is it here, from the whole excerpt. The handle stays the source's.
+		continuation: context.continuation && {
+			...context.continuation,
+			content: {
+				...context.continuation.content,
+				text: redactCloudWebhookSecrets(context.continuation.content.text),
+			},
+		},
 		// How much open work the agent has; the list itself stays behind manage_todo and manage_worker.
 		...(openWork ? { openWork } : {}),
 		// Changes the agent saved from a computer that wait for review (P40); apply_proposal applies one.

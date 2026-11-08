@@ -870,6 +870,35 @@ it.each([true, false])(
 		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
 	},
 );
+it("starts a run whose continuation printed a webhook signing secret without the secret in what Codex gets", async () => {
+	const f = await fixture("company-silent");
+	// Made up for this test: never a real secret.
+	const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [{ outputTail: `${"o".repeat(8000)}\nSTRIPE_WEBHOOK_SECRET=${fake}\n${"p".repeat(12000)}` }],
+	});
+	const whole = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...whole,
+		content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+	};
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const raw = await readFile(f.evidence, "utf8");
+	const evidence = JSON.parse(raw);
+	expect(raw).not.toContain(fake);
+	const promptText: string = evidence.turnParameters.input[0].text;
+	expect(JSON.parse(promptText).continuation.content).toMatchObject({
+		sha256: whole.content.sha256,
+		nextOffset: 16384,
+		// The continuation's text is JSON, so the line break is the two characters \n.
+		text: expect.stringContaining("STRIPE_WEBHOOK_SECRET=whsec_[REDACTED]\\n"),
+	});
+	// The context bound before the model starts is the one shown, redacted.
+	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+	const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+	expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+});
 
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
