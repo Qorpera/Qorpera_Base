@@ -1257,7 +1257,7 @@ topic's rows. A new private topic's policies must do the same.
   (migration `20260930653000_member_live_hints`, perf T3). Private broadcast channel, events `sessions`, `staff`,
   `access`, `company-file`, `sidebar` (the tables `qorpera_shared_sessions`, `qorpera_profile_staff`,
   `qorpera_profile_access_state`, `qorpera_company_files`, `qorpera_company_sidebar_revisions`), payload
-  `{"schema":"qorpera.live-hint/v1"}` and nothing else (Realtime adds an `id`): never a row or its id. Ids lower-case,
+  `{"schema":"qorpera.live-hint/v1"}` and nothing else: never a row or its id. Ids lower-case,
   as the database writes them. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
