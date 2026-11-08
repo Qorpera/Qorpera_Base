@@ -18,6 +18,7 @@ import {
 	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import { CLOUD_RUNTIME_CONSTITUTION, CLOUD_RUNTIME_CONSTITUTION_VERSION } from "./cloud-runtime-constitution.ts";
 import {
@@ -978,7 +979,14 @@ export function composeCloudNativeCompanyPrompt(
 					: [],
 		},
 	});
-	const prompt = escapeCloudNativeContextJson(json);
+	// A webhook signing secret is cut out of all of it, as the tool boundary cuts one out of every tool result (E3c-2):
+	// every source shown here (current inputs, the request, history, the job record and description, the continuation)
+	// and the wake's payload. Text past a source's excerpt is read as a read_context page, cut; the excerpt now is too.
+	// The cut is made in the serialized, escaped message, as Codex is sent it, so a handle stays the source's (sha256,
+	// offsets and lengths are the whole text's) and read_context reads on from it, and the session's own cut of what it
+	// sends finds nothing more: the context hash names what Codex gets. The rule never ends inside an escape and never
+	// matches a quote, so the JSON stays valid.
+	const prompt = redactCloudWebhookSecrets(escapeCloudNativeContextJson(json));
 	if (Buffer.byteLength(prompt) > 768 * 1024) {
 		// The whole profile is composed (15.1). A notebook another writer grew past this bound
 		// degrades memory to unavailable; memory never fails the run.

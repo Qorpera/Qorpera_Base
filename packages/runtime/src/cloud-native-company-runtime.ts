@@ -88,6 +88,7 @@ import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	cloudToolJsonText,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
@@ -537,12 +538,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							})
 						: null;
 					openingSignal.throwIfAborted();
-					const head = composeCloudAgentHead(context, vision, memory);
+					// The head (vision, job description, notebook facts) and the views hold text members and agents wrote: a
+					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
+					// cuts one out of every tool result and the composer out of the context message (E3c-2). The session cuts
+					// all it sends Codex again, for any source added later.
+					const composedHead = composeCloudAgentHead(context, vision, memory);
+					const head = { ...composedHead, text: redactCloudWebhookSecrets(composedHead.text) };
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
 					requestSources = request.flatMap((entry) => [entry.input, ...(entry.question ? [entry.question] : [])]);
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
-					const views = view?.views ?? "";
+					const views = redactCloudWebhookSecrets(view?.views ?? "");
 					const prompt = composeCloudNativeCompanyPrompt(
 						context,
 						wake,
