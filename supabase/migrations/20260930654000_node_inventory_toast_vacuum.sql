@@ -15,11 +15,21 @@
 -- inserted. At 20 % of the about 160,000 chunks a week holds then, the insert count triggers a vacuum about every 15 hours,
 -- with up to about 25,000 dead chunks (about 50 MB) held back each time. One vacuum after each run keeps that under a few MB.
 --
--- So: vacuum the TOAST table after 1,000 dead chunks, whatever its size. Each thinning run passes that (also during the
--- catch-up, which removes about 3,000 chunks a run), and the seven-day retention's deletes count towards the next.
--- Cost: one vacuum an hour of about 1,000 pages: the pages filled since the last vacuum and the pages just thinned, mostly
--- still in shared buffers. The TOAST index is keyed by chunk id, which grows with time, so the deleted chunks sit together
--- on a few index pages. The full page images were mostly written by the thinning's own deletes minutes before.
+-- So: vacuum the TOAST table after 1,000 dead chunks, whatever its size. Each thinning run passes that (the catch-up runs
+-- of 7-8 November left 3,180 dead chunks a run on average over the first five, and 6,828 at 00:32Z on 8 November; a steady
+-- run about 1,700), and the seven-day retention's deletes count towards the next.
+--
+-- And always do the index pass (vacuum_index_cleanup = on). PostgreSQL 14 and later skip it when under 2 % of the table's
+-- pages hold dead items, and PostgreSQL 17 then leaves those pages out of the free space map: their space comes back only
+-- at the next vacuum that does the pass. A steady run touches about 450 to 500 of about 28,000 to 36,000 pages (1.3 to
+-- 1.8 %), under that line. Lab on a test machine, PostgreSQL 17.6, 20,000 TOAST pages, each run 560 of 720 reports spread
+-- over 360 pages (1.8 %): with the two thresholds alone the space came back every second run (the file took 280 extra pages
+-- once, and the free space map alternated); with the index pass forced it came back every run and the file did not grow;
+-- with the defaults it grew 280 pages every run.
+-- Cost: one vacuum an hour of about 1,000 pages (the pages filled since the last vacuum and the pages just thinned, mostly
+-- still in shared buffers) and one scan of the TOAST index, about 3 MB on 8 November. That index is keyed by chunk id,
+-- which grows with time, so the deleted chunks sit together on a few of its pages. The full page images were mostly written
+-- by the thinning's own deletes minutes before.
 --
 -- The heap is left at PostgreSQL's default on purpose, for now. Its primary key holds the random observation ids of the
 -- reports filed before 7 November 11:14Z (time-ordered ids since v211), and an index vacuum rewrites most pages of that key
@@ -29,13 +39,13 @@
 -- seven-day retention by 14 November 11:14Z).
 --
 -- TOAST options are stored on the TOAST table (pg_class.reloptions of pg_toast.pg_toast_<oid>); the table's own
--- reloptions stay unset. ALTER TABLE ... SET (toast.autovacuum_*) takes SHARE UPDATE EXCLUSIVE: the observers' inserts and
--- the thinning carry on. A running autovacuum on the table gives way; the lock timeout stops the migration rather than
--- queue behind anything else.
+-- reloptions stay unset. ALTER TABLE ... SET (toast.autovacuum_*, toast.vacuum_index_cleanup) takes SHARE UPDATE EXCLUSIVE:
+-- the observers' inserts and the thinning carry on. A running autovacuum on the table gives way; the lock timeout stops the
+-- migration rather than queue behind anything else.
 --
 -- Undo: alter table public.qorpera_runtime_node_inventory_receipts reset (toast.autovacuum_vacuum_threshold,
--- toast.autovacuum_vacuum_scale_factor).
+-- toast.autovacuum_vacuum_scale_factor, toast.vacuum_index_cleanup).
 set local lock_timeout = '3s';
 
 alter table public.qorpera_runtime_node_inventory_receipts
-	set (toast.autovacuum_vacuum_threshold = 1000, toast.autovacuum_vacuum_scale_factor = 0);
+	set (toast.autovacuum_vacuum_threshold = 1000, toast.autovacuum_vacuum_scale_factor = 0, toast.vacuum_index_cleanup = on);
