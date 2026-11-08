@@ -185,6 +185,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_shared_sessions_page(uuid,timestamp with time zone,uuid,integer)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_list_staff_execution_activity(uuid)', false, true, 'member: qorpera_can_read_profile; anon revoked (20260928289610)'),
 	('public.qorpera_list_wake_occurrences(uuid,integer)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
+	('public.qorpera_live_hint_member(text)', false, true, 'member: whether the topic is auth.uid()''s own hint topic for a company they are a member of or have an access row in, for the Realtime receive policy (perf T3, 20260930653000)'),
 	('public.qorpera_manage_company_sidebar(uuid,jsonb)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_mark_good_will_item(uuid,uuid,text,bigint,text)', false, true, 'member: auth.uid() + membership, viewers refused; only a month not final (20260930566000)'),
 	('public.qorpera_mark_mail_thread_read(uuid,text)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),

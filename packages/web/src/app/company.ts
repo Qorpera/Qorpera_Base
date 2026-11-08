@@ -28,11 +28,11 @@ import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
 import type { FolderProposalPage } from "../cloud/proposals.ts";
 import { type MessageQuote, QUOTES_MAX, sameQuotes } from "../cloud/quotes.ts";
 import {
+	type CompanyRealtimeSubscription,
 	type RealtimePhase,
 	type RealtimeResource,
 	type RealtimeSubscription,
-	subscribeProfileRealtime,
-	subscribeSidebarRealtime,
+	subscribeCompanyRealtime,
 } from "../cloud/realtime.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
@@ -519,7 +519,7 @@ export class CompanyController {
 	readonly #emailDraftEditors = new Map<string, EmailDraftEditor>();
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
-	#realtime: RealtimeSubscription | undefined;
+	#realtime: CompanyRealtimeSubscription | undefined;
 	#sidebarRealtime: RealtimeSubscription | undefined;
 	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
 	#sidebarPending = 0;
@@ -629,9 +629,10 @@ export class CompanyController {
 
 	async start(): Promise<void> {
 		if (this.#stopped || this.#realtime) return;
-		this.#realtime = subscribeProfileRealtime(
+		this.#realtime = subscribeCompanyRealtime(
 			this.#api.cloud,
 			this.profile.profileId,
+			this.#userId,
 			(resource) => this.#onHint(resource),
 			(phase, error, recovered) => {
 				if (this.#stopped) return;
@@ -1009,10 +1010,9 @@ export class CompanyController {
 			// A change in flight answers with a newer sidebar than this read.
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			this.store.set({ sidebar });
-			// Its own channel: a cloud without the sidebar tables must not degrade the company's hints.
-			this.#sidebarRealtime ??= subscribeSidebarRealtime(this.#api.cloud, this.profile.profileId, () =>
-				this.#onHint("sidebar"),
-			);
+			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
+			// the sidebar tables must not degrade the company's hints.
+			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.sidebar) return;
 			if (error instanceof CloudRpcError && error.missing)

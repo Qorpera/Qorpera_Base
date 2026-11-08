@@ -1253,16 +1253,34 @@ presence and room drafts since migration `20260928469300_realtime_topic_equality
 a client joined to one topic reads, and where it may publish writes, only that
 topic's rows. A new private topic's policies must do the same.
 
+- `qorpera-live-{profileId}-{userId}` — a company's change hints for one member, pushed by the database
+  (migration `20260930653000_member_live_hints`, perf T3). Private broadcast channel, events `sessions`, `staff`,
+  `access`, `company-file`, `sidebar` (the tables `qorpera_shared_sessions`, `qorpera_profile_staff`,
+  `qorpera_profile_access_state`, `qorpera_company_files`, `qorpera_company_sidebar_revisions`), payload
+  `{"schema":"qorpera.live-hint/v1"}` and nothing else: never a row or its id. Ids lower-case,
+  as the database writes them. Who hears a change is decided per change, at commit: only the topics of the members
+  who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
+  from that commit on but the change to their own access row (which they may read). A member may join only their own
+  topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
+  `qorpera_live_hint_member`), checked at join and at each token refresh; nobody publishes but the database. One hint
+  per topic and event per transaction. A nudge only, as before: re-read through the RPCs, keep the slow poll for hints
+  missed while disconnected. It replaces the `postgres_changes` subscriptions below, which keep Realtime polling the
+  WAL while any client holds one: a client listens by push, and by `postgres_changes` only where its push join is
+  refused twice running (a database without the migration). The tables stay in the publication for clients from
+  before the push.
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
-  client re-reads through RPCs; large bodies never travel on this channel.
+  client re-reads through RPCs; large bodies never travel on this channel. The web's
+  `postgres_changes` subscriptions on the four tables above (filter `profile_id=eq.{profileId}`) are its fallback
+  since the push; Realtime checks each subscriber's read policy per change for them.
 - `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
   `profile_id=eq.{profileId}`, member-readable, one row per company) — the
   shared sidebar changed, by a member or an agent: one hint per change however
   many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
   section and placement tables themselves are not readable or published. The web
-  subscribes on its own channel, only after the read RPC answered, so a cloud
+  follows it only after the read RPC answered: by push, the `sidebar` event of the
+  member's live topic; by `postgres_changes`, on its own channel, so a cloud
   without the table never degrades the company channel. Pins and hidden agents
   are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).

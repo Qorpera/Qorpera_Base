@@ -62,7 +62,9 @@ begin
 			'public.qorpera_reject_runtime_bundle_mutation()'::regprocedure,
 			'public.qorpera_guard_native_launch_replacement()'::regprocedure,
 			'public.qorpera_coding_session_turn_guard()'::regprocedure,
-			'public.qorpera_guard_office_delete_disposition()'::regprocedure);
+			'public.qorpera_guard_office_delete_disposition()'::regprocedure,
+			-- The live hint (20260930653000) is deferred and absorbs every error: it never refuses a delete.
+			'public.qorpera_live_hint_internal()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
 	end if;
