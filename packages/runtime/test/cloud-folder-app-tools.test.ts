@@ -289,6 +289,13 @@ it("posts its own app without review, and reviews posting or changing another's 
 	expect(describeCloudAction(runtime("save_app"), { name: "sales", foreignOwner: true }).title).toBe(
 		"Change another agent's app",
 	);
+	// 8 November 2026: an app opens as a page of its own, no longer beside the chat (#1524).
+	expect(describeCloudAction(runtime("post_app"), { name: "sales", posted: true }).details.effect).toContain(
+		"as a page of its own",
+	);
+	expect(describeCloudAction(runtime("save_app"), { name: "sales", foreignOwner: true }).details.effect).toContain(
+		"as a page of its own",
+	);
 });
 
 it("counts a video as a file of its app, but not toward the bytes of the rest", async () => {

@@ -828,7 +828,7 @@ export function describeCloudAction(
 		if (args.foreignOwner === true)
 			add(
 				"effect",
-				"Members see the changed app under its maker's name, beside the chat and in their apps if it is posted",
+				"Members see the changed app under its maker's name, as a page of its own and in their apps if it is posted",
 			);
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
@@ -837,7 +837,7 @@ export function describeCloudAction(
 			"effect",
 			args.posted === false
 				? "Members no longer see it in their apps; links to it still open it"
-				: "Every member of the company sees it in their apps and can open it beside the chat",
+				: "Every member of the company sees it in their apps and can open it as a page of its own",
 		);
 	} else if (tool.name === "publish_site") {
 		// Its prepared arguments (cloud-site-tools.ts): what the files are, read before the review.
