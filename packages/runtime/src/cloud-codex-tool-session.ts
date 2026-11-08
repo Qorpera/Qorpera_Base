@@ -45,6 +45,7 @@ import {
 	type CloudNativeFencedResult,
 	type CloudNativeToolBoundary,
 	redactCloudWebhookSecrets,
+	redactCloudWebhookSecretsIn,
 } from "./cloud-native-tool-boundary.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -1392,9 +1393,15 @@ class CodexBoundaryRpc {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
+		// Every request the host makes of Codex passes here: the agent's, the reviewer's and the compactor's threads and
+		// turns, their instructions and every turn's input. A webhook signing secret is cut out of each text in it, as
+		// the tool boundary cuts one out of every tool answer (E3c-2, the only other text the host sends Codex), so no
+		// source, today's or a later one, reaches the model with one. A text cut already where it was composed comes
+		// through as it is, so a hash taken of it there still names what Codex is sent.
+		const cut = redactCloudWebhookSecretsIn(params);
 		return new Promise((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
-			this.#write({ id, method, params });
+			this.#write({ id, method, params: cut });
 		});
 	}
 
@@ -1445,12 +1452,7 @@ class CodexBoundaryRpc {
 
 	#write(message: unknown): void {
 		if (this.#closed || this.#failure) return;
-		// Every message the host sends Codex passes here: the thread's instructions, every turn's input, the reviewer's
-		// and the compactor's requests, and every tool answer. A webhook signing secret is cut out of all of it, as the
-		// tool boundary cuts one out of a result (E3c-2), so no source, today's or a later one, reaches the model with
-		// one. What was cut already is left as it is (the rule never matches its own mark), and the rule matches no quote
-		// or backslash, so the message stays the same JSON.
-		const text = redactCloudWebhookSecrets(JSON.stringify(message));
+		const text = JSON.stringify(message);
 		if (
 			Buffer.byteLength(text) >
 			(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)

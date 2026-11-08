@@ -253,6 +253,30 @@ it("refuses a context request outside the run's turn before composing it", async
 	expect(composeContext).not.toHaveBeenCalled();
 });
 
+/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
+const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+
+it("cuts webhook signing secrets out of the compactor's instructions and windows it sends Codex", async () => {
+	const compactor = new MemoryCompactChannel();
+	const { result, evidence } = run("compact", {
+		compactor,
+		composeContext: async (request) => ({ input: request.items.map((_, keep) => ({ keep })) }),
+		closing: async (signal) => {
+			// Raw conversation events, as the compactor's leaf windows carry them: a member pasted a secret.
+			const thread = await compactor.call(`PRIVATE_COMPACT_SYSTEM ${FAKE_WEBHOOK_SECRET}`, signal);
+			await thread.send(`PRIVATE_WINDOW_1 member: ${FAKE_WEBHOOK_SECRET}`, signal);
+			await thread.send("PRIVATE_WINDOW_2", signal);
+			thread.close?.();
+		},
+	});
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(recorded.compactThreads[0].developerInstructions).toBe("PRIVATE_COMPACT_SYSTEM whsec_[REDACTED]");
+	expect(recorded.compactTurns[0].input[0].text).toBe("PRIVATE_WINDOW_1 member: whsec_[REDACTED]");
+});
+
 it("ends the run when its composition is not one Codex can send", async () => {
 	// A position past the request's items: refused here, before Codex sees it.
 	const composeContext = vi.fn(async () => ({ input: [{ keep: 2 }] }));
@@ -274,9 +298,6 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("project_doc_max_bytes=0");
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
-
-/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
-const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
 
 it("cuts webhook signing secrets out of the instructions file and the thread's instructions it sends Codex", async () => {
 	const { result, evidence } = run("bootstrap", { runtimeInstructions: `HOST_LAW ${FAKE_WEBHOOK_SECRET} END` });
@@ -1292,6 +1313,7 @@ function reviewRun(
 	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context" | "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
 	compactor?: MemoryCompactChannel,
+	request = "Email Bob.",
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
@@ -1320,7 +1342,7 @@ function reviewRun(
 						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." },
 			},
 			reviewer,
-			request: "Email Bob.",
+			request,
 			holdMs: 0,
 		}),
 	});
@@ -1342,6 +1364,18 @@ function reviewRun(
 	});
 	return { result, execute, evidence, contextViews };
 }
+
+it("cuts webhook signing secrets out of the action review's prompt it sends Codex", async () => {
+	// A member pasted one into the request the review quotes.
+	const { result, evidence } = reviewRun("review", undefined, undefined, `Email Bob the key ${FAKE_WEBHOOK_SECRET}.`);
+	await expect(result).resolves.toMatchObject({ toolCalls: 1 });
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(JSON.parse(recorded.reviewerTurn.input[0].text)).toMatchObject({
+		request: "Email Bob the key whsec_[REDACTED].",
+	});
+});
 
 it("reviews an acting call in a second thread of the same app-server before running it", async () => {
 	const { result, execute, evidence, contextViews } = reviewRun("review");
