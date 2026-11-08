@@ -256,6 +256,17 @@ export const CONVERSATION: Record<string, string> = {
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
 	"App · opens on its own page": "App · åbner på sin egen side",
 	App: "App",
+
+	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
+	Concepts: "Koncepter",
+	"1 concept": "1 koncept",
+	"{count} concepts": "{count} koncepter",
+	"Show the concepts": "Vis koncepterne",
+	"Hide the concepts": "Skjul koncepterne",
+	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
+	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
+	"Open the newest concept": "Åbn det nyeste koncept",
+
 	"1 message": "1 besked",
 	"{count}+ messages": "{count}+ beskeder",
 	and: "og",

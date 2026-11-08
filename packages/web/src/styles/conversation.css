@@ -948,6 +948,83 @@ a.side-panel-button { color: var(--text-muted); text-decoration: none; }
 a.side-panel-button:hover { text-decoration: none; }
 @media (max-width: 760px) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
 @container thread-body (max-width: 42em) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
+/* The Concepts viewer (views/concepts.ts; Jonas, 8 November 2026): full screen, no rail and no top bar. A slim side
+ * panel in Qorpera's light look lists the concepts; the open one's frame fills the rest, with nothing over it. The panel
+ * folds to a thin strip; at phone width it is a top bar whose menu drops the list over the concept. */
+.frame.has-concepts .topbar { display: none; }
+.concepts { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; }
+.concepts-side {
+	display: flex; flex: none; flex-direction: column; width: 264px; min-height: 0;
+	border-right: 1px solid var(--border); background: var(--sidebar-surface); color: var(--text);
+	transition: width var(--motion-base) var(--ease-spring);
+}
+.concepts-top { display: flex; flex: none; align-items: center; gap: 4px; min-height: var(--titlebar-height); padding: 10px 10px 4px 12px; }
+.concepts-back {
+	display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; height: 32px; margin-left: -4px; padding: 0 8px;
+	border-radius: 9px; color: var(--text); font-size: 14px; font-weight: 650; text-decoration: none;
+}
+.concepts-back:hover { background: var(--sidebar-hover); text-decoration: none; }
+.concepts-back .icon { flex: none; width: 16px; height: 16px; color: var(--text-muted); }
+.concepts-back-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.concepts-current { display: none; }
+.concepts-button {
+	display: grid; flex: none; place-items: center; width: 30px; height: 30px; padding: 0;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.concepts-button .icon { width: 16px; height: 16px; }
+.concepts-button:hover { background: var(--sidebar-hover); color: var(--text); }
+:is(.concepts-button, .concepts-back, .concepts-item):focus-visible { outline: 2px solid var(--composer-accent); outline-offset: -2px; }
+.concepts-menu { display: none; }
+.concepts-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.concepts-heading { margin: 10px 16px 6px; color: var(--text-muted); font-size: 11.5px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+.concepts-panel > nav { flex: 1; min-height: 0; padding: 0 8px 8px; overflow-y: auto; overscroll-behavior: contain; }
+.concepts-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.concepts-item {
+	display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px;
+	border-radius: 10px; color: var(--text); text-decoration: none;
+	transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.concepts-item:hover { background: var(--sidebar-hover); text-decoration: none; }
+.concepts-item[aria-current] { background: var(--overlay); box-shadow: 0 0 0 1px var(--border), 0 1px 3px rgb(18 18 17 / 6%); }
+.concepts-thumb {
+	display: grid; place-items: center; width: 56px; height: 42px; overflow: hidden;
+	border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
+}
+.concepts-thumb.has-cover { border-color: transparent; }
+.concepts-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.concepts-item-copy { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.concepts-item-copy > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.concepts-item-title { font-size: 13px; font-weight: 600; }
+.concepts-item-about { color: var(--text-muted); font-size: 12px; }
+.concepts-item-by { color: var(--text-soft); font-size: 11px; }
+.concepts-foot { flex: none; padding: 8px 12px 12px; border-top: 1px solid var(--border); }
+.concepts-foot:empty { display: none; }
+.concepts-actions { display: flex; gap: 2px; margin-left: -4px; }
+.concepts-note { margin: 4px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.35; }
+.concepts-stage { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
+.side-panel.is-concept { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border: 0; box-shadow: none; animation: none; }
+.concepts-status { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: auto; max-width: 36ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
+.concepts-status p { margin: 0; }
+/* Folded: a thin strip with the way back and the button that unfolds the list. */
+.concepts.is-collapsed .concepts-side { width: 48px; }
+.concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; padding: 10px 0; }
+.concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 32px; margin: 0; padding: 0; }
+.concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
+@media (max-width: 760px) {
+	.concepts { flex-direction: column; }
+	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+	.concepts-top, .concepts.is-collapsed .concepts-top { flex-direction: row; gap: 4px; min-height: 48px; padding: 6px 8px; }
+	.concepts-back, .concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 36px; margin: 0; padding: 0; }
+	.concepts-back-name, .concepts-collapse { display: none; }
+	.concepts-current { display: block; flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+	.concepts-menu { display: grid; width: 36px; height: 36px; }
+	.concepts-panel, .concepts.is-collapsed .concepts-panel {
+		display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: min(70dvh, 560px);
+		border-bottom: 1px solid var(--border); background: var(--sidebar-surface); box-shadow: 0 18px 40px rgb(18 18 17 / 14%);
+	}
+	.concepts.is-menu-open .concepts-panel { display: flex; }
+}
+@media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
 /* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */
 .app-card {
 	display: flex; align-items: center; gap: 12px; width: min(100%, 360px); margin: 6px 0; padding: 10px 14px 10px 10px;

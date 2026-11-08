@@ -27,10 +27,10 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
-import type { CompanyApp } from "../interface-apps.ts";
+import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
-import { appHash, type Route } from "../router.ts";
+import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -897,9 +897,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
 	const interfacesShown = companyInterfaces(company);
-	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages.
-	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true);
-	const hasApps = interfacesShown.length > 0 || postedApps.length > 0;
+	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages. The
+	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
+	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true && !app.manifest.concept);
+	const concepts = companyConcepts(state.apps ?? []).length;
+	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
@@ -944,7 +946,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1329,6 +1331,7 @@ function drawInterfaces(
 	company: CompanyController,
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
+	concepts: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -1362,6 +1365,20 @@ function drawInterfaces(
 		element.style.setProperty("--i", String(elements.length));
 		element.classList.toggle("active", app.name === activeApp);
 		if (app.name === activeApp) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// The company's concepts: one entry for the Concepts viewer, which lists them all.
+	if (concepts > 0) {
+		const key = "concepts";
+		const model = JSON.stringify([key, t("Concepts"), concepts]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId), concepts);
+		rows.set(key, { shown: model, element });
+		element.style.setProperty("--i", String(elements.length));
+		const open = route.name === "company" && route.section === "concepts";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
 		elements.push(element);
 	}
@@ -1415,6 +1432,22 @@ function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),
+	);
+}
+
+/** The Concepts entry in the drawer: the concepts' emblem with "Concepts" under it, a link to the Concepts viewer. */
+function conceptsIcon(href: string, count: number): HTMLElement {
+	const label = t("Concepts");
+	return h(
+		"a",
+		{
+			class: "rail-app rail-concepts",
+			href,
+			draggable: "false",
+			title: count === 1 ? t("1 concept") : t("{count} concepts", { count }),
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", "purple", 34)),
+		h("span", { class: "rail-app-name" }, label),
 	);
 }
 

@@ -81,6 +81,11 @@ export interface AppManifest {
 	readonly owner: string | null;
 	readonly posted: boolean;
 	readonly reads: readonly AppRead[];
+	/** A concept of the company's product (Jonas, 8 November 2026: "vision alignment through concepts"): it shows in the
+	 * Concepts viewer, beside the company's other concepts, not as an app of its own. */
+	readonly concept: boolean;
+	/** A picture of the app, relative to its folder (.png, .jpg or .webp), shown as its thumbnail; null for none. */
+	readonly cover: string | null;
 }
 
 export interface AppProblem {
@@ -92,7 +97,9 @@ export type AppManifestParse =
 	| { readonly ok: true; readonly manifest: AppManifest }
 	| { readonly ok: false; readonly problems: readonly AppProblem[] };
 
-const KEYS = ["name", "about", "emblem", "colour", "entry", "owner", "posted", "reads"];
+const KEYS = ["name", "about", "emblem", "colour", "entry", "owner", "posted", "reads", "concept", "cover"];
+/** The kinds a cover may be. */
+export const APP_COVER_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "webp"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** A file's kind: its extension, lowercase, or "" for none. */
@@ -206,6 +213,18 @@ export function parseAppManifest(text: string): AppManifestParse {
 		if (typeof value.posted !== "boolean") problem("posted", "posted must be true or false");
 		else posted = value.posted;
 	}
+	let concept = false;
+	if (value.concept !== undefined) {
+		if (typeof value.concept !== "boolean") problem("concept", "concept must be true or false");
+		else concept = value.concept;
+	}
+	let cover: string | null = null;
+	if (value.cover !== undefined) {
+		const relative = typeof value.cover === "string" ? appRelativePath(value.cover) : null;
+		if (relative === null || !APP_COVER_KINDS.has(appFileKind(relative)))
+			problem("cover", "cover must be a relative path to a .png, .jpg or .webp picture in the app's folder");
+		else cover = relative;
+	}
 	const reads: AppRead[] = [];
 	if (value.reads !== undefined) {
 		if (!Array.isArray(value.reads)) problem("reads", `reads must be a list of ${APP_READS.join(", ")}`);
@@ -217,7 +236,7 @@ export function parseAppManifest(text: string): AppManifestParse {
 			}
 	}
 	if (problems.length > 0 || name === null) return { ok: false, problems };
-	return { ok: true, manifest: { name, about, emblem, colour, entry, owner, posted, reads } };
+	return { ok: true, manifest: { name, about, emblem, colour, entry, owner, posted, reads, concept, cover } };
 }
 
 /** A TOML basic string. */
@@ -235,6 +254,8 @@ export function writeAppManifest(manifest: AppManifest): string {
 	if (manifest.owner) lines.push(`owner = ${tomlString(manifest.owner)}`);
 	lines.push(`posted = ${manifest.posted}`);
 	if (manifest.reads.length > 0) lines.push(`reads = [${manifest.reads.map(tomlString).join(", ")}]`);
+	if (manifest.concept) lines.push("concept = true");
+	if (manifest.cover) lines.push(`cover = ${tomlString(manifest.cover)}`);
 	return `${lines.join("\n")}\n`;
 }
 

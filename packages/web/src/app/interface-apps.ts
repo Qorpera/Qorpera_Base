@@ -49,6 +49,16 @@ export interface CompanyApp {
 	readonly problems: readonly AppProblem[];
 	/** The manifest's version, so a change shows. */
 	readonly version: string | null;
+	/** When its folder or manifest last changed, as the folder's change number: the larger, the later. */
+	readonly changed?: number;
+}
+
+/** The company's concepts of its product (`concept = true`, with a manifest that reads), the most recently changed
+ * first, for the Concepts viewer. */
+export function companyConcepts(apps: readonly CompanyApp[]): (CompanyApp & { readonly manifest: AppManifest })[] {
+	return apps
+		.filter((app): app is CompanyApp & { readonly manifest: AppManifest } => app.manifest?.concept === true)
+		.sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0) || a.name.localeCompare(b.name));
 }
 
 type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile">;
@@ -97,6 +107,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 			if (!isInterfaceName(name)) return null;
 			const manifest = (await folder.read(`${entry.path}/${APP_MANIFEST}`, signal)).entry;
 			const text = manifest ? await readText(folder, manifest, signal, APP_MANIFEST_MAX_BYTES) : null;
+			const changed = Math.max(entry.seq, manifest?.seq ?? 0);
 			if (text === null)
 				return {
 					name,
@@ -104,6 +115,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 					manifest: null,
 					problems: [{ line: null, message: manifest ? "app.toml is not text" : "app.toml is missing" }],
 					version: manifest?.version ?? null,
+					changed,
 				};
 			const parsed = parseAppManifest(text);
 			return {
@@ -112,6 +124,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 				manifest: parsed.ok ? parsed.manifest : null,
 				problems: parsed.ok ? [] : parsed.problems,
 				version: manifest?.version ?? null,
+				changed,
 			};
 		}),
 	);
