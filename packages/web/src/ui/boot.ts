@@ -5,12 +5,17 @@
  * whether a session is stored, never the session. Anything it cannot tell shows no placeholder, as before. */
 import { parseRoute } from "../app/router.ts";
 
-/** Auth's storage key (cloud/client.ts AUTH_STORAGE_KEY), here so the head script stays free of the SDK. */
+/** Auth's storage key (cloud/client.ts AUTH_STORAGE_KEY), here so the head script stays free of the SDK. These copies
+ * keep the head script small and free of the dictionary; test/boot.test.ts ties each to the app's own. */
 export const STORED_SESSION_KEY = "qorpera-web-auth/v1";
-/** RailLayout's stored width (ui/rail-layout.ts). */
-const RAIL_WIDTH_KEY = "qorpera.web.rail-width.v4";
-/** What a sign-in callback carries (app/auth.ts); Auth finishes it before the app knows which screen comes. */
-const CALLBACK = [
+/** RailLayout's stored width and the two widths it takes besides its default (ui/rail-layout.ts STORAGE_KEY, COMPACT,
+ * MIN); the defaults and the two-fifths cap are in styles/boot.css. */
+export const RAIL_WIDTH_KEY = "qorpera.web.rail-width.v4";
+export const RAIL_COMPACT = 80;
+export const RAIL_MIN = 240;
+/** What a sign-in callback carries (app/auth.ts SIGN_IN_CALLBACK_FIELDS); Auth finishes it before the app knows which
+ * screen comes. */
+export const CALLBACK = [
 	"code",
 	"access_token",
 	"refresh_token",
@@ -21,7 +26,9 @@ const CALLBACK = [
 	"error_description",
 ];
 /** qorpera.com's idea (application.ts WEBSITE_KEYS): the page goes to the new-company box. */
-const WEBSITE = ["ide", "idea", "kind"];
+export const WEBSITE = ["ide", "idea", "kind"];
+/** app.css's skeleton-breathe animation, and ui/skeleton.ts's rule for its phase. */
+const BREATH = "skeleton-breathe";
 
 export type BootView = "sign-in" | "hub" | "thread";
 
@@ -46,6 +53,20 @@ export function bootView(href: string, signedIn: boolean): BootView | undefined 
 	return section === "home" || section === "chat" || section === "staff" || section === "new" ? "thread" : undefined;
 }
 
+/** The static shapes breathe on the document's clock, as ui/skeleton.ts's shapes do (breatheTogether), so the app's
+ * first draw, which puts its own shapes where these stood, changes nothing on screen. Theirs start at 0 when the
+ * stylesheet arrives; each is set back to the document's start when its breath starts. Only `.boot`'s: the app's own
+ * shapes keep skeleton.ts's rule. */
+export function breatheOnDocumentClock(target: EventTarget): void {
+	target.addEventListener("animationstart", (event) => {
+		const shape = event.target;
+		if ((event as AnimationEvent).animationName !== BREATH || !(shape instanceof Element) || !shape.closest(".boot"))
+			return;
+		for (const animation of shape.getAnimations?.() ?? [])
+			if ("animationName" in animation && animation.animationName === BREATH) animation.startTime = 0;
+	});
+}
+
 /** Runs in the head script before the first paint. */
 export function applyBoot(): void {
 	const root = document.documentElement;
@@ -54,7 +75,7 @@ export function applyBoot(): void {
 	let view: BootView | undefined;
 	try {
 		signedIn = localStorage.getItem(STORED_SESSION_KEY) !== null;
-		// RailLayout's own reading: compact (80), or a width from 240 up; anything else is its default.
+		// RailLayout's own reading: compact, or a width from its minimum up; anything else is its default.
 		rail = Number(localStorage.getItem(RAIL_WIDTH_KEY));
 	} catch {
 		/* No storage: nothing is stored, as Auth sees it too. */
@@ -65,7 +86,9 @@ export function applyBoot(): void {
 		return;
 	}
 	// A compact rail has shapes of its own (app.css .rail-compact): that one placeholder is left out.
-	if (!view || (view === "thread" && rail === 80)) return;
+	if (!view || (view === "thread" && rail === RAIL_COMPACT)) return;
 	root.dataset.boot = view;
-	if (view === "thread" && Number.isFinite(rail) && rail >= 240) root.style.setProperty("--boot-rail", String(rail));
+	if (view === "thread" && Number.isFinite(rail) && rail >= RAIL_MIN)
+		root.style.setProperty("--boot-rail", String(rail));
+	breatheOnDocumentClock(document);
 }

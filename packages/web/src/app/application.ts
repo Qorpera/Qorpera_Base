@@ -1706,7 +1706,7 @@ export function mountApplication(
 
 /** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
  * "kind", not "type": the sign-in callback takes a type parameter. */
-const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
+export const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
 /** How long a card's request for its agent's computer or wall waits for that agent's chat to open. */
 const AGENT_PAGE_WAIT_MS = 20_000;
 

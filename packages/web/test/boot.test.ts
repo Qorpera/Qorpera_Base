@@ -2,9 +2,22 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mountApplication } from "../src/app/application.ts";
+import { mountApplication, WEBSITE_KEYS } from "../src/app/application.ts";
+import { SIGN_IN_CALLBACK_FIELDS } from "../src/app/auth.ts";
 import { AUTH_STORAGE_KEY } from "../src/cloud/client.ts";
-import { applyBoot, type BootView, bootView, STORED_SESSION_KEY } from "../src/ui/boot.ts";
+import {
+	applyBoot,
+	type BootView,
+	bootView,
+	breatheOnDocumentClock,
+	CALLBACK,
+	RAIL_COMPACT,
+	RAIL_MIN,
+	RAIL_WIDTH_KEY,
+	STORED_SESSION_KEY,
+	WEBSITE,
+} from "../src/ui/boot.ts";
+import { COMPACT, DEFAULT, MAX_SHARE, MIN, SMALL_DEFAULT, STORAGE_KEY } from "../src/ui/rail-layout.ts";
 import { companyCardsSkeleton, railSkeleton, threadSkeleton } from "../src/ui/skeleton.ts";
 import { deferred, fixture, settle } from "./fixtures.ts";
 
@@ -75,6 +88,26 @@ describe("which first screen stands while main.js loads", () => {
 	it("reads only whether Auth's session is stored, under Auth's own key", () => {
 		expect(STORED_SESSION_KEY).toBe(AUTH_STORAGE_KEY);
 	});
+
+	it("keeps the app's own callback fields, website keys and rail widths: a change there must change these", () => {
+		expect(CALLBACK).toEqual(SIGN_IN_CALLBACK_FIELDS);
+		expect(WEBSITE).toEqual([...WEBSITE_KEYS]);
+		expect([RAIL_WIDTH_KEY, RAIL_COMPACT, RAIL_MIN]).toEqual([STORAGE_KEY, COMPACT, MIN]);
+		// styles/boot.css's static rail: RailLayout's default per interface size, its minimum and its share of the window.
+		const css = readFileSync(resolve("src/styles/boot.css"), "utf8");
+		const widths = [
+			...css.matchAll(
+				/--rail-width: min\(calc\(var\(--boot-rail, (\d+)\) \* var\(--px\)\), max\((\d+)px, (\d+)vw\)\)/g,
+			),
+		].map((match) => match.slice(1).map(Number));
+		expect(widths).toEqual([
+			[DEFAULT, MIN, MAX_SHARE * 100],
+			[SMALL_DEFAULT, MIN, MAX_SHARE * 100],
+		]);
+		expect(css).toMatch(
+			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 456\)/,
+		);
+	});
 });
 
 describe("the head script", () => {
@@ -99,6 +132,53 @@ describe("the head script", () => {
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("thread");
 		expect(document.documentElement.style.getPropertyValue("--boot-rail")).toBe("412");
+		// And the static shapes breathe on the document's clock from their first breath.
+		const shape = document.createElement("span");
+		const breath = { animationName: "skeleton-breathe", startTime: 1280 };
+		Object.assign(shape, { getAnimations: () => [breath] });
+		const wrap = document.createElement("div");
+		wrap.className = "boot";
+		wrap.append(shape);
+		document.body.append(wrap);
+		const event = new Event("animationstart", { bubbles: true });
+		Object.defineProperty(event, "animationName", { value: "skeleton-breathe" });
+		shape.dispatchEvent(event);
+		wrap.remove();
+		expect(breath.startTime).toBe(0);
+	});
+
+	it("sets the static shapes' breath on the document's clock, as the app's own shapes are, and leaves the app's", () => {
+		const target = document.createElement("div");
+		breatheOnDocumentClock(target);
+		const shape = (inBoot: boolean, startTime: number) => {
+			const element = document.createElement("span");
+			element.className = "skeleton";
+			const animation = { animationName: "skeleton-breathe", startTime };
+			const other = { animationName: "fade", startTime };
+			Object.assign(element, { getAnimations: () => [animation, other] });
+			if (inBoot) {
+				const wrap = document.createElement("div");
+				wrap.className = "boot";
+				wrap.append(element);
+				target.append(wrap);
+			} else target.append(element);
+			return { element, animation, other };
+		};
+		const started = (element: Element, name = "skeleton-breathe") => {
+			const event = new Event("animationstart", { bubbles: true });
+			Object.defineProperty(event, "animationName", { value: name });
+			element.dispatchEvent(event);
+		};
+		const still = shape(true, 1280);
+		started(still.element);
+		expect(still.animation.startTime).toBe(0);
+		expect(still.other.startTime).toBe(1280);
+		const own = shape(false, 3200);
+		started(own.element);
+		expect(own.animation.startTime).toBe(3200);
+		const fading = shape(true, 900);
+		started(fading.element, "fade");
+		expect(fading.animation.startTime).toBe(900);
 	});
 
 	it("leaves a compact rail's thread and a width RailLayout would not take alone", () => {

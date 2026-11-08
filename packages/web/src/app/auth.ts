@@ -20,6 +20,18 @@ export interface AuthState {
 
 export type OAuthProvider = "github" | "google";
 
+/** What a sign-in callback carries in the address. ui/boot.ts shows no static first screen while one is finished. */
+export const SIGN_IN_CALLBACK_FIELDS = [
+	"code",
+	"access_token",
+	"refresh_token",
+	"provider_token",
+	"provider_refresh_token",
+	"error",
+	"error_code",
+	"error_description",
+];
+
 export class AuthController {
 	readonly store = new Store<AuthState>({ ready: false, session: null, user: null, busy: false, oauthProviders: [] });
 	readonly #cloud: Cloud;
@@ -38,25 +50,15 @@ export class AuthController {
 		// Listen before the first cloud read, so a session refused on the first request is seen.
 		this.#stopRejections = this.#cloud.onSessionRejected?.((rejection) => this.#sessionRejected(rejection));
 		const original = new URL(location.href);
-		const callbackFields = [
-			"code",
-			"access_token",
-			"refresh_token",
-			"provider_token",
-			"provider_refresh_token",
-			"error",
-			"error_code",
-			"error_description",
-		];
 		const originalFragment = new URLSearchParams(original.hash.slice(1));
-		const queryCallback = callbackFields.some((key) => original.searchParams.has(key));
+		const queryCallback = SIGN_IN_CALLBACK_FIELDS.some((key) => original.searchParams.has(key));
 		const fragmentCallback =
-			!original.hash.startsWith("#/") && callbackFields.some((key) => originalFragment.has(key));
+			!original.hash.startsWith("#/") && SIGN_IN_CALLBACK_FIELDS.some((key) => originalFragment.has(key));
 		const { error: initializationError } = await this.#cloud.supabase.auth.initialize().finally(() => {
 			// Let Auth consume the callback first, then remove credentials even
 			// when it rejects an expired or mismatched flow. Preserve app routes.
 			const url = new URL(location.href);
-			const fields = [...callbackFields, "sb_flow_id", "expires_in", "expires_at", "token_type", "type"];
+			const fields = [...SIGN_IN_CALLBACK_FIELDS, "sb_flow_id", "expires_in", "expires_at", "token_type", "type"];
 			if (queryCallback) {
 				for (const key of fields) {
 					if (JSON.stringify(original.searchParams.getAll(key)) === JSON.stringify(url.searchParams.getAll(key)))
