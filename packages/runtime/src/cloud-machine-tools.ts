@@ -58,6 +58,9 @@ export const CLOUD_MACHINE_START_ANSWER_MS = CLOUD_TOOL_REQUEST_MAX_MS;
 export const CLOUD_MACHINE_READ_MS = 30_000;
 /** How often a waiting worker looks at the machine's status again, when no word from its executor ends the wait first. */
 const WAIT_STEP_MS = 5000;
+/** A waiting worker's look asks the machine only with this much of the wait left: closer to the end, the read after
+ * the wait is that ask. */
+const WAIT_READ_LEAST_MS = 1000;
 /** How long a run waits for the executor to take a wake it does not wait on. A lost word costs only the executor's next
  * pass, 10 s at most. */
 const WAKE_SENT_MS = 2000;
@@ -331,18 +334,18 @@ export function cloudMachineTools(options: {
 	};
 	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped, and at once when
 	 * `word` comes (its machine's executor saying to look again). No model turn is spent. A failed look is only a failed
-	 * look; the answer comes after the wait either way. */
+	 * look; the answer comes after the wait either way. `settled` is told when the wait ends. */
 	const waitUntil = async (
 		seconds: number,
 		signal: AbortSignal,
-		settled: () => Promise<boolean | "stopped">,
+		settled: (deadline: number) => Promise<boolean | "stopped">,
 		word?: Promise<boolean>,
 	): Promise<"stopped" | undefined> => {
 		const deadline = Date.now() + seconds * 1000;
 		let waiting = word;
 		for (;;) {
 			try {
-				const outcome = await settled();
+				const outcome = await settled(deadline);
 				if (outcome === "stopped") return "stopped";
 				if (outcome) return undefined;
 			} catch {
@@ -777,22 +780,24 @@ export function cloudMachineTools(options: {
 				}
 			};
 			if (waitSeconds !== undefined) {
-				// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
-				// or the time passed. It looks at the kernel's status, which also says whether its work was stopped. A
-				// command may have ended long before the kernel hears of it, and most short ones have by the time the
-				// model reads them (7 Nov 2026): after the first look that finds it running, the machine is asked once.
-				// That read is a look too: if it fails, the wait goes on. The read below answers otherwise.
-				let asked = false;
+				// A worker waits until its command ended, its machine stopped or the time passed. Each look asks the
+				// kernel's status first, which also says whether its work was stopped. The kernel hears of a command's
+				// end only at its executor's next pass (one every 10 s or so: commands of a few milliseconds were
+				// recorded ended 1 to 12 s after their start on 7 Nov 2026), and the machine knows at once. So each look
+				// that finds the command running asks the machine too, and an ended command is answered at the next look
+				// rather than one look after that pass. A read is a look too: if it fails, the wait goes on. No read
+				// starts with less than WAIT_READ_LEAST_MS left, as the read below answers then, and a read that outlives
+				// the wait (a slow executor) is the answer, so a wait runs over by one read at most (review-1499 F3).
+				// The read below answers otherwise.
 				let answer: CloudToolContent | undefined;
-				const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
+				const outcome = await waitUntil(Number(waitSeconds), context.signal, async (deadline) => {
 					const now = await status(machine.name, String(query.commandId), context.signal);
 					if (now.workStopped) return "stopped";
 					if (now.machine?.state !== "running" || now.command?.state !== "running") return true;
-					if (asked) return false;
-					asked = true;
-					const first = await page();
-					if (first.ended) answer = first.content;
-					return first.ended;
+					if (deadline - Date.now() < WAIT_READ_LEAST_MS) return false;
+					const read = await page();
+					if (read.ended || Date.now() >= deadline) answer = read.content;
+					return read.ended;
 				});
 				check(context);
 				if (outcome === "stopped") return told(workStopped());

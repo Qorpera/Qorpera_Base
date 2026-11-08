@@ -673,9 +673,10 @@ describe("machine tools", () => {
 			});
 		});
 
-		it("looks at the kernel's status until its command ends, and reads it before the wait and for the answer", async () => {
+		it("looks at the kernel's status until its command ends, asks the machine at each look, and reads it for the answer", async () => {
 			const f = fixture(undefined, true);
 			try {
+				running(f);
 				running(f);
 				f.statuses.push(
 					f.status(f.listed[0], "running"),
@@ -693,8 +694,72 @@ describe("machine tools", () => {
 				expect(result.success).toBe(true);
 				expect(result.contentItems[0].text).toContain("succeeded");
 				expect(f.looks()).toHaveLength(3);
-				// The machine is asked before the wait and for the answer, never while waiting.
-				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+				// Asked at the two looks that found it running, and for the answer.
+				expect(f.gateway.read).toHaveBeenCalledTimes(3);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers a command that ended at the next look, before its executor's pass tells the kernel", async () => {
+			const f = fixture(undefined, true);
+			try {
+				running(f);
+				running(f);
+				// The kernel says running throughout: its executor has not recorded the end yet.
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				let settled = false;
+				void read.then(() => {
+					settled = true;
+				});
+				await vi.advanceTimersByTimeAsync(9_000);
+				expect(settled).toBe(false);
+				// The third look, at 10 s, asks the machine, which says the command ended.
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(settled).toBe(true);
+				const result = await read;
+				expect(result.success).toBe(true);
+				expect(result.contentItems[0].text).toContain("succeeded");
+				expect(f.looks()).toHaveLength(3);
+				expect(f.gateway.read).toHaveBeenCalledTimes(3);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("runs over its time by one read at most: a read that outlives the wait is the answer (review-1499 F3)", async () => {
+			const f = fixture(undefined, true);
+			try {
+				// A slow executor: the first look's read takes 20 s, past the 12 s wait, and would again.
+				const slowly = () =>
+					f.gateway.read.mockImplementationOnce(
+						(scope, input) =>
+							new Promise((resolve) =>
+								setTimeout(() => resolve(f.receipt(scope.machineId, input.commandId) as never), 20_000),
+							),
+					);
+				slowly();
+				slowly();
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 12,
+				});
+				let settled = false;
+				void read.then(() => {
+					settled = true;
+				});
+				await vi.advanceTimersByTimeAsync(20_000);
+				expect(settled).toBe(true);
+				const result = await read;
+				expect(result.success).toBe(true);
+				expect(result.contentItems[0].text).toContain("running");
+				expect(f.looks()).toHaveLength(1);
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
 			} finally {
 				f.boundary.close();
 			}
@@ -810,9 +875,10 @@ describe("machine tools", () => {
 				await vi.advanceTimersByTimeAsync(12_000);
 				const result = await read;
 				expect(result.contentItems[0].text).toContain("running");
-				// Looks at 0, 5, 10 and at the deadline, 12 s.
+				// Looks at 0, 5, 10 and at the deadline, 12 s. The machine is asked at the first three and for the answer:
+				// the last look has less than a second left.
 				expect(f.looks()).toHaveLength(4);
-				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+				expect(f.gateway.read).toHaveBeenCalledTimes(4);
 			} finally {
 				f.boundary.close();
 			}
@@ -863,6 +929,7 @@ describe("machine tools", () => {
 			const f = fixture(undefined, true);
 			try {
 				running(f);
+				running(f);
 				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
 					machine: "build-a",
 					commandId: randomUUID(),
@@ -872,7 +939,7 @@ describe("machine tools", () => {
 				f.run.abort(new Error("run stopped"));
 				expect((await read).success).toBe(false);
 				expect(f.looks()).toHaveLength(2);
-				expect(f.gateway.read).toHaveBeenCalledTimes(1);
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
 			} finally {
 				f.boundary.close();
 			}
