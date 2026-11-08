@@ -32,12 +32,20 @@
 -- Cost in the writing transaction: at commit, once per company, resource and readers' class, one primary-key read
 -- where the rule reads mutable columns (sessions, agents), the company's members by primary key, and one insert per
 -- new topic into realtime.messages.
--- Every failure is absorbed under a 20 ms lock budget, a missing Realtime included, as the folder hint does
--- (20260928469260): a hint never fails or holds up a commit. A missed hint is normal; the web keeps its slow poll.
+-- A hint never fails or slows the write it follows: every error is caught, a cancel or a statement timeout included,
+-- and the first one ends hinting for the rest of the transaction. Each lock waits at most 20 ms, so a transaction
+-- spends at most one such wait on hints, however many rows it changed (perf T3 review F1: a Realtime whose insert
+-- waited and failed cost 20 ms per row, and a timeout inside the hint rolled the write back). A missed hint is normal;
+-- the web keeps its slow poll.
 --
 -- The publication stays: web tabs from before this change keep postgres_changes until they close, and the new web falls
--- back to it when its join is refused (a database without this migration). Roll: this migration first, then the web.
--- Undo: the web first (it falls back by itself on a refused join), then drop the triggers, the policy and the functions.
+-- back to it when its join is refused twice running (a database without this migration). Roll: this migration first,
+-- then the web. Undo: the web first (it falls back by itself on refused joins), then drop the triggers, the policy and
+-- the functions.
+
+-- Creating the triggers locks the five tables and the policy locks realtime.messages: never queue behind a long
+-- transaction while every write and private join waits.
+set local lock_timeout = '3s';
 
 -- The topic of one member's hints for one company. The web makes the same name.
 create function public.qorpera_live_hint_topic(p_profile_id uuid, p_user_id uuid)
@@ -138,33 +146,37 @@ $$;
 -- again later in the transaction is read as it is now; a deleted row as it was.
 -- Its readers' class (the company and the columns the policy reads: the session's audience, whether the agent is
 -- deleted, the access row's account) is sent once per transaction: a later row of a class already sent costs a string
--- search and nothing else, so a statement over many rows of one company (a purge, a bulk update) sends once. Otherwise
--- one subtransaction under a 20 ms lock budget; rolling it back restores lock_timeout and absorbs every failure.
+-- search and nothing else, so a statement over many rows of one company (a purge, a bulk update) sends once.
+-- Everything runs in one subtransaction under a 20 ms lock budget, and every error is caught, `query_canceled` too
+-- (a cancel or a statement timeout landing here), which PL/pgSQL's OTHERS leaves out. The first error notes
+-- qorpera.live_hints_failed outside the subtransaction, and from then on the trigger returns at once: a failing
+-- Realtime costs a transaction one 20 ms wait at most, never one per row, and never the write.
 create function public.qorpera_live_hint_internal()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare
 	v_lock_timeout text := current_setting('lock_timeout');
 	v_row record;
 	v_class text;
-	v_topics text[];
 	v_profile uuid;
 	v_kind text;
 	v_audience uuid;
 	v_deleted boolean;
 begin
 	-- perf T3 (20260930653000)
-	if tg_op = 'DELETE' then v_row := old; else v_row := new; end if;
-	if tg_table_name = 'qorpera_shared_sessions' then
-		v_class := v_row.profile_id || ' sessions ' || v_row.audience_kind || ' ' || coalesce(v_row.audience_user_id::text, '');
-	elsif tg_table_name = 'qorpera_profile_staff' then
-		v_class := v_row.profile_id || ' staff ' || (v_row.deleted_at is not null)::text;
-	elsif tg_table_name = 'qorpera_profile_access_state' then
-		v_class := v_row.profile_id || ' access ' || v_row.user_id;
-	else
-		v_class := v_row.profile_id || ' ' || tg_argv[0];
-	end if;
-	if strpos(coalesce(current_setting('qorpera.live_hints_sent', true), ''), '|' || v_class || '|') > 0 then return null; end if;
+	if current_setting('qorpera.live_hints_failed', true) = 'on' then return null; end if;
 	begin
+		if tg_op = 'DELETE' then v_row := old; else v_row := new; end if;
+		if tg_table_name = 'qorpera_shared_sessions' then
+			v_class := v_row.profile_id || ' sessions ' || v_row.audience_kind || ' ' || coalesce(v_row.audience_user_id::text, '');
+		elsif tg_table_name = 'qorpera_profile_staff' then
+			v_class := v_row.profile_id || ' staff ' || (v_row.deleted_at is not null)::text;
+		elsif tg_table_name = 'qorpera_profile_access_state' then
+			v_class := v_row.profile_id || ' access ' || v_row.user_id;
+		else
+			v_class := v_row.profile_id || ' ' || tg_argv[0];
+		end if;
+		-- A class already sent: no read, no write (this subtransaction then takes no transaction id).
+		if strpos(coalesce(current_setting('qorpera.live_hints_sent', true), ''), '|' || v_class || '|') > 0 then return null; end if;
 		perform set_config('lock_timeout', '20ms', true);
 		if tg_table_name = 'qorpera_shared_sessions' then
 			if tg_op = 'DELETE' then
@@ -195,8 +207,11 @@ begin
 			perform public.qorpera_live_hint_send(tg_argv[0], public.qorpera_live_hint_profile_topics(v_row.profile_id), v_class);
 		end if;
 		perform set_config('lock_timeout', v_lock_timeout, true);
-	exception when others then
-		null;
+	exception
+		when query_canceled then
+			perform set_config('qorpera.live_hints_failed', 'on', true);
+		when others then
+			perform set_config('qorpera.live_hints_failed', 'on', true);
 	end;
 	return null;
 end

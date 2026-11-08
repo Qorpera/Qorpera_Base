@@ -553,8 +553,8 @@ describe("a company's hints by push", () => {
 		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
 	});
 
-	it("listens by postgres_changes, as before, where the database refuses the topic", async () => {
-		const { cloud, made } = pushCloud();
+	it("listens by postgres_changes, as before, where the database refuses the topic twice running", async () => {
+		const { cloud, made, order } = pushCloud();
 		const health: RealtimePhase[] = [];
 		const changes: RealtimeResource[] = [];
 		const subscription = subscribeCompanyRealtime(
@@ -567,10 +567,16 @@ describe("a company's hints by push", () => {
 		const sidebar = vi.fn();
 		subscription.followSidebar(sidebar);
 		await vi.advanceTimersByTimeAsync(0);
+		// One refusal may be a stray (a join Realtime got before it held the token): once more at once, the refused
+		// channel gone first and the token set again.
 		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
 		await vi.advanceTimersByTimeAsync(0);
-		// At once the company's and the sidebar's postgres_changes channels, each on a topic of its own.
-		expect(made).toHaveLength(3);
+		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "setAuth", "subscribe 1"]);
+		expect(made[1]!.topic).toBe(`realtime:${topic}`);
+		made[1]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		// Then at once the company's and the sidebar's postgres_changes channels, each on a topic of its own.
+		expect(made).toHaveLength(4);
 		const company = made.find((each) => each.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`))!;
 		const ownSidebar = made.find((each) => each.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`))!;
 		expect(company.bindings.map(([kind, filter]) => [kind, filter.table, filter.filter])).toEqual(
@@ -582,9 +588,10 @@ describe("a company's hints by push", () => {
 			].map((table) => ["postgres_changes", table, `profile_id=eq.${profileA.profileId}`]),
 		);
 		expect(ownSidebar.bindings[0]![1].table).toBe("qorpera_company_sidebar_revisions");
-		// The refused channel is removed, and nothing joins the topic again.
+		// The refused channels are removed, and nothing joins the topic again.
 		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
-		expect(made.filter((each) => each.topic === `realtime:${topic}`)).toHaveLength(1);
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[1]);
+		expect(made.filter((each) => each.topic === `realtime:${topic}`)).toHaveLength(2);
 		company.status!("SUBSCRIBED");
 		// A refusal is no outage: the badge never said degraded.
 		expect(health).toEqual(["connecting", "connected"]);
@@ -596,10 +603,32 @@ describe("a company's hints by push", () => {
 		company.status!("CHANNEL_ERROR", transport());
 		expect(health.at(-1)).toBe("degraded");
 		await vi.advanceTimersByTimeAsync(1_000);
-		expect(made).toHaveLength(4);
+		expect(made).toHaveLength(5);
 		expect(made.at(-1)!.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`)).toBe(true);
 		subscription.stop();
 		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(ownSidebar);
+	});
+
+	it("stays on push after one refusal, and counts refusals again from each subscription", async () => {
+		const { cloud, made } = pushCloud();
+		subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		made[1]!.status!("SUBSCRIBED");
+		// Closed later (a Realtime restart): the next join is refused once, then tried again on push.
+		made[1]!.status!("CLOSED");
+		await vi.advanceTimersByTimeAsync(1_000);
+		made[2]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(made).toHaveLength(4);
+		expect(made.every((each) => each.topic === `realtime:${topic}`)).toBe(true);
 	});
 
 	it("opens the sidebar's own channel when it falls back after the sidebar was read", async () => {
@@ -614,16 +643,18 @@ describe("a company's hints by push", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
 		await vi.advanceTimersByTimeAsync(0);
-		expect(made).toHaveLength(2);
+		made[1]!.status!("CHANNEL_ERROR", refusal(topic));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(made).toHaveLength(3);
 		const sidebar = vi.fn();
 		const following = subscription.followSidebar(sidebar);
-		expect(made).toHaveLength(3);
-		expect(made[2]!.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`)).toBe(true);
+		expect(made).toHaveLength(4);
+		expect(made[3]!.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`)).toBe(true);
 		expect(following.live()).toBe(false);
-		made[2]!.status!("SUBSCRIBED");
+		made[3]!.status!("SUBSCRIBED");
 		expect(following.live()).toBe(true);
 		following.stop();
-		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[2]);
+		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[3]);
 	});
 
 	it("waits for a channel still leaving the same topic, as a company closed just before leaves one", async () => {

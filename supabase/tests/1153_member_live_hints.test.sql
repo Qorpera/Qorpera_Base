@@ -74,6 +74,7 @@ $$;
 create function pg_temp.clear() returns void language sql as $$
 	delete from realtime.messages where topic like 'qorpera-live-%';
 	select set_config('qorpera.live_hints_sent', '', true)::void;
+	select set_config('qorpera.live_hints_failed', '', true)::void;
 $$;
 -- What a commit would send now: the deferred hints fire.
 create function pg_temp.flush() returns void language plpgsql as $$
@@ -106,6 +107,21 @@ begin
 	perform set_config('request.jwt.claims', jsonb_build_object('sub', p_user, 'role', p_role)::text, true);
 	perform set_config('realtime.topic', p_topic, true);
 	execute format('set local role %I', p_role);
+	select exists (select 1 from realtime.messages where id = v_probe) into v_seen;
+	reset role;
+	perform set_config('realtime.topic', '', true);
+	perform set_config('request.jwt.claims', '', true);
+	delete from realtime.messages where id = v_probe;
+	return v_seen;
+end $$;
+-- Whether `p_user`, joined to `p_joined`, reads a broadcast row of `p_row_topic` (the topic-equality clause).
+create function pg_temp.reads(p_joined text, p_row_topic text, p_user uuid) returns boolean language plpgsql as $$
+declare v_probe uuid := extensions.gen_random_uuid(); v_seen boolean;
+begin
+	insert into realtime.messages (id, topic, extension, private) values (v_probe, p_row_topic, 'broadcast', true);
+	perform set_config('request.jwt.claims', jsonb_build_object('sub', p_user, 'role', 'authenticated')::text, true);
+	perform set_config('realtime.topic', p_joined, true);
+	set local role authenticated;
 	select exists (select 1 from realtime.messages where id = v_probe) into v_seen;
 	reset role;
 	perform set_config('realtime.topic', '', true);
@@ -166,6 +182,37 @@ begin
 	perform pg_temp.same(public.qorpera_live_hint_topic_profile('qorpera-presence-11530000-0000-4000-8000-000000000010',
 		'11530000-0000-4000-8000-0000000000a1')::text, null, 'another family''s topic');
 	perform pg_temp.same(public.qorpera_live_hint_topic_profile(pg_temp.topic('10', 'a1'), null)::text, null, 'no user');
+end $$;
+
+-- The audience functions restate the five tables' read policies (qorpera_live_hint_*_topics) and the rule functions
+-- those call: the policies (each permissive or restrictive SELECT or ALL policy, its roles and its expression), the
+-- tables' RLS and their SELECT grant to authenticated, and the bodies of qorpera_can_read_session,
+-- qorpera_can_read_profile and qorpera_member_role are pinned here. A change to any of them fails until the topics
+-- functions follow it and this pin is renewed (perf T3 review F2): a new rule the matrix below has no row for cannot
+-- slip by.
+do $$
+declare v_got text; v_path text := current_setting('search_path');
+begin
+	-- Expressions print fully qualified under an empty path, the same in any database (production's gave these values,
+	-- 8 Nov 2026).
+	perform set_config('search_path', 'pg_catalog', true);
+	select string_agg(format('%s:%s:%s:%s:%s:%s', c.relname, c.relrowsecurity, c.relforcerowsecurity,
+			has_table_privilege('authenticated', c.oid, 'SELECT'),
+			(select count(*) from pg_policies as p where p.schemaname = 'public' and p.tablename = c.relname
+				and p.cmd in ('SELECT', 'ALL')),
+			md5(coalesce((select string_agg(format('%s|%s|%s|%s|%s', p.policyname, p.permissive, p.cmd, p.roles::text,
+				coalesce(p.qual, '')), ' ' order by p.policyname collate "C") from pg_policies as p
+				where p.schemaname = 'public' and p.tablename = c.relname and p.cmd in ('SELECT', 'ALL')), ''))),
+		' ' order by c.relname collate "C")
+	into v_got from pg_class as c where c.relnamespace = 'public'::regnamespace and c.relname in ('qorpera_shared_sessions',
+		'qorpera_profile_staff', 'qorpera_profile_access_state', 'qorpera_company_files', 'qorpera_company_sidebar_revisions');
+	v_got := v_got || ' ' || (select string_agg(format('%s:%s', p.oid::regprocedure, md5(p.prosrc)), ' ' order by p.oid::regprocedure::text collate "C")
+		from pg_proc as p where p.oid in ('public.qorpera_can_read_session(uuid)'::regprocedure,
+			'public.qorpera_can_read_profile(uuid)'::regprocedure, 'public.qorpera_member_role(uuid)'::regprocedure));
+	perform set_config('search_path', v_path, true);
+	if v_got is distinct from 'qorpera_company_files:t:f:t:1:b7c3cc631d7204235197056fa97cbb62 qorpera_company_sidebar_revisions:t:f:t:1:1392c4b3fd7be0456ac9438393abcceb qorpera_profile_access_state:t:f:t:1:6d3c0adfe942ad68cdb16e25ecb9ab2b qorpera_profile_staff:t:f:t:1:ee916f8775b447ff8af7fcaa0a930664 qorpera_shared_sessions:t:f:t:1:4be9b455854a1fa0e533096d442cddc6 public.qorpera_can_read_profile(uuid):f58257824eac0982bbc53b7836c3084f public.qorpera_can_read_session(uuid):24f66c23dc5ddb914c600abd67e0e913 public.qorpera_member_role(uuid):1535250ccedfa65b7f931725a322f9e6' then
+		raise exception 'A read policy of the live hints'' tables or a rule it calls changed: update qorpera_live_hint_*_topics (20260930653000) to the new rule, then this pin. got %', v_got;
+	end if;
 end $$;
 
 -- Deferred: the fixture's writes sent nothing yet. At commit each row's readers get one hint per resource. (Live hints
@@ -354,6 +401,13 @@ do $$ begin
 		'a stranger''s own topic of A');
 	perform pg_temp.same(pg_temp.may_join(pg_temp.topic('10', 'a1'), '11530000-0000-4000-8000-0000000000a1', 'anon')::text, 'false',
 		'anon');
+	-- Joined to their own topic, a member reads no other member's or company's live rows, only their own.
+	perform pg_temp.same(pg_temp.reads(pg_temp.topic('10', 'a1'), pg_temp.topic('10', 'a1'), '11530000-0000-4000-8000-0000000000a1')::text,
+		'true', 'A1 joined to its topic reads its rows');
+	perform pg_temp.same(pg_temp.reads(pg_temp.topic('10', 'a1'), pg_temp.topic('10', 'a2'), '11530000-0000-4000-8000-0000000000a1')::text,
+		'false', 'A1 joined to its topic reads none of A2''s');
+	perform pg_temp.same(pg_temp.reads(pg_temp.topic('11', 'c1'), pg_temp.topic('10', 'c1'), '11530000-0000-4000-8000-0000000000c1')::text,
+		'false', 'X joined to its topic of B reads none of its topic of A');
 	-- Joined to another family's topic, a member reads none of the live hints through this policy, and joined to a live
 	-- topic none of the others'.
 	perform pg_temp.flush();
@@ -405,12 +459,14 @@ savepoint live_no_realtime;
 alter table realtime.messages rename to messages_moved_by_test_1153;
 do $$ begin
 	perform set_config('qorpera.live_hints_sent', '', true);
+	perform set_config('qorpera.live_hints_failed', '', true);
 	update public.qorpera_shared_sessions set title = 'Team renamed' where id = '11530000-0000-4000-8000-000000000030';
 	perform pg_temp.flush();
 	perform pg_temp.same((select title from public.qorpera_shared_sessions where id = '11530000-0000-4000-8000-000000000030'),
 		'Team renamed', 'the write without Realtime');
 	perform pg_temp.same(current_setting('lock_timeout'), (select setting from pg_settings where name = 'lock_timeout'),
 		'the lock budget is restored');
+	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'a missing Realtime ends hinting');
 end $$;
 rollback to savepoint live_no_realtime;
 savepoint live_raising_realtime;
@@ -423,12 +479,68 @@ do $$ begin
 	perform pg_temp.same(pg_temp.hints(), '', 'no hint from a refusing Realtime');
 	perform pg_temp.same(current_setting('lock_timeout'), (select setting from pg_settings where name = 'lock_timeout'),
 		'the lock budget is restored after a refusal');
-	-- The refused send is not counted as sent: the next change in the transaction sends it.
+	-- The first failure ends hinting for the transaction: Realtime back, a later change still sends nothing.
 	drop trigger refuse_1153 on realtime.messages;
-	update public.qorpera_shared_sessions set updated_at = updated_at where id = '11530000-0000-4000-8000-000000000030';
+	update public.qorpera_shared_sessions set updated_at = updated_at where id = '11530000-0000-4000-8000-000000000033';
+	update public.qorpera_company_sidebar_revisions set revision = revision + 1 where profile_id = '11530000-0000-4000-8000-000000000011';
 	perform pg_temp.flush();
-	perform pg_temp.same(pg_temp.hints(), 'A/A1:sessions A/A2:sessions A/A3:sessions A/R:sessions A/X:sessions', 'the next change sends');
+	perform pg_temp.same(pg_temp.hints(), '', 'a transaction whose hint failed sends no more');
 end $$;
 rollback to savepoint live_raising_realtime;
+
+-- A Realtime whose insert waits 20 ms and fails (a lock_timeout on realtime.messages while its partitions turn over):
+-- a statement over 100 rows of one class and rows of other classes pays that once, not per row, and the write stands.
+savepoint live_slow_realtime;
+create function realtime.slow_refuse_1153() returns trigger language plpgsql as $$
+begin
+	perform pg_sleep(0.02);
+	raise exception 'lock timeout on realtime.messages (test 1153)' using errcode = '55P03';
+end $$;
+create trigger slow_refuse_1153 before insert on realtime.messages for each row execute function realtime.slow_refuse_1153();
+do $$
+declare v_started timestamptz; v_ms numeric;
+begin
+	perform pg_temp.clear();
+	insert into public.qorpera_shared_sessions (id, profile_id, environment_id, title, created_by_user_id, audience_kind)
+	select extensions.gen_random_uuid(), '11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000020',
+		'Slow ' || n, '11530000-0000-4000-8000-0000000000a1', 'company' from generate_series(1, 100) as n;
+	update public.qorpera_shared_sessions set updated_at = updated_at
+	where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011');
+	update public.qorpera_profile_staff set updated_at = updated_at
+	where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011');
+	update public.qorpera_company_sidebar_revisions set revision = revision + 1
+	where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011');
+	v_started := clock_timestamp();
+	perform pg_temp.flush();
+	v_ms := extract(epoch from clock_timestamp() - v_started) * 1000;
+	if v_ms > 400 then raise exception 'a failing Realtime held the commit for % ms (one 20 ms wait expected)', round(v_ms); end if;
+	raise notice 'a failing Realtime cost this commit % ms for % changed rows', round(v_ms), 100 + (select count(*) from public.qorpera_shared_sessions where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011'));
+	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'the first failure ends hinting');
+	perform pg_temp.same((select count(*)::text from public.qorpera_shared_sessions where title like 'Slow %'), '100',
+		'the write stands');
+	perform pg_temp.same((select count(*)::text from realtime.messages where topic like 'qorpera-live-%'), '0', 'and nothing was sent');
+end $$;
+rollback to savepoint live_slow_realtime;
+
+-- A statement timeout (or a cancel) that lands inside the hint is caught too: the write stands and hinting ends.
+savepoint live_cancelled;
+create function realtime.stall_1153() returns trigger language plpgsql as $$ begin perform pg_sleep(5); return new; end $$;
+create trigger stall_1153 before insert on realtime.messages for each row execute function realtime.stall_1153();
+set local statement_timeout = '300ms';
+do $$
+declare v_started timestamptz := clock_timestamp();
+begin
+	perform set_config('qorpera.live_hints_sent', '', true);
+	perform set_config('qorpera.live_hints_failed', '', true);
+	update public.qorpera_shared_sessions set title = 'Team cancelled' where id = '11530000-0000-4000-8000-000000000030';
+	update public.qorpera_profile_staff set updated_at = updated_at where profile_id = '11530000-0000-4000-8000-000000000010';
+	perform pg_temp.flush();
+	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'a timeout inside the hint ends hinting');
+	perform pg_temp.same((select title from public.qorpera_shared_sessions where id = '11530000-0000-4000-8000-000000000030'),
+		'Team cancelled', 'the write survives a timeout inside the hint');
+	if clock_timestamp() - v_started > interval '2 s' then raise exception 'the hint outlived the statement timeout'; end if;
+end $$;
+set local statement_timeout = 0;
+rollback to savepoint live_cancelled;
 
 rollback;

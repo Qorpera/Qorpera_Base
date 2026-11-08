@@ -59,6 +59,8 @@ interface ChannelSource {
 	topic(): string | undefined;
 	/** Whether a failure changes how to listen: then the next channel is made at once and the failure is not shown. */
 	refused?(error: string | undefined): boolean;
+	/** The channel subscribed. */
+	joined?(): void;
 }
 
 /** The wait before each new try after a channel fails: 1 s, 2 s, 5 s, 10 s, then every 30 s. */
@@ -154,6 +156,7 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 				unreported = undefined;
 				const recovered = missed;
 				missed = false;
+				source.joined?.();
 				onHealth("connected", undefined, recovered);
 			} else if (
 				status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR ||
@@ -321,9 +324,11 @@ export interface CompanyRealtimeSubscription extends RealtimeSubscription {
 
 /**
  * A company's hints for one member: by push on the member's own private topic, `liveHintTopic(profileId, userId)`.
- * A join the database refuses (one before 20260930653000) makes it listen by postgres_changes instead, for as long as
- * it lives; the refusal is not shown as degraded. A tab opened before the database has the topic so keeps working, and
- * so does a tab from before this change, which knows only postgres_changes.
+ * A join the database refuses is tried once more at once, with the token set again; refused twice running (a database
+ * before 20260930653000) it listens by postgres_changes instead, for as long as it lives. A refusal is not shown as
+ * degraded. A tab opened before the database has the topic so keeps working, and so does a tab from before this
+ * change, which knows only postgres_changes. One stray refusal (a token Realtime did not hold yet) costs one more join,
+ * not the push.
  */
 export function subscribeCompanyRealtime(
 	cloud: Cloud,
@@ -334,6 +339,8 @@ export function subscribeCompanyRealtime(
 ): CompanyRealtimeSubscription {
 	const topic = liveHintTopic(profileId, userId);
 	let push = true;
+	/** Push joins refused since the last subscription. */
+	let refusals = 0;
 	let onSidebar: (() => void) | undefined;
 	let sidebarChanges: RealtimeSubscription | undefined;
 	const followSidebarChanges = (): void => {
@@ -358,9 +365,15 @@ export function subscribeCompanyRealtime(
 			},
 			refused: (error) => {
 				if (!push || !refusedJoin(error)) return false;
-				push = false;
-				followSidebarChanges();
+				refusals++;
+				if (refusals >= 2) {
+					push = false;
+					followSidebarChanges();
+				}
 				return true;
+			},
+			joined: () => {
+				refusals = 0;
 			},
 		},
 		onHealth,
