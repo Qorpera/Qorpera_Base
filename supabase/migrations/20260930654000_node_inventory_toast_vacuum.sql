@@ -8,11 +8,12 @@
 --
 -- Measured in production on 7 November 2026, 23:55Z (pg_stat_all_tables): the first five thinning runs, 19:32Z to 23:32Z,
 -- each removed 6,781 reports in 0.27 to 0.32 s. The heap was vacuumed at 22:32Z once 27,179 rows were dead. The TOAST table
--- had 15,902 dead chunks and no vacuum since 15:21Z: at 20 % of about 130,000 chunks it waits for about 26,000. Meanwhile
--- every new report takes fresh pages, so the table grows while the freed space waits.
--- In the steady state thinning removes about 560 of node 2's 720 reports an hour, about 1,700 chunks. At 20 % of the
--- 160,000 chunks a week holds then, a vacuum comes about every 19 hours, with up to about 32,000 dead chunks (about 60 MB)
--- held back each time. One vacuum after each run keeps that under a few MB.
+-- had 15,902 dead chunks and no vacuum since 15:21Z (00:20Z: still 15,902): at 20 % of its 127,192 chunks it waits for
+-- 25,488 dead, or for 26,438 inserted (19,299 so far). Meanwhile every new report takes fresh pages, so the table grows
+-- while the freed space waits.
+-- In the steady state thinning removes about 560 of node 2's 720 reports an hour, about 1,700 chunks, and 2,160 are
+-- inserted. At 20 % of the about 160,000 chunks a week holds then, the insert count triggers a vacuum about every 15 hours,
+-- with up to about 25,000 dead chunks (about 50 MB) held back each time. One vacuum after each run keeps that under a few MB.
 --
 -- So: vacuum the TOAST table after 1,000 dead chunks, whatever its size. Each thinning run passes that (also during the
 -- catch-up, which removes about 3,000 chunks a run), and the seven-day retention's deletes count towards the next.
