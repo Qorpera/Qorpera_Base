@@ -263,7 +263,8 @@ describe("the coding composition of a native turn", () => {
 				// or asking, those words mean a hand-in, and a blocker is handed in or asked about.
 				for (const rule of [
 					"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails",
-					"A request to push, to open a pull request or to report its link means: commit and call coding_finish; the trusted broker then pushes the branch, opens or updates the draft pull request and passes its link on, so you do none of that yourself.",
+					"A request to push, to merge, to open a pull request or to report its link means: commit and call coding_finish; the platform then hands the commit in as above and passes on what happened, so you do none of that yourself.",
+					"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch.",
 					"When something blocks you, still end the turn that way: coding_finish with the commit you have and a summary that names the blocker, or, with nothing worth handing in, coding_ask with what blocks you and what you need from the member.",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.

@@ -226,6 +226,39 @@ function held() {
 }
 
 describe("CodeHostRepositories", () => {
+	it("a repository kept in Qorpera: starts it, adds the worktree and lands, with no GitHub and no token", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha };
+		expect(await f.repositories.prepare(session, signal())).toEqual({
+			cwd: `/company/code/qorpera/example/worktrees/${f.workerId}`,
+		});
+		const head = await f.commit(f.tree, "cart.js");
+		expect(await f.repositories.land(session, head, signal())).toEqual({ state: "fast-forward", mainSha: head });
+		expect(f.calls).toEqual([]);
+		expect(f.lent).not.toHaveBeenCalled();
+		expect(vi.mocked(attachCodeSession)).not.toHaveBeenCalled();
+		// A start of a GitHub repository, or a landing in one, is not this repository's.
+		await expect(
+			f.repositories.start({ claim: f.session.claim, assertAuthorized: f.authorized }, signal()),
+		).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
+		await expect(f.repositories.land(f.session, head, signal())).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
+	});
+	it("a start where a GitHub copy is fails the turn, saying the place is taken", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		// The GitHub repository at the same place is seeded first: a start there fails the turn, saying so.
+		await f.repositories.prepare(f.session, signal());
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const refused = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal()).catch((e) => e);
+		expect(refused).toBeInstanceOf(CodingWorkspaceFailed);
+		expect(refused.message).toBe("CODE_HOST_AREA_FROM_GITHUB");
+		expect(refused.summary).toMatch(
+			/already holds a copy of a GitHub repository.+\[code=CODE_HOST_AREA_FROM_GITHUB\]$/,
+		);
+	});
 	it("seeds the company's code area from GitHub and adds the session's worktree in one job, and gives the machine its path", async () => {
 		const f = await fixture(),
 			given = signal(),

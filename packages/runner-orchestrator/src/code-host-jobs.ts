@@ -542,9 +542,13 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 		typeof (bundle as AsyncIterable<Uint8Array>)?.[Symbol.asyncIterator] !== "function"
 	)
 		throw new Error("INVALID_CODE_HOST_JOB");
+	// A repository kept in Qorpera is never seeded from GitHub (startCodeArea makes it).
+	if (repository.host !== "github.com") throw new Error("INVALID_CODE_HOST_JOB");
 	const base = `refs/heads/${repository.baseBranch}`;
 	return withJob(job, repository, async (run) => {
 		const area = await run.prepare();
+		if (area.seeded && (await run.ref(CODE_AREA_IN_QORPERA_REF)) !== null)
+			throw new CodeHostRefusal("CODE_HOST_AREA_IN_QORPERA", [run.area]);
 		const file = `${run.directory}/seed.bundle`,
 			scratch = `${run.directory}/scratch.git`;
 		const put = await run.sh('umask 077; set -C; exec cat >"$1"', [file], { stdin: bundle });
@@ -853,6 +857,190 @@ export async function exportCodeBranch(
 		const read = await run.command(["/usr/bin/cat", "--", file], { maximumOutputBytes: options.maximumBytes });
 		if (read.status !== 0 || read.stdout.length !== size) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED");
 		return { headSha, bundle: read.stdout };
+	});
+}
+
+/** The mark of a code area kept in Qorpera (own code storage, slice 1): a ref at its first commit, made with it. A seed
+ * from GitHub refuses an area that has it, and a start or a landing refuses a seeded area without it, so one code area
+ * never holds both a copy of a GitHub repository and a repository kept here. */
+export const CODE_AREA_IN_QORPERA_REF = "refs/qorpera/kept-here";
+/** Who makes the platform's own commits in a repository kept in Qorpera: its first commit and its merges. */
+const PLATFORM_COMMITTER = ["-c", "user.name=Qorpera", "-c", "user.email=code@qorpera.com"] as const;
+
+export interface CodeAreaStarted {
+	/** `started`: the repository was made by this job, with one empty commit. `present`: it was already there. */
+	state: "started" | "present";
+	/** The default branch's commit: a session's base. */
+	baseSha: string;
+	restored: string[];
+}
+
+/** A repository kept in Qorpera (host `qorpera`), made empty when it is not there yet: `repo.git` with one commit of no
+ * files on the default branch, its mark, and `main/` at it. A repository already there answers its default branch, and
+ * main/ is moved to it when a start or landing stopped between the two. A code area seeded from GitHub is refused
+ * (`CODE_HOST_AREA_FROM_GITHUB`). */
+export async function startCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository },
+): Promise<CodeAreaStarted> {
+	const input = closed(value, ["repository"]);
+	const repository = repositoryOf(input.repository);
+	if (repository.host !== "qorpera") throw new Error("INVALID_CODE_HOST_JOB");
+	const base = `refs/heads/${repository.baseBranch}`;
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) {
+			// git takes a repo.git without HEAD for a new one: it writes HEAD and keeps any refs and objects there.
+			await run.gitOk(
+				run.repo,
+				[
+					"init",
+					"--quiet",
+					"--bare",
+					"--template=",
+					"--ref-format=files",
+					`--initial-branch=${repository.baseBranch}`,
+					run.repo,
+				],
+				"CODE_HOST_START_FAILED",
+			);
+			await run.write(`${run.repo}/config`, CODE_AREA_CONFIG);
+			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
+		}
+		let kept = await run.ref(CODE_AREA_IN_QORPERA_REF);
+		const head = await run.ref(base);
+		if (kept === null && head !== null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (kept === null) {
+			const tree = (await run.gitOk(run.repo, ["mktree"], "CODE_HOST_START_FAILED", { stdin: new Uint8Array() }))
+				.toString("utf8")
+				.trim();
+			const first = (
+				await run.gitOk(
+					run.repo,
+					[...PLATFORM_COMMITTER, "commit-tree", tree, "-m", `Start ${repository.name}`],
+					"CODE_HOST_START_FAILED",
+				)
+			)
+				.toString("utf8")
+				.trim();
+			if (!SHA.test(first)) throw new CodeHostJobFailure("CODE_HOST_START_FAILED", "no first commit");
+			await run.gitOk(
+				run.repo,
+				["update-ref", "--no-deref", CODE_AREA_IN_QORPERA_REF, first, ZERO],
+				"CODE_HOST_START_FAILED",
+			);
+			kept = first;
+		}
+		if (head === null) {
+			await moveBase(run, area.main, base, kept, ZERO);
+			return { state: "started", baseSha: kept, restored: run.restored };
+		}
+		const at =
+			area.main === "present" &&
+			(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${head}\n`)) === true;
+		if (!at) await moveBase(run, area.main, base, head, head);
+		return { state: "present", baseSha: head, restored: run.restored };
+	});
+}
+
+export interface CodeBranchLanding {
+	repository: CloudCodingRepository;
+	workerId: string;
+	/** The commit the session submitted: its branch's head, or a commit the branch still reaches. */
+	headSha: string;
+}
+export interface CodeBranchLanded {
+	/** `fast-forward`: the default branch moved to the submitted commit. `merged`: to a merge of it with the default
+	 * branch, which had moved on. `unchanged`: the default branch already held it. */
+	state: "fast-forward" | "merged" | "unchanged";
+	/** The default branch's commit after the landing. */
+	mainSha: string;
+	restored: string[];
+}
+
+/** A session's submitted commit landed on the default branch of a repository kept in Qorpera, with main/ moved to it
+ * in the same step as the branch (`moveBase`'s compare-and-swap: a landing racing another fails, and is asked again).
+ * When the default branch moved on since the session's base, the two are merged by git's own merge (`merge-tree`, no
+ * worktree); a conflict lands nothing and is refused naming its paths (`CODE_HOST_LAND_CONFLICT`), for the session to
+ * merge itself. The landed tree passes the same name checks as a seed. */
+export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding): Promise<CodeBranchLanded> {
+	const input = closed(value, ["repository", "workerId", "headSha"]);
+	const repository = repositoryOf(input.repository),
+		workerId = workerIdOf(input.workerId),
+		headSha = sha(input.headSha);
+	if (repository.host !== "qorpera") throw new Error("INVALID_CODE_HOST_JOB");
+	const ref = `refs/heads/qorpera/coding/${workerId}`,
+		base = `refs/heads/${repository.baseBranch}`;
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const branch = await run.ref(ref);
+		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const ancestor = async (older: string, newer: string): Promise<boolean> => {
+			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
+			if (result.status !== 0 && result.status !== 1)
+				throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", tail(result.stderr));
+			return result.status === 0;
+		};
+		// The branch may have moved on since the session submitted; it must still hold what was submitted.
+		if (!(await ancestor(headSha, branch))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const current = await run.ref(base);
+		if (!current) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+		if (await ancestor(headSha, current)) {
+			const at =
+				area.main === "present" &&
+				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${current}\n`)) === true;
+			if (!at) await moveBase(run, area.main, base, current, current);
+			return { state: "unchanged", mainSha: current, restored: run.restored };
+		}
+		let next = headSha,
+			state: CodeBranchLanded["state"] = "fast-forward";
+		if (!(await ancestor(current, headSha))) {
+			const merged = await run.git(run.repo, [
+				"merge-tree",
+				"--write-tree",
+				"-z",
+				"--name-only",
+				"--no-messages",
+				current,
+				headSha,
+			]);
+			const fields = merged.stdout.toString("utf8").split("\0");
+			if (merged.status === 1) {
+				// The tree, then each conflicted path (one per conflicting stage), then an empty field.
+				const paths = [...new Set(fields.slice(1).filter(Boolean))];
+				throw new CodeHostRefusal("CODE_HOST_LAND_CONFLICT", paths);
+			}
+			if (merged.status !== 0 || !SHA.test(fields[0] ?? ""))
+				throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", tail(merged.stderr));
+			next = (
+				await run.gitOk(
+					run.repo,
+					[
+						...PLATFORM_COMMITTER,
+						"commit-tree",
+						fields[0] as string,
+						"-p",
+						current,
+						"-p",
+						headSha,
+						"-m",
+						`Merge the work of coding session ${workerId}`,
+					],
+					"CODE_HOST_LAND_FAILED",
+				)
+			)
+				.toString("utf8")
+				.trim();
+			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
+			state = "merged";
+		}
+		await run.checkNames(run.repo, next);
+		await moveBase(run, area.main, base, next, current);
+		return { state, mainSha: next, restored: run.restored };
 	});
 }
 

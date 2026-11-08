@@ -100,7 +100,7 @@ function codingScope(value: unknown, sequence: unknown): boolean {
 		(scope.harness === "codex" || scope.harness === "claude-code") &&
 		!!repository &&
 		typeof repository === "object" &&
-		repository.host === "github.com" &&
+		(repository.host === "github.com" || repository.host === "qorpera") &&
 		typeof repository.owner === "string" &&
 		typeof repository.name === "string" &&
 		typeof repository.baseBranch === "string" &&

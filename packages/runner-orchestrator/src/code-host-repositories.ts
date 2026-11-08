@@ -1,19 +1,24 @@
 import { isDeepStrictEqual } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import {
+	addCodeWorktree,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
 	codeAreaPath,
 	exportCodeBranch,
+	landCodeBranch,
+	startCodeArea,
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
-import { CodingWorkspaceFailed } from "./coding-executor.ts";
+import { CodingLandConflict, CodingWorkspaceFailed } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
+	type CodingFolderStart,
+	type CodingLanded,
 } from "./coding-folder-repositories.ts";
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
@@ -21,6 +26,11 @@ export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
 /** What the member and the agent read when the code host could not make the session's worktree (its code follows). */
 const CODE_COPY_FAILED =
 	"Making the session's copy of the code failed. The workspace is kept; a follow-up tries again.";
+/** What they read when the code host could not make or read a repository kept in Qorpera. */
+const CODE_START_FAILED = "Opening the company's repository failed. Nothing was changed; a follow-up tries again.";
+/** And when its folder already holds a copy of a GitHub repository. */
+const CODE_AREA_TAKEN =
+	"The company folder already holds a copy of a GitHub repository at this repository's place under code/. Nothing was changed; start the work again with another owner or name.";
 
 /** The coding sessions' repositories on the folder path (F3 step 5g-6b). A session works in its own locked worktree
  * of its company's code area, `/company/code/<owner>/<name>/worktrees/<workerId>` (lower-case, `codeAreaPath`) on
@@ -39,11 +49,19 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	 * for the executor's log. */
 	async prepare(session: CodingFolderRepositorySession, signal: AbortSignal): Promise<{ cwd: string }> {
 		const { repository, workerId } = session.claim;
-		const broker = codeAreaBroker(session);
 		try {
-			await this.#job(session, signal, (job) =>
-				attachCodeSession(job, { repository, workerId, baseSha: session.baseSha }, broker),
-			);
+			await this.#job(session, signal, async (job) => {
+				// A repository kept in Qorpera holds its sessions' bases (start made it): only the worktree is added.
+				if (repository.host === "qorpera") {
+					const added = await addCodeWorktree(job, { repository, workerId, baseSha: session.baseSha });
+					if (!added.headSha)
+						throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [
+							`${codeAreaPath(repository)}/worktrees/${workerId}`,
+						]);
+					return;
+				}
+				await attachCodeSession(job, { repository, workerId, baseSha: session.baseSha }, codeAreaBroker(session));
+			});
 		} catch (error) {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
 			throw new CodingWorkspaceFailed(error.code, CODE_COPY_FAILED, { cause: error });
@@ -67,11 +85,45 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		return exported.bundle;
 	}
 
+	/** A repository kept in Qorpera, made empty when it is not there yet, and its default branch's commit. A code host
+	 * refusal or failure fails the turn with its code, as a prepare's does. */
+	async start(session: CodingFolderStart, signal: AbortSignal): Promise<{ baseSha: string }> {
+		const { repository } = session.claim;
+		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		try {
+			const started = await this.#job(session, signal, (job) => startCodeArea(job, { repository }));
+			return { baseSha: started.baseSha };
+		} catch (error) {
+			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
+			throw new CodingWorkspaceFailed(
+				error.code,
+				error.code === "CODE_HOST_AREA_FROM_GITHUB" ? CODE_AREA_TAKEN : CODE_START_FAILED,
+				{ cause: error },
+			);
+		}
+	}
+
+	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. */
+	async land(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingLanded> {
+		const { repository, workerId } = session.claim;
+		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		try {
+			const landed = await this.#job(session, signal, (job) =>
+				landCodeBranch(job, { repository, workerId, headSha }),
+			);
+			return { state: landed.state, mainSha: landed.mainSha };
+		} catch (error) {
+			if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_LAND_CONFLICT")
+				throw new CodingLandConflict(error.paths);
+			throw error;
+		}
+	}
+
 	/** One job on the code host of the session's company, in that company's line. The session's run authority is asked
 	 * again once the job's turn comes, before its first step, and once its steps are done, before the job publishes:
 	 * a session whose authority ended while its job waited, or while it ran, writes and publishes nothing. */
 	async #job<T>(
-		session: CodingFolderRepositorySession,
+		session: Pick<CodingFolderRepositorySession, "claim" | "assertAuthorized">,
 		signal: AbortSignal,
 		steps: (job: CodeHostJob) => Promise<T>,
 	): Promise<T> {

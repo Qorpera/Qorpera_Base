@@ -1755,7 +1755,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	};
 }
 
-/** A coding brief's `harness`, `repository` (`github.com/<owner>/<name>`) and `base_branch` (C3a), or null with its
+/** A coding brief's `harness`, `repository` (`<host>/<owner>/<name>`: `qorpera/...` or `github.com/...`) and `base_branch` (C3a), or null with its
  * problems; an in-house brief has none of them. */
 function workerCoding(
 	fields: Fields,
@@ -1785,7 +1785,7 @@ function workerCoding(
 				"value",
 				fields.line("repository"),
 				"repository",
-				"repository must be a GitHub repository like github.com/acme/app",
+				"repository must be one kept in Qorpera like qorpera/company/app, or on GitHub like github.com/acme/app",
 			);
 	}
 	let branch: string | null = null;
