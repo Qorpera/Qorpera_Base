@@ -32,7 +32,7 @@ import { CompanyController } from "./company.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, sharedFolderHints } from "./interface-apps.ts";
+import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -49,6 +49,7 @@ import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
 import { ComputerPanels } from "./views/computer.ts";
+import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
@@ -199,11 +200,26 @@ export function mountApplication(
 		}
 		conversation.showBeside(sidePanel(target));
 	}
-	/** Opens an agent's app as a page of its own (`#/c/{id}/a/{name}`); on its own page already, it reads it again. */
+	/** Opens an agent's app as a page of its own (`#/c/{id}/a/{name}`), or a concept of the company's product in the
+	 * Concepts viewer (`#/c/{id}/concepts/{name}`); shown already, it reads it again. */
 	function openApp(name: string): void {
 		const controller = company;
 		if (!controller) return;
 		const route = currentRoute();
+		if (isConcept(controller, name)) {
+			if (
+				conceptsView &&
+				route.name === "company" &&
+				route.profileId === controller.profile.profileId &&
+				route.section === "concepts" &&
+				conceptsView.selected === name
+			) {
+				conceptsView.reload();
+				return;
+			}
+			navigate({ name: "company", profileId: controller.profile.profileId, section: "concepts", id: name });
+			return;
+		}
 		if (
 			appPage &&
 			route.name === "company" &&
@@ -216,6 +232,10 @@ export function mountApplication(
 			return;
 		}
 		navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: name });
+	}
+	/** Whether the open company's app `name` is a concept of its product, as its apps were last read. */
+	function isConcept(controller: CompanyController, name: string): boolean {
+		return companyConcepts(controller.store.get().apps ?? []).some((app) => app.name === name);
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
@@ -350,6 +370,8 @@ export function mountApplication(
 	let appPage: AppPanel | undefined;
 	/** The open company's last conversation, where an app's page leads back to. */
 	let appReturn: string | undefined;
+	/** The company's concepts, full screen (`#/c/{id}/concepts`), while that route shows. */
+	let conceptsView: ConceptsView | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
@@ -481,6 +503,8 @@ export function mountApplication(
 		conversation = undefined;
 		appPage?.dispose();
 		appPage = undefined;
+		conceptsView?.dispose();
+		conceptsView = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -504,6 +528,8 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
+		conceptsView?.dispose();
+		conceptsView = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
@@ -746,6 +772,8 @@ export function mountApplication(
 			"has-thread",
 			route.name === "company" && (route.section === "chat" || route.section === "new"),
 		);
+		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
+		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
 		if (route.name !== "company") {
 			teardownCompany();
 			rail.hidden = true;
@@ -842,7 +870,7 @@ export function mountApplication(
 			topbar.classList.remove("topbar-plain");
 			topbar.classList.add("topbar-company");
 			replace(topbar);
-			rail.hidden = route.section === "meet";
+			rail.hidden = route.section === "meet" || route.section === "concepts";
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
 				route.section === "home" ||
@@ -981,7 +1009,9 @@ export function mountApplication(
 		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
-		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
+		// The Concepts viewer is full screen: its own side panel leads back.
+		rail.hidden =
+			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		// The card's Computer and Latest notes open in the agent's own chat: here when it is on screen, else once it opens.
@@ -1093,6 +1123,8 @@ export function mountApplication(
 			newConversation?.dispose();
 			appPage?.dispose();
 			appPage = undefined;
+			conceptsView?.dispose();
+			conceptsView = undefined;
 			// Revoked access ends every retained screen connection, not only the shown one.
 			computerPanels?.dispose();
 			navigationOpen = false;
@@ -1314,6 +1346,10 @@ export function mountApplication(
 		if (route.section !== "app" || (appPage && !sameTarget(appPage.target, { kind: "app", name: route.id ?? "" }))) {
 			appPage?.dispose();
 			appPage = undefined;
+		}
+		if (route.section !== "concepts") {
+			conceptsView?.dispose();
+			conceptsView = undefined;
 		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
@@ -1608,7 +1644,15 @@ export function mountApplication(
 			}
 			case "app": {
 				// An agent's app as a page of its own, in the frame the app's own folder fills (Jonas, 8 November 2026). It
-				// stays as it is through the company's redraws; its page follows the folder itself.
+				// stays as it is through the company's redraws; its page follows the folder itself. A concept of the
+				// company's product opens in the Concepts viewer instead, once the apps are read that say it is one.
+				if (route.id && isConcept(controller, route.id)) {
+					navigate(
+						{ name: "company", profileId: controller.profile.profileId, section: "concepts", id: route.id },
+						true,
+					);
+					return;
+				}
 				if (appPage && main.contains(appPage.el)) return;
 				const home = `#/c/${controller.profile.profileId}`;
 				// A deep link or a reload: the page waits for the company's first read, so its header names the agent that
@@ -1643,6 +1687,57 @@ export function mountApplication(
 				);
 				replace(main, appPage.el);
 				if (!frame.inert) appPage.focus();
+				return;
+			}
+			case "concepts": {
+				// The company's concepts, full screen with a side panel to pick one (Jonas, 8 November 2026). The viewer
+				// stays through the company's redraws and a change of concept: only the stage's frame changes.
+				const home = `#/c/${controller.profile.profileId}`;
+				if (state.loading) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
+				if (!companyApps) {
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", t("This can't be opened right now.")),
+							h("a", { href: home }, t("Back to the company")),
+						),
+					);
+					return;
+				}
+				// An app the route names that is no concept opens as a page of its own.
+				const named = route.id ? (state.apps ?? []).find((app) => app.name === route.id) : undefined;
+				if (route.id && named?.manifest && !named.manifest.concept) {
+					navigate(
+						{ name: "company", profileId: controller.profile.profileId, section: "app", id: route.id },
+						true,
+					);
+					return;
+				}
+				if (conceptsView && main.contains(conceptsView.el)) {
+					conceptsView.update(state.apps ?? [], route.id);
+					return;
+				}
+				conceptsView?.dispose();
+				const reader = cardImage;
+				conceptsView = new ConceptsView(
+					{
+						panel: panelHost(false),
+						profileId: controller.profile.profileId,
+						companyName: () => controller.profile.profileName,
+						back: () => appReturn ?? home,
+						picture: (path, signal) => reader(path, signal),
+					},
+					state.apps ?? [],
+					route.id,
+				);
+				replace(main, conceptsView.el);
+				if (!frame.inert) conceptsView.focus();
 				return;
 			}
 			case "staff": {

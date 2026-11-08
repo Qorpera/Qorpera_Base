@@ -2305,6 +2305,16 @@ kernel resolves the effort when it creates the run and pins it as before
 rules above. Built, not live: it goes live with the release cut whose bundle
 declares it.
 
+2026-11-08 amendment: an agent's own work runs high after a chat too (founder,
+8 November: "they should default to use high for their own work, while the
+low reasoning is only for light conversations with users"). Only a chain whose
+first run was a wake (a routine's, a coworker's message, an agent's own work)
+keeps the effort that run was pinned with, so a routine's chain still keeps its
+routine's effort. Work that carries on a chain a member's turn started (a
+worker's report, a machine event or check-in, an office start) runs as a run no
+member waits on: the agent.md's effort, else high. The member's turn itself
+keeps its conversation's Model menu effort (migration 20260930661000).
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are

@@ -9,6 +9,7 @@ import {
 	assembleApp,
 	type CompanyApp,
 	CompanyApps,
+	companyConcepts,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
@@ -203,6 +204,23 @@ describe("the company's apps", () => {
 			["empty", null, true],
 			["sales", true, false],
 		]);
+	});
+
+	it("lists the concepts of the company's product, the most recently changed first", async () => {
+		const f = fakeFolder({
+			"apps/shop-a/app.toml": 'name = "Shop A"\nconcept = true\ncover = "cover.webp"\n',
+			"apps/shop-b/app.toml": 'name = "Shop B"\nconcept = true\n',
+			"apps/sales/app.toml": 'name = "Sales"\nposted = true\n',
+			"apps/broken/app.toml": "name = \nconcept = true\n",
+		});
+		const apps = await readApps(f, new AbortController().signal);
+		expect(apps.find((app) => app.name === "shop-a")?.manifest).toMatchObject({ concept: true, cover: "cover.webp" });
+		expect(apps.every((app) => app.changed === 1)).toBe(true);
+		// The same change number: by name. A later change comes first.
+		expect(companyConcepts(apps).map((app) => app.name)).toEqual(["shop-a", "shop-b"]);
+		const later = apps.map((app) => (app.name === "shop-b" ? { ...app, changed: 9 } : app));
+		expect(companyConcepts(later).map((app) => app.name)).toEqual(["shop-b", "shop-a"]);
+		expect(companyConcepts([])).toEqual([]);
 	});
 
 	it("shares one hint channel between readers", async () => {

@@ -5,8 +5,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 /** "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment).
  * "app" is an agent's interface app (`apps/<name>/` of the Company File) as a page of its own, `#/c/{id}/a/{name}`
- * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). */
-export type CompanySection = "home" | "chat" | "staff" | "file" | "team" | "new" | "meet" | "interface" | "app";
+ * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). "concepts" is the
+ * company's concepts of its product, full screen with a side panel to pick one, `#/c/{id}/concepts` (the most
+ * recently changed one) or `#/c/{id}/concepts/{name}` (Jonas, 8 November 2026). */
+export type CompanySection =
+	| "home"
+	| "chat"
+	| "staff"
+	| "file"
+	| "team"
+	| "new"
+	| "meet"
+	| "interface"
+	| "app"
+	| "concepts";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -38,13 +50,12 @@ export function parseRoute(hash: string): Route {
 		const section = parts[2];
 		const id = parts[3];
 		if (!section) return { name: "company", profileId, section: "home" };
-		if (section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
-			return { name: "company", profileId, section: "interface", id };
-		}
-		// An app's folder name keeps the same rule as a page's (cloud-client isInterfaceName).
-		if (section === "a" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
-			return { name: "company", profileId, section: "app", id };
-		}
+		// A page's, an app's and a concept's names keep one rule (cloud-client isInterfaceName). This parse is in
+		// theme.js too (ui/boot.ts), whose size is pinned: keep it short.
+		const named = id !== undefined && id.length <= 64 && INTERFACE_NAME.test(id);
+		if (section === "i" && named) return { name: "company", profileId, section: "interface", id };
+		if (section === "a" && named) return { name: "company", profileId, section: "app", id };
+		if (section === "concepts") return { name: "company", profileId, section: "concepts", ...(named && { id }) };
 		if ((section === "chat" || section === "staff") && id) {
 			return { name: "company", profileId, section, id };
 		}
@@ -71,6 +82,7 @@ export function routeHash(route: Route): string {
 			if (route.section === "home") return `#/c/${route.profileId}`;
 			if (route.section === "interface") return `#/c/${route.profileId}/i/${route.id ?? ""}`;
 			if (route.section === "app") return appHash(route.profileId, route.id ?? "");
+			if (route.section === "concepts") return conceptsHash(route.profileId, route.id);
 			return route.id
 				? `#/c/${route.profileId}/${route.section}/${route.id}`
 				: `#/c/${route.profileId}/${route.section}`;
@@ -80,6 +92,11 @@ export function routeHash(route: Route): string {
 /** The page of the agent's app `name` in the company `profileId`. */
 export function appHash(profileId: string, name: string): string {
 	return `#/c/${profileId}/a/${name}`;
+}
+
+/** The Concepts viewer of the company `profileId`, at the concept `name`, or at its most recently changed one. */
+export function conceptsHash(profileId: string, name?: string): string {
+	return name ? `#/c/${profileId}/concepts/${name}` : `#/c/${profileId}/concepts`;
 }
 
 export function navigate(route: Route, replaceEntry = false): void {

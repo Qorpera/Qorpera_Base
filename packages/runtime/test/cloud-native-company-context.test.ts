@@ -1526,7 +1526,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "282ee612e86a47ca521435c6024ed3520e54ea98842d19fcad573b00d1e3e701",
+			instructions: "00d853143f23be6d08cd6c05a17a5fe83263e08bc815c903e28adbd6033ce38d",
 			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
 		},
 	],
@@ -1534,7 +1534,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "a9c26d70bc62824edd0468dfe2353a7d529f06072034141010b97447b5c6ff24",
+			instructions: "0324c495b0931a0fcae1a7aefe154427220551446bf4b956a19e7ef911b0189a",
 			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
 		},
 	],
@@ -1542,7 +1542,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "282ee612e86a47ca521435c6024ed3520e54ea98842d19fcad573b00d1e3e701",
+			instructions: "00d853143f23be6d08cd6c05a17a5fe83263e08bc815c903e28adbd6033ce38d",
 			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
 		},
 	],
@@ -1617,6 +1617,28 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
+});
+
+it("makes concepts in four steps, looks at pictures, and writes to coworkers in plain words (8 November 2026)", () => {
+	// Jonas, 8 November: the agents jumped to building, researched only in text and never judged how anything looks,
+	// and their threads read as test reports.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Concepts are made in four steps, none skipped",
+		"write the concept brief in plain words in strategy/concept-brief.md and put it on your wall for the founders",
+		"screenshots of their real screens saved as image files in research/moodboard/",
+		"Research that is only text does not count as looking.",
+		"make several clearly different directions as still pictures of the key moments, not built apps",
+		"look at them as a demanding designer would, against the brief, the moodboard and the best reference",
+		"Passing tests is not done",
+		"A concept is its own interface app, so the founders can open each one on its own.",
+		"A concept's directions are the exception to what follows: their workers make still pictures, not videos or an app",
+		"never logs, check counts or file lists, because the founders read these threads",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The Co-Founder writes the concept brief with the founders before anything is built",
+	);
 });
 
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {

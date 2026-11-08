@@ -13,9 +13,13 @@ import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../
  * - A Company File page linked in a message stands beside the conversation (Jonas, 5 November 2026: PR #1430's agent
  *   sheet, standing beside the thread instead of over it). The thread stays as it is, usable; Escape, in the panel or
  *   in its page, and Close put it away.
+ * - A concept of the company's product fills the Concepts viewer's stage (views/concepts.ts; Jonas, 8 November 2026:
+ *   "a fullscreen view of the selected concept"). It has no header at all: the concept's own design owns the whole
+ *   area, and the viewer's side panel says whose it is, with Reload and Show in Storage.
  * Either way:
- * - Its header is drawn here, outside the frame, and always says whose app it is and that Qorpera never asks for a
- *   password in it, so a page that draws a sign-in can't pass for this app's own (security review r1, H2).
+ * - Its header (or the Concepts viewer's side panel) is drawn outside the frame, and always says whose app it is and
+ *   that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this app's own
+ *   (security review r1, H2).
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
  *   changed, shows it afresh; any other change tells the page that what it reads may have changed. */
 
@@ -27,10 +31,12 @@ export type AppPanelTarget =
 /** What stands beside a chat: a page of the Company File. An app opens as a page of its own. */
 export type SidePanelTarget = Extract<AppPanelTarget, { kind: "page" }>;
 
-/** Where it stands: beside the chat, with Close, or as a page of its own, with the way back. */
+/** Where it stands: beside the chat, with Close; as a page of its own, with the way back; or as the Concepts viewer's
+ * concept, with no header (the viewer's side panel has the way back and the controls). */
 export type AppPanelPlacement =
 	| { readonly kind: "beside"; readonly onClose: () => void }
-	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } };
+	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } }
+	| { readonly kind: "concept" };
 
 /** What the panel needs from the open company. */
 export interface AppPanelHost extends AppBridgeHost {
@@ -90,7 +96,12 @@ export class AppPanel {
 				if (this.#path) host.openInStorage(this.#path);
 			}),
 		];
-		if (placement.kind === "page") {
+		if (placement.kind === "concept") {
+			// Nothing of Qorpera's over the concept: the frame is the whole stage. The heading is kept, unshown.
+			this.#title = h("strong", { class: "side-panel-title" });
+			this.el = h("section", { class: "side-panel is-concept", tabindex: "-1" }, this.#body);
+			this.#first = this.el;
+		} else if (placement.kind === "page") {
 			// The page's own heading: the app's name, once, at the top of the page.
 			this.#title = h("h1", { class: "side-panel-title" });
 			this.#first = h(

@@ -86,6 +86,9 @@ it("refuses arguments it cannot save before anything is read", async () => {
 		"manifest.emblem must be one of",
 	);
 	refusesArguments(tool, save("sales", "k", manifest("S", { entry: "a.css" }), []), "manifest.entry");
+	refusesArguments(tool, save("sales", "k", manifest("S", { concept: "yes" }), []), "manifest.concept");
+	refusesArguments(tool, save("sales", "k", manifest("S", { cover: "cover.gif" }), []), "manifest.cover");
+	refusesArguments(tool, save("sales", "k", manifest("S", { cover: "../cover.png" }), []), "manifest.cover");
 	refusesArguments(f.tool("post_app"), { name: "sales", operationKey: "k", posted: "yes" }, "posted must be");
 	expect(f.commits).toEqual([]);
 });
@@ -123,6 +126,8 @@ it("makes a new app in one unit, owned by the agent and not posted, with the app
 			owner: f.identity.staffAgentId.toLowerCase(),
 			posted: false,
 			reads: ["tables"],
+			concept: false,
+			cover: null,
 		},
 	});
 	expect(f.text("apps/sales/js/app.js")).toBe("console.log(1)");
@@ -164,6 +169,31 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 		manifest: { name: "Sales, by week", owner: OWNER, posted: true },
 	});
 	expect(f.text("apps/sales/index.html")).toBe("<h1>New</h1>");
+});
+
+it("marks an app as a concept with its cover, and keeps both when a later change leaves them out", async () => {
+	const f = await fixture();
+	await f.call(
+		"save_app",
+		save("shop", "make-1", manifest("Shop", { concept: true, cover: "./cover.webp" }), [
+			{ path: "index.html", text: PAGE },
+		]),
+	);
+	expect(f.text("apps/shop/app.toml")).toContain('concept = true\ncover = "cover.webp"\n');
+	expect(parseAppManifest(f.text("apps/shop/app.toml") ?? "")).toMatchObject({
+		ok: true,
+		manifest: { name: "Shop", concept: true, cover: "cover.webp" },
+	});
+	await f.call("save_app", save("shop", "change-1", manifest("Shop, round 2"), []));
+	expect(parseAppManifest(f.text("apps/shop/app.toml") ?? "")).toMatchObject({
+		ok: true,
+		manifest: { name: "Shop, round 2", concept: true, cover: "cover.webp" },
+	});
+	await f.call("save_app", save("shop", "change-2", manifest("Shop", { concept: false }), []));
+	expect(parseAppManifest(f.text("apps/shop/app.toml") ?? "")).toMatchObject({
+		ok: true,
+		manifest: { concept: false, cover: "cover.webp" },
+	});
 });
 
 it("posts an app by its one line, and refuses posted through company_write", async () => {

@@ -275,8 +275,9 @@ end
 $$;
 rollback to ce_routine;
 
--- 6. Work that carries on a chain keeps the effort its first run was pinned with; a worker's own run, a member's
---    finished task and a chain whose first run is unknown or another agent's take the agent.md's effort, else high.
+-- 6. Work that carries on a chain a wake started keeps the effort its first run was pinned with; work that carries on
+--    a member's chat (20260930661000), a worker's own run, a member's finished task and a chain whose first run is
+--    unknown or another agent's take the agent.md's effort, else high.
 --    Carol's coworker run (from Bob's delivery) has its wake rewritten to each kind; her member turn, at the medium
 --    the owner chose in her thread, is the origin, and runs after the coworker run's job ends.
 savepoint ce_carried;
@@ -299,8 +300,10 @@ begin
 		and (pg_temp.ce_run(v_coworker)).reasoning_effort = 'high', 'fixture: Carol''s member turn at medium, her coworker run high: '
 		|| v_pass::text);
 	foreach v_kind in array array['worker-completion', 'machine-event', 'machine-checkin', 'office-activation'] loop
-		perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, v_kind, v_member) = 'medium',
-			'a ' || v_kind || ' wake keeps its chain''s effort');
+		perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, v_kind, v_member) = 'high',
+			'a ' || v_kind || ' wake after a member''s chat runs high, not at the chat''s medium');
+		perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, v_kind, v_coworker) = 'high',
+			'a ' || v_kind || ' wake keeps the effort of a chain a wake started');
 		perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, v_kind, null) = 'high',
 			'a ' || v_kind || ' wake with no origin runs high');
 		perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, v_kind, (v_bob ->> 'runId')::uuid) = 'high',
@@ -310,12 +313,20 @@ begin
 		'a worker''s own run runs high');
 	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'human-task', null) = 'high', 'a member''s finished task runs high');
 	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'coworker', null) = 'high', 'the coworker wake again: high');
-	-- The chain keeps whatever its first run was pinned with.
+	-- A chain a wake started keeps whatever its first run was pinned with; a chat's low never carries on.
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set reasoning_effort = 'low' where id = v_member;
 	set local session_replication_role = origin;
-	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'worker-completion', v_member) = 'low',
-		'a chain started at low stays low');
+	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'worker-completion', v_member) = 'high',
+		'a chat at low does not carry low into the agent''s own work');
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs set reasoning_effort = 'low' where id = v_coworker;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'worker-completion', v_coworker) = 'low',
+		'a chain a wake started at low stays low');
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs set reasoning_effort = 'high' where id = v_coworker;
+	set local session_replication_role = origin;
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set reasoning_effort = 'medium' where id = v_member;
 	set local session_replication_role = origin;
@@ -323,8 +334,9 @@ begin
 		pg_temp.ce_effort_edit('carol', '92400000-0000-4000-8000-000000000032', 'Carol', 'low')));
 	perform pg_temp.base_assert(pg_temp.ce_carried(v_coworker, 'worker-dispatch', v_member) = 'low'
 		and pg_temp.ce_carried(v_coworker, 'machine-event', null) = 'low'
-		and pg_temp.ce_carried(v_coworker, 'worker-completion', v_member) = 'medium',
-		'the agent.md''s effort sets a worker''s own run and an unknown chain, not a chain with a first run');
+		and pg_temp.ce_carried(v_coworker, 'worker-completion', v_member) = 'low'
+		and pg_temp.ce_carried(v_coworker, 'worker-completion', v_coworker) = 'high',
+		'the agent.md''s effort sets a worker''s own run, an unknown chain and work after a chat, not a chain a wake started');
 end
 $$;
 rollback to ce_carried;

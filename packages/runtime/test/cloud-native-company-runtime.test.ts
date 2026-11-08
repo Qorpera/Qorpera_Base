@@ -3127,6 +3127,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// and say how a card reads; every other tool is as on master.
 	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
 	// On 8 November 2026 save_app's description says an app opens as a page of its own, so they moved again.
+	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3169,9 +3170,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"658a49c41db7df815b829d41dddd6a4dc663d5834667864017a813a82e0f9bd8",
+		"5dc2576c57024ea40c962a4cf88c7c5b8c5a1caa2f3915a3b3a93eb744b4c961",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"f8ced095bbde231241e48eacef201b005c7e3cd71e9f43025244924fb355c687",
+		"7b4f04684c5d264223d312056073674e0ca529a0986f714f2f216ba110f99b22",
 	);
 });

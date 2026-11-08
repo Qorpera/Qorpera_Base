@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Interface apps: `app.toml` takes `concept = true` (a concept of the company's product, for the web's Concepts viewer) and `cover = "<path>"` (a .png, .jpg or .webp in the app's folder, checked as the entry is; `APP_COVER_KINDS`). `AppManifest` has `concept` (default false) and `cover` (default null); `writeAppManifest` writes both when set.
 - `CloudMemberFolderClient`: its function calls and object reads no longer set `cache: "no-store"`, which made Chrome send a CORS preflight before every call (perf sprint A6, 7 Nov 2026). No browser stores the answer to a POST, and the objects' route answers `private, no-store` itself. A commit keeps the option.
 - Interface apps take videos: `APP_FILE_TYPES` has `.mp4` and `.webm`, with `APP_VIDEO_KINDS`, `APP_VIDEO_FILE_MAX_BYTES` and `APP_VIDEOS_MAX_BYTES`.
 - `agent-wall`: an item is `{text, detail?}`: a headline, and under it, indented, an optional detail (lines join as one, at most 240 characters). `wallPreview(item)` names the picture (`folder:` image) or app an item links, `WALL_HEADLINE_MAX_CHARS` (80) and `WALL_DETAIL_MAX_CHARS` (240) are exported; a headline written before details existed still reads up to 240.
