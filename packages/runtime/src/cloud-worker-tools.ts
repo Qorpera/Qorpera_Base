@@ -385,7 +385,7 @@ export function cloudWorkerTools(
 							type: "string",
 							enum: ["qorpera", "github.com"],
 							description:
-								"qorpera: kept in the company folder at code/<owner>/<name>/ (main/ holds the default branch's files). A new one is made empty by the session's first turn: start one yourself, without asking anyone, and reuse it for later work on the same thing. A finished change lands on the default branch at once. github.com: only for code that already lives on GitHub; a finished change becomes a draft pull request.",
+								"qorpera: kept in the company folder at code/<owner>/<name>/ (main/ holds the default branch's files). A new one is made empty by the session's first turn: start one yourself, without asking anyone, and reuse it for later work on the same thing. A finished change lands on the default branch at once. github.com: only for code that already lives on GitHub, or when a member asks for GitHub by name; a finished change becomes a draft pull request.",
 						},
 						owner: {
 							type: "string",

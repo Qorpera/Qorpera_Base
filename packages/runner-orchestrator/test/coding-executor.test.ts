@@ -23,6 +23,7 @@ import {
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
 	parseCodingTurnState,
+	prepareUnfinished,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
@@ -524,6 +525,42 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+	});
+
+	it("a workspace that failed for another reason fails the turn at once with its code, once what it attached came off", async () => {
+		// 8 Nov 2026, Lærdom: the old vault refused the session's environment, and the lease lapsed twice as "the executor
+		// stopped responding". Now the turn says what stopped it; an error that is no code reads as the generic one.
+		for (const [failure, code] of [
+			[new Error("CODING_ENVIRONMENT_UNAVAILABLE"), "CODING_ENVIRONMENT_UNAVAILABLE"],
+			[new Error("socket hang up"), "CODING_PREPARE_UNFINISHED"],
+		] as [Error, string][]) {
+			const w = world();
+			vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(failure);
+			const report = vi.fn();
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+				report,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			expect(completion.p_outcome).toBe("failed");
+			expect(completion.p_summary).toBe(prepareUnfinished(failure));
+			expect(completion.p_summary).toBe(
+				`Preparing the session's workspace did not finish, so the coding turn did not start. Nothing was changed; a follow-up tries again. [code=${code}]`,
+			);
+			expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			const completed = vi
+				.mocked(w.control.call)
+				.mock.calls.findIndex((c) => c[0] === "qorpera_complete_coding_turn");
+			expect(vi.mocked(w.host.detachSession).mock.invocationCallOrder[0]).toBeLessThan(
+				vi.mocked(w.control.call).mock.invocationCallOrder[completed]!,
+			);
+			expect(report.mock.calls).toEqual([["turn", failure]]);
+		}
 	});
 
 	it("a workspace the host could not make for a reason it names fails the turn at once, with that reason, under its lease", async () => {
