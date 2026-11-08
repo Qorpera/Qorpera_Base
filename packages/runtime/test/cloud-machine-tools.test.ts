@@ -791,6 +791,100 @@ describe("machine tools", () => {
 			}
 		});
 
+		/** The machine says the command runs, at once or after `ms`. */
+		const runningAfter =
+			(f: ReturnType<typeof fixture>, ms: number) => (scope: { machineId: string }, input: { commandId: string }) =>
+				ms === 0
+					? Promise.resolve(f.receipt(scope.machineId, input.commandId) as never)
+					: new Promise<never>((resolve) =>
+							setTimeout(() => resolve(f.receipt(scope.machineId, input.commandId) as never), ms),
+						);
+
+		it("asks the machine during a command's first minute only; a later wait on it asks at its first look", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.gateway.read.mockImplementation(runningAfter(f, 0));
+				const commandId = randomUUID();
+				const first = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId,
+					waitSeconds: 120,
+				});
+				await vi.advanceTimersByTimeAsync(120_000);
+				expect((await first).contentItems[0].text).toContain("running");
+				// Looks every 5 s from 0 to 120 s; asks at 0 to 55 s, then the read after the wait.
+				expect(f.looks()).toHaveLength(25);
+				expect(f.gateway.read).toHaveBeenCalledTimes(13);
+				const again = f.boundary.invoke("r2", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId,
+					waitSeconds: 30,
+				});
+				await vi.advanceTimersByTimeAsync(30_000);
+				expect((await again).contentItems[0].text).toContain("running");
+				// Its first look asks, its others are the kernel's, then the read after the wait.
+				expect(f.looks()).toHaveLength(25 + 7);
+				expect(f.gateway.read).toHaveBeenCalledTimes(13 + 2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("stops asking in a call after a read slower than a look's step, so a stop is heard at the next look", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.gateway.read.mockImplementationOnce(runningAfter(f, 0));
+				f.gateway.read.mockImplementation(runningAfter(f, 8_000));
+				f.statuses.push(
+					f.status(f.listed[0], "running"),
+					f.status(f.listed[0], "running"),
+					f.status(f.listed[0], "running"),
+					{ schema: "qorpera.machine-status/v1", workStopped: true },
+				);
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 60,
+				});
+				let settled = false;
+				void read.then(() => {
+					settled = true;
+				});
+				// Asks at 0 and at 5 s (8 s); the looks at 18 and 23 s are the kernel's alone.
+				await vi.advanceTimersByTimeAsync(22_900);
+				expect(settled).toBe(false);
+				await vi.advanceTimersByTimeAsync(100);
+				expect(settled).toBe(true);
+				expect((await read).contentItems[0].text).toContain("WORK_STOPPED");
+				expect(f.looks()).toHaveLength(4);
+				expect(f.gateway.read).toHaveBeenCalledTimes(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("asks nothing at a look with less than a second of the wait left: the read after the wait answers", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.gateway.read.mockImplementationOnce(runningAfter(f, 0));
+				// The second look's read takes 4.5 s, so the third look comes at 14.5 s, 0.5 s before the end.
+				f.gateway.read.mockImplementationOnce(runningAfter(f, 4_500));
+				f.gateway.read.mockImplementation(runningAfter(f, 0));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 15,
+				});
+				await vi.advanceTimersByTimeAsync(15_000);
+				expect((await read).contentItems[0].text).toContain("running");
+				// Looks at 0, 5, 14.5 and 15 s; asks at 0 and 5 s, then the read after the wait.
+				expect(f.looks()).toHaveLength(4);
+				expect(f.gateway.read).toHaveBeenCalledTimes(3);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
 		it("a starting machine's executor is told at once, and its word ends the worker's wait", async () => {
 			const f = fixture(undefined, true);
 			try {

@@ -61,6 +61,14 @@ const WAIT_STEP_MS = 5000;
 /** A waiting worker's look asks the machine only with this much of the wait left: closer to the end, the read after
  * the wait is that ask. */
 const WAIT_READ_LEAST_MS = 1000;
+/** A waiting worker's looks after a call's first ask the machine too only while its run has seen the command running for
+ * less than this. A read is not cheap (five SQL calls, eight when forwarded, and a folder boundary that holds the
+ * machine's writes to /company while it runs), and most ends come soon after a start: replayed on the 159 waits of
+ * 7 Nov 2026, 60 s keeps about 83 % of the time asking at every look saves, with 29 % of its extra reads. Later on, the
+ * kernel's look, after the executor's pass, hears of an end about as soon as a read would. */
+const WAIT_READ_WINDOW_MS = 60_000;
+/** How many commands a run remembers when it first saw running. */
+const WAIT_SEEN_MAX = 256;
 /** How long a run waits for the executor to take a wake it does not wait on. A lost word costs only the executor's next
  * pass, 10 s at most. */
 const WAKE_SENT_MS = 2000;
@@ -207,6 +215,8 @@ export function cloudMachineTools(options: {
 	const binding = parseCloudNativeToolBinding(options.binding),
 		identity = Object.freeze({ ...options.identity });
 	const refusals = new CloudControlRefusalRelay();
+	/** When this run's waits first found each command running (WAIT_READ_WINDOW_MS), the oldest forgotten first. */
+	const seenRunning = new Map<string, number>();
 	if (
 		Object.entries(binding).some(
 			([key, value]) => key !== "credentialCapsuleId" && identity[key as keyof CloudNativeToolIdentity] !== value,
@@ -785,25 +795,48 @@ export function cloudMachineTools(options: {
 				// A worker waits until its command ended, its machine stopped or the time passed. Each look asks the
 				// kernel's status first, which also says whether its work was stopped. The kernel hears of a command's
 				// end only at its executor's next pass (one every 10 s or so: commands of a few milliseconds were
-				// recorded ended 1 to 12 s after their start on 7 Nov 2026), and the machine knows at once. So each look
-				// that finds the command running asks the machine too, and an ended command is answered at the next look
-				// rather than one look after that pass. A read is a look too: if it fails, the wait goes on. No read
-				// starts with less than WAIT_READ_LEAST_MS left, as the read below answers then, and a read that outlives
-				// the wait (a slow executor) answers or fails for it, so a wait runs over by one read at most
-				// (review-1499 F3). The read below answers otherwise.
+				// recorded ended 0.7 to 12 s after their start, 5 to 7 Nov 2026), and the machine knows at once.
+				// - A call's first look that finds the command running asks the machine, which answers at once a
+				//   command that ended before the call.
+				// - Its later looks ask too while the run has seen the command running for less than
+				//   WAIT_READ_WINDOW_MS, so an end soon after a start is answered at the next look rather than one look
+				//   after that pass. After that, the looks are the kernel's alone.
+				// - A read that took longer than a look's step ends the asking for this call, so a slow executor or folder
+				//   does not keep the kernel's look, which tells a stopped worker, from coming every few seconds.
+				// - A read is a look too: if it fails, the wait goes on. No read starts with less than WAIT_READ_LEAST_MS
+				//   left, as the read below answers then, and a read that outlives the wait (a slow executor) answers or
+				//   fails for it, so a wait runs over by one read at most (review-1499 F3).
+				// The read below answers otherwise.
+				const commandId = String(query.commandId);
 				let answer: CloudToolContent | undefined;
+				let asked = false;
+				let slow = false;
 				const outcome = await waitUntil(Number(waitSeconds), context.signal, async (deadline) => {
-					const now = await status(machine.name, String(query.commandId), context.signal);
+					const now = await status(machine.name, commandId, context.signal);
 					if (now.workStopped) return "stopped";
-					if (now.machine?.state !== "running" || now.command?.state !== "running") return true;
-					if (deadline - Date.now() < WAIT_READ_LEAST_MS) return false;
+					if (now.machine?.state !== "running" || now.command?.state !== "running") {
+						seenRunning.delete(commandId);
+						return true;
+					}
+					const at = Date.now();
+					const since = seenRunning.get(commandId) ?? at;
+					if (!seenRunning.has(commandId)) {
+						if (seenRunning.size >= WAIT_SEEN_MAX) seenRunning.delete(seenRunning.keys().next().value as string);
+						seenRunning.set(commandId, at);
+					}
+					if (deadline - at < WAIT_READ_LEAST_MS) return false;
+					if (asked && (slow || at - since >= WAIT_READ_WINDOW_MS)) return false;
+					asked = true;
 					let read: Awaited<ReturnType<typeof page>>;
 					try {
 						read = await page();
 					} catch (error) {
 						if (Date.now() >= deadline) late = { error };
 						throw error;
+					} finally {
+						if (Date.now() - at > WAIT_STEP_MS) slow = true;
 					}
+					if (read.ended) seenRunning.delete(commandId);
 					if (read.ended || Date.now() >= deadline) answer = read.content;
 					return read.ended;
 				});
