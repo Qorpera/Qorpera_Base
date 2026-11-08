@@ -77,7 +77,11 @@ async function fixture() {
 	const runGit = vi.fn(async (command: CodingBrokerGitCommand): Promise<string> => {
 		calls.push(command);
 		if (command.args.includes("ls-remote")) {
-			const shown = staleReads > 0 ? (staleReads--, staleHead) : remoteHead;
+			let shown = remoteHead;
+			if (staleReads > 0) {
+				staleReads--;
+				shown = staleHead;
+			}
 			return `${remoteBase}\trefs/heads/main\n${shown ? `${shown}\t${ref}\n` : ""}`;
 		}
 		if (command.args.includes("push")) {
@@ -136,6 +140,7 @@ async function fixture() {
 		},
 		lagReads: (reads: number) => {
 			lag = reads;
+			staleReads = Math.min(staleReads, reads);
 		},
 		loseReply: (effect = true) => {
 			loseReply = true;

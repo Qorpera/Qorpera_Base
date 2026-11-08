@@ -14,12 +14,12 @@ import {
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
-	PUBLICATION_UNFINISHED,
 	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
 	type CodingTurnState,
 	CodingWorkspaceFailed,
+	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
 	parseCodingTurnState,
 } from "../src/coding-executor.ts";
@@ -406,7 +406,10 @@ describe("the coding executor over a session turn", () => {
 		expect(completion.p_outcome).toBe("failed");
 		expect(completion.p_summary).toBe(PUBLICATION_UNFINISHED);
 		expect(completion.p_pull_request).toBeNull();
-		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODING_GIT_RECONCILIATION_REQUIRED" }));
+		expect(report).toHaveBeenCalledWith(
+			"publish",
+			expect.objectContaining({ message: "CODING_GIT_RECONCILIATION_REQUIRED" }),
+		);
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
@@ -709,7 +712,7 @@ describe("the coding executor over a session turn", () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_GUEST_NOT_READY"));
 		vi.mocked(w.host.detachSession).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
-		const report = vi.fn((_stage: "turn" | "stop" | "defer", _error: unknown) => {
+		const report = vi.fn((_stage: "turn" | "stop" | "defer" | "publish", _error: unknown) => {
 			throw new Error("log sink down");
 		});
 		const executor = new CloudCodingExecutor({
