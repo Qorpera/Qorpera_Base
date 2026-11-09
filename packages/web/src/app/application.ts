@@ -154,12 +154,16 @@ export function mountApplication(
 		if (!friendsWindow) return;
 		friendsWindow.dispose();
 		friendsWindow = undefined;
-		if (restoreFocus) frame.querySelector<HTMLElement>(".account-friends")?.focus();
+		if (!restoreFocus) return;
+		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
+		(
+			settings?.el.querySelector<HTMLElement>(".settings-friends") ??
+			frame.querySelector<HTMLElement>(".account-friends")
+		)?.focus();
 	}
-	/** Friends as a window of its own, over whatever is open; Settings close first. */
+	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
 	function openFriends(): void {
 		if (friendsWindow || feedback || !auth.userId) return;
-		if (settings) closeSettings(false);
 		friendsWindow = new FriendsWindow(api, hub, () => closeFriends());
 		root.append(friendsWindow.el);
 		friendsWindow.open();

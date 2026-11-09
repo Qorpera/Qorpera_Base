@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- The Friends window opens over Settings and leaves them open behind it; closing it gives the focus back to Settings' Friends button (Jonas, 9 Nov 2026: opening the friends list closed Settings).
 - The leaderboard shows people with their own profile picture (initials until they choose one), never a company's figure; companies keep their logo, which is still their figure until companies get logos of their own (Jonas, 9 Nov 2026).
 - The account menu at the foot of the rail has a thin, clearly drawn border and a fixed width (Jonas, 9 Nov 2026: "it should have thin borders and a max width that doesn't scale with the sidepanels width"). It is 232 design pixels wide from the rail's left edge whatever width the rail is dragged to (before, it stretched across the whole rail; the folded rail's menu was 260), its edge uses the stronger border colour, its corners are a little tighter (10 px, was 14) and its shadow is lighter, so the border, not a soft glow, gives it its shape. The top bar's account menu gets the same edge.
 - The Members emblem no longer shows a white rim around one of its two people (Jonas, 9 Nov 2026: "the members interface has a white border for one of the people that should be removed"). An emblem's cuts are now holes in a mask instead of strokes painted in the page colour, so the rail, the page header and the open tile show through them; before, the cut around the front person was painted white and showed against the tinted header and the rail. The calendar emblem's rings are notches for the same reason.

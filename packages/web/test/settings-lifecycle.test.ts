@@ -599,7 +599,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
-	it("opens the Friends window from the button beside Settings | Storage", async () => {
+	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
@@ -609,8 +609,14 @@ describe("settings session lifecycle", () => {
 		expect(friends.nextElementSibling?.classList.contains("settings-modes")).toBe(true);
 		friends.click();
 		await draw();
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		// Settings stay open behind the window (Jonas, 9 Nov 2026), and get the focus back when it closes.
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		const window = f.root.querySelector<HTMLDialogElement>(".friends-window")!;
+		expect(window.open).toBe(true);
+		window.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		expect(document.activeElement).toBe(friends);
 	});
 	it("opens all eight tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
@@ -1667,9 +1673,8 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll<HTMLButtonElement>(".company-invite button")]
 			.find((button) => button.textContent === "Add a friend")!
 			.click();
-		// Settings close and the Friends window opens over the conversation, its search field ready to type in.
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+		// The Friends window opens over Settings, which stay open behind it; its search field is ready to type in.
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
 		const friendsWindow = f.root.querySelector<HTMLDialogElement>(".friends-window")!;
 		expect(friendsWindow.open).toBe(true);
 		expect(document.activeElement).toBe(friendsWindow.querySelector(".panel-search input"));
