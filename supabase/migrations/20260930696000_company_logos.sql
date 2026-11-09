@@ -1,14 +1,15 @@
 -- A company's logo (Jonas, 9 Nov 2026; CLIENT-CONTRACT.md request 10).
 --
--- The official logo is a file in the company folder, QorperaOS/brand/logo.png: the company's Branding & Identity
--- agent makes and updates it, and an owner or admin can choose another in Settings → Company, the way a member
--- chooses their own picture. The folder is the one source of truth; agents and people edit the same file.
+-- The official logo is a file in the company folder, QorperaOS/brand/logo.svg: the company's Branding & Identity
+-- agent draws and updates it (an SVG is text, which every agent can write), and an owner or admin can choose another
+-- in Settings → Company, the way a member chooses their own picture (the app wraps the cropped picture in an SVG). The
+-- folder is the one source of truth; agents and people edit the same file.
 --
 -- People outside the company see the logo too: a friend on the leaderboard, someone invited to join. They cannot
--- read the company folder, so a copy of the current logo sits in a private bucket, as <profile UUID>/<sha256>.png,
--- the way member pictures do (20260924150000). A member of the company keeps the copy current: their app uploads
--- the folder's logo and publishes it, and publishing accepts only a copy whose name carries the sha256 of the
--- folder's current logo file. Who sees the copy is decided here: the company's members, anyone with an open
+-- read the company folder, so a PNG drawn from the current logo sits in a private bucket, as
+-- <profile UUID>/<sha256 of the SVG>.png, the way member pictures do (20260924150000). A member of the company keeps
+-- the copy current: their app draws the folder's logo and publishes it, and publishing accepts only a copy named for
+-- the folder's current logo file. Every app shows the copy, so members see what everyone else sees. Who sees the copy is decided here: the company's members, anyone with an open
 -- invitation to it, and the accepted friends of its members. Everyone else keeps the company's figure.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -46,7 +47,7 @@ as $$
 	from public.qorpera_company_environments environment
 	join public.qorpera_folder_entries entry
 		on entry.environment_id = environment.id
-		and entry.key_sha256 = extensions.digest(public.qorpera_folder_key('QorperaOS/brand/logo.png'), 'sha256')
+		and entry.key_sha256 = extensions.digest(public.qorpera_folder_key('QorperaOS/brand/logo.svg'), 'sha256')
 	where environment.profile_id = p_profile_id
 		and entry.kind = 'file'
 	order by entry.updated_at desc
@@ -274,7 +275,7 @@ end
 $$;
 
 -- Makes the uploaded copy the company's logo copy, or takes the copy away (`p_object_name` null) once the folder holds
--- no logo. The copy's name must carry the sha256 of the folder's current QorperaOS/brand/logo.png. Returns the copy it
+-- no logo. The copy's name must carry the sha256 of the folder's current QorperaOS/brand/logo.svg. Returns the copy it
 -- replaced, which the caller then deletes.
 create function public.qorpera_publish_company_logo(p_profile_id uuid, p_object_name text)
 returns jsonb

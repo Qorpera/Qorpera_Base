@@ -1,6 +1,6 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- Company logos (20260930696000): the official logo is the company folder's QorperaOS/brand/logo.png; a member who
--- may write the folder publishes a copy into the qorpera-company-logos bucket, named by the file's sha256, and only
+-- Company logos (20260930696000): the official logo is the company folder's QorperaOS/brand/logo.svg; a member who
+-- may write the folder publishes a copy into the qorpera-company-logos bucket, named by the SVG file's sha256, and only
 -- that copy. Members, people with an open invitation and accepted friends of members see the copy; viewers see it but
 -- cannot publish; strangers see nothing. The fixture's company: owner …01, contributor …02, viewer …03, admin …04,
 -- outsider …05 (no member).
@@ -10,7 +10,7 @@ do $$
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'logo-0001', jsonb_build_array(
 		jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/brand'),
-		jsonb_build_object('op', 'write', 'path', 'QorperaOS/brand/logo.png', 'file', pg_temp.base_stage('first logo'))));
+		jsonb_build_object('op', 'write', 'path', 'QorperaOS/brand/logo.svg', 'file', pg_temp.base_stage('first logo'))));
 end
 $$;
 select set_config('qorpera_test.logo_sha', encode(extensions.digest(convert_to('first logo', 'utf8'), 'sha256'), 'hex'), false);
@@ -147,8 +147,8 @@ do $$
 declare v jsonb;
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'logo-0002', jsonb_build_array(jsonb_build_object(
-		'op', 'write', 'path', 'QorperaOS/brand/logo.png', 'file', pg_temp.base_stage('second logo'),
-		'expectedVersion', pg_temp.base_version('QorperaOS/brand/logo.png'))));
+		'op', 'write', 'path', 'QorperaOS/brand/logo.svg', 'file', pg_temp.base_stage('second logo'),
+		'expectedVersion', pg_temp.base_version('QorperaOS/brand/logo.svg'))));
 	perform pg_temp.logo_as('92400000-0000-4000-8000-000000000004');
 	select public.qorpera_company_logos(array['92400000-0000-4000-8000-000000000010'::uuid]) into v;
 	if v -> 0 ->> 'source_sha256' <> encode(extensions.digest(convert_to('second logo', 'utf8'), 'sha256'), 'hex')
@@ -157,7 +157,7 @@ begin
 	end if;
 	perform pg_temp.logo_back();
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'logo-0003', jsonb_build_array(jsonb_build_object(
-		'op', 'delete', 'path', 'QorperaOS/brand/logo.png', 'expectedVersion', pg_temp.base_version('QorperaOS/brand/logo.png'))));
+		'op', 'delete', 'path', 'QorperaOS/brand/logo.svg', 'expectedVersion', pg_temp.base_version('QorperaOS/brand/logo.svg'))));
 	perform pg_temp.logo_as('92400000-0000-4000-8000-000000000004');
 	select public.qorpera_publish_company_logo('92400000-0000-4000-8000-000000000010', null) into v;
 	if v ->> 'object_name' is not null or v ->> 'previous_object_name' is null then
