@@ -584,6 +584,7 @@ export const SETTINGS: Record<string, string> = {
 	// The Friends window and Settings → Leaderboard (views/friends-window.ts, views/leaderboard.ts)
 	"Online now": "Online nu",
 	"Last online {when}": "Sidst online {when}",
+	"Last online 2+ weeks ago": "Sidst online for over 2 uger siden",
 	"Friends {since}": "Venner {since}",
 	"Close friends": "Luk venner",
 	"Friends: {count} company invitations waiting": "Venner: {count} virksomhedsinvitationer venter",
@@ -610,7 +611,6 @@ export const SETTINGS: Record<string, string> = {
 	"1 task": "1 opgave",
 	"{count} tasks": "{count} opgaver",
 	Leaderboards: "Ranglister",
-	"You're in the lead.": "Du fører.",
 	"{amount} behind {name}": "{amount} efter {name}",
 	"{count} to pass {name}": "{count} for at overhale {name}",
 	"Up {count} since last week": "{count} op siden sidste uge",

@@ -290,9 +290,10 @@ export class LeaderboardView {
 							const place = places.get(entry)!;
 							const move = moves ? lastPlaces.get(entry)! - place : 0;
 							const above = ordered.filter((other) => other.value > entry.value).at(-1);
+							// In the lead, your row just says "You" (Jonas, 9 Nov 2026).
 							const nudge = entry.me
 								? entry.value > 0 && place === 1
-									? t("You're in the lead.")
+									? ""
 									: above
 										? earning
 											? t("{amount} behind {name}", {
@@ -421,7 +422,11 @@ export class LeaderboardView {
 						.map((entry) =>
 							h(
 								"span",
-								{ class: "leaderboard-champion-figure" },
+								{
+									class: entry.userId
+										? "leaderboard-champion-figure is-person"
+										: "leaderboard-champion-figure",
+								},
 								entry.userId
 									? personAvatar(entry.name, entry.userId)
 									: companyLogo(entry.profileId ?? entry.key),

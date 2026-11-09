@@ -85,6 +85,8 @@
 .leaderboard-champion-figures.is-shared .figure { width: 104px; height: 104px; }
 .leaderboard-champion-figure { position: relative; flex: none; animation: leaderboard-cheer 1.9s cubic-bezier(.3, 1.5, .5, 1) infinite; }
 .leaderboard-champion-figure .figure { width: 128px; height: 128px; }
+/* A person's own picture stays still; only a company's figure cheers (Jonas, 9 Nov 2026). */
+.leaderboard-champion-figure.is-person { animation: none; }
 .leaderboard-champion-figure .person-avatar { width: 112px; height: 112px; font-size: 38px; box-shadow: 0 0 0 4px var(--header-surface), 0 8px 24px rgb(0 0 0 / 12%); }
 .leaderboard-champion-figures.is-shared .person-avatar { width: 92px; height: 92px; font-size: 30px; }
 .leaderboard-row .person-avatar { width: 40px; height: 40px; font-size: 14px; }

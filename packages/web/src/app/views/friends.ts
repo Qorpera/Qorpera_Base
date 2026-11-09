@@ -204,22 +204,29 @@ function isFriend(state: FriendsState, address: string): boolean {
 /** Within this long of the last mark a friend counts as online now: an open tab marks every four minutes. */
 const ONLINE_MS = 5 * 60_000;
 
-/** When someone was last online, in words: "Online now", or "Last online 3 hours ago" / "… Nov 2, 2026". */
+const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
+const WEEK_MS = 7 * DAY_MS;
+
+/** When someone was last online, in words (Jonas, 9 Nov 2026: hours up to a day, then days, then weeks, and no further
+ * than two weeks): "Online now", "Last online 20 minutes ago", "… 3 hours ago", "… 2 days ago", "… 1 week ago", and
+ * "Last online 2+ weeks ago" for anything older. */
 export function lastOnline(iso: string | null | undefined, now = Date.now()): { online: boolean; text: string } | null {
 	const time = iso ? Date.parse(iso) : Number.NaN;
 	if (!iso || !Number.isFinite(time)) return null;
 	const ago = Math.max(0, now - time);
 	if (ago < ONLINE_MS) return { online: true, text: t("Online now") };
-	const words = new Intl.RelativeTimeFormat(presentationLocale(), { numeric: "auto" });
-	const minutes = Math.floor(ago / 60_000);
+	if (ago >= 2 * WEEK_MS) return { online: false, text: t("Last online 2+ weeks ago") };
+	// "always", so a day ago reads "1 day ago", not "yesterday", which can be a few hours ago.
+	const words = new Intl.RelativeTimeFormat(presentationLocale(), { numeric: "always" });
 	const when =
-		minutes < 60
-			? words.format(-minutes, "minute")
-			: minutes < 24 * 60
-				? words.format(-Math.floor(minutes / 60), "hour")
-				: minutes < 7 * 24 * 60
-					? words.format(-Math.floor(minutes / (24 * 60)), "day")
-					: fmtDate(iso);
+		ago < HOUR_MS
+			? words.format(-Math.floor(ago / 60_000), "minute")
+			: ago < DAY_MS
+				? words.format(-Math.floor(ago / HOUR_MS), "hour")
+				: ago < WEEK_MS
+					? words.format(-Math.floor(ago / DAY_MS), "day")
+					: words.format(-Math.floor(ago / WEEK_MS), "week");
 	return { online: false, text: t("Last online {when}", { when }) };
 }
 
