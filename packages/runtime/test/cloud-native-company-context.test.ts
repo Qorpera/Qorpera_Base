@@ -711,8 +711,14 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("Your first job is building the vision with the founders");
 	expect(cofounder).toContain("You hire and manage: domain work, such as research, finance, sales or product");
 	expect(cofounder).toContain(
-		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, and a strategist",
+		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, a strategist who works out the options and weighs them, and a Branding & Identity specialist who owns the company's logo and look",
 	);
+	// v11 (Jonas, 9 November 2026): the Branding & Identity specialist makes a first identity at once, with the official
+	// logo where the app shows it, and keeps the brand current; renaming the company is deferred.
+	expect(cofounder).toContain("the official logo saved as QorperaOS/brand/logo.svg");
+	expect(cofounder).toContain("It leaves the company's name as it is");
+	expect(cofounder).not.toContain("proposes a new name");
+	expect(cofounder).toContain("brand and identity, suppliers and stock");
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
 	// v11 (Jonas, 9 November 2026): each agent works for one member; with two or more founders the team is dealt out.
 	expect(cofounder).not.toContain(
@@ -1538,24 +1544,24 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "65f6b8e4306b00b65603be9ac5e93c64525b1c7ba97b872660513413a5fa6d4b",
-			prompt: "b977f3f5470e4ccbc6447ff08181b2c2f87af2c060f75ac4701d2ff6bcfae503",
+			instructions: "cde6025096b48ceb011ea9b3e5b526658a48c04acbe7b07b9e8cea211cb0149a",
+			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "0e3563f72518708f8d7ec8a0c8f31aaede912dd994662f60b6580813131d663f",
-			prompt: "66f25cc5ef4d70fcc0b6bd5d99f380af44ada6767d268949c7a76651db9615f3",
+			instructions: "916a65cba65be334b3edd39d546761ebc6307776d0343cf6f44016fb090520f6",
+			prompt: "3b2a8421dedf5f10551deebf86ab9703250273b80d5c2be9077a8db82a7c8f33",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "65f6b8e4306b00b65603be9ac5e93c64525b1c7ba97b872660513413a5fa6d4b",
-			prompt: "40c00e9827e26a1f3748104a3e26aaf9c5a0dc84232933d429374350dc1251db",
+			instructions: "cde6025096b48ceb011ea9b3e5b526658a48c04acbe7b07b9e8cea211cb0149a",
+			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
