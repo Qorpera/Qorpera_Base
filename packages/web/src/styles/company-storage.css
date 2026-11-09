@@ -84,6 +84,9 @@
 }
 .storage-browser .is-grid .files-kind { width: 60px; height: 60px; transition: transform var(--motion-fast, 120ms) var(--ease-out, ease); }
 .storage-browser .is-grid .files-row-main:hover .files-kind { transform: translateY(-1px); }
+/* A press answers at once: the icon gives a little under the finger (over the hover's lift; a list icon keeps its
+ * centring). */
+.storage-browser .is-grid .files-row-main:is(:active, :hover:active) .files-kind { transform: scale(0.93); transition-duration: 60ms; }
 .storage-browser .is-grid .storage-name-cell { width: 100%; align-items: center; gap: 2px; }
 .storage-browser .is-grid .files-name {
 	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal;
@@ -102,7 +105,8 @@
 .storage-columns span:nth-child(3) { text-align: right; }
 .storage-browser .is-list { display: flex; flex-direction: column; gap: 1px; padding-top: 4px; }
 .storage-browser .is-list .files-row-main { position: relative; width: 100%; min-height: 38px; padding: 7px 10px 7px 42px; }
-.storage-browser .is-list .files-kind { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); }
+.storage-browser .is-list .files-kind { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); transition: transform var(--motion-fast) var(--ease-out); }
+.storage-browser .is-list .files-row-main:active .files-kind { transform: translateY(-50%) scale(0.9); transition-duration: 60ms; }
 .storage-browser .is-list .files-kind .icon { width: 18px; height: 18px; }
 .storage-browser .is-list .files-kind.is-folder .icon { fill: color-mix(in srgb, var(--files-folder) 30%, transparent); }
 .storage-browser .is-list .files-name { font-size: 13px; }
@@ -113,6 +117,12 @@
 /* ---- preview: its own window over Settings, the way a picture is viewed ---- */
 .storage-viewer[open] { display: flex; }
 .storage-viewer::backdrop { background: rgb(20 20 19 / 32%); }
+/* The window grows out of its file's icon and shrinks back into it (company-folder.ts, #zoom), so the dialogs' own
+ * rise is off here. What the read brings fades into the waiting window. */
+.surface-dialog.storage-viewer[open], .surface-dialog.storage-viewer::backdrop { animation: none; }
+.storage-viewer .files-preview-body.is-arriving { animation: storage-viewer-arrive var(--motion-base) var(--ease-out) both; }
+@keyframes storage-viewer-arrive { from { opacity: 0; transform: translateY(4px); } }
+.storage-viewer .skeleton-lines { max-width: 720px; margin-inline: auto; }
 :root[data-theme="dark"] .storage-viewer::backdrop { background: rgb(0 0 0 / 55%); }
 .storage-viewer {
 	flex-direction: column; width: min(960px, calc(100vw - 48px)); height: min(900px, calc(100dvh - 48px));
