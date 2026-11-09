@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import { CompanyInterfaceOffers } from "../src/app/interface-offers.ts";
-import { interfaceRows, pagesOn } from "../src/app/interfaces.ts";
-import { renderInterface } from "../src/app/views/interface.ts";
+import { companyInterface, interfaceRows, pagesOn } from "../src/app/interfaces.ts";
+import { renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	InterfaceOfferAnswer,
@@ -179,7 +179,13 @@ async function members(fake: FolderFake, role: HostedProfileRole = "owner", offe
 		reread: followed.reread,
 		...(reader ? { offers: reader } : {}),
 	};
-	const draw = () => renderInterface(main, controller, "members", writes);
+	// The Members definition's own blocks (the board of areas), which the Members address no longer draws: it draws
+	// who each agent works for (views/members.ts).
+	const draw = (): void => {
+		const entry = companyInterface(controller, "members");
+		if (entry) renderInterfaceFile(main, controller, "members", entry.file, draw, writes);
+		else renderInterface(main, controller, "members", writes);
+	};
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
 	return { controller, main, ...followed };

@@ -7,9 +7,9 @@ import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
-import { companyInterfaces, folderSources, pagesOn } from "../src/app/interfaces.ts";
+import { companyInterface, companyInterfaces, folderSources, pagesOn } from "../src/app/interfaces.ts";
 import type { Route } from "../src/app/router.ts";
-import { renderInterface } from "../src/app/views/interface.ts";
+import { renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
@@ -157,7 +157,13 @@ async function shown(fake: FolderFake) {
 	const followed = await follow(fake, controller);
 	const main = h("main");
 	document.body.append(main);
-	const draw = () => renderInterface(main, controller, "members");
+	// The Members definition's own blocks (the board of areas), which the Members address no longer draws: it draws
+	// who each agent works for (views/members.ts).
+	const draw = (): void => {
+		const entry = companyInterface(controller, "members");
+		if (entry) renderInterfaceFile(main, controller, "members", entry.file, draw);
+		else renderInterface(main, controller, "members");
+	};
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
 	return { controller, main, ...followed };

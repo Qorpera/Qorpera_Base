@@ -166,8 +166,6 @@ describe("which interfaces a company lists", () => {
 });
 
 describe("the shipped pages (C6a)", () => {
-	const people = (main: HTMLElement) =>
-		[...main.querySelectorAll(".interface-table tbody tr")].map((row) => row.querySelector("td")?.textContent);
 	const missing = (main: HTMLElement) => {
 		expect(main.textContent).toContain("This page isn't available here yet.");
 		expect(main.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
@@ -179,12 +177,10 @@ describe("the shipped pages (C6a)", () => {
 		const main = h("main");
 		document.body.append(main);
 		renderInterface(main, controller, "members");
+		// The Members page draws itself (views/members.ts, test/members.test.ts): no tabs, no blocks.
 		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-		// Without the folder, only the People view's members can be read: the board and the rules file wait for it, so
-		// there is one view and no tabs.
 		expect(main.querySelector("[role=tablist]")).toBeNull();
-		expect(main.querySelectorAll(".interface-block")).toHaveLength(1);
-		expect(people(main)).toEqual(["Ann", "Ben", "Cat"]);
+		expect(main.querySelector(".members-page")).not.toBeNull();
 		const page = main.firstElementChild;
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).toBe(page);
@@ -195,7 +191,6 @@ describe("the shipped pages (C6a)", () => {
 		controller.store.set({ team: { ...current, members } });
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).not.toBe(page);
-		expect(people(main)).toEqual(["Ann", "Bea", "Cat"]);
 		// Switched off, the page is gone at its own address too.
 		controller.store.set({ interfacePages: pages(false, false) });
 		renderInterface(main, controller, "members");

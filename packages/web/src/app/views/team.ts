@@ -6,8 +6,13 @@ import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
+import { worksForCount } from "./members.ts";
 
 const ROLES: HostedProfileRole[] = ["viewer", "contributor", "admin", "owner"];
+
+/** How many agents work for the member in each company: the Members page's last read, else read when the member reaches
+ * for Leave company (a cloud without the read counts none). */
+const agentsCarried = new WeakMap<CompanyController, number>();
 
 /** `exitError` is a failed Delete/Leave company, shown under that button rather than at the top. */
 export type TeamFeedback = { message?: string; error?: string; exitError?: string };
@@ -386,15 +391,8 @@ export function renderTeam(
 			() =>
 				void (async () => {
 					// Agents that work for a member who leaves go to the open pile (migration 20260930700000): say how
-					// many, so they can be handed over on the Members page first. A cloud without it says nothing.
-					const carried = deleting
-						? 0
-						: await company
-								.worksFor()
-								.read()
-								.then((read) => read.agents.filter((agent) => agent.userId === company.userId).length)
-								.catch(() => 0);
-					if (!current()) return;
+					// many, so they can be handed over on the Members page first.
+					const carried = deleting ? 0 : (worksForCount(company) ?? agentsCarried.get(company) ?? 0);
 					const confirmed = await confirmDialog(
 						deleting
 							? t("Delete {company}? Type the company name to confirm.", {
@@ -429,6 +427,20 @@ export function renderTeam(
 				...(exitHint ? { title: exitHint } : {}),
 			},
 		);
+		// Read when the member reaches for the button, so the dialog can say it; a draw alone calls nothing.
+		const reach = () => {
+			if (deleting || agentsCarried.has(company)) return;
+			agentsCarried.set(company, worksForCount(company) ?? 0);
+			void company
+				.worksFor()
+				.read()
+				.then((read) => {
+					agentsCarried.set(company, read.agents.filter((agent) => agent.userId === company.userId).length);
+				})
+				.catch(() => {});
+		};
+		exit.addEventListener("pointerenter", reach);
+		exit.addEventListener("focus", reach);
 		exit.classList.add("company-exit");
 	}
 	// The button is rebuilt on every company update; keep keyboard focus on it.

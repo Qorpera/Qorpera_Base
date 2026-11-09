@@ -101,9 +101,18 @@ export function renderMembers(container: HTMLElement, company: CompanyController
 	draw(container, page);
 }
 
+/** Each company's last read, for the Leave company dialog (views/team.ts). */
+const lastRead = new WeakMap<CompanyController, WorksFor>();
+
+/** How many agents work for the member, as the Members page last read it; undefined when it never read. */
+export function worksForCount(company: CompanyController): number | undefined {
+	return lastRead.get(company)?.agents.filter((agent) => agent.userId === company.userId).length;
+}
+
 async function read(container: HTMLElement, page: Page): Promise<void> {
 	try {
 		page.data = await page.company.worksFor().read();
+		lastRead.set(page.company, page.data);
 		page.error = undefined;
 	} catch (error) {
 		page.error = error instanceof Error ? error.message : String(error);
@@ -126,9 +135,30 @@ async function act(container: HTMLElement, page: Page, call: () => Promise<strin
 	await read(container, page);
 }
 
+/** What the page was last drawn from, so a redraw of the company that changes none of it leaves the page (its scroll
+ * and focus) alone. */
+const drawn = new WeakMap<HTMLElement, { key: string; element: Element }>();
+
 function draw(container: HTMLElement, page: Page): void {
 	const { company } = page;
 	const state = company.store.get();
+	const live = state.realtime === "connected";
+	const key = JSON.stringify([
+		presentationLocale(),
+		state.realtime,
+		state.team?.members,
+		state.staff.map((agent) => [agent.id, agent.displayName, agent.role, agent.employmentStatus, agent.appearance]),
+		interfaceRows(company, "table:areas")?.map((item) => [item.row.area, item.row.agents]),
+		page.data,
+		page.error,
+		page.picked,
+		page.open,
+		page.busy,
+		page.note,
+		page.dismissed,
+	]);
+	const last = drawn.get(container);
+	if (last?.key === key && container.firstElementChild === last.element) return;
 	const head = h(
 		"header",
 		{ class: "interface-head" },
@@ -139,17 +169,23 @@ function draw(container: HTMLElement, page: Page): void {
 			h("h1", null, t("Members")),
 			h("small", null, t("Who each agent works for.")),
 		),
+		h(
+			"span",
+			{ class: `interface-live${live ? "" : " is-degraded"}`, role: "status" },
+			h("span", { class: "interface-live-dot", "aria-hidden": "true" }),
+			live ? t("Live") : state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
+		),
 	);
-	const shell = (...body: (HTMLElement | null)[]) =>
-		replace(
-			container,
-			h(
-				"section",
-				{ class: "interface members", "data-interface": "members" },
-				head,
-				h("div", { class: "members-page" }, ...body),
-			),
+	const shell = (...body: (HTMLElement | null)[]) => {
+		const element = h(
+			"section",
+			{ class: "interface members", "data-interface": "members" },
+			head,
+			h("div", { class: "members-page" }, ...body),
 		);
+		replace(container, element);
+		drawn.set(container, { key, element });
+	};
 	const data = page.data;
 	if (!data) {
 		shell(h("p", { class: "members-foot" }, page.error ?? t("Reading who each agent works for…")));
