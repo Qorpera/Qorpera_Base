@@ -39,6 +39,20 @@ LXD applies drop and reject rules before allow rules, and its baseline DHCP and 
 
 Together these covered the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. The agent exit covers the same destinations (its `internal4` set) and more.
 
+### The desktop
+
+Every machine has a desktop for work that needs a screen, such as testing a product in a browser or driving an app's interface (Jonas, 9 Nov 2026). Most work needs none: files, commands and a headless browser come first. Nothing of it runs until an agent asks.
+
+- `desktop start` (an agent's `machine_run`, as root) starts `qorpera-machine-desktop.service`: TigerVNC's X server on display `:1` at 1600x1000 and a plain XFCE session, as the account `desktop` (`desktop-session`). The unit has no `[Install]`, runs in `qorpera-machine.slice` like the commands, and stops with `desktop stop`, the watchdog and the machine.
+- Chromium is the coding image's pinned Chrome for Testing build at `/usr/lib/qorpera-chromium` (`chromium`). It runs as `desktop` with its own sandbox: Ubuntu allows the user namespaces it needs only to a program with an AppArmor profile that says so, `/etc/apparmor.d/qorpera-chromium` (unconfined otherwise, as Ubuntu's own browser profiles).
+- `desktop open URL` and `desktop run PROGRAM` start a program on the desktop in a unit of its own (`systemd-run`), so it outlives the command that started it. `Requisite` and `BindsTo` the desktop refuse it on a stopped desktop and stop it with the desktop, and start, stop and launch take turns under one lock, so no program outlives a stop. Its arguments reach it as given (`--expand-environment=no`).
+- Programs on the desktop run as `desktop` and save in `/home/desktop` (Chromium's downloads in `~/Downloads`): the company folder at `/company` is root's. An agent copies what matters into `/company` with a root command.
+- `desktop click/double/move/drag/type/key/scroll` drive it with xdotool. `desktop shot FILE.png` saves the screen with scrot. An agent saves it under `/company` and reads it with `company_read`, which shows it the picture: that is how an agent sees the screen until a screen tool of its own comes.
+- VNC listens on the machine's loopback only (port 5901, no password), for a live view through the machine's host later. Nothing outside the machine reaches the machine.
+- A desktop counts like any other program for the idle rule: an idle one uses next to nothing, and a busy page keeps the machine awake. `desktop stop` ends it.
+- The image build starts it once, opens Chromium on it, types, clicks, takes a 1600x1000 screenshot, runs a program with a literal `$` in its arguments and stops it, and refuses the image if any of that fails, a program of the desktop outlives it, or a program starts on the stopped desktop.
+- `scripts/prove-machine-desktop-vm.sh` builds the image in nested LXD and drives a booted machine's desktop. It changes nothing on its host, so it runs only in a throwaway VM whose nested bridges reach the internet (not the shared test machines).
+
 ### Proof on node 2 (2026-09-29)
 
 Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It ran the real `setup-machine-network.sh`, `build-machine-image.sh` and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS. The image was built by the build script as of f6b25e9d5, before its stdout fix: the record was taken from the end of its output. The fixed `> image-build.json` flow was checked in a container, not on LXD.

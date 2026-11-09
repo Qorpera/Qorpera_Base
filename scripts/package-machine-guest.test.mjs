@@ -181,3 +181,72 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 		await rm(temporary, { recursive: true, force: true });
 	}
 });
+
+test("the image has a desktop that only `desktop start` starts, with Chromium sandboxed, and checks it end to end", () => {
+	// deploy/machine/README.md, "The desktop" (9 Nov 2026).
+	const packager = read("scripts/package-machine-guest.mjs");
+	const files = [...packager.matchAll(/\{ file: "([^"]+)", installedPath: "([^"]+)", mode: "(\d{4})" \}/g)].map(
+		([, file, installedPath, mode]) => ({ file, installedPath, mode }),
+	);
+	assert.deepEqual(files, [
+		{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
+		{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
+		{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+	]);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	for (const { file, installedPath, mode } of files) {
+		assert.ok(required.includes(file), file);
+		assert.ok(
+			imageScript.includes(`lx file push "$PACKAGE/${file}" "$BUILDER${installedPath}" --uid 0 --gid 0 --mode ${mode}\n`),
+			file,
+		);
+	}
+	const unit = read("deploy/machine/qorpera-machine-desktop.service");
+	assert.doesNotMatch(unit, /^\[Install\]/m);
+	assert.match(unit, /\nSlice=qorpera-machine\.slice\n/);
+	assert.match(unit, /\nUser=desktop\n/);
+	assert.match(unit, /\nExecStart=\/opt\/qorpera-machine\/desktop-session\n/);
+	const session = read("deploy/machine/desktop-session");
+	// VNC only on the machine's loopback, no TCP X.
+	assert.match(session, /Xvnc :1 [^\n]*-localhost yes [^\n]*-nolisten tcp/);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	for (const tool of ["tigervnc-standalone-server", "xfce4-session", "xdotool", "wmctrl", "scrot", "x11-utils", "file"])
+		assert.ok(apt.includes(tool), tool);
+	// The coding image's Chromium pin, the same bytes.
+	const coding = JSON.parse(read("deploy/coding-machine/coding-image.json")).chromium;
+	assert.match(imageScript, new RegExp(`\\nCHROMIUM_VERSION=${coding.version.replaceAll(".", "\\.")}\\n`));
+	assert.ok(imageScript.includes(`\nCHROMIUM_URL=${coding.url}\n`));
+	assert.ok(imageScript.includes(`\nCHROMIUM_SHA256=${coding.sha256}\n`));
+	assert.ok(imageScript.includes(`[[ $(chromium --version) == *" ${coding.version}"* ]]`));
+	assert.match(read("deploy/machine/qorpera-chromium.apparmor"), /profile qorpera-chromium \/usr\/lib\/qorpera-chromium\/chrome flags=\(unconfined\) \{\n\s+userns,/);
+	// The build's own check: started, Chromium on it, a 1600x1000 shot, stopped with nothing left.
+	for (const line of [
+		"\tdesktop start\n",
+		'\tdesktop shot /tmp/desktop.png | grep -q " 1600 x 1000$"',
+		"\tdesktop stop\n",
+		"\t[[ -z $(pgrep -u desktop || true) ]]",
+		"\tsystemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+	// A program on the desktop: refused unless the desktop is active, stopped with it, its arguments not expanded by
+	// systemd, and start/stop/launch take turns under one lock (review r1 F3, F4).
+	const command = read("deploy/machine/desktop");
+	assert.match(command, /systemd-run --quiet --collect --expand-environment=no /);
+	assert.match(command, /-p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT"/);
+	assert.doesNotMatch(command, /PartOf=/);
+	assert.match(command, /start \| stop \| open \| run\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
+	for (const line of [
+		'\t[[ $(cat /tmp/desktop-run) == "literal \\$HOME" ]]',
+		'\tif desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The proof changes nothing on its host: no module loads, no firewall rules (review r1 F1).
+	const proof = read("scripts/prove-machine-desktop-vm.sh");
+	assert.doesNotMatch(proof, /modprobe|iptables -[ID]/);
+	const cli = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "help"], { encoding: "utf8" });
+	assert.equal(cli.status, 0);
+	for (const command of ["start", "stop", "status", "shot", "open", "run", "click", "double", "move", "drag", "type", "key", "scroll", "windows"])
+		assert.match(cli.stdout, new RegExp(`^desktop ${command}\\b`, "m"), command);
+	const unknown = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "fly"], { encoding: "utf8" });
+	assert.equal(unknown.status, 2);
+});
