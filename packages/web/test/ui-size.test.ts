@@ -74,7 +74,7 @@ describe("interface size", () => {
 	it("offers both sizes in Appearance, persists changes and synchronizes mounted controls", () => {
 		const first = appearance();
 		const second = appearance();
-		expect(first.group.closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
+		expect(first.group.closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
 		expect(
 			first.group.parentElement?.previousElementSibling?.querySelector("fieldset")?.getAttribute("aria-label"),
 		).toBe("Composer color");

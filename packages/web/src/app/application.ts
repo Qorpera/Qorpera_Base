@@ -179,10 +179,6 @@ export function mountApplication(
 			() => closeSettings(),
 			companyRemovedHandler(),
 			tab,
-			// A page switched on or off in the open company shows or leaves its Interfaces tab at once.
-			(environmentId) => {
-				if (company?.profile.environmentId === environmentId) void interfacePages?.refresh();
-			},
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -1091,6 +1087,7 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
 				openGroupCard,
+				setInterfacePage: (page, on) => interfacePages?.set(page, on) ?? Promise.resolve(),
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the

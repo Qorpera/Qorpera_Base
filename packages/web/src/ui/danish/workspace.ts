@@ -547,6 +547,7 @@ export const WORKSPACE: Record<string, string> = {
 	Hidden: "Skjulte",
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
+	"Hidden for everyone": "Skjult for alle",
 	Delete: "Slet",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
 		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",

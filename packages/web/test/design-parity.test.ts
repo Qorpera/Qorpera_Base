@@ -347,19 +347,20 @@ describe("shell presentation lifecycle", () => {
 		);
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
-		view.el.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		view.updateProfiles([profileA]);
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("Loading storage");
-		expect(view.el.querySelector("progress")).toBeNull();
+		view.el.querySelector<HTMLButtonElement>('.settings-mode[data-mode="storage"]')!.click();
+		const usage = () => view.el.querySelector(".settings-storage-usage");
+		expect(usage()?.textContent).toContain("Loading storage");
+		expect(usage()?.querySelector("progress")).toBeNull();
 		// The company is removed and another one takes its place.
 		view.updateProfiles([]);
 		view.updateProfiles([profileB]);
 		await settle();
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(usage()?.textContent).toContain("40 B used");
 		pending.resolve({ ...file, storageUsedBytes: 99 });
 		await settle();
-		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(usage()?.textContent).not.toContain("99 B");
+		expect(usage()?.textContent).toContain("40 B used");
 	});
 	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
 		const mount = stubFigureMotion();

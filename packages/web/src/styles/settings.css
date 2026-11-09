@@ -137,8 +137,6 @@
    The theme pictures keep their own colours in both themes (they show a
    theme, not the page); the composer pictures follow the page. */
 /* Center the rows below the heading; short panels grow and scroll from the top. */
-.settings-appearance { display: flex; flex-direction: column; min-height: 100%; }
-.settings-appearance-choices { flex: none; margin-block: auto; }
 .settings-preference { padding: 8px 12px 10px; }
 /* No titles: extra room keeps the theme and colour rows reading as two groups. */
 .settings-preference + .settings-preference { padding-top: 22px; }
@@ -201,12 +199,6 @@
 @keyframes good-will-in { from { opacity: 0; transform: translateY(8px); } }
 @media (prefers-reduced-motion: reduce) { .good-will-months > li, .good-will-companies > li { animation: none; } }
 .settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; text-align: center; }
-.settings-file-card { min-height: 92px; grid-template-columns: 38px minmax(0, 1fr) 18px; gap: 16px; }
-.settings-file-card > .icon:first-child { width: 36px; height: 44px; color: #8c8c87; }
-.settings-file-card progress { width: 100%; height: 3px; margin-top: 8px; border: 0; border-radius: 3px; overflow: hidden; appearance: none; }
-.settings-file-card progress::-webkit-progress-bar { background: #dcdcd8; }
-.settings-file-card progress::-webkit-progress-value { background: #93938e; }
-.settings-file-card progress::-moz-progress-bar { background: #93938e; }
 .settings-link { color: inherit; text-decoration: none; margin-top: 12px; }
 .settings-link:hover { background: #e8e8e5; }
 .company-people { display: grid; gap: 6px; }

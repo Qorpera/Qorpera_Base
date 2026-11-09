@@ -432,6 +432,8 @@ label > input, label > select { font-weight: 400; }
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 9px; color: var(--text);
 }
 .rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
+/* A page hidden from the rail, in Hidden: a button that opens its menu. */
+.rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
