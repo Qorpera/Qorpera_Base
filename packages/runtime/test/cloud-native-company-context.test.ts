@@ -1707,7 +1707,7 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 		"clickable screens for an app or a website, a 3D view or a rendered turntable for an object or a space",
 		"A picture of a screen is not a screen.",
 		"Make following the work fun, not a chore",
-		"raise the choice with ask_member as a question whose options preview the app or its pictures, and show the same choice in the app",
+		"raise the choice as a question card whose options preview the app or its pictures, and show the same choice in the app",
 		'From the company\'s first day it keeps one concepts app, named after the product followed by "concepts", with concept = true and a cover',
 		"Show the moodboard in the concepts app, each picture with its note.",
 		"ask the founders to pick one with a question whose options preview them",
@@ -1779,7 +1779,7 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app; since 8 November it opens as a page of its own.
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open as a page of its own. Link it in your message as [Title](app:<name>) instead of pasting long text",
+		"An app is a small web page in apps/<name>/ that members open as a page of its own. A file that sits only in the folder is not shown to anyone. Keep one app per topic and grow it as the work moves on, instead of a new app for every step. Link it in your message as [Title](app:<name>) instead of pasting long text",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",
