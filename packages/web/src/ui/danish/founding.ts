@@ -93,4 +93,9 @@ export const FOUNDING: Record<string, string> = {
 	"Cancel {name}? It will not be started.": "Vil du annullere {name}? Den bliver ikke startet.",
 	"To cancel, remove the other seats first.": "Fjern de andre pladser, før du annullerer.",
 	"You cancelled the company.": "Du annullerede virksomheden.",
+	"Starting {name}": "Starter {name}",
+	"Starting your company": "Starter din virksomhed",
+	"Connect your ChatGPT account, and {name} starts.": "Forbind din ChatGPT-konto, så starter {name}.",
+	"Your own account, connected to {name}. It pays for the work you start there.":
+		"Din egen konto, forbundet til {name}. Den betaler for det arbejde, du sætter i gang der.",
 };

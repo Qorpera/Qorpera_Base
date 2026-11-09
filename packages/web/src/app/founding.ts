@@ -86,6 +86,9 @@ export interface FoundingState {
 	live?: boolean;
 	/** The others at the table now, in seat order. */
 	present?: FounderPresence[];
+	/** Opened alone from the new-company box's arrow: the company starts by itself, and the page shows that start (or
+	 * the ChatGPT step before it) instead of the table (Jonas, 9 Nov 2026). */
+	autoStart?: boolean;
 	/** What the others are writing: one per person and field, newest first. */
 	liveText?: FounderLive[];
 }
@@ -99,19 +102,21 @@ export interface FoundingOptions {
 	onCompanyReady?: () => void;
 }
 
-/** What the new-company box asked for as it opened a table: the friends list open at once, and the idea, if
- * saving it with the opening failed. Kept in the tab, through a reload, until the table's page has used it:
- * the friends list once, the idea until it is saved. */
+/** What the new-company box asked for as it opened a table: the friends list open at once, the idea, if
+ * saving it with the opening failed, and, from the arrow alone, to start the company at once. Kept in the tab,
+ * through a reload, until the table's page has used it: the friends list once, the idea until it is saved, the
+ * start until it went through or stopped. */
 export interface FoundingIntent {
 	friends?: boolean;
 	vision?: string;
+	start?: boolean;
 }
 
 const intents = new Map<string, FoundingIntent>();
 const intentKey = (profileId: string) => `qorpera:founding-intent:${profileId}`;
 
 export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
-	if (!intent.friends && !intent.vision) {
+	if (!intent.friends && !intent.vision && !intent.start) {
 		intents.delete(profileId);
 		try {
 			sessionStorage.removeItem(intentKey(profileId));
@@ -138,6 +143,7 @@ function takeFoundingIntent(profileId: string): FoundingIntent | undefined {
 		return {
 			...("friends" in saved && saved.friends === true ? { friends: true } : {}),
 			...(vision ? { vision } : {}),
+			...("start" in saved && saved.start === true ? { start: true } : {}),
 		};
 	} catch {
 		return undefined;
@@ -186,6 +192,9 @@ export class FoundingController {
 	#pendingVision: string | undefined;
 	#visionTries = 0;
 	#savingVision = false;
+	/** The company starts by itself (FoundingState.autoStart), and its start is under way. */
+	#autoStart = false;
+	#autoStarting = false;
 	/** The page's check for words in its fields that the table on the server does not have (FoundingView). */
 	#unsaved: (() => boolean) | undefined;
 	// Live presence: this tab on the table's topic, the other tabs there, and what each of them writes.
@@ -217,8 +226,10 @@ export class FoundingController {
 		this.#startKey = `qorpera-web-founding-start/v1/${api.cloud.config.projectUrl}/${userId}/${profileId}`;
 		const intent = takeFoundingIntent(profileId);
 		this.#pendingVision = intent?.vision?.trim() || undefined;
-		// The friends list opens once; the idea stays kept until it is saved.
-		setFoundingIntent(profileId, this.#pendingVision ? { vision: this.#pendingVision } : {});
+		this.#autoStart = intent?.start === true;
+		// The friends list opens once; the idea stays kept until it is saved, the start until it is done.
+		this.#keepIntent();
+		if (this.#autoStart) this.store.set({ autoStart: true });
 		if (intent?.friends) this.openFriends(true);
 		const resume = () => {
 			this.#presence?.setState(!document.hidden, this.#myField);
@@ -304,6 +315,7 @@ export class FoundingController {
 		else this.#leavePresence();
 		this.#showPresence();
 		this.#savePendingVision(table);
+		this.#startByItself(table);
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
 		// 2026). A first run that waits for a login or failed keeps the page, which says why; so does one waiting for a
 		// used-up login to reset (20260930579000), whose page says when it begins and opens the company with a press.
@@ -354,7 +366,50 @@ export class FoundingController {
 
 	#forgetPendingVision(): void {
 		this.#pendingVision = undefined;
-		setFoundingIntent(this.profileId, {});
+		this.#keepIntent();
+	}
+
+	#keepIntent(): void {
+		setFoundingIntent(this.profileId, {
+			...(this.#pendingVision ? { vision: this.#pendingVision } : {}),
+			...(this.#autoStart ? { start: true } : {}),
+		});
+	}
+
+	/** A company opened alone from the new-company box's arrow starts once its idea is in and your ChatGPT is
+	 * connected (the page asks for it meanwhile); there is no Ready for one founder. Anyone else at the table, an
+	 * idea that could not be saved, or a start that did not go through ends it, and the table shows with what went
+	 * wrong. */
+	#startByItself(table: CompanyFounding): void {
+		if (!this.#autoStart || this.#autoStarting) return;
+		const mine = table.seats.find((seat) => seat.userId === this.userId);
+		if (table.phase !== "open" || table.me.state !== "joined" || table.seats.length > 1 || !mine) {
+			this.#endAutoStart();
+			return;
+		}
+		if (this.#pendingVision !== undefined) {
+			if (!this.#savingVision && this.#visionTries >= VISION_TRIES) this.#endAutoStart();
+			return;
+		}
+		if (!mine.modelLoginReady) {
+			if (!this.store.get().connectOpen) this.openConnect(true);
+			return;
+		}
+		this.#autoStarting = true;
+		// Started, or not: either way it is over (a start that failed leaves the table, with what went wrong). An
+		// invitation sent from another tab while Ready was out does not move the revision, and Start would withdraw
+		// it: the table Ready answered with must still be yours alone.
+		void this.startAlone(table.revision, (now) => now.seats.length === 1).then(() => {
+			this.#autoStarting = false;
+			if (!this.disposed) this.#endAutoStart();
+		});
+	}
+
+	#endAutoStart(): void {
+		if (!this.#autoStart) return;
+		this.#autoStart = false;
+		this.#keepIntent();
+		this.store.set({ autoStart: false });
 	}
 
 	/** The idea the opening could not save yet, shown in the box as your unsaved text. */
@@ -463,14 +518,16 @@ export class FoundingController {
 		});
 	}
 
-	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
-	async startAlone(seenRevision: number): Promise<void> {
+	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. `onlyIf` checks the
+	 * table Ready answered with before Start goes out. */
+	async startAlone(seenRevision: number, onlyIf?: (table: CompanyFounding) => boolean): Promise<void> {
 		// The field you left as you pressed saves first; a save clears Ready, so Ready is read after it. If the
 		// save failed, nothing happens (Ready and Start check that too).
 		if (!(await this.#editsSaved())) return;
 		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
 			await this.setReady(seenRevision, true);
-		if (this.store.get().table?.me.canStart) await this.start();
+		const table = this.store.get().table;
+		if (table?.me.canStart && (!onlyIf || onlyIf(table))) await this.start();
 	}
 
 	async invite(friendUserId: string): Promise<void> {
@@ -569,6 +626,8 @@ export class FoundingController {
 
 	openConnect(open: boolean): void {
 		if (!open) this.#closeConnections();
+		// Closing the ChatGPT step of a company starting by itself shows its table instead.
+		if (!open) this.#endAutoStart();
 		this.store.set({ connectOpen: open });
 		this.#schedule();
 	}

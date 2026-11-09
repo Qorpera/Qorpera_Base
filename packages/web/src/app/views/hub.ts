@@ -318,8 +318,10 @@ export class HubController {
 			this.store.set({ creating: undefined, creationRetry: undefined });
 			void this.refresh();
 			if (creation.vision) this.onTableOpened?.(creation.vision);
+			// The arrow alone starts the company at once; its page shows the start, not a table (Jonas, 9 Nov 2026).
 			setFoundingIntent(table.profileId, {
 				...(creation.intent === "friends" ? { friends: true } : {}),
+				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
