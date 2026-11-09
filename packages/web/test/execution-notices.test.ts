@@ -276,6 +276,21 @@ describe("company notices", () => {
 		expect(unknown.view.el.querySelector("p")?.textContent).toBe(
 			"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
 		);
+		// Its run could not wait (or was stopped): that work does not go on by itself (20260930703000).
+		const stopped = (accountEmail: string | null) => {
+			const notice = usage(accountEmail, soon);
+			return { ...notice, subject: { ...notice.subject, runStopped: true as const } };
+		};
+		const named2 = setup([stopped("a@example.com")]);
+		await settle();
+		expect(named2.view.el.querySelector("p")?.textContent).toBe(
+			"Your login a@example.com reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
+		);
+		const unnamed = setup([stopped(null)]);
+		await settle();
+		expect(unnamed.view.el.querySelector("p")?.textContent).toBe(
+			"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
+		);
 	});
 
 	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {

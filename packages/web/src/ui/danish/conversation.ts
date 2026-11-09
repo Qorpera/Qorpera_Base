@@ -187,6 +187,14 @@ export const CONVERSATION: Record<string, string> = {
 	"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets. Only {name} can continue it now with another of their logins.":
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen er nulstillet. Kun {name} kan fortsætte det nu med et andet af sine logins.",
 	"Continue with {account}": "Fortsæt med {account}",
+	"{name} is waiting to go on": "{name} venter på at fortsætte",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}), or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}), eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}). Only {name} can continue it now with another of their logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}). Kun {name} kan fortsætte det nu med et andet af sine logins.",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}).":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}).",
+	"The work could not be moved. Try again.": "Arbejdet kunne ikke flyttes. Prøv igen.",
 	"Continuing…": "Fortsætter…",
 	"Send your message to continue with {account}.": "Send din besked for at fortsætte med {account}.",
 	"Your last run stopped because a login reached its usage limit. Please continue that work.":
@@ -322,6 +330,10 @@ export const CONVERSATION: Record<string, string> = {
 		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
 	"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
 		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
+	"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
+		"Dit login {account} har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
+	"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
+		"Dit login har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
 	"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
 		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
 	"{count} min": "{count} min.",

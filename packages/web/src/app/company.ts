@@ -109,6 +109,10 @@ export interface FailedRun {
 const isFailedRun = (row: HostedStaffExecutionActivity) =>
 	row.activity === "needs_attention" && (row.jobStatus === "failed" || row.jobStatus === "cancelled");
 
+/** A queued run waiting at its login's usage limit until a time still ahead (20260930703000). */
+const pausedNow = (row: HostedStaffExecutionActivity) =>
+	row.jobStatus === "queued" && row.paused !== undefined && Date.parse(row.paused.until) > Date.now();
+
 /** Keeps the details of runs the activity still reports as failed. */
 function stillFailed(
 	recoveries: Record<string, HostedRunRecovery>,
@@ -1490,6 +1494,9 @@ export class CompanyController {
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return staffAgentId && this.store.get().approvals?.[staffAgentId] ? "decision" : "idle";
+		// A run waiting at its login's usage limit is no work in progress: the agent rests until the reset
+		// (20260930703000), and its thread says why.
+		if (pausedNow(row)) return this.store.get().approvals?.[row.staffAgentId] ? "decision" : "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
@@ -1506,6 +1513,24 @@ export class CompanyController {
 		return row.noProgressSince && row.noProgressMinutes
 			? { since: row.noProgressSince, minutes: row.noProgressMinutes }
 			: undefined;
+	}
+
+	/** The agent's run waiting at its login's usage limit, while the pause holds (20260930703000). */
+	pausedRunFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+		const row = this.activityFor(staffAgentId);
+		return row && pausedNow(row) ? row : undefined;
+	}
+
+	/** The member whose own login pays for a waiting run moves it to another of their logins, by their own pick: it goes
+	 * on there at once (20260930703000). Activity is read again either way, so the thread shows what holds now. */
+	async movePausedRun(runId: string, connectionId: string): Promise<void> {
+		if (this.#stopped) return;
+		try {
+			await this.#api.movePausedRun(runId, connectionId);
+		} finally {
+			if (!this.#stopped) await this.refreshActivity();
+		}
+		if (!this.#stopped) this.#watchWork(20_000);
 	}
 
 	/** The agent's failure to show: the one that is its state, or else the one from before its newer work. */

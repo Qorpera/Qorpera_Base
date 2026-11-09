@@ -193,6 +193,27 @@ export function runFailureReason(
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
 }
 
+/** Why a run waits at its login's usage limit, until `until` (20260930703000): it goes on by itself, on the same login,
+ * then. The member whose own login pays may continue it now with another login of theirs (the card's "Continue with …",
+ * `payer.continuable`); anyone else reads who can. */
+export function runWaitingReason(until: string, payer: RunPayer = {}): string {
+	const time = fmtTime(until);
+	if (payer.own === true && payer.continuable === true)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}), or you can continue it now with another of your logins.",
+			{ time },
+		);
+	if (payer.own !== true && payer.payerName)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}). Only {name} can continue it now with another of their logins.",
+			{ time, name: payer.payerName },
+		);
+	return t(
+		"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}).",
+		{ time },
+	);
+}
+
 // The coding executor's own words for a turn that ended with no coding_finish or
 // coding_ask, or that was stopped (runner-orchestrator coding-executor.ts). Any
 // other failure it reports carries the run's last error after its own prefix.
@@ -323,7 +344,8 @@ export interface RunFailureCard {
 	retrying?: boolean;
 	/** What went wrong with the last Try again. */
 	retryError?: string;
-	dismiss: () => void;
+	/** Absent for a run that waits rather than failed: there is nothing to dismiss. */
+	dismiss?: () => void;
 	/** A link that replaces Try again, e.g. "Review" for a run that left a proposal. */
 	action?: HTMLElement;
 	/** A run that stopped at its usage limit, for the member whose own login paid: their other logins that can pay now,
@@ -344,7 +366,8 @@ export interface RunFailureContinue {
 
 /** A failed run, shown as one quiet line right above the composer, in the same
  * band and shape as a company notice, with Dismiss and, for an interrupted run,
- * Try again. Dismissing is durable: the run stops counting against the agent. */
+ * Try again. Dismissing is durable: the run stops counting against the agent. A run
+ * waiting at its login's usage limit takes the same line with no Dismiss. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
 	const guarded = (action: () => void) => (event: MouseEvent) => {
@@ -364,10 +387,13 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		primary.dataset.action = "retry-run";
 		if (busy) primary.setAttribute("aria-disabled", "true");
 	}
-	const dismiss = button(t("Dismiss"), guarded(card.dismiss), { small: true });
-	dismiss.classList.add("run-failure-secondary");
-	dismiss.dataset.action = "dismiss-run";
-	if (busy) dismiss.setAttribute("aria-disabled", "true");
+	const onDismiss = card.dismiss;
+	const dismiss = onDismiss ? button(t("Dismiss"), guarded(onDismiss), { small: true }) : null;
+	if (dismiss) {
+		dismiss.classList.add("run-failure-secondary");
+		dismiss.dataset.action = "dismiss-run";
+		if (busy) dismiss.setAttribute("aria-disabled", "true");
+	}
 	const offer = card.continueWith;
 	const held = offer !== undefined && (offer.continuing !== undefined || offer.waiting === true);
 	const logins = (offer?.logins ?? []).map((login) => {
@@ -393,10 +419,10 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 			role: "group",
 			"aria-label": card.title,
 			onkeydown: (event: KeyboardEvent) => {
-				if (!matchesKey(event, "dismiss")) return;
+				if (!onDismiss || !matchesKey(event, "dismiss")) return;
 				event.preventDefault();
 				event.stopPropagation();
-				if (!busy) card.dismiss();
+				if (!busy) onDismiss();
 			},
 		},
 		h(

@@ -88,6 +88,27 @@ describe("company notices member read", () => {
 		// An email that can't be shown is left out.
 		expect(result[1]!.subject).toMatchObject({ accountEmail: null });
 	});
+	it("reads whether a usage-limit notice's run stopped instead of waiting (20260930703000)", async () => {
+		const f = setup();
+		const subject = {
+			schema: "qorpera.member-notification.provider-usage-limit/v1",
+			provider: "openai",
+			resetsAt: null,
+			runId: id(11),
+			connectionId: id(12),
+		};
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				{ ...full, kind: "provider_usage_limit", subject, notification_id: id(100), run_stopped: true },
+				{ ...full, kind: "provider_usage_limit", subject, notification_id: id(101), run_stopped: false },
+				{ ...full, kind: "provider_usage_limit", subject, notification_id: id(102) },
+			]),
+		);
+		const [stopped, going, older] = await f.client.listNotifications();
+		expect(stopped!.subject).toEqual({ ...subject, runStopped: true });
+		expect(going!.subject).toEqual(subject);
+		expect(older!.subject).toEqual(subject);
+	});
 	it("projects every published notification subject without exposing extra fields", async () => {
 		const f = setup();
 		const subjects = [

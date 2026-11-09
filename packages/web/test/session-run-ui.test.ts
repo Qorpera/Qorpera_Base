@@ -246,4 +246,51 @@ describe("cloud run UI", () => {
 		await settle();
 		expect(view.el.querySelector(".thread-activity")).toBeNull();
 	});
+
+	it("lets the member stop a run that waits at its login's usage limit, though the agent shows no work", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const read = vi.fn(async () => ({
+			...state(),
+			run: { runId: id(90), status: "queued" as const, canCancel: true },
+		}));
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const view = new ConversationView(company, session.sessionId, {
+			runControl: { read, cancel },
+			sendMessage: vi.fn(async () => true),
+		});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		company.store.set({
+			activity: [
+				{
+					runId: id(90),
+					staffAgentId: staff.id,
+					sourceKind: "room_delivery",
+					jobStatus: "queued",
+					activity: "waiting",
+					paused: {
+						until: "2099-01-01T00:00:00.000Z",
+						sponsorBindingId: id(91),
+						paidByChatgptPlan: false,
+						paidWhileAway: true,
+						movable: true,
+					},
+					updatedAt: "2026-09-17T06:00:01.000Z",
+				},
+			],
+		});
+		view.update();
+		await settle();
+		// It holds the conversation until it goes on (20260930703000), so the empty send button stops it.
+		expect(view.el.querySelector(".thread-activity")).toBeNull();
+		button("Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(90), expect.any(AbortSignal));
+	});
 });

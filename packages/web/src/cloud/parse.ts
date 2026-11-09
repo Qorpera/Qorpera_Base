@@ -17,6 +17,7 @@ import type {
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
 	JsonValue,
+	PausedRun,
 	PendingSessionInput,
 	PendingSessionInputPage,
 	SessionInputReceipt,
@@ -445,11 +446,47 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 							noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
 							noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),
 						}),
+				...pausedRun(activity),
 				updatedAt: timestamp(activity.updated_at, "activity time"),
 			},
 			activity.superseded,
 		);
 	});
+}
+
+/** A queued run waiting at its login's usage limit (20260930703000); an older cloud says nothing of it. */
+function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
+	if (activity.paused_until === undefined || activity.paused_until === null) return {};
+	if (activity.job_status !== "queued") throw new CloudShapeError("a paused run that is not queued");
+	if (
+		typeof activity.paid_by_chatgpt_plan !== "boolean" ||
+		typeof activity.paid_while_away !== "boolean" ||
+		typeof activity.movable !== "boolean"
+	)
+		throw new CloudShapeError("paused run payer");
+	return {
+		paused: {
+			until: timestamp(activity.paused_until, "activity pause time"),
+			sponsorBindingId: uuid(activity.sponsor_binding_id, "paused run login"),
+			...(activity.requested_by_user_id === undefined || activity.requested_by_user_id === null
+				? {}
+				: { requestedByUserId: uuid(activity.requested_by_user_id, "paused run member") }),
+			paidByChatgptPlan: activity.paid_by_chatgpt_plan,
+			paidWhileAway: activity.paid_while_away,
+			movable: activity.movable,
+		},
+	};
+}
+
+/** The move of a waiting run to another login (20260930703000): the cloud must answer for that run and that login. */
+export function parsePausedRunMove(value: unknown, runId: string, connectionId: string): void {
+	const answer = record(value, "paused run move");
+	if (
+		answer.schema !== "qorpera.paused-run-move/v1" ||
+		uuid(answer.runId, "moved run id") !== runId.toLowerCase() ||
+		uuid(answer.connectionId, "moved run login") !== connectionId.toLowerCase()
+	)
+		throw new CloudShapeError("the cloud moved another run");
 }
 
 /** The control of the worker run asked for: the cloud must answer for that run. */
