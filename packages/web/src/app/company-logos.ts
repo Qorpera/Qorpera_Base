@@ -5,6 +5,7 @@ import {
 	COMPANY_BRAND_FOLDER,
 	COMPANY_LOGO_PATH,
 	type CompanyLogo,
+	type CompanyLogoChange,
 	companyLogoName,
 	companyLogoSource,
 } from "../cloud/company-logos.ts";
@@ -27,6 +28,10 @@ type Entry =
 	| { kind: "failed"; retryAt: number };
 
 const RETRY_MS = 60_000;
+/** A PNG that is not the logo and has sat this long was left by a sync that never published it. */
+const STALE_MS = 10 * 60_000;
+/** The bucket keeps four PNGs per company (migration 20260930696000). */
+const FOLDER_CAP = 4;
 const BATCH = 100;
 /** The PNG everyone sees, square. */
 export const COMPANY_LOGO_SIZE = 512;
@@ -52,6 +57,8 @@ export class CompanyLogos implements CompanyLogoStore {
 	readonly #elements = new Map<string, Set<WeakRef<HTMLElement>>>();
 	readonly #queue = new Set<string>();
 	readonly #syncing = new Map<string, Promise<void>>();
+	/** Each company's latest answer being taken; an older one that finishes later is dropped. */
+	readonly #revisions = new Map<string, number>();
 	#flushing = false;
 	#generation = 0;
 	/** False once the cloud has said it has no company logos (not deployed there yet). */
@@ -91,6 +98,8 @@ export class CompanyLogos implements CompanyLogoStore {
 		this.#entries.clear();
 		this.#queue.clear();
 		this.#syncing.clear();
+		this.#revisions.clear();
+		this.#flushing = false;
 		this.#available = undefined;
 		for (const [profileId] of this.#elements) this.#paint(profileId, undefined);
 		this.#elements.clear();
@@ -107,14 +116,22 @@ export class CompanyLogos implements CompanyLogoStore {
 	}
 
 	/** Brings the PNG everyone sees in step with the folder's logo.svg, when the caller may. One sync per company runs
-	 * at a time; a second waits for it. */
+	 * at a time; another joins it. */
 	sync(profileId: string, folder: () => WebMemberFolder, signal: AbortSignal): Promise<void> {
-		const id = profileId.toLowerCase();
+		return this.#start(profileId.toLowerCase(), folder, signal, false);
+	}
+
+	/** Starts a sync, or joins the one running; `fresh` (after a change to the folder) runs another pass after it,
+	 * since the running one may have read the folder before the change. */
+	#start(id: string, folder: () => WebMemberFolder, signal: AbortSignal, fresh: boolean): Promise<void> {
 		const running = this.#syncing.get(id);
-		if (running) return running;
-		const work = this.#sync(id, folder, signal).finally(() => {
-			if (this.#syncing.get(id) === work) this.#syncing.delete(id);
-		});
+		if (running && !fresh) return running;
+		const work: Promise<void> = (running ?? Promise.resolve())
+			.catch(() => undefined)
+			.then(() => this.#sync(id, folder, signal))
+			.finally(() => {
+				if (this.#syncing.get(id) === work) this.#syncing.delete(id);
+			});
 		this.#syncing.set(id, work);
 		return work;
 	}
@@ -147,7 +164,7 @@ export class CompanyLogos implements CompanyLogoStore {
 		);
 		const unsaved = answer.units.find((unit) => unit.outcome !== "saved");
 		if (unsaved) throw new Error(phrase("The logo could not be saved. Try again."));
-		await this.sync(profileId, folder, signal);
+		await this.#start(profileId.toLowerCase(), folder, signal, true);
 	}
 
 	/** Takes the company's logo away: the folder's logo.svg is deleted and the figure comes back. */
@@ -169,7 +186,7 @@ export class CompanyLogos implements CompanyLogoStore {
 			if (answer.units.some((unit) => unit.outcome !== "saved"))
 				throw new Error(phrase("The logo could not be removed. Try again."));
 		}
-		await this.sync(profileId, folder, signal);
+		await this.#start(profileId.toLowerCase(), folder, signal, true);
 	}
 
 	async #sync(profileId: string, folder: () => WebMemberFolder, signal: AbortSignal): Promise<void> {
@@ -200,13 +217,47 @@ export class CompanyLogos implements CompanyLogoStore {
 			const png = await this.#rasterize(svg, COMPANY_LOGO_SIZE);
 			signal.throwIfAborted();
 			objectName = companyLogoName(profileId, row.sourceSha256);
+			await this.#tidy(profileId, row.objectName, objectName);
 			await this.#api.uploadCompanyLogo(objectName, png);
 		}
 		if (generation !== this.#generation) return;
-		const change = await this.#api.publishCompanyLogo(profileId, objectName);
+		let change: CompanyLogoChange;
+		try {
+			change = await this.#api.publishCompanyLogo(profileId, objectName);
+		} catch (error) {
+			// Not published (the folder moved on, or the call failed): the upload would only take one of the four places.
+			// The cloud refuses to delete it if another member published the same drawing meanwhile.
+			if (objectName) await this.#api.deleteCompanyLogo(objectName).catch(() => undefined);
+			throw error;
+		}
 		if (change.previousObjectName)
 			await this.#api.deleteCompanyLogo(change.previousObjectName).catch(() => undefined);
 		await this.refresh(profileId);
+	}
+
+	/** Makes room for an upload: deletes PNGs that are neither the logo nor `keep` once they are stale, and the oldest
+	 * of them as well while the folder would still be full. A delete that fails is tried again by the next upload. */
+	async #tidy(profileId: string, current: string | null, keep: string): Promise<void> {
+		let objects: { objectName: string; createdAt: number }[];
+		try {
+			objects = await this.#api.listCompanyLogoObjects(profileId);
+		} catch {
+			return;
+		}
+		const others = objects
+			.filter((object) => object.objectName !== current && object.objectName !== keep)
+			.sort((a, b) => a.createdAt - b.createdAt);
+		const kept = objects.length - others.length;
+		const now = this.#now();
+		let left = others.length;
+		for (const object of others) {
+			const full = kept + left >= FOLDER_CAP;
+			if (!full && now - object.createdAt < STALE_MS) continue;
+			await this.#api.deleteCompanyLogo(object.objectName).then(
+				() => left--,
+				() => undefined,
+			);
+		}
 	}
 
 	#ask(profileId: string): void {
@@ -214,11 +265,13 @@ export class CompanyLogos implements CompanyLogoStore {
 		this.#queue.add(profileId);
 		if (this.#flushing) return;
 		this.#flushing = true;
-		queueMicrotask(() => void this.#flush());
+		const generation = this.#generation;
+		queueMicrotask(() => void this.#flush(generation));
 	}
 
-	async #flush(): Promise<void> {
-		const generation = this.#generation;
+	async #flush(generation: number): Promise<void> {
+		// Asked for before a reset: the reset dropped the queue and the flag, and a newer flush serves the new account.
+		if (generation !== this.#generation) return;
 		try {
 			while (this.#queue.size > 0 && generation === this.#generation) {
 				const ids = [...this.#queue].slice(0, BATCH);
@@ -256,6 +309,9 @@ export class CompanyLogos implements CompanyLogoStore {
 
 	/** Takes a company's answer: downloads its PNG when it is new, and repaints. */
 	async #take(profileId: string, row: CompanyLogo | undefined, generation: number): Promise<void> {
+		const revision = (this.#revisions.get(profileId) ?? 0) + 1;
+		this.#revisions.set(profileId, revision);
+		const latest = () => generation === this.#generation && this.#revisions.get(profileId) === revision;
 		const before = this.#entries.get(profileId);
 		if (!row?.objectName) {
 			if (before?.kind === "logo") URL.revokeObjectURL(before.url);
@@ -269,15 +325,14 @@ export class CompanyLogos implements CompanyLogoStore {
 		}
 		try {
 			const blob = await this.#api.downloadCompanyLogo(row.objectName);
-			if (generation !== this.#generation) return;
+			if (!latest()) return;
 			const url = URL.createObjectURL(blob);
 			const current = this.#entries.get(profileId);
 			if (current?.kind === "logo") URL.revokeObjectURL(current.url);
 			this.#entries.set(profileId, { kind: "logo", row, url });
 			this.#paint(profileId, url);
 		} catch {
-			if (generation === this.#generation)
-				this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+			if (latest()) this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
 		}
 	}
 

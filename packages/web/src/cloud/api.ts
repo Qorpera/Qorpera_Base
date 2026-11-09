@@ -331,6 +331,19 @@ export class CloudApi {
 		throw error;
 	}
 
+	/** The PNGs a company's logo folder holds, for a member who may publish its logo (the others see none). */
+	async listCompanyLogoObjects(profileId: string): Promise<{ objectName: string; createdAt: number }[]> {
+		const folder = requiredUuid(profileId, "Company id").toLowerCase();
+		const { data, error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).list(folder, { limit: 100 });
+		if (error) throw error;
+		return (data ?? []).flatMap((item) => {
+			const objectName = `${folder}/${item.name}`;
+			if (!isCompanyLogoName(objectName, folder)) return [];
+			const createdAt = Date.parse(item.created_at ?? "");
+			return [{ objectName, createdAt: Number.isFinite(createdAt) ? createdAt : 0 }];
+		});
+	}
+
 	async downloadCompanyLogo(objectName: string): Promise<Blob> {
 		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
 		const { data, error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).download(objectName);

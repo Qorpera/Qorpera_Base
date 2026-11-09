@@ -1,3 +1,4 @@
+import { writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
 import type { WebMemberFolder } from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
@@ -32,7 +33,8 @@ export interface CompanyBrandOptions {
 export function renamedVision(text: string, name: string): string {
 	const lines = text.split("\n");
 	const first = lines.findIndex((line) => line.trim() !== "");
-	const heading = `# ${name}`;
+	// The shared writer's heading, so a name ending in `#` reads back whole (`# Acme # #`).
+	const heading = writeVisionFile(name, "").split("\n")[0]!;
 	if (first >= 0 && /^#\s/.test(lines[first]!.trim())) lines[first] = heading;
 	else lines.unshift(heading, "");
 	return lines.join("\n");
