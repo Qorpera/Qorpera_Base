@@ -4,7 +4,7 @@ import { button, confirmDialog, fmtBytes, fmtTime, h, icon, replace } from "../.
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
- * Settings → Sites: the websites the company's agents published, each at its own link on sites.qorpera.com with its
+ * The Sites page (`#/c/<id>/sites`, opened from the apps drawer; Jonas, 9 Nov 2026: out of Settings): the websites the company's agents published, each at its own link on sites.qorpera.com with its
  * own password. Every member sees each site's name, link, state, when and by which agent it was last published, and
  * where in the Company File it came from. An owner or admin also reads a site's password (to share it), changes it
  * (every visitor then enters the new one) and takes a site offline; the kernel refuses anyone else. Agents never see a
@@ -56,6 +56,8 @@ export class SitesView {
 	readonly #client: SitesClient;
 	readonly #lifetime = new AbortController();
 	readonly #access: SitesAccess;
+	/** Told the sites after each read and after one is taken offline: the apps drawer shows Sites while there are any. */
+	readonly #listed: (sites: readonly CompanySite[]) => void;
 	#drawnManage: boolean | undefined;
 	#sites: CompanySite[] | undefined;
 	#loading = true;
@@ -73,9 +75,14 @@ export class SitesView {
 	/** One more read, asked for while a read was out, and the focus it draws with. */
 	#again: { read: Promise<void>; focusKey: string | undefined } | undefined;
 
-	constructor(client: SitesClient, signal: AbortSignal, options: { access?: SitesAccess } = {}) {
+	constructor(
+		client: SitesClient,
+		signal: AbortSignal,
+		options: { access?: SitesAccess; listed?: (sites: readonly CompanySite[]) => void } = {},
+	) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
+		this.#listed = options.listed ?? (() => {});
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -131,6 +138,7 @@ export class SitesView {
 			const sites = await this.#client.list(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#sites = sites;
+			this.#listed(sites);
 			this.#error = undefined;
 			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind.
 			const ids = new Set(sites.map((site) => site.id));
@@ -272,6 +280,7 @@ export class SitesView {
 				if (this.#changing === site.id) this.#changing = undefined;
 				// It leaves the list at once; the read after it confirms it.
 				this.#sites = this.#sites?.filter((item) => item.id !== site.id);
+				this.#listed(this.#sites ?? []);
 			},
 			phrase("The site could not be taken offline. Try again."),
 			`site-unpublish:${site.id}`,

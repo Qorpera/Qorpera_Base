@@ -23,6 +23,8 @@ import {
 import { mailList, mailRow, mailSummary } from "../interface-mail.ts";
 import type { QuotedText } from "../quotes.ts";
 import { messageText, show } from "./interface.ts";
+import { type DigitalPostClient, DigitalPostView } from "./settings-digital-post.ts";
+import { type HooksClient, HooksView } from "./settings-hooks.ts";
 
 /* The Mailbox page, drawn as a mail app draws an inbox (the 21 Oct 2026 rebuild; design canvas "Qorpera Mail", v3):
  * Inbox, Sent and Addresses as plain tabs, one line per thread, and no boxes. The page's definition (the cloud client's
@@ -45,6 +47,8 @@ import { messageText, show } from "./interface.ts";
  *   Digital Post mark. A letter opens to its text and its documents (which open in Storage), with a line to ask an agent
  *   about it. Addresses has a Digital Post row, and its Choose asks the Co-Founder to give it an agent. The Mailbox shows
  *   while the company has an email address, or Digital Post connected or holding letters.
+ * - Making addresses (Jonas, 9 Nov 2026: they live here, not in Settings): under Addresses, and on the page with no
+ *   address yet, an owner or admin adds, pauses or removes the company's mail addresses and connects Digital Post.
  *
  * What came from outside the company (a sender, a subject, a snippet, a message's text) is only ever set as text, and
  * carries the title that says so. Account mail shows only that it is account mail, for which site, who used the
@@ -79,11 +83,40 @@ interface MailboxUi {
 }
 
 const uis = new WeakMap<HTMLElement, MailboxUi>();
+/** A number for each company controller drawn: the company opened again draws afresh, so the cards it keeps are its. */
+const controllers = new WeakMap<CompanyController, number>();
+let controllerCount = 0;
+function controllerKey(company: CompanyController): number {
+	let key = controllers.get(company);
+	if (key === undefined) {
+		key = ++controllerCount;
+		controllers.set(company, key);
+	}
+	return key;
+}
+/** The address and Digital Post cards of a page's state, kept so a form being filled survives a redraw: for the company
+ * controller, the language and the time zone they were built for. */
+const manageViews = new WeakMap<
+	MailboxUi,
+	{
+		readonly company: CompanyController;
+		readonly locale: string;
+		readonly zone: string;
+		readonly hooks: HooksView;
+		readonly post: DigitalPostView;
+	}
+>();
 let toastIds = 0;
 
+/** The calls behind the company's mail addresses and its Digital Post key. */
+export interface MailboxManage {
+	readonly hooks: HooksClient;
+	readonly digitalPost: DigitalPostClient;
+}
+
 export interface MailboxOptions {
-	/** Opens Settings on Company connections, where the company's addresses are made. */
-	readonly openSettings?: () => void;
+	/** Where the company's addresses are made and Digital Post is connected, by an owner or admin. */
+	readonly manage?: () => MailboxManage;
 }
 
 /** Draws the Mailbox page `name` into `container` (views/interface.ts routes it here); `moveFocus` names the control
@@ -134,6 +167,7 @@ export function renderMailbox(
 	const staff = state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]);
 	const key = JSON.stringify([
 		profileId,
+		controllerKey(company),
 		company.userId,
 		presentationLocale(),
 		presentationTimeZone(),
@@ -141,6 +175,7 @@ export function renderMailbox(
 		name,
 		{ ...ui, toast: ui.toast?.id ?? null },
 		state.team?.capabilities.write === true,
+		state.team?.capabilities.authorize === true,
 		company.cofounderId() ?? null,
 		staff,
 		mail
@@ -358,17 +393,53 @@ function toast(page: Page, text: string, agent: string | null): HTMLElement {
 }
 
 function noAddress(page: Page): HTMLElement {
-	const settings = page.options.openSettings;
+	const manage = manageArea(page);
 	return h(
 		"div",
 		{ class: "mailbox-empty" },
 		h("h1", null, t("The company has no email address yet")),
 		h("p", null, t("Make one, and pick the agent who answers what comes in.")),
-		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected in Settings.")),
-		settings && page.company.store.get().team?.capabilities.authorize === true
-			? h("button", { type: "button", class: "mailbox-primary", onclick: settings }, t("Make an address"))
-			: null,
+		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected.")),
+		manage ?? h("p", { class: "mailbox-muted" }, t("An owner or admin makes the company's addresses.")),
 	);
+}
+
+/** For owners and admins: the company's mail addresses to add, pause or remove, and Digital Post to connect. A change
+ * reads the company's mail again, so a new address shows at once. */
+function manageArea(page: Page): HTMLElement | null {
+	const { company, ui, options } = page;
+	if (!options.manage || company.store.get().team?.capabilities.authorize !== true) return null;
+	let views = manageViews.get(ui);
+	// The company opened again (a new controller, the old one stopped), a new language or a new time zone: the cards
+	// are built again.
+	if (
+		views &&
+		(views.company !== company ||
+			company.signal.aborted ||
+			views.locale !== presentationLocale() ||
+			views.zone !== presentationTimeZone())
+	) {
+		views.hooks.dispose();
+		views.post.dispose();
+		manageViews.delete(ui);
+		views = undefined;
+	}
+	if (!views) {
+		const calls = options.manage();
+		const access = { canManage: () => company.store.get().team?.capabilities.authorize === true };
+		const changed = () => void CompanyMail.of(company)?.reread();
+		views = {
+			company,
+			locale: presentationLocale(),
+			zone: presentationTimeZone(),
+			hooks: new HooksView(calls.hooks, company.signal, { access, kinds: ["mailbox"], changed }),
+			post: new DigitalPostView(calls.digitalPost, company.signal, { access, changed }),
+		};
+		manageViews.set(ui, views);
+	}
+	views.hooks.update();
+	views.post.update();
+	return h("div", { class: "mailbox-manage" }, views.hooks.el, views.post.el);
 }
 
 // The lists ---------------------------------------------------------------------------------------------------------
@@ -1500,14 +1571,7 @@ function addressesView(page: Page): HTMLElement {
 		"div",
 		{ class: "mailbox-addresses" },
 		h("ul", { class: "mailbox-address-list" }, ...rows, ...(post ? [post] : [])),
-		page.options.openSettings && company.store.get().team?.capabilities.authorize === true
-			? h(
-					"button",
-					{ type: "button", class: "mailbox-text mailbox-new", onclick: page.options.openSettings },
-					icon("plus"),
-					t("New address"),
-				)
-			: null,
+		manageArea(page),
 	);
 }
 

@@ -249,6 +249,12 @@ export class CompanyMail {
 		await this.#refreshCompany();
 	}
 
+	/** Reads the addresses and Digital Post's state again: an address was made or removed, or Digital Post connected
+	 * (the Mailbox's Addresses). */
+	reread(): Promise<void> {
+		return this.#closed ? Promise.resolve() : this.#refreshCompany();
+	}
+
 	dispose(): void {
 		this.#disposed = true;
 		clearInterval(this.#companyTimer);

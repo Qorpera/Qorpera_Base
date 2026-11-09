@@ -11,6 +11,7 @@ import { invalid, readStateFile, rewriteStateFile, type WebMemberFolder } from "
 import type { WebConnectors } from "../cloud/connectors.ts";
 import { t } from "../ui/preferences.ts";
 import type { InterfaceOfferActions } from "./interface-offers.ts";
+import type { MailboxManage } from "./views/mailbox.ts";
 
 /* A board's take and release (Interfaces step I9a; deploy/first-node/RUNTIME-INTERFACES.md §3.3 and §5): a member puts
  * their own id in a card's empty holder cell, or one that names someone who left (Interfaces C6d), or clears the cell
@@ -28,8 +29,8 @@ export interface InterfaceWrites {
 	readonly offers?: InterfaceOfferActions;
 	/** Reads the company's folder again soon, so a change that could not be made shows the rows as they are now. */
 	readonly reread?: () => void;
-	/** Opens Settings on Company connections, where the company's mail addresses are made (the Mailbox's New address). */
-	readonly openSettings?: () => void;
+	/** The calls behind the Mailbox's Addresses: the company's mail addresses and its Digital Post key. */
+	readonly mailManage?: () => MailboxManage;
 	/** The company's connections, for the Bank page's Connect the bank: its sign-in and whether it is connected. */
 	readonly bankConnection?: () => Pick<WebConnectors, "list" | "beginSignIn" | "finishSignIn">;
 }

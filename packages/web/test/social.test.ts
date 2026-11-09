@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { watchOnline } from "../src/app/online-mark.ts";
-import { lastOnline } from "../src/app/views/friends.ts";
+import { FriendsController, lastOnline } from "../src/app/views/friends.ts";
 import { LeaderboardView } from "../src/app/views/leaderboard.ts";
 import type { CloudApi } from "../src/cloud/api.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CloudShapeError, parseFriends } from "../src/cloud/parse.ts";
 import { type Leaderboard, parseLeaderboard } from "../src/cloud/social.ts";
+import type { HostedFriend } from "../src/cloud/types.ts";
 
 const ME = "11111111-1111-4111-8111-000000000001";
 const FRIEND = "11111111-1111-4111-8111-000000000002";
@@ -98,6 +99,35 @@ describe("leaderboard answers", () => {
 		]);
 		expect(accepted!.lastSeenAt).toBe("2026-11-09T09:00:00Z");
 		expect(pending!.lastSeenAt).toBeUndefined();
+	});
+});
+
+describe("friends list reads", () => {
+	it("shows only the newest read when two cross", async () => {
+		const older = deferred<HostedFriend[]>();
+		const newer = deferred<HostedFriend[]>();
+		const listFriends = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+		const friends = new FriendsController({ listFriends } as unknown as CloudApi);
+		const first = friends.refresh();
+		const second = friends.refresh();
+		const friend = parseFriends([
+			{
+				user_id: FRIEND,
+				email: "asger@example.test",
+				display_name: "Asger",
+				status: "accepted",
+				direction: "outgoing",
+				since: "2026-11-08T10:00:00Z",
+			},
+		]);
+		// The newer read (after a removal: no friends) lands first; the older one, still listing Asger, lands after.
+		newer.resolve([]);
+		await second;
+		older.resolve(friend);
+		await first;
+		expect(friends.store.get().friends).toEqual([]);
+		expect(friends.store.get().loading).toBe(false);
+		friends.dispose();
 	});
 });
 

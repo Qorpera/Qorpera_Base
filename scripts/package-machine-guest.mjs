@@ -19,8 +19,15 @@ const units = [
 	"qorpera-machine-watchdog.service",
 	"qorpera-machine-watchdog.timer",
 	"qorpera-machine-folder.service",
+	"qorpera-machine-desktop.service",
 ];
-await Promise.all(units.map((unit) => readFile(`deploy/machine/${unit}`)));
+// The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile.
+const files = [
+	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
+	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
+	{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+];
+await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // Only the recorded build: the image script pins the same bytes.
 const program = await readFile(resolve(args[3]));
 const record = readFolderProgramRecord();
@@ -61,6 +68,19 @@ for (const unit of units) {
 		installedPath: `/etc/systemd/system/${unit}`,
 		owner: "root:root",
 		mode: "0644",
+		sha256: createHash("sha256").update(bytes).digest("hex"),
+		bytes: bytes.length,
+	});
+}
+for (const { file, installedPath, mode } of files) {
+	const bytes = await readFile(`deploy/machine/${file}`);
+	await writeFile(resolve(output, file), bytes, { mode: Number.parseInt(mode, 8) });
+	artifacts.push({
+		file,
+		source: `deploy/machine/${file}`,
+		installedPath,
+		owner: "root:root",
+		mode,
 		sha256: createHash("sha256").update(bytes).digest("hex"),
 		bytes: bytes.length,
 	});

@@ -40,6 +40,7 @@ import {
 } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
+import { type HooksClient, HooksView } from "./settings-hooks.ts";
 
 export interface AgentRoutineAccess {
 	routines: WebRoutines;
@@ -54,6 +55,12 @@ export interface AgentRoutineAccess {
 	memberName?: (userId: string) => string | undefined;
 	/** The signed-in member: a routine whose login is their own asks them to sign in again. */
 	memberId?: string;
+	/** The company's webhooks, listed under the routines (Jonas, 9 Nov 2026: they live with the routines, not in
+	 * Settings). Owners and admins add, pause and remove them. */
+	webhooks?: HooksClient;
+	/** Tells `listener` of each company change (a role that changed decides what the webhooks offer); answers how to
+	 * stop. */
+	onChange?: (listener: () => void) => () => void;
 }
 
 /** Routine access for the signed-in member, or none when the page was not given the routine calls. */
@@ -71,6 +78,8 @@ export function routineAccessFor(
 		canWrite: () => company.store.get().team?.capabilities.write === true,
 		memberName: (userId) => company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 		memberId: company.userId,
+		...(actions.eventHooks ? { webhooks: actions.eventHooks } : {}),
+		onChange: (listener) => company.store.subscribe(listener),
 	};
 }
 
@@ -342,6 +351,8 @@ export class AgentRoutines {
 	#returnTo: string | undefined;
 	/** The agent's figure, kept through redraws so it does not start over. */
 	#figure: { key: string; el: HTMLElement } | undefined;
+	/** The company's webhooks under the list, kept through redraws so a form being filled stays. */
+	readonly #webhooks: HooksView | undefined;
 	/** `close` leaves the routines: back to the agent's card when `back` (they are its page), else closes them. */
 	constructor(
 		agent: () => HostedStaffAgent,
@@ -355,11 +366,21 @@ export class AgentRoutines {
 		this.#access = access;
 		this.#signal = signal;
 		this.#close = close;
+		this.#webhooks = access?.webhooks
+			? new HooksView(access.webhooks, signal, { access: { canManage: access.canManage }, kinds: ["webhook"] })
+			: undefined;
+		// A role that changed while the page is open shows at once: an admin made a member loses the addresses and
+		// controls, and the other way round.
+		if (this.#webhooks && access?.onChange && !signal.aborted) {
+			const stop = access.onChange(() => this.#webhooks?.update());
+			signal.addEventListener("abort", stop, { once: true });
+		}
 		this.#list();
 		if (access) void this.#refresh();
 	}
 	/** Reads the list again, unless a routine is open in the composer. */
 	refresh(): void {
+		this.#webhooks?.update();
 		if (!this.#held()) void this.#refresh();
 	}
 	async #refresh(): Promise<void> {
@@ -497,6 +518,7 @@ export class AgentRoutines {
 								? t("{name} has no routines yet.", { name: agent.displayName })
 								: t("Routines will appear here."),
 						),
+			this.#webhooks?.el ?? null,
 		);
 		if (focused) this.#refocus(focused, back);
 		else if (back && (!document.activeElement || document.activeElement === document.body))

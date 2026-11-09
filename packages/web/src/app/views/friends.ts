@@ -60,6 +60,8 @@ export class FriendsController {
 	/** Lookups on their way, so an address typed again waits for the same answer. */
 	readonly #asking = new Map<string, Promise<HostedAccountMatch | null>>();
 	#lookupTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Friends-list reads asked, so an older answer never replaces a newer one. */
+	#reads = 0;
 	#lookupTurn = 0;
 
 	constructor(api: CloudApi) {
@@ -132,10 +134,15 @@ export class FriendsController {
 
 	async refresh(): Promise<void> {
 		if (this.#disposed) return;
+		// Reads can cross (the window's first read, then one after a removal): only the newest one asked is shown.
+		const read = ++this.#reads;
 		this.store.set({ loading: true, error: undefined });
 		try {
-			this.store.set({ friends: await this.#api.listFriends(), loading: false, loaded: true });
+			const friends = await this.#api.listFriends();
+			if (this.#disposed || read !== this.#reads) return;
+			this.store.set({ friends, loading: false, loaded: true });
 		} catch (error) {
+			if (this.#disposed || read !== this.#reads) return;
 			this.store.set({ loading: false, error: describeError(error) });
 			return;
 		}

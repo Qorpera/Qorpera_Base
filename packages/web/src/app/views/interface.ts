@@ -326,7 +326,7 @@ export function renderInterface(
 	}
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
-		renderMailbox(container, company, name, writes?.openSettings ? { openSettings: writes.openSettings } : {});
+		renderMailbox(container, company, name, writes?.mailManage ? { manage: writes.mailManage } : {});
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).

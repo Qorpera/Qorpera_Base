@@ -4,18 +4,19 @@ import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.t
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
- * Settings → Company connections → Webhooks and Mailboxes: the company's event
- * hooks (events plan §6). What arrives at one starts the company's routines
+ * The company's event hooks (events plan §6): its webhooks, under an agent's
+ * Routines, and its mailboxes, under the Mailbox page's Addresses. What arrives at one starts the company's routines
  * that wait for it. Every member sees each one's name, what it is for and
  * whether it is on; a mailbox's email address is public by nature. An owner or
  * admin also sees a webhook's address, the one thing its sender needs, and
  * adds, pauses, resumes or removes them; the kernel refuses anyone else.
- * Settings adds address-proven webhooks only: a signed one needs its sender's
+ * It adds address-proven webhooks only: a signed one needs its sender's
  * signing secret in the vault, and members never paste one.
  */
 
-type HooksClient = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
-type Kind = "webhook" | "mailbox";
+export type HooksClient = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
+export type HookKind = "webhook" | "mailbox";
+type Kind = HookKind;
 
 export interface HooksAccess {
 	/** Whether the signed-in member may add, pause or remove the company's hooks
@@ -121,6 +122,10 @@ export class HooksView {
 	readonly #client: HooksClient;
 	readonly #lifetime = new AbortController();
 	readonly #access: HooksAccess;
+	/** The lists drawn: webhooks, mailboxes or both. */
+	readonly #kinds: readonly Kind[];
+	/** Told after a hook was added, paused, resumed or removed. */
+	readonly #changed: () => void;
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
 	#loading = true;
@@ -138,9 +143,15 @@ export class HooksView {
 	/** One more read, asked for while a read was out, and the focus it draws with. */
 	#again: { read: Promise<void>; focusKey: string | undefined } | undefined;
 
-	constructor(client: HooksClient, signal: AbortSignal, options: { access?: HooksAccess } = {}) {
+	constructor(
+		client: HooksClient,
+		signal: AbortSignal,
+		options: { access?: HooksAccess; kinds?: readonly HookKind[]; changed?: () => void } = {},
+	) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
+		this.#changed = options.changed ?? (() => {});
+		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -224,6 +235,7 @@ export class HooksView {
 		this.#draw();
 		try {
 			await this.#client.setStatus(hook.id, status, this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted) this.#changed();
 		} catch (error) {
 			// A hook removed meanwhile (55000) leaves the list on the next read.
 			if (!this.#lifetime.signal.aborted && !(error instanceof CloudRpcError && error.code === "55000"))
@@ -279,6 +291,7 @@ export class HooksView {
 			this.#outcome = { key: hook.id, tone: "ok", text: t(text.ready) };
 			// The new one shows at once, with its address to copy; the next read sorts it in.
 			this.#hooks = [...(this.#hooks ?? []).filter((item) => item.id !== hook.id), hook];
+			this.#changed();
 			const focus = hook.url ? `hook-copy:${hook.id}` : `hook-add:${kind}`;
 			this.#draw(focus);
 			await this.#refresh(focus);
@@ -521,7 +534,7 @@ export class HooksView {
 			this.el,
 			error,
 			// Without a first read there is nothing to show but the way to try again.
-			this.#hooks || this.#loading ? [this.#section("webhook"), this.#section("mailbox")] : null,
+			this.#hooks || this.#loading ? this.#kinds.map((kind) => this.#section(kind)) : null,
 		);
 		if (key) {
 			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(

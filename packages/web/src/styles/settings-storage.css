@@ -77,8 +77,6 @@
 
 /* Storage's content is a size container, so the browser lays itself out by the room it has, not the window's. */
 .settings-storage-content { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; overflow: auto; padding: 22px 28px 28px; font-size: 14px; container: storage / inline-size; scroll-padding-top: 40px; }
-:root .settings-dialog.settings-unified .settings-file-card { width: 100%; border: 1px solid var(--border); color: var(--text); text-align: left; cursor: pointer; font: inherit; }
-:root .settings-dialog.settings-unified .settings-file-card:hover { background: var(--hover); }
 :root .settings-dialog.settings-unified [hidden] { display: none; }
 
 @media (max-width: 1000px) {
@@ -105,7 +103,12 @@
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] { min-height: 32px; gap: 7px; padding: 5px 11px; white-space: nowrap; border-radius: 999px; }
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] > .icon { width: 16px; height: 16px; }
 	:root .settings-dialog.settings-unified .settings-nav .settings-back { flex: none; margin: 0 0 0 auto; min-height: 32px; padding: 5px 10px; white-space: nowrap; }
-	.settings-nav-heading, .settings-storage-usage { display: none; }
+	.settings-nav-heading { display: none; }
+	/* On a phone Storage's tabs are one row; what the company uses stands on a line under them, with Retry when it can't
+	 * be read. */
+	:root .settings-dialog.settings-unified .settings-storage-nav { flex-wrap: wrap; row-gap: 6px; }
+	.settings-storage-usage { display: flex; flex: 1 0 100%; align-items: center; gap: 10px; margin: 0; padding: 0 4px; }
+	.settings-storage-usage progress { flex: 0 1 120px; }
 	:root .settings-dialog.settings-unified .settings-content, .settings-storage-content { grid-column: 1; grid-row: 2; padding: 18px 16px 24px; }
 	:root .settings-dialog.settings-unified .settings-content h1 { font-size: 20px; margin-bottom: 22px; }
 	:root .settings-dialog.settings-unified .account .preference-picker-button { min-width: 0; }

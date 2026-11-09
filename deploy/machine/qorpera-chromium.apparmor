@@ -1,0 +1,11 @@
+# Chromium's own sandbox needs unprivileged user namespaces, which Ubuntu allows only to a program with a profile that
+# says so (kernel.apparmor_restrict_unprivileged_userns). This is that profile for the machine's Chromium, as Ubuntu
+# ships for its own browsers: unconfined otherwise. Without it Chromium refuses to start sandboxed.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile qorpera-chromium /usr/lib/qorpera-chromium/chrome flags=(unconfined) {
+  userns,
+
+  include if exists <local/qorpera-chromium>
+}
