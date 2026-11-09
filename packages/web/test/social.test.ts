@@ -22,22 +22,33 @@ function person(userId: string, name: string, tasks: number, revenueOre: number,
 		last_seen_at: null,
 		companies: 1,
 		tasks,
+		last_week_tasks: 0,
 		revenue_ore: revenueOre,
+		main_profile_id: null,
 		...extra,
 	};
 }
 
 const BOARD = {
-	since: "2026-11-02T10:00:00Z",
+	since: "2026-11-09T00:00:00+01:00",
+	until: "2099-11-16T00:00:00+01:00",
+	week: 46,
 	hidden: false,
 	people: [
-		person(ME, "Jonas", 12, 1250000, { companies: 2 }),
-		person(FRIEND, "Asger", 30, 0),
-		person(OTHER, "Bo", 12, 340000),
+		person(ME, "Jonas", 12, 1250000, { companies: 2, last_week_tasks: 40, main_profile_id: COMPANY }),
+		person(FRIEND, "Asger", 30, 0, { last_week_tasks: 5, main_profile_id: CAFE }),
+		person(OTHER, "Bo", 12, 340000, { last_week_tasks: 20, main_profile_id: CAFE }),
 	],
 	companies: [
-		{ profile_id: COMPANY, name: "Dekora", members: [ME], tasks: 114, revenue_ore: 1250000 },
-		{ profile_id: CAFE, name: "Havnens Kaffebar", members: [FRIEND, OTHER], tasks: 42, revenue_ore: 0 },
+		{ profile_id: COMPANY, name: "Dekora", members: [ME], tasks: 114, last_week_tasks: 0, revenue_ore: 1250000 },
+		{
+			profile_id: CAFE,
+			name: "Havnens Kaffebar",
+			members: [FRIEND, OTHER],
+			tasks: 42,
+			last_week_tasks: 0,
+			revenue_ore: 0,
+		},
 	],
 };
 
@@ -50,16 +61,20 @@ afterEach(() => {
 describe("leaderboard answers", () => {
 	it("reads people and companies", () => {
 		const board = parseLeaderboard(BOARD);
-		expect(board.people.map((row) => [row.displayName, row.me, row.tasks, row.revenueOre])).toEqual([
-			["Jonas", true, 12, 1250000],
-			["Asger", false, 30, 0],
-			["Bo", false, 12, 340000],
+		expect(board.week).toBe(46);
+		expect(
+			board.people.map((row) => [row.displayName, row.me, row.tasks, row.lastWeekTasks, row.mainProfileId]),
+		).toEqual([
+			["Jonas", true, 12, 40, COMPANY],
+			["Asger", false, 30, 5, CAFE],
+			["Bo", false, 12, 20, CAFE],
 		]);
 		expect(board.companies[0]).toEqual({
 			profileId: COMPANY,
 			name: "Dekora",
 			members: [ME],
 			tasks: 114,
+			lastWeekTasks: 0,
 			revenueOre: 1250000,
 		});
 	});
@@ -154,50 +169,67 @@ describe("leaderboard page", () => {
 	const rows = (root: HTMLElement) =>
 		[...root.querySelectorAll(".leaderboard-row")].map((row) => [
 			row.querySelector(".leaderboard-place")!.textContent,
+			row.querySelector(".leaderboard-move")?.textContent ?? null,
 			row.querySelector(".leaderboard-who strong")!.textContent,
-			row.querySelector(".leaderboard-score strong")!.textContent,
+			row.querySelector(".leaderboard-score")!.textContent,
 		]);
-	const pick = (root: HTMLElement, value: string) =>
-		root.querySelector<HTMLButtonElement>(`.leaderboard-bar [data-value="${value}"]`)!.click();
+	const pick = (root: HTMLElement, board: string) =>
+		root.querySelector<HTMLButtonElement>(`.leaderboard-tabs [data-board="${board}"]`)!.click();
+	const champion = (root: HTMLElement) =>
+		[...root.querySelectorAll(".leaderboard-champion-copy > *")].map((part) => part.textContent);
 	const toggle = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('.leaderboard-visible [role="switch"]')!;
 	const settled = (root: HTMLElement) =>
 		vi.waitFor(() => expect(toggle(root).getAttribute("aria-disabled")).toBeNull());
 
-	it("ranks your friends by tasks done this week, with shared places for ties", async () => {
+	it("crowns this week's busiest friend and shows who moved up or down", async () => {
 		const { view } = await mount();
-		expect(rows(view.el)).toEqual([
-			["1", "Asger", "30"],
-			["2", "Jonas", "12"],
-			["2", "Bo", "12"],
+		expect(view.el.querySelector('[data-board="busy-friends"]')?.getAttribute("aria-selected")).toBe("true");
+		expect(champion(view.el)).toEqual([
+			"Busiest this week, so far",
+			"Asger",
+			"30 tasks at Havnens Kaffebar · 18 tasks ahead of Jonas",
+			expect.stringMatching(/^Week 46 ends Sunday at midnight\. \d+ days left to catch up\.$/),
 		]);
-		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · 2 companies");
-		expect(view.el.querySelector(".is-place-1 .leaderboard-who strong")?.textContent).toBe("Asger");
-		expect(view.el.querySelector('[data-value="busiest"]')?.getAttribute("aria-pressed")).toBe("true");
-		expect(view.el.querySelector('[data-value="friends"]')?.getAttribute("aria-pressed")).toBe("true");
+		// Last week: Jonas 40, Bo 20, Asger 5.
+		expect(rows(view.el)).toEqual([
+			["1", "▲ 2", "Asger", "30"],
+			["2", "▼ 1", "Jonas", "12"],
+			["2", "–", "Bo", "12"],
+		]);
+		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · 19 tasks to pass Asger");
 	});
 
-	it("ranks by revenue, and companies as well as friends", async () => {
+	it("shows the other boards: busiest companies and top earners", async () => {
 		const { view } = await mount();
-		pick(view.el, "revenue");
-		expect(view.el.querySelector(".leaderboard-about")?.textContent).toBe("All sales so far, without VAT.");
-		// Revenue in kroner; nobody with nothing yet gets a place.
+		pick(view.el, "busy-companies");
+		// Nobody's company had a task last week: no arrows yet.
 		expect(rows(view.el)).toEqual([
-			["1", "Jonas", "DKK\u00a012,500"],
-			["2", "Bo", "DKK\u00a03,400"],
-			["–", "Asger", "DKK\u00a00"],
-		]);
-		pick(view.el, "companies");
-		expect(rows(view.el)).toEqual([
-			["1", "Dekora", "DKK\u00a012,500"],
-			["–", "Havnens Kaffebar", "DKK\u00a00"],
-		]);
-		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You");
-		pick(view.el, "busiest");
-		expect(rows(view.el)).toEqual([
-			["1", "Dekora", "114"],
-			["2", "Havnens Kaffebar", "42"],
+			["1", null, "Dekora", "114"],
+			["2", null, "Havnens Kaffebar", "42"],
 		]);
 		expect(view.el.querySelectorAll(".leaderboard-who small")[1]?.textContent).toBe("Asger, Bo");
+		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · You're in the lead.");
+		pick(view.el, "earning-friends");
+		// Revenue in kroner, no arrows; nobody with nothing yet gets a place.
+		expect(rows(view.el)).toEqual([
+			["1", null, "Jonas", "DKK\u00a012,500"],
+			["2", null, "Bo", "DKK\u00a03,400"],
+			["–", null, "Asger", "DKK\u00a00"],
+		]);
+		expect(champion(view.el)[0]).toBe("Most revenue so far");
+		expect(champion(view.el)[3]).toBe("All sales so far, without VAT.");
+		pick(view.el, "earning-companies");
+		expect(rows(view.el).map((row) => row[2])).toEqual(["Dekora", "Havnens Kaffebar"]);
+	});
+
+	it("says nobody is ahead yet when the week has no tasks", async () => {
+		const quiet = parseLeaderboard({
+			...BOARD,
+			people: BOARD.people.map((row) => ({ ...row, tasks: 0 })),
+		});
+		const { view } = await mount(quiet);
+		expect(champion(view.el).slice(0, 2)).toEqual(["Busiest this week", "Nobody is ahead yet"]);
+		expect(view.el.querySelector(".leaderboard-champion-figure")).toBeNull();
 	});
 
 	it("takes you off your friends' boards with the switch", async () => {

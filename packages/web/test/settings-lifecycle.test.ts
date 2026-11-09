@@ -1094,7 +1094,7 @@ describe("settings session lifecycle", () => {
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
-	it("reads the Leaderboard once its tab opens: friends by tasks done, or by revenue", async () => {
+	it("reads the Leaderboard once its tab opens: busiest friends, then top earners", async () => {
 		const f = await setup();
 		const person = (id: string, name: string, me: boolean, tasks: number, revenueOre: number) => ({
 			user_id: id,
@@ -1103,12 +1103,16 @@ describe("settings session lifecycle", () => {
 			last_seen_at: me ? null : timestamp,
 			companies: 1,
 			tasks,
+			last_week_tasks: 0,
 			revenue_ore: revenueOre,
+			main_profile_id: null,
 		});
 		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
 			if (name === "qorpera_friends_leaderboard")
 				return {
 					since: "2026-11-02T00:00:00Z",
+					until: "2026-11-09T00:00:00Z",
+					week: 45,
 					hidden: false,
 					people: [person(userA.id, "Account A", true, 10, 500000), person(userB.id, "Account B", false, 20, 0)],
 					companies: [],
@@ -1130,7 +1134,7 @@ describe("settings session lifecycle", () => {
 		expect(rows()).toHaveLength(2);
 		expect(rows()[0]).toContain("Account B");
 		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("Account A");
-		click(content, '[data-value="revenue"]');
+		click(content, '[data-board="earning-friends"]');
 		expect(rows()[0]).toContain("Account A");
 		// The categories switch on the page; the board is read once.
 		expect(leaderboardCalls()).toHaveLength(1);

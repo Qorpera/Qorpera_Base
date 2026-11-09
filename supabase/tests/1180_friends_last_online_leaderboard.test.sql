@@ -15,11 +15,11 @@ insert into public.qorpera_profiles (id, name, created_by_user_id)
 values
 	('11800000-0000-4000-8000-000000000101', 'Board shop', '11800000-0000-4000-8000-00000000000a'),
 	('11800000-0000-4000-8000-000000000102', 'Board cafe', '11800000-0000-4000-8000-00000000000b');
-insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
+insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role, joined_at)
 values
-	('11800000-0000-4000-8000-000000000101', '11800000-0000-4000-8000-00000000000a', 'board-a@example.test', 'Board A', 'owner'),
-	('11800000-0000-4000-8000-000000000101', '11800000-0000-4000-8000-00000000000b', 'board-b@example.test', 'Board B', 'contributor'),
-	('11800000-0000-4000-8000-000000000102', '11800000-0000-4000-8000-00000000000b', 'board-b@example.test', 'Board B', 'owner');
+	('11800000-0000-4000-8000-000000000101', '11800000-0000-4000-8000-00000000000a', 'board-a@example.test', 'Board A', 'owner', statement_timestamp() - interval '3 days'),
+	('11800000-0000-4000-8000-000000000101', '11800000-0000-4000-8000-00000000000b', 'board-b@example.test', 'Board B', 'contributor', statement_timestamp() - interval '2 days'),
+	('11800000-0000-4000-8000-000000000102', '11800000-0000-4000-8000-00000000000b', 'board-b@example.test', 'Board B', 'owner', statement_timestamp() - interval '1 day');
 insert into public.qorpera_good_will_months (profile_id, month, sales_ore, moms_ore, net_ore)
 values
 	('11800000-0000-4000-8000-000000000101', '2026-10-01', 62500, 12500, 50000),
@@ -55,7 +55,16 @@ begin
 	if not v_ok then raise exception 'authenticated could read qorpera_account_presence'; end if;
 	-- Before B accepts, A's board holds A and A's company only.
 	select public.qorpera_friends_leaderboard() into v;
+	-- The week runs from Monday 00:00 in Copenhagen for seven days.
+	if extract(isodow from (v ->> 'since')::timestamptz at time zone 'Europe/Copenhagen') <> 1
+		or ((v ->> 'since')::timestamptz at time zone 'Europe/Copenhagen')::time <> '00:00'
+		or (v ->> 'until')::timestamptz - (v ->> 'since')::timestamptz <> interval '7 days'
+		or (v ->> 'since')::timestamptz > statement_timestamp()
+		or (v ->> 'week')::int <> extract(week from statement_timestamp() at time zone 'Europe/Copenhagen')::int then
+		raise exception 'the board''s week is not this Monday-to-Sunday week in Copenhagen: %', v;
+	end if;
 	if jsonb_array_length(v -> 'people') <> 1
+		or v -> 'people' -> 0 ->> 'main_profile_id' <> '11800000-0000-4000-8000-000000000101'
 		or (v -> 'people' -> 0 ->> 'revenue_ore')::bigint <> 75000
 		or jsonb_array_length(v -> 'companies') <> 1
 		or v -> 'companies' -> 0 ->> 'name' <> 'Board shop' then
@@ -111,7 +120,9 @@ begin
 		or jsonb_array_length(v -> 'people') <> 2
 		or not exists (select 1 from jsonb_array_elements(v -> 'people') p
 			where p ->> 'user_id' = '11800000-0000-4000-8000-00000000000b' and (p ->> 'me')::boolean
-				and (p ->> 'revenue_ore')::bigint = 85000 and (p ->> 'companies')::int = 2 and (p ->> 'tasks')::int = 0)
+				and (p ->> 'revenue_ore')::bigint = 85000 and (p ->> 'companies')::int = 2 and (p ->> 'tasks')::int = 0 and (p ->> 'last_week_tasks')::int = 0
+				-- No tasks anywhere: the main company is the one B joined first.
+				and p ->> 'main_profile_id' = '11800000-0000-4000-8000-000000000101')
 		or not exists (select 1 from jsonb_array_elements(v -> 'people') p
 			where p ->> 'user_id' = '11800000-0000-4000-8000-00000000000a' and not (p ->> 'me')::boolean
 				and (p ->> 'revenue_ore')::bigint = 75000 and p ->> 'last_seen_at' is not null)

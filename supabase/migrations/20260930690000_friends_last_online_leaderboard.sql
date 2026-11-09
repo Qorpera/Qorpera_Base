@@ -6,8 +6,8 @@
 -- the time; a pending request shows none either way.
 --
 -- The leaderboard has two categories, each for people and for companies: the
--- busiest, by tasks agents finished this week (runs in qorpera_execution_runs
--- whose result saved work), and the most revenue, by all sales the good will has
+-- busiest, by tasks agents finished this week, a round from Monday 00:00 Danish
+-- time (runs in qorpera_execution_runs whose result saved work), and the most revenue, by all sales the good will has
 -- counted, without VAT (qorpera_good_will_months.net_ore). A person's figure is
 -- the sum over the companies they are a member of. An account can leave its
 -- friends' boards (qorpera_set_leaderboard_hidden); it still sees its own row.
@@ -115,8 +115,11 @@ revoke all on function public.qorpera_set_leaderboard_hidden(boolean) from publi
 grant execute on function public.qorpera_set_leaderboard_hidden(boolean) to authenticated;
 
 -- The board: you and your accepted friends who stay on the boards, and the
--- companies any of you are a member of. Tasks count from 7 days ago; revenue is
--- every good will month so far, in øre without VAT.
+-- companies any of you are a member of. Tasks count from this week's Monday
+-- 00:00 in Copenhagen; revenue is every good will month so far, in øre without
+-- VAT. Last week's tasks (the seven days before this Monday) let the page show
+-- who moved up or down. Each person's main company (their busiest this week,
+-- else the one they joined first) gives the page their figure.
 create function public.qorpera_friends_leaderboard()
 returns jsonb
 language plpgsql
@@ -126,7 +129,8 @@ set search_path = ''
 as $$
 declare
 	v_actor uuid := auth.uid();
-	v_since timestamptz := statement_timestamp() - interval '7 days';
+	v_since timestamptz := date_trunc('week', statement_timestamp() at time zone 'Europe/Copenhagen')
+		at time zone 'Europe/Copenhagen';
 	v_result jsonb;
 begin
 	if v_actor is null then
@@ -144,7 +148,7 @@ begin
 			and not coalesce(presence.leaderboard_hidden, false)
 	),
 	memberships as (
-		select member.profile_id, member.user_id
+		select member.profile_id, member.user_id, member.joined_at
 		from public.qorpera_profile_members member
 		join board on board.user_id = member.user_id
 	),
@@ -154,6 +158,11 @@ begin
 				join public.qorpera_execution_run_results result on result.run_id = run.id
 				where run.profile_id = profile.id and run.created_at >= v_since
 					and result.company_disposition <> 'unchanged') as tasks,
+			(select count(*) from public.qorpera_execution_runs run
+				join public.qorpera_execution_run_results result on result.run_id = run.id
+				where run.profile_id = profile.id
+					and run.created_at >= v_since - interval '7 days' and run.created_at < v_since
+					and result.company_disposition <> 'unchanged') as last_week_tasks,
 			(select coalesce(sum(month.net_ore), 0) from public.qorpera_good_will_months month
 				where month.profile_id = profile.id) as revenue_ore
 		from public.qorpera_profiles profile
@@ -166,14 +175,21 @@ begin
 			(select count(*) from memberships m where m.user_id = account.id) as company_count,
 			(select coalesce(sum(c.tasks), 0) from companies c
 				join memberships m on m.profile_id = c.profile_id and m.user_id = account.id) as tasks,
+			(select coalesce(sum(c.last_week_tasks), 0) from companies c
+				join memberships m on m.profile_id = c.profile_id and m.user_id = account.id) as last_week_tasks,
 			(select coalesce(sum(c.revenue_ore), 0) from companies c
-				join memberships m on m.profile_id = c.profile_id and m.user_id = account.id) as revenue_ore
+				join memberships m on m.profile_id = c.profile_id and m.user_id = account.id) as revenue_ore,
+			(select c.profile_id from companies c
+				join memberships m on m.profile_id = c.profile_id and m.user_id = account.id
+				order by c.tasks desc, m.joined_at, c.profile_id limit 1) as main_profile_id
 		from board
 		join auth.users account on account.id = board.user_id
 		left join public.qorpera_account_presence presence on presence.user_id = account.id
 	)
 	select jsonb_build_object(
 		'since', v_since,
+		'until', v_since + interval '7 days',
+		'week', extract(week from v_since at time zone 'Europe/Copenhagen')::integer,
 		'hidden', coalesce((select presence.leaderboard_hidden from public.qorpera_account_presence presence
 			where presence.user_id = v_actor), false),
 		'people', coalesce((select jsonb_agg(jsonb_build_object(
@@ -183,7 +199,9 @@ begin
 			'last_seen_at', p.last_seen_at,
 			'companies', p.company_count,
 			'tasks', p.tasks,
-			'revenue_ore', p.revenue_ore
+			'last_week_tasks', p.last_week_tasks,
+			'revenue_ore', p.revenue_ore,
+			'main_profile_id', p.main_profile_id
 		) order by p.tasks desc, p.display_name) from people p), '[]'::jsonb),
 		'companies', coalesce((select jsonb_agg(jsonb_build_object(
 			'profile_id', c.profile_id,
@@ -191,6 +209,7 @@ begin
 			'members', (select jsonb_agg(m.user_id order by m.user_id) from memberships m
 				where m.profile_id = c.profile_id),
 			'tasks', c.tasks,
+			'last_week_tasks', c.last_week_tasks,
 			'revenue_ore', c.revenue_ore
 		) order by c.tasks desc, c.name) from companies c), '[]'::jsonb)
 	) into v_result;
