@@ -237,9 +237,12 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	const fail = (why) => { console.error(why); process.exit(1); };
 	const key = `npm_${crypto.randomBytes(18).toString("hex")}`;
 	// xsel serves what it is given from a process of its own, which wants a home.
-	for (const selection of ["--clipboard", "--primary"])
-		execFileSync("/usr/bin/xsel", ["--logfile", "/dev/null", selection, "--input"],
-			{ input: key, env: { ...env, HOME: "/root" }, stdio: ["pipe", "ignore", "ignore"] });
+	const copy = () => {
+		for (const selection of ["--clipboard", "--primary"])
+			execFileSync("/usr/bin/xsel", ["--logfile", "/dev/null", selection, "--input"],
+				{ input: key, env: { ...env, HOME: "/root" }, stdio: ["pipe", "ignore", "ignore"] });
+	};
+	copy();
 	const id = () => crypto.randomUUID();
 	const target = { schema: "qorpera.coding-value-machine-target/v1", service: "npm", valuePattern: "^npm_[A-Za-z0-9]{36}$",
 		variable: "npm_token", companyId: id(), companyMachineId: id(), placementId: id(),
@@ -252,6 +255,12 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if (sealed.stdout.includes(key.slice(4)) || sealed.stderr.includes(key.slice(4))) fail("the clipboard helper printed the key");
 	if (read("--clipboard") !== "" || read("--primary") !== "") fail("the clipboard helper left the key on the clipboard");
 	if (JSON.parse(helper().stdout).code !== "CLIPBOARD_EMPTY") fail("the clipboard helper did not refuse an empty clipboard");
+	// The executor clears it itself after a save that did not end cleanly: the same helper with --clear-only.
+	copy();
+	const clearOnly = spawnSync("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-coding-value.mjs", "--clear-only"], { encoding: "utf8" });
+	if (clearOnly.status !== 0 || JSON.parse(clearOnly.stdout).schema !== "qorpera.machine-coding-value-cleared/v1")
+		fail("the clipboard helper did not clear with --clear-only");
+	if (read("--clipboard") !== "" || read("--primary") !== "") fail("--clear-only left the key on the clipboard");
 	execFileSync("/usr/local/bin/desktop", ["stop"], { stdio: "ignore" });
 	if (JSON.parse(helper().stdout).code !== "DESKTOP_NOT_RUNNING") fail("the clipboard helper did not refuse a stopped desktop");
 JS

@@ -24,6 +24,8 @@ import {
 export const MACHINE_CODING_VALUE_TARGET_SCHEMA = "qorpera.coding-value-machine-target/v1";
 export const MACHINE_CODING_VALUE_BOX_SCHEMA = "qorpera.machine-coding-value-box/v1";
 export const MACHINE_CODING_VALUE_REFUSAL_SCHEMA = "qorpera.machine-coding-value-refusal/v1";
+/** The answer of `--clear-only`, the executor's own clear after a save that did not end cleanly. */
+export const MACHINE_CODING_VALUE_CLEARED_SCHEMA = "qorpera.machine-coding-value-cleared/v1";
 /** Why the helper sealed nothing; each also reaches the agent (cloud-machine-tools.ts says what to do). */
 export const MACHINE_CODING_VALUE_REFUSALS = [
 	/** No desktop runs on the machine, so there is no clipboard. */
@@ -169,27 +171,41 @@ export async function saveCodingValueFromClipboard(
 	} finally {
 		read?.fill(0);
 		// The key leaves the machine's clipboard whatever came of it: a refused one is made again or copied again.
-		await ports.clipboard.clear("clipboard");
-		await ports.clipboard.clear("primary");
+		await clearBoth(ports.clipboard);
 	}
+}
+
+/** Both selections cleared side by side, so the clear takes one xsel's time at most. */
+function clearBoth(clipboard: MachineClipboard): Promise<unknown> {
+	return Promise.all([clipboard.clear("clipboard"), clipboard.clear("primary")]);
 }
 
 /** The display the desktop runs on (deploy/machine/desktop-session), and its socket. */
 const DISPLAY = ":1";
 const DISPLAY_SOCKET = "/tmp/.X11-unix/X1";
 const XSEL = "/usr/bin/xsel";
-/** How long one xsel may take: a selection's owner that never answers is given up. */
-const XSEL_MS = 10_000;
+/**
+ * How long one xsel may take, then it is killed: a selection's owner that never answers is given up (the read asks
+ * xsel itself to give up a second sooner). A save is one read, then both clears side by side: two xsels' time, well
+ * inside the 20 s the executor gives the helper (company-machine-host.ts), so its clear always runs before that.
+ */
+export const MACHINE_XSEL_MS = 4_000;
 
 /** xsel with these arguments against the desktop's display, as root (the session lets root in, xhost localuser:root):
  * its stdout in memory, up to `maxBytes`; nothing on the disk, no log (xsel logs only when it serves a selection it
  * owns, which these arguments never do; its log file is /dev/null all the same). */
-function xsel(args: readonly string[], maxBytes: number): Promise<{ ok: boolean; stdout: Buffer; over: boolean }> {
+function xsel(
+	binary: string,
+	args: readonly string[],
+	maxBytes: number,
+	timeoutMs: number,
+): Promise<{ ok: boolean; stdout: Buffer; over: boolean }> {
 	return new Promise((settle) => {
-		const child = spawn(XSEL, ["--logfile", "/dev/null", ...args], {
+		const child = spawn(binary, ["--logfile", "/dev/null", ...args], {
 			env: { DISPLAY, PATH: "/usr/bin:/bin" },
 			stdio: ["ignore", "pipe", "ignore"],
-			timeout: XSEL_MS,
+			timeout: timeoutMs,
+			killSignal: "SIGKILL",
 		});
 		const chunks: Buffer[] = [];
 		let bytes = 0;
@@ -219,23 +235,38 @@ function xsel(args: readonly string[], maxBytes: number): Promise<{ ok: boolean;
 	});
 }
 
-/** The desktop's clipboard on this machine, through xsel. */
-export const xselClipboard: MachineClipboard = {
-	async read() {
-		if (!existsSync(DISPLAY_SOCKET)) return "no-display";
-		const answer = await xsel(["--clipboard", "--output", "--selectionTimeout", "5000"], MACHINE_CLIPBOARD_MAX_BYTES);
-		if (answer.over) return "too-large";
-		if (!answer.ok) {
-			answer.stdout.fill(0);
-			return existsSync(DISPLAY_SOCKET) ? "unreadable" : "no-display";
-		}
-		return answer.stdout;
-	},
-	async clear(selection) {
-		if (!existsSync(DISPLAY_SOCKET)) return;
-		await xsel([`--${selection}`, "--clear"], 0);
-	},
-};
+/** The desktop's clipboard on this machine, through xsel; the program and the display's socket are fixed (the
+ * options are the tests' own: a stand-in xsel, a socket and a shorter time). */
+export function xselClipboard(
+	options: { readonly xsel?: string; readonly socket?: string; readonly timeoutMs?: number } = {},
+): MachineClipboard {
+	const binary = options.xsel ?? XSEL;
+	const socket = options.socket ?? DISPLAY_SOCKET;
+	const timeoutMs = options.timeoutMs ?? MACHINE_XSEL_MS;
+	// xsel's own wait for the selection's owner ends a second before the kill.
+	const selectionTimeout = String(Math.max(100, timeoutMs - 1000));
+	return {
+		async read() {
+			if (!existsSync(socket)) return "no-display";
+			const answer = await xsel(
+				binary,
+				["--clipboard", "--output", "--selectionTimeout", selectionTimeout],
+				MACHINE_CLIPBOARD_MAX_BYTES,
+				timeoutMs,
+			);
+			if (answer.over) return "too-large";
+			if (!answer.ok) {
+				answer.stdout.fill(0);
+				return existsSync(socket) ? "unreadable" : "no-display";
+			}
+			return answer.stdout;
+		},
+		async clear(selection) {
+			if (!existsSync(socket)) return;
+			await xsel(binary, [`--${selection}`, "--clear"], 0, timeoutMs);
+		},
+	};
+}
 
 /** Reads the target off `stdin`, up to its bound, or null. */
 async function readTarget(stdin: AsyncIterable<Buffer | string>): Promise<unknown> {
@@ -254,19 +285,31 @@ async function readTarget(stdin: AsyncIterable<Buffer | string>): Promise<unknow
 	}
 }
 
-/** The program: the target from stdin, one JSON line on stdout (the box, or a refusal), exit 0. Anything else (a
- * failure) prints a fixed word on stderr and exits 1; the executor never shows either. */
+/**
+ * The program. With no arguments: the target from stdin, one JSON line on stdout (the box, or a refusal), exit 0.
+ * With `--clear-only` (the executor's own clear after a save that did not end cleanly): both selections cleared, stdin
+ * unread, one line saying so. Any other arguments: both selections cleared and the target refused. A failure prints a
+ * fixed word on stderr and exits 1; the executor never shows either.
+ */
 export async function runMachineCodingValueCli(options: {
+	argv: readonly string[];
 	stdin: AsyncIterable<Buffer | string>;
 	stdout: { write(text: string): unknown };
 	ports?: MachineCodingValuePorts;
 }): Promise<number> {
 	const ports = options.ports ?? {
-		clipboard: xselClipboard,
+		clipboard: xselClipboard(),
 		bootId: () => readFile("/proc/sys/kernel/random/boot_id", "utf8"),
 		now: Date.now,
 	};
-	const output = await saveCodingValueFromClipboard(await readTarget(options.stdin), ports);
+	let output: Record<string, unknown>;
+	if (options.argv.length === 1 && options.argv[0] === "--clear-only") {
+		await clearBoth(ports.clipboard);
+		output = { schema: MACHINE_CODING_VALUE_CLEARED_SCHEMA };
+	} else if (options.argv.length > 0) {
+		await clearBoth(ports.clipboard);
+		output = refused("CODING_VALUE_TARGET_INVALID");
+	} else output = await saveCodingValueFromClipboard(await readTarget(options.stdin), ports);
 	options.stdout.write(`${JSON.stringify(output)}\n`);
 	return 0;
 }

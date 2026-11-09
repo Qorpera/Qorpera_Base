@@ -284,11 +284,26 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 		'fail("the clipboard helper left the key on the clipboard")',
 		'fail("the clipboard helper did not refuse an empty clipboard")',
 		'fail("the clipboard helper did not refuse a stopped desktop")',
+		'fail("--clear-only left the key on the clipboard")',
 	])
 		assert.ok(imageScript.includes(line), line);
 	// The check's script sits in the build's single-quoted script: it must hold no single quote.
 	const check = imageScript.slice(imageScript.indexOf('\tnode - <<"JS"\n'), imageScript.indexOf("\nJS\n"));
 	assert.ok(check.length > 0 && !check.includes("'"));
+	// The helper's time fits the executor's deadlines: a read and both clears side by side are two xsels' time, killed
+	// at MACHINE_XSEL_MS each, plus its start, well inside the run's deadline; the executor's own clear (--clear-only)
+	// is one xsel's time and its start, inside its own.
+	const helperSource = read("packages/runtime/src/cloud-machine-coding-value.ts");
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const xselMs = Number(helperSource.match(/\nexport const MACHINE_XSEL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const runMs = Number(hostSource.match(/\nconst CODING_VALUE_MS = (\d+);\n/)[1]);
+	const clearMs = Number(hostSource.match(/\nconst CODING_VALUE_CLEAR_MS = (\d+);\n/)[1]);
+	assert.ok(2 * xselMs + 4000 <= runMs / 1.5, `${xselMs} ms per xsel against ${runMs} ms`);
+	assert.ok(xselMs + 4000 <= clearMs, `${xselMs} ms per xsel against the clear's ${clearMs} ms`);
+	assert.match(helperSource, /timeout: timeoutMs,\n\t\t\tkillSignal: "SIGKILL",/);
+	assert.match(helperSource, /return Promise\.all\(\[clipboard\.clear\("clipboard"\), clipboard\.clear\("primary"\)\]\);/);
+	// The executor's own clear runs on a deadline of its own, never the request's signal.
+	assert.match(hostSource, /AbortSignal\.timeout\(this\.#options\.codingValueClearTimeoutMs \?\? CODING_VALUE_CLEAR_MS\)/);
 	// The executor runs it where the image put it.
 	assert.match(
 		read("packages/runner-orchestrator/src/company-machine-host.ts"),

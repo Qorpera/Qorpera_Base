@@ -1,13 +1,18 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	type CodingValueMachineIdentity,
 	openCodingValueMachineCapture,
 } from "@qorpera/runtime/cloud-coding-value-capture-box";
 import {
+	MACHINE_XSEL_MS,
 	type MachineClipboard,
 	type MachineCodingValuePorts,
 	runMachineCodingValueCli,
 	saveCodingValueFromClipboard,
+	xselClipboard,
 } from "@qorpera/runtime/cloud-machine-coding-value";
 import { describe, expect, it, vi } from "vitest";
 
@@ -175,6 +180,7 @@ describe("save_coding_value's clipboard helper", () => {
 			}
 			expect(
 				await runMachineCodingValueCli({
+					argv: [],
 					stdin: stdin(),
 					stdout: { write: (text) => written.push(text) },
 					ports: f.ports,
@@ -194,6 +200,7 @@ describe("save_coding_value's clipboard helper", () => {
 			yield Buffer.alloc(9000, 0x20);
 		}
 		await runMachineCodingValueCli({
+			argv: [],
 			stdin: large(),
 			stdout: { write: (text) => written.push(text) },
 			ports: f.ports,
@@ -203,5 +210,106 @@ describe("save_coding_value's clipboard helper", () => {
 			code: "CODING_VALUE_TARGET_INVALID",
 		});
 		expect(f.board.read).not.toHaveBeenCalled();
+	});
+
+	it("only clears both selections with --clear-only, the executor's own clear, and never reads the target", async () => {
+		const f = fixture(token);
+		const written: string[] = [];
+		/** stdin that fails the call if it is read at all. */
+		const unread = (): AsyncIterable<Buffer> => ({
+			[Symbol.asyncIterator]: () => {
+				throw new Error("stdin read");
+			},
+		});
+		expect(
+			await runMachineCodingValueCli({
+				argv: ["--clear-only"],
+				stdin: unread(),
+				stdout: { write: (text) => written.push(text) },
+				ports: f.ports,
+			}),
+		).toBe(0);
+		expect(written).toEqual([`${JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })}\n`]);
+		expect(f.cleared.sort()).toEqual(["clipboard", "primary"]);
+		expect(f.board.read).not.toHaveBeenCalled();
+		// Any other arguments: cleared all the same, and refused.
+		const g = fixture(token);
+		const refusedLine: string[] = [];
+		await runMachineCodingValueCli({
+			argv: ["--clear"],
+			stdin: unread(),
+			stdout: { write: (text) => refusedLine.push(text) },
+			ports: g.ports,
+		});
+		expect(JSON.parse(refusedLine[0] as string)).toEqual({
+			schema: "qorpera.machine-coding-value-refusal/v1",
+			code: "CODING_VALUE_TARGET_INVALID",
+		});
+		expect(g.cleared.sort()).toEqual(["clipboard", "primary"]);
+		expect(g.board.read).not.toHaveBeenCalled();
+	});
+});
+
+// The helper's time on the machine: one xsel read and both clears side by side, each xsel killed at MACHINE_XSEL_MS, so
+// the clear always runs well inside the 20 s the executor gives the helper (company-machine-host.ts). A stand-in xsel
+// that never answers shows it, with a shorter time.
+describe("save_coding_value's helper on xsel", () => {
+	async function standIn(read: "hang" | "empty", clear: "hang" | "log") {
+		const dir = await mkdtemp(join(tmpdir(), "qorpera-xsel-"));
+		const socket = join(dir, "X1");
+		await writeFile(socket, "");
+		const xsel = join(dir, "xsel");
+		await writeFile(
+			xsel,
+			[
+				"#!/bin/sh",
+				'dir=$(dirname "$0")',
+				'case " $* " in',
+				`*" --output "*) ${read === "hang" ? "exec sleep 60" : "exit 0"} ;;`,
+				`*" --clear "*) echo "$3" >> "$dir/cleared"; ${clear === "hang" ? "exec sleep 60" : "exit 0"} ;;`,
+				"esac",
+				"",
+			].join("\n"),
+		);
+		await chmod(xsel, 0o755);
+		return { dir, clipboard: xselClipboard({ xsel, socket, timeoutMs: 400 }) };
+	}
+	const cleared = async (dir: string) =>
+		(await readFile(join(dir, "cleared"), "utf8").catch(() => "")).split("\n").filter(Boolean).sort();
+
+	it("gives a read that never answers up in time, and still clears both selections", async () => {
+		const f = fixture(token);
+		for (const clear of ["log", "hang"] as const) {
+			const { dir, clipboard } = await standIn("hang", clear);
+			try {
+				const started = Date.now();
+				expect(await saveCodingValueFromClipboard(f.target, { ...f.ports, clipboard })).toEqual({
+					schema: "qorpera.machine-coding-value-refusal/v1",
+					code: "CLIPBOARD_UNREADABLE",
+				});
+				// One read's time and one clear's (side by side), each killed at its time: never three.
+				expect(Date.now() - started).toBeLessThan(2 * 400 + 600);
+				expect(await cleared(dir)).toEqual(["--clipboard", "--primary"]);
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		}
+		// An empty clipboard is read at once, and cleared all the same.
+		const { dir, clipboard } = await standIn("empty", "log");
+		try {
+			expect(await saveCodingValueFromClipboard(f.target, { ...f.ports, clipboard })).toMatchObject({
+				code: "CLIPBOARD_EMPTY",
+			});
+			expect(await cleared(dir)).toEqual(["--clipboard", "--primary"]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("fits the executor's deadline: a read and a clear at most, each well under it", () => {
+		// The executor gives the helper 20 s and its own clear 10 s (company-machine-host.ts; the guest package's test
+		// checks the two files agree).
+		expect(MACHINE_XSEL_MS).toBe(4000);
+		expect(2 * MACHINE_XSEL_MS + 2000).toBeLessThanOrEqual(10_000);
 	});
 });
