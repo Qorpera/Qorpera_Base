@@ -246,4 +246,35 @@ begin
 end $$;
 reset role;
 
+-- 8. An open ask loses its sender or its asker to an account deletion: void. F (admin) and G (contributor) join; F takes
+--    Jens (nobody's since C's account went) and offers him to the owner; F also asks for the owner's Hugo to go to G.
+insert into auth.users (id, email, email_confirmed_at) values
+	('11900000-0000-4000-8000-00000000000f', 'works-f@example.test', statement_timestamp()),
+	('11900000-0000-4000-8000-000000000010', 'works-g@example.test', statement_timestamp());
+insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role, joined_at) values
+	('11900000-0000-4000-8000-000000000101', '11900000-0000-4000-8000-00000000000f', 'works-f@example.test', 'Works F', 'admin', statement_timestamp()),
+	('11900000-0000-4000-8000-000000000101', '11900000-0000-4000-8000-000000000010', 'works-g@example.test', 'Works G', 'contributor', statement_timestamp());
+select pg_temp.as_member('f');
+set local role authenticated;
+create temporary table works_asks_f(id uuid) on commit drop;
+do $$
+begin
+	if not (public.qorpera_ask_works_for('11900000-0000-4000-8000-000000000101', '11900000-0000-4000-8000-000000000203',
+		'11900000-0000-4000-8000-00000000000f') ->> 'moved')::boolean then raise exception 'F could not take Jens'; end if;
+	insert into works_asks_f select (public.qorpera_ask_works_for('11900000-0000-4000-8000-000000000101',
+		'11900000-0000-4000-8000-000000000203', '11900000-0000-4000-8000-00000000000a') ->> 'ask_id')::uuid;
+	insert into works_asks_f select (public.qorpera_ask_works_for('11900000-0000-4000-8000-000000000101',
+		'11900000-0000-4000-8000-000000000201', '11900000-0000-4000-8000-000000000010') ->> 'ask_id')::uuid;
+	if (select count(*) from works_asks_f where id is not null) <> 2 then raise exception 'F''s two asks are not open'; end if;
+end $$;
+reset role;
+delete from auth.users where id = '11900000-0000-4000-8000-00000000000f';
+do $$
+begin
+	if exists (select 1 from public.qorpera_agent_works_for_asks where id in (select id from works_asks_f) and status <> 'void')
+		then raise exception 'an ask whose sender or asker was deleted is still open'; end if;
+	if exists (select 1 from public.qorpera_agent_works_for_asks where profile_id = '11900000-0000-4000-8000-000000000101'
+		and status = 'open') then raise exception 'an open ask is left'; end if;
+end $$;
+
 rollback;

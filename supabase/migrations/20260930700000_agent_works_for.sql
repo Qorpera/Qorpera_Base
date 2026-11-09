@@ -210,6 +210,10 @@ begin
 	if p_staff_agent_id is null or p_to_user_id is null then
 		raise exception 'agent and member are required' using errcode = '22023'; end if;
 	perform public.qorpera_works_for_hold_members(p_profile_id);
+	-- The caller as they are now: a removal or a demotion that committed while this waited counts.
+	v_role := public.qorpera_member_role(p_profile_id);
+	if v_role is null then raise exception 'Members unavailable' using errcode = '42501'; end if;
+	if v_role = 'viewer' then raise exception 'A viewer cannot move agents' using errcode = '42501'; end if;
 	select member.role into v_to_role from public.qorpera_profile_members as member
 		where member.profile_id = p_profile_id and member.user_id = p_to_user_id;
 	if v_to_role is null or v_to_role = 'viewer' then
@@ -260,6 +264,8 @@ begin
 	if not found or public.qorpera_member_role(v_ask.profile_id) is null then
 		raise exception 'That ask is not here' using errcode = '42501'; end if;
 	perform public.qorpera_works_for_hold_members(v_ask.profile_id);
+	if public.qorpera_member_role(v_ask.profile_id) is null then
+		raise exception 'That ask is not here' using errcode = '42501'; end if;
 	select * into v_ask from public.qorpera_agent_works_for_asks where id = p_ask_id for update;
 	if v_ask.status <> 'open' then
 		return jsonb_build_object('status', v_ask.status, 'moved', false); end if;
@@ -313,20 +319,24 @@ revoke all on function public.qorpera_works_for_member_left() from public, anon,
 create trigger qorpera_works_for_member_left after delete on public.qorpera_profile_members
 	for each row execute function public.qorpera_works_for_member_left();
 
--- An open ask whose member, or the member who answers it, lost their account (an account deletion clears the names
--- before or after the member-left trigger runs) is void: nobody could answer it, and it would hold the agent.
+-- An open ask that loses anyone it names (an account deletion clears the names before or after the member-left trigger
+-- runs: the member it would go to, the one who answers, the one it works for, or the member who asked) is void: it
+-- could no longer be answered as asked, and it would hold the agent.
 create function public.qorpera_works_for_ask_lost_member()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
 	-- 20260930700000
-	if new.status = 'open' and (new.to_user_id is null or new.answer_by_user_id is null) then
+	if new.status = 'open' and ((old.to_user_id is not null and new.to_user_id is null)
+		or (old.answer_by_user_id is not null and new.answer_by_user_id is null)
+		or (old.from_user_id is not null and new.from_user_id is null)
+		or (old.asked_by_user_id is not null and new.asked_by_user_id is null)) then
 		new.status := 'void';
 		new.answered_at := clock_timestamp();
 	end if;
 	return new;
 end $$;
 revoke all on function public.qorpera_works_for_ask_lost_member() from public, anon, authenticated, service_role;
-create trigger qorpera_works_for_ask_lost_member before update of to_user_id, answer_by_user_id
-	on public.qorpera_agent_works_for_asks
+create trigger qorpera_works_for_ask_lost_member
+	before update of to_user_id, answer_by_user_id, from_user_id, asked_by_user_id on public.qorpera_agent_works_for_asks
 	for each row execute function public.qorpera_works_for_ask_lost_member();
