@@ -390,6 +390,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Preview is not available for this file.": "Forhåndsvisning er ikke tilgængelig for denne fil.",
 	"Preview failed · retry": "Forhåndsvisning mislykkedes · prøv igen",
 	"Open preview": "Åbn forhåndsvisning",
+	"Image viewer": "Billedvisning",
+	"Previous image": "Forrige billede",
+	"Next image": "Næste billede",
+	"{index} of {count}": "{index} af {count}",
 	"This image could not be displayed.": "Billedet kunne ikke vises.",
 	"The preview could not be loaded. Close and reopen it to retry.":
 		"Forhåndsvisningen kunne ikke hentes. Luk og åbn den igen for at prøve igen.",

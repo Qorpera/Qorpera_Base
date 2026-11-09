@@ -374,11 +374,11 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(files?.textContent).toContain("Photo.png");
 		thread.element(withFile.id)!.querySelector<HTMLButtonElement>(".received-file")!.click();
 		await settle();
-		expect(document.querySelector<HTMLDialogElement>(".file-preview-dialog")?.open).toBe(true);
+		expect(document.querySelector<HTMLDialogElement>(".image-viewer-dialog")?.open).toBe(true);
 		await thread.show([message(1), withFile, message(3)]);
 		await thread.show([message(1), { ...withFile, pending: "failed" }, message(3)]);
 		expect(thread.element(withFile.id)!.querySelector(".received-attachments")).toBe(files);
-		expect(document.querySelector<HTMLDialogElement>(".file-preview-dialog")?.open).toBe(true);
+		expect(document.querySelector<HTMLDialogElement>(".image-viewer-dialog")?.open).toBe(true);
 		expect(disposed).not.toHaveBeenCalled();
 		await thread.show([message(1), message(3)]);
 		expect(disposed).toHaveBeenCalledOnce();

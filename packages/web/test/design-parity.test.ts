@@ -695,6 +695,69 @@ describe("received content presentation", () => {
 		expect(document.querySelector("dialog img")?.getAttribute("src")).toBe("blob:local-fixture");
 		expect(load).toHaveBeenCalledOnce();
 	});
+	it("steps through the message's images in a frameless viewer with its arrows, the arrow keys and a swipe", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const load = vi.fn(async (_id: string, index: number) => new Blob([`png${index}`], { type: "image/png" }));
+		const view = new ReceivedAttachments(
+			{
+				...imageMessage,
+				attachmentCount: 4,
+				attachments: [
+					image("a"),
+					{ kind: "file", name: "plan.pdf", bytes: 42, mediaType: "application/pdf" },
+					image("b"),
+					image("c"),
+				],
+			},
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const shown = () => document.querySelector<HTMLImageElement>(".image-viewer-dialog img")?.getAttribute("src");
+		const count = () => document.querySelector(".image-viewer-count")?.textContent;
+		const nav = (name: string) =>
+			document.querySelector<HTMLButtonElement>(`.image-viewer-dialog [aria-label="${name}"]`)!;
+		view.el.querySelectorAll<HTMLButtonElement>(".received-image")[1]!.click();
+		await settle();
+		// No title or size line around the picture: just it, the arrows and where it is in the message.
+		expect(document.querySelector(".image-viewer-dialog h2")).toBeNull();
+		expect(shown()).toBe("blob:two");
+		expect(count()).toBe("2 of 3");
+		nav("Next image").click();
+		await settle();
+		expect(shown()).toBe("blob:three");
+		expect(nav("Next image").disabled).toBe(true);
+		const dialog = document.querySelector<HTMLDialogElement>(".image-viewer-dialog")!;
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		await settle();
+		expect(shown()).toBe("blob:one");
+		expect(count()).toBe("1 of 3");
+		expect(nav("Previous image").disabled).toBe(true);
+		// A swipe to the left goes on to the next one.
+		const stage = document.querySelector<HTMLElement>(".image-viewer-stage")!;
+		const pointer = (type: string, x: number, timeStamp = 0) => {
+			const event = new MouseEvent(type, { clientX: x, clientY: 200, button: 0, bubbles: true });
+			Object.defineProperties(event, { pointerId: { value: 1 }, timeStamp: { value: timeStamp } });
+			stage.dispatchEvent(event);
+		};
+		pointer("pointerdown", 300, 0);
+		pointer("pointermove", 220, 60);
+		pointer("pointerup", 220, 100);
+		await settle();
+		expect(shown()).toBe("blob:two");
+		// The PDF stays out of the viewer, and every image was read once.
+		expect(load.mock.calls.map(([, index]) => index).sort()).toEqual([0, 2, 3]);
+	});
 	it("puts a thread image that fails back on its card with a retry", async () => {
 		const reference = { sha256: "b".repeat(64), bytes: 2048, mediaType: "image/png" };
 		const load = vi

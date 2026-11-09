@@ -2,6 +2,7 @@ import type { WorkspaceActions } from "../app/workspace-actions.ts";
 import type { TranscriptAttachment, TranscriptMessage } from "../cloud/transcript.ts";
 import { SurfaceDialog } from "./dialog.ts";
 import { fmtBytes, h, icon, replace } from "./dom.ts";
+import { matchesKey } from "./keys.ts";
 import { t } from "./preferences.ts";
 
 const SAFE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -125,7 +126,13 @@ export class ReceivedAttachments {
 	/** Shows the image in the thread. A message that is still being sent has no readable bytes yet;
 	 * follow() tries again once the cloud has it. */
 	#thumbnail(slot: Slot): void {
-		if (slot.url || slot.loading || slot.failed || this.#message.pending || !this.#showsThumbnail(slot.attachment))
+		if (
+			slot.card.classList.contains("has-thumbnail") ||
+			slot.loading ||
+			slot.failed ||
+			this.#message.pending ||
+			!this.#showsThumbnail(slot.attachment)
+		)
 			return;
 		this.#fetch(slot).then(
 			(url) => {
@@ -187,8 +194,145 @@ export class ReceivedAttachments {
 		}
 	}
 
+	/** The message's images, one at a time over the dimmed thread, with no frame around them: the arrows, the arrow
+	 * keys or a swipe go to the next or the one before. */
+	#view(start: Slot): void {
+		const images = this.#slots.filter((slot) => slot.attachment.kind === "image");
+		let at = Math.max(0, images.indexOf(start));
+		this.#preview?.close(false);
+		const viewer = new SurfaceDialog(t("Image viewer"), "image-viewer-dialog", () => {
+			if (this.#preview === viewer) this.#preview = undefined;
+		});
+		this.#preview = viewer;
+		const stage = h("div", { class: "image-viewer-stage" });
+		const count = h("p", { class: "image-viewer-count", "aria-live": "polite" });
+		const step = (by: number) => {
+			const next = at + by;
+			if (next < 0 || next >= images.length) return;
+			at = next;
+			show(by);
+		};
+		const previous = h(
+			"button",
+			{
+				type: "button",
+				class: "image-viewer-nav is-previous",
+				"aria-label": t("Previous image"),
+				onclick: () => step(-1),
+			},
+			icon("chevron"),
+		) as HTMLButtonElement;
+		const next = h(
+			"button",
+			{ type: "button", class: "image-viewer-nav is-next", "aria-label": t("Next image"), onclick: () => step(1) },
+			icon("chevron"),
+		) as HTMLButtonElement;
+		let shown = 0;
+		const show = (from = 0) => {
+			const slot = images[at]!;
+			const ticket = ++shown;
+			previous.hidden = next.hidden = images.length < 2;
+			previous.disabled = at === 0;
+			next.disabled = at === images.length - 1;
+			count.textContent =
+				images.length > 1 ? t("{index} of {count}", { index: String(at + 1), count: String(images.length) }) : "";
+			viewer.el.setAttribute("aria-label", slot.attachment.name);
+			replace(stage, h("p", { class: "image-viewer-note", role: "status" }, t("Loading preview…")));
+			slot.failed = false;
+			this.#fetch(slot).then(
+				(url) => {
+					if (ticket !== shown || this.#preview !== viewer) return;
+					if (!url) {
+						this.#settle(slot, t("Preview unavailable"));
+						replace(stage, h("p", { class: "image-viewer-note" }, t("Preview is not available for this file.")));
+						return;
+					}
+					if (!slot.card.classList.contains("has-thumbnail")) this.#place(slot, url);
+					const image = h("img", {
+						src: url,
+						alt: slot.attachment.name,
+						draggable: "false",
+						class: from ? (from > 0 ? "is-from-next" : "is-from-previous") : "",
+					});
+					image.onerror = () =>
+						replace(stage, h("p", { class: "image-viewer-note" }, t("This image could not be displayed.")));
+					replace(stage, image);
+				},
+				() => {
+					if (this.#lifetime.signal.aborted) return;
+					slot.failed = true;
+					this.#settle(slot, t("Preview failed · retry"));
+					if (ticket === shown && this.#preview === viewer)
+						replace(
+							stage,
+							h(
+								"p",
+								{ class: "image-viewer-note" },
+								t("The preview could not be loaded. Close and reopen it to retry."),
+							),
+						);
+				},
+			);
+			// The ones beside it come along, so the next step shows at once.
+			for (const near of [images[at - 1], images[at + 1]])
+				if (near && !near.url && !near.loading) this.#fetch(near).catch(() => {});
+		};
+		viewer.el.addEventListener("keydown", (event) => {
+			if (event.altKey || event.ctrlKey || event.metaKey) return;
+			if (matchesKey(event, "left")) {
+				event.preventDefault();
+				step(-1);
+			} else if (matchesKey(event, "right")) {
+				event.preventDefault();
+				step(1);
+			}
+		});
+		// A swipe follows the finger and goes on past a third of the way or with a flick; anything shorter springs
+		// back. A tap beside the picture closes the viewer.
+		let drag: { id: number; x: number; y: number; at: number; dx: number } | undefined;
+		stage.addEventListener("pointerdown", (event) => {
+			if (event.button !== 0) return;
+			drag = { id: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp, dx: 0 };
+		});
+		stage.addEventListener("pointermove", (event) => {
+			if (!drag || drag.id !== event.pointerId) return;
+			const dx = event.clientX - drag.x;
+			if (!drag.dx && Math.abs(dx) < 8) return;
+			if (!drag.dx) stage.setPointerCapture?.(event.pointerId);
+			drag.dx = dx;
+			// Past either end the picture holds back.
+			const end = (dx > 0 && at === 0) || (dx < 0 && at === images.length - 1);
+			stage.style.setProperty("--image-viewer-drag", `${end ? dx / 4 : dx}px`);
+			stage.classList.add("is-dragging");
+		});
+		const release = (event: PointerEvent) => {
+			if (!drag || drag.id !== event.pointerId) return;
+			const { dx, at: began, x, y } = drag;
+			drag = undefined;
+			stage.classList.remove("is-dragging");
+			stage.style.removeProperty("--image-viewer-drag");
+			if (event.type === "pointercancel") return;
+			if (dx) {
+				const flick = Math.abs(dx) > 30 && event.timeStamp - began < 250;
+				if (Math.abs(dx) > stage.clientWidth / 3 || flick) step(dx < 0 ? 1 : -1);
+				return;
+			}
+			const moved = Math.hypot(event.clientX - x, event.clientY - y) > 8;
+			if (!moved && event.target === stage) viewer.close();
+		};
+		stage.addEventListener("pointerup", release);
+		stage.addEventListener("pointercancel", release);
+		viewer.content.append(stage, previous, next, count);
+		viewer.open();
+		show();
+	}
+
 	async #open(slot: Slot): Promise<void> {
 		const { attachment } = slot;
+		if (attachment.kind === "image" && this.#load) {
+			this.#view(slot);
+			return;
+		}
 		this.#preview?.close(false);
 		const preview = new SurfaceDialog(t("Attachment preview"), "file-preview-dialog", () => {
 			if (this.#preview === preview) this.#preview = undefined;
