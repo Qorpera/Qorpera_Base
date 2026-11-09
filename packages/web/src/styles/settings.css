@@ -447,6 +447,8 @@
 .settings-brand-name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .settings-brand-name strong { overflow: hidden; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
 .settings-brand-name-input { min-width: 0; width: min(320px, 100%); font-size: 15px; }
-.settings-brand-note { margin: 0; max-width: 46ch; color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
+.settings-brand-rename { width: 30px; height: 30px; color: var(--text-muted); opacity: .7; }
+.settings-brand-rename:hover, .settings-brand-rename:focus-visible { color: var(--text); opacity: 1; }
+.settings-brand-rename svg { width: 16px; height: 16px; }
 .settings-brand-error:empty { display: none; }
 @media (max-width: 560px) { .settings-brand-row { align-items: flex-start; gap: 14px; } .settings-brand-logo, .settings-brand-logo .figure { width: 64px; height: 64px; } }

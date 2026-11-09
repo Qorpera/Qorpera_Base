@@ -11,7 +11,8 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
  * QorperaOS/brand/logo.svg, which the company's Branding & Identity agent draws and keeps up to date; an owner or admin
  * chooses another the way they choose their own picture (fitted to a rounded square), or removes it. The name is the
  * first line of the company's vision, QorperaOS/vision/vision.md, which renaming rewrites. Colours, fonts and the brand
- * guide live in the brand folder, which a button opens in Storage. */
+ * guide live beside the logo in the brand folder; this section shows only the official name and logo (Jonas, 9 Nov
+ * 2026: no note and no brand-files button here, and a quiet rename). */
 
 export const VISION_PATH = "QorperaOS/vision/vision.md";
 
@@ -23,8 +24,6 @@ export interface CompanyBrandOptions {
 	/** The company folder as the member, for each change (it re-checks the member's authority). */
 	readonly folder: () => WebMemberFolder;
 	readonly signal: AbortSignal;
-	/** Opens the brand folder in Storage. */
-	readonly openBrandFiles: () => void;
 	/** Told after a rename was saved, with the new name. */
 	readonly renamed: (name: string) => void;
 }
@@ -113,19 +112,7 @@ export class CompanyBrandView {
 				"div",
 				{ class: "settings-brand-row" },
 				h("div", { class: "account-picture settings-brand-picture" }, this.#logoButton, this.#menu, this.#input),
-				h(
-					"div",
-					{ class: "settings-brand-copy" },
-					this.#nameSlot,
-					h(
-						"p",
-						{ class: "settings-brand-note" },
-						t(
-							"Your Branding & Identity agent keeps the brand up to date. Its colours, fonts and brand guide live in the company file.",
-						),
-					),
-					button(t("Open brand files"), () => options.openBrandFiles(), { small: true }),
-				),
+				h("div", { class: "settings-brand-copy" }, this.#nameSlot),
 			),
 			this.#error,
 		);
@@ -155,7 +142,20 @@ export class CompanyBrandView {
 		replace(
 			this.#nameSlot,
 			h("strong", null, this.#savedName ?? current),
-			manage ? button(t("Rename"), () => this.#startRename(), { small: true, disabled: this.#busy }) : null,
+			manage
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "icon-button settings-brand-rename",
+							"aria-label": t("Rename the company"),
+							title: t("Rename the company"),
+							disabled: this.#busy,
+							onclick: () => this.#startRename(),
+						},
+						icon("edit"),
+					)
+				: null,
 		);
 	}
 

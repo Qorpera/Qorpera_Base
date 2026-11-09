@@ -558,16 +558,15 @@ describe("settings session lifecycle", () => {
 		const brand = f.root.querySelector<HTMLElement>("#settings-content .settings-brand")!;
 		expect(brand.querySelector("h2")?.textContent).toBe("Brand");
 		expect(brand.querySelector(".settings-brand-name strong")?.textContent).toBe(profileA.profileName);
-		// The owner may change both: the logo button opens the picker, and Rename is offered.
+		// The owner may change both: the logo button opens the picker, and a quiet pencil renames the company.
 		expect(brand.querySelector<HTMLButtonElement>(".settings-brand-logo")!.disabled).toBe(false);
-		expect([...brand.querySelectorAll("button")].some((button) => button.textContent === "Rename")).toBe(true);
+		expect(brand.querySelector(".settings-brand-rename")?.getAttribute("aria-label")).toBe("Rename the company");
 		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
-		// The brand's colours, fonts and guide are files: the button opens them in Storage.
-		[...brand.querySelectorAll<HTMLButtonElement>("button")]
-			.find((button) => button.textContent === "Open brand files")!
-			.click();
-		await draw();
-		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+		// Only the name and the logo: the brand's colours, fonts and guide stay in the company file.
+		expect(brand.querySelector(".settings-brand-note")).toBeNull();
+		expect([...brand.querySelectorAll("button")].map((button) => button.textContent)).not.toContain(
+			"Open brand files",
+		);
 	});
 	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
 		const f = await setup();

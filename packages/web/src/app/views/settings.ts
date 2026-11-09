@@ -1,7 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
-import { COMPANY_BRAND_FOLDER } from "../../cloud/company-logos.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
@@ -978,7 +977,6 @@ export class SettingsView {
 				},
 				folder,
 				signal: lifetime,
-				openBrandFiles: () => this.openFolderPath(COMPANY_BRAND_FOLDER),
 				renamed: () => void this.#hub.refresh(),
 			});
 			if (company.store.get().team?.capabilities.write)
