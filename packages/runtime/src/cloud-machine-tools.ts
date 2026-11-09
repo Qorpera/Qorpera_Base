@@ -12,9 +12,19 @@ import {
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
+import type {
+	CodingValueCaptureAnswer,
+	CodingValueCaptureCall,
+	CodingValueCaptureRequest,
+	CodingValuePrepareAnswer,
+	CodingValueRefusal,
+} from "./cloud-coding-value-vault.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
+	CloudMachineCodingValueRefusal,
+	type CloudMachineCodingValueRefusalCode,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
 	CloudMachineCommandUnanswered,
@@ -39,6 +49,19 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+
+/** The vault, for save_coding_value (20260930705000): the same two calls an office's capture of a coding value makes
+ * (HttpCloudSecretBrokerClient): the value's capture key before the machine reads its clipboard, and the box after. */
+export interface CloudMachineCodingValues {
+	codingValuePrepare(
+		call: CodingValueCaptureCall,
+		signal: AbortSignal,
+	): Promise<CodingValuePrepareAnswer | CodingValueRefusal>;
+	codingValueCapture(
+		request: CodingValueCaptureRequest,
+		signal: AbortSignal,
+	): Promise<CodingValueCaptureAnswer | CodingValueRefusal>;
+}
 
 // Machines (2026-09-28): virtual machines an agent starts for tests, builds
 // and long jobs, of the size it picks, on the company's own nodes. The
@@ -182,6 +205,33 @@ export const CLOUD_MACHINE_STOP_DESCRIPTION =
 	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server, unless a waiting machine needs that disk; otherwise, or if that server is full or gone, it starts fresh with an empty disk. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
 export const CLOUD_MACHINE_DELETE_DESCRIPTION =
 	"Delete a machine and its disk. This cannot be undone. Save what you need first.";
+/** The services a coding value may be taken from (qorpera_coding_value_services, 20260930695000); the database checks
+ * the call again. */
+const CODING_VALUE_SERVICES = ["npm", "github", "stripe", "resend"] as const;
+export const CLOUD_MACHINE_SAVE_CODING_VALUE_DESCRIPTION =
+	"Save a key you made on a service's website into the company's vault as a coding value: an environment variable the company's coding sessions in one repository get (npm_token is NPM_TOKEN). For npm, github, stripe and resend. " +
+	"On a running machine, make the key on the service's site in the machine's browser (desktop start, desktop open URL, sign in, create the key), press the site's own Copy button beside the key (or select the key and press ctrl+c) so it is on the machine's clipboard, then call save_coding_value. You never pass the key: the machine reads its clipboard, checks the key's shape, seals it for the vault and clears the clipboard. " +
+	"The vault stores it (a new version when the variable exists) and grants it to the repository in the name of the member you work for, who must be an owner or an admin. The result says saved, with the version, or why not; the clipboard is cleared either way, so copy the key again (or make a new one) before you call again. " +
+	"Never type, paste, print, echo or write a key anywhere (a command, a file, a message), and take no desktop shot while a key is on the screen: shots are kept in the company folder. " +
+	"A key of another service, or one only a person has, comes from a member: ask_member with surface secret and connectorId environment.";
+/** What the agent does about each refusal of the machine's (the clipboard is cleared in each). */
+const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, string>> = {
+	MACHINE_NOT_RUNNING: "the machine is not running: start it, make or copy the key again, then call again",
+	MACHINE_IMAGE_WITHOUT_CODING_VALUES:
+		"this machine runs an earlier image that cannot save keys; a machine started on the current image can (one that sleeps wakes on it)",
+	DESKTOP_NOT_RUNNING:
+		"the machine's desktop is not running, so it has no clipboard: desktop start, make the key in its browser, press the site's Copy, then call again",
+	CLIPBOARD_EMPTY:
+		"the machine's clipboard is empty: press the site's Copy button beside the key (or select the key and press ctrl+c), then call again",
+	CLIPBOARD_NOT_A_KEY:
+		"the machine's clipboard held no whole key of this service (it was cleared): copy the key itself with the site's Copy button, then call again",
+	CLIPBOARD_MORE_THAN_ONE_KEY:
+		"the machine's clipboard held more than one key of this service (it was cleared): copy only the key to save, then call again",
+	CLIPBOARD_UNREADABLE: "the machine's clipboard could not be read: copy the key again, then call again",
+	MACHINE_BOOT_CHANGED:
+		"the machine restarted, and its clipboard went with it: copy or make the key again, then call again",
+	CODING_VALUE_TARGET_INVALID: "the machine could not take the vault's request; try again with a new operationKey",
+};
 export const CLOUD_MACHINE_LIST_DESCRIPTION =
 	"List the company's machines: name, purpose, size, state (waiting, starting, running, stopping, stopped, deleting), place in line, who started it and how many commands run.";
 
@@ -200,6 +250,9 @@ export function cloudMachineTools(options: {
 	gateway: CloudMachineCommandGateway;
 	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. */
 	worker?: boolean;
+	/** The vault (20260930705000): with it, and a gateway that runs the machine's clipboard helper, a company agent's
+	 * own run (never a worker's) is offered save_coding_value. */
+	codingValues?: CloudMachineCodingValues;
 }): readonly CloudNativeTool[] {
 	const worker = options.worker === true;
 	const binding = parseCloudNativeToolBinding(options.binding),
@@ -921,6 +974,156 @@ export function cloudMachineTools(options: {
 		},
 	};
 
+	/**
+	 * save_coding_value (20260930705000): a key the agent made on a service's site in its machine's browser and copied,
+	 * from the machine's clipboard into the vault. The model passes only where it goes (the service, the variable, the
+	 * repository, why) and the machine; never the value. One receipted call: the vault makes or keeps the value's capture
+	 * key (the office's prepare, bound to this receipt), the executor runs the image's clipboard helper on the machine for
+	 * this receipt (it seals the key to that capture key and clears the clipboard), and the vault opens the box, checks the
+	 * key against the service's pattern again, stores it and grants it to the repository. The answer names the version.
+	 */
+	const codingValues = options.codingValues;
+	const codingValueSaving = !worker && codingValues !== undefined && options.gateway.codingValue !== undefined;
+	const notSaved = (reason: string, message: string, extra: Record<string, JsonValue> = {}) => ({
+		kind: "json" as const,
+		value: { saved: false, refused: { reason, message, ...extra } },
+	});
+	const save: CloudNativeTool = {
+		name: "save_coding_value" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_MACHINE_SAVE_CODING_VALUE_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["operationKey", "machine", "service", "variable", "repository", "purpose"],
+			properties: {
+				operationKey,
+				machine: {
+					...machineName,
+					description: "The running machine whose desktop's clipboard holds the key you copied.",
+				},
+				service: {
+					type: "string",
+					enum: [...CODING_VALUE_SERVICES],
+					description:
+						"Whose key: npm (npm_ and 36 letters or digits), github (github_pat_… or ghp_…), stripe (sk_ or rk_, test_ or live_) or resend (re_…).",
+				},
+				variable: {
+					type: "string",
+					pattern: "^[a-z][a-z0-9_]{0,63}$",
+					description:
+						"The environment variable's name in lower case, as coding sessions get it in upper case (npm_token is NPM_TOKEN). Not one a coding machine sets itself (path, home, the proxies), nor one starting lc_, git_, ld_, ssh_, qorpera_ or a model provider's.",
+				},
+				repository: {
+					type: "string",
+					pattern: CODING_VALUE_REPOSITORY.source,
+					description: "The repository whose coding sessions get it: owner/name in lower case.",
+				},
+				purpose: {
+					type: "string",
+					minLength: 1,
+					maxLength: 300,
+					description: "What the key is for, in plain words (one line), as members see it beside the value.",
+				},
+			},
+		},
+		parseArguments(value) {
+			const input = closed(value, ["operationKey", "machine", "service", "variable", "repository", "purpose"]);
+			key(input.operationKey);
+			name(input.machine);
+			if (typeof input.service !== "string" || !(CODING_VALUE_SERVICES as readonly string[]).includes(input.service))
+				throw new Error("Coding values come from npm, github, stripe or resend");
+			if (typeof input.variable !== "string" || !codingValueNameAllowed(input.variable))
+				throw new Error(
+					"A coding value's variable is a lower-case environment variable name a coding session may get",
+				);
+			if (typeof input.repository !== "string" || !CODING_VALUE_REPOSITORY.test(input.repository))
+				throw new Error("A coding value's repository is owner/name in lower case");
+			const purpose = typeof input.purpose === "string" ? input.purpose.trim().replace(/\s+/g, " ") : "";
+			if (!purpose || purpose.length > 300 || /\p{Cc}/u.test(purpose))
+				throw new Error("A coding value needs a purpose of one line, at most 300 characters");
+			return {
+				operationKey: input.operationKey,
+				machine: input.machine,
+				service: input.service,
+				variable: input.variable,
+				repository: input.repository,
+				purpose,
+			};
+		},
+		async execute(value, context) {
+			check(context);
+			const input = value as Record<string, string>;
+			const machine = await find(input.machine, context.signal);
+			if (!machine) return notSaved("MACHINE_NOT_FOUND", `no machine is named ${input.machine}`);
+			if (machine.state !== "running")
+				return notSaved("MACHINE_NOT_RUNNING", `${machine.name} is ${machine.state}`, { state: machine.state });
+			const vault = codingValues as CloudMachineCodingValues;
+			const sealer = options.gateway.codingValue?.bind(options.gateway);
+			if (!sealer) throw new Error("Coding values are unavailable");
+			return options.operations.execute({
+				operation: {
+					tool: "save_coding_value",
+					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+					logicalOperationKey: input.operationKey,
+					arguments: input,
+					target: { realm: "company_machine", machineId: machine.machineId },
+					requiresCompanyRevision: false,
+				},
+				signal: context.signal,
+				observation: context.observation,
+				performMs: CLOUD_MACHINE_START_ANSWER_MS,
+				authorize: async (_operation, admitted) => {
+					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Coding value identity changed");
+				},
+				perform: async (operation, effect) => {
+					// The vault's calls and the executor's are bound to this receipt and this exact call (its digest).
+					const call: CodingValueCaptureCall = {
+						binding,
+						receiptId: effect.receiptId,
+						idempotencyKey: effect.idempotencyKey,
+						envelope: cloudNativeToolOperationEnvelope(effect.identity, operation),
+					};
+					const prepared = await vault.codingValuePrepare(call, effect.signal);
+					if (prepared.schema === "qorpera.coding-value-refusal/v1")
+						return { content: notSaved("VAULT_REFUSED", prepared.message, { code: prepared.code }) };
+					if (prepared.variable !== input.variable) throw new Error("Coding value capture unconfirmed");
+					let sealed: { readonly box: Readonly<Record<string, string>> };
+					try {
+						sealed = await sealer(
+							{ machineId: machine.machineId },
+							{ commandId: effect.receiptId, envelope: call.envelope },
+							effect.signal,
+						);
+					} catch (error) {
+						if (error instanceof CloudMachineCodingValueRefusal)
+							return { content: notSaved(error.code, CODING_VALUE_REFUSED[error.code]) };
+						throw error;
+					}
+					const stored = await vault.codingValueCapture({ ...call, box: sealed.box }, effect.signal);
+					if (stored.schema === "qorpera.coding-value-refusal/v1")
+						return { content: notSaved("VAULT_REFUSED", stored.message, { code: stored.code }) };
+					if (stored.variable !== input.variable || stored.repository !== input.repository)
+						throw new Error("Coding value capture unconfirmed");
+					return {
+						content: {
+							kind: "json",
+							value: {
+								saved: {
+									service: input.service,
+									variable: stored.variable,
+									repository: stored.repository,
+									version: stored.version,
+									unchanged: stored.unchanged,
+								},
+							},
+						},
+					};
+				},
+			});
+		},
+	};
+
 	return [
 		start,
 		run,
@@ -929,6 +1132,7 @@ export function cloudMachineTools(options: {
 		change("stop", CLOUD_MACHINE_STOP_DESCRIPTION),
 		change("delete", CLOUD_MACHINE_DELETE_DESCRIPTION),
 		listTool,
+		...(codingValueSaving ? [save] : []),
 	];
 }
 

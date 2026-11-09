@@ -94,6 +94,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"update_wall",
 	"crew_and_members",
 	"offer_agents_to_member",
+	// A key the agent made, saved off its company machine's clipboard into the vault (20260930705000).
+	"save_coding_value",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

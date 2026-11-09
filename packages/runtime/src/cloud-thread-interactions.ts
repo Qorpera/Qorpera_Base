@@ -107,7 +107,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 		},
 		"surface secret: the member saves a value into the company vault; you never see it. " +
 			// The guidance lives here: ask_member's description is at its 4096-byte limit.
-			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. A key you can make yourself on npm, GitHub, Stripe or Resend needs no card: make it on that site in your company computer's browser and save it with computer_browser vault_capture (codingValue).",
+			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. A key you can make yourself on npm, GitHub, Stripe or Resend needs no card: make it on that site in your machine's browser, press the site's Copy and save it with save_coding_value (on a company computer, computer_browser vault_capture with codingValue).",
 	),
 	form: closedObject(
 		["domain", "fields"],

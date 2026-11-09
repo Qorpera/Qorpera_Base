@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
-	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCommandHttpRequest, cloudMachineCommandHead, CloudMachineCommandRefusal,
+	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
+	cloudMachineCommandHead, CloudMachineCommandRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
@@ -77,4 +78,51 @@ export async function authorizeMachineCommand(
 		executorOwner: result.executorOwner, providerId: result.providerId, bootId: result.bootId as string | null,
 		runId: identity.runId, staffAgentId: identity.staffAgentId, requestedByUserId: identity.requesterUserId,
 		folderLost: folderLost ?? null };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** What SQL says about one save_coding_value (20260930705000): where the machine runs, and the clipboard helper's target
+ * (the service's pattern, the value's capture key and what the box is bound to), which goes to the helper as SQL wrote
+ * it. Nothing in it is secret. */
+export interface MachineCodingValueAuthority {
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	receiptId: string;
+	target: Record<string, unknown>;
+}
+
+/** The calling run's live tool authority, its own executing save_coding_value receipt of exactly this envelope, the
+ * run's and requester's rules, a running machine of its company and a current capture key, all in SQL
+ * (qorpera_authorize_machine_coding_value). A machine that is not running is the agent's refusal; anything else SQL
+ * refuses fails the request. */
+export async function authorizeMachineCodingValue(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: CloudMachineCodingValueHttpRequest,
+	signal: AbortSignal,
+): Promise<MachineCodingValueAuthority> {
+	const value = await control.call("qorpera_authorize_machine_coding_value", {
+		p_binding: request.binding, p_scope: request.scope, p_receipt_id: request.input.commandId, p_envelope: request.input.envelope,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.machine-coding-value-authority/v1") throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+	if (result.state === "refused" && result.reason === "MACHINE_NOT_RUNNING") throw new CloudMachineCodingValueRefusal("MACHINE_NOT_RUNNING");
+	const target = result.target;
+	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
+		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
+		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		!target || typeof target !== "object" || Array.isArray(target)) throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+	const bound = target as Record<string, unknown>;
+	// The helper's target names the same machine, placement, boot and receipt the executor runs it for.
+	if (bound.schema !== "qorpera.coding-value-machine-target/v1" || bound.companyMachineId !== result.machineId ||
+		bound.placementId !== result.placementId || bound.bootId !== result.bootId || bound.receiptId !== result.receiptId)
+		throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
+		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound } };
 }

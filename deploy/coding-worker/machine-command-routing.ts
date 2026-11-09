@@ -1,14 +1,22 @@
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
+import type { CompanyMachineCodingValue, CompanyMachineCodingValueOutcome } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
+	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
 	CLOUD_MACHINE_WAKE_WAIT_MS,
+	type CloudMachineCodingValueAnswer,
+	CloudMachineCodingValueRefusal,
+	type CloudMachineCodingValueHttpRequest,
 	type CloudMachineCommandHttpRequest,
 	CloudMachineCommandRefusal,
 	type CloudMachineWakeHttpRequest,
 	cloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
+	isCloudMachineCodingValueRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
-import { authorizeMachineCommand, type MachineCommandAuthority } from "./machine-command-authority.ts";
+import {
+	authorizeMachineCodingValue, authorizeMachineCommand, type MachineCodingValueAuthority, type MachineCommandAuthority,
+} from "./machine-command-authority.ts";
 
 interface MachineCommandRouterOptions {
 	owner: string;
@@ -20,6 +28,8 @@ interface MachineCommandRouterOptions {
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
+	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
+	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
 	fetch?: typeof fetch;
 }
 
@@ -81,6 +91,25 @@ export class MachineCommandRouter {
 			throw refusal ? new CloudMachineCommandRefusal(refusal, error instanceof CloudMachineCommandRefusal ? error.folderLost : undefined) : error;
 		}
 	}
+	/** save_coding_value (20260930705000): SQL names the machine's executor, as for a command. This node runs the helper; another
+	 * node's executor is sent the request once (it reads SQL again and only runs it locally): the helper clears the clipboard, so a
+	 * send again would find nothing. Its refusal reaches the agent as the same refusal (a 409 with its code). */
+	async codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCodingValueAnswer> {
+		const authority = await authorizeMachineCodingValue(this.#options.control, request, signal);
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.codingValueLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			return this.#options.codingValueLocal(authority, signal);
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			holder: null, fetch: this.#options.fetch,
+		});
+		if (!gateway.codingValue) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		return gateway.codingValue(request.scope, request.input, signal);
+	}
 }
 
 /** How a router reaches this node's machines for a wake (MachineCommandRouter's `wakeLocal`). */
@@ -95,6 +124,22 @@ export function localMachineWake(host: {
 	};
 }
 
+/** How a router runs save_coding_value's helper on this node's machines (MachineCommandRouter's `codingValueLocal`): the
+ * host's box is the answer, a code the agent can act on its refusal, and any other code a failure. */
+export function localMachineCodingValue(host: {
+	codingValue(run: CompanyMachineCodingValue, signal: AbortSignal): Promise<CompanyMachineCodingValueOutcome>;
+}): (authority: MachineCodingValueAuthority, signal: AbortSignal) => Promise<CloudMachineCodingValueAnswer> {
+	return async (authority, signal) => {
+		const outcome = await host.codingValue({ placementId: authority.placementId, bootId: authority.bootId,
+			receiptId: authority.receiptId, target: authority.target }, signal);
+		if ("refused" in outcome) {
+			if (isCloudMachineCodingValueRefusal(outcome.refused)) throw new CloudMachineCodingValueRefusal(outcome.refused);
+			throw new Error("MACHINE_CODING_VALUE_FAILED");
+		}
+		return { schema: CLOUD_MACHINE_CODING_VALUE_SCHEMA, commandId: authority.receiptId, box: outcome.box };
+	};
+}
+
 /** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
  * never forwards. */
 export function machineCommandRoutes(
@@ -105,10 +150,12 @@ export function machineCommandRoutes(
 	authorize(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<MachineCommandAuthority>;
 	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
 	wake(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
+	codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
 } {
 	return {
 		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, localOnly),
 		wake: (request, signal) => router.wake(request, signal, localOnly),
+		codingValue: (request, signal) => router.codingValue(request, signal, localOnly),
 	};
 }
