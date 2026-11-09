@@ -559,7 +559,9 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-company");
 		await draw();
 		const brand = f.root.querySelector<HTMLElement>("#settings-content .settings-brand")!;
-		expect(brand.querySelector("h2")?.textContent).toBe("Brand");
+		// No title over it (Jonas, 9 Nov 2026): the logo and the name say what it is.
+		expect(brand.querySelector("h2")).toBeNull();
+		expect(brand.getAttribute("aria-label")).toBe("Brand");
 		expect(brand.querySelector(".settings-brand-name strong")?.textContent).toBe(profileA.profileName);
 		// The owner may change the logo; the name is shown, and renaming is deferred.
 		expect(brand.querySelector<HTMLButtonElement>(".settings-brand-logo")!.disabled).toBe(false);
