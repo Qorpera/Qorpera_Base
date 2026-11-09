@@ -11,6 +11,10 @@ canvases lazily, loads only the selected activity, accepts the static asset
 base URL (the product JS is bundled), and permits retry after a failed load.
 Its two read-back canvases are created with `willReadFrequently` (9 Nov 2026), so
 the per-frame `getImageData` calls do not stall on a GPU canvas.
+It keeps its last six prepared frames rather than one (several figures paint each
+frame; views of one agent no longer decode its frame again), and `drawRecordedEyes`
+returns the device-pixel box the eyes reach, so the compositor halves and cuts only
+that box (9 Nov 2026). The decoded pixels are unchanged.
 Its eye extraction, placement, and stroke compositing remain the studio's.
 
 The TypeScript compositor in `src/ui/figure-motion.ts` ports the studio's
