@@ -1124,7 +1124,9 @@ describe("conversation UI boundaries", () => {
 		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
 		// The foot laid over the messages' end too: the messages keep room for it under their last line.
 		const foot = view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot")!;
-		expect(sizes.targets).toEqual([messages, foot]);
+		// And the messages themselves, which grow when a sent image's picture arrives.
+		const log = messages.querySelector<HTMLElement>(".messages-log")!;
+		expect(sizes.targets).toEqual([messages, foot, log]);
 		document.body.append(view.el);
 		metrics.scrollHeight = 2000;
 		Object.defineProperty(foot, "offsetHeight", { configurable: true, get: () => 118 });

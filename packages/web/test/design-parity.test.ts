@@ -662,6 +662,60 @@ describe("received content presentation", () => {
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:local-fixture");
 	});
+	it("shows a readable image in the thread without a click and reuses its bytes for the preview", async () => {
+		const sent: TranscriptMessage = {
+			...imageMessage,
+			pending: "queued",
+			attachments: [
+				{
+					kind: "image",
+					name: "Image attachment",
+					bytes: 2048,
+					mediaType: "image/png",
+					reference: { sha256: "a".repeat(64), bytes: 2048, mediaType: "image/png" },
+				},
+			],
+		};
+		const load = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+		const view = new ReceivedAttachments(sent, load);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		const card = view.el.querySelector<HTMLButtonElement>(".received-file")!;
+		// While the message is on its way its bytes can't be read: a quiet box holds the place.
+		await settle();
+		expect(load).not.toHaveBeenCalled();
+		expect(card.classList.contains("awaits-thumbnail")).toBe(true);
+		view.follow({ ...sent, pending: undefined });
+		await settle();
+		expect(load).toHaveBeenCalledExactlyOnceWith(imageMessage.id, 0, expect.any(AbortSignal));
+		expect(card.classList.contains("has-thumbnail")).toBe(true);
+		expect(card.querySelector("img")?.getAttribute("src")).toBe("blob:local-fixture");
+		card.click();
+		await settle();
+		expect(document.querySelector("dialog img")?.getAttribute("src")).toBe("blob:local-fixture");
+		expect(load).toHaveBeenCalledOnce();
+	});
+	it("puts a thread image that fails back on its card with a retry", async () => {
+		const reference = { sha256: "b".repeat(64), bytes: 2048, mediaType: "image/png" };
+		const load = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Unavailable"))
+			.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+		const view = new ReceivedAttachments(
+			{ ...imageMessage, attachments: [{ ...imageMessage.attachments![0]!, reference }] },
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const card = view.el.querySelector<HTMLButtonElement>(".received-file")!;
+		expect(card.classList.contains("awaits-thumbnail")).toBe(false);
+		expect(card.textContent).toContain("retry");
+		card.click();
+		await settle();
+		expect(card.classList.contains("has-thumbnail")).toBe(true);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
 	it("discards preview bytes that arrive after the conversation is disposed", async () => {
 		const pending = deferred<Blob>();
 		const view = new ReceivedAttachments(imageMessage, () => pending.promise);
