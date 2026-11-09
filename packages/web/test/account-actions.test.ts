@@ -8,6 +8,17 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { fixture, id, profileA, settle, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
+/** jsdom does not implement the native dialog methods the Friends window opens and closes with. */
+function stubDialogs(): void {
+	const dialog = HTMLDialogElement.prototype;
+	dialog.showModal ??= function (this: HTMLDialogElement) {
+		this.open = true;
+	};
+	dialog.close ??= function (this: HTMLDialogElement) {
+		this.open = false;
+	};
+}
+stubDialogs();
 afterEach(() => {
 	dispose?.();
 	document.body.replaceChildren();

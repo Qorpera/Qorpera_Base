@@ -35,6 +35,7 @@ import { folderFake } from "./folder-fake.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
+	stubDialogs();
 	vi.useFakeTimers();
 	vi.stubGlobal("crypto", webcrypto);
 	// The usage refresh behind each account check hashes with crypto.subtle,
@@ -77,17 +78,20 @@ function mounted(hash = "#/") {
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
 }
-/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
-function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
-	// jsdom does not implement the native dialog methods the card opens and closes with.
+/** jsdom does not implement the native dialog methods the Friends window and agent cards open and closes with. */
+function stubDialogs(): void {
 	const dialog = HTMLDialogElement.prototype;
 	dialog.showModal ??= function (this: HTMLDialogElement) {
 		this.open = true;
 	};
-	dialog.show ??= dialog.showModal;
 	dialog.close ??= function (this: HTMLDialogElement) {
 		this.open = false;
 	};
+}
+/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
+function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
+	stubDialogs();
+	HTMLDialogElement.prototype.show ??= HTMLDialogElement.prototype.showModal;
 	root
 		.querySelector(`.rail [data-agent-id="${agentId}"], .rail [data-cofounder-id="${agentId}"]`)!
 		.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
