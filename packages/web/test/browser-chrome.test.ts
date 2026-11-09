@@ -81,6 +81,13 @@ describe("sidebars follow Safari's toolbar", () => {
 		focused = false;
 		vi.advanceTimersByTime(500);
 		expect(root.dataset.windowInactive).toBe("");
+		// It comes back with focus still in the frame: again no event reaches the page.
+		focused = true;
+		vi.advanceTimersByTime(500);
+		expect(root.dataset.windowInactive).toBeUndefined();
+		// Focus returns to the page itself: the look stops.
+		window.dispatchEvent(new Event("focus"));
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it("leaves other browsers alone", () => {

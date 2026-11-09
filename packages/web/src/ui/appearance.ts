@@ -164,7 +164,9 @@ export function safariOnMac(): boolean {
 }
 
 /** Marks Safari and whether its window is in front. Focus inside an iframe of the page still
- * counts as in front: document.hasFocus() covers nested frames. */
+ * counts as in front: document.hasFocus() covers nested frames. A page cannot tell its window
+ * going behind from focus moving into Safari's own address bar (Cmd-L), so the sidebar also
+ * takes the darker grey while the member types an address. */
 export function applyBrowserChrome(): void {
 	const root = document.documentElement;
 	if (!safariOnMac()) {
@@ -177,35 +179,27 @@ export function applyBrowserChrome(): void {
 	else root.dataset.windowInactive = "";
 }
 
-/** Keep the in-front mark current. While focus sits inside an iframe the page gets no blur
- * when the window goes behind, so it looks again every half second until it does. */
+/** Keep the in-front mark current. Once the page itself loses focus, the focus and blur
+ * events of the window can go to an iframe instead (focus moved into one, or comes back to
+ * one when the window returns), so it looks every half second until the page has focus again. */
 function watchBrowserChrome(): () => void {
 	applyBrowserChrome();
 	if (document.documentElement.dataset.chrome !== "safari") return () => undefined;
-	let framePoll: ReturnType<typeof setInterval> | undefined;
-	const stopPoll = () => {
-		if (framePoll !== undefined) clearInterval(framePoll);
-		framePoll = undefined;
-	};
-	const check = () => {
-		applyBrowserChrome();
-		if (!document.hasFocus()) stopPoll();
-	};
+	let poll: ReturnType<typeof setInterval> | undefined;
 	const onFocus = () => {
-		stopPoll();
+		if (poll !== undefined) clearInterval(poll);
+		poll = undefined;
 		applyBrowserChrome();
 	};
 	const onBlur = () => {
 		// Focus moving into a frame blurs the page first; look once it has landed.
-		setTimeout(() => {
-			applyBrowserChrome();
-			if (document.hasFocus() && framePoll === undefined) framePoll = setInterval(check, 500);
-		}, 0);
+		setTimeout(applyBrowserChrome, 0);
+		poll ??= setInterval(applyBrowserChrome, 500);
 	};
 	window.addEventListener("focus", onFocus);
 	window.addEventListener("blur", onBlur);
 	return () => {
-		stopPoll();
+		if (poll !== undefined) clearInterval(poll);
 		window.removeEventListener("focus", onFocus);
 		window.removeEventListener("blur", onBlur);
 	};
