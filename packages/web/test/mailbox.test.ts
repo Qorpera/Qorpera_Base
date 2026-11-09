@@ -7,6 +7,7 @@ import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 import {
@@ -444,6 +445,28 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='mailbox']")).not.toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='webhook']")).toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
+	});
+
+	it("builds the address cards again for a company opened again, and in a new language", async () => {
+		const { f, main, controller, manage } = await mailbox(() => {});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		const first = main.querySelector(".mailbox-manage .hooks");
+		// The company is left and opened again: a new controller for the same company, the old one stopped.
+		const again = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => again.stop());
+		again.store.set(controller.store.get());
+		controller.stop();
+		renderMailbox(main, again, "mailbox", { manage: () => manage });
+		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		expect(main.querySelector(".mailbox-manage .hooks")).not.toBe(first);
+		expect(manage.hooks.list).toHaveBeenCalledTimes(2);
+		// A new language builds them again in it.
+		setLanguagePreference("da");
+		cleanup.push(() => setLanguagePreference("system"));
+		renderMailbox(main, again, "mailbox", { manage: () => manage });
+		await vi.waitFor(() => expect(button(main, "Tilføj postkasse")).toBeDefined());
 	});
 
 	it("asks the chosen agent to write an email, from the address it answers", async () => {

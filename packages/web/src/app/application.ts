@@ -511,6 +511,8 @@ export function mountApplication(
 		appPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
+		sitesPage?.view.dispose();
+		sitesPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;

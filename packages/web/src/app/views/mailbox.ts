@@ -83,8 +83,28 @@ interface MailboxUi {
 }
 
 const uis = new WeakMap<HTMLElement, MailboxUi>();
-/** The address and Digital Post cards of a page's state, kept so a form being filled survives a redraw. */
-const manageViews = new WeakMap<MailboxUi, { readonly hooks: HooksView; readonly post: DigitalPostView }>();
+/** A number for each company controller drawn: the company opened again draws afresh, so the cards it keeps are its. */
+const controllers = new WeakMap<CompanyController, number>();
+let controllerCount = 0;
+function controllerKey(company: CompanyController): number {
+	let key = controllers.get(company);
+	if (key === undefined) {
+		key = ++controllerCount;
+		controllers.set(company, key);
+	}
+	return key;
+}
+/** The address and Digital Post cards of a page's state, kept so a form being filled survives a redraw: for the company
+ * controller and the language they were built for. */
+const manageViews = new WeakMap<
+	MailboxUi,
+	{
+		readonly company: CompanyController;
+		readonly locale: string;
+		readonly hooks: HooksView;
+		readonly post: DigitalPostView;
+	}
+>();
 let toastIds = 0;
 
 /** The calls behind the company's mail addresses and its Digital Post key. */
@@ -146,6 +166,7 @@ export function renderMailbox(
 	const staff = state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]);
 	const key = JSON.stringify([
 		profileId,
+		controllerKey(company),
 		company.userId,
 		presentationLocale(),
 		presentationTimeZone(),
@@ -388,11 +409,20 @@ function manageArea(page: Page): HTMLElement | null {
 	const { company, ui, options } = page;
 	if (!options.manage || company.store.get().team?.capabilities.authorize !== true) return null;
 	let views = manageViews.get(ui);
+	// The company opened again (a new controller, the old one stopped) or a new language: the cards are built again.
+	if (views && (views.company !== company || company.signal.aborted || views.locale !== presentationLocale())) {
+		views.hooks.dispose();
+		views.post.dispose();
+		manageViews.delete(ui);
+		views = undefined;
+	}
 	if (!views) {
 		const calls = options.manage();
 		const access = { canManage: () => company.store.get().team?.capabilities.authorize === true };
 		const changed = () => void CompanyMail.of(company)?.reread();
 		views = {
+			company,
+			locale: presentationLocale(),
 			hooks: new HooksView(calls.hooks, company.signal, { access, kinds: ["mailbox"], changed }),
 			post: new DigitalPostView(calls.digitalPost, company.signal, { access, changed }),
 		};

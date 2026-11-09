@@ -536,6 +536,46 @@ describe("agent routines section", () => {
 		stop.abort();
 	});
 
+	it("follows a role change while the routines are open: the webhook controls go and come back", async () => {
+		const webhooks = {
+			list: vi.fn(async () => []),
+			createHook: vi.fn(),
+			createMailbox: vi.fn(),
+			setStatus: vi.fn(),
+		};
+		let manage = true;
+		const listeners = new Set<() => void>();
+		const stop = new AbortController();
+		const view = new AgentRoutines(
+			() => staff,
+			{
+				routines: mocked([]),
+				accounts: async () => ({ connections: [account] }),
+				canManage: () => manage,
+				webhooks,
+				onChange: (listener) => {
+					listeners.add(listener);
+					return () => listeners.delete(listener);
+				},
+			},
+			stop.signal,
+		);
+		document.body.append(view.el);
+		const add = () =>
+			[...view.el.querySelectorAll<HTMLButtonElement>(".hooks button")].find(
+				(each) => each.textContent === "Add webhook",
+			);
+		await vi.waitFor(() => expect(add()).toBeDefined());
+		manage = false;
+		for (const listener of listeners) listener();
+		expect(add()).toBeUndefined();
+		manage = true;
+		for (const listener of listeners) listener();
+		await vi.waitFor(() => expect(add()).toBeDefined());
+		stop.abort();
+		expect(listeners.size).toBe(0);
+	});
+
 	it("lists this agent's routines and hides another agent's and retired ones", async () => {
 		const f = mount([
 			routine(),

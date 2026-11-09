@@ -58,6 +58,9 @@ export interface AgentRoutineAccess {
 	/** The company's webhooks, listed under the routines (Jonas, 9 Nov 2026: they live with the routines, not in
 	 * Settings). Owners and admins add, pause and remove them. */
 	webhooks?: HooksClient;
+	/** Tells `listener` of each company change (a role that changed decides what the webhooks offer); answers how to
+	 * stop. */
+	onChange?: (listener: () => void) => () => void;
 }
 
 /** Routine access for the signed-in member, or none when the page was not given the routine calls. */
@@ -76,6 +79,7 @@ export function routineAccessFor(
 		memberName: (userId) => company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 		memberId: company.userId,
 		...(actions.eventHooks ? { webhooks: actions.eventHooks } : {}),
+		onChange: (listener) => company.store.subscribe(listener),
 	};
 }
 
@@ -365,6 +369,12 @@ export class AgentRoutines {
 		this.#webhooks = access?.webhooks
 			? new HooksView(access.webhooks, signal, { access: { canManage: access.canManage }, kinds: ["webhook"] })
 			: undefined;
+		// A role that changed while the page is open shows at once: an admin made a member loses the addresses and
+		// controls, and the other way round.
+		if (this.#webhooks && access?.onChange && !signal.aborted) {
+			const stop = access.onChange(() => this.#webhooks?.update());
+			signal.addEventListener("abort", stop, { once: true });
+		}
 		this.#list();
 		if (access) void this.#refresh();
 	}

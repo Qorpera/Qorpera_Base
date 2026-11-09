@@ -107,7 +107,12 @@
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] { min-height: 32px; gap: 7px; padding: 5px 11px; white-space: nowrap; border-radius: 999px; }
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] > .icon { width: 16px; height: 16px; }
 	:root .settings-dialog.settings-unified .settings-nav .settings-back { flex: none; margin: 0 0 0 auto; min-height: 32px; padding: 5px 10px; white-space: nowrap; }
-	.settings-nav-heading, .settings-storage-usage { display: none; }
+	.settings-nav-heading { display: none; }
+	/* On a phone Storage's tabs are one row; what the company uses stands on a line under them, with Retry when it can't
+	 * be read. */
+	:root .settings-dialog.settings-unified .settings-storage-nav { flex-wrap: wrap; row-gap: 6px; }
+	.settings-storage-usage { display: flex; flex: 1 0 100%; align-items: center; gap: 10px; margin: 0; padding: 0 4px; }
+	.settings-storage-usage progress { flex: 0 1 120px; }
 	:root .settings-dialog.settings-unified .settings-content, .settings-storage-content { grid-column: 1; grid-row: 2; padding: 18px 16px 24px; }
 	:root .settings-dialog.settings-unified .settings-content h1 { font-size: 20px; margin-bottom: 22px; }
 	:root .settings-dialog.settings-unified .account .preference-picker-button { min-width: 0; }
