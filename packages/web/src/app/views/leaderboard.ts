@@ -417,21 +417,15 @@ export class LeaderboardView {
 				h(
 					"span",
 					{ class: shared ? "leaderboard-champion-figures is-shared" : "leaderboard-champion-figures" },
-					...leaders
-						.slice(0, 3)
-						.map((entry) =>
-							h(
-								"span",
-								{
-									class: entry.userId
-										? "leaderboard-champion-figure is-person"
-										: "leaderboard-champion-figure",
-								},
-								entry.userId
-									? personAvatar(entry.name, entry.userId)
-									: companyLogo(entry.profileId ?? entry.key),
-							),
+					...leaders.slice(0, 3).map((entry) =>
+						h(
+							"span",
+							{
+								class: entry.userId ? "leaderboard-champion-figure is-person" : "leaderboard-champion-figure",
+							},
+							entry.userId ? personAvatar(entry.name, entry.userId) : companyLogo(entry.profileId ?? entry.key),
 						),
+					),
 				),
 				h(
 					"div",
