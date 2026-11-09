@@ -222,7 +222,7 @@ describe("index.html's static first screens", () => {
 	it("download nothing: no image, no style, no script, no link", () => {
 		expect(
 			boot.querySelectorAll(
-				"img, picture, source, video, link, script, style, iframe, object, [style], [src], [data-href]",
+				"img, picture, source, video, link, script, style, iframe, object, [style], [src], [href], [data-href]",
 			),
 		).toHaveLength(0);
 	});
