@@ -445,7 +445,8 @@ label > input, label > select { font-weight: 400; }
 .rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
-	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
+	/* 8px between the figure and the name, as Messages leaves after a contact's picture (Jonas, 9 Nov 2026). */
+	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 8px;
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 6px; color: var(--text);
 }
 .rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
@@ -509,7 +510,9 @@ label > input, label > select { font-weight: 400; }
 .skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: -7.5px; padding: 0 0 24.5px; }
 .skeleton-cofounder-figure { width: 76px; height: 76px; }
 .skeleton-cofounder-name { width: 72px; height: 13px; }
-.skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
+.skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
+/* Its two lines stand where the name and the role draw: at the top of the row. */
+.skeleton-rail-row .skeleton-stack { align-self: start; gap: 4px; padding-top: 6px; }
 .skeleton-rail-figure { width: 42px; height: 42px; justify-self: center; }
 .skeleton-rail-account { display: flex; align-items: center; gap: 10px; height: 53px; padding-inline: 8px; }
 .skeleton-account-chip { width: 45px; height: 45px; }
