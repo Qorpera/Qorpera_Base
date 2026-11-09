@@ -215,7 +215,9 @@ describe("actual product conversation attachments", () => {
 			name === "qorpera_member_digital_post" ||
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
-			name === "qorpera_member_interface_pages";
+			name === "qorpera_member_interface_pages" ||
+			// The apps drawer's Sites entry.
+			name === "qorpera_list_company_sites";
 		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {

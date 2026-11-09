@@ -361,12 +361,27 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-sites")).toBeNull();
 	});
 
-	it("hides a page for everyone from its right-click, and shows it again from Hidden (owners and admins)", async () => {
+	it("hides a page from the member's own rail with a right-click, and shows it again from Hidden", async () => {
 		const { element, controller } = rail(home);
-		const setInterfacePage = vi.fn(async (page: string, on: boolean) => {
+		// A cloud that answers each member's own choice: Bank hidden, Members shown though the company's switch for it is
+		// off: the member's own choice decides. (Mailbox has no mail to draw here.)
+		const own = (hidden: readonly string[]): InterfacePagesState => ({
+			pages: (["mailbox", "members", "bank"] as const).map((page) => ({
+				page,
+				on: page !== "members",
+				hidden: hidden.includes(page),
+			})),
+			mayChange: false,
+			personal: true,
+		});
+		controller.store.set({ interfacePages: own(["bank"]) });
+		const hideInterfacePage = vi.fn(async (page: string, hidden: boolean) => {
 			const now = controller.store.get().interfacePages!;
 			controller.store.set({
-				interfacePages: { ...now, pages: now.pages.map((entry) => (entry.page === page ? { page, on } : entry)) },
+				interfacePages: {
+					...now,
+					pages: now.pages.map((entry) => (entry.page === page ? { ...entry, hidden } : entry)),
+				},
 			});
 		});
 		const context = {
@@ -378,7 +393,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			openSettings: () => {},
 			openFeedback: () => {},
 			agentActions: {},
-			setInterfacePage,
+			hideInterfacePage,
 		};
 		cleanup.push(() => context.auth.dispose());
 		const redraw = () => renderRail(element, controller, context);
@@ -393,32 +408,33 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 				row.querySelector("strong")?.textContent,
 				row.querySelector("small")?.textContent,
 			]);
-		// Mailbox is off: it waits in Hidden, from where an owner shows it.
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
 		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
-		expect(hiddenPages()).toEqual([["Mailbox", "Hidden for everyone"]]);
-		// Right-click on Members in the drawer: Hide from sidebar.
+		expect(hiddenPages()).toEqual([["Bank", "Hidden for you"]]);
+		// Right-click on Members in the drawer: Hide from sidebar, for this member only (no owner needed).
 		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(true);
 		expect(menuItems()).toEqual([["Hide from sidebar", null]]);
 		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
-		expect(setInterfacePage).toHaveBeenCalledExactlyOnceWith("members", false);
+		expect(hideInterfacePage).toHaveBeenCalledExactlyOnceWith("members", true);
 		await settle();
 		redraw();
 		expect(icons(element)).toEqual([]);
 		expect(hiddenPages()).toEqual([
-			["Mailbox", "Hidden for everyone"],
-			["Members", "Hidden for everyone"],
+			["Members", "Hidden for you"],
+			["Bank", "Hidden for you"],
 		]);
 		// A press on a hidden page offers to show it again.
-		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='members']")!.click();
+		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='bank']")!.click();
 		expect(menuItems()).toEqual([["Show in sidebar", null]]);
 		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
-		expect(setInterfacePage).toHaveBeenLastCalledWith("members", true);
+		expect(hideInterfacePage).toHaveBeenLastCalledWith("bank", false);
 		await settle();
 		redraw();
-		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
-		// A member who may not change the pages gets the browser's own menu, and no hidden page.
-		controller.store.set({ interfacePages: { ...pages(false, true), mayChange: false } });
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
+		// A cloud from before each member's own choice: the company's switch decides, and no menu or hidden page.
+		controller.store.set({ interfacePages: pages(false, true) });
 		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
 		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(false);
 		expect(hiddenPages()).toEqual([]);
 	});

@@ -1072,7 +1072,9 @@ describe("conversation UI boundaries", () => {
 			name === "qorpera_member_digital_post" ||
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
-			name === "qorpera_member_interface_pages";
+			name === "qorpera_member_interface_pages" ||
+			// The apps drawer's Sites entry.
+			name === "qorpera_list_company_sites";
 		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

@@ -2,8 +2,8 @@ import { CloudRpcError } from "../cloud/client.ts";
 import type { InterfacePageCalls, InterfacePageName, MemberInterfacePages } from "../cloud/interface-pages.ts";
 
 /* Which pages the company shows (Interfaces C6a; supabase/CLIENT-CONTRACT.md "Pages"). They are read when the company
- * opens, when the window comes back into focus, and each minute while it shows; an owner or admin hides or shows one from
- * the rail (views/shell.ts), and the answer is published at once. A cloud
+ * opens, when the window comes back into focus, and each minute while it shows; a member hides or shows one on their own
+ * rail (views/shell.ts), and the answer is published at once. A cloud
  * without the calls, or a member the calls don't answer, publishes nothing, so no page shows. A read that fails keeps
  * what was read before. */
 
@@ -54,22 +54,22 @@ export class CompanyInterfacePages {
 		clearInterval(this.#poll);
 	}
 
-	/** Shows or hides a page for everyone in the company. Changes run one at a time, each after the last has answered
+	/** Hides a page from the member's own rail, or shows it again. Changes run one at a time, each after the last has answered
 	 * (or failed and been read again), so an older answer never lands over a newer one. A change that fails reads the
 	 * pages again (it may still have landed) and throws. */
-	set(page: InterfacePageName, on: boolean): Promise<void> {
-		const run = () => this.#change(page, on);
+	hide(page: InterfacePageName, hidden: boolean): Promise<void> {
+		const run = () => this.#change(page, hidden);
 		const next = this.#changing.then(run, run);
 		this.#changing = next.catch(() => {});
 		return next;
 	}
 
-	async #change(page: InterfacePageName, on: boolean): Promise<void> {
+	async #change(page: InterfacePageName, hidden: boolean): Promise<void> {
 		if (this.#stop.signal.aborted) return;
 		this.#changes++;
 		let state: InterfacePagesState;
 		try {
-			state = await this.#calls.set(page, on);
+			state = await this.#calls.hide(page, hidden);
 		} catch (error) {
 			this.#changes++;
 			await this.refresh();

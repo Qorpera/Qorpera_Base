@@ -30,7 +30,7 @@ import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
-import { type CompanyInterface, companyInterfaces, hiddenCompanyInterfaces } from "../interfaces.ts";
+import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
@@ -66,9 +66,9 @@ export interface ShellContext {
 		card: CardFootActions,
 		findAnchor: () => HTMLElement | null,
 	) => void;
-	/** Hides a page (Mailbox, Members, Bank) from the rail for everyone in the company, or shows it again: an owner's
-	 * or admin's right-click on it. */
-	setInterfacePage?: (page: InterfacePageName, on: boolean) => Promise<void>;
+	/** Hides a page (Mailbox, Members, Bank) from the member's own rail, or shows it again: a right-click on it, as on
+	 * an agent (Jonas, 9 Nov 2026: each member's own, not the company's). */
+	hideInterfacePage?: (page: InterfacePageName, hidden: boolean) => Promise<void>;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -1115,7 +1115,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// again. A search already lists the matching ones in their places.
 	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
 	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
-	const hiddenPages = railQuery ? [] : hiddenCompanyInterfaces(company);
+	const hiddenPages = railQuery ? [] : hiddenInterfaces(company);
 	const hiddenCount = hiddenItems.length + hiddenPages.length;
 	const hiddenGroup = parts.hiddenGroup;
 	hiddenGroup.count.textContent = String(hiddenCount);
@@ -1847,13 +1847,13 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	if (element) openPageMenu(company, parts, element, event);
 }
 
-/** A page's menu, for owners and admins: Hide from sidebar in the drawer, Show in sidebar in Hidden. The change is the
- * whole company's; nothing the page showed is removed. Everyone else gets the browser's own menu. */
+/** A page's menu: Hide from sidebar in the drawer, Show in sidebar in Hidden. It changes the member's own rail only;
+ * nothing the page showed is removed. On a cloud from before each member's own choice, the browser's own menu. */
 function openPageMenu(company: CompanyController, parts: RailParts, element: HTMLElement, event: MouseEvent): void {
 	const page = element.dataset.interfacePage as InterfacePageName;
-	const set = parts.context?.setInterfacePage;
+	const hide = parts.context?.hideInterfacePage;
 	const pages = company.store.get().interfacePages;
-	if (!set || !pages?.mayChange || !pages.pages.some((entry) => entry.page === page)) return;
+	if (!hide || !pages?.personal || !pages.pages.some((entry) => entry.page === page)) return;
 	event.preventDefault();
 	const shown = parts.appsDrawer.contains(element);
 	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
@@ -1871,7 +1871,7 @@ function openPageMenu(company: CompanyController, parts: RailParts, element: HTM
 				icon: shown ? "hide" : "show",
 				select: () => {
 					company.reportRailError(undefined);
-					set(page, !shown).catch(() =>
+					hide(page, shown).catch(() =>
 						company.reportRailError(t("{page} could not be changed. Try again.", { page: name })),
 					);
 				},
@@ -1901,7 +1901,7 @@ function hiddenPageRow(model: {
 			{ class: "rail-row-stand" },
 			interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, model.colour, 34),
 		),
-		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for everyone"))),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for you"))),
 	);
 	row.addEventListener("click", (event) => {
 		row.dispatchEvent(
