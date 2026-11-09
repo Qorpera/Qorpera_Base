@@ -1,99 +1,26 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
-import type {
-	Leaderboard,
-	LeaderboardAgent,
-	LeaderboardCompany,
-	LeaderboardDays,
-	LeaderboardPerson,
-} from "../../cloud/social.ts";
+import type { Leaderboard, LeaderboardAgent, LeaderboardCompany, LeaderboardPerson } from "../../cloud/social.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, companyLogo, h, notice, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import { lastOnline, personFace } from "./friends.ts";
 
-/* Settings → Leaderboard (Jonas, 9 Nov 2026): you and your friends compared over the last 7 or 30 days, as people,
- * as companies, and as the agents of those companies. Everything is counted by the database
- * (qorpera_friends_leaderboard): agent runs, hours agents ran, active days, messages written, active agents, sales the
- * good will counted, and per agent its runs and the runs that saved work. One switch takes the account off its
- * friends' boards. */
-
-type Board = "people" | "companies" | "agents";
-
-interface Metric<Row> {
-	id: string;
-	/** The chip's label, and the unit under the score. */
-	label: () => string;
-	unit: (value: number) => string;
-	value: (row: Row) => number;
-	/** Sales show as money, hours with one decimal. */
-	format?: (value: number) => string;
-}
+/* Settings → Leaderboard (Jonas, 9 Nov 2026): this week with your friends, for regular people, not a dashboard. On
+ * top, this week's awards: Star agent, Longest streak, Busiest team, Biggest team, and Top seller once a company
+ * sells. Under them, you and your friends by tasks done, a task being work an agent finished and saved for one of
+ * your companies, each with their streak of days in a row. No tabs, periods or filters. One switch takes the account
+ * off its friends' boards. Figures come from qorpera_friends_leaderboard. */
 
 const count = (value: number) => new Intl.NumberFormat(presentationLocale()).format(value);
-const hours = (value: number) =>
-	new Intl.NumberFormat(presentationLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value);
 const kroner = (ore: number) =>
 	new Intl.NumberFormat(presentationLocale(), { style: "currency", currency: "DKK", maximumFractionDigits: 0 }).format(
 		ore / 100,
 	);
-
-const AGENT_RUNS = {
-	id: "runs",
-	label: () => t("Agent runs"),
-	unit: (value: number) => (value === 1 ? t("agent run") : t("agent runs")),
-};
-const AGENT_HOURS = {
-	id: "hours",
-	label: () => t("Agent hours"),
-	unit: (value: number) => (value === 1 ? t("agent hour") : t("agent hours")),
-	format: hours,
-};
-const SALES = { id: "sales", label: () => t("Sales"), unit: () => t("sales"), format: kroner };
-
-const PEOPLE: Metric<LeaderboardPerson>[] = [
-	{ ...AGENT_RUNS, value: (row) => row.agentRuns },
-	{ ...AGENT_HOURS, value: (row) => row.agentHours },
-	{
-		id: "days",
-		label: () => t("Active days"),
-		unit: (value) => (value === 1 ? t("active day") : t("active days")),
-		value: (row) => row.activeDays,
-	},
-	{
-		id: "messages",
-		label: () => t("Messages"),
-		unit: (value) => (value === 1 ? t("message") : t("messages")),
-		value: (row) => row.messages,
-	},
-	{ ...SALES, value: (row) => row.salesOre },
-];
-const COMPANIES: Metric<LeaderboardCompany>[] = [
-	{ ...AGENT_RUNS, value: (row) => row.agentRuns },
-	{ ...AGENT_HOURS, value: (row) => row.agentHours },
-	{
-		id: "agents",
-		label: () => t("Agents"),
-		unit: (value) => (value === 1 ? t("agent") : t("agents")),
-		value: (row) => row.agents,
-	},
-	{ ...SALES, value: (row) => row.salesOre },
-];
-const AGENTS: Metric<LeaderboardAgent>[] = [
-	{
-		id: "runs",
-		label: () => t("Runs"),
-		unit: (value) => (value === 1 ? t("run") : t("runs")),
-		value: (row) => row.runs,
-	},
-	{
-		id: "saved",
-		label: () => t("Saved work"),
-		unit: (value) => (value === 1 ? t("run saved work") : t("runs saved work")),
-		value: (row) => row.saved,
-	},
-];
+const tasks = (value: number) => (value === 1 ? t("1 task done") : t("{count} tasks done", { count: count(value) }));
+const streak = (value: number) =>
+	value === 1 ? t("1 day in a row") : t("{count} days in a row", { count: count(value) });
 
 /** Places by score, with ties sharing a place (1, 1, 3). */
 function ranked<Row>(rows: readonly Row[], value: (row: Row) => number): { row: Row; place: number }[] {
@@ -105,20 +32,22 @@ function ranked<Row>(rows: readonly Row[], value: (row: Row) => number): { row: 
 	});
 }
 
+/** The row with the highest score above zero, the first of a tie. */
+function best<Row>(rows: readonly Row[], value: (row: Row) => number): Row | undefined {
+	let top: Row | undefined;
+	for (const row of rows) if (value(row) > 0 && (!top || value(row) > value(top))) top = row;
+	return top;
+}
+
 export class LeaderboardView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
 	readonly #signal: AbortSignal;
 	readonly #openFriends: () => void;
-	readonly #tabs = h("div", { class: "leaderboard-switch", role: "group", "aria-label": t("Compare") });
-	readonly #period = h("div", { class: "leaderboard-switch", role: "group", "aria-label": t("Period") });
-	readonly #metrics = h("div", { class: "leaderboard-metrics", role: "group", "aria-label": t("Rank by") });
+	readonly #awards = h("div", { class: "leaderboard-awards" });
 	readonly #list = h("div", { class: "leaderboard-list" });
-	readonly #visible: HTMLInputElement;
-	readonly #visibleNote = h("small", { class: "muted" });
-	#board: Board = "people";
-	#days: LeaderboardDays = 7;
-	#metric: Record<Board, string> = { people: "runs", companies: "runs", agents: "runs" };
+	readonly #switch: HTMLButtonElement;
+	readonly #switchNote = h("small");
 	#data: Leaderboard | undefined;
 	#loading = false;
 	#error: string | undefined;
@@ -135,44 +64,15 @@ export class LeaderboardView {
 		this.#api = api;
 		this.#signal = signal;
 		this.#openFriends = openFriends;
-		for (const [board, label] of [
-			["people", t("People")],
-			["companies", t("Companies")],
-			["agents", t("Agents")],
-		] as const)
-			this.#tabs.append(
-				h(
-					"button",
-					{
-						type: "button",
-						"data-board": board,
-						onclick: () => {
-							this.#board = board;
-							this.#draw();
-						},
-					},
-					label,
-				),
-			);
-		for (const days of [7, 30] as const)
-			this.#period.append(
-				h(
-					"button",
-					{
-						type: "button",
-						"data-days": String(days),
-						onclick: () => {
-							if (this.#days === days) return;
-							this.#days = days;
-							void this.load();
-						},
-					},
-					days === 7 ? t("7 days") : t("30 days"),
-				),
-			);
-		this.#visible = h("input", {
-			type: "checkbox",
-			onchange: () => void this.#setVisible(this.#visible.checked),
+		this.#switch = h("button", {
+			type: "button",
+			role: "switch",
+			class: "routine-switch",
+			"aria-label": t("Show me on my friends' leaderboards"),
+			onclick: () => {
+				if (this.#switch.getAttribute("aria-disabled") !== "true")
+					void this.#setVisible(this.#switch.getAttribute("aria-checked") !== "true");
+			},
 		});
 		this.el = h(
 			"section",
@@ -181,16 +81,20 @@ export class LeaderboardView {
 			h(
 				"p",
 				{ class: "settings-lead" },
-				t("How you and your friends compare: you, your companies, and the agents that work in them."),
+				t("This week with your friends. A task is work an agent finished for one of your companies."),
 			),
-			h("div", { class: "leaderboard-bar" }, this.#tabs, this.#period),
-			this.#metrics,
+			this.#awards,
 			this.#list,
 			h(
-				"label",
-				{ class: "leaderboard-visible" },
-				this.#visible,
-				h("span", null, h("strong", null, t("Show me on my friends' leaderboards")), this.#visibleNote),
+				"div",
+				{ class: "settings-preference-row leaderboard-visible" },
+				h(
+					"div",
+					{ class: "settings-copy" },
+					h("span", null, t("Show me on my friends' leaderboards")),
+					this.#switchNote,
+				),
+				this.#switch,
 			),
 		);
 		this.#draw();
@@ -207,7 +111,7 @@ export class LeaderboardView {
 		this.#error = undefined;
 		this.#draw();
 		try {
-			const data = await this.#api.getFriendsLeaderboard(this.#days);
+			const data = await this.#api.getFriendsLeaderboard();
 			if (this.#signal.aborted || turn !== this.#turn) return;
 			const overlapped = (savePending || this.#saves !== saves) && this.#savedHidden !== undefined;
 			this.#data = overlapped ? { ...data, hidden: this.#savedHidden! } : data;
@@ -244,26 +148,22 @@ export class LeaderboardView {
 
 	#draw(): void {
 		if (this.#signal.aborted) return;
-		for (const control of this.#tabs.querySelectorAll<HTMLButtonElement>("button"))
-			control.setAttribute("aria-pressed", String(control.dataset.board === this.#board));
-		for (const control of this.#period.querySelectorAll<HTMLButtonElement>("button")) {
-			control.setAttribute("aria-pressed", String(control.dataset.days === String(this.#days)));
-			control.disabled = this.#missing;
-		}
 		const data = this.#data;
-		this.#visible.checked = !data?.hidden;
-		this.#visible.disabled = !data || this.#saving || this.#missing;
-		this.#visibleNote.textContent = data?.hidden
+		this.#switch.setAttribute("aria-checked", String(!data?.hidden));
+		this.#switch.toggleAttribute("aria-busy", this.#saving);
+		if (!data || this.#saving || this.#missing) this.#switch.setAttribute("aria-disabled", "true");
+		else this.#switch.removeAttribute("aria-disabled");
+		this.#switchNote.textContent = data?.hidden
 			? t("Your friends don't see you now. You still see yourself here.")
-			: t("Your friends see your row, your companies and their agents.");
+			: t("Your friends see you, your companies and their agents.");
 		this.#list.toggleAttribute("aria-busy", this.#loading);
 		if (this.#missing) {
-			replace(this.#metrics);
+			replace(this.#awards);
 			replace(this.#list, notice("neutral", t("The leaderboard isn't available yet.")));
 			return;
 		}
 		if (!data) {
-			replace(this.#metrics);
+			replace(this.#awards);
 			replace(
 				this.#list,
 				this.#error
@@ -277,89 +177,125 @@ export class LeaderboardView {
 			);
 			return;
 		}
-		if (this.#board === "people") this.#drawBoard(PEOPLE, data.people, (row, metric) => this.#personRow(row, metric));
-		else if (this.#board === "companies")
-			this.#drawBoard(COMPANIES, data.companies, (row, metric) => this.#companyRow(row, metric, data));
-		else this.#drawBoard(AGENTS, data.agents, (row) => this.#agentRow(row, data));
+		this.#drawAwards(data);
+		this.#drawPeople(data);
 	}
 
-	#drawBoard<Row>(
-		metrics: Metric<Row>[],
-		rows: readonly Row[],
-		draw: (row: Row, metric: Metric<Row>) => { face: HTMLElement; name: string; detail: string; me?: boolean },
-	): void {
-		const metric = metrics.find((item) => item.id === this.#metric[this.#board]) ?? metrics[0]!;
-		replace(
-			this.#metrics,
-			h("span", { class: "leaderboard-metrics-label" }, t("Rank by")),
-			...metrics.map((item) =>
+	/** This week's awards; one shows only once someone has earned it. */
+	#drawAwards(data: Leaderboard): void {
+		const star = best(data.agents, (agent: LeaderboardAgent) => agent.tasks);
+		const steady = best(data.people, (person: LeaderboardPerson) => person.streak);
+		const busiest = best(data.companies, (company: LeaderboardCompany) => company.tasks);
+		const biggest = best(data.companies, (company: LeaderboardCompany) => company.agents);
+		const seller = best(data.companies, (company: LeaderboardCompany) => company.salesOre);
+		const award = (title: string, face: HTMLElement, name: string, line: string) =>
+			h(
+				"div",
+				{ class: "leaderboard-award" },
+				face,
 				h(
-					"button",
-					{
-						type: "button",
-						"aria-pressed": String(item === metric),
-						onclick: () => {
-							this.#metric[this.#board] = item.id;
-							this.#draw();
-						},
-					},
-					item.label(),
+					"span",
+					{ class: "leaderboard-award-copy" },
+					h("small", null, title),
+					h("strong", null, name),
+					h("span", null, line),
 				),
-			),
+			);
+		const figure = (agent: LeaderboardAgent) =>
+			agentFigure(
+				{
+					id: agent.staffAgentId,
+					displayName: agent.displayName,
+					appearance: agent.appearance,
+					templateId: agent.templateId,
+				},
+				agent.displayName,
+				{ size: 44 },
+			);
+		replace(
+			this.#awards,
+			star
+				? award(
+						t("Star agent"),
+						figure(star),
+						star.displayName,
+						t("{tasks} at {company}", { tasks: tasks(star.tasks), company: star.companyName }),
+					)
+				: null,
+			steady
+				? award(
+						t("Longest streak"),
+						personFace(steady.displayName, steady.userId, false),
+						steady.me ? t("You") : steady.displayName,
+						streak(steady.streak),
+					)
+				: null,
+			busiest ? award(t("Busiest team"), companyLogo(busiest.profileId), busiest.name, tasks(busiest.tasks)) : null,
+			biggest
+				? award(
+						t("Biggest team"),
+						companyLogo(biggest.profileId),
+						biggest.name,
+						biggest.agents === 1 ? t("1 agent") : t("{count} agents", { count: count(biggest.agents) }),
+					)
+				: null,
+			seller
+				? award(
+						t("Top seller"),
+						companyLogo(seller.profileId),
+						seller.name,
+						t("{amount} in sales", { amount: kroner(seller.salesOre) }),
+					)
+				: null,
 		);
-		const places = ranked(rows, metric.value);
-		const top = Math.max(1, ...rows.map(metric.value));
-		const friends = this.#data?.people.filter((person) => !person.me).length ?? 0;
+	}
+
+	/** You and your friends by tasks done this week. */
+	#drawPeople(data: Leaderboard): void {
+		const top = Math.max(1, ...data.people.map((person) => person.tasks));
+		const friends = data.people.filter((person) => !person.me).length;
 		replace(
 			this.#list,
 			this.#error ? notice("danger", this.#error) : null,
-			places.length
-				? h(
-						"ol",
-						{ class: "leaderboard-rows", "aria-label": metric.label() },
-						...places.map(({ row, place }) => {
-							const shown = draw(row, metric);
-							const value = metric.value(row);
-							const bar = h("span", { class: "leaderboard-meter-fill" });
-							bar.style.width = `${Math.round((value / top) * 100)}%`;
-							return h(
-								"li",
-								{
-									class: [
-										"leaderboard-row",
-										shown.me ? "is-me" : "",
-										value > 0 && place <= 3 ? `is-place-${place}` : "",
-									]
-										.filter(Boolean)
-										.join(" "),
-								},
-								h(
-									"span",
-									{ class: "leaderboard-place", "aria-label": t("Place {place}", { place }) },
-									String(place),
-								),
-								shown.face,
-								h(
-									"span",
-									{ class: "leaderboard-who" },
-									h("strong", null, shown.name),
-									shown.detail ? h("small", null, shown.detail) : null,
-								),
-								h(
-									"span",
-									{ class: "leaderboard-score" },
-									h("strong", null, (metric.format ?? count)(value)),
-									h("small", null, metric.unit(value)),
-									h("span", { class: "leaderboard-meter", "aria-hidden": "true" }, bar),
-								),
-							);
-						}),
-					)
-				: h(
-						"p",
-						{ class: "panel-empty muted" },
-						this.#board === "agents" ? t("No agent has run in this period.") : t("Nothing to compare yet."),
-					),
+			h(
+				"ol",
+				{ class: "leaderboard-rows", "aria-label": t("You and your friends this week") },
+				...ranked(data.people, (person) => person.tasks).map(({ row, place }) => {
+					const seen = row.me ? undefined : lastOnline(row.lastSeenAt);
+					const detail = [row.me ? t("You") : seen?.text, row.streak > 0 ? streak(row.streak) : null]
+						.filter(Boolean)
+						.join(" · ");
+					const bar = h("span", { class: "leaderboard-meter-fill" });
+					bar.style.width = `${Math.round((row.tasks / top) * 100)}%`;
+					return h(
+						"li",
+						{
+							class: [
+								"leaderboard-row",
+								row.me ? "is-me" : "",
+								row.tasks > 0 && place <= 3 ? `is-place-${place}` : "",
+							]
+								.filter(Boolean)
+								.join(" "),
+						},
+						h("span", { class: "leaderboard-place", "aria-label": t("Place {place}", { place }) }, String(place)),
+						personFace(row.displayName, row.userId, seen?.online === true),
+						h(
+							"span",
+							{ class: "leaderboard-who" },
+							h("strong", null, row.displayName),
+							detail ? h("small", null, detail) : null,
+						),
+						h(
+							"span",
+							{ class: "leaderboard-score" },
+							h("strong", null, count(row.tasks)),
+							h("small", null, row.tasks === 1 ? t("task done") : t("tasks done")),
+							h("span", { class: "leaderboard-meter", "aria-hidden": "true" }, bar),
+						),
+					);
+				}),
+			),
 			friends === 0
 				? h(
 						"div",
@@ -374,72 +310,5 @@ export class LeaderboardView {
 					)
 				: null,
 		);
-	}
-
-	#personRow(row: LeaderboardPerson, metric: Metric<LeaderboardPerson>) {
-		const seen = lastOnline(row.lastSeenAt);
-		const companies = row.companies === 1 ? t("1 company") : t("{count} companies", { count: count(row.companies) });
-		const detail = [
-			row.me ? t("You") : seen?.text,
-			companies,
-			metric.id === "runs" ? null : this.#runsLine(row.agentRuns),
-		]
-			.filter(Boolean)
-			.join(" · ");
-		return {
-			face: personFace(row.displayName, row.userId, !row.me && seen?.online === true),
-			name: row.displayName,
-			detail,
-			me: row.me,
-		};
-	}
-
-	#companyRow(row: LeaderboardCompany, metric: Metric<LeaderboardCompany>, data: Leaderboard) {
-		const names = row.members
-			.map((id) => data.people.find((person) => person.userId === id))
-			.filter((person): person is LeaderboardPerson => Boolean(person))
-			.map((person) => (person.me ? t("You") : person.displayName));
-		const detail = [
-			names.join(", "),
-			metric.id === "agents"
-				? null
-				: row.agents === 1
-					? t("1 agent")
-					: t("{count} agents", { count: count(row.agents) }),
-		]
-			.filter(Boolean)
-			.join(" · ");
-		return {
-			face: companyLogo(row.profileId, "leaderboard-logo"),
-			name: row.name,
-			detail,
-			me: row.members.some((id) => data.people.some((person) => person.me && person.userId === id)),
-		};
-	}
-
-	/** An agent of one of your own companies is marked as yours. */
-	#agentRow(row: LeaderboardAgent, data: Leaderboard) {
-		const me = data.people.find((person) => person.me)?.userId;
-		return {
-			face: agentFigure(
-				{
-					id: row.staffAgentId,
-					displayName: row.displayName,
-					appearance: row.appearance,
-					templateId: row.templateId,
-				},
-				row.displayName,
-				{ size: 34, still: true },
-			),
-			name: row.displayName,
-			detail: [row.role === row.displayName ? "" : row.role, row.companyName].filter(Boolean).join(" · "),
-			me: data.companies.some(
-				(company) => company.profileId === row.profileId && company.members.includes(me ?? ""),
-			),
-		};
-	}
-
-	#runsLine(runs: number): string {
-		return runs === 1 ? t("1 agent run") : t("{count} agent runs", { count: count(runs) });
 	}
 }

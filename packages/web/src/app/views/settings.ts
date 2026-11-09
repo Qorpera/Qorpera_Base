@@ -64,7 +64,7 @@ const TABS = [
 		label: phrase("Leaderboard"),
 		icon: "trophy",
 		keywords:
-			"friends compare ranking rank scores activity usage agents runs hours companies sales success leaderboard venner sammenlign rangliste placering aktivitet forbrug agenter kørsler timer virksomheder salg",
+			"friends compare ranking awards streak tasks agents companies sales leaderboard venner sammenlign rangliste priser stime opgaver agenter virksomheder salg",
 	},
 	{
 		id: "ai-subscriptions",
@@ -292,18 +292,15 @@ export class SettingsView {
 		);
 		nav.append(tablist, empty, back);
 		// Friends, a window of its own, beside Settings | Storage (Jonas, 9 Nov 2026): inside a company the friends
-		// button lives here rather than in the rail. A dot shows while a company invitation waits.
-		const friendsDot = h("span", { class: "settings-friends-dot", "aria-hidden": "true", hidden: true });
+		// button lives here rather than in the rail. Plain, with no fill or dot; its label says when invitations wait.
 		const friendsButton = h(
 			"button",
 			{ type: "button", class: "settings-friends", onclick: () => this.#openFriends() },
 			icon("friends"),
 			uiText(phrase("Friends")),
-			friendsDot,
 		);
 		const countInvitations = () => {
 			const waiting = hub.store.get().invitations.length;
-			friendsDot.hidden = waiting === 0;
 			const label =
 				waiting > 0 ? t("Friends: {count} company invitations waiting", { count: waiting }) : t("Friends");
 			friendsButton.setAttribute("aria-label", label);

@@ -116,7 +116,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_find_account_by_email(text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_folder_hint_member(text)', false, true, 'member: whether auth.uid() is a member of the topic''s folder-v2 company, for the Realtime receive policy (C4 P30)'),
 	('public.qorpera_folder_human_task_wake_continue(uuid,uuid)', false, true, 'member: auth.uid() + a writing member of a folder-v2 company re-arms its unpaid task wakes with themselves as payer (P31)'),
-	('public.qorpera_friends_leaderboard(integer)', false, true, 'member: auth.uid(); the caller and its accepted friends who stay on the boards (20260930690000)'),
+	('public.qorpera_friends_leaderboard()', false, true, 'member: auth.uid(); the caller and its accepted friends who stay on the boards (20260930690000)'),
 	('public.qorpera_get_account_entitlement()', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_get_company_file(uuid)', false, true, 'member: always raises'),
 	('public.qorpera_get_company_path_proposal(uuid)', false, true, 'internal: auth.uid() + membership/ownership'),

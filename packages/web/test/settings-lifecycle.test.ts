@@ -1094,45 +1094,29 @@ describe("settings session lifecycle", () => {
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
-	it("reads the Leaderboard only once its tab opens, and again for another period", async () => {
+	it("reads the Leaderboard once its tab opens: awards, then friends by tasks done", async () => {
 		const f = await setup();
-		const board = (days: number) => ({
-			days,
-			since: "2026-11-02T00:00:00Z",
-			hidden: false,
-			people: [
-				{
-					user_id: userA.id,
-					display_name: "Account A",
-					me: true,
-					last_seen_at: null,
-					active_days: 3,
-					messages: 4,
-					companies: 1,
-					agents: 2,
-					agent_runs: 10,
-					agent_hours: 1.5,
-					sales_ore: 0,
-				},
-				{
-					user_id: userB.id,
-					display_name: "Account B",
-					me: false,
-					last_seen_at: timestamp,
-					active_days: 5,
-					messages: 9,
-					companies: 2,
-					agents: 3,
-					agent_runs: days === 7 ? 20 : 40,
-					agent_hours: 2,
-					sales_ore: 0,
-				},
-			],
-			companies: [],
-			agents: [],
+		const person = (id: string, name: string, me: boolean, tasks: number, streak: number) => ({
+			user_id: id,
+			display_name: name,
+			me,
+			last_seen_at: me ? null : timestamp,
+			active_days: 3,
+			streak,
+			companies: 1,
+			agents: 2,
+			tasks,
+			sales_ore: 0,
 		});
-		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args?: Record<string, unknown>) => {
-			if (name === "qorpera_friends_leaderboard") return board(args!.p_days as number);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_friends_leaderboard")
+				return {
+					since: "2026-11-02T00:00:00Z",
+					hidden: false,
+					people: [person(userA.id, "Account A", true, 10, 4), person(userB.id, "Account B", false, 20, 2)],
+					companies: [],
+					agents: [],
+				};
 			if (name === "qorpera_list_review_rules") return [];
 			throw new Error("Unexpected RPC");
 		});
@@ -1143,25 +1127,18 @@ describe("settings session lifecycle", () => {
 		expect(leaderboardCalls()).toEqual([]);
 		click(f.root, "#settings-tab-leaderboard");
 		await draw();
-		expect(leaderboardCalls()).toEqual([["qorpera_friends_leaderboard", { p_days: 7 }]]);
+		expect(leaderboardCalls()).toEqual([["qorpera_friends_leaderboard", {}]]);
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
 		expect(content.querySelector("h1")?.textContent).toBe("Leaderboard");
-		const rows = () => [...content.querySelectorAll(".leaderboard-row")].map((row) => row.textContent ?? "");
-		// Ranked by agent runs: the friend with more runs leads, and the account's own row is marked.
-		expect(rows()).toHaveLength(2);
-		expect(rows()[0]).toContain("Account B");
-		expect(rows()[1]).toContain("Account A");
-		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("Account A");
-		[...content.querySelectorAll<HTMLButtonElement>(".leaderboard-switch button")]
-			.find((button) => button.textContent === "30 days")!
-			.click();
-		await draw();
-		expect(leaderboardCalls()).toEqual([
-			["qorpera_friends_leaderboard", { p_days: 7 }],
-			["qorpera_friends_leaderboard", { p_days: 30 }],
-		]);
-		expect(rows()).toHaveLength(2);
-		expect(rows()[0]).toContain("40");
+		// No tabs, periods or filters: awards, the ranking and one switch.
+		expect(content.querySelectorAll("[aria-pressed]")).toHaveLength(0);
+		expect(content.querySelector(".leaderboard-award")?.textContent).toContain("Longest streak");
+		const rows = [...content.querySelectorAll(".leaderboard-row")].map((row) => row.textContent ?? "");
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toContain("Account B");
+		expect(rows[1]).toContain("Account A");
+		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("4 days in a row");
+		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
 	it("finds the member's own logins and the company's services on their own tabs", async () => {
 		const f = await setup();

@@ -84,7 +84,7 @@ import {
 	subscribeRoomDrafts,
 } from "./room-drafts.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
-import { type Leaderboard, type LeaderboardDays, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
+import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
 import type {
 	HostedAccountEntitlement,
 	HostedAccountMatch,
@@ -244,9 +244,9 @@ export class CloudApi {
 		return markOnline(this.cloud);
 	}
 
-	/** This account, its friends, their companies and those companies' agents over the last `days` days. */
-	getFriendsLeaderboard(days: LeaderboardDays): Promise<Leaderboard> {
-		return readLeaderboard(this.cloud, days);
+	/** This account, its friends, their companies and those companies' agents, this week. */
+	getFriendsLeaderboard(): Promise<Leaderboard> {
+		return readLeaderboard(this.cloud);
 	}
 
 	/** Leaves (or joins again) the leaderboards of this account's friends. */
