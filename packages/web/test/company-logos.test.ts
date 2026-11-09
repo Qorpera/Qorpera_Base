@@ -169,6 +169,41 @@ describe("company logos on the page", () => {
 		expect(logos.logo(COMPANY)?.objectName).toBe(companyLogoName(COMPANY, NEW));
 	});
 
+	it("asks again after the retry time when the read after publishing failed", async () => {
+		let now = Date.parse("2026-11-09T12:00:00Z");
+		let answer!: (rows: CompanyLogo[]) => void;
+		let current = row({ objectName: null, publisher: true, sourceSha256: NEW });
+		const api = fakeApi(() => [current]);
+		api.listCompanyLogos.mockImplementationOnce(
+			() =>
+				new Promise<CompanyLogo[]>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		api.publishCompanyLogo.mockImplementation(async () => {
+			current = row({ objectName: companyLogoName(COMPANY, NEW), publisher: true, sourceSha256: NEW });
+			api.listCompanyLogos.mockRejectedValueOnce(new Error("offline"));
+			return {};
+		});
+		const logos = new CompanyLogos(api as unknown as CloudApi, {
+			rasterize: async () => new Blob(["drawn"]),
+			now: () => now,
+		});
+		setCompanyLogos(logos);
+		companyLogo(COMPANY);
+		await vi.waitFor(() => expect(answer).toBeDefined());
+		const folder = fakeFolder({ fileSha256: NEW, version: "v1" });
+		await logos.sync(COMPANY, () => folder as unknown as WebMemberFolder, new AbortController().signal);
+		answer([]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		now += 61_000;
+		const figure = companyLogo(COMPANY);
+		await vi.waitFor(() =>
+			expect(figure.querySelector("img.company-logo-picture")?.getAttribute("src")).toBe("blob:logo-1"),
+		);
+		expect(logos.logo(COMPANY)?.objectName).toBe(companyLogoName(COMPANY, NEW));
+	});
+
 	it("keeps the newest logo when an older download finishes last", async () => {
 		const downloads: ((blob: Blob) => void)[] = [];
 		let current = row();

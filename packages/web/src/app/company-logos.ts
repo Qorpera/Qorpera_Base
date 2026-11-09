@@ -105,12 +105,20 @@ export class CompanyLogos implements CompanyLogoStore {
 		this.#elements.clear();
 	}
 
-	/** Reads a company's logo again, and repaints its figures. */
+	/** Reads a company's logo again, and repaints its figures. A read that fails leaves the logo to be asked for again
+	 * (its revision has made any older answer stale), and resolves undefined. */
 	async refresh(profileId: string): Promise<CompanyLogo | undefined> {
 		const id = profileId.toLowerCase();
 		const generation = this.#generation;
 		const revision = this.#revision(id);
-		const [row] = await this.#api.listCompanyLogos([id]);
+		let row: CompanyLogo | undefined;
+		try {
+			[row] = await this.#api.listCompanyLogos([id]);
+		} catch {
+			if (this.#latest(id, generation, revision))
+				this.#entries.set(id, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+			return undefined;
+		}
 		if (generation !== this.#generation) return undefined;
 		await this.#take(id, row, generation, revision);
 		return row;
