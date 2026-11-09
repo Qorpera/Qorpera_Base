@@ -9,7 +9,7 @@ import { parseRoute } from "../app/router.ts";
  * keep the head script small and free of the dictionary; test/boot.test.ts ties each to the app's own. */
 export const STORED_SESSION_KEY = "qorpera-web-auth/v1";
 /** RailLayout's stored width and the two widths it takes besides its default (ui/rail-layout.ts STORAGE_KEY, COMPACT,
- * MIN); the defaults and the 48% cap are in styles/boot.css. */
+ * MIN); the defaults and the 44% cap are in styles/boot.css. */
 export const RAIL_WIDTH_KEY = "qorpera.web.rail-width.v5";
 export const RAIL_COMPACT = 80;
 export const RAIL_MIN = 240;

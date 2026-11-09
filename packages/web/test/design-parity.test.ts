@@ -175,19 +175,19 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("caps the rail at 48% of the window and keeps resizing usable when storage is blocked", () => {
+	it("caps the rail at 44% of the window and keeps resizing usable when storage is blocked", () => {
 		const aside = h("aside", { class: "rail" }),
 			frame = h("div", null, aside),
 			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
-		const cap = String(Math.floor(window.innerWidth * 0.48));
+		const cap = String(Math.floor(window.innerWidth * 0.44));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
-		// The default is the earlier 369px rail made a fifth wider; the 1280px fixture window shows all of it.
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("443");
+		// The default is the earlier 369px rail made a tenth wider; the 1280px fixture window shows all of it.
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("459");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("422");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
@@ -199,7 +199,7 @@ describe("shell presentation lifecycle", () => {
 		// A narrower window clamps what is shown; the preference survives until the member acts.
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("384");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("352");
 		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe(cap);
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
@@ -207,37 +207,37 @@ describe("shell presentation lifecycle", () => {
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		press("ArrowLeft");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("368");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("368");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("368");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Where the cap is the minimum, a key press that moves nothing leaves the preference alone.
 		vi.stubGlobal("innerWidth", 500);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("368");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("368");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Going back to the default forgets the stored width, even where the window caps it.
 		vi.stubGlobal("innerWidth", 900);
 		window.dispatchEvent(new Event("resize"));
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("432");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("396");
 		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBeNull();
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("443");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("443");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 	});
 	it("starts every member once from the new default and keeps any width chosen since", () => {
 		const shown = () => {
@@ -250,7 +250,7 @@ describe("shell presentation lifecycle", () => {
 		localStorage.setItem("qorpera.web.rail-width.v2", "456");
 		localStorage.setItem("qorpera.web.rail-width.v3", "410");
 		localStorage.setItem("qorpera.web.rail-width.v4", "304");
-		expect(shown()).toBe("443");
+		expect(shown()).toBe("406");
 		localStorage.setItem("qorpera.web.rail-width.v5", "304");
 		expect(shown()).toBe("304");
 	});

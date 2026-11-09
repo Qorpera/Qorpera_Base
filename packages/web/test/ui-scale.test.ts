@@ -53,9 +53,9 @@ describe("the app's scale in scripts", () => {
 			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		try {
-			// The 443px default is drawn at 553.75 screen pixels; the cap is 48% of the window in design pixels.
-			expect(aside.style.getPropertyValue("--rail-width")).toBe("553.75px");
-			expect(rail.el.getAttribute("aria-valuemax")).toBe("614");
+			// The 406px default is drawn at 507.5 screen pixels; the cap is 44% of the window in design pixels.
+			expect(aside.style.getPropertyValue("--rail-width")).toBe("507.5px");
+			expect(rail.el.getAttribute("aria-valuemax")).toBe("563");
 			// A drag to 500 screen pixels chooses 400 design pixels.
 			rail.el.setPointerCapture = () => {};
 			rail.el.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 1 }));
