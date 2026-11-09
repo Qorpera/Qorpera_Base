@@ -234,7 +234,7 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		// Nothing of it in the header: the dock stands right above the composer.
 		expect(f.view.el.querySelector(".thread-header .coding-pill, .thread-header .coding-badge")).toBeNull();
-		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .coding-dock")!;
+		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot > .coding-dock")!;
 		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
 		expect(dock.hidden).toBe(false);
 		// Only the session still going, and alone it is the pill's one line.
@@ -568,7 +568,7 @@ describe("the coding pill on the wall's line", () => {
 
 	it("joins the wall's line only on a wide thread, narrow only while folded", () => {
 		const shared =
-			conversation.match(/@container thread-conversation \(min-width: 680px\) \{([^@]*?)\n\}/)?.[1] ?? "";
+			conversation.match(/@container thread-conversation \(min-width: 48\.6em\) \{([^@]*?)\n\}/)?.[1] ?? "";
 		expect(shared).toContain(".agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }");
 		// Unfolded (hover, focus or a tap) it keeps its usual width over the wall's button.
 		expect(shared).toContain(

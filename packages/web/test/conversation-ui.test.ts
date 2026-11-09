@@ -1116,11 +1116,17 @@ describe("conversation UI boundaries", () => {
 		const observers = stubResizeObserver();
 		const { view, messages, metrics } = loadedView();
 		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
-		expect(sizes.targets).toEqual([messages]);
+		// The foot laid over the messages' end too: the messages keep room for it under their last line.
+		const foot = view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot")!;
+		expect(sizes.targets).toEqual([messages, foot]);
 		document.body.append(view.el);
 		metrics.scrollHeight = 2000;
+		Object.defineProperty(foot, "offsetHeight", { configurable: true, get: () => 118 });
 		sizes.callback();
 		expect(metrics.scrollTop).toBe(1600);
+		expect(view.el.querySelector<HTMLElement>(".thread-conversation")?.style.getPropertyValue("--thread-foot")).toBe(
+			"118px",
+		);
 		// A reader who scrolled up to older messages is left there.
 		metrics.scrollTop = 500;
 		messages.dispatchEvent(new Event("scroll"));
@@ -1354,7 +1360,7 @@ describe("conversation UI boundaries", () => {
 	it("places the company notices above the coding sessions' dock, which sits right above the composer", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
-		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		// The failed-run line shares the band: notices first, then the run, the wall, the coding dock, then the composer.
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
@@ -1368,7 +1374,7 @@ describe("conversation UI boundaries", () => {
 	it("places the failed-run line above the coding dock without a notification host", () => {
 		const f = setup();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
-		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
 		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
 		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();

@@ -99,6 +99,9 @@
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
+/* The thread foot's glass, on the dark surface (conversation.css). */
+:root[data-theme="dark"] .thread-foot { --glass-bg: color-mix(in srgb, #242423 74%, transparent); --glass-edge: rgb(255 255 255 / 10%); --glass-shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 26px rgb(0 0 0 / 35%); }
+:root[data-theme="dark"] .thread-foot .composer-shell { background: var(--glass-bg); }
 :root[data-theme="dark"] .draft-panel { background: #242423; }
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
