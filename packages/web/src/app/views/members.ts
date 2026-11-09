@@ -278,14 +278,15 @@ function draw(container: HTMLElement, page: Page): void {
 	);
 }
 
-/** The asks the viewer answers: yes or no. The asks one asker made at once with one reason (the Co-Founder dealing out
- * an area, say) are one card, answered together. */
+/** The asks the viewer answers: yes or no. The asks one offer made together (the Co-Founder dealing out an area, say)
+ * are one card, answered together; any other ask is a card of its own. */
 function asksForYou(container: HTMLElement, ctx: Ctx): HTMLElement | null {
 	const mine = ctx.data.asks.filter((entry) => entry.answerByUserId === ctx.viewer);
 	if (!mine.length) return null;
 	const groups = new Map<string, WorksForAsk[]>();
 	for (const pending of mine) {
-		const key = JSON.stringify([pending.askedByUserId, pending.askedByAgentId, pending.toUserId, pending.why]);
+		// One offer's asks (the same batch) are one card; every other ask is its own.
+		const key = pending.batch ?? pending.id;
 		groups.set(key, [...(groups.get(key) ?? []), pending]);
 	}
 	return h(

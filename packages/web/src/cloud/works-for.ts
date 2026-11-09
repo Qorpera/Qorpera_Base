@@ -26,6 +26,8 @@ export interface WorksForAsk {
 	readonly createdAt: string;
 	/** Why the asker asks (migration 20260930702000), when they said. */
 	readonly why: string | null;
+	/** The offer the ask came in, when one offer asked for several agents at once. */
+	readonly batch: string | null;
 }
 
 export interface WorksFor {
@@ -81,6 +83,7 @@ export function parseWorksFor(value: unknown): WorksFor {
 				answerByUserId: uuid(item.answer_by_user_id, "member"),
 				createdAt: timestamp(item.created_at, "asked at"),
 				why: typeof item.why === "string" && item.why.trim() ? item.why.trim().slice(0, 280) : null,
+				batch: nullableUuid(item.batch, "offer"),
 			};
 		}),
 	};

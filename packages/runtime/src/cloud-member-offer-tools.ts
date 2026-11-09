@@ -29,12 +29,16 @@ export const CLOUD_CREW_AND_MEMBERS_DESCRIPTION =
 export const CLOUD_OFFER_AGENTS_DESCRIPTION =
 	"Ask one member to take some agents, so the work handed to them runs on that member's ChatGPT. member is their " +
 	"name, first name or email; agents are 1 to 20 agent names; why is one short sentence the member sees (up to 280 " +
-	"characters), such as which area is theirs. Nothing moves until the member says yes on the Members page, and an " +
+	"characters), such as which area is theirs. Two agents with the same name are named by id. Nothing moves until the member says yes on the Members page, and an " +
 	"agent that already works for them or already waits for an answer is left as it is. With two or more founders, " +
 	"deal the team out by area so each founder carries the areas that fit what they said they want to own; offer a " +
 	"member's agents to another when one carries far more, or when someone's ChatGPT is full or needs a new sign-in " +
 	"while their agents wait. Never offer agents to a viewer or to a member with no ChatGPT connected. Tell the members " +
 	"once, briefly, what you offered whom and why.";
+
+/** An agent as the Co-Founder names it: its name, or, when another agent has the same name, its name, role and id. */
+const label = (agent: Record<string, unknown>): JsonValue =>
+	agent.sameName === true ? `${agent.name} (${agent.role}, ${agent.agentId})` : (agent.name as JsonValue);
 
 const TEXT = (value: unknown, max: number) =>
 	typeof value === "string" && value.trim().length > 0 && [...value.trim()].length <= max && !/\p{Cc}/u.test(value);
@@ -105,13 +109,13 @@ export function cloudMemberOfferTools(
 						chatgpt: member.login as JsonValue,
 						agents: (r.agents as Record<string, unknown>[])
 							.filter((agent) => agent.worksFor === member.userId)
-							.map((agent) => agent.name as JsonValue),
+							.map((agent) => label(agent)),
 					}),
 				),
 				cloudToolJsonText({
 					worksForNobody: (r.agents as Record<string, unknown>[])
 						.filter((agent) => agent.worksFor === null || !names.has(agent.worksFor))
-						.map((agent) => agent.name as JsonValue),
+						.map((agent) => label(agent)),
 				}),
 				...(r.asks as Record<string, unknown>[]).map((ask) =>
 					cloudToolJsonText({

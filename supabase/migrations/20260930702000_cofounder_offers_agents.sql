@@ -12,11 +12,15 @@
 --   a first name that names one member) to take each agent (an id or a name), with a short reason shown to them. An
 --   agent that already works for that member, or already has an open ask, is left as it is and said so; a viewer is
 --   never asked. All or none: an agent or member it cannot find refuses the whole call, naming who there is.
--- * Each ask keeps its reason (`why`), and the Members page's read gives it.
--- Locks: the agents' staff rows, as a member's ask takes them. Every body carries 20260930702000.
+-- * Each ask keeps its reason (`why`) and the offer it came in (`batch`), and the Members page's read gives both.
+-- * Two agents with the same name are told apart by id: a name that names more than one refuses, listing them.
+-- Locks: the company's member rows FOR SHARE first, then the agents' staff rows, as a member's ask takes them
+-- (20260930700000): a member leaving comes wholly before or after an offer. Every body carries 20260930702000.
 
 alter table public.qorpera_agent_works_for_asks
-	add column why text check (why is null or char_length(why) between 1 and 280);
+	add column why text check (why is null or char_length(why) between 1 and 280),
+	-- The asks one offer made together (the page answers them as one card); null for a member's single ask.
+	add column batch uuid;
 
 -- The Co-Founder's run whose wake allows work (never a worker's).
 create function public.qorpera_cofounder_offer_run(p_binding jsonb)
@@ -54,6 +58,10 @@ begin
 		'agents', coalesce((select jsonb_agg(jsonb_build_object(
 				'agentId', agent.staff_agent_id,
 				'name', staff.display_name,
+				-- Two agents with one name are offered by id.
+				'sameName', exists (select 1 from public.qorpera_profile_staff as other
+					where other.profile_id = v_run.profile_id and other.staff_agent_id <> agent.staff_agent_id
+						and other.employment_status = 'active' and lower(other.display_name) = lower(staff.display_name)),
 				'role', staff.role,
 				'worksFor', public.qorpera_agent_works_for_user(v_run.profile_id, agent.staff_agent_id))
 			order by staff.display_name, agent.staff_agent_id)
@@ -87,9 +95,12 @@ declare
 	v_already jsonb := '[]';
 	v_waiting jsonb := '[]';
 	v_found integer;
+	v_batch uuid := gen_random_uuid();
 begin
 	-- 20260930702000
 	v_run := public.qorpera_cofounder_offer_run(p_binding);
+	-- The members as they are until the offer is made: one who leaves meanwhile waits, or went first.
+	perform public.qorpera_works_for_hold_members(v_run.profile_id);
 	if jsonb_typeof(p_request) is distinct from 'object' or jsonb_typeof(p_request -> 'member') is distinct from 'string'
 		or jsonb_typeof(p_request -> 'agents') is distinct from 'array'
 		or jsonb_array_length(p_request -> 'agents') not between 1 and 20
@@ -127,12 +138,19 @@ begin
 	end if;
 	-- The agents: an id or a name, each one of the company's agents other than the Co-Founder.
 	for v_wanted in select btrim(value) from jsonb_array_elements_text(p_request -> 'agents') loop
-		select agent.staff_agent_id into v_agent
+		select count(*), min(agent.staff_agent_id::text)::uuid into v_found, v_agent
 		from public.qorpera_works_for_agents(v_run.profile_id) as agent
 		join public.qorpera_profile_staff as staff on staff.profile_id = v_run.profile_id
 			and staff.staff_agent_id = agent.staff_agent_id
-		where agent.staff_agent_id::text = lower(v_wanted) or lower(staff.display_name) = lower(v_wanted)
-		order by agent.staff_agent_id limit 1;
+		where agent.staff_agent_id::text = lower(v_wanted) or lower(staff.display_name) = lower(v_wanted);
+		if v_found > 1 then
+			raise exception 'Offer: % agents are called %: %. Name one by its id.', v_found, v_wanted,
+				(select string_agg(format('%s (%s)', agent.staff_agent_id, staff.role), ', ' order by agent.staff_agent_id)
+					from public.qorpera_works_for_agents(v_run.profile_id) as agent
+					join public.qorpera_profile_staff as staff on staff.profile_id = v_run.profile_id
+						and staff.staff_agent_id = agent.staff_agent_id
+					where lower(staff.display_name) = lower(v_wanted)) using errcode = '22023';
+		end if;
 		if v_agent is null then
 			raise exception 'Offer: no agent called %. Agents that can be offered: %', v_wanted,
 				coalesce((select string_agg(staff.display_name, ', ' order by staff.display_name)
@@ -158,8 +176,8 @@ begin
 				where profile_id = v_run.profile_id and staff_agent_id = v_agent));
 		else
 			insert into public.qorpera_agent_works_for_asks(profile_id, staff_agent_id, from_user_id, to_user_id,
-				asked_by_staff_agent_id, answer_by_user_id, why)
-			values (v_run.profile_id, v_agent, v_from, v_member.user_id, v_run.staff_agent_id, v_member.user_id, v_why);
+				asked_by_staff_agent_id, answer_by_user_id, why, batch)
+			values (v_run.profile_id, v_agent, v_from, v_member.user_id, v_run.staff_agent_id, v_member.user_id, v_why, v_batch);
 			v_asked := v_asked || to_jsonb((select display_name from public.qorpera_profile_staff
 				where profile_id = v_run.profile_id and staff_agent_id = v_agent));
 		end if;
@@ -194,7 +212,7 @@ select pg_temp.offers702_replace('public.qorpera_record_runtime_observation(uuid
 select pg_temp.offers702_replace('public.qorpera_read_works_for(uuid)'::regprocedure,
 	$old$				'created_at', ask.created_at) order by ask.created_at, ask.id)$old$,
 	$new$				'created_at', ask.created_at,
-				-- 20260930702000: the reason the asker gave.
-				'why', ask.why) order by ask.created_at, ask.id)$new$);
+				-- 20260930702000: the reason the asker gave, and the offer the ask came in.
+				'why', ask.why, 'batch', ask.batch) order by ask.created_at, ask.id)$new$);
 
 drop function pg_temp.offers702_replace(regprocedure, text, text);
