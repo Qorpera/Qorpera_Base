@@ -61,12 +61,17 @@ async function setup(f = fixture()) {
 	return { ...f, root };
 }
 /** The RPC names called so far, besides the app marking the account online (online-mark.ts), which it does at
- * sign-in whatever is open. */
+ * sign-in whatever is open, and the company logos its figures ask for and keep current (app/company-logos.ts). */
 function rpcNames(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => name !== "qorpera_mark_online");
+		.filter(
+			(name) =>
+				name !== "qorpera_mark_online" &&
+				name !== "qorpera_company_logos" &&
+				name !== "qorpera_publish_company_logo",
+		);
 }
 /** The SDK RPCs Settings made, besides the Company tab's rules list (its only one until Company connections opens) and the
  * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
@@ -547,6 +552,25 @@ describe("settings session lifecycle", () => {
 		// The company list itself needs no way back.
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
+	});
+	it("shows the company's name and logo at the head of the Company tab", async () => {
+		const f = await setup();
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		const brand = f.root.querySelector<HTMLElement>("#settings-content .settings-brand")!;
+		expect(brand.querySelector("h2")?.textContent).toBe("Brand");
+		expect(brand.querySelector(".settings-brand-name strong")?.textContent).toBe(profileA.profileName);
+		// The owner may change the logo; the name is shown, and renaming is deferred.
+		expect(brand.querySelector<HTMLButtonElement>(".settings-brand-logo")!.disabled).toBe(false);
+		expect(brand.querySelector(".settings-brand-rename")).toBeNull();
+		expect(brand.querySelector("input[type=text]")).toBeNull();
+		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
+		// Only the name and the logo: the brand's colours, fonts and guide stay in the company file.
+		expect(brand.querySelector(".settings-brand-note")).toBeNull();
+		expect([...brand.querySelectorAll("button")].map((button) => button.textContent)).not.toContain(
+			"Open brand files",
+		);
 	});
 	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
 		const f = await setup();

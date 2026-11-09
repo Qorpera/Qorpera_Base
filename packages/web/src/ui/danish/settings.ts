@@ -630,4 +630,15 @@ export const SETTINGS: Record<string, string> = {
 	"Busiest this week, so far": "Travlest denne uge indtil nu",
 	"{amount} each": "{amount} hver",
 	"Sharing the lead": "Deler føringen",
+	// Settings → Company → Brand (views/settings-brand.ts) and company logos (app/company-logos.ts)
+	"The logo could not be removed. Try again.": "Logoet kunne ikke fjernes. Prøv igen.",
+	"The logo could not be saved. Try again.": "Logoet kunne ikke gemmes. Prøv igen.",
+	"Add a company logo": "Tilføj et logo",
+	Brand: "Brand",
+	"Change the company logo": "Skift logoet",
+	"Choose a new logo": "Vælg et nyt logo",
+	"Company logo": "Virksomhedens logo",
+	"Remove logo": "Fjern logo",
+	"The logo could not be removed.": "Logoet kunne ikke fjernes.",
+	"The logo could not be saved.": "Logoet kunne ikke gemmes.",
 };
