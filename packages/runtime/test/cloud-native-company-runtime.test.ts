@@ -3128,6 +3128,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
 	// On 8 November 2026 save_app's description says an app opens as a page of its own, so they moved again.
 	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
+	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
+	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3173,6 +3175,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"191f2be753041608873dbce02cc6f32cf9312cef670a8267e34fcf178ec2277b",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"b7bab85bde504438285b4052ac8f3bfd71268d5e7fea07c886360b5f3b4d4916",
+		"405176760e6a0efc6ea0fd4ddf728fd5dbad816e0160768bc8bf05d810f674f4",
 	);
 });
