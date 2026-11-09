@@ -72,7 +72,15 @@ label > input, label > select { font-weight: 400; }
 .fineprint { color: var(--text-soft); font-size: 12px; }
 
 .app { height: 100%; }
-.frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
+/* The frame is the window: nothing inside it may stretch the page below the screen. A part
+ * that reached past the bottom made the document scrollable, and the browser then scrolled
+ * it, leaving an empty band under the app (9 Nov). Clip, not hidden, so focus and
+ * scrollIntoView cannot scroll the frame either; position makes it the box absolute parts
+ * clip to. Fixed menus and dialogs are not clipped. */
+.frame {
+	position: relative; overflow: clip; display: flex; flex-direction: column; height: 100%;
+	background: var(--bg); font-family: var(--font-sans);
+}
 .body { position: relative; display: flex; flex: 1; min-height: 0; }
 
 /* buttons */
