@@ -245,6 +245,26 @@ describe("leaderboard page", () => {
 		expect(view.el.querySelector(".leaderboard-visible small")?.textContent).toContain("Your friends see your row");
 	});
 
+	it("believes a read started after a save whose answer was lost", async () => {
+		const { view, api } = await mount();
+		const visible = view.el.querySelector<HTMLInputElement>(".leaderboard-visible input")!;
+		await vi.waitFor(() => expect(visible.disabled).toBe(false));
+		visible.checked = false;
+		visible.dispatchEvent(new Event("change"));
+		await vi.waitFor(() => expect(api.setLeaderboardHidden).toHaveBeenLastCalledWith(true));
+		await vi.waitFor(() => expect(visible.disabled).toBe(false));
+		// Showing again commits, but the answer is lost; the next read says the account shows.
+		api.setLeaderboardHidden.mockRejectedValueOnce(new Error("The connection was lost."));
+		visible.checked = true;
+		visible.dispatchEvent(new Event("change"));
+		await vi.waitFor(() => expect(view.el.textContent).toContain("The connection was lost."));
+		view.el.querySelector<HTMLButtonElement>('[data-days="30"]')!.click();
+		await vi.waitFor(() => expect(api.getFriendsLeaderboard).toHaveBeenLastCalledWith(30));
+		await vi.waitFor(() => expect(view.el.textContent).not.toContain("The connection was lost."));
+		expect(visible.checked).toBe(true);
+		expect(view.el.querySelector(".leaderboard-visible small")?.textContent).toContain("Your friends see your row");
+	});
+
 	it("asks for friends when there are none", async () => {
 		const alone = parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", 12)] });
 		const { view, openFriends } = await mount(alone);

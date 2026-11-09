@@ -124,8 +124,11 @@ export class LeaderboardView {
 	#error: string | undefined;
 	#missing = false;
 	#saving = false;
-	/** The visibility this page last saved: a board read before the save landed must not show the old one. */
+	/** The visibility this page last saved. A board read that overlapped the save may carry the old choice, so it
+	 * shows this one instead; a read started after the save is the database's own word. */
 	#savedHidden: boolean | undefined;
+	/** Visibility saves started, so a read knows whether one overlapped it. */
+	#saves = 0;
 	#turn = 0;
 
 	constructor(api: CloudApi, signal: AbortSignal, openFriends: () => void) {
@@ -197,13 +200,15 @@ export class LeaderboardView {
 	async load(): Promise<void> {
 		if (this.#signal.aborted) return;
 		const turn = ++this.#turn;
+		const saves = this.#saves;
 		this.#loading = true;
 		this.#error = undefined;
 		this.#draw();
 		try {
 			const data = await this.#api.getFriendsLeaderboard(this.#days);
 			if (this.#signal.aborted || turn !== this.#turn) return;
-			this.#data = this.#savedHidden === undefined ? data : { ...data, hidden: this.#savedHidden };
+			const overlapped = this.#saves !== saves && this.#savedHidden !== undefined;
+			this.#data = overlapped ? { ...data, hidden: this.#savedHidden! } : data;
 		} catch (error) {
 			if (this.#signal.aborted || turn !== this.#turn) return;
 			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
@@ -219,12 +224,15 @@ export class LeaderboardView {
 	async #setVisible(visible: boolean): Promise<void> {
 		if (this.#saving || this.#signal.aborted) return;
 		this.#saving = true;
+		this.#saves++;
 		this.#draw();
 		try {
 			await this.#api.setLeaderboardHidden(!visible);
 			this.#savedHidden = !visible;
 			if (this.#data) this.#data = { ...this.#data, hidden: !visible };
 		} catch (error) {
+			// The save may have landed anyway: the next read says what the database holds.
+			this.#savedHidden = undefined;
 			if (!this.#signal.aborted) this.#error = describeError(error);
 		} finally {
 			this.#saving = false;
