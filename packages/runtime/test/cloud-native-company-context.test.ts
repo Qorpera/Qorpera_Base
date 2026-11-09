@@ -1679,20 +1679,50 @@ it("makes concepts in four steps, looks at pictures, and writes to coworkers in 
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
 		"Concepts are made in four steps, none skipped",
-		"write the concept brief in plain words in strategy/concept-brief.md and put it on your wall for the founders",
+		"write the concept brief in plain words in strategy/concept-brief.md, show it in the concepts app and put it on your wall for the founders",
 		"screenshots of their real screens saved as image files in research/moodboard/",
 		"Research that is only text does not count as looking.",
-		"make several clearly different directions as still pictures of the key moments, not built apps",
+		"make several clearly different directions of the key moments, each in the form that shows it best (clickable screens for software)",
 		"look at them as a demanding designer would, against the brief, the moodboard and the best reference",
 		"Passing tests is not done",
-		"A concept is its own interface app, so the founders can open each one on its own.",
-		"A concept's directions are the exception to what follows: their workers make still pictures, not videos or an app",
+		"Each built concept is its own interface app with concept = true, so the founders can open each one on its own.",
+		"A concept's directions are the exception to what follows: their workers make quick directions of the key moments, not finished apps or videos",
 		"never logs, check counts or file lists, because the founders read these threads",
 	])
 		expect(instructions).toContain(rule);
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
 		"The Co-Founder writes the concept brief with the founders before anything is built",
 	);
+});
+
+it("shows the company's work in interface apps from the first day, as fun quick choices (10 November 2026)", () => {
+	// Jonas, 10 November: in Dekora and Brooks no interface was made; a moodboard and PNG sketches lay in the folder,
+	// there was no concepts app, and the founders had nothing engaging to do while the agents worked.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Interface apps are where members see the company's work.",
+		"goes into one with save_app, when it is offered, on the day you make it",
+		"A file that sits only in the folder is not shown to anyone.",
+		"Keep one app per topic and grow it as the work moves on",
+		"clickable screens for an app or a website, a 3D view or a rendered turntable for an object or a space",
+		"A picture of a screen is not a screen.",
+		"Make following the work fun, not a chore",
+		"raise the choice with ask_member as a question whose options preview the app or its pictures, and show the same choice in the app",
+		'From the company\'s first day it keeps one concepts app, named after the product followed by "concepts", with concept = true and a cover',
+		"Show the moodboard in the concepts app, each picture with its note.",
+		"ask the founders to pick one with a question whose options preview them",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
+});
+
+it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
+	// Jonas, 10 November: a company should have its email from the start; no company had a mailbox.
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain(
+		"In that first run, before your hello, open the company's email so it works from day one: when manage_hook is offered, create the company's main mailbox (action create, kind mailbox) with the company's name in lowercase letters as its localPart",
+	);
+	expect(cofounder).toContain("Give the founders the address in your hello.");
 });
 
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
