@@ -588,6 +588,8 @@ export class SettingsView {
 		if (this.#mode !== "storage") return;
 		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
 		this.#drawStorageUsage();
+		// Shown again after a failed read, Storage reads its usage again.
+		if (shown && this.#fileError && !this.#fileLoading) this.#fileError = undefined;
 		if (company && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
 		this.#markStorageSection(this.#storageSection);
 		if (!company) {
@@ -702,7 +704,22 @@ export class SettingsView {
 			return;
 		}
 		const storage = storageSummary(this.#file, this.#fileError);
-		replace(this.#storageUsage, storage.meter, h("small", null, storage.text));
+		replace(
+			this.#storageUsage,
+			storage.meter,
+			h("small", null, storage.text),
+			this.#fileError
+				? button(
+						uiText("Retry"),
+						() => {
+							this.#fileError = undefined;
+							void this.#loadFile();
+							this.#drawStorageUsage();
+						},
+						{ small: true },
+					)
+				: null,
+		);
 	}
 
 	#select(choice: SettingsCategory): void {

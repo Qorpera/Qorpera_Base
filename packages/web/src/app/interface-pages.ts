@@ -24,6 +24,8 @@ export class CompanyInterfacePages {
 	#shown: string | undefined;
 	/** Counts changes: a read that a change overtook is dropped, so the change's answer stays the last word. */
 	#changes = 0;
+	/** The last change asked for, settled: the next one starts after it. */
+	#changing: Promise<void> = Promise.resolve();
 
 	constructor(
 		calls: InterfacePageCalls,
@@ -52,9 +54,17 @@ export class CompanyInterfacePages {
 		clearInterval(this.#poll);
 	}
 
-	/** Shows or hides a page for everyone in the company. A change that fails reads the pages again (it may still have
-	 * landed) and throws. */
-	async set(page: InterfacePageName, on: boolean): Promise<void> {
+	/** Shows or hides a page for everyone in the company. Changes run one at a time, each after the last has answered
+	 * (or failed and been read again), so an older answer never lands over a newer one. A change that fails reads the
+	 * pages again (it may still have landed) and throws. */
+	set(page: InterfacePageName, on: boolean): Promise<void> {
+		const run = () => this.#change(page, on);
+		const next = this.#changing.then(run, run);
+		this.#changing = next.catch(() => {});
+		return next;
+	}
+
+	async #change(page: InterfacePageName, on: boolean): Promise<void> {
 		if (this.#stop.signal.aborted) return;
 		this.#changes++;
 		let state: InterfacePagesState;

@@ -1655,14 +1655,28 @@ describe("settings session lifecycle", () => {
 		expect(rows[1]?.textContent).toContain("No sales yet");
 		expect(rows[1]?.textContent).toContain("No card yet");
 	});
-	it("says under Storage's navigation when the company's storage can't be read", async () => {
+	it("says under Storage's navigation when the company's storage can't be read, and reads it again", async () => {
 		const f = await setup();
 		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
 		open(f.root);
 		click(f.root, '.settings-mode[data-mode="storage"]');
 		await draw();
-		expect(f.root.querySelector(".settings-storage-usage")?.textContent).toContain("Storage information unavailable");
+		const usage = () => f.root.querySelector(".settings-storage-usage")!;
+		expect(usage().textContent).toContain("Storage information unavailable");
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+		// Retry reads it again.
+		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
+		[...usage().querySelectorAll("button")].find((button) => button.textContent === "Retry")!.click();
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
+		expect(usage().textContent).toContain("Storage information unavailable");
+		// Settings shown and Storage opened again read it again too.
+		click(f.root, '.settings-mode[data-mode="settings"]');
+		click(f.root, '.settings-mode[data-mode="storage"]');
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(3);
+		expect(usage().textContent).not.toContain("Storage information unavailable");
+		expect(usage().querySelector("button")).toBeNull();
 	});
 	it("shows the open company's agent rules on the Company tab, and none when no company is open", async () => {
 		const fixtureState = fixture();

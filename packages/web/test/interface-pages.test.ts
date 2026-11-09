@@ -188,6 +188,22 @@ describe("hiding and showing a page (app/interface-pages.ts set)", () => {
 		expect(published).toEqual([state(false, true)]);
 	});
 
+	it("runs changes one at a time, so an older answer never lands over a newer one", async () => {
+		const first = deferred<MemberInterfacePages>();
+		const answers = [first.promise, Promise.resolve(state(false, false))];
+		const set = vi.fn<InterfacePageCalls["set"]>(() => answers.shift()!);
+		const { pages, published } = follow({ list: vi.fn(), set });
+		const mailbox = pages.set("mailbox", false);
+		const members = pages.set("members", false);
+		await settle();
+		// The second waits for the first's answer.
+		expect(set).toHaveBeenCalledExactlyOnceWith("mailbox", false);
+		first.resolve(state(false, true));
+		await Promise.all([mailbox, members]);
+		expect(set).toHaveBeenLastCalledWith("members", false);
+		expect(published).toEqual([state(false, true), state(false, false)]);
+	});
+
 	it("reads the pages again when a change fails, and says so", async () => {
 		const list = vi.fn<InterfacePageCalls["list"]>(async () => state(true, false));
 		const set = vi.fn<InterfacePageCalls["set"]>(async () => {
