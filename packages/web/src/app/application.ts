@@ -154,9 +154,6 @@ export function mountApplication(
 		if (!friendsWindow) return;
 		friendsWindow.dispose();
 		friendsWindow = undefined;
-		// Settings stayed open behind it: their invitation picker reads the friends list again, so a friend added or
-		// removed in the window shows there.
-		settings?.refreshFriends();
 		if (!restoreFocus) return;
 		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
 		(
@@ -167,7 +164,8 @@ export function mountApplication(
 	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
 	function openFriends(): void {
 		if (friendsWindow || feedback || !auth.userId) return;
-		friendsWindow = new FriendsWindow(api, hub, () => closeFriends());
+		// Over Settings it shares their friends list, so the invitation picker behind it follows every change.
+		friendsWindow = new FriendsWindow(api, hub, () => closeFriends(), settings?.friends);
 		root.append(friendsWindow.el);
 		friendsWindow.open();
 	}

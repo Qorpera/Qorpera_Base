@@ -1682,21 +1682,22 @@ describe("settings session lifecycle", () => {
 		// The window reads the list for itself.
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(friendsWindow.querySelector(".person-row")?.textContent).toContain("Friend B");
-		// A friend added in the window shows in Settings' picker once the window closes.
-		const before = vi.mocked(f.api.listFriends).mock.results[0]!.value as Promise<HostedFriend[]>;
-		const friendC: HostedFriend = {
-			...(await before)[0]!,
-			userId: id(77),
-			email: "friend-c@example.test",
-			displayName: "Friend C",
-		};
-		vi.mocked(f.api.listFriends).mockResolvedValue([...(await before), friendC]);
+		// The window shares Settings' list: a friend removed there, closed before the removal lands, leaves the picker
+		// once it lands.
+		const removed = deferred<void>();
+		const remove = vi.spyOn(f.api, "removeFriend").mockImplementation(() => removed.promise);
+		[...friendsWindow.querySelectorAll<HTMLButtonElement>(".person-row button")]
+			.find((button) => button.textContent === "Remove")!
+			.click();
 		friendsWindow.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
+		vi.mocked(f.api.listFriends).mockResolvedValue([]);
+		expect(remove).toHaveBeenCalledTimes(1);
+		removed.resolve();
 		await draw();
-		expect(f.api.listFriends).toHaveBeenCalledTimes(3);
 		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
 		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
-		expect(f.root.querySelector(".invite-results")?.textContent).toContain("Friend C");
+		expect(f.root.querySelector(".invite-results")?.textContent ?? "").not.toContain("Friend B");
 	});
 	it("closes nested confirmation before settings, and cancels it on sign-out", async () => {
 		const f = await setup();
