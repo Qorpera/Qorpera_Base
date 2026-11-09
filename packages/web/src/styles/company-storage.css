@@ -132,6 +132,8 @@
 /* A picture fills the window's body, as large as it fits. */
 .storage-viewer .files-preview-body:has(> .files-image) { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; overflow: hidden; background: var(--pane); }
 .storage-viewer .files-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* What an action says, under the window's foot. */
+.storage-viewer > :is(.files-status, .files-retries) { margin: 0; padding: 0 24px 14px; }
 .storage-viewer .files-blank { height: 100%; justify-content: center; }
 .storage-viewer .files-page-view { display: flex; flex-direction: column; height: 100%; }
 .storage-viewer .files-page-stage { display: flex; flex: 1; flex-direction: column; min-height: 0; }

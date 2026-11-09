@@ -918,9 +918,16 @@ describe("settings session lifecycle", () => {
 			closeLarge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-			// Escape again closes the file's own window over Settings, and Settings still stays.
+			// Tab in the file's own window over Settings is the window's: Settings' trap leaves it alone.
 			const viewer = f.root.querySelector<HTMLDialogElement>(".settings-storage-content dialog.storage-viewer")!;
 			expect(viewer.open).toBe(true);
+			const history = [...viewer.querySelectorAll<HTMLButtonElement>(".files-preview-actions button")].at(-1)!;
+			history.focus();
+			const onwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+			history.dispatchEvent(onwards);
+			expect(onwards.defaultPrevented).toBe(false);
+			expect(document.activeElement).toBe(history);
+			// Escape again closes the window, and Settings still stays.
 			(document.activeElement ?? document.body).dispatchEvent(
 				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
 			);

@@ -1150,6 +1150,44 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.open).toBe(false);
 	});
 
+	it("rests the file window while an action runs and says what failed inside it, back under the list once closed", async () => {
+		const { fake, host } = await opened({ embedded: true });
+		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
+		const preview = host.querySelector<HTMLElement>(".files-preview")!;
+		await click(row(host, "readme.txt"));
+		expect(viewer.open).toBe(true);
+		let fail!: (error: Error) => void;
+		fake.client.readFile.mockImplementationOnce(
+			() =>
+				new Promise<Uint8Array<ArrayBuffer>>((_, reject) => {
+					fail = reject;
+				}),
+		);
+		const download = action(host, "Download")!;
+		download.focus();
+		download.click();
+		// A modal window is not made inert by the list's root, so its content rests on its own; focus stays in it.
+		expect(preview.inert).toBe(true);
+		expect(document.activeElement).toBe(viewer);
+		// Escape while it runs is the window's and closes nothing.
+		const early = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		viewer.dispatchEvent(early);
+		expect(early.defaultPrevented).toBe(true);
+		expect(viewer.open).toBe(true);
+		fail(new Error("lost"));
+		await settle();
+		expect(preview.inert).toBe(false);
+		// What failed shows in the window, with Try again in reach, and focus is back on Download.
+		const said = viewer.querySelector(".files-status");
+		expect(visibleText(said)).toContain("The Company File could not be read just now.");
+		expect(said?.querySelector("button")?.textContent).toBe("Try again");
+		expect(document.activeElement).toBe(download);
+		await click(viewer.querySelector('.files-preview-head [aria-label="Close readme.txt"]'));
+		expect(viewer.contains(host.querySelector(".files-status"))).toBe(false);
+		expect(host.querySelector(".files-retries")?.nextElementSibling).toBe(host.querySelector(".files-root"));
+		expect(status(host)).toContain("could not be read");
+	});
+
 	it("keeps the standalone browser's preview beside the files, with no window and no scrolling", async () => {
 		const { host } = await opened();
 		const reveal = vi.fn();

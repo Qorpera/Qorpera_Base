@@ -490,9 +490,8 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
-		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
-		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
-			return;
+		// A dialog opened over Settings (a page shown across the window, or Storage's file window) keeps its own keys.
+		if (event.target instanceof Element && event.target.closest("dialog")?.open) return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
 				this.#search.value = "";

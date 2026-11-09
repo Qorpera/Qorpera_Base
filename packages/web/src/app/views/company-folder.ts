@@ -566,6 +566,13 @@ export class CompanyFolderBrowser {
 		this.#busy = true;
 		const focus = document.activeElement;
 		this.#root.inert = true;
+		// A modal window is not made inert by its ancestors, so its content rests on its own. Focus stays in the window,
+		// where Escape is the window's.
+		if (this.#viewer?.open) {
+			this.#preview.inert = true;
+			if (!this.#viewer.contains(document.activeElement) || this.#preview.contains(document.activeElement))
+				this.#viewer.focus({ preventScroll: true });
+		}
 		this.#say("");
 		try {
 			this.#live();
@@ -588,10 +595,13 @@ export class CompanyFolderBrowser {
 		} finally {
 			this.#busy = false;
 			this.#root.inert = false;
+			this.#preview.inert = false;
 			if (
 				focus instanceof HTMLElement &&
 				focus.isConnected &&
-				(!document.activeElement || document.activeElement === document.body)
+				(!document.activeElement ||
+					document.activeElement === document.body ||
+					(this.#viewer !== null && document.activeElement === this.#viewer && this.#viewer.contains(focus)))
 			)
 				focus.focus();
 			// The window was drawn while the root rested, so nothing in it could take focus then.
@@ -930,14 +940,10 @@ export class CompanyFolderBrowser {
 	}
 
 	#close(): void {
+		const path = this.#viewer?.open ? this.#opened?.path : undefined;
 		if (this.#viewer?.open) {
 			this.#viewer.close();
-			// Focus goes back to the file's row; the list was out of reach while the window was open.
-			const path = this.#opened?.path;
-			if (path !== undefined)
-				[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
-					.find((row) => row.dataset.path === path)
-					?.focus({ preventScroll: true });
+			this.#root.before(this.#status, this.#retries);
 		}
 		this.#forget(this.#opened);
 		this.#opened = null;
@@ -945,6 +951,11 @@ export class CompanyFolderBrowser {
 		this.#preview.replaceChildren();
 		this.#host.classList.remove("has-preview");
 		for (const row of this.#list.querySelectorAll(".files-row.is-open")) row.classList.remove("is-open");
+		// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
+		if (path !== undefined)
+			[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
+				.find((row) => row.dataset.path === path)
+				?.focus({ preventScroll: true });
 	}
 
 	#forget(opened: Opened | null): void {
@@ -979,7 +990,13 @@ export class CompanyFolderBrowser {
 		this.#host.classList.add("has-preview");
 		if (this.#viewer) {
 			this.#viewer.setAttribute("aria-label", title);
-			if (!this.#viewer.open && this.#viewer.isConnected) this.#viewer.showModal();
+			if (!this.#viewer.open && this.#viewer.isConnected) {
+				// What an action says, and a lost restore's Try again, show in the window: the page under it is out of reach.
+				this.#viewer.append(this.#status, this.#retries);
+				this.#viewer.showModal();
+				// Opened while an action runs: it rests until the action is done.
+				this.#preview.inert = this.#busy;
+			}
 		}
 	}
 
