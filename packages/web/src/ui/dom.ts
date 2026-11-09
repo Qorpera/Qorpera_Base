@@ -101,6 +101,9 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 				// tabindex given in attrs is applied after this and wins.
 				setLinkHref(element, String(value));
 			} else if (key === "dataset") Object.assign(element.dataset, value as Record<string, string>);
+			// Through the CSSOM: the app's Content-Security-Policy (`style-src 'self'`, public/_headers) drops a style
+			// attribute the page sets, so a bar's height or a custom property given as an attribute never applied.
+			else if (key === "style") element.style.cssText = String(value);
 			else if (key.startsWith("on") && typeof value === "function") {
 				element.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
 			} else if (
