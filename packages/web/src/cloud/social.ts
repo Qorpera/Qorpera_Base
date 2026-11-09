@@ -17,8 +17,6 @@ export interface LeaderboardPerson {
 	tasks: number;
 	lastWeekTasks: number;
 	revenueOre: number;
-	/** Their busiest company this week, else the one they joined first: its figure stands for them. */
-	mainProfileId: string | null;
 }
 
 export interface LeaderboardCompany {
@@ -72,7 +70,6 @@ export function parseLeaderboard(value: unknown): Leaderboard {
 				tasks: amount(row.tasks, "leaderboard tasks"),
 				lastWeekTasks: amount(row.last_week_tasks, "leaderboard last week tasks"),
 				revenueOre: amount(row.revenue_ore, "leaderboard revenue"),
-				mainProfileId: row.main_profile_id == null ? null : uuid(row.main_profile_id, "leaderboard main company"),
 			};
 		}),
 		companies: array(input.companies, "leaderboard companies").map((item) => {

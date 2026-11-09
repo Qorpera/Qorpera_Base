@@ -62,12 +62,10 @@ describe("leaderboard answers", () => {
 	it("reads people and companies", () => {
 		const board = parseLeaderboard(BOARD);
 		expect(board.week).toBe(46);
-		expect(
-			board.people.map((row) => [row.displayName, row.me, row.tasks, row.lastWeekTasks, row.mainProfileId]),
-		).toEqual([
-			["Jonas", true, 12, 40, COMPANY],
-			["Asger", false, 30, 5, CAFE],
-			["Bo", false, 12, 20, CAFE],
+		expect(board.people.map((row) => [row.displayName, row.me, row.tasks, row.lastWeekTasks])).toEqual([
+			["Jonas", true, 12, 40],
+			["Asger", false, 30, 5],
+			["Bo", false, 12, 20],
 		]);
 		expect(board.companies[0]).toEqual({
 			profileId: COMPANY,
@@ -197,6 +195,10 @@ describe("leaderboard page", () => {
 			["2", "–", "Bo", "12"],
 		]);
 		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · 19 tasks to pass Asger");
+		// People show their own picture (initials until they choose one), never a company's figure.
+		expect(view.el.querySelectorAll(".leaderboard-row .person-avatar")).toHaveLength(3);
+		expect(view.el.querySelector(".leaderboard-row .company-logo")).toBeNull();
+		expect(view.el.querySelector(".leaderboard-champion-figure .person-avatar")?.textContent).toBe("A");
 	});
 
 	it("shows the other boards: busiest companies and top earners", async () => {
@@ -208,6 +210,9 @@ describe("leaderboard page", () => {
 			["2", null, "Havnens Kaffebar", "42"],
 		]);
 		expect(view.el.querySelectorAll(".leaderboard-who small")[1]?.textContent).toBe("Asger, Bo");
+		// A company shows its logo: its figure, until companies have logos of their own.
+		expect(view.el.querySelectorAll(".leaderboard-row .company-logo")).toHaveLength(2);
+		expect(view.el.querySelector(".leaderboard-champion-figure .company-logo")).not.toBeNull();
 		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · You're in the lead.");
 		pick(view.el, "earning-friends");
 		// Revenue in kroner, no arrows; nobody with nothing yet gets a place.

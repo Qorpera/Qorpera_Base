@@ -81,10 +81,13 @@
 }
 .leaderboard-champion.is-open { min-height: 0; }
 .leaderboard-champion-figures { position: relative; display: flex; flex: none; }
-.leaderboard-champion-figures.is-shared .leaderboard-champion-figure + .leaderboard-champion-figure { margin-left: -34px; animation-delay: .35s; }
+.leaderboard-champion-figures.is-shared .leaderboard-champion-figure + .leaderboard-champion-figure { margin-left: -28px; animation-delay: .35s; }
 .leaderboard-champion-figures.is-shared .figure { width: 104px; height: 104px; }
 .leaderboard-champion-figure { position: relative; flex: none; animation: leaderboard-cheer 1.9s cubic-bezier(.3, 1.5, .5, 1) infinite; }
 .leaderboard-champion-figure .figure { width: 128px; height: 128px; }
+.leaderboard-champion-figure .person-avatar { width: 112px; height: 112px; font-size: 38px; box-shadow: 0 0 0 4px var(--header-surface), 0 8px 24px rgb(0 0 0 / 12%); }
+.leaderboard-champion-figures.is-shared .person-avatar { width: 92px; height: 92px; font-size: 30px; }
+.leaderboard-row .person-avatar { width: 40px; height: 40px; font-size: 14px; }
 .leaderboard-champion-copy { position: relative; display: grid; gap: 4px; min-width: 0; }
 .leaderboard-champion-copy small { color: #8a6510; font-size: 11.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
 .leaderboard-champion-copy strong { overflow: hidden; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
@@ -129,6 +132,7 @@
 	.leaderboard-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.leaderboard-champion { gap: 16px; padding: 18px; }
 	.leaderboard-champion-figure .figure, .leaderboard-champion-figures.is-shared .figure { width: 84px; height: 84px; }
+	.leaderboard-champion-figure .person-avatar { width: 76px; height: 76px; font-size: 26px; }
 	.leaderboard-champion-copy strong { font-size: 22px; }
 	.leaderboard-row { gap: 10px; padding-inline: 12px; }
 	.leaderboard-move { width: 30px; }

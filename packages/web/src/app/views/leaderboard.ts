@@ -1,17 +1,18 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import type { Leaderboard, LeaderboardCompany, LeaderboardPerson } from "../../cloud/social.ts";
-import { button, companyLogo, h, notice, replace } from "../../ui/dom.ts";
+import { button, companyLogo, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
-import { lastOnline } from "./friends.ts";
+import { lastOnline, personFace } from "./friends.ts";
 
 /* Settings → Leaderboard (Jonas, 9 Nov 2026: direction C, "Champion of the week"). Four wide tabs across the page:
  * busiest friends and busiest companies this week (a round from Monday, Danish time; a task is work an agent finished
  * and saved for a company), and top-earning friends and companies (all sales so far, without VAT). Whoever leads gets
- * a banner with their figure cheering; the ranking below shows who moved up or down since last week, and your own
- * row says how far it is to the next place. A person's figures sum their companies, and the figure of their busiest
- * company stands for them. One switch takes the account off its friends' boards (qorpera_friends_leaderboard). */
+ * a banner with their picture cheering; the ranking below shows who moved up or down since last week, and your own
+ * row says how far it is to the next place. A person's figures sum their companies. People show their own profile
+ * picture (initials until they choose one); a company shows its logo, which is its figure until companies get real
+ * logos (Jonas, 9 Nov 2026). One switch takes the account off its friends' boards (qorpera_friends_leaderboard). */
 
 type Board = "busy-friends" | "busy-companies" | "earning-friends" | "earning-companies";
 
@@ -40,12 +41,21 @@ function placesBy<Row>(rows: readonly Row[], value: (row: Row) => number): Map<R
 	return places;
 }
 
+/** A row's picture: a person's own (with the green dot while online), a company's logo. */
+function faceOf(entry: Entry): HTMLElement {
+	return entry.userId
+		? personFace(entry.name, entry.userId, entry.online === true)
+		: companyLogo(entry.profileId ?? entry.key);
+}
+
 /** One row of a board: who, how to draw them, this week's figure and last week's. */
 interface Entry {
 	key: string;
 	name: string;
-	/** The seed of the company figure that stands for them. */
-	figure: string;
+	/** Whose picture: a person's account (with whether they are online now), else a company's logo. */
+	userId?: string;
+	online?: boolean;
+	profileId?: string;
 	detail: string;
 	me: boolean;
 	value: number;
@@ -231,7 +241,8 @@ export class LeaderboardView {
 				return {
 					key: person.userId,
 					name: person.displayName,
-					figure: person.mainProfileId ?? person.userId,
+					userId: person.userId,
+					online: seen?.online === true,
 					detail: person.me ? t("You") : (seen?.text ?? ""),
 					me: person.me,
 					value: earning ? person.revenueOre : person.tasks,
@@ -245,7 +256,7 @@ export class LeaderboardView {
 			return {
 				key: company.profileId,
 				name: company.name,
-				figure: company.profileId,
+				profileId: company.profileId,
 				detail: members.map((person) => (person.me ? t("You") : person.displayName)).join(", "),
 				me: members.some((person) => person.me),
 				value: earning ? company.revenueOre : company.tasks,
@@ -318,7 +329,7 @@ export class LeaderboardView {
 											move === 0 ? "–" : `${move > 0 ? "▲" : "▼"} ${Math.abs(move)}`,
 										)
 									: null,
-								companyLogo(entry.figure, "leaderboard-figure"),
+								faceOf(entry),
 								h(
 									"span",
 									{ class: "leaderboard-who" },
@@ -407,7 +418,15 @@ export class LeaderboardView {
 					{ class: shared ? "leaderboard-champion-figures is-shared" : "leaderboard-champion-figures" },
 					...leaders
 						.slice(0, 3)
-						.map((entry) => h("span", { class: "leaderboard-champion-figure" }, companyLogo(entry.figure))),
+						.map((entry) =>
+							h(
+								"span",
+								{ class: "leaderboard-champion-figure" },
+								entry.userId
+									? personAvatar(entry.name, entry.userId)
+									: companyLogo(entry.profileId ?? entry.key),
+							),
+						),
 				),
 				h(
 					"div",
