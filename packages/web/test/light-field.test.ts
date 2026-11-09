@@ -6,8 +6,20 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("../public/assets/avatars/light-field.js", import.meta.url), "utf8");
 
 interface LightField {
-	lightField(pixels: Uint8ClampedArray, coverage: Float32Array, eyes: Float32Array | null, width: number, height: number): Float32Array;
-	compute(pixels: Uint8ClampedArray, coverage: Float32Array, eyes: Float32Array | null, width: number, height: number): Promise<Float32Array>;
+	lightField(
+		pixels: Uint8ClampedArray,
+		coverage: Float32Array,
+		eyes: Float32Array | null,
+		width: number,
+		height: number,
+	): Float32Array;
+	compute(
+		pixels: Uint8ClampedArray,
+		coverage: Float32Array,
+		eyes: Float32Array | null,
+		width: number,
+		height: number,
+	): Promise<Float32Array>;
 }
 
 class WorkerScope {
@@ -24,7 +36,10 @@ function run(globals: Record<string, unknown>): void {
 }
 
 /** The script as a page loads it: `Worker` is what `new Worker(url)` builds, if anything. */
-function page(Worker?: unknown, url: string | undefined = "https://app.example/assets/avatars/light-field.js?v=0123456789ab"): LightField {
+function page(
+	Worker?: unknown,
+	url: string | undefined = "https://app.example/assets/avatars/light-field.js?v=0123456789ab",
+): LightField {
 	const window: { QORPERA_LIGHT_FIELD?: LightField } = {};
 	run({
 		window,
@@ -74,7 +89,14 @@ describe("the figures' light field (light-field.js)", () => {
 			readonly scope = new WorkerScope();
 			constructor(url: string) {
 				started.push(url);
-				run({ self: this.scope, WorkerGlobalScope: WorkerScope, window: undefined, document: undefined, navigator: undefined, Worker: undefined });
+				run({
+					self: this.scope,
+					WorkerGlobalScope: WorkerScope,
+					window: undefined,
+					document: undefined,
+					navigator: undefined,
+					Worker: undefined,
+				});
 			}
 			postMessage(data: unknown): void {
 				this.scope.onmessage!({ data });
