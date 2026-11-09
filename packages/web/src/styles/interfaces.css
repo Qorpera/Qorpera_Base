@@ -40,15 +40,19 @@
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
 /* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
- * 2026). The emblem turns white with its cuts in the selection colour, so an emblem of that same colour still shows. */
+ * 2026). The emblem turns white; the selection shows through its cuts. */
 .rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-app.active .interface-emblem :is([fill]:not([fill="none"], [fill="#ffffff"])) { fill: #fff; }
-.rail-app.active .interface-emblem :is([stroke]:not([stroke="#ffffff"])) { stroke: #fff; }
-.rail-app.active .interface-emblem [fill="#ffffff"] { fill: var(--rail-selection); }
-.rail-app.active .interface-emblem [stroke="#ffffff"] { stroke: var(--rail-selection); }
+.rail-app.active .interface-emblem { --emblem-ink: #fff; }
 .rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-app.active:focus-visible { outline-color: #fff; }
+/* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
+ * make way. Its tile shows no hover while it moves. */
+.rail-apps-grid.is-sorting { cursor: grabbing; }
+.rail-apps-grid.is-sorting .rail-app { cursor: grabbing; }
+.rail-apps-grid.is-sorting .rail-app:not(.active):hover { background: none; }
+.rail-app.is-lifted { position: relative; z-index: 2; transition: none; }
+.rail-app.is-lifted .interface-emblem { transform: scale(1.12); filter: drop-shadow(0 6px 10px rgb(0 0 0 / 22%)); }
 .rail-app-stand { position: relative; display: grid; }
 .rail-app .interface-emblem { width: 34px; height: 34px; transition: transform var(--motion-base) var(--ease-spring); }
 .rail-app:hover .interface-emblem { transform: translateY(-2px) scale(1.06); }
@@ -64,6 +68,11 @@
 	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot { transition: none; }
 }
 
+/* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour. Its
+ * cuts are holes in a mask, so whatever is under the emblem shows through them. */
+.interface-emblem { --emblem-ink: var(--text); }
+.interface-emblem [data-fill="ink"] { fill: var(--emblem-ink); }
+.interface-emblem [data-stroke="ink"] { stroke: var(--emblem-ink); }
 .interface-emblem .emblem-beat { stroke-dasharray: 60; animation: emblem-beat 2.4s linear infinite; }
 @keyframes emblem-beat { 0% { stroke-dashoffset: 60; } 60%, 100% { stroke-dashoffset: 0; } }
 

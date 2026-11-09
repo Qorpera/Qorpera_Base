@@ -84,6 +84,7 @@ import {
 	subscribeRoomDrafts,
 } from "./room-drafts.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
+import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
 import type {
 	HostedAccountEntitlement,
 	HostedAccountMatch,
@@ -236,6 +237,21 @@ export class CloudApi {
 
 	async removeFriend(userId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
+	}
+
+	/** Marks this account online now, for its friends' "last online". */
+	markOnline(): Promise<void> {
+		return markOnline(this.cloud);
+	}
+
+	/** This account, its friends, their companies and those companies' agents, this week. */
+	getFriendsLeaderboard(): Promise<Leaderboard> {
+		return readLeaderboard(this.cloud);
+	}
+
+	/** Leaves (or joins again) the leaderboards of this account's friends. */
+	setLeaderboardHidden(hidden: boolean): Promise<void> {
+		return setLeaderboardHidden(this.cloud, hidden);
 	}
 
 	// Member pictures: the photo a member chose for their account. The cloud

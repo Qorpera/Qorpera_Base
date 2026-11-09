@@ -143,6 +143,7 @@ function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 		invitations: 0,
 		openSettings: () => {},
 		openFeedback: () => {},
+		openFriends: () => {},
 		agentActions: {},
 	});
 	return element;

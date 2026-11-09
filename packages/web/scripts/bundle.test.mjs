@@ -124,7 +124,7 @@ test("theme.js restores appearance before paint without the dictionary", async (
 		URL,
 		URLSearchParams,
 		location: { href: `https://app.example/#/c/${company}` },
-		localStorage: { getItem: (key) => ({ "qorpera-web-auth/v1": "{}", "qorpera.web.rail-width.v4": "400" })[key] ?? null },
+		localStorage: { getItem: (key) => ({ "qorpera-web-auth/v1": "{}", "qorpera.web.rail-width.v5": "400" })[key] ?? null },
 		document: { documentElement: member, querySelectorAll: () => [], addEventListener: (type) => listened.push(type) },
 	});
 	assert.equal(member.dataset.boot, "thread");

@@ -201,7 +201,7 @@ export class AppPanel {
 	#heading(title: string, manifest: AppManifest | null, owner: string | null): void {
 		this.#title.textContent = title;
 		this.#title.title = manifest?.about ? `${title} · ${manifest.about}` : title;
-		replace(this.#emblem, interfaceEmblem(manifest?.emblem ?? "page", manifest?.colour ?? null, 22));
+		replace(this.#emblem, interfaceEmblem(manifest?.emblem ?? "page", 22));
 		const made = owner
 			? t("Made by {name}", { name: owner })
 			: manifest

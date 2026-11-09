@@ -39,6 +39,7 @@ function setup(initial: HostedSession) {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 		view.update();
 	};

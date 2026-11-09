@@ -189,6 +189,9 @@ function parseFriend(value: unknown): HostedFriend {
 		status,
 		direction: input.direction === "outgoing" ? "outgoing" : "incoming",
 		since: timestamp(input.since, "friend time"),
+		...(status === "accepted" && input.last_seen_at != null
+			? { lastSeenAt: timestamp(input.last_seen_at, "friend last online") }
+			: {}),
 	};
 }
 

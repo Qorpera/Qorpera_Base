@@ -9,10 +9,10 @@
 :root[data-boot="hub"] .boot > .boot-hub,
 :root[data-boot="thread"] .boot > .boot-thread { display: contents; }
 
-/* RailLayout's width: the member's stored one or the size's default, at most two fifths of the window and never
+/* RailLayout's width: the member's stored one or the size's default, at most 44% of the window and never
  * under 240 (design pixels; --px is the scale). */
-.boot .rail { --rail-width: min(calc(var(--boot-rail, 369) * var(--px)), max(240px, 40vw)); }
-:root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 456) * var(--px)), max(240px, 40vw)); }
+.boot .rail { --rail-width: min(calc(var(--boot-rail, 406) * var(--px)), max(240px, 44vw)); }
+:root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 502) * var(--px)), max(240px, 44vw)); }
 
 /* A grey line where a line of text will stand; its line box keeps the text's own height (line heights here are
  * multiples of the font size, whatever the face). The sign-in page's lines are set in the system face: a line box in

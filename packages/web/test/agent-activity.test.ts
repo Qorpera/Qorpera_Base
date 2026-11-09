@@ -47,6 +47,7 @@ function setup() {
 			route: { name: "company", profileId: profileA.profileId, section: "chat", id: session.sessionId },
 			openSettings() {},
 			openFeedback() {},
+			openFriends() {},
 		});
 	cleanup.push(() => {
 		view.dispose();
