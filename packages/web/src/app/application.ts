@@ -1428,6 +1428,18 @@ export function mountApplication(
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
+		controller.setOpenPlace(
+			route.section === "interface" && route.id
+				? `page:${route.id}`
+				: route.section === "app" && route.id
+					? `app:${route.id}`
+					: route.section === "staff" && route.id
+						? `agent:${route.id.toLowerCase()}`
+						: route.section === "concepts" || route.section === "sites"
+							? route.section
+							: undefined,
+		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
 		if (route.section === "chat") appReturn = routeHash(route);

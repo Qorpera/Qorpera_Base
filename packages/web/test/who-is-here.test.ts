@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { parsePresenceValue, presenceValue } from "../src/app/presence-place.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
+import { renderRail } from "../src/app/views/shell.ts";
 import type { PresenceMember } from "../src/cloud/presence.ts";
 import type { HostedProfileMember } from "../src/cloud/types.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
@@ -168,5 +171,104 @@ describe("who is here now", () => {
 		const s = await setup({ members: [members[0]!] });
 		expect(s.join).not.toHaveBeenCalled();
 		expect(s.here().hidden).toBe(true);
+	});
+});
+
+describe("who is where in the company (the rail's markers)", () => {
+	it("says the open conversation and its agent, and a page, app or card when no conversation is open", async () => {
+		const s = await setup();
+		// An agent's thread is bound to a room of its own, and still stands for the agent.
+		s.company.store.set({
+			sessions: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(55), agentThread: true } }],
+		});
+		await settle();
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith(`${session.sessionId}@agent:${staff.id}`);
+		// A group chat stands for its room.
+		s.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(56) } }] });
+		await settle();
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith(`${session.sessionId}@room:${id(56)}`);
+		s.view.dispose();
+		s.company.setOpenPlace("page:Members");
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith("@page:Members");
+		s.company.setOpenPlace(undefined);
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith(null);
+	});
+
+	it("groups the other members by where they are, once each, and still finds them in a conversation", async () => {
+		const s = await setup();
+		await s.publish([
+			tab(userB.id, `${session.sessionId}@agent:${staff.id}`),
+			tab(userB.id, `${session.sessionId}@agent:${staff.id}`),
+			tab(userC, `${id(98)}@agent:${staff.id}`),
+			tab(userD, "@page:Members"),
+			tab(userE, id(97)),
+			tab(userA.id, `${session.sessionId}@agent:${staff.id}`),
+		]);
+		const places = s.company.peopleByPlace();
+		expect(places.get(`agent:${staff.id}`)?.map((person) => person.name)).toEqual(["Sofie Lund", "Mads Holm"]);
+		expect(places.get("page:Members")?.map((person) => person.name)).toEqual(["Anna Berg"]);
+		// An older tab says its conversation alone: it is in no place, but still in the conversation's header.
+		expect([...places.keys()]).toHaveLength(2);
+		expect(s.company.presentIn(session.sessionId).map((person) => person.name)).toEqual(["Sofie Lund"]);
+		expect(s.company.presentIn(id(97)).map((person) => person.name)).toEqual(["Peter Nørgaard"]);
+	});
+
+	it("reads and writes the tracked value", () => {
+		expect(presenceValue("s1", "agent:a1")).toBe("s1@agent:a1");
+		expect(presenceValue(undefined, "sites")).toBe("@sites");
+		expect(presenceValue("s1", undefined)).toBe("s1");
+		expect(presenceValue(undefined, undefined)).toBeNull();
+		expect(parsePresenceValue("s1@room:r1")).toEqual({ sessionId: "s1", place: "room:r1" });
+		expect(parsePresenceValue("@app:crm")).toEqual({ place: "app:crm" });
+		expect(parsePresenceValue("s1")).toEqual({ sessionId: "s1" });
+		expect(parsePresenceValue(null)).toEqual({});
+		// Too long for the channel: the conversation alone.
+		expect(presenceValue("s1", `page:${"x".repeat(300)}`)).toBe("s1");
+	});
+
+	it("puts the other members' pictures on the agent's row they are in, and takes them off when they leave", async () => {
+		const s = await setup();
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			auth: new AuthController(fixture().cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
+		};
+		const marker = () => rail.querySelector<HTMLElement>(`[data-agent-id="${staff.id}"] .rail-here`);
+		await s.publish([tab(userB.id, `${id(98)}@agent:${staff.id}`), tab(userC, `${id(97)}@agent:${staff.id}`)]);
+		renderRail(rail, s.company, context);
+		expect([...marker()!.querySelectorAll(".person-avatar")].map((face) => face.textContent)).toEqual(["SL", "MH"]);
+		expect(rail.querySelector(`[data-agent-id="${staff.id}"]`)?.getAttribute("aria-description")).toBe(
+			"Sofie Lund and Mads Holm are here",
+		);
+		const row = rail.querySelector<HTMLElement>(`[data-agent-id="${staff.id}"]`)!;
+		expect(row.style.getPropertyValue("--here-count")).toBe("2");
+		const kept = marker();
+		renderRail(rail, s.company, context);
+		// The same people keep the same marker: nothing grows in again on a redraw.
+		expect(marker()).toBe(kept);
+		// A renamed member is drawn anew, with the new name's initials and words.
+		s.company.store.set({
+			team: {
+				...s.company.store.get().team!,
+				members: members.map((member) =>
+					member.userId === userB.id ? { ...member, displayName: "Anna Holt" } : member,
+				),
+			},
+		});
+		renderRail(rail, s.company, context);
+		expect([...marker()!.querySelectorAll(".person-avatar")].map((face) => face.textContent)).toEqual(["AH", "MH"]);
+		expect(row.getAttribute("aria-description")).toBe("Anna Holt and Mads Holm are here");
+		await s.publish([]);
+		renderRail(rail, s.company, context);
+		expect(marker()).toBeNull();
+		expect(rail.querySelector(`[data-agent-id="${staff.id}"]`)?.hasAttribute("aria-description")).toBe(false);
+		expect(row.style.getPropertyValue("--here-count")).toBe("");
 	});
 });

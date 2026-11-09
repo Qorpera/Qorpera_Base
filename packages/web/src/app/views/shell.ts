@@ -14,7 +14,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
-import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -1438,7 +1438,69 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
+	paintPresence(container, parts, company);
 	restoreFocus();
+}
+
+/* ---- Who is where ---------------------------------------------------------------- */
+
+/** The rail place an entry stands for (app/presence-place.ts): its agent, its group chat, or its page or app. */
+function placeOf(element: HTMLElement): string | undefined {
+	const { agentId, cofounderId, roomId, appKey } = element.dataset;
+	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
+	if (roomId) return `room:${roomId.toLowerCase()}`;
+	if (!appKey) return undefined;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" ? appKey : `page:${appKey}`;
+}
+
+/** The other members in the company now, each as a small picture on the agent, group chat, page or app they are in
+ * (Jonas, 9 Nov 2026: "a visual in the sidepanel that indicates what agent/interface the user is inside of, like a
+ * little notch"). Pages and apps show theirs on the apps button too while the drawer is shut. Set in place, like the
+ * current row, so a member moving never rebuilds a row. */
+function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
+	const places = company.peopleByPlace();
+	const inApps = new Map<string, { userId: string; name: string }>();
+	for (const element of container.querySelectorAll<HTMLElement>(
+		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key]",
+	)) {
+		const place = placeOf(element);
+		const people = (place && places.get(place)) || [];
+		if (element.dataset.appKey) for (const person of people) inApps.set(person.userId, person);
+		paintHere(element, people);
+	}
+	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()]);
+}
+
+function paintHere(element: HTMLElement, people: readonly { userId: string; name: string }[]): void {
+	const kept = element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here");
+	// Who and by what name: a renamed member is drawn anew.
+	const key = JSON.stringify(people.map((person) => [person.userId, person.name]));
+	if (!people.length) {
+		kept?.remove();
+		element.removeAttribute("aria-description");
+		element.style.removeProperty("--here-count");
+		return;
+	}
+	if (kept?.dataset.people === key) return;
+	const names = people.map((person) => person.name);
+	const said =
+		names.length === 1
+			? t("{name} is here", { name: names[0]! })
+			: t("{names} are here", { names: new Intl.ListFormat(presentationLocale()).format(names) });
+	const marker = h(
+		"span",
+		{ class: "rail-here", "data-people": key, title: said, "aria-hidden": "true" },
+		...people.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
+		people.length > 3 ? h("span", { class: "rail-here-more" }, `+${people.length - 3}`) : null,
+	);
+	if (kept) kept.replaceWith(marker);
+	else element.append(marker);
+	// How many circles the marker draws (pictures and "+n"), so a row keeps its text clear of them.
+	element.style.setProperty("--here-count", String(Math.min(people.length, 4)));
+	// A card's marker sits against its figure (in the stand), not in the card's far corner.
+	const stand = element.querySelector<HTMLElement>(":scope > .cofounder-stand, :scope > .rail-pin-stand");
+	if (stand) stand.append(marker);
+	element.setAttribute("aria-description", said);
 }
 
 /* ---- The apps drawer --------------------------------------------------------------- */
