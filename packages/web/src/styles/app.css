@@ -471,6 +471,27 @@ label > input, label > select { font-weight: 400; }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 /* "@": someone mentioned this member here and they have not looked yet. */
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
+/* Who is where (Jonas, 9 Nov 2026): the other members in the company now, as small pictures on the agent, group chat,
+ * page or app they are in. A row has them at its right edge, a card or an app's tile at its top-right corner, and the
+ * apps button (shut) at its corner. Each picture is ringed in the colour under it, so they read as cut out of it. */
+.rail-here { --here-size: 22px; --here-ring: var(--rail); position: absolute; z-index: 3; display: flex; align-items: center; pointer-events: none; }
+.rail-here .person-avatar, .rail-here-more { width: var(--here-size); height: var(--here-size); box-shadow: 0 0 0 2px var(--here-ring); }
+.rail-here .person-avatar { font-size: calc(var(--here-size) * 0.42); font-weight: 650; }
+.rail-here > * + * { margin-left: calc(var(--here-size) * -0.18); }
+.rail-here-more { display: grid; place-items: center; width: auto; min-width: var(--here-size); padding: 0 4px; border-radius: 999px; background: var(--rail-hover); color: var(--text-muted); font-size: 10px; font-weight: 650; }
+.rail-row > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
+.rail-row:has(> .rail-here) { padding-right: 40px; }
+.rail-row:hover > .rail-here, .rail-app:hover > .rail-here { --here-ring: var(--rail-hover); }
+:is(.rail-row, .rail-app).active > .rail-here, :is(.rail-pin, .cofounder-home).active .rail-here { --here-ring: var(--rail-selection); }
+.rail-pin:hover .rail-here, .cofounder-home:hover .rail-here { --here-ring: var(--rail-hover); }
+/* On a card, against the figure's top-right, where a row's "@" would be on its own figure. */
+:is(.cofounder-stand, .rail-pin-stand) > .rail-here { --here-size: 20px; top: 2px; left: calc(100% - 6px); }
+.rail-app { position: relative; }
+.rail-app > .rail-here { --here-size: 18px; top: 2px; right: 4px; }
+.rail-apps > .rail-here { --here-size: 16px; top: -4px; right: -4px; }
+.rail-apps:hover > .rail-here, .rail-apps.is-open > .rail-here { --here-ring: var(--rail-hover); }
+.rail-compact .rail-row > .rail-here { --here-size: 18px; top: 2px; right: 2px; transform: none; }
+.rail-compact .rail-row:has(> .rail-here) { padding-right: 8px; }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
 /* As in a Messages contact row: the name sits at the top of the row, 10px under the

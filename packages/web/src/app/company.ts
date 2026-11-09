@@ -75,6 +75,7 @@ import type { CompanyApp } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
+import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
 	brokenQuotes,
@@ -587,8 +588,10 @@ export class CompanyController {
 	#hoursWaitReads = 0;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
-	/** The conversation this tab says it shows: the open one while the tab is visible. */
+	/** What this tab says it shows (app/presence-place.ts): the open conversation and its place while the tab is visible. */
 	#tracked: string | null = null;
+	/** Where this tab is outside a conversation: an interface's page, an app, Concepts, Sites or an agent's card. */
+	#openPlace: string | undefined;
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
@@ -1747,16 +1750,47 @@ export class CompanyController {
 		this.#seeMentions();
 	}
 
+	/** Where this tab is when no conversation is open (app/presence-place.ts), or nowhere (undefined). */
+	setOpenPlace(place: string | undefined): void {
+		this.#openPlace = place;
+		this.#trackOpen();
+	}
+
 	/** The other members who have this conversation open now, one entry per member. */
 	presentIn(sessionId: string): { userId: string; name: string }[] {
+		return this.#peopleWhere((at) => at.sessionId === sessionId);
+	}
+
+	/** The other members in the company now, by the place in the rail their tab shows (an agent, a group chat, a page or
+	 * an app; app/presence-place.ts), one entry per member and place. */
+	peopleByPlace(): Map<string, { userId: string; name: string }[]> {
+		const places = new Map<string, { userId: string; name: string }[]>();
 		const state = this.store.get();
+		const seen = new Set<string>();
+		for (const member of state.here ?? []) {
+			const place = parsePresenceValue(member.staffAgentId).place;
+			if (!place || member.userId === this.#userId || seen.has(`${member.userId} ${place}`)) continue;
+			seen.add(`${member.userId} ${place}`);
+			const list = places.get(place) ?? [];
+			list.push({ userId: member.userId, name: this.#memberName(member.userId, member.name) });
+			places.set(place, list);
+		}
+		return places;
+	}
+
+	#memberName(userId: string, fallback: string): string {
+		return this.store.get().team?.members.find((item) => item.userId === userId)?.displayName ?? fallback;
+	}
+
+	#peopleWhere(test: (at: { sessionId?: string; place?: string }) => boolean): { userId: string; name: string }[] {
 		const seen = new Map<string, { userId: string; name: string }>();
-		for (const member of state.here ?? [])
-			if (member.staffAgentId === sessionId && member.userId !== this.#userId && !seen.has(member.userId))
-				seen.set(member.userId, {
-					userId: member.userId,
-					name: state.team?.members.find((item) => item.userId === member.userId)?.displayName ?? member.name,
-				});
+		for (const member of this.store.get().here ?? [])
+			if (
+				member.userId !== this.#userId &&
+				!seen.has(member.userId) &&
+				test(parsePresenceValue(member.staffAgentId))
+			)
+				seen.set(member.userId, { userId: member.userId, name: this.#memberName(member.userId, member.name) });
 		return [...seen.values()];
 	}
 
@@ -1778,14 +1812,21 @@ export class CompanyController {
 		this.#tracked = null;
 		if (typeof document !== "undefined")
 			document.addEventListener("visibilitychange", () => this.#trackOpen(), { signal: this.signal });
+		// The open conversation's place is known once its session is: track again when the sessions arrive.
+		const stop = this.store.subscribe(() => this.#trackOpen());
+		this.signal.addEventListener("abort", stop, { once: true });
 		this.#trackOpen();
 	}
 
-	/** Say which conversation this tab shows: none while the tab is hidden. */
+	/** Say which conversation this tab shows, and where it is in the rail: nothing while the tab is hidden. */
 	#trackOpen(): void {
 		if (!this.#presence || this.#stopped) return;
 		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
-		const open = visible ? (this.#openSessionId ?? null) : null;
+		const sessionId = this.#openSessionId;
+		const place = sessionId
+			? sessionPlace(this.store.get().sessions.find((session) => session.sessionId === sessionId))
+			: this.#openPlace;
+		const open = visible ? presenceValue(sessionId, place) : null;
 		if (open === this.#tracked) return;
 		this.#tracked = open;
 		this.#presence.setOpenThread(open);
