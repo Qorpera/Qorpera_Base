@@ -187,7 +187,7 @@ describe("leaderboard page", () => {
 		expect(champion(view.el)).toEqual([
 			"Busiest this week, so far",
 			"Asger",
-			"30 tasks at Havnens Kaffebar · 18 tasks ahead of Jonas",
+			"30 tasks · 18 tasks ahead of Jonas",
 			expect.stringMatching(/^Week 46 ends Sunday at midnight\. \d+ days left to catch up\.$/),
 		]);
 		// Last week: Jonas 40, Bo 20, Asger 5.
@@ -220,6 +220,26 @@ describe("leaderboard page", () => {
 		expect(champion(view.el)[3]).toBe("All sales so far, without VAT.");
 		pick(view.el, "earning-companies");
 		expect(rows(view.el).map((row) => row[2])).toEqual(["Dekora", "Havnens Kaffebar"]);
+	});
+
+	it("crowns a shared first place together, with each total its own", async () => {
+		// Jonas has 12 tasks at Dekora and 20 at another company: the banner shows his total, not one company's.
+		const tied = parseLeaderboard({
+			...BOARD,
+			people: [
+				person(ME, "Jonas", 30, 0, { companies: 2, main_profile_id: COMPANY }),
+				person(FRIEND, "Asger", 30, 0, { main_profile_id: CAFE }),
+				person(OTHER, "Bo", 12, 0, { main_profile_id: CAFE }),
+			],
+		});
+		const { view } = await mount(tied);
+		expect(champion(view.el).slice(0, 3)).toEqual([
+			"Sharing the lead",
+			"Jonas and Asger",
+			"30 tasks each · 18 tasks ahead of Bo",
+		]);
+		expect(view.el.querySelectorAll(".leaderboard-champion-figure")).toHaveLength(2);
+		expect(rows(view.el).map((row) => row[0])).toEqual(["1", "1", "3"]);
 	});
 
 	it("says nobody is ahead yet when the week has no tasks", async () => {

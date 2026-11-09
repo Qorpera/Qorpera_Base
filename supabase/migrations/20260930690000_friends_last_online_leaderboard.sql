@@ -114,6 +114,25 @@ $$;
 revoke all on function public.qorpera_set_leaderboard_hidden(boolean) from public, anon;
 grant execute on function public.qorpera_set_leaderboard_hidden(boolean) to authenticated;
 
+-- The week a moment falls in, Monday 00:00 to the next Monday 00:00 in
+-- Copenhagen, with the week before it. The Mondays are counted on the local
+-- calendar before they become moments, so a week holding a clock change is
+-- 167 or 169 hours long and no hour falls between two weeks.
+create function public.qorpera_leaderboard_week(p_at timestamptz)
+returns table (last_since timestamptz, since timestamptz, until timestamptz, week integer)
+language sql
+immutable
+set search_path = ''
+as $$
+	select (monday - interval '7 days') at time zone 'Europe/Copenhagen',
+		monday at time zone 'Europe/Copenhagen',
+		(monday + interval '7 days') at time zone 'Europe/Copenhagen',
+		extract(week from monday)::integer
+	from (select date_trunc('week', p_at at time zone 'Europe/Copenhagen') as monday) local_week
+$$;
+
+revoke all on function public.qorpera_leaderboard_week(timestamptz) from public, anon, authenticated, service_role;
+
 -- The board: you and your accepted friends who stay on the boards, and the
 -- companies any of you are a member of. Tasks count from this week's Monday
 -- 00:00 in Copenhagen; revenue is every good will month so far, in øre without
@@ -129,13 +148,15 @@ set search_path = ''
 as $$
 declare
 	v_actor uuid := auth.uid();
-	v_since timestamptz := date_trunc('week', statement_timestamp() at time zone 'Europe/Copenhagen')
-		at time zone 'Europe/Copenhagen';
+	v_week record;
+	v_since timestamptz;
 	v_result jsonb;
 begin
 	if v_actor is null then
 		raise exception 'authentication required' using errcode = '42501';
 	end if;
+	select * into v_week from public.qorpera_leaderboard_week(statement_timestamp());
+	v_since := v_week.since;
 	with board as (
 		select v_actor as user_id
 		union
@@ -161,7 +182,7 @@ begin
 			(select count(*) from public.qorpera_execution_runs run
 				join public.qorpera_execution_run_results result on result.run_id = run.id
 				where run.profile_id = profile.id
-					and run.created_at >= v_since - interval '7 days' and run.created_at < v_since
+					and run.created_at >= v_week.last_since and run.created_at < v_since
 					and result.company_disposition <> 'unchanged') as last_week_tasks,
 			(select coalesce(sum(month.net_ore), 0) from public.qorpera_good_will_months month
 				where month.profile_id = profile.id) as revenue_ore
@@ -188,8 +209,8 @@ begin
 	)
 	select jsonb_build_object(
 		'since', v_since,
-		'until', v_since + interval '7 days',
-		'week', extract(week from v_since at time zone 'Europe/Copenhagen')::integer,
+		'until', v_week.until,
+		'week', v_week.week,
 		'hidden', coalesce((select presence.leaderboard_hidden from public.qorpera_account_presence presence
 			where presence.user_id = v_actor), false),
 		'people', coalesce((select jsonb_agg(jsonb_build_object(

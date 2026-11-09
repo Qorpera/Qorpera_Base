@@ -26,6 +26,35 @@ values
 	('11800000-0000-4000-8000-000000000101', '2026-11-01', 31250, 6250, 25000),
 	('11800000-0000-4000-8000-000000000102', '2026-11-01', 12500, 2500, 10000);
 
+-- Weeks across the clock changes (as the superuser: the helper is not an API function). 25 Oct 2026 03:00 CEST
+-- became 02:00 CET; 28 Mar 2027 02:00 CET became 03:00 CEST. Each week starts at local Monday midnight, so the week
+-- holding a change is 169 or 167 hours long and the weeks meet without a gap.
+do $$
+declare w record;
+begin
+	select * into w from public.qorpera_leaderboard_week('2026-10-28 12:00+01');
+	if w.since <> '2026-10-26 00:00+01' or w.last_since <> '2026-10-19 00:00+02' or w.until <> '2026-11-02 00:00+01'
+		or w.week <> 44 then
+		raise exception 'the week after the October change is wrong: %', w;
+	end if;
+	select * into w from public.qorpera_leaderboard_week('2026-10-21 09:00+02');
+	if w.since <> '2026-10-19 00:00+02' or w.until <> '2026-10-26 00:00+01'
+		or w.until - w.since <> interval '169 hours' then
+		raise exception 'the week holding the October change is wrong: %', w;
+	end if;
+	select * into w from public.qorpera_leaderboard_week('2027-03-24 09:00+01');
+	if w.since <> '2027-03-22 00:00+01' or w.until <> '2027-03-29 00:00+02'
+		or w.until - w.since <> interval '167 hours' then
+		raise exception 'the week holding the March change is wrong: %', w;
+	end if;
+	-- Sunday 23:59 local is still the same week; Monday 00:00 local starts the next.
+	select * into w from public.qorpera_leaderboard_week('2026-11-01 23:59+01');
+	if w.since <> '2026-10-26 00:00+01' then raise exception 'Sunday night left its week: %', w; end if;
+	select * into w from public.qorpera_leaderboard_week('2026-11-02 00:00+01');
+	if w.since <> '2026-11-02 00:00+01' then raise exception 'Monday midnight is not a new week: %', w; end if;
+end
+$$;
+
 -- A marks itself online and asks B.
 select set_config('request.jwt.claims', '{"sub":"11800000-0000-4000-8000-00000000000a","email":"board-a@example.test","role":"authenticated","user_metadata":{}}', true);
 set local role authenticated;
@@ -58,7 +87,8 @@ begin
 	-- The week runs from Monday 00:00 in Copenhagen for seven days.
 	if extract(isodow from (v ->> 'since')::timestamptz at time zone 'Europe/Copenhagen') <> 1
 		or ((v ->> 'since')::timestamptz at time zone 'Europe/Copenhagen')::time <> '00:00'
-		or (v ->> 'until')::timestamptz - (v ->> 'since')::timestamptz <> interval '7 days'
+		or ((v ->> 'until')::timestamptz at time zone 'Europe/Copenhagen')
+			<> ((v ->> 'since')::timestamptz at time zone 'Europe/Copenhagen') + interval '7 days'
 		or (v ->> 'since')::timestamptz > statement_timestamp()
 		or (v ->> 'week')::int <> extract(week from statement_timestamp() at time zone 'Europe/Copenhagen')::int then
 		raise exception 'the board''s week is not this Monday-to-Sunday week in Copenhagen: %', v;

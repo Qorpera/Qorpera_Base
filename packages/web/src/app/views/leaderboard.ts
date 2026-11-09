@@ -50,8 +50,6 @@ interface Entry {
 	me: boolean;
 	value: number;
 	lastWeek: number;
-	/** The company the leader's line names ("at Lærdom"), for a person. */
-	company?: string;
 }
 
 export class LeaderboardView {
@@ -227,7 +225,6 @@ export class LeaderboardView {
 
 	#entries(data: Leaderboard): Entry[] {
 		const earning = this.#board.startsWith("earning");
-		const companyName = (id: string | null) => data.companies.find((company) => company.profileId === id)?.name;
 		if (this.#board.endsWith("friends"))
 			return data.people.map((person: LeaderboardPerson) => {
 				const seen = person.me ? undefined : lastOnline(person.lastSeenAt);
@@ -239,7 +236,6 @@ export class LeaderboardView {
 					me: person.me,
 					value: earning ? person.revenueOre : person.tasks,
 					lastWeek: person.lastWeekTasks,
-					...(companyName(person.mainProfileId) ? { company: companyName(person.mainProfileId)! } : {}),
 				};
 			});
 		return data.companies.map((company: LeaderboardCompany) => {
@@ -354,7 +350,9 @@ export class LeaderboardView {
 	#drawChampion(data: Leaderboard, ordered: Entry[], figure: (amount: number) => string): void {
 		const earning = this.#board.startsWith("earning");
 		const leader = ordered[0];
-		const second = ordered.find((entry) => entry !== leader && entry.value < (leader?.value ?? 0));
+		// A shared first place crowns everyone in it; the lead is over the best of the rest.
+		const leaders = ordered.filter((entry) => entry.value === leader?.value);
+		const second = ordered.find((entry) => entry.value < (leader?.value ?? 0));
 		const daysLeft = Math.max(0, Math.ceil((Date.parse(data.until) - Date.now()) / 86_400_000));
 		const timing = earning
 			? t("All sales so far, without VAT.")
@@ -386,10 +384,9 @@ export class LeaderboardView {
 			);
 			return;
 		}
+		const shared = leaders.length > 1;
 		const lead = [
-			leader.company && !earning
-				? t("{amount} at {company}", { amount: figure(leader.value), company: leader.company })
-				: figure(leader.value),
+			shared ? t("{amount} each", { amount: figure(leader.value) }) : figure(leader.value),
 			second
 				? t("{amount} ahead of {name}", { amount: figure(leader.value - second.value), name: second.name })
 				: null,
@@ -405,12 +402,28 @@ export class LeaderboardView {
 				"div",
 				{ class: "leaderboard-champion" },
 				...confetti,
-				h("span", { class: "leaderboard-champion-figure" }, companyLogo(leader.figure)),
+				h(
+					"span",
+					{ class: shared ? "leaderboard-champion-figures is-shared" : "leaderboard-champion-figures" },
+					...leaders
+						.slice(0, 3)
+						.map((entry) => h("span", { class: "leaderboard-champion-figure" }, companyLogo(entry.figure))),
+				),
 				h(
 					"div",
 					{ class: "leaderboard-champion-copy" },
-					h("small", null, earning ? t("Most revenue so far") : t("Busiest this week, so far")),
-					h("strong", null, leader.name),
+					h(
+						"small",
+						null,
+						shared ? t("Sharing the lead") : earning ? t("Most revenue so far") : t("Busiest this week, so far"),
+					),
+					h(
+						"strong",
+						null,
+						new Intl.ListFormat(presentationLocale(), { type: "conjunction" }).format(
+							leaders.map((entry) => entry.name),
+						),
+					),
 					h("span", null, lead),
 					h("span", { class: "leaderboard-champion-timing" }, timing),
 				),

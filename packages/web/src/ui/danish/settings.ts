@@ -661,8 +661,9 @@ export const SETTINGS: Record<string, string> = {
 	"Nobody is ahead yet": "Ingen fører endnu",
 	"The first sale takes the lead.": "Det første salg tager føringen.",
 	"The first task this week takes the lead.": "Ugens første opgave tager føringen.",
-	"{amount} at {company}": "{amount} hos {company}",
 	"{amount} ahead of {name}": "{amount} foran {name}",
 	"Most revenue so far": "Mest omsætning indtil nu",
 	"Busiest this week, so far": "Travlest denne uge indtil nu",
+	"{amount} each": "{amount} hver",
+	"Sharing the lead": "Deler føringen",
 };

@@ -80,6 +80,9 @@
 	padding: 22px 30px; border: 1px solid var(--border); border-radius: 20px; background: var(--header-surface);
 }
 .leaderboard-champion.is-open { min-height: 0; }
+.leaderboard-champion-figures { position: relative; display: flex; flex: none; }
+.leaderboard-champion-figures.is-shared .leaderboard-champion-figure + .leaderboard-champion-figure { margin-left: -34px; animation-delay: .35s; }
+.leaderboard-champion-figures.is-shared .figure { width: 104px; height: 104px; }
 .leaderboard-champion-figure { position: relative; flex: none; animation: leaderboard-cheer 1.9s cubic-bezier(.3, 1.5, .5, 1) infinite; }
 .leaderboard-champion-figure .figure { width: 128px; height: 128px; }
 .leaderboard-champion-copy { position: relative; display: grid; gap: 4px; min-width: 0; }
@@ -125,7 +128,7 @@
 @media (max-width: 640px) {
 	.leaderboard-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.leaderboard-champion { gap: 16px; padding: 18px; }
-	.leaderboard-champion-figure .figure { width: 84px; height: 84px; }
+	.leaderboard-champion-figure .figure, .leaderboard-champion-figures.is-shared .figure { width: 84px; height: 84px; }
 	.leaderboard-champion-copy strong { font-size: 22px; }
 	.leaderboard-row { gap: 10px; padding-inline: 12px; }
 	.leaderboard-move { width: 30px; }
