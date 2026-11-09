@@ -204,6 +204,28 @@ describe("company logos on the page", () => {
 		expect(logos.logo(COMPANY)?.objectName).toBe(companyLogoName(COMPANY, NEW));
 	});
 
+	it("releases a shown logo's URL when a read of it fails, and shows the logo again after the retry", async () => {
+		let now = Date.parse("2026-11-09T12:00:00Z");
+		const api = fakeApi(() => [row()]);
+		const logos = new CompanyLogos(api as unknown as CloudApi, { now: () => now });
+		setCompanyLogos(logos);
+		const figure = companyLogo(COMPANY);
+		await vi.waitFor(() =>
+			expect(figure.querySelector("img.company-logo-picture")?.getAttribute("src")).toBe("blob:logo-1"),
+		);
+		api.listCompanyLogos.mockRejectedValueOnce(new Error("offline"));
+		await logos.refresh(COMPANY);
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:logo-1");
+		expect(figure.querySelector("img.company-logo-picture")).toBeNull();
+		now += 61_000;
+		const again = companyLogo(COMPANY);
+		await vi.waitFor(() =>
+			expect(again.querySelector("img.company-logo-picture")?.getAttribute("src")).toBe("blob:logo-2"),
+		);
+		logos.reset();
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:logo-2");
+	});
+
 	it("keeps the newest logo when an older download finishes last", async () => {
 		const downloads: ((blob: Blob) => void)[] = [];
 		let current = row();

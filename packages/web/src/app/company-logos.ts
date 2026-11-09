@@ -115,8 +115,7 @@ export class CompanyLogos implements CompanyLogoStore {
 		try {
 			[row] = await this.#api.listCompanyLogos([id]);
 		} catch {
-			if (this.#latest(id, generation, revision))
-				this.#entries.set(id, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+			if (this.#latest(id, generation, revision)) this.#fail(id);
 			return undefined;
 		}
 		if (generation !== this.#generation) return undefined;
@@ -208,8 +207,7 @@ export class CompanyLogos implements CompanyLogoStore {
 			[row] = await this.#api.listCompanyLogos([profileId]);
 		} catch (error) {
 			if (error instanceof CloudRpcError && error.missing) this.#available = false;
-			else if (this.#latest(profileId, generation, revision))
-				this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+			else if (this.#latest(profileId, generation, revision)) this.#fail(profileId);
 			return;
 		}
 		// Unless the sync publishes and reads the logo again, its answer is the one the page shows.
@@ -321,9 +319,7 @@ export class CompanyLogos implements CompanyLogoStore {
 						this.#queue.clear();
 						return;
 					}
-					for (const id of ids)
-						if (this.#latest(id, generation, revisions.get(id)!))
-							this.#entries.set(id, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+					for (const id of ids) if (this.#latest(id, generation, revisions.get(id)!)) this.#fail(id);
 					continue;
 				}
 				if (generation !== this.#generation) return;
@@ -380,8 +376,19 @@ export class CompanyLogos implements CompanyLogoStore {
 			this.#entries.set(profileId, { kind: "logo", row, url });
 			this.#paint(profileId, url);
 		} catch {
-			if (latest()) this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+			if (latest()) this.#fail(profileId);
 		}
+	}
+
+	/** A read for a company failed: it is asked for again after RETRY_MS. A logo it showed is taken down and its blob:
+	 * URL released, since the failed entry no longer holds it. */
+	#fail(profileId: string): void {
+		const before = this.#entries.get(profileId);
+		if (before?.kind === "logo") {
+			URL.revokeObjectURL(before.url);
+			this.#paint(profileId, undefined);
+		}
+		this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
 	}
 
 	#paint(profileId: string, url: string | undefined): void {
