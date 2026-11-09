@@ -98,4 +98,5 @@ export const FOUNDING: Record<string, string> = {
 	"Connect your ChatGPT account, and {name} starts.": "Forbind din ChatGPT-konto, så starter {name}.",
 	"Your own account, connected to {name}. It pays for the work you start there.":
 		"Din egen konto, forbundet til {name}. Den betaler for det arbejde, du sætter i gang der.",
+	"Named after your idea": "Opkaldt efter din idé",
 };

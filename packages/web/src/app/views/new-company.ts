@@ -1,3 +1,4 @@
+import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
 import { button, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
@@ -10,6 +11,9 @@ import type { HubController } from "./hub.ts";
  * a founder alone; "Invite friends" opens the table with the friends list, so friends write the first
  * message with you. What was typed and picked on qorpera.com arrives in the box: its arrow opens
  * `app.qorpera.com/?ide=…&kind=…` (and `#/new?idea=…` works too).
+ *
+ * A "Company name" field over the box names the company (Jonas, 9 Nov 2026: a company started alone never sees the
+ * table, so it is named here); left empty, the name comes from the idea, as its placeholder shows.
  *
  * The view is built once per hub and kept: typing, the caret, an IME composition and focus survive
  * every refresh of the company list, a move between the hub and `#/new`, and a new language. Once the table is
@@ -100,6 +104,7 @@ class NewCompanyView {
 	readonly el: HTMLElement;
 	readonly #hub: HubController;
 	readonly #idea: HTMLTextAreaElement;
+	readonly #name: HTMLInputElement;
 	readonly #from: HTMLElement;
 	readonly #go: HTMLButtonElement;
 	readonly #invite: HTMLButtonElement;
@@ -146,6 +151,20 @@ class NewCompanyView {
 				this.#start();
 			},
 		});
+		this.#name = h("input", {
+			id: "newCompanyName",
+			class: "hero-name",
+			type: "text",
+			maxlength: FOUNDING_NAME_MAX_CHARACTERS,
+			autocomplete: "organization",
+			placeholder: t("Named after your idea"),
+			onkeydown: (event: KeyboardEvent) => {
+				// Enter goes on to the idea; Enter that ends an IME composition stays.
+				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+				event.preventDefault();
+				this.#idea.focus();
+			},
+		});
 		this.#from = h("span", { class: "hero-from", hidden: true }, icon("globe"), t("Your idea from qorpera.com"));
 		this.#go = h(
 			"button",
@@ -177,6 +196,12 @@ class NewCompanyView {
 			{ class: "hero" },
 			h("h1", { class: "hero-title" }, t("From idea to company.")),
 			h("p", { class: "hero-sub" }, t("Tell your Co-Founder the idea. Friends can write it with you.")),
+			h(
+				"div",
+				{ class: "hero-name-field" },
+				h("label", { for: "newCompanyName", class: "hero-name-label" }, t("Company name")),
+				h("div", { class: "hero-name-box" }, this.#name, icon("edit")),
+			),
 			h(
 				"div",
 				{ class: "hero-ask" },
@@ -236,6 +261,7 @@ class NewCompanyView {
 	/** Takes over another view's idea, note and kind (the same box, drawn again in a new language). */
 	adopt(other: NewCompanyView): void {
 		this.#idea.value = other.#idea.value;
+		this.#name.value = other.#name.value;
 		this.#carried = other.#carried;
 		this.#touched = other.#touched;
 		// Focus goes with the words: the new box takes it when it is put in the page.
@@ -251,6 +277,7 @@ class NewCompanyView {
 		const paused = state.foundingAvailable === false;
 		if (busy && document.activeElement === this.#idea) this.#refocus = true;
 		this.#idea.disabled = busy;
+		this.#name.disabled = busy;
 		if (!busy && this.#refocus) {
 			// An opening that failed hands the box back to the founder, caret at the end.
 			this.#refocus = false;
@@ -312,6 +339,9 @@ class NewCompanyView {
 
 	#changed(): void {
 		this.#resize();
+		// Left empty, the company is named after the idea: the field shows that name.
+		const idea = this.#idea.value.trim();
+		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Named after your idea");
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
@@ -334,11 +364,11 @@ class NewCompanyView {
 			this.#idea.focus();
 			return;
 		}
-		void this.#hub.startFromIdea(idea, "start");
+		void this.#hub.startFromIdea(idea, "start", this.#name.value);
 	}
 
 	#withFriends(): void {
-		void this.#hub.startFromIdea(this.#idea.value.trim(), "friends");
+		void this.#hub.startFromIdea(this.#idea.value.trim(), "friends", this.#name.value);
 	}
 
 	/** A table opened with this idea (from the arrow, Invite friends or Resume): the box starts empty, so the next
@@ -347,6 +377,7 @@ class NewCompanyView {
 		if (this.#idea.value.trim() !== idea.trim()) return;
 		this.#refocus = false;
 		this.#idea.value = "";
+		this.#name.value = "";
 		this.#carried = undefined;
 		for (const kind of this.#kinds) kind.setAttribute("aria-pressed", "false");
 		this.#changed();

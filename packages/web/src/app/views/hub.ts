@@ -243,11 +243,11 @@ export class HubController {
 		}
 	}
 
-	/** The new-company box: the table opens with a name taken from the idea, which the founders can change there.
-	 * True once the table is open. */
-	startFromIdea(idea: string, intent: CreationIntent): Promise<boolean> {
+	/** The new-company box: the table opens with the name typed over the box, or else one taken from the idea; the
+	 * founders can change it at the table. True once the table is open. */
+	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
 		const vision = idea.trim();
-		return this.createCompany(companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
+		return this.createCompany(name.trim() || companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
 	}
 
 	/** True once the table is open. */
