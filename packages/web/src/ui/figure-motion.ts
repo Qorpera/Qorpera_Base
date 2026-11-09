@@ -8,7 +8,8 @@ export type { Activity };
 
 export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
-	prepare(id: string, image: HTMLImageElement): void;
+	/** Resolves once the plate can be drawn (its light field runs in a worker where it can). */
+	prepare(id: string, image: HTMLImageElement): Promise<void> | void;
 	drawable(id: string, color: string): CanvasImageSource;
 	/** The approved shade of `color` on a dark surface. */
 	colorOnDark(id: string, color: string): string;
@@ -128,9 +129,9 @@ async function prepare(entry: LiveMotion): Promise<void> {
 				return image;
 			}),
 		)
-			.then(([image, face]) => {
-				artwork.prepare(id, image!);
-				artwork.prepare(`${id}-face`, face!);
+			.then(async ([image, face]) => {
+				await artwork.prepare(id, image!);
+				await artwork.prepare(`${id}-face`, face!);
 			})
 			.catch((error: unknown) => {
 				prepared.delete(id);
@@ -207,7 +208,8 @@ function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], fr
 let eyesCanvas: HTMLCanvasElement | undefined;
 function paint(entry: LiveMotion): void {
 	const { canvas, artwork, activity } = entry;
-	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, recordedEyesBox, stepKey, timelines, workingStep } = motion!;
+	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, recordedEyesBox, stepKey, timelines, workingStep } =
+		motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
@@ -257,10 +259,7 @@ function paint(entry: LiveMotion): void {
 			if (box) {
 				// Aligned to two pixels at the body's level, so the box's halvings and the final resampling
 				// fall on the same pixel grid as the whole layer's would.
-				const region = alignRegion(
-					box.map((value) => value * 5.12) as Region,
-					Math.max(1, scale / 2),
-				);
+				const region = alignRegion(box.map((value) => value * 5.12) as Region, Math.max(1, scale / 2));
 				at = [region[0], region[1]];
 				let width = region[2] - region[0],
 					height = region[3] - region[1],
@@ -322,7 +321,17 @@ function paint(entry: LiveMotion): void {
 			lc.rect(0, 0, size[0], size[1]);
 			lc.clip();
 			lc.globalCompositeOperation = "destination-in";
-			lc.drawImage(level(`${surface}:source`, asset.source, bucket), at[0] * k, at[1] * k, size[0], size[1], 0, 0, size[0], size[1]);
+			lc.drawImage(
+				level(`${surface}:source`, asset.source, bucket),
+				at[0] * k,
+				at[1] * k,
+				size[0],
+				size[1],
+				0,
+				0,
+				size[0],
+				size[1],
+			);
 			lc.restore();
 		}
 		ctx.save();
@@ -335,7 +344,17 @@ function paint(entry: LiveMotion): void {
 		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		if (layer)
-			ctx.drawImage(layer, 0, 0, size[0], size[1], (at[0] * k * 100) / scale, (at[1] * k * 100) / scale, (size[0] * 100) / scale, (size[1] * 100) / scale);
+			ctx.drawImage(
+				layer,
+				0,
+				0,
+				size[0],
+				size[1],
+				(at[0] * k * 100) / scale,
+				(at[1] * k * 100) / scale,
+				(size[0] * 100) / scale,
+				(size[1] * 100) / scale,
+			);
 		ctx.restore();
 	}
 	ctx.fillStyle = entry.shown;

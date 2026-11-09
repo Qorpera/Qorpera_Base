@@ -99,7 +99,7 @@ export function boxCanvas(
 	width: number,
 	height: number,
 ): HTMLCanvasElement {
-	let box = boxes.get(size);
+	const box = boxes.get(size);
 	if (!box || box.width < width || box.height < height) {
 		const round = (value: number) => Math.min(size, Math.ceil(value / 32) * 32);
 		const grown = document.createElement("canvas");
