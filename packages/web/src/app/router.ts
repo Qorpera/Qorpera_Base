@@ -18,7 +18,8 @@ export type CompanySection =
 	| "meet"
 	| "interface"
 	| "app"
-	| "concepts";
+	| "concepts"
+	| "sites";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -59,7 +60,7 @@ export function parseRoute(hash: string): Route {
 		if ((section === "chat" || section === "staff") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (section === "file" || section === "team" || section === "new" || section === "meet") {
+		if (section === "file" || section === "team" || section === "new" || section === "meet" || section === "sites") {
 			return { name: "company", profileId, section };
 		}
 		return { name: "company", profileId, section: "home" };

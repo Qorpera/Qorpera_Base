@@ -12,7 +12,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -338,6 +338,110 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(apps(element).hidden).toBe(true);
 		expect(drawer(element).hidden).toBe(true);
 		expect(element.querySelector(".rail-app")).toBeNull();
+	});
+
+	it("shows the company's websites as one Sites entry while there are any, leading to the Sites page", () => {
+		const { element, draw, controller } = rail(home);
+		expect(element.querySelector(".rail-sites")).toBeNull();
+		controller.store.set({ siteCount: 2 });
+		draw();
+		const entry = element.querySelector<HTMLAnchorElement>(".rail-app.rail-sites")!;
+		expect(entry.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(entry.title).toBe("2 sites");
+		expect(entry.querySelector(".rail-app-name")?.textContent).toBe("Sites");
+		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
+		expect(entry.getAttribute("aria-current")).toBe("page");
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		// It is ordered like every other entry: it carries its key, and an order the member kept puts it first.
+		expect(entry.dataset.appKey).toBe("sites");
+		expect(icons(element).map(([name]) => name)).toEqual(["Members", "Sites"]);
+		localStorage.setItem(`qorpera.web.rail-apps-order:${profileA.profileId}`, JSON.stringify(["sites"]));
+		const ordered = rail(home);
+		ordered.controller.store.set({ siteCount: 2 });
+		ordered.draw();
+		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Members"]);
+		controller.store.set({ siteCount: 0 });
+		draw();
+		expect(element.querySelector(".rail-sites")).toBeNull();
+	});
+
+	it("hides a page from the member's own rail with a right-click, and shows it again from Hidden", async () => {
+		const { element, controller } = rail(home);
+		// A cloud that answers each member's own choice: Bank hidden, Members shown though the company's switch for it is
+		// off: the member's own choice decides. (Mailbox has no mail to draw here.)
+		const own = (hidden: readonly string[]): InterfacePagesState => ({
+			pages: (["mailbox", "members", "bank"] as const).map((page) => ({
+				page,
+				on: page !== "members",
+				hidden: hidden.includes(page),
+			})),
+			mayChange: false,
+			personal: true,
+		});
+		controller.store.set({ interfacePages: own(["bank"]) });
+		const hideInterfacePage = vi.fn(async (page: string, hidden: boolean) => {
+			const now = controller.store.get().interfacePages!;
+			controller.store.set({
+				interfacePages: {
+					...now,
+					pages: now.pages.map((entry) => (entry.page === page ? { ...entry, hidden } : entry)),
+				},
+			});
+		});
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			route: home,
+			auth: new AuthController(fixture().cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+			hideInterfacePage,
+		};
+		cleanup.push(() => context.auth.dispose());
+		const redraw = () => renderRail(element, controller, context);
+		redraw();
+		const rightClick = (target: Element) => {
+			const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+			target.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		const hiddenPages = () =>
+			[...element.querySelectorAll<HTMLButtonElement>(".rail-hidden-list .rail-row-page")].map((row) => [
+				row.querySelector("strong")?.textContent,
+				row.querySelector("small")?.textContent,
+			]);
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
+		expect(hiddenPages()).toEqual([["Bank", "Hidden for you"]]);
+		// Right-click on Members in the drawer: Hide from sidebar, for this member only (no owner needed).
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(true);
+		expect(menuItems()).toEqual([["Hide from sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(hideInterfacePage).toHaveBeenCalledExactlyOnceWith("members", true);
+		await settle();
+		redraw();
+		expect(icons(element)).toEqual([]);
+		expect(hiddenPages()).toEqual([
+			["Members", "Hidden for you"],
+			["Bank", "Hidden for you"],
+		]);
+		// A press on a hidden page offers to show it again.
+		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='bank']")!.click();
+		expect(menuItems()).toEqual([["Show in sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(hideInterfacePage).toHaveBeenLastCalledWith("bank", false);
+		await settle();
+		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
+		// A cloud from before each member's own choice: the company's switch decides, and no menu or hidden page.
+		controller.store.set({ interfacePages: pages(false, true) });
+		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(false);
+		expect(hiddenPages()).toEqual([]);
 	});
 
 	it("links an agent's posted app to its own page, opens the drawer for it and marks it open there", () => {

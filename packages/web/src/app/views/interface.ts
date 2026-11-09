@@ -327,7 +327,7 @@ export function renderInterface(
 	}
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
-		renderMailbox(container, company, name, writes?.openSettings ? { openSettings: writes.openSettings } : {});
+		renderMailbox(container, company, name, writes?.mailManage ? { manage: writes.mailManage } : {});
 		return;
 	}
 	// The Members page draws who each agent works for (views/members.ts; Jonas, 9 November 2026).

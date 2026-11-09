@@ -318,6 +318,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_set_founder_ready(uuid,bigint,boolean)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_set_founder_role(uuid,bigint,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_set_interface_page(uuid,text,boolean)', false, true, 'member: auth.uid() + membership of a folder-v2 company, owners and admins only; switches Mailbox or Members on or off and changes no data (C6a)'),
+	('public.qorpera_set_interface_page_hidden(uuid,text,boolean)', false, true, 'member: auth.uid() + membership of a folder-v2 company; hides or shows Mailbox, Members or Bank on the caller''s own rail and changes no data (20260930697000)'),
 	('public.qorpera_set_leaderboard_hidden(boolean)', false, true, 'member: auth.uid(); sets only the caller''s own choice (20260930690000)'),
 	('public.qorpera_set_logical_computer_status(uuid,uuid,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_set_member_picture(text)', false, true, 'member: auth.uid() + membership/ownership'),

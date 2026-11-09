@@ -1,5 +1,6 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
+import type { InterfacePageName } from "../../cloud/interface-pages.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import {
 	type CompanySidebar,
@@ -30,7 +31,7 @@ import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
-import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
+import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
@@ -68,6 +69,9 @@ export interface ShellContext {
 		card: CardFootActions,
 		findAnchor: () => HTMLElement | null,
 	) => void;
+	/** Hides a page (Mailbox, Members, Bank) from the member's own rail, or shows it again: a right-click on it, as on
+	 * an agent (Jonas, 9 Nov 2026: each member's own, not the company's). */
+	hideInterfacePage?: (page: InterfacePageName, hidden: boolean) => Promise<void>;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -744,7 +748,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(list, company, created);
+		pressToOpenMenu(list, company, (event) => openRailMenu(company, created, event));
+		// A right-click on a page in the drawer hides it, as on an agent.
+		appsDrawer.addEventListener("contextmenu", (event) => openDrawerMenu(company, created, event), {
+			signal: company.signal,
+		});
+		pressToOpenMenu(appsDrawer, company, (event) => openDrawerMenu(company, created, event));
 		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent or group chat one place.
 		list.addEventListener(
 			"keydown",
@@ -983,12 +992,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
 	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true && !app.manifest.concept);
 	const concepts = companyConcepts(state.apps ?? []).length;
-	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0;
+	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
+	const sites = state.siteCount ?? 0;
+	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
-		if ((section === "interface" || section === "app") && !parts.appsOpen) setAppsOpen(parts, profileId, true);
+		if ((section === "interface" || section === "app" || section === "sites") && !parts.appsOpen)
+			setAppsOpen(parts, profileId, true);
 	}
 	const appsOpen = hasApps && parts.appsOpen;
 	parts.apps.hidden = !hasApps;
@@ -1028,7 +1040,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1117,13 +1129,28 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const placedRooms: ReadonlyMap<string, HostedSession> = sidebar?.groupChats ? rooms : new Map();
 	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
 	const hidden = new Set(sidebar?.hidden ?? []);
+	// A search that names a section lists everyone in it, pinned ones too; "Unassigned" names
+	// what is in no section once there are sections to tell it from.
+	const sectionNames = sidebar?.sections ?? [];
+	const wholeSections = new Set(
+		railQuery
+			? sectionNames.filter((item) => matches(item.name)).map((item) => item.sectionId as string | undefined)
+			: [],
+	);
+	if (railQuery && sectionNames.length && matches(t("Unassigned"))) wholeSections.add(undefined);
+	const sectionOf = (itemId: string) => {
+		const placed = sidebar?.placements[itemId]?.sectionId;
+		return placed && sectionNames.some((item) => item.sectionId === placed) ? placed : undefined;
+	};
+	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
-		matches(`${agent!.displayName} ${agent!.role}`) &&
+		(matches(`${agent!.displayName} ${agent!.role}`) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
-		matches(placedRooms.get(roomId)?.title ?? "") && (!hidden.has(roomId) || Boolean(railQuery));
+		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&
+		(!hidden.has(roomId) || Boolean(railQuery));
 	const agentElement = (agent: HostedStaffAgent) =>
 		row(
 			`#/c/${profileId}/staff/${agent.id}`,
@@ -1184,31 +1211,45 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// Hidden agents and group chats fold at the foot of the list, where they can be shown
 	// again. A search already lists the matching ones in their places.
 	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
+	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
+	const hiddenPages = railQuery ? [] : hiddenInterfaces(company);
+	const hiddenCount = hiddenItems.length + hiddenPages.length;
 	const hiddenGroup = parts.hiddenGroup;
-	hiddenGroup.count.textContent = String(hiddenItems.length);
+	hiddenGroup.count.textContent = String(hiddenCount);
 	hiddenGroup.count.hidden = hiddenGroup.open;
 	hiddenGroup.chevron.hidden = !hiddenGroup.open;
 	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
-	hiddenGroup.toggle.setAttribute("aria-label", t("Hidden: {count}", { count: hiddenItems.length }));
+	hiddenGroup.toggle.setAttribute("aria-label", t("Hidden: {count}", { count: hiddenCount }));
 	hiddenGroup.list.hidden = !hiddenGroup.open;
 	reconcile(
 		hiddenGroup.list,
 		hiddenGroup.open
-			? hiddenItems.flatMap((itemId) => {
-					if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
-					const agent = company.staffById(itemId);
-					return agent
-						? [
-								row(
-									`hidden:#/c/${profileId}/staff/${agent.id}`,
-									`#/c/${profileId}/staff/${agent.id}`,
-									agentModel(agent),
-									isActive(agent.id),
-									agentRow,
-								),
-							]
-						: [];
-				})
+			? [
+					...hiddenPages.map((entry) =>
+						row(
+							`hidden-page:${entry.name}`,
+							"",
+							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
+							false,
+							hiddenPageRow,
+						),
+					),
+					...hiddenItems.flatMap((itemId) => {
+						if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
+						const agent = company.staffById(itemId);
+						return agent
+							? [
+									row(
+										`hidden:#/c/${profileId}/staff/${agent.id}`,
+										`#/c/${profileId}/staff/${agent.id}`,
+										agentModel(agent),
+										isActive(agent.id),
+										agentRow,
+									),
+								]
+							: [];
+					}),
+				]
 			: [],
 	);
 	const unassignedRows = [
@@ -1219,7 +1260,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			.filter(
 				(session) =>
 					session.status === "open" &&
-					matches(session.title) &&
+					(matches(session.title) || wholeSections.has(undefined)) &&
 					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
 					!isAgentPairSession(session) &&
 					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
@@ -1264,7 +1305,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const anyRows =
 		pinnedElements.length +
 		unassignedRows.length +
-		hiddenItems.length +
+		hiddenCount +
 		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
 	if (!state.loading || state.staff.length) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
@@ -1348,7 +1389,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			// A section shows while it has rows, and always when nothing is being searched.
 			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
-			hiddenItems.length ? hiddenGroup.el : null,
+			hiddenCount ? hiddenGroup.el : null,
 			empty ? parts.empty : null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
@@ -1417,6 +1458,7 @@ function drawInterfaces(
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
 	concepts: number,
+	sites: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -1467,6 +1509,21 @@ function drawInterfaces(
 		else element.removeAttribute("aria-current");
 		elements.push(element);
 	}
+	// The company's websites: one entry for the Sites page, which lists them all.
+	if (sites > 0) {
+		const key = "sites";
+		const model = JSON.stringify([key, t("Sites"), sites]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`, sites);
+		rows.set(key, { shown: model, element });
+		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
+		element.dataset.appKey = key;
+		const open = route.name === "company" && route.section === "sites";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
 	parts.interfaceRows = rows;
 	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
 	for (const [index, element] of ordered.entries()) element.style.setProperty("--i", String(index));
@@ -1495,6 +1552,7 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 			class: "rail-app",
 			href,
 			draggable: "false",
+			"data-interface-page": entry.name,
 			title: file.about ? `${file.name} · ${file.about}` : file.name,
 			...(waiting ? { "aria-label": `${file.name}, ${waiting}` } : {}),
 		},
@@ -1536,6 +1594,21 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", 34)),
 		h("span", { class: "rail-app-name" }, label),
+	);
+}
+
+/** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
+function sitesIcon(href: string, count: number): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-app rail-sites",
+			href,
+			draggable: "false",
+			title: count === 1 ? t("1 site") : t("{count} sites", { count }),
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
+		h("span", { class: "rail-app-name" }, t("Sites")),
 	);
 }
 
@@ -1821,6 +1894,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const agentElement = target.closest<HTMLElement>("[data-agent-id], [data-cofounder-id]");
 	const roomElement = target.closest<HTMLElement>("[data-room-id]");
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
+	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
@@ -1850,6 +1924,10 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 			);
 		}
 		return;
+	} else if (pageElement?.dataset.interfacePage) {
+		// A hidden page, in Hidden.
+		openPageMenu(company, parts, pageElement, event);
+		return;
 	} else if (titleElement?.dataset.sectionId) {
 		const sectionId = titleElement.dataset.sectionId;
 		items = sectionMenu(company, sectionId);
@@ -1866,8 +1944,79 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	openContextMenu({ label, x: point.x, y: point.y, items, opener, ...(findOpener ? { findOpener } : {}) });
 }
 
+/** Right-click in the apps drawer: a page offers to hide it. The agents' apps and Concepts offer nothing. */
+function openDrawerMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
+	if (event.shiftKey && (event.clientX || event.clientY)) return;
+	const element = (event.target as Element).closest<HTMLElement>("[data-interface-page]");
+	if (element) openPageMenu(company, parts, element, event);
+}
+
+/** A page's menu: Hide from sidebar in the drawer, Show in sidebar in Hidden. It changes the member's own rail only;
+ * nothing the page showed is removed. On a cloud from before each member's own choice, the browser's own menu. */
+function openPageMenu(company: CompanyController, parts: RailParts, element: HTMLElement, event: MouseEvent): void {
+	const page = element.dataset.interfacePage as InterfacePageName;
+	const hide = parts.context?.hideInterfacePage;
+	const pages = company.store.get().interfacePages;
+	if (!hide || !pages?.personal || !pages.pages.some((entry) => entry.page === page)) return;
+	event.preventDefault();
+	const shown = parts.appsDrawer.contains(element);
+	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
+	const point = menuPoint(event, element);
+	openContextMenu({
+		label: t("{name} actions", { name }),
+		x: point.x,
+		y: point.y,
+		opener: element,
+		findOpener: () =>
+			(shown ? parts.appsDrawer : parts.list).querySelector<HTMLElement>(`[data-interface-page="${page}"]`),
+		items: [
+			{
+				label: shown ? t("Hide from sidebar") : t("Show in sidebar"),
+				icon: shown ? "hide" : "show",
+				select: () => {
+					company.reportRailError(undefined);
+					hide(page, shown).catch(() =>
+						company.reportRailError(t("{page} could not be changed. Try again.", { page: name })),
+					);
+				},
+			},
+		],
+	});
+}
+
+/** A page hidden from the rail, in Hidden: its emblem and name. A press, like a right-click, offers to show it. */
+function hiddenPageRow(model: {
+	name: string;
+	title: string;
+	emblem: CompanyInterface["file"]["emblem"];
+}): HTMLElement {
+	const row = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-row rail-row-page",
+			"data-interface-page": model.name,
+			"data-page-name": model.title,
+			"aria-haspopup": "menu",
+		},
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, 34)),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for you"))),
+	);
+	row.addEventListener("click", (event) => {
+		row.dispatchEvent(
+			new MouseEvent("contextmenu", {
+				bubbles: true,
+				cancelable: true,
+				clientX: event.clientX,
+				clientY: event.clientY,
+			}),
+		);
+	});
+	return row;
+}
+
 /** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event). */
-function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: RailParts): void {
+function pressToOpenMenu(list: HTMLElement, company: CompanyController, open: (event: MouseEvent) => void): void {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let start: { x: number; y: number } | undefined;
 	// When a press last opened a menu; never, at first, so the page's first 800 ms
@@ -1895,7 +2044,7 @@ function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: R
 					cancelable: true,
 				});
 				Object.defineProperty(synthetic, "target", { value: target });
-				openRailMenu(company, parts, synthetic);
+				open(synthetic);
 			}, 550);
 		},
 		{ signal },

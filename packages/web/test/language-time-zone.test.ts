@@ -408,4 +408,29 @@ describe("changing the time zone with a conversation open", () => {
 			dispose();
 		}
 	});
+
+	it("builds the Sites page again in the new language", async () => {
+		vi.useFakeTimers();
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/sites`);
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		const dispose = mountApplication(root, f.cloud, f.api);
+		try {
+			const draw = async () => {
+				await settle();
+				await vi.advanceTimersByTimeAsync(60);
+			};
+			await draw();
+			const page = root.querySelector(".sites-page");
+			expect(page?.querySelector("h1")?.textContent).toBe("Sites");
+			expect(setLanguagePreference("da")).toBe(true);
+			await draw();
+			expect(root.querySelector(".sites-page")).not.toBe(page);
+			expect(root.querySelector(".sites-page h1")?.textContent).toBe("Hjemmesider");
+		} finally {
+			setLanguagePreference("system");
+			dispose();
+		}
+	});
 });

@@ -11,7 +11,11 @@
 # fuse3 and the company folder's program with its unit (F3 step 6c: it mounts
 # the folder at /company once the host hands the machine a view), the machine
 # guest helper and its watchdog (scripts/package-machine-guest.mjs), and apt's
-# and fwupd's self-update units masked. An agent that has a Dockerfile builds
+# and fwupd's self-update units masked. Since 9 Nov 2026 also a desktop for work
+# that needs a screen: TigerVNC's X server and a plain XFCE session on display :1
+# as the account `desktop`, started only by the agents' `desktop start`, with
+# Chromium (the coding image's pinned build) and xdotool behind the `desktop`
+# command (README, "The desktop"). An agent that has a Dockerfile builds
 # and runs it inside its machine; images are not made from Dockerfiles.
 #
 # The builder runs in the node's declared image build space (the observer
@@ -41,6 +45,10 @@ MISE_VERSION=2026.10.10
 MISE_SHA256=7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
 TYPESCRIPT_VERSION=7.0.2
 TSX_VERSION=4.23.15
+# Chromium for the desktop: the coding image's pin (deploy/coding-machine/coding-image.json), Chrome for Testing.
+CHROMIUM_VERSION=151.0.7922.34
+CHROMIUM_URL=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip
+CHROMIUM_SHA256=ae8736ac28bc69278551500f219fc749575648263c43ec5990749eff43b9fcf8
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
 EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
@@ -50,7 +58,8 @@ exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
 for file in cloud-machine-guest.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
-	qorpera-machine-folder.service qorpera-folder manifest.json; do
+	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
+	qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -93,12 +102,18 @@ for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sl
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
 	UV_SHA256="$UV_SHA256" MISE_VERSION="$MISE_VERSION" MISE_SHA256="$MISE_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
-	TSX_VERSION="$TSX_VERSION" bash -euo pipefail -c '
+	TSX_VERSION="$TSX_VERSION" CHROMIUM_URL="$CHROMIUM_URL" CHROMIUM_SHA256="$CHROMIUM_SHA256" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
-		ripgrep fd-find sqlite3 libreoffice-nogui fuse3
+		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file \
+		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
+		x11-utils x11-xserver-utils xdotool wmctrl scrot apparmor \
+		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
+		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-dejavu-core fonts-liberation \
+		fonts-noto-core fonts-noto-color-emoji
 	# Debian names fd fdfind; the toolbox calls it fd.
 	ln -sf /usr/bin/fdfind /usr/local/bin/fd
 	curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
@@ -122,6 +137,20 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	install -o root -g root -m 0755 /tmp/mise /usr/local/bin/mise
 	rm -f /tmp/mise
 	systemctl enable docker.service containerd.service
+	# The desktop browser: Chrome for Testing, pinned like the coding image one.
+	curl -fsSLo /tmp/chromium.zip "$CHROMIUM_URL"
+	echo "${CHROMIUM_SHA256}  /tmp/chromium.zip" | sha256sum -c -
+	unzip -q /tmp/chromium.zip -d /tmp/chromium
+	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
+	ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium
+	rm -rf /tmp/chromium.zip /tmp/chromium
+	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
+	useradd --create-home --shell /bin/bash --user-group desktop
+	# Its panel starts with the default XFCE layout instead of asking on the first start.
+	install -d -o desktop -g desktop -m 0755 /home/desktop/.config /home/desktop/.config/xfce4 \
+		/home/desktop/.config/xfce4/xfconf /home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml
+	install -o desktop -g desktop -m 0644 /etc/xdg/xfce4/panel/default.xml \
+		/home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
 	# Where the company folder is mounted; until then an empty folder.
 	install -d -o root -g root -m 0755 /company
@@ -137,7 +166,11 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
-for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service; do
+lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/qorpera-chromium.apparmor" "$BUILDER/etc/apparmor.d/qorpera-chromium" --uid 0 --gid 0 --mode 0644
+for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
+	qorpera-machine-desktop.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
 lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" bash -euo pipefail -c '
@@ -164,6 +197,36 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		[[ $(stat -c "%U:%G %a %F" "$folder") == "root:root 700 directory" ]]
 	done
 	[[ -z $(ls -A /var/lib/qorpera-folder/cache/machine) ]]
+	# The desktop: started only by `desktop start`, it comes up, shows Chromium, takes a 1600x1000 screenshot and stops with
+	# everything on it. Chromium runs sandboxed as the desktop account (its AppArmor profile allows the user namespaces).
+	[[ $(systemctl is-enabled qorpera-machine-desktop.service || true) == static ]]
+	apparmor_parser -r /etc/apparmor.d/qorpera-chromium
+	[[ $(chromium --version) == *" 151.0.7922.34"* ]]
+	DOM=$(runuser -u desktop -- timeout 60 chromium --headless --disable-gpu --dump-dom "data:text/html,<p>qorpera-machine-desktop</p>" 2>/dev/null)
+	[[ $DOM == *qorpera-machine-desktop* ]] || { echo "chromium does not render sandboxed" >&2; exit 1; }
+	desktop start
+	desktop open "data:text/html,<title>qorpera-machine-desktop</title><h1>qorpera-machine-desktop</h1>"
+	for _ in $(seq 1 60); do desktop windows | grep -q qorpera-machine-desktop && break; sleep 0.5; done
+	desktop windows | grep -q qorpera-machine-desktop || { echo "chromium shows no window on the desktop" >&2; exit 1; }
+	desktop key ctrl+l && desktop type about:blank && desktop key Return
+	desktop click 800 500
+	desktop shot /tmp/desktop.png | grep -q " 1600 x 1000$" || { echo "the screenshot is not 1600x1000" >&2; exit 1; }
+	# A program gets its arguments as given (no $ expansion by systemd), and none starts on a stopped desktop.
+	desktop run sh -c "v=literal; echo \"\${v} \\\$HOME\" > /tmp/desktop-run"
+	for _ in $(seq 1 50); do [[ -s /tmp/desktop-run ]] && break; sleep 0.1; done
+	[[ $(cat /tmp/desktop-run) == "literal \$HOME" ]] || { echo "desktop run changed its arguments: $(cat /tmp/desktop-run)" >&2; exit 1; }
+	desktop stop
+	if systemctl is-active --quiet qorpera-machine-desktop.service; then echo "the desktop did not stop" >&2; exit 1; fi
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	if desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi
+	sleep 1
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "a program runs without the desktop" >&2; exit 1; }
+	# Nothing of that check stays in the desktop account but its panel layout.
+	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
+		-exec rm -rf -- {} +
+	find /home/desktop/.config -mindepth 1 -maxdepth 1 ! -name xfce4 -exec rm -rf -- {} +
+	find /home/desktop/.config/xfce4 -mindepth 1 -maxdepth 1 ! -name xfconf -exec rm -rf -- {} +
+	find /home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml -mindepth 1 ! -name xfce4-panel.xml -exec rm -rf -- {} +
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service \
 		fwupd-refresh.timer fwupd-refresh.service fwupd.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
@@ -184,6 +247,7 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	done
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
 		/etc/systemd/system/qorpera-machine-folder.service
+	systemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service
 	# Nothing of this build stays: logs, keys, caches (the LibreOffice profile too), the machine id.
 	apt-get clean
 	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.config/libreoffice
@@ -193,7 +257,7 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	sync
 '
 lx stop "$BUILDER"
-lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION, toolbox, company folder)"
+lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION, toolbox, company folder, desktop with Chromium $CHROMIUM_VERSION)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
 echo "published $FINGERPRINT (delete it by hand if this build fails from here)" >&2
@@ -221,6 +285,6 @@ fi
 # The bootstrap digest pins exactly what was installed: this script and the guest package.
 BOOTSTRAP=$(cat "$0" "$PACKAGE/manifest.json" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
-	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" \
+	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" \
 	'{schema: "qorpera.machine-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
-	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node}' >&3
+	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node, chromium: $chromium}' >&3

@@ -6,6 +6,8 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
+import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
+import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
@@ -16,6 +18,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
+import { createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { nativeColorOf } from "../ui/avatar.ts";
@@ -72,6 +75,7 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
+import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
@@ -154,13 +158,18 @@ export function mountApplication(
 		if (!friendsWindow) return;
 		friendsWindow.dispose();
 		friendsWindow = undefined;
-		if (restoreFocus) frame.querySelector<HTMLElement>(".account-friends")?.focus();
+		if (!restoreFocus) return;
+		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
+		(
+			settings?.el.querySelector<HTMLElement>(".settings-friends") ??
+			frame.querySelector<HTMLElement>(".account-friends")
+		)?.focus();
 	}
-	/** Friends as a window of its own, over whatever is open; Settings close first. */
+	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
 	function openFriends(): void {
 		if (friendsWindow || feedback || !auth.userId) return;
-		if (settings) closeSettings(false);
-		friendsWindow = new FriendsWindow(api, hub, () => closeFriends());
+		// Over Settings it shares their friends list, so the invitation picker behind it follows every change.
+		friendsWindow = new FriendsWindow(api, hub, () => closeFriends(), settings?.friends);
 		root.append(friendsWindow.el);
 		friendsWindow.open();
 	}
@@ -180,6 +189,8 @@ export function mountApplication(
 	 * so what the founder types next goes into their message. */
 	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
+		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
+		if (settings) closeFriends(false);
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;
@@ -202,10 +213,6 @@ export function mountApplication(
 			() => closeSettings(),
 			companyRemovedHandler(),
 			tab,
-			// A page switched on or off in the open company shows or leaves its Interfaces tab at once.
-			(environmentId) => {
-				if (company?.profile.environmentId === environmentId) void interfacePages?.refresh();
-			},
 			openFriends,
 		);
 		frame.inert = true;
@@ -398,6 +405,12 @@ export function mountApplication(
 	let appReturn: string | undefined;
 	/** The company's concepts, full screen (`#/c/{id}/concepts`), while that route shows. */
 	let conceptsView: ConceptsView | undefined;
+	/** The company's Sites page (`#/c/{id}/sites`), kept while that route shows. */
+	let sitesPage:
+		| { readonly company: CompanyController; readonly view: SitesView; readonly el: HTMLElement }
+		| undefined;
+	/** The company whose sites were read for the apps drawer. */
+	let sitesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
@@ -534,6 +547,8 @@ export function mountApplication(
 		appPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
+		sitesPage?.view.dispose();
+		sitesPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -1074,6 +1089,7 @@ export function mountApplication(
 					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
 						memberFolder(companyCurrent, t("Company access changed.")),
 					),
+					eventHooks: createWebEventHooks(cloud, controller.profile),
 					nativeSubscription: createWebNativeSubscription(
 						cloud,
 						controller.profile.profileId,
@@ -1120,6 +1136,7 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
 				openGroupCard,
+				hideInterfacePage: (page, hidden) => interfacePages?.hide(page, hidden) ?? Promise.resolve(),
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the
@@ -1316,6 +1333,21 @@ export function mountApplication(
 			});
 			apps.open();
 		}
+		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
+		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
+		if (sitesRead !== controller && state.team?.capabilities.read) {
+			sitesRead = controller;
+			const sites = createWebSites(cloud, controller.profile);
+			const readSites = () =>
+				void sites.list(controller.signal).then(
+					(list) => {
+						if (!controller.signal.aborted) controller.store.set({ siteCount: list.length });
+					},
+					() => {},
+				);
+			readSites();
+			window.addEventListener("focus", readSites, { signal: controller.signal });
+		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
 			mail.dispose();
@@ -1379,6 +1411,10 @@ export function mountApplication(
 		if (route.section !== "concepts") {
 			conceptsView?.dispose();
 			conceptsView = undefined;
+		}
+		if (route.section !== "sites" || sitesPage?.company !== controller) {
+			sitesPage?.view.dispose();
+			sitesPage = undefined;
 		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
@@ -1630,6 +1666,7 @@ export function mountApplication(
 								checkConversationAccess,
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
+							eventHooks: createWebEventHooks(cloud, controller.profile),
 							// No Undo on an agent's interface change: agents don't make pages (Interfaces C6a), and the save
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
@@ -1816,10 +1853,69 @@ export function mountApplication(
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
 					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
-					openSettings: () => openSettings("company-connections"),
+					mailManage: () => {
+						const environment = {
+							profileId: controller.profile.profileId,
+							environmentId: controller.profile.environmentId,
+						};
+						const keys = createDigitalPostKeys(cloud, environment);
+						return {
+							hooks: createWebEventHooks(cloud, environment),
+							digitalPost: {
+								read: () => readDigitalPost(cloud, environment.environmentId),
+								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
+								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
+							},
+						};
+					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
 				});
 				return;
+			case "sites": {
+				// The websites the company's agents published (Jonas, 9 Nov 2026: out of Settings, into the apps drawer).
+				// Every member sees them and their links; owners and admins also read and change their passwords and take
+				// them offline (the kernel enforces the same rule).
+				if (!sitesPage) {
+					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
+						access: {
+							canManage: () => {
+								const role = controller.store.get().team?.role;
+								return role === "owner" || role === "admin";
+							},
+						},
+						listed: (list) => controller.store.set({ siteCount: list.length }),
+					});
+					sitesPage = {
+						company: controller,
+						view,
+						el: h(
+							"section",
+							{ class: "page sites-page" },
+							h(
+								"header",
+								{ class: "sites-page-heading" },
+								interfaceEmblem("globe", 40),
+								h(
+									"div",
+									null,
+									h("h1", null, t("Sites")),
+									h(
+										"p",
+										null,
+										t(
+											"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
+										),
+									),
+								),
+							),
+							view.el,
+						),
+					};
+				}
+				sitesPage.view.update();
+				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
 			case "team":
 				renderTeam(
 					api,

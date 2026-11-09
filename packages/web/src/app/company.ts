@@ -238,6 +238,9 @@ export interface CompanyState {
 	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
 	 * first read lands. */
 	apps?: readonly CompanyApp[];
+	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
+	 * Unset until read, and on a cloud that can't say. */
+	siteCount?: number;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
