@@ -40,12 +40,9 @@
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
 /* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
- * 2026). The emblem turns white with its cuts in the selection colour, so an emblem of that same colour still shows. */
+ * 2026). The emblem turns white with its cuts in the selection colour. */
 .rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-app.active .interface-emblem :is([fill]:not([fill="none"], [fill="#ffffff"])) { fill: #fff; }
-.rail-app.active .interface-emblem :is([stroke]:not([stroke="#ffffff"])) { stroke: #fff; }
-.rail-app.active .interface-emblem [fill="#ffffff"] { fill: var(--rail-selection); }
-.rail-app.active .interface-emblem [stroke="#ffffff"] { stroke: var(--rail-selection); }
+.rail-app.active .interface-emblem { --emblem-ink: #fff; --emblem-cut: var(--rail-selection); }
 .rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-app.active:focus-visible { outline-color: #fff; }
@@ -64,6 +61,13 @@
 	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot { transition: none; }
 }
 
+/* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour, with
+ * cuts in the page colour. */
+.interface-emblem { --emblem-ink: var(--text); --emblem-cut: var(--bg); }
+.interface-emblem [data-fill="ink"] { fill: var(--emblem-ink); }
+.interface-emblem [data-fill="cut"] { fill: var(--emblem-cut); }
+.interface-emblem [data-stroke="ink"] { stroke: var(--emblem-ink); }
+.interface-emblem [data-stroke="cut"] { stroke: var(--emblem-cut); }
 .interface-emblem .emblem-beat { stroke-dasharray: 60; animation: emblem-beat 2.4s linear infinite; }
 @keyframes emblem-beat { 0% { stroke-dashoffset: 60; } 60%, 100% { stroke-dashoffset: 0; } }
 

@@ -280,7 +280,6 @@ export class ConceptsView {
 				concept.manifest.name,
 				concept.manifest.about,
 				concept.manifest.emblem,
-				concept.manifest.colour,
 				concept.manifest.cover,
 				this.#made(concept),
 			]),
@@ -335,7 +334,7 @@ export class ConceptsView {
 			replace(thumb, h("img", { src: url, alt: "", draggable: "false" }));
 		} else if (thumb.classList.contains("has-cover") || !thumb.firstChild) {
 			thumb.classList.remove("has-cover");
-			replace(thumb, interfaceEmblem(concept.manifest.emblem, concept.manifest.colour, 28));
+			replace(thumb, interfaceEmblem(concept.manifest.emblem, 28));
 		}
 	}
 

@@ -269,10 +269,10 @@ export function mountApplication(
 		if (!apps) return;
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
 			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
-			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.colour, manifest.about]) : "";
+			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.about]) : "";
 			if (!manifest || card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, manifest.colour, 30));
+			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, 30));
 			const note = card.querySelector(".app-card-note");
 			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
 		}

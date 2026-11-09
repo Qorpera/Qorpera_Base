@@ -1,11 +1,14 @@
-/* An interface's emblem (RUNTIME-INTERFACES.md §3): one solid shape in the interface's colour with white cuts,
- * the same two materials as the agents' figures, so an interface reads as a sibling of an agent in the rail
- * without wearing a figure. The shapes are fixed here; a file only names one. */
+/* An interface's emblem (RUNTIME-INTERFACES.md §3): one solid shape with cuts. Every emblem is black or white,
+ * against the member's theme (Jonas, 9 November 2026: simpler interfaces): the solid parts take the text colour and
+ * the cuts the page colour, from `--emblem-ink` and `--emblem-cut` (styles/interfaces.css), so a light theme shows
+ * black emblems and a dark one white. A file's `colour` no longer tints it. The shapes are fixed here; a file only
+ * names one. */
 
 import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
-import { colourNameHex } from "./avatar.ts";
 
 const NS = "http://www.w3.org/2000/svg";
+/** What the parts are drawn with before the stylesheet says otherwise: the light theme's text and page colours. */
+const INK = "#161615";
 const CUT = "#ffffff";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
@@ -13,7 +16,7 @@ type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 /** An emblem a file may name, or the Bank page's, which only the web draws (app/bank-page.ts). */
 export type Emblem = InterfaceEmblem | "bank";
 
-/** Each emblem on a 48×48 grid: the solid parts take the colour, the cuts are white. */
+/** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 	bank: [
 		["path", { d: "M24 3.5 44.5 14.6a1.6 1.6 0 0 1-.8 3H4.3a1.6 1.6 0 0 1-.8-3z", fill: "solid" }],
@@ -70,9 +73,8 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 	],
 };
 
-/** The emblem, `size` pixels square. `colour` is an agent colour name; without one the emblem is gray. */
-export function interfaceEmblem(emblem: Emblem | null, colour: string | null, size: number): SVGSVGElement {
-	const hue = colourNameHex(colour ?? "") ?? colourNameHex("gray") ?? "#7c7c7a";
+/** The emblem, `size` pixels square, in the theme's ink (see above). */
+export function interfaceEmblem(emblem: Emblem | null, size: number): SVGSVGElement {
 	const svg = document.createElementNS(NS, "svg");
 	svg.setAttribute("viewBox", "0 0 48 48");
 	svg.setAttribute("width", String(size));
@@ -82,9 +84,12 @@ export function interfaceEmblem(emblem: Emblem | null, colour: string | null, si
 	for (const [tag, attrs] of EMBLEMS[emblem ?? "page"]) {
 		const part = document.createElementNS(NS, tag);
 		for (const [name, value] of Object.entries(attrs)) {
-			if (name === "fill") part.setAttribute("fill", value === "solid" ? hue : CUT);
-			else if (name === "stroke") {
-				part.setAttribute("stroke", value === "solid-line" ? hue : CUT);
+			if (name === "fill") {
+				part.setAttribute("fill", value === "solid" ? INK : CUT);
+				part.setAttribute("data-fill", value === "solid" ? "ink" : "cut");
+			} else if (name === "stroke") {
+				part.setAttribute("stroke", value === "solid-line" ? INK : CUT);
+				part.setAttribute("data-stroke", value === "solid-line" ? "ink" : "cut");
 				part.setAttribute("stroke-width", value === "cut-thin" ? "2.6" : value === "cut-dot" ? "5.2" : "3.4");
 				part.setAttribute("stroke-linecap", "round");
 				part.setAttribute("stroke-linejoin", "round");
