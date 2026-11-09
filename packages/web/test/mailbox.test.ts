@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
-import { renderMailbox } from "../src/app/views/mailbox.ts";
+import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
+import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -100,11 +101,43 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	await reader.open();
 	const main = h("main");
 	document.body.append(main);
-	const openSettings = vi.fn();
-	const draw = () => renderMailbox(main, controller, "mailbox", { openSettings });
+	// The address and Digital Post calls behind Addresses: no hooks yet, Digital Post not connected.
+	const hooks: EventHook[] = [];
+	const manage: MailboxManage = {
+		hooks: {
+			list: vi.fn(async () => [...hooks]),
+			createHook: vi.fn(),
+			createMailbox: vi.fn(async (name: string, purpose: string) => {
+				const made: EventHook = {
+					id: id(950 + hooks.length),
+					name: `mail-${name}`,
+					purpose,
+					proof: "mail",
+					status: "active",
+					email: `${name}@acme.example`,
+					createdAt: timestamp,
+				};
+				hooks.push(made);
+				return made;
+			}),
+			setStatus: vi.fn(),
+		},
+		digitalPost: {
+			read: vi.fn(async () => ({
+				connected: false,
+				status: "disconnected" as const,
+				letters: 0,
+				waitingForFolder: 0,
+				held: 0,
+			})),
+			save: vi.fn(),
+			disconnect: vi.fn(),
+		},
+	};
+	const draw = () => renderMailbox(main, controller, "mailbox", { manage: () => manage });
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
-	return { f, controller, fake, main, openSettings, accounts };
+	return { f, controller, fake, main, manage, accounts };
 }
 
 const texts = (root: ParentNode, selector: string) =>
@@ -228,9 +261,19 @@ describe("the Inbox", () => {
 		await vi.waitFor(() =>
 			expect(none.main.querySelector(".mailbox-empty h1")?.textContent).toBe("The company has no email address yet"),
 		);
-		button(none.main, "Make an address")!.click();
-		expect(none.openSettings).toHaveBeenCalledTimes(1);
+		// An owner makes the first address right here; the mail is read again, and the page opens.
 		expect(none.main.querySelector(".mailbox-tabs")).toBeNull();
+		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
+		button(none.main, "Add mailbox")!.click();
+		const form = none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
+		type(form.querySelector('input[aria-label="Mailbox name"]')!, "hello");
+		type(form.querySelector('input[aria-label="What it is for"]')!, "Customer questions");
+		none.fake.addresses = [ADDRESS];
+		form.requestSubmit();
+		await vi.waitFor(() =>
+			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "Customer questions", expect.anything()),
+		);
+		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
 	});
 });
 
@@ -373,7 +416,7 @@ describe("Sent, Addresses and Write", () => {
 	});
 
 	it("lists each address with who answers it, and asks the Co-Founder to give it to another agent", async () => {
-		const { main, controller, openSettings } = await mailbox(() => {});
+		const { main, controller } = await mailbox(() => {});
 		vi.spyOn(controller, "openCofounderConversation").mockResolvedValue({ sessionId: session.sessionId });
 		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
@@ -396,8 +439,11 @@ describe("Sent, Addresses and Write", () => {
 				"Asked Co-Founder to give hello@acme.example to Bo",
 			),
 		);
-		button(main, "New address")!.click();
-		expect(openSettings).toHaveBeenCalledTimes(1);
+		// The company's addresses are made, paused and removed here, and Digital Post connected.
+		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='mailbox']")).not.toBeNull();
+		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='webhook']")).toBeNull();
+		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
 	});
 
 	it("asks the chosen agent to write an email, from the address it answers", async () => {
@@ -435,7 +481,7 @@ describe("Sent, Addresses and Write", () => {
 		button(main, "Back to Inbox")!.click();
 		tab(main, "Addresses");
 		expect(button(main, "Change")).toBeUndefined();
-		expect(button(main, "New address")).toBeUndefined();
+		expect(main.querySelector(".mailbox-manage")).toBeNull();
 	});
 });
 
@@ -717,7 +763,7 @@ describe("Digital Post", () => {
 			expect(main.querySelector(".mailbox-empty h1")?.textContent).toBe("The company has no email address yet"),
 		);
 		expect(texts(main, ".mailbox-empty p")).toContain(
-			"Letters from public authorities come here too, once Digital Post is connected in Settings.",
+			"Letters from public authorities come here too, once Digital Post is connected.",
 		);
 		expect(folder.folder.read).not.toHaveBeenCalled();
 	});

@@ -10,8 +10,9 @@ const CUT = "#ffffff";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
-/** An emblem a file may name, or the Bank page's, which only the web draws (app/bank-page.ts). */
-export type Emblem = InterfaceEmblem | "bank";
+/** An emblem a file may name, or the Bank page's or the Sites page's, which only the web draws (app/bank-page.ts,
+ * views/sites-page.ts). */
+export type Emblem = InterfaceEmblem | "bank" | "globe";
 
 /** Each emblem on a 48×48 grid: the solid parts take the colour, the cuts are white. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
@@ -23,6 +24,16 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 		["rect", { x: "26.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "35.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "3.5", y: "38.5", width: "41", height: "5.5", rx: "2.2", fill: "solid" }],
+	],
+	globe: [
+		["circle", { cx: "24", cy: "24", r: "20", fill: "solid" }],
+		[
+			"path",
+			{
+				d: "M4.5 24h39M24 4.5c-6 5.4-8.6 12-8.6 19.5S18 38.1 24 43.5M24 4.5c6 5.4 8.6 12 8.6 19.5S30 38.1 24 43.5",
+				stroke: "cut",
+			},
+		],
 	],
 	pulse: [
 		["path", { d: "M24 4c11.6 0 20 8.2 20 19.4C44 35 35.4 44 24 44S4 35 4 23.4C4 12.2 12.4 4 24 4z", fill: "solid" }],

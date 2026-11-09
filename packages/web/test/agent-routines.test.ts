@@ -502,6 +502,40 @@ describe("routine triggers", () => {
 });
 
 describe("agent routines section", () => {
+	it("lists the company's webhooks under the routines, kept through a redraw", async () => {
+		const hook = {
+			id: "11111111-2222-4333-8444-555555555555",
+			name: "new-orders",
+			purpose: "New orders from the shop",
+			proof: "address",
+			status: "active" as const,
+			url: "https://fixture.invalid/functions/v1/event-intake/abc",
+			createdAt: "2026-11-09T10:00:00Z",
+		};
+		const webhooks = {
+			list: vi.fn(async () => [hook]),
+			createHook: vi.fn(),
+			createMailbox: vi.fn(),
+			setStatus: vi.fn(),
+		};
+		const stop = new AbortController();
+		const view = new AgentRoutines(
+			() => staff,
+			{ routines: mocked([]), accounts: async () => ({ connections: [account] }), canManage: () => true, webhooks },
+			stop.signal,
+		);
+		document.body.append(view.el);
+		await vi.waitFor(() => expect(view.el.querySelector(".hook-card strong")?.textContent).toBe("new-orders"));
+		// Webhooks only: the mailboxes live in the Mailbox.
+		expect(view.el.querySelector("[data-hooks='webhook'] h2")?.textContent).toBe("Webhooks");
+		expect(view.el.querySelector("[data-hooks='mailbox']")).toBeNull();
+		const hooks = view.el.querySelector(".hooks");
+		view.refresh();
+		await settle();
+		expect(view.el.querySelector(".hooks")).toBe(hooks);
+		stop.abort();
+	});
+
 	it("lists this agent's routines and hides another agent's and retired ones", async () => {
 		const f = mount([
 			routine(),

@@ -910,12 +910,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
 	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true && !app.manifest.concept);
 	const concepts = companyConcepts(state.apps ?? []).length;
-	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0;
+	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
+	const sites = state.siteCount ?? 0;
+	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
-		if ((section === "interface" || section === "app") && !parts.appsOpen) setAppsOpen(parts, profileId, true);
+		if ((section === "interface" || section === "app" || section === "sites") && !parts.appsOpen)
+			setAppsOpen(parts, profileId, true);
 	}
 	const appsOpen = hasApps && parts.appsOpen;
 	parts.apps.hidden = !hasApps;
@@ -955,7 +958,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1355,6 +1358,7 @@ function drawInterfaces(
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
 	concepts: number,
+	sites: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -1400,6 +1404,20 @@ function drawInterfaces(
 		rows.set(key, { shown: model, element });
 		element.style.setProperty("--i", String(elements.length));
 		const open = route.name === "company" && route.section === "concepts";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// The company's websites: one entry for the Sites page, which lists them all.
+	if (sites > 0) {
+		const key = "sites";
+		const model = JSON.stringify([key, t("Sites"), sites]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`, sites);
+		rows.set(key, { shown: model, element });
+		element.style.setProperty("--i", String(elements.length));
+		const open = route.name === "company" && route.section === "sites";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1472,6 +1490,21 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", "purple", 34)),
 		h("span", { class: "rail-app-name" }, label),
+	);
+}
+
+/** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
+function sitesIcon(href: string, count: number): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-app rail-sites",
+			href,
+			draggable: "false",
+			title: count === 1 ? t("1 site") : t("{count} sites", { count }),
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", "blue", 34)),
+		h("span", { class: "rail-app-name" }, t("Sites")),
 	);
 }
 

@@ -66,7 +66,9 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 				name !== "qorpera_member_digital_post" &&
 				name !== "qorpera_member_interface_offers" &&
 				name !== "qorpera_member_interface_supervisions" &&
-				name !== "qorpera_member_interface_pages",
+				name !== "qorpera_member_interface_pages" &&
+				// The apps drawer's Sites entry: the company's sites are read once it opens.
+				name !== "qorpera_list_company_sites",
 		);
 }
 function click(root: Element, selector: string) {
@@ -86,7 +88,7 @@ function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
 const ACCOUNT_TABS = ["general", "friends", "ai-subscriptions"];
-const ALL_TABS = ["general", "company", "friends", "ai-subscriptions", "company-connections", "sites"];
+const ALL_TABS = ["general", "company", "friends", "ai-subscriptions", "company-connections"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -538,7 +540,7 @@ describe("settings session lifecycle", () => {
 			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
 				(tab) => tab.textContent,
 			),
-		).toEqual(["General", "Company", "Friends", "AI subscriptions", "Company connections", "Sites"]);
+		).toEqual(["General", "Company", "Friends", "AI subscriptions", "Company connections"]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Appearance is part of General, under the account's settings; the agent rules are not.
@@ -1026,36 +1028,11 @@ describe("settings session lifecycle", () => {
 		expect(shown("claude")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
-		expect(shown("webhooks")).toEqual(["settings-tab-company-connections"]);
-		expect(shown("postkasser")).toEqual(["settings-tab-company-connections"]);
-	});
-	it("shows the company's websites on Sites, read only once that tab opens", async () => {
-		const f = await setup();
-		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
-			if (name === "qorpera_list_company_sites") return [];
-			throw new Error("Unexpected RPC");
-		});
-		open(f.root);
-		await draw();
-		expect(sdkRpcs(f)).not.toContain("qorpera_list_company_sites");
-		// The Danish word finds it too: the label is English, so the keywords carry it. The search shows the one tab
-		// it finds, which opens the page.
-		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
-		search.value = "hjemmesider";
-		search.dispatchEvent(new Event("input"));
-		expect(navTabs(f.root)).toEqual(["sites"]);
-		expect(selectedTab(f.root)).toBe("sites");
-		search.value = "";
-		search.dispatchEvent(new Event("input"));
-		click(f.root, "#settings-tab-sites");
-		await draw();
-		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
-		expect(content.querySelector("h1")?.textContent).toBe("Sites");
-		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
-		);
-		expect(content.textContent).toContain("No sites yet.");
-		expect(sdkRpcs(f).filter((name) => name === "qorpera_list_company_sites")).toHaveLength(1);
+		// Webhooks live under an agent's routines, mailboxes and Digital Post in the Mailbox, and Sites in the apps
+		// drawer: Settings finds none of them.
+		expect(shown("webhooks")).toEqual([]);
+		expect(shown("postkasser")).toEqual([]);
+		expect(shown("sites")).toEqual([]);
 	});
 	it("brings a service sign-in back to Company connections", async () => {
 		sessionStorage.setItem(
@@ -2084,7 +2061,7 @@ describe("settings session lifecycle", () => {
 		[
 			"company-connections",
 			".service-card button:not(:disabled)",
-			["qorpera_list_cloud_secret_connections", "qorpera_list_coding_environment", "qorpera_list_event_hooks"],
+			["qorpera_list_cloud_secret_connections", "qorpera_list_coding_environment"],
 		],
 	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
 		const f = await setup();
@@ -2126,20 +2103,17 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(content.querySelector("h1")?.textContent).toBe("Company connections");
 		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
+			"The company's own accounts. Every agent can use them, and they stay when someone leaves.",
 		);
-		// The Services section lists the Step 7 connectors with their own Connect buttons; Digital Post has its own card.
-		expect(content.querySelectorAll('.service-card:not([data-connector="digital_post"])')).toHaveLength(3);
-		expect(content.querySelector('.digital-post .service-card[data-connector="digital_post"]')).not.toBeNull();
+		// The Services section lists the Step 7 connectors with their own Connect buttons. Digital Post, mailboxes and
+		// webhooks are no longer here.
+		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
+		expect(content.querySelector(".digital-post, [data-hooks]")).toBeNull();
 		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// The services, the coding environment variables and the hooks are this tab's only reads; the member's own
-		// accounts are not read for it.
-		const companyReads = [
-			"qorpera_list_cloud_secret_connections",
-			"qorpera_list_coding_environment",
-			"qorpera_list_event_hooks",
-		];
+		// The services and the coding environment variables are this tab's only reads; the member's own accounts are not
+		// read for it.
+		const companyReads = ["qorpera_list_cloud_secret_connections", "qorpera_list_coding_environment"];
 		expect(sdkRpcs(f)).toEqual(companyReads);
 		expect(memberReads()).toEqual([]);
 
@@ -2211,7 +2185,6 @@ describe("settings session lifecycle", () => {
 			"qorpera_list_coding_environment",
 			"qorpera_list_cloud_secret_connections",
 			"qorpera_list_coding_environment",
-			"qorpera_list_event_hooks",
 			"qorpera_grant_coding_environment_secret",
 			"qorpera_list_coding_environment",
 			"qorpera_list_coding_environment",

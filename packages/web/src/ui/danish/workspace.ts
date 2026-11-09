@@ -234,10 +234,10 @@ export const WORKSPACE: Record<string, string> = {
 	"The company has no email address yet": "Virksomheden har ingen e-mailadresse endnu",
 	"Make one, and pick the agent who answers what comes in.":
 		"Lav en, og vælg den agent, der svarer på det, der kommer ind.",
-	"Make an address": "Lav en adresse",
+	"An owner or admin makes the company's addresses.": "En ejer eller administrator laver virksomhedens adresser.",
 	// Digital Post in the Mailbox (app/views/mailbox.ts)
-	"Letters from public authorities come here too, once Digital Post is connected in Settings.":
-		"Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet under Indstillinger.",
+	"Letters from public authorities come here too, once Digital Post is connected.":
+		"Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet.",
 	"No Digital Post yet": "Ingen Digital Post endnu",
 	"Letters from public authorities come here as Digital Post delivers them.":
 		"Breve fra offentlige myndigheder kommer her, efterhånden som Digital Post leverer dem.",
@@ -299,7 +299,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Please have {name} answer the email that comes to {address}.":
 		"Lad venligst {name} svare på de e-mails, der kommer til {address}.",
 	"Asked {cofounder} to give {address} to {name}": "Bad {cofounder} om at give {address} til {name}",
-	"New address": "Ny adresse",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",
@@ -547,6 +546,8 @@ export const WORKSPACE: Record<string, string> = {
 	Hidden: "Skjulte",
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
+	"1 site": "1 hjemmeside",
+	"{count} sites": "{count} hjemmesider",
 	"Hidden for everyone": "Skjult for alle",
 	Delete: "Slet",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":

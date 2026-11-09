@@ -344,6 +344,23 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-app")).toBeNull();
 	});
 
+	it("shows the company's websites as one Sites entry while there are any, leading to the Sites page", () => {
+		const { element, draw, controller } = rail(home);
+		expect(element.querySelector(".rail-sites")).toBeNull();
+		controller.store.set({ siteCount: 2 });
+		draw();
+		const entry = element.querySelector<HTMLAnchorElement>(".rail-app.rail-sites")!;
+		expect(entry.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(entry.title).toBe("2 sites");
+		expect(entry.querySelector(".rail-app-name")?.textContent).toBe("Sites");
+		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
+		expect(entry.getAttribute("aria-current")).toBe("page");
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		controller.store.set({ siteCount: 0 });
+		draw();
+		expect(element.querySelector(".rail-sites")).toBeNull();
+	});
+
 	it("hides a page for everyone from its right-click, and shows it again from Hidden (owners and admins)", async () => {
 		const { element, controller } = rail(home);
 		const setInterfacePage = vi.fn(async (page: string, on: boolean) => {
