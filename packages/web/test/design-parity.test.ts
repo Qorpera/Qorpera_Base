@@ -695,6 +695,132 @@ describe("received content presentation", () => {
 		expect(document.querySelector("dialog img")?.getAttribute("src")).toBe("blob:local-fixture");
 		expect(load).toHaveBeenCalledOnce();
 	});
+	it("steps through the message's images in a frameless viewer with its arrows, the arrow keys and a swipe", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const load = vi.fn(async (_id: string, index: number) => new Blob([`png${index}`], { type: "image/png" }));
+		const view = new ReceivedAttachments(
+			{
+				...imageMessage,
+				attachmentCount: 4,
+				attachments: [
+					image("a"),
+					{ kind: "file", name: "plan.pdf", bytes: 42, mediaType: "application/pdf" },
+					image("b"),
+					image("c"),
+				],
+			},
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const shown = () => document.querySelector<HTMLImageElement>(".image-viewer-dialog img")?.getAttribute("src");
+		const count = () => document.querySelector(".image-viewer-count")?.textContent;
+		const nav = (name: string) =>
+			document.querySelector<HTMLButtonElement>(`.image-viewer-dialog [aria-label="${name}"]`)!;
+		view.el.querySelectorAll<HTMLButtonElement>(".received-image")[1]!.click();
+		await settle();
+		// No title or size line around the picture: just it, the arrows and where it is in the message.
+		expect(document.querySelector(".image-viewer-dialog h2")).toBeNull();
+		expect(shown()).toBe("blob:two");
+		expect(count()).toBe("2 of 3");
+		nav("Next image").click();
+		await settle();
+		expect(shown()).toBe("blob:three");
+		expect(nav("Next image").disabled).toBe(true);
+		const dialog = document.querySelector<HTMLDialogElement>(".image-viewer-dialog")!;
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		await settle();
+		expect(shown()).toBe("blob:one");
+		expect(count()).toBe("1 of 3");
+		expect(nav("Previous image").disabled).toBe(true);
+		// A swipe to the left goes on to the next one.
+		const stage = document.querySelector<HTMLElement>(".image-viewer-stage")!;
+		const pointer = (type: string, x: number, timeStamp = 0) => {
+			const event = new MouseEvent(type, { clientX: x, clientY: 200, button: 0, bubbles: true });
+			Object.defineProperties(event, { pointerId: { value: 1 }, timeStamp: { value: timeStamp } });
+			stage.dispatchEvent(event);
+		};
+		pointer("pointerdown", 300, 0);
+		pointer("pointermove", 220, 60);
+		pointer("pointerup", 220, 100);
+		await settle();
+		expect(shown()).toBe("blob:two");
+		// The PDF stays out of the viewer, and every image was read once.
+		expect(load.mock.calls.map(([, index]) => index).sort()).toEqual([0, 2, 3]);
+	});
+	it("keeps the viewer's current image when one stepped away from fails late, and places a thumbnail read ahead", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		// Cards load only as they come on screen.
+		const watched: Element[] = [];
+		let intersect: IntersectionObserverCallback = () => {};
+		vi.stubGlobal(
+			"IntersectionObserver",
+			class {
+				constructor(callback: IntersectionObserverCallback) {
+					intersect = callback;
+				}
+				observe(target: Element) {
+					watched.push(target);
+				}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const third = deferred<Blob>();
+		const load = vi.fn((_id: string, index: number) =>
+			index === 2 ? third.promise : Promise.resolve(new Blob([`png${index}`], { type: "image/png" })),
+		);
+		const view = new ReceivedAttachments(
+			{ ...imageMessage, attachmentCount: 3, attachments: [image("a"), image("b"), image("c")] },
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		const cards = [...view.el.querySelectorAll<HTMLButtonElement>(".received-image")];
+		expect(watched).toEqual(cards);
+		expect(load).not.toHaveBeenCalled();
+		cards[0]!.click();
+		await settle();
+		const first = document.querySelector<HTMLImageElement>(".image-viewer-dialog img")!;
+		expect(first.getAttribute("src")).toBe("blob:one");
+		document.querySelector<HTMLButtonElement>('.image-viewer-dialog [aria-label="Next image"]')!.click();
+		await settle();
+		// The second's step read the third ahead; it is still on its way.
+		expect(load.mock.calls.map(([, index]) => index)).toEqual([0, 1, 2]);
+		first.dispatchEvent(new Event("error"));
+		expect(document.querySelector(".image-viewer-dialog img")?.getAttribute("src")).toBe("blob:two");
+		expect(document.querySelector(".image-viewer-note")).toBeNull();
+		// Closed before the third arrived, then its card comes on screen: it waits on that same read.
+		document.querySelector<HTMLButtonElement>(".image-viewer-dialog .surface-close")!.click();
+		intersect(
+			[{ target: cards[2]!, isIntersecting: true } as unknown as IntersectionObserverEntry],
+			{} as IntersectionObserver,
+		);
+		expect(cards[2]!.classList.contains("awaits-thumbnail")).toBe(true);
+		third.resolve(new Blob(["png2"], { type: "image/png" }));
+		await settle();
+		expect(cards[2]!.classList.contains("has-thumbnail")).toBe(true);
+		expect(cards[2]!.querySelector("img")?.getAttribute("src")).toBe("blob:three");
+		expect(load).toHaveBeenCalledTimes(3);
+	});
 	it("puts a thread image that fails back on its card with a retry", async () => {
 		const reference = { sha256: "b".repeat(64), bytes: 2048, mediaType: "image/png" };
 		const load = vi

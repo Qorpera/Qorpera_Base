@@ -596,6 +596,41 @@
 .file-preview-dialog h2 { overflow-wrap: anywhere; margin-right: 20px; font-size: 15px; }
 .file-preview-dialog img { display: block; width: 100%; max-height: 65dvh; object-fit: contain; margin: 16px 0; }
 .file-preview-placeholder { text-align: center; padding: 50px 20px; }
+/* A message's images, one at a time over the dimmed thread with no frame around them (Jonas, 10 Nov 2026): the arrows,
+ * the arrow keys or a swipe go through the message's images. */
+dialog.surface-dialog.image-viewer-dialog { inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: hidden; color: #fff; }
+dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var(--motion-base) var(--ease-out) both; }
+@keyframes image-viewer-in { from { opacity: 0; } }
+:root .image-viewer-dialog::backdrop, :root[data-theme="dark"] .image-viewer-dialog::backdrop { background: rgb(12 12 11 / 86%); }
+.image-viewer-dialog > .surface-dialog-content { position: absolute; inset: 0; padding: 0; }
+.image-viewer-stage { position: absolute; inset: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; padding: 56px 84px; touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }
+.image-viewer-stage img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; transform: translateX(var(--image-viewer-drag, 0)); transition: transform var(--motion-base) var(--ease-out); -webkit-user-drag: none; }
+.image-viewer-stage.is-dragging img { transition: none; }
+.image-viewer-stage img.is-from-next { animation: image-viewer-from-next var(--motion-base) var(--ease-out) backwards; }
+.image-viewer-stage img.is-from-previous { animation: image-viewer-from-previous var(--motion-base) var(--ease-out) backwards; }
+@keyframes image-viewer-from-next { from { opacity: 0; transform: translateX(36px); } }
+@keyframes image-viewer-from-previous { from { opacity: 0; transform: translateX(-36px); } }
+.image-viewer-note { margin: 0; color: rgb(255 255 255 / 72%); font-size: 13px; text-align: center; }
+.image-viewer-dialog .surface-tools { top: 14px; right: 14px; }
+.image-viewer-dialog .surface-close, .image-viewer-nav { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgb(255 255 255 / 12%); color: #fff; cursor: pointer; transition: background var(--motion-fast) ease, opacity var(--motion-fast) ease; }
+.image-viewer-dialog .surface-close { width: 36px; height: 36px; }
+.image-viewer-dialog .surface-close:hover, .image-viewer-nav:hover:not(:disabled) { background: rgb(255 255 255 / 22%); color: #fff; }
+.image-viewer-nav { position: absolute; top: 50%; width: 44px; height: 44px; margin-top: -22px; padding: 0; }
+.image-viewer-nav .icon { width: 22px; height: 22px; }
+.image-viewer-nav.is-previous { left: 20px; }
+.image-viewer-nav.is-previous .icon { transform: scaleX(-1); }
+.image-viewer-nav.is-next { right: 20px; }
+.image-viewer-nav:disabled { opacity: .28; cursor: default; }
+.image-viewer-nav[hidden] { display: none; }
+.image-viewer-nav:focus-visible, .image-viewer-dialog .surface-close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.image-viewer-count { position: absolute; left: 50%; bottom: 18px; margin: 0; transform: translateX(-50%); color: rgb(255 255 255 / 72%); font-size: 12px; font-variant-numeric: tabular-nums; }
+.image-viewer-count:empty { display: none; }
+/* On a phone the picture takes the width and a swipe does the stepping. */
+@media (max-width: 640px) {
+	.image-viewer-stage { padding: 60px 0 48px; }
+	.image-viewer-stage img { border-radius: 0; }
+	.image-viewer-nav { display: none; }
+}
 .file-preview-placeholder .icon { width: 48px; height: 48px; color: var(--text-soft); }
 
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
