@@ -599,7 +599,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
-	it("opens the Friends window from the button beside Settings | Storage", async () => {
+	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
@@ -609,8 +609,14 @@ describe("settings session lifecycle", () => {
 		expect(friends.nextElementSibling?.classList.contains("settings-modes")).toBe(true);
 		friends.click();
 		await draw();
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		// Settings stay open behind the window (Jonas, 9 Nov 2026), and get the focus back when it closes.
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		const window = f.root.querySelector<HTMLDialogElement>(".friends-window")!;
+		expect(window.open).toBe(true);
+		window.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		expect(document.activeElement).toBe(friends);
 	});
 	it("opens all eight tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
@@ -1074,6 +1080,22 @@ describe("settings session lifecycle", () => {
 		loading.resolve({ asOfSeq: 1, entries: [], next: null });
 		await draw();
 		expect(files.inert).toBe(false);
+	});
+	it("closes the Friends window over Settings when access to the company is lost", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		click(f.root, ".settings-header .settings-friends");
+		await draw();
+		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		vi.mocked(f.api.getTeam).mockRejectedValue(
+			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+		);
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		// Settings close, and the window that used their friends list closes with them.
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
 	});
 	it.each(["revocation", "sign out"])("ends Storage reads and removes the dialog on %s", async (change) => {
 		const folder = storageFixture();
@@ -1667,9 +1689,8 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll<HTMLButtonElement>(".company-invite button")]
 			.find((button) => button.textContent === "Add a friend")!
 			.click();
-		// Settings close and the Friends window opens over the conversation, its search field ready to type in.
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+		// The Friends window opens over Settings, which stay open behind it; its search field is ready to type in.
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
 		const friendsWindow = f.root.querySelector<HTMLDialogElement>(".friends-window")!;
 		expect(friendsWindow.open).toBe(true);
 		expect(document.activeElement).toBe(friendsWindow.querySelector(".panel-search input"));
@@ -1677,6 +1698,22 @@ describe("settings session lifecycle", () => {
 		// The window reads the list for itself.
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(friendsWindow.querySelector(".person-row")?.textContent).toContain("Friend B");
+		// The window shares Settings' list: a friend removed there, closed before the removal lands, leaves the picker
+		// once it lands.
+		const removed = deferred<void>();
+		const remove = vi.spyOn(f.api, "removeFriend").mockImplementation(() => removed.promise);
+		[...friendsWindow.querySelectorAll<HTMLButtonElement>(".person-row button")]
+			.find((button) => button.textContent === "Remove")!
+			.click();
+		friendsWindow.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
+		vi.mocked(f.api.listFriends).mockResolvedValue([]);
+		expect(remove).toHaveBeenCalledTimes(1);
+		removed.resolve();
+		await draw();
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
+		expect(f.root.querySelector(".invite-results")?.textContent ?? "").not.toContain("Friend B");
 	});
 	it("closes nested confirmation before settings, and cancels it on sign-out", async () => {
 		const f = await setup();

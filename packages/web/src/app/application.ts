@@ -154,13 +154,18 @@ export function mountApplication(
 		if (!friendsWindow) return;
 		friendsWindow.dispose();
 		friendsWindow = undefined;
-		if (restoreFocus) frame.querySelector<HTMLElement>(".account-friends")?.focus();
+		if (!restoreFocus) return;
+		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
+		(
+			settings?.el.querySelector<HTMLElement>(".settings-friends") ??
+			frame.querySelector<HTMLElement>(".account-friends")
+		)?.focus();
 	}
-	/** Friends as a window of its own, over whatever is open; Settings close first. */
+	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
 	function openFriends(): void {
 		if (friendsWindow || feedback || !auth.userId) return;
-		if (settings) closeSettings(false);
-		friendsWindow = new FriendsWindow(api, hub, () => closeFriends());
+		// Over Settings it shares their friends list, so the invitation picker behind it follows every change.
+		friendsWindow = new FriendsWindow(api, hub, () => closeFriends(), settings?.friends);
 		root.append(friendsWindow.el);
 		friendsWindow.open();
 	}
@@ -180,6 +185,8 @@ export function mountApplication(
 	 * so what the founder types next goes into their message. */
 	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
+		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
+		if (settings) closeFriends(false);
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;

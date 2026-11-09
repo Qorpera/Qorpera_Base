@@ -14,13 +14,18 @@ const REFRESH_MS = 60_000;
 export class FriendsWindow {
 	readonly el: HTMLDialogElement;
 	readonly #friends: FriendsController;
+	/** The list is this window's own, not Settings' it opened over. */
+	readonly #ownsFriends: boolean;
 	readonly #hub: HubController;
 	readonly #body = h("div", { class: "friends-window-body" });
 	readonly #lifetime = new AbortController();
 	#timer: ReturnType<typeof setInterval> | undefined;
 
-	constructor(api: CloudApi, hub: HubController, close: () => void) {
-		this.#friends = new FriendsController(api);
+	/** `friends`: the list of Settings this window opens over, so a change made here (even one still on its way when
+	 * the window closes) shows there too; without it the window keeps a list of its own. */
+	constructor(api: CloudApi, hub: HubController, close: () => void, friends?: FriendsController) {
+		this.#friends = friends ?? new FriendsController(api);
+		this.#ownsFriends = !friends;
 		this.#hub = hub;
 		this.el = h(
 			"dialog",
@@ -79,7 +84,7 @@ export class FriendsWindow {
 		if (this.#lifetime.signal.aborted) return;
 		this.#lifetime.abort();
 		clearInterval(this.#timer);
-		this.#friends.dispose();
+		if (this.#ownsFriends) this.#friends.dispose();
 		if (this.el.open) this.el.close();
 		this.el.remove();
 	}

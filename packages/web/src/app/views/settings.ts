@@ -112,7 +112,7 @@ export class SettingsView {
 	/** The account's friends, for the Company tab's invitation picker; the list itself is the Friends window's. */
 	readonly #friends: FriendsController;
 	readonly #close: () => void;
-	/** Opens the Friends window (Settings close first). */
+	/** Opens the Friends window over Settings. */
 	readonly #openFriends: () => void;
 	/** Leaderboard, read once its tab shows. */
 	#leaderboard: LeaderboardView | undefined;
@@ -412,6 +412,11 @@ export class SettingsView {
 		});
 		void this.#friends.refresh();
 		this.#switchMode(this.#mode);
+	}
+
+	/** The account's friends: the Friends window opened over Settings shares this list with the invitation picker. */
+	get friends(): FriendsController {
+		return this.#friends;
 	}
 
 	/** The open tab, so a language change can reopen Settings where it was. */
@@ -1170,7 +1175,7 @@ export class SettingsView {
 				signal: this.#companyLifetime.signal,
 				embedded: true,
 				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
-				// Friends are a window of their own: Settings close and it opens on its search field.
+				// Friends are a window of their own: it opens over Settings, on its search field.
 				addFriend: () => this.#openFriends(),
 				onCompanyRemoved: (profileId) => {
 					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
