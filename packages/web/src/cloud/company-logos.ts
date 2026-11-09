@@ -1,3 +1,4 @@
+import { POSTGRES_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { array, record, timestamp, uuid } from "./parse.ts";
 
 /* A company's logo (migration 20260930696000). The official logo is the company folder's QorperaOS/brand/logo.svg, which
@@ -10,7 +11,14 @@ export const COMPANY_LOGO_BUCKET = "qorpera-company-logos";
 export const COMPANY_LOGO_PATH = "QorperaOS/brand/logo.svg";
 export const COMPANY_BRAND_FOLDER = "QorperaOS/brand";
 
-const OBJECT_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([0-9a-f]{64})\.png$/;
+/** A logo object's company and source sha256, when `value` is `<company UUID>/<64 hex>.png`. */
+function objectParts(value: string): { profileId: string; sourceSha256: string } | null {
+	const [profileId, file, ...rest] = value.split("/");
+	if (rest.length || !profileId || !file?.endsWith(".png")) return null;
+	const sourceSha256 = file.slice(0, -".png".length);
+	if (!POSTGRES_UUID_PATTERN.test(profileId) || !SHA256_HEX_PATTERN.test(sourceSha256)) return null;
+	return { profileId, sourceSha256 };
+}
 
 export interface CompanyLogo {
 	profileId: string;
@@ -30,23 +38,23 @@ export interface CompanyLogoChange {
 
 export function companyLogoName(profileId: string, sourceSha256: string): string {
 	const name = `${profileId.toLowerCase()}/${sourceSha256}.png`;
-	if (!OBJECT_NAME.test(name)) throw new Error("Invalid logo name.");
+	if (!objectParts(name)) throw new Error("Invalid logo name.");
 	return name;
 }
 
 export function isCompanyLogoName(value: string, profileId?: string): boolean {
-	const match = OBJECT_NAME.exec(value);
-	return Boolean(match) && (profileId === undefined || match![1] === profileId.toLowerCase());
+	const parts = objectParts(value);
+	return Boolean(parts) && (profileId === undefined || parts!.profileId === profileId.toLowerCase());
 }
 
 /** The sha256 of the SVG a PNG was drawn from. */
 export function companyLogoSource(objectName: string): string | null {
-	return OBJECT_NAME.exec(objectName)?.[2] ?? null;
+	return objectParts(objectName)?.sourceSha256 ?? null;
 }
 
 function sha(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
-	if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) throw new Error(`Invalid ${label}`);
+	if (typeof value !== "string" || !SHA256_HEX_PATTERN.test(value)) throw new Error(`Invalid ${label}`);
 	return value;
 }
 
