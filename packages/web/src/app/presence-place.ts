@@ -32,10 +32,14 @@ export function parsePresenceValue(value: string | null | undefined): PresencePl
 	return { ...(sessionId ? { sessionId } : {}), ...(place ? { place } : {}) };
 }
 
-/** A conversation's place in the rail: its group chat's room, or the agent it is with. */
+/** A conversation's place in the rail: the agent it is with, or its group chat's room. An agent's thread is bound to a
+ * room of its own too (`agentThread`), and stands for the agent, as its row does. */
 export function sessionPlace(session: HostedSession | undefined): string | undefined {
 	if (!session) return undefined;
-	const roomId = session.executionScope?.roomId;
+	const scope = session.executionScope ?? {};
+	const agent = session.staffAgentId ? `agent:${session.staffAgentId.toLowerCase()}` : undefined;
+	if (scope.agentThread === true && agent) return agent;
+	const roomId = scope.roomId;
 	if (typeof roomId === "string" && roomId) return `room:${roomId.toLowerCase()}`;
-	return session.staffAgentId ? `agent:${session.staffAgentId.toLowerCase()}` : undefined;
+	return agent;
 }

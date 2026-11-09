@@ -177,9 +177,16 @@ describe("who is here now", () => {
 describe("who is where in the company (the rail's markers)", () => {
 	it("says the open conversation and its agent, and a page, app or card when no conversation is open", async () => {
 		const s = await setup();
-		s.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
+		// An agent's thread is bound to a room of its own, and still stands for the agent.
+		s.company.store.set({
+			sessions: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(55), agentThread: true } }],
+		});
 		await settle();
 		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith(`${session.sessionId}@agent:${staff.id}`);
+		// A group chat stands for its room.
+		s.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(56) } }] });
+		await settle();
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith(`${session.sessionId}@room:${id(56)}`);
 		s.view.dispose();
 		s.company.setOpenPlace("page:Members");
 		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith("@page:Members");
@@ -240,13 +247,28 @@ describe("who is where in the company (the rail's markers)", () => {
 		expect(rail.querySelector(`[data-agent-id="${staff.id}"]`)?.getAttribute("aria-description")).toBe(
 			"Sofie Lund and Mads Holm are here",
 		);
+		const row = rail.querySelector<HTMLElement>(`[data-agent-id="${staff.id}"]`)!;
+		expect(row.style.getPropertyValue("--here-count")).toBe("2");
 		const kept = marker();
 		renderRail(rail, s.company, context);
 		// The same people keep the same marker: nothing grows in again on a redraw.
 		expect(marker()).toBe(kept);
+		// A renamed member is drawn anew, with the new name's initials and words.
+		s.company.store.set({
+			team: {
+				...s.company.store.get().team!,
+				members: members.map((member) =>
+					member.userId === userB.id ? { ...member, displayName: "Anna Holt" } : member,
+				),
+			},
+		});
+		renderRail(rail, s.company, context);
+		expect([...marker()!.querySelectorAll(".person-avatar")].map((face) => face.textContent)).toEqual(["AH", "MH"]);
+		expect(row.getAttribute("aria-description")).toBe("Anna Holt and Mads Holm are here");
 		await s.publish([]);
 		renderRail(rail, s.company, context);
 		expect(marker()).toBeNull();
 		expect(rail.querySelector(`[data-agent-id="${staff.id}"]`)?.hasAttribute("aria-description")).toBe(false);
+		expect(row.style.getPropertyValue("--here-count")).toBe("");
 	});
 });

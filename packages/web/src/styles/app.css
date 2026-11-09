@@ -480,7 +480,8 @@ label > input, label > select { font-weight: 400; }
 .rail-here > * + * { margin-left: calc(var(--here-size) * -0.18); }
 .rail-here-more { display: grid; place-items: center; width: auto; min-width: var(--here-size); padding: 0 4px; border-radius: 999px; background: var(--rail-hover); color: var(--text-muted); font-size: 10px; font-weight: 650; }
 .rail-row > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
-.rail-row:has(> .rail-here) { padding-right: 40px; }
+/* Room for the marker: its first circle, then 82% of one for each further one (they overlap by 18%), and 10px either side. */
+.rail-row:has(> .rail-here) { padding-right: calc(20px + var(--here-size, 22px) * (1 + (var(--here-count, 1) - 1) * 0.82)); }
 .rail-row:hover > .rail-here, .rail-app:hover > .rail-here { --here-ring: var(--rail-hover); }
 :is(.rail-row, .rail-app).active > .rail-here, :is(.rail-pin, .cofounder-home).active .rail-here { --here-ring: var(--rail-selection); }
 .rail-pin:hover .rail-here, .cofounder-home:hover .rail-here { --here-ring: var(--rail-hover); }

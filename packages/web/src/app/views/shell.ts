@@ -1473,10 +1473,12 @@ function paintPresence(container: HTMLElement, parts: RailParts, company: Compan
 
 function paintHere(element: HTMLElement, people: readonly { userId: string; name: string }[]): void {
 	const kept = element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here");
-	const key = people.map((person) => person.userId).join(" ");
+	// Who and by what name: a renamed member is drawn anew.
+	const key = JSON.stringify(people.map((person) => [person.userId, person.name]));
 	if (!people.length) {
 		kept?.remove();
 		element.removeAttribute("aria-description");
+		element.style.removeProperty("--here-count");
 		return;
 	}
 	if (kept?.dataset.people === key) return;
@@ -1493,6 +1495,8 @@ function paintHere(element: HTMLElement, people: readonly { userId: string; name
 	);
 	if (kept) kept.replaceWith(marker);
 	else element.append(marker);
+	// How many circles the marker draws (pictures and "+n"), so a row keeps its text clear of them.
+	element.style.setProperty("--here-count", String(Math.min(people.length, 4)));
 	// A card's marker sits against its figure (in the stand), not in the card's far corner.
 	const stand = element.querySelector<HTMLElement>(":scope > .cofounder-stand, :scope > .rail-pin-stand");
 	if (stand) stand.append(marker);
