@@ -203,7 +203,7 @@ describe("the Bank page (app/views/bank.ts)", () => {
 	it("is listed once it is switched on, before the company has a summary, with the bank emblem", () => {
 		expect(companyInterfaces(company(false)).map((entry) => entry.name)).toEqual([]);
 		expect(companyInterfaces(company(true)).map((entry) => entry.name)).toEqual(["bank"]);
-		expect(interfaceEmblem("bank", 40).querySelectorAll("rect")).toHaveLength(5);
+		expect(interfaceEmblem("bank", 40).querySelectorAll("g rect")).toHaveLength(5);
 	});
 
 	it("says there is no bank yet, or that its summary can't be read", () => {
