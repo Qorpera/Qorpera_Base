@@ -1,13 +1,9 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
-import { createDigitalPostKeys, readDigitalPost } from "../../cloud/digital-post.ts";
-import { createWebEventHooks } from "../../cloud/event-hooks.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
-import { createWebSites } from "../../cloud/sites.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
@@ -23,15 +19,11 @@ import { FriendsController } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
-import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
-import { DigitalPostView } from "./settings-digital-post.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
-import { HooksView } from "./settings-hooks.ts";
 import { MemoryView } from "./settings-memory.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
-import { SitesView } from "./settings-sites.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
@@ -62,30 +54,25 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage environment variables ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
+			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
 	},
 	{
 		id: "company-connections",
 		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"services accounts gmail google drive github token secrets agents environment variables webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler postkasser hændelser",
-	},
-	{
-		id: "sites",
-		label: phrase("Sites"),
-		icon: "globe",
-		keywords:
-			"sites websites website web link url password share shop preview publish published unpublish offline hjemmesider hjemmeside websted link adgangskode kodeord del webshop udgiv udgivet",
+			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
 /** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. "appearance" was a
- * tab of its own: it is part of General now. */
+ * tab of its own: it is part of General now. Sites, webhooks, mailboxes and Digital Post left Settings (Jonas, 9 Nov
+ * 2026): Sites is a page of the apps drawer, webhooks are under an agent's routines, and the Mailbox makes its own
+ * addresses and connects Digital Post. */
 export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections" | "appearance";
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
-const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections", "sites"]);
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -167,15 +154,7 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
-	/** The member's own coding environment variables, on AI subscriptions. */
-	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
-	#digitalPost: DigitalPostView | undefined;
-	/** The company's coding environment variables, on Company connections. */
-	#companyEnvironment: CodingEnvironmentView | undefined;
-	#hooks: HooksView | undefined;
-	/** The company's websites, on Sites. */
-	#sites: SitesView | undefined;
 	#rules: RulesView | undefined;
 	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
 	#memory: MemoryView | undefined;
@@ -470,12 +449,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#accountSubscriptions?.dispose();
-		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
-		this.#digitalPost?.dispose();
-		this.#companyEnvironment?.dispose();
-		this.#hooks?.dispose();
-		this.#sites?.dispose();
 		this.#rules?.dispose();
 		this.#memory?.dispose();
 		this.#goodWill?.dispose();
@@ -783,24 +757,12 @@ export class SettingsView {
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
 				);
-				// The member's own coding environment variables: anyone who may write sets their own.
-				this.#memberEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					lifetime,
-					{ owner: "member", access: { canManage: () => company.store.get().team?.capabilities.write === true } },
-				);
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("AI subscriptions"),
-						subscriptionsLead(),
-						this.#connections.el,
-						this.#memberEnvironment.el,
-					),
-				);
+				// Coding values (environment variables a coding session gets) are no longer drawn here (Jonas, 9 Nov 2026:
+				// not something to show founders); the cloud keeps them.
+				this.#panels.set(tab, connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el));
 			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors, the company's coding environment variables, then its webhooks and
-				// mailboxes. Company first: owners and admins manage them, everyone sees them.
+				// Step 7 connectors. Owners and admins manage them, everyone sees them. The company's coding values are no
+				// longer drawn here (Jonas, 9 Nov 2026); the cloud keeps them.
 				const canManage = () => {
 					const role = company.store.get().team?.role;
 					return role === "owner" || role === "admin";
@@ -813,60 +775,12 @@ export class SettingsView {
 							undefined,
 					},
 				});
-				// The company's public post (RUNTIME-DIGITAL-POST.md): its state, and the key an owner or admin saves.
-				const cloud = this.#api.cloud;
-				const keys = createDigitalPostKeys(cloud, environment);
-				this.#digitalPost = new DigitalPostView(
-					{
-						read: () => readDigitalPost(cloud, environment.environmentId),
-						save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
-						disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
-					},
-					signal(),
-					{ access: { canManage } },
-				);
-				// Where a company variable is given decides where a member's own of that name is used, so AI
-				// subscriptions reads its list again after each change here (opened later, it reads one anyway).
-				this.#companyEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					signal(),
-					{ owner: "company", access: { canManage }, onChange: () => this.#memberEnvironment?.reload() },
-				);
-				this.#hooks = new HooksView(createWebEventHooks(this.#api.cloud, environment), signal(), {
-					access: { canManage },
-				});
 				this.#panels.set(
 					tab,
 					connectionsPage(
 						t("Company connections"),
-						t(
-							"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
-						),
+						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
 						this.#services.el,
-						this.#digitalPost.el,
-						this.#companyEnvironment.el,
-						this.#hooks.el,
-					),
-				);
-			} else if (tab === "sites" && !this.#sites) {
-				// Every member sees the company's sites and their links; owners and admins also read and change their
-				// passwords and take them offline (the kernel enforces the same rule).
-				this.#sites = new SitesView(createWebSites(this.#api.cloud, environment), signal(), {
-					access: {
-						canManage: () => {
-							const role = company.store.get().team?.role;
-							return role === "owner" || role === "admin";
-						},
-					},
-				});
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("Sites"),
-						t(
-							"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
-						),
-						this.#sites.el,
 					),
 				);
 			}
@@ -973,18 +887,8 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
-		this.#memberEnvironment?.dispose();
-		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
-		this.#digitalPost?.dispose();
-		this.#digitalPost = undefined;
-		this.#companyEnvironment?.dispose();
-		this.#companyEnvironment = undefined;
-		this.#hooks?.dispose();
-		this.#hooks = undefined;
-		this.#sites?.dispose();
-		this.#sites = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#memory?.dispose();
@@ -1000,20 +904,14 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "ai-subscriptions", "company-connections", "sites"] as const)
-			this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
 					this.#close();
 					return;
 				}
-				this.#memberEnvironment?.update();
 				this.#services?.update();
-				this.#digitalPost?.update();
-				this.#companyEnvironment?.update();
-				this.#hooks?.update();
-				this.#sites?.update();
 				this.#rules?.update();
 				this.#memory?.update();
 				this.#drawCompany();

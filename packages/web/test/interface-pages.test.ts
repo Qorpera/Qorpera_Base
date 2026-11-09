@@ -72,15 +72,49 @@ describe("the pages answer (cloud/interface-pages.ts)", () => {
 		for (const value of bad) expect(() => parseInterfacePages(value)).toThrow(CloudShapeError);
 	});
 
-	it("reads and switches the pages of one company", async () => {
+	it("reads the pages of one company, and hides or shows one on the member's own rail", async () => {
 		const rpc = vi.fn(async (_name: string, _args?: Record<string, unknown>) => answer(true, false));
 		const calls = interfacePageCalls({ rpc } as unknown as Cloud, "environment-1");
 		await expect(calls.list()).resolves.toEqual(state(true, false));
-		await expect(calls.set("members", true)).resolves.toEqual(state(true, false));
+		await expect(calls.hide("members", true)).resolves.toEqual(state(true, false));
 		expect(rpc.mock.calls).toEqual([
 			["qorpera_member_interface_pages", { p_environment_id: "environment-1" }],
-			["qorpera_set_interface_page", { p_environment_id: "environment-1", p_page: "members", p_on: true }],
+			[
+				"qorpera_set_interface_page_hidden",
+				{ p_environment_id: "environment-1", p_page: "members", p_hidden: true },
+			],
 		]);
+	});
+
+	it("reads each member's own hidden pages once the cloud answers them (20260930697000)", () => {
+		const read = parseInterfacePages({
+			...answer(true, false),
+			pages: [
+				{ page: "mailbox", on: true, hidden: false },
+				{ page: "members", on: false, hidden: true },
+			],
+		});
+		expect(read).toEqual({
+			pages: [
+				{ page: "mailbox", on: true, hidden: false },
+				{ page: "members", on: false, hidden: true },
+			],
+			mayChange: true,
+			personal: true,
+		});
+		// Half an answer is no member's choice: the company's switch decides.
+		expect(
+			parseInterfacePages({
+				...answer(true, false),
+				pages: [
+					{ page: "mailbox", on: true, hidden: false },
+					{ page: "members", on: false },
+				],
+			}).personal,
+		).toBeUndefined();
+		expect(() =>
+			parseInterfacePages({ ...answer(true, false), pages: [{ page: "mailbox", on: true, hidden: "no" }] }),
+		).toThrow(CloudShapeError);
 	});
 });
 
@@ -88,7 +122,7 @@ describe("following the pages (app/interface-pages.ts)", () => {
 	function follow(list: InterfacePageCalls["list"]) {
 		const published: (InterfacePagesState | undefined)[] = [];
 		const stop = new AbortController();
-		const pages = new CompanyInterfacePages({ list, set: vi.fn() }, (next) => published.push(next), stop.signal);
+		const pages = new CompanyInterfacePages({ list, hide: vi.fn() }, (next) => published.push(next), stop.signal);
 		cleanup.push(() => stop.abort());
 		return { pages, published, stop };
 	}
@@ -165,7 +199,7 @@ describe("following the pages (app/interface-pages.ts)", () => {
 	});
 });
 
-describe("hiding and showing a page (app/interface-pages.ts set)", () => {
+describe("hiding and showing a page (app/interface-pages.ts hide)", () => {
 	function follow(calls: InterfacePageCalls) {
 		const published: (InterfacePagesState | undefined)[] = [];
 		const stop = new AbortController();
@@ -177,10 +211,10 @@ describe("hiding and showing a page (app/interface-pages.ts set)", () => {
 	it("publishes the change's answer at once, and drops a read the change overtook", async () => {
 		const before = deferred<MemberInterfacePages>();
 		const list = vi.fn<InterfacePageCalls["list"]>().mockReturnValueOnce(before.promise);
-		const set = vi.fn<InterfacePageCalls["set"]>(async () => state(false, true));
-		const { pages, published } = follow({ list, set });
+		const set = vi.fn<InterfacePageCalls["hide"]>(async () => state(false, true));
+		const { pages, published } = follow({ list, hide: set });
 		const reading = pages.refresh();
-		await pages.set("mailbox", false);
+		await pages.hide("mailbox", false);
 		expect(set).toHaveBeenCalledExactlyOnceWith("mailbox", false);
 		expect(published).toEqual([state(false, true)]);
 		before.resolve(state(true, true));
@@ -191,10 +225,10 @@ describe("hiding and showing a page (app/interface-pages.ts set)", () => {
 	it("runs changes one at a time, so an older answer never lands over a newer one", async () => {
 		const first = deferred<MemberInterfacePages>();
 		const answers = [first.promise, Promise.resolve(state(false, false))];
-		const set = vi.fn<InterfacePageCalls["set"]>(() => answers.shift()!);
-		const { pages, published } = follow({ list: vi.fn(), set });
-		const mailbox = pages.set("mailbox", false);
-		const members = pages.set("members", false);
+		const set = vi.fn<InterfacePageCalls["hide"]>(() => answers.shift()!);
+		const { pages, published } = follow({ list: vi.fn(), hide: set });
+		const mailbox = pages.hide("mailbox", false);
+		const members = pages.hide("members", false);
 		await settle();
 		// The second waits for the first's answer.
 		expect(set).toHaveBeenCalledExactlyOnceWith("mailbox", false);
@@ -206,11 +240,11 @@ describe("hiding and showing a page (app/interface-pages.ts set)", () => {
 
 	it("reads the pages again when a change fails, and says so", async () => {
 		const list = vi.fn<InterfacePageCalls["list"]>(async () => state(true, false));
-		const set = vi.fn<InterfacePageCalls["set"]>(async () => {
+		const set = vi.fn<InterfacePageCalls["hide"]>(async () => {
 			throw new Error("Network unavailable");
 		});
-		const { pages, published } = follow({ list, set });
-		await expect(pages.set("members", true)).rejects.toThrow("Network unavailable");
+		const { pages, published } = follow({ list, hide: set });
+		await expect(pages.hide("members", true)).rejects.toThrow("Network unavailable");
 		expect(list).toHaveBeenCalledOnce();
 		expect(published).toEqual([state(true, false)]);
 	});

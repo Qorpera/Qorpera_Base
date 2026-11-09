@@ -219,8 +219,8 @@ export const SETTINGS: Record<string, string> = {
 	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
-	"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.":
-		"Virksomhedens egne konti, webhooks og postkasser. Alle agenter kan bruge dem, og de bliver, når nogen går.",
+	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
+		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
