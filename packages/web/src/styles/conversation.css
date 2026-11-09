@@ -122,6 +122,11 @@
 .run-failure-actions { display: flex; flex: none; align-items: center; gap: 6px; }
 .run-failure-actions .btn { border-radius: 999px; }
 .run-failure-actions .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+/* "Continue with …" names a login: the buttons go under the words, wrapping on a narrow screen. */
+.run-failure-card.has-logins { flex-wrap: wrap; }
+.run-failure-card.has-logins .run-failure-text { flex-basis: 100%; }
+.run-failure-card.has-logins .run-failure-actions { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+.run-failure-continue { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-stop { display: block; width: 11px; height: 11px; border-radius: 2.5px; background: currentColor; }
 .message-progress .bubble { padding: 7px 11px; color: #343432; }
 .pending-queued .bubble { opacity: .7; }
