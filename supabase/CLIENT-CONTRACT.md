@@ -398,6 +398,10 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 
 ### Company memory (2) — C5, `20260930508000_memory_mode.sql`
 
+Not called by the web since 9 Nov 2026: the Memory section left Settings
+(Jonas: Shared context never went live). Every company runs on Agent notebooks;
+the RPCs stay for the runtime's gate.
+
 - `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
   `mode` (the company's choice: `notebooks`, Agent notebooks, the default, or
   `tree`, Shared context — Beta), `setAt` (null until first chosen),
