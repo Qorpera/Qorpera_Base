@@ -62,7 +62,7 @@ export interface FounderLive {
 	typedAt: number;
 }
 
-export type FoundingAction = "name" | "vision" | "role" | "ready" | "invite" | "remove" | "respond" | "start" | "close";
+export type FoundingAction = "name" | "vision" | "ready" | "invite" | "remove" | "respond" | "start" | "close";
 
 export interface FoundingState {
 	table?: CompanyFounding;
@@ -374,7 +374,7 @@ export class FoundingController {
 		return !(this.#unsaved?.() ?? false);
 	}
 
-	/** Actions run one after another, in the order they were made (a role saved as you click Ready,
+	/** Actions run one after another, in the order they were made (an idea saved as you click Ready,
 	 * then Ready). A changed table is read again and shown, never silently overwritten. */
 	#act(action: FoundingAction, run: (table: CompanyFounding) => Promise<CompanyFounding | null>): Promise<boolean> {
 		const next = this.#queue.then(() => this.#run(action, run));
@@ -414,10 +414,7 @@ export class FoundingController {
 
 	/** A text edit applies to the table as it is on the server: on a moved table it is sent again on
 	 * that table, with that table's other fields, so nobody else's edit is undone. */
-	#edit(
-		action: "name" | "vision" | "role",
-		run: (table: CompanyFounding) => Promise<CompanyFounding>,
-	): Promise<boolean> {
+	#edit(action: "name" | "vision", run: (table: CompanyFounding) => Promise<CompanyFounding>): Promise<boolean> {
 		return this.#act(action, async (table) => {
 			let base = table;
 			let next: CompanyFounding;
@@ -452,16 +449,7 @@ export class FoundingController {
 		);
 	}
 
-	setRole(role: string): Promise<boolean> {
-		const trimmed = role.trim();
-		return this.#edit("role", (table) =>
-			trimmed === table.seats.find((seat) => seat.userId === this.userId)?.role
-				? Promise.resolve(table)
-				: this.#founding.setRole(this.profileId, table.revision, trimmed),
-		);
-	}
-
-	/** Ready (or not) for the table you pressed it on. Your own edits queued before the press (a role
+	/** Ready (or not) for the table you pressed it on. Your own edits queued before the press (an idea
 	 * saved as you clicked) may move the revision; anyone else's change makes the server refuse it. */
 	async setReady(seenRevision: number, ready: boolean): Promise<void> {
 		// Ready means the table as you see it, your own words included: never while one of your saves failed.

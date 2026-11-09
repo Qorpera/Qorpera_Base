@@ -679,6 +679,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	resize: none; background: transparent; color: var(--text); font: 18px / 26px var(--font-sans); overflow-y: auto;
 }
 .hero-idea::placeholder { color: var(--text-soft); }
+/* The box itself shows focus; the field inside it draws no edge of its own (Jonas, 9 November 2026). */
+textarea.hero-idea:focus-visible { outline: none; }
 .hero-row { display: flex; align-items: center; gap: 10px; }
 .hero-invite {
 	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;
