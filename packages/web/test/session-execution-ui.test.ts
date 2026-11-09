@@ -8,6 +8,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WebExecutionConnections, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
+import type { HostedStaffExecutionActivity, PausedRun } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -2287,5 +2288,177 @@ describe("continuing a run that stopped at its login's usage limit", () => {
 		expect(reason(f.view)).toBe(
 			`${STOPPED} It does not move to another account. It can run again once the limit resets.`,
 		);
+	});
+});
+
+describe("a run waiting at its login's usage limit", () => {
+	const WAITS =
+		"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets";
+	const until = "2099-01-01T00:00:00.000Z";
+	const paused = (sponsorBindingId: string, extra: Partial<PausedRun> = {}): HostedStaffExecutionActivity => ({
+		runId: id(172),
+		staffAgentId: staff.id,
+		sourceKind: "wake",
+		jobStatus: "queued",
+		activity: "waiting",
+		paused: {
+			until,
+			sponsorBindingId,
+			requestedByUserId: userA.id,
+			paidByChatgptPlan: false,
+			paidWhileAway: true,
+			movable: true,
+			...extra,
+		},
+		updatedAt: timestamp,
+	});
+	/** The member's logins as the list reads them, each allowed to work while they are away unless said otherwise. */
+	const away = (
+		observed: NativeExecutionConnections,
+		extra: Record<string, unknown>[] = [],
+	): NativeExecutionConnections => ({
+		...observed,
+		connections: observed.connections.map((connection, index) => ({
+			...connection,
+			allowAutonomous: true,
+			...extra[index],
+		})),
+	});
+	const title = (view: ConversationView) => view.el.querySelector(".run-failure-title")?.textContent;
+	const reason = (view: ConversationView) => view.el.querySelector(".run-failure-reason")?.textContent;
+	const buttons = (view: ConversationView) =>
+		[...view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+	const continueButton = (view: ConversationView) =>
+		view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="continue-run"]');
+
+	it("offers the member whose login pays to move it, and moves the run itself with one click", async () => {
+		// The first login (connection id(90), binding id(100)) pays and is at its limit; the second has room.
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		const move = vi.spyOn(f.api, "movePausedRun").mockResolvedValue(undefined);
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		expect(reason(f.view)).toBe(
+			`${WAITS} (${fmtTime(until)}), or you can continue it now with another of your logins.`,
+		);
+		// Nothing to dismiss: the line goes when the run goes on.
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		continueButton(f.view)!.click();
+		await settle();
+		// The run itself moves and goes on there: no message is sent, so it never also comes back on the old login.
+		expect(move).toHaveBeenCalledExactlyOnceWith(id(172), id(91));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+	});
+
+	it("says so when the move is refused, and keeps the line", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		vi.spyOn(f.api, "movePausedRun").mockRejectedValue(new Error("This login cannot pay for this work now"));
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([paused(id(100))]);
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe("The work could not be moved. Try again.");
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+	});
+
+	it("offers nothing to anyone else, nor for a ChatGPT plan, nor without another login that can pay", async () => {
+		const f = setup(false, away(withUsage([0, 0])));
+		await settle();
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(buttons(f.view)).toEqual([]);
+		// Another member's login pays: the line names who can move it.
+		f.listConnections.mockResolvedValue(away(withUsage([40, 40])));
+		refresh();
+		await settle();
+		f.company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userB.id,
+						email: "b@example.invalid",
+						displayName: "Anna",
+						role: "contributor",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			activity: [paused(id(199), { requestedByUserId: userB.id })],
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${WAITS} (${fmtTime(until)}). Only Anna can continue it now with another of their logins.`,
+		);
+		expect(continueButton(f.view)).toBeNull();
+		// A ChatGPT plan's work stays on it, the member's own or not.
+		f.company.store.set({ activity: [paused(id(100), { paidByChatgptPlan: true })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(continueButton(f.view)).toBeNull();
+		f.company.store.set({ activity: [paused(id(199), { requestedByUserId: userB.id, paidByChatgptPlan: true })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		// Their own login, but they may not write here.
+		f.company.store.set({
+			team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } },
+			activity: [paused(id(100))],
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("offers only logins the move can use, and none for work that cannot move", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		// A routine's run, or one that no longer resumes: the cloud never moves it.
+		f.company.store.set({ activity: [paused(id(100), { movable: false })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(continueButton(f.view)).toBeNull();
+		// A login that may not work while the member is away never takes over a login that may.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { allowAutonomous: false }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+		// Never onto a ChatGPT plan.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { loginKind: "chatgpt_plan" }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("shows above an earlier failure, and the failure again once the run goes on", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		const earlier: HostedStaffExecutionActivity = {
+			runId: id(173),
+			staffAgentId: staff.id,
+			sourceKind: "wake",
+			jobStatus: "failed",
+			activity: "needs_attention",
+			superseded: true,
+			updatedAt: timestamp,
+		};
+		f.company.store.set({ activity: [earlier, paused(id(100))] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		// The reset passed: the run is the agent's work again, and the earlier failure keeps its own line.
+		f.company.store.set({ activity: [earlier, paused(id(100), { until: "2000-01-01T00:00:00.000Z" })] });
+		await settle();
+		expect(title(f.view)).toBe("An earlier run of Fixture agent did not finish");
 	});
 });

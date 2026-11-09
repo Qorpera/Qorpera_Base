@@ -549,15 +549,24 @@ export class SessionExecutionView {
 	}
 
 	/** The logins a run that stopped at its usage limit may go on with, from its card ("Continue with …"): those the
-	 * Login page lists, less the login that paid for the run. None unless that login is this member's own: only the
-	 * member whose login paid chooses where the work goes on, and only with their own logins that can pay now. */
-	continueLogins(sponsorBindingId: string | undefined): readonly SessionLogin[] {
+	 * Login page lists, less the login that paid for the run, and only those `accepts` takes (a move of a waiting run has
+	 * rules of its own). None unless that login is this member's own: only the member whose login paid chooses where the
+	 * work goes on, and only with their own logins that can pay now. */
+	continueLogins(
+		sponsorBindingId: string | undefined,
+		accepts: (connection: WebMemberConnection) => boolean = () => true,
+	): readonly SessionLogin[] {
+		const connections = this.#observed?.connections ?? [];
 		const paid = new Set(
-			(this.#observed?.connections ?? [])
+			connections
 				.filter((connection) => sponsorBindingId !== undefined && connection.sponsorBindingId === sponsorBindingId)
 				.map((connection) => connection.connectionId),
 		);
-		return paid.size ? this.logins.filter((login) => !paid.has(login.connectionId)) : [];
+		if (!paid.size) return [];
+		return this.logins.filter((login) => {
+			const connection = connections.find((candidate) => candidate.connectionId === login.connectionId);
+			return !paid.has(login.connectionId) && connection !== undefined && accepts(connection);
+		});
 	}
 
 	/** The member's pick of one of the logins `continueLogins` offers, for this conversation, as the Login page picks
