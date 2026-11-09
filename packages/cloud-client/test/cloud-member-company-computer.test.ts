@@ -103,6 +103,82 @@ describe("member Company Computer transport", () => {
 		}
 		await expect(f.client.agentComputer("not-an-id", signal)).rejects.toThrow();
 	});
+	it("lists the company's machines with their latest commands, ignoring fields it does not use", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const command = {
+			commandId: "4f0c2d1e-0000-0000-0000-000000000001",
+			command: "ls -la",
+			startedAt: "2026-11-09T10:00:00Z",
+			endedAt: null,
+			state: "running",
+			exitCode: null,
+		};
+		const machine = {
+			machineId: id(20),
+			name: "render",
+			purpose: "Render stills",
+			state: "running",
+			cpus: 2,
+			memoryGiB: 4,
+			diskGiB: 20,
+			image: "ubuntu",
+			lifetime: "task",
+			startedBy: { staffAgentId: id(5), runId: id(21), name: "Agent" },
+			node: "node01",
+			queuePosition: null,
+			waitingFor: null,
+			runningSince: "2026-11-09T09:59:00Z",
+			stoppedBy: null,
+			commandsRunning: 1,
+			lastError: null,
+			createdAt: "2026-11-09T09:58:00Z",
+			updatedAt: "2026-11-09T09:59:00Z",
+			commands: [command],
+			addedLater: true,
+		};
+		const reply = (machines: unknown[]) =>
+			f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.company-machines/v1", machines }));
+		reply([machine, { ...machine, machineId: id(22), purpose: null, startedBy: { staffAgentId: null } }]);
+		expect(await f.client.machines(signal)).toEqual([
+			{
+				machineId: id(20),
+				name: "render",
+				purpose: "Render stills",
+				state: "running",
+				startedByStaffAgentId: id(5),
+				waitingFor: null,
+				commandsRunning: 1,
+				createdAt: "2026-11-09T09:58:00Z",
+				commands: [
+					{
+						commandId: command.commandId,
+						command: "ls -la",
+						state: "running",
+						startedAt: command.startedAt,
+						exitCode: null,
+					},
+				],
+			},
+			expect.objectContaining({ machineId: id(22), purpose: null, startedByStaffAgentId: null }),
+		]);
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_list_company_machines");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({ p_profile_id: id(1) });
+		for (const bad of [
+			{ ...machine, machineId: "x" },
+			{ ...machine, name: "" },
+			{ ...machine, state: 3 },
+			{ ...machine, startedBy: { staffAgentId: "x" } },
+			{ ...machine, commandsRunning: -1 },
+			{ ...machine, commands: Array(21).fill(command) },
+			{ ...machine, commands: [{ ...command, exitCode: 1.5 }] },
+		]) {
+			reply([bad]);
+			await expect(f.client.machines(signal)).rejects.toThrow();
+		}
+		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.company-machines/v2", machines: [] }));
+		await expect(f.client.machines(signal)).rejects.toThrow();
+	});
 	it("pages exact ordered staff without granting access", async () => {
 		const f = fixture();
 		f.data.staff = Array.from({ length: 50 }, (_, n) => ({ staffAgentId: id(n + 10), name: `Agent ${n}` }));

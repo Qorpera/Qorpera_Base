@@ -56,6 +56,28 @@ const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
 	"denied",
 	"none",
 ];
+/** A machine an agent started for a job (qorpera_company_machines, migration 20260928259050): a whole VM
+ * with a shell and no screen. `state` is the company's view of it (qorpera_company_machine_state). */
+export interface MemberCompanyMachine {
+	machineId: string;
+	name: string;
+	purpose: string | null;
+	state: string;
+	startedByStaffAgentId: string | null;
+	/** Why a waiting machine has not started: NODE_CAPACITY_EXHAUSTED, COMPUTER_HOURS_EXHAUSTED or a node's refusal. */
+	waitingFor: string | null;
+	commandsRunning: number;
+	createdAt: string;
+	/** The newest commands first, at most 20. */
+	commands: { commandId: string; command: string; state: string; startedAt: string; exitCode: number | null }[];
+}
+function machineText(value: unknown, max: number): value is string {
+	return typeof value === "string" && value.length <= max;
+}
+function object(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid company machines");
+	return value as Record<string, unknown>;
+}
 function record(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("Invalid Company Computer response");
@@ -252,6 +274,69 @@ export class CloudMemberCompanyComputerClient {
 			placement: value.placement as MemberAgentComputerPlacement,
 			computer,
 		};
+	}
+	/** The company's machines, newest first, with each one's latest commands. Fields this
+	 * client does not use are ignored, so the list survives additions to the view. */
+	async machines(signal: AbortSignal): Promise<MemberCompanyMachine[]> {
+		const value = object(
+			(await this.#rpc("qorpera_list_company_machines", { p_profile_id: this.#options.companyId }, signal)).data,
+		);
+		if (
+			value.schema !== "qorpera.company-machines/v1" ||
+			!Array.isArray(value.machines) ||
+			value.machines.length > 1000
+		)
+			throw new Error("Invalid company machines");
+		return value.machines.map((input) => {
+			const row = object(input);
+			const started = row.startedBy === null ? null : object(row.startedBy).staffAgentId;
+			if (
+				typeof row.machineId !== "string" ||
+				!COMPANY_COMPUTER_UUID.test(row.machineId) ||
+				!machineText(row.name, 200) ||
+				!row.name ||
+				(row.purpose !== null && !machineText(row.purpose, 4000)) ||
+				!machineText(row.state, 40) ||
+				(started !== null && (typeof started !== "string" || !COMPANY_COMPUTER_UUID.test(started))) ||
+				(row.waitingFor !== null && !machineText(row.waitingFor, 200)) ||
+				!Number.isSafeInteger(row.commandsRunning) ||
+				(row.commandsRunning as number) < 0 ||
+				!machineText(row.createdAt, 64) ||
+				!Array.isArray(row.commands) ||
+				row.commands.length > 20
+			)
+				throw new Error("Invalid company machines");
+			const commands = row.commands.map((item) => {
+				const command = object(item);
+				if (
+					// The run's receipt id, written by the runtime: any uuid.
+					!machineText(command.commandId, 64) ||
+					!machineText(command.command, 4000) ||
+					!machineText(command.state, 40) ||
+					!machineText(command.startedAt, 64) ||
+					(command.exitCode !== null && !Number.isSafeInteger(command.exitCode))
+				)
+					throw new Error("Invalid company machines");
+				return {
+					commandId: command.commandId,
+					command: command.command,
+					state: command.state,
+					startedAt: command.startedAt,
+					exitCode: command.exitCode as number | null,
+				};
+			});
+			return {
+				machineId: row.machineId,
+				name: row.name,
+				purpose: row.purpose as string | null,
+				state: row.state,
+				startedByStaffAgentId: started as string | null,
+				waitingFor: row.waitingFor as string | null,
+				commandsRunning: row.commandsRunning as number,
+				createdAt: row.createdAt,
+				commands,
+			};
+		});
 	}
 	start(scope: CompanyComputerScope): CloudCompanyComputerStart {
 		return new CloudCompanyComputerStart(this.#scope(scope), (method, args, signal) =>
