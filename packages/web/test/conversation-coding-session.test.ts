@@ -578,6 +578,19 @@ describe("the coding pill on the wall's line", () => {
 		expect(conversation).toMatch(/\.thread-conversation \{[^}]*container: thread-conversation \/ inline-size;/);
 	});
 
+	it("lays the thread's foot over the messages, with everything its bands hold taking the pointer", () => {
+		expect(conversation).toMatch(/\.messages \{[^}]*padding: 16px 16px calc\(40px \+ var\(--thread-foot, 0px\)\);/);
+		// Every band passes the pointer through; whatever a band holds (a notice, the execution line's buttons, the pill,
+		// the composer's parts) takes it back, so no control is left out by a list.
+		expect(conversation).toContain(".thread-foot > * { pointer-events: none; }");
+		expect(conversation).toContain(".thread-foot > * > * { pointer-events: auto; }");
+		// The composer stands over the coding dock (z-index 6), so its menus open over the pill.
+		expect(conversation).toContain(".thread-foot .composer { position: relative; z-index: 7; }");
+		expect(conversation).toMatch(/\.coding-dock \{[^}]*z-index: 6;/);
+		// The Answering strip is measured inside the composer's shell: no margin of its own.
+		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-answer/);
+	});
+
 	it("leaves a single draft its own place while coding sessions go", () => {
 		const sharing = wall
 			.split("\n")

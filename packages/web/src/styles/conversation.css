@@ -33,8 +33,9 @@
 /* The thread's foot (notices, the wall, the coding pill, the composer) stands over the messages' last stretch with no
  * background of its own: the messages scroll on behind it, and only its controls are drawn, as frosted glass (Jonas,
  * 9 Nov 2026: "it should be transparant, with the widgets possibly being more glassy a-la apple style"). The view sets
- * --thread-foot to the foot's height, which the messages keep free under their last line. Only the controls take the
- * pointer, so a wheel or a click between them reaches the messages. */
+ * --thread-foot to the foot's height, which the messages keep free under their last line. Only what the foot's bands
+ * hold takes the pointer, so a wheel or a click between the controls reaches the messages: the bands themselves and the
+ * few full-width rows with nothing drawn (the wall's bar, the drafts' rows) pass it through. */
 .thread-foot {
 	--glass-bg: color-mix(in srgb, var(--bg) 72%, transparent);
 	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
@@ -42,9 +43,14 @@
 	--glass-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 6px 22px rgb(18 18 17 / 9%);
 	position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; pointer-events: none;
 }
-.thread-foot > *, .thread-foot .agent-wall-bar, .thread-foot .composer-drafts, .thread-foot .draft-notches { pointer-events: none; }
-.thread-foot :is(.notice, .company-notice, .run-failure-card, .agent-wall-toggle, .coding-pill, .composer-shell, .composer-answer, .composer-mention-note, .composer-quote-note, .draft-notch, .draft-panel, .draft-helpers, .draft-own-note),
+.thread-foot > * { pointer-events: none; }
+.thread-foot > * > * { pointer-events: auto; }
+.thread-foot :is(.agent-wall-bar, .composer-drafts, .draft-notches) { pointer-events: none; }
+.thread-foot :is(.agent-wall-toggle, .draft-notches > *, .composer-drafts > :not(.draft-notches)),
 .thread-foot .agent-wall:not(.is-folded) { pointer-events: auto; }
+/* The composer stands above the coding pill's dock, so its menus (models, skills, names) open over the pill: the shell's
+ * glass makes it a stacking context, which would hold the menus under the dock. */
+.thread-foot .composer { position: relative; z-index: 7; }
 .thread-foot :is(.notice, .company-notice, .run-failure-card, .composer-shell, .draft-notch, .draft-panel),
 .thread-foot .agent-wall.is-folded .agent-wall-toggle,
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) {
@@ -56,12 +62,17 @@
 .thread-foot .agent-wall.is-folded .agent-wall-toggle:hover { background: color-mix(in srgb, var(--text) 6%, var(--glass-bg)); }
 /* Open, the wall is a frosted sheet over the messages, its rows on the glass. */
 .thread-foot .agent-wall:not(.is-folded) { border-radius: 20px 20px 0 0; background: var(--glass-bg); box-shadow: 0 -1px 0 var(--glass-edge), 0 -8px 28px rgb(18 18 17 / 8%); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
-/* A line of words alone (the answer it writes, a note under the field) gets a glass chip of its own to be read on. */
-.thread-foot :is(.composer-answer, .composer-mention-note, .composer-quote-note, .draft-helpers, .draft-own-note) {
+/* A line of words alone (a note under the field, the drafts' helpers) gets a glass chip of its own to be read on, and the
+ * run's execution line (its login picker, a send to start again) a glass card. The Answering strip is inside the
+ * composer's own glass. */
+.thread-foot :is(.composer-mention-note, .composer-quote-note, .attachment-status:not(:empty), .draft-helpers, .draft-own-note, .thread-status > p) {
 	width: fit-content; max-width: 100%; box-sizing: border-box; padding: 3px 9px; border-radius: 12px; background: var(--glass-bg);
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
-.thread-foot .composer-answer { width: auto; margin-bottom: 8px; padding: 6px 6px 6px 9px; border-radius: 14px; box-shadow: var(--glass-shadow); }
+.thread-foot .session-execution:not(:empty) {
+	margin: 6px 0; padding: 6px 12px; border: 1px solid var(--glass-edge); border-radius: 14px; background: var(--glass-bg); box-shadow: var(--glass-shadow);
+	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+}
 @media (forced-colors: active) { .thread-foot * { -webkit-backdrop-filter: none; backdrop-filter: none; } }
 .messages-log, .thread-older { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .messages-log { flex: 1 0 auto; }
