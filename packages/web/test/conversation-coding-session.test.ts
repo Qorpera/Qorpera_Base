@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
@@ -555,5 +557,33 @@ describe("coding sessions in the thread", () => {
 		expect(
 			f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill-summary .coding-pill-note")?.dataset.tone,
 		).toBe("working");
+	});
+});
+
+describe("the coding pill on the wall's line", () => {
+	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here (checked in headless Chrome at 600, 680
+	// and 1200px for PR #1557).
+	const conversation = readFileSync(resolve("src/styles/conversation.css"), "utf8");
+	const wall = readFileSync(resolve("src/styles/agent-wall.css"), "utf8");
+
+	it("joins the wall's line only on a wide thread, narrow only while folded", () => {
+		const shared =
+			conversation.match(/@container thread-conversation \(min-width: 680px\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(shared).toContain(".agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }");
+		// Unfolded (hover, focus or a tap) it keeps its usual width over the wall's button.
+		expect(shared).toContain(
+			'.coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }',
+		);
+		expect(shared).toContain(".agent-wall-toggle { max-width: 300px; }");
+		expect(conversation).toMatch(/\.thread-conversation \{[^}]*container: thread-conversation \/ inline-size;/);
+	});
+
+	it("leaves a single draft its own place while coding sessions go", () => {
+		const sharing = wall
+			.split("\n")
+			.filter((line) => line.includes(".composer-drafts") && line.includes(".agent-wall"));
+		expect(sharing.length).toBeGreaterThanOrEqual(4);
+		for (const line of sharing) expect(line).toContain(".coding-dock[hidden] + .composer");
+		expect(wall).not.toMatch(/\.agent-wall[^{]*~ \.composer/);
 	});
 });

@@ -858,11 +858,13 @@
 .coding-pill-action .icon { width: 11px; height: 11px; }
 /* Under an agent's wall, the pill takes the wall's line instead of one of its own: it sits at the line's left, level
  * with the wall's centred button (Jonas, 9 Nov 2026). The wall's bar is the wall's last 32px, so a dock of no height
- * right under it puts the pill's foot on the bar's. Each keeps to its own half: the pill ends 160px short of the
- * middle and the button is at most 300px wide. On a narrow thread the two stack, the pill on its own line. */
+ * right under it puts the pill's foot on the bar's. Each keeps to its own half: the folded pill ends 160px short of
+ * the middle and the button is at most 300px wide; unfolded, the pill takes its usual width over the button. A single
+ * draft then keeps its own place above the composer (agent-wall.css). On a narrow thread the two stack, the pill on its
+ * own line. */
 @container thread-conversation (min-width: 680px) {
 	.agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }
-	.agent-wall:not([hidden]) + .coding-dock .coding-pill { width: min(300px, calc(50% - 160px)); }
+	.agent-wall:not([hidden]) + .coding-dock .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }
 	.agent-wall:has(+ .coding-dock:not([hidden])) .agent-wall-toggle { max-width: 300px; }
 }
 @media (forced-colors: active) { .coding-pill { border: 1px solid CanvasText; } }
