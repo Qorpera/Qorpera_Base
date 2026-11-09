@@ -10,6 +10,7 @@ import {
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
+import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
@@ -335,6 +336,10 @@ interface RailParts {
 	/** The route the drawer was last opened for: an interface's page opens it once. */
 	appsRoute: string;
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
+	/** The member's own order of the drawer's icons, by key, as last dragged on this device (empty: the default). */
+	appsOrder: readonly string[];
+	/** Dragging the drawer's icons to reorder them. */
+	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
@@ -393,6 +398,24 @@ interface HiddenParts {
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
+/** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
+const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
+function storedAppsOrder(profileId: string): string[] {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(`${APPS_ORDER_KEY}:${profileId}`) ?? "[]");
+		return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+	} catch {
+		return [];
+	}
+}
+function storeAppsOrder(profileId: string, order: readonly string[]): void {
+	try {
+		localStorage.setItem(`${APPS_ORDER_KEY}:${profileId}`, JSON.stringify(order));
+	} catch {
+		/* The order lasts this view. */
+	}
+}
+
 function storedAppsOpen(profileId: string): boolean {
 	try {
 		return localStorage.getItem(`${APPS_OPEN_KEY}:${profileId}`) === "1";
@@ -557,6 +580,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOpen: storedAppsOpen(company.profile.profileId),
 			appsRoute: "",
 			interfaceRows: new Map(),
+			appsOrder: storedAppsOrder(company.profile.profileId),
+			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
 			add,
@@ -592,6 +617,19 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			redraw,
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
+		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
+		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
+			appsGrid,
+			() => ({
+				canDrag: () => created.appsOpen && !created.apps.inert,
+				drop: (order) => {
+					created.appsOrder = order;
+					storeAppsOrder(company.profile.profileId, order);
+					created.redraw();
+				},
+			}),
+			company.signal,
+		);
 		// The four windows open or close the interfaces; the choice is kept for this company on this device.
 		apps.addEventListener(
 			"click",
@@ -1381,7 +1419,7 @@ function drawInterfaces(
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
 	let waiting = 0;
-	const elements = shown.map((entry, index) => {
+	const elements = shown.map((entry) => {
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
@@ -1389,7 +1427,7 @@ function drawInterfaces(
 		const kept = parts.interfaceRows.get(name);
 		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
 		rows.set(name, { shown: model, element });
-		element.style.setProperty("--i", String(index));
+		element.dataset.appKey = name;
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1405,7 +1443,7 @@ function drawInterfaces(
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		element.dataset.appKey = key;
 		element.classList.toggle("active", app.name === activeApp);
 		if (app.name === activeApp) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1418,7 +1456,7 @@ function drawInterfaces(
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId), concepts);
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		element.dataset.appKey = key;
 		const open = route.name === "company" && route.section === "concepts";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
@@ -1426,7 +1464,10 @@ function drawInterfaces(
 		elements.push(element);
 	}
 	parts.interfaceRows = rows;
-	reconcile(parts.appsGrid, elements);
+	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
+	for (const [index, element] of ordered.entries()) element.style.setProperty("--i", String(index));
+	// A lifted icon keeps the order the drag shows; the drop draws the drawer afresh.
+	if (!parts.appsDrag.dragging) reconcile(parts.appsGrid, ordered);
 	const dot = waiting > 0 && !parts.appsOpen;
 	parts.apps.classList.toggle("has-waiting", dot);
 	const label = dot ? `${t("Apps")}, ${t("{count} waiting", { count: waiting })}` : t("Apps");
