@@ -88,6 +88,32 @@ select pg_temp.refused('{"member": "Nobody", "agents": ["Bob"]}', '22023', 'The 
 select pg_temp.refused('{"member": "Admin", "agents": ["Zed"]}', '22023', 'no agent called Zed');
 select pg_temp.refused('{"member": "Admin", "agents": []}', '22023', 'a list of 1 to 20 agents');
 
+-- Two agents with one name are named by id: the name refuses, listing both; the id offers.
+update public.qorpera_profile_staff set display_name = 'Bob'
+where profile_id = '92400000-0000-4000-8000-000000000010' and display_name = 'Carol';
+select pg_temp.refused('{"member": "Admin Four", "agents": ["Bob"]}', '22023', '2 agents are called Bob');
+do $$
+declare v jsonb;
+begin
+	v := public.qorpera_cofounder_crew(current_setting('qorpera_test.base_binding')::jsonb);
+	if (select count(*) from jsonb_array_elements(v -> 'agents') a where a ->> 'name' = 'Bob' and (a ->> 'sameName')::boolean) <> 2
+		then raise exception 'the crew read does not mark two agents of one name: %', v -> 'agents'; end if;
+end $$;
+update public.qorpera_profile_staff set display_name = 'Carol'
+where profile_id = '92400000-0000-4000-8000-000000000010' and display_name = 'Bob'
+	and staff_agent_id <> '92400000-0000-4000-8000-000000000031';
+
+-- An offer holds the company's members before it reads them, as a member's ask does (1193 shows a departure then waits
+-- for it): the hold comes before the member lookup in its body.
+do $$
+declare v_body text := pg_get_functiondef('public.qorpera_offer_agents_to_member(jsonb,jsonb)'::regprocedure);
+begin
+	if position('qorpera_works_for_hold_members(v_run.profile_id)' in v_body) = 0
+		or position('qorpera_works_for_hold_members(v_run.profile_id)' in v_body)
+			> position('from public.qorpera_profile_members as m' in v_body) then
+		raise exception 'the offer reads the members before holding them'; end if;
+end $$;
+
 -- 6. A run of an agent that is not the Co-Founder deals nothing.
 set local session_replication_role = replica;
 update public.qorpera_company_cofounders set staff_agent_id = '92400000-0000-4000-8000-000000000033'
