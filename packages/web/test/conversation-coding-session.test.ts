@@ -233,7 +233,7 @@ describe("coding sessions in the thread", () => {
 		// Nothing of it in the header: the dock stands right above the composer.
 		expect(f.view.el.querySelector(".thread-header .coding-pill, .thread-header .coding-badge")).toBeNull();
 		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .coding-dock")!;
-		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
 		expect(dock.hidden).toBe(false);
 		// Only the session still going, and alone it is the pill's one line.
 		expect(dock.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);

@@ -800,8 +800,10 @@ export class ConversationView {
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
-			this.#coding.el,
+			// The wall before the coding sessions: with both showing, the sessions' pill sits on the wall's own line,
+			// level with its button (conversation.css).
 			this.#wall.el,
+			this.#coding.el,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);

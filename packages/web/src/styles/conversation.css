@@ -24,7 +24,7 @@
 .thread-presence-more { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 14px; background: var(--pane-strong); box-shadow: 0 0 0 2px var(--header-surface); color: var(--text-muted); font-size: 11px; font-weight: 600; }
 @keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; container: thread-body / inline-size; }
-.thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; container: thread-conversation / inline-size; }
 /* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
 .messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
 /* The live log (what a screen reader hears as new) and, above it, the older items "Show earlier"
@@ -844,11 +844,11 @@
 .coding-pill-faces { display: flex; flex: none; gap: 3px; }
 .coding-pill-face { position: relative; display: block; flex: none; width: 20px; height: 20px; }
 .coding-pill-face .figure { width: 100%; height: 100%; }
-.coding-pill-face .coding-badge { right: -3px; bottom: -2px; width: 10px; height: 10px; border-width: 1.25px; border-color: var(--bg); }
-.coding-pill-face .coding-badge svg { width: 6px; height: 6px; }
+.coding-pill-face .coding-badge { right: -4px; bottom: -3px; width: 11px; height: 11px; border-width: 1.25px; border-color: var(--bg); }
+.coding-pill-face .coding-badge svg { width: 7px; height: 7px; }
 .coding-pill-row .coding-pill-face { width: 24px; height: 24px; }
-.coding-pill-row .coding-pill-face .coding-badge { width: 11px; height: 11px; }
-.coding-pill-row .coding-pill-face .coding-badge svg { width: 6.5px; height: 6.5px; }
+.coding-pill-row .coding-pill-face .coding-badge { width: 12px; height: 12px; }
+.coding-pill-row .coding-pill-face .coding-badge svg { width: 7.5px; height: 7.5px; }
 .coding-pill-label, .coding-pill-title { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .coding-pill-note, .coding-pill-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .coding-pill-note[data-tone="attention"], .coding-pill-row[data-tone="attention"] .coding-pill-status { color: #8a5a00; }
@@ -856,6 +856,15 @@
 .coding-pill-action { display: inline-flex; flex: none; align-items: center; gap: 1px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .coding-pill-row[data-tone="attention"] .coding-pill-action, .coding-pill-note[data-tone="attention"] ~ .coding-pill-action { color: var(--blue); font-weight: 600; }
 .coding-pill-action .icon { width: 11px; height: 11px; }
+/* Under an agent's wall, the pill takes the wall's line instead of one of its own: it sits at the line's left, level
+ * with the wall's centred button (Jonas, 9 Nov 2026). The wall's bar is the wall's last 32px, so a dock of no height
+ * right under it puts the pill's foot on the bar's. Each keeps to its own half: the pill ends 160px short of the
+ * middle and the button is at most 300px wide. On a narrow thread the two stack, the pill on its own line. */
+@container thread-conversation (min-width: 680px) {
+	.agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }
+	.agent-wall:not([hidden]) + .coding-dock .coding-pill { width: min(300px, calc(50% - 160px)); }
+	.agent-wall:has(+ .coding-dock:not([hidden])) .agent-wall-toggle { max-width: 300px; }
+}
 @media (forced-colors: active) { .coding-pill { border: 1px solid CanvasText; } }
 @media (prefers-reduced-motion: reduce) { .coding-pill, .coding-pill-row, .coding-pill-summary > .icon { transition: none; } }
 /* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
