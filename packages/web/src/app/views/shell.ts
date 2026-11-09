@@ -625,8 +625,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				drop: (order) => {
 					created.appsOrder = order;
 					storeAppsOrder(company.profile.profileId, order);
-					created.redraw();
 				},
+				// Whatever changed while an icon was lifted draws now, the order kept or not.
+				end: () => created.redraw(),
 			}),
 			company.signal,
 		);
@@ -1466,7 +1467,7 @@ function drawInterfaces(
 	parts.interfaceRows = rows;
 	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
 	for (const [index, element] of ordered.entries()) element.style.setProperty("--i", String(index));
-	// A lifted icon keeps the order the drag shows; the drop draws the drawer afresh.
+	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
 	if (!parts.appsDrag.dragging) reconcile(parts.appsGrid, ordered);
 	const dot = waiting > 0 && !parts.appsOpen;
 	parts.apps.classList.toggle("has-waiting", dot);

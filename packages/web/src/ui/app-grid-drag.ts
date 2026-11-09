@@ -3,7 +3,8 @@
  * way for it, gliding to their new places, and letting go keeps the order it shows. A press that never moves stays a
  * click, Escape puts everything back, and touch scrolls as before. Alt with an arrow moves the focused icon one place,
  * the keyboard's twin of the drag. The icons carry `data-app-key`; the hooks say whether a drag may start and are told
- * the new order. */
+ * the new order. While an icon is lifted the pointer is matched against the grid's places as they stood when it was
+ * lifted, never against icons still gliding, so a swap never undoes itself. */
 
 import { matchesKey } from "./keys.ts";
 import { easing, reducedMotion } from "./motion.ts";
@@ -14,6 +15,8 @@ export interface AppGridDragHooks {
 	readonly canDrag: () => boolean;
 	/** The icons' keys in their new order, after a drag or a keyboard move that changed it. */
 	readonly drop: (order: string[]) => void;
+	/** A drag ended, however it ended (dropped, put back, given up): what the drawer held back meanwhile may draw. */
+	readonly end: () => void;
 }
 
 const ITEM = "[data-app-key]";
@@ -59,14 +62,22 @@ function moveGliding(grid: HTMLElement, item: HTMLElement, before: Element | nul
 }
 
 interface Drag {
-	readonly item: HTMLElement;
+	/** The pressed icon's key: a redraw before the lift may have replaced its element. */
+	readonly key: string;
 	readonly pointerId: number;
 	readonly start: { x: number; y: number };
-	/** Where the pointer held the icon, from its top left corner. */
-	offset?: { x: number; y: number };
-	/** The order before the drag, to put back on Escape. */
-	readonly before: string[];
+	lifted?: {
+		readonly item: HTMLElement;
+		/** Where the pointer held the icon, from its top left corner. */
+		readonly offset: { x: number; y: number };
+		/** The grid's places at the lift, by index, before anything glides. */
+		readonly slots: readonly DOMRect[];
+		/** The order at the lift, to put back on Escape. */
+		readonly before: readonly string[];
+	};
 }
+
+const inside = (r: DOMRect, x: number, y: number) => x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 
 /** Makes the icons in `grid` reorderable. Listeners live until `signal` aborts. */
 export class AppGridDrag {
@@ -89,6 +100,8 @@ export class AppGridDrag {
 		document.addEventListener("pointermove", (event) => this.#move(event), { signal });
 		document.addEventListener("pointerup", (event) => this.#release(event), { signal });
 		document.addEventListener("pointercancel", () => this.cancel(), { signal });
+		// Switching to another window mid-drag: the release may never reach this page.
+		window.addEventListener("blur", () => this.cancel(), { signal });
 		document.addEventListener(
 			"keydown",
 			(event) => {
@@ -104,20 +117,21 @@ export class AppGridDrag {
 
 	/** Whether an icon is lifted now: the drawer is not drawn afresh meanwhile. */
 	get dragging(): boolean {
-		return this.#drag?.offset !== undefined;
+		return this.#drag?.lifted !== undefined;
 	}
 
-	/** Puts every icon back where it stood before the drag. */
+	/** Puts every icon back where it stood at the lift, and drops a press not lifted yet. */
 	cancel(): void {
-		const drag = this.#drag;
+		const lifted = this.#drag?.lifted;
 		this.#drag = undefined;
-		if (!drag?.offset) return;
+		if (!lifted) return;
 		const byKey = new Map(itemsIn(this.#grid).map((item) => [keyOf(item), item]));
-		for (const key of drag.before) {
+		for (const key of lifted.before) {
 			const item = byKey.get(key);
 			if (item) this.#grid.append(item);
 		}
-		this.#settle(drag.item);
+		this.#settle(lifted.item);
+		this.#hooks().end();
 	}
 
 	#press(event: PointerEvent): void {
@@ -125,48 +139,52 @@ export class AppGridDrag {
 			return;
 		const item = (event.target as Element).closest?.<HTMLElement>(ITEM);
 		if (!item || item.parentElement !== this.#grid || !this.#hooks().canDrag()) return;
-		this.#drag = {
-			item,
-			pointerId: event.pointerId,
-			start: { x: event.clientX, y: event.clientY },
-			before: gridOrder(this.#grid),
-		};
+		this.#drag = { key: keyOf(item), pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY } };
 	}
 
 	#move(event: PointerEvent): void {
 		const drag = this.#drag;
 		if (!drag || event.pointerId !== drag.pointerId) return;
-		if (!drag.offset) {
+		// The button came up where this page could not hear it (another window, a lost release).
+		if ((event.buttons & 1) === 0) {
+			this.cancel();
+			return;
+		}
+		if (!drag.lifted) {
 			const far = Math.hypot(event.clientX - drag.start.x, event.clientY - drag.start.y);
 			if (far < THRESHOLD * uiScale()) return;
-			const rect = drag.item.getBoundingClientRect();
-			drag.offset = { x: drag.start.x - rect.left, y: drag.start.y - rect.top };
-			drag.item.classList.add("is-lifted");
+			// The icon as it stands now: a redraw since the press may have rebuilt it, or taken it away.
+			const items = itemsIn(this.#grid);
+			const item = items.find((candidate) => keyOf(candidate) === drag.key);
+			if (!item || !this.#hooks().canDrag()) {
+				this.#drag = undefined;
+				return;
+			}
+			const rect = item.getBoundingClientRect();
+			drag.lifted = {
+				item,
+				offset: { x: drag.start.x - rect.left, y: drag.start.y - rect.top },
+				slots: items.map((candidate) => candidate.getBoundingClientRect()),
+				before: items.map(keyOf),
+			};
+			item.classList.add("is-lifted");
 			this.#grid.classList.add("is-sorting");
 		}
 		event.preventDefault();
-		// The icon over which the pointer stands takes the dragged one's place.
-		const over = itemsIn(this.#grid).find((other) => {
-			if (other === drag.item) return false;
-			const r = other.getBoundingClientRect();
-			return (
-				event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom
-			);
-		});
-		if (over) {
-			const items = itemsIn(this.#grid);
-			const forward = items.indexOf(over) > items.indexOf(drag.item);
-			moveGliding(this.#grid, drag.item, forward ? over.nextElementSibling : over);
-		}
-		this.#follow(drag, event.clientX, event.clientY);
+		const { item, slots } = drag.lifted;
+		// The place under the pointer is the icon's new place.
+		const target = slots.findIndex((slot) => inside(slot, event.clientX, event.clientY));
+		const others = itemsIn(this.#grid).filter((other) => other !== item);
+		if (target >= 0 && others.length + 1 === slots.length && itemsIn(this.#grid).indexOf(item) !== target)
+			moveGliding(this.#grid, item, others[target] ?? null);
+		this.#follow(drag.lifted, event.clientX, event.clientY);
 	}
 
 	/** Keeps the lifted icon under the pointer, inside the grid. */
-	#follow(drag: Drag, x: number, y: number): void {
-		const item = drag.item;
-		const offset = drag.offset!;
-		item.style.translate = "";
-		const slot = item.getBoundingClientRect();
+	#follow(lifted: NonNullable<Drag["lifted"]>, x: number, y: number): void {
+		const { item, offset, slots } = lifted;
+		const slot = slots[itemsIn(this.#grid).indexOf(item)];
+		if (!slot) return;
 		const frame = this.#grid.getBoundingClientRect();
 		const left = Math.min(Math.max(x - offset.x, frame.left), frame.right - slot.width);
 		const top = Math.min(Math.max(y - offset.y, frame.top), frame.bottom - slot.height);
@@ -177,7 +195,8 @@ export class AppGridDrag {
 		const drag = this.#drag;
 		if (!drag || event.pointerId !== drag.pointerId) return;
 		this.#drag = undefined;
-		if (!drag.offset) return;
+		const lifted = drag.lifted;
+		if (!lifted) return;
 		// The press moved, so the click that follows it is no click. A release off the icon brings no click, so the
 		// guard ends with this task rather than eating the next real one.
 		const guard = new AbortController();
@@ -191,9 +210,11 @@ export class AppGridDrag {
 			{ capture: true, signal: guard.signal },
 		);
 		setTimeout(() => guard.abort(), 0);
-		this.#settle(drag.item);
+		this.#settle(lifted.item);
 		const order = gridOrder(this.#grid);
-		if (order.join("\n") !== drag.before.join("\n")) this.#hooks().drop(order);
+		const hooks = this.#hooks();
+		if (order.join("\n") !== lifted.before.join("\n")) hooks.drop(order);
+		hooks.end();
 	}
 
 	/** The lifted icon glides into its place and is an ordinary icon again. */
@@ -221,6 +242,8 @@ export class AppGridDrag {
 		if (!target) return;
 		moveGliding(this.#grid, item, earlier ? target : target.nextElementSibling);
 		item.focus({ preventScroll: true });
-		this.#hooks().drop(gridOrder(this.#grid));
+		const hooks = this.#hooks();
+		hooks.drop(gridOrder(this.#grid));
+		hooks.end();
 	}
 }

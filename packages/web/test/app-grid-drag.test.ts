@@ -34,16 +34,29 @@ function grid(keys: readonly string[]) {
 function setup(keys: readonly string[], canDrag = () => true) {
 	const element = grid(keys);
 	const drops: string[][] = [];
-	const drag = new AppGridDrag(element, () => ({ canDrag, drop: (order) => drops.push(order) }), stop.signal);
+	let ends = 0;
+	const drag = new AppGridDrag(
+		element,
+		() => ({ canDrag, drop: (order) => drops.push(order), end: () => ends++ }),
+		stop.signal,
+	);
 	return {
 		element,
 		drops,
 		drag,
+		ends: () => ends,
 		icon: (key: string) => element.querySelector<HTMLElement>(`[data-app-key="${key}"]`)!,
 	};
 }
 
-const pointer = (type: string, x: number, y: number, target: EventTarget = document) =>
+/** A mouse event as a browser sends it: the button is held from the press until the release. */
+const pointer = (
+	type: string,
+	x: number,
+	y: number,
+	target: EventTarget = document,
+	buttons = type === "pointerup" ? 0 : 1,
+) =>
 	target.dispatchEvent(
 		new PointerEvent(type, {
 			bubbles: true,
@@ -51,6 +64,7 @@ const pointer = (type: string, x: number, y: number, target: EventTarget = docum
 			pointerId: 1,
 			pointerType: "mouse",
 			button: 0,
+			buttons,
 			clientX: x,
 			clientY: y,
 		}),
@@ -186,5 +200,94 @@ describe("the apps drawer's order", () => {
 		// Without Alt an arrow is the page's own.
 		document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
 		expect(gridOrder(element)).toEqual(["members", "mailbox", "bank"]);
+	});
+
+	it("never undoes a swap while the icon it passed is still gliding away from under the pointer", () => {
+		const { element, drops, icon } = setup(["mailbox", "members", "bank"]);
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 75, 30);
+		expect(gridOrder(element)).toEqual(["members", "mailbox", "bank"]);
+		// Mid-glide, Members' box is still where it came from, under the pointer.
+		vi.spyOn(icon("members"), "getBoundingClientRect").mockReturnValue(new DOMRect(50, 0, 50, 60));
+		pointer("pointermove", 77, 31);
+		pointer("pointermove", 79, 32);
+		expect(gridOrder(element)).toEqual(["members", "mailbox", "bank"]);
+		pointer("pointerup", 79, 32);
+		expect(drops).toEqual([["members", "mailbox", "bank"]]);
+	});
+
+	it("lifts the icon as it stands now when the drawer redrew it between the press and the lift", () => {
+		const { element, drops, drag, icon } = setup(["mailbox", "members", "bank"]);
+		const pressed = icon("mailbox");
+		pointer("pointerdown", 25, 30, pressed);
+		// A new badge rebuilds the Mailbox icon before the pointer has moved far.
+		const rebuilt = h("a", { class: "rail-app", href: "#/mailbox", "data-app-key": "mailbox" }, "mailbox 1");
+		vi.spyOn(rebuilt, "getBoundingClientRect").mockImplementation(() => {
+			const index = [...element.children].indexOf(rebuilt);
+			return new DOMRect((index % 4) * 50, Math.floor(index / 4) * 60, 50, 60);
+		});
+		pressed.replaceWith(rebuilt);
+		pointer("pointermove", 125, 30);
+		expect(drag.dragging).toBe(true);
+		expect(rebuilt.classList.contains("is-lifted")).toBe(true);
+		expect(pressed.isConnected).toBe(false);
+		expect(gridOrder(element)).toEqual(["members", "bank", "mailbox"]);
+		pointer("pointerup", 125, 30);
+		expect(drops).toEqual([["members", "bank", "mailbox"]]);
+	});
+
+	it("gives up a press whose icon a redraw took away before the lift", () => {
+		const { element, drag, drops, ends, icon } = setup(["mailbox", "members"]);
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		icon("mailbox").remove();
+		pointer("pointermove", 75, 30);
+		expect(drag.dragging).toBe(false);
+		expect(gridOrder(element)).toEqual(["members"]);
+		pointer("pointerup", 75, 30);
+		expect(drops).toEqual([]);
+		expect(ends()).toBe(0);
+	});
+
+	it("tells the drawer every time a drag ends, so what it held back draws, kept order or not", () => {
+		const { drops, ends, icon } = setup(["mailbox", "members", "bank"]);
+		// Lifted and let go where it started: no new order, but the end.
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 35, 30);
+		pointer("pointerup", 35, 30);
+		expect(drops).toEqual([]);
+		expect(ends()).toBe(1);
+		// Put back with Escape.
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 125, 30);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(ends()).toBe(2);
+		// Dropped in a new place.
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 75, 30);
+		pointer("pointerup", 75, 30);
+		expect(drops).toEqual([["members", "mailbox", "bank"]]);
+		expect(ends()).toBe(3);
+	});
+
+	it("puts everything back when the window loses focus mid-drag, or the button came up unheard", () => {
+		const { element, drag, drops, ends, icon } = setup(["mailbox", "members", "bank"]);
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 125, 30);
+		window.dispatchEvent(new Event("blur"));
+		expect(drag.dragging).toBe(false);
+		expect(gridOrder(element)).toEqual(["mailbox", "members", "bank"]);
+		expect(icon("mailbox").classList.contains("is-lifted")).toBe(false);
+		expect(ends()).toBe(1);
+		// Back in the window with the button already up: the next move ends it too.
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 125, 30);
+		pointer("pointermove", 130, 30, document, 0);
+		expect(drag.dragging).toBe(false);
+		expect(gridOrder(element)).toEqual(["mailbox", "members", "bank"]);
+		// Later moves reorder nothing.
+		pointer("pointermove", 75, 30);
+		expect(gridOrder(element)).toEqual(["mailbox", "members", "bank"]);
+		expect(drops).toEqual([]);
+		expect(ends()).toBe(2);
 	});
 });
