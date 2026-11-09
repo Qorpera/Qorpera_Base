@@ -563,7 +563,7 @@ describe("what a member sees before answering, and who did what", () => {
 		});
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
 		const line = lines(main)[0]!;
-		expect(line.querySelector("a.mailbox-open")?.getAttribute("href")).toBe(
+		expect(line.querySelector("a.mailbox-open")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${ada.id}`,
 		);
 		expect(line.querySelector(".mailbox-who")?.textContent).toBe("new@outside.example");

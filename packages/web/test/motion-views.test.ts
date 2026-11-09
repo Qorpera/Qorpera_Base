@@ -101,7 +101,7 @@ describe("rail rows that come back", () => {
 		const hired = { ...staff, id: "33333333-3333-4333-8333-000000000098", displayName: "New hire" };
 		company.store.set({ staff: [staff, second, hired] });
 		draw();
-		const row = rail.querySelector(`a[href$="/staff/${hired.id}"]`);
+		const row = rail.querySelector(`a[data-href$="/staff/${hired.id}"]`);
 		expect(row?.classList.contains("is-hired")).toBe(true);
 		expect(rail.querySelectorAll(".is-hired")).toHaveLength(1);
 	});

@@ -97,7 +97,9 @@ export class PairTranscriptView {
 				}
 				if (event.key !== "Tab") return;
 				const controls = [
-					...this.sheet.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), [tabindex='0']"),
+					...this.sheet.querySelectorAll<HTMLElement>(
+						"a[href], a[data-href], button:not(:disabled), [tabindex='0']",
+					),
 				];
 				const first = controls[0];
 				const last = controls[controls.length - 1];

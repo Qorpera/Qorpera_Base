@@ -625,7 +625,7 @@ it("reads notices for the company workspace without any popup, also across an ac
 	// The line belongs to an open conversation (above its composer); nothing floats over the app.
 	expect(root.querySelector(".notification-stack, .notification-card")).toBeNull();
 	expect(root.textContent).not.toContain("company computers are in use");
-	expect(root.querySelector('a[href$="/notifications"]')).toBeNull();
+	expect(root.querySelector('a[data-href$="/notifications"]')).toBeNull();
 	transport.mockImplementation(async () => Response.json([]));
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);

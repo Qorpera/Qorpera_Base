@@ -173,7 +173,7 @@ function eraseFailure(error: unknown, what: EraseLine["what"]): string {
 }
 
 /** Elements that hold a handler of their own or what the member typed or opened. */
-const INTERACTIVE = "button, input, select, textarea, a[href], details, [contenteditable]";
+const INTERACTIVE = "button, input, select, textarea, a[href], a[data-href], details, [contenteditable]";
 
 /** An element without controls: nothing in it acts on what it showed when it was drawn. */
 function inert(element: Element): boolean {
@@ -1236,7 +1236,10 @@ export class ConversationView {
 			(element.contains(selection.anchorNode) || element.contains(selection.focusNode))
 				? selection.toString()
 				: "";
-		if (!keyboard && (target.closest("a[href], img, video, audio, .received-attachments") || (!touch && selected)))
+		if (
+			!keyboard &&
+			(target.closest("a[href], a[data-href], img, video, audio, .received-attachments") || (!touch && selected))
+		)
 			return;
 		event.preventDefault();
 		const { item, author, mine } = drawn;

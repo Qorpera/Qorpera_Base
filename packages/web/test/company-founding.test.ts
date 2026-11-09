@@ -801,7 +801,7 @@ describe("hub with founding tables", () => {
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
 		expect(visibleText(container)).toContain("From idea to company.");
 		expect(visibleText(container)).toContain("Bo saved you a seat at Havn.");
-		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("href")).toBe(
+		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("data-href")).toBe(
 			`#/found/${id(902)}`,
 		);
 		await hub.createCompany("Nordlys Kaffe");
@@ -914,7 +914,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(visibleText(container)).toContain("Pick a company.");
 		const tiles = [...container.querySelectorAll<HTMLAnchorElement>("a.company-card")].map((tile) => [
 			tile.querySelector(".company-name")?.textContent,
-			tile.getAttribute("href"),
+			tile.getAttribute("data-href"),
 		]);
 		expect(tiles).toEqual([
 			[profileA.profileName, `#/c/${profileA.profileId}`],

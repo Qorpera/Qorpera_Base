@@ -571,7 +571,7 @@ describe("agent pages", () => {
 		await settle();
 		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
 		expect(f.dialog.textContent).not.toContain("Product quality");
-		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
+		expect(f.dialog.querySelector('a[data-href*="/responsibility/"]')).toBeNull();
 		expect(field("Responsibilities").value).toBe(staff.charter);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});

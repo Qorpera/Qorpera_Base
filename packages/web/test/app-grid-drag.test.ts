@@ -90,9 +90,10 @@ function clickReaches(icon: HTMLElement): boolean {
 		reached = !event.defaultPrevented;
 		event.preventDefault();
 	};
-	document.addEventListener("click", listen);
+	// On the body: the document's own listener follows in-app links and takes the click (ui/dom.ts).
+	document.body.addEventListener("click", listen);
 	icon.click();
-	document.removeEventListener("click", listen);
+	document.body.removeEventListener("click", listen);
 	return reached;
 }
 
