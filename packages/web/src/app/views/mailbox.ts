@@ -95,12 +95,13 @@ function controllerKey(company: CompanyController): number {
 	return key;
 }
 /** The address and Digital Post cards of a page's state, kept so a form being filled survives a redraw: for the company
- * controller and the language they were built for. */
+ * controller, the language and the time zone they were built for. */
 const manageViews = new WeakMap<
 	MailboxUi,
 	{
 		readonly company: CompanyController;
 		readonly locale: string;
+		readonly zone: string;
 		readonly hooks: HooksView;
 		readonly post: DigitalPostView;
 	}
@@ -409,8 +410,15 @@ function manageArea(page: Page): HTMLElement | null {
 	const { company, ui, options } = page;
 	if (!options.manage || company.store.get().team?.capabilities.authorize !== true) return null;
 	let views = manageViews.get(ui);
-	// The company opened again (a new controller, the old one stopped) or a new language: the cards are built again.
-	if (views && (views.company !== company || company.signal.aborted || views.locale !== presentationLocale())) {
+	// The company opened again (a new controller, the old one stopped), a new language or a new time zone: the cards
+	// are built again.
+	if (
+		views &&
+		(views.company !== company ||
+			company.signal.aborted ||
+			views.locale !== presentationLocale() ||
+			views.zone !== presentationTimeZone())
+	) {
 		views.hooks.dispose();
 		views.post.dispose();
 		manageViews.delete(ui);
@@ -423,6 +431,7 @@ function manageArea(page: Page): HTMLElement | null {
 		views = {
 			company,
 			locale: presentationLocale(),
+			zone: presentationTimeZone(),
 			hooks: new HooksView(calls.hooks, company.signal, { access, kinds: ["mailbox"], changed }),
 			post: new DigitalPostView(calls.digitalPost, company.signal, { access, changed }),
 		};

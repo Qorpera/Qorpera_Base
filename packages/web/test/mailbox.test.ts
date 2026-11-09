@@ -7,7 +7,7 @@ import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
-import { setLanguagePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 import {
@@ -447,7 +447,7 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
 	});
 
-	it("builds the address cards again for a company opened again, and in a new language", async () => {
+	it("builds the address cards again for a company opened again, and in a new time zone or language", async () => {
 		const { f, main, controller, manage } = await mailbox(() => {});
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
@@ -462,6 +462,13 @@ describe("Sent, Addresses and Write", () => {
 		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
 		expect(main.querySelector(".mailbox-manage .hooks")).not.toBe(first);
 		expect(manage.hooks.list).toHaveBeenCalledTimes(2);
+		// A new time zone builds them again, so their times are in it.
+		const before = main.querySelector(".mailbox-manage .hooks");
+		setTimeZonePreference("Asia/Tokyo");
+		cleanup.push(() => setTimeZonePreference("system"));
+		renderMailbox(main, again, "mailbox", { manage: () => manage });
+		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		expect(main.querySelector(".mailbox-manage .hooks")).not.toBe(before);
 		// A new language builds them again in it.
 		setLanguagePreference("da");
 		cleanup.push(() => setLanguagePreference("system"));

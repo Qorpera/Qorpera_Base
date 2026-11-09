@@ -2057,12 +2057,8 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each([
-		["ai-subscriptions", ".connection-section-heading button", ["qorpera_list_coding_environment"]],
-		[
-			"company-connections",
-			".service-card button:not(:disabled)",
-			["qorpera_list_cloud_secret_connections", "qorpera_list_coding_environment"],
-		],
+		["ai-subscriptions", ".connection-section-heading button", []],
+		["company-connections", ".service-card button:not(:disabled)", ["qorpera_list_cloud_secret_connections"]],
 	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
 		const f = await setup();
 		open(f.root);
@@ -2111,9 +2107,10 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelector(".digital-post, [data-hooks]")).toBeNull();
 		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// The services and the coding environment variables are this tab's only reads; the member's own accounts are not
-		// read for it.
-		const companyReads = ["qorpera_list_cloud_secret_connections", "qorpera_list_coding_environment"];
+		// The services are this tab's only read; the member's own accounts are not read for it. Coding values are no
+		// longer drawn in Settings (Jonas, 9 Nov 2026), so neither tab reads them.
+		const companyReads = ["qorpera_list_cloud_secret_connections"];
+		expect(content.querySelector(".coding-environment")).toBeNull();
 		expect(sdkRpcs(f)).toEqual(companyReads);
 		expect(memberReads()).toEqual([]);
 
@@ -2128,77 +2125,9 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
 		expect(content.querySelector(".service-card")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path, and the company's lists are not read again; the member's
-		// own coding environment variables are read for this tab.
-		expect(sdkRpcs(f)).toEqual([...companyReads, "qorpera_list_coding_environment"]);
+		// Model accounts never go through the SDK RPC path, and the company's lists are not read again.
+		expect(sdkRpcs(f)).toEqual(companyReads);
+		expect(content.querySelector(".coding-environment")).toBeNull();
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
-	});
-	it("reads AI subscriptions' coding variables again after Company connections gives one to a repository", async () => {
-		const f = await setup();
-		const companyToken = {
-			schema: "qorpera.coding-environment-secret/v1",
-			secretId: id(30),
-			name: "NPM_TOKEN",
-			ownerKind: "company",
-			purpose: "Installs private packages",
-			version: 1,
-			grants: [] as unknown[],
-			createdAt: timestamp,
-			updatedAt: timestamp,
-		};
-		const memberToken = {
-			...companyToken,
-			secretId: id(32),
-			ownerKind: "member",
-			purpose: "My own token",
-			grants: [],
-		};
-		const grant = { grantId: id(41), repository: "acme/web", issuedByUserId: userA.id, createdAt: timestamp };
-		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
-			if (name === "qorpera_list_coding_environment") return structuredClone([companyToken, memberToken]);
-			if (name === "qorpera_grant_coding_environment_secret") {
-				companyToken.grants = [grant];
-				return { schema: "qorpera.coding-environment-grant/v1", status: "active", secretId: id(30), ...grant };
-			}
-			throw new Error("Unexpected RPC");
-		});
-		const card = (owner: string, secretId: string) =>
-			f.root.querySelector<HTMLElement>(`[data-coding-environment="${owner}"] [data-variable="${secretId}"]`)!;
-		const press = (root: Element, label: string) =>
-			[...root.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!.click();
-		const reach = () => card("member", id(32)).querySelector(".hook-state")?.textContent;
-		open(f.root);
-		click(f.root, "#settings-tab-ai-subscriptions");
-		await draw();
-		expect(reach()).toBe("Your coding sessions get it.");
-
-		click(f.root, "#settings-tab-company-connections");
-		await draw();
-		press(card("company", id(30)), "Give to a repository");
-		const repository = f.root.querySelector<HTMLInputElement>('input[aria-label="Repository for NPM_TOKEN"]')!;
-		repository.value = "acme/web";
-		repository.dispatchEvent(new Event("input"));
-		press(card("company", id(30)), "Add");
-		await draw();
-		// The company's list and then the member's are read again.
-		const reads = [
-			"qorpera_list_coding_environment",
-			"qorpera_list_cloud_secret_connections",
-			"qorpera_list_coding_environment",
-			"qorpera_grant_coding_environment_secret",
-			"qorpera_list_coding_environment",
-			"qorpera_list_coding_environment",
-		];
-		expect(sdkRpcs(f)).toEqual(reads);
-
-		click(f.root, "#settings-tab-ai-subscriptions");
-		await draw();
-		expect(reach()).toBe("Your coding sessions get it. In acme/web, the company's NPM_TOKEN is used instead.");
-		// Switching tabs alone reads nothing again.
-		click(f.root, "#settings-tab-company-connections");
-		await draw();
-		click(f.root, "#settings-tab-ai-subscriptions");
-		await draw();
-		expect(sdkRpcs(f)).toEqual(reads);
 	});
 });

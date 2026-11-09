@@ -1,6 +1,5 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
@@ -19,7 +18,6 @@ import { CompanyFolderBrowser } from "./company-folder.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
-import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
 import { MemoryView } from "./settings-memory.ts";
@@ -55,14 +53,14 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage environment variables ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
+			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
 	},
 	{
 		id: "company-connections",
 		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"services accounts gmail google drive github token secrets agents environment variables virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler",
+			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -153,11 +151,7 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
-	/** The member's own coding environment variables, on AI subscriptions. */
-	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
-	/** The company's coding environment variables, on Company connections. */
-	#companyEnvironment: CodingEnvironmentView | undefined;
 	#rules: RulesView | undefined;
 	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
 	#memory: MemoryView | undefined;
@@ -438,9 +432,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#accountSubscriptions?.dispose();
-		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
-		this.#companyEnvironment?.dispose();
 		this.#rules?.dispose();
 		this.#memory?.dispose();
 		this.#goodWill?.dispose();
@@ -751,24 +743,12 @@ export class SettingsView {
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
 				);
-				// The member's own coding environment variables: anyone who may write sets their own.
-				this.#memberEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					lifetime,
-					{ owner: "member", access: { canManage: () => company.store.get().team?.capabilities.write === true } },
-				);
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("AI subscriptions"),
-						subscriptionsLead(),
-						this.#connections.el,
-						this.#memberEnvironment.el,
-					),
-				);
+				// Coding values (environment variables a coding session gets) are no longer drawn here (Jonas, 9 Nov 2026:
+				// not something to show founders); the cloud keeps them.
+				this.#panels.set(tab, connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el));
 			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors, then the company's coding environment variables. Owners and admins manage them,
-				// everyone sees them.
+				// Step 7 connectors. Owners and admins manage them, everyone sees them. The company's coding values are no
+				// longer drawn here (Jonas, 9 Nov 2026); the cloud keeps them.
 				const canManage = () => {
 					const role = company.store.get().team?.role;
 					return role === "owner" || role === "admin";
@@ -781,20 +761,12 @@ export class SettingsView {
 							undefined,
 					},
 				});
-				// Where a company variable is given decides where a member's own of that name is used, so AI
-				// subscriptions reads its list again after each change here (opened later, it reads one anyway).
-				this.#companyEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					signal(),
-					{ owner: "company", access: { canManage }, onChange: () => this.#memberEnvironment?.reload() },
-				);
 				this.#panels.set(
 					tab,
 					connectionsPage(
 						t("Company connections"),
 						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
 						this.#services.el,
-						this.#companyEnvironment.el,
 					),
 				);
 			}
@@ -909,12 +881,8 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
-		this.#memberEnvironment?.dispose();
-		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
-		this.#companyEnvironment?.dispose();
-		this.#companyEnvironment = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#memory?.dispose();
@@ -937,9 +905,7 @@ export class SettingsView {
 					this.#close();
 					return;
 				}
-				this.#memberEnvironment?.update();
 				this.#services?.update();
-				this.#companyEnvironment?.update();
 				this.#rules?.update();
 				this.#memory?.update();
 				this.#drawCompany();
