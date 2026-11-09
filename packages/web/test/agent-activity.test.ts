@@ -234,6 +234,59 @@ describe("shared agent activity", () => {
 			expect(() => parseStaffExecutionActivity([entry])).toThrow("superseded activity that is not a failure");
 	});
 
+	it("reads a run waiting at its login's usage limit, only on a queued run (20260930703000)", () => {
+		const row = {
+			run_id: id(92),
+			staff_agent_id: staff.id,
+			source_kind: "wake",
+			job_status: "queued",
+			activity: "waiting",
+			updated_at: timestamp,
+		};
+		const pause = {
+			paused_until: "2099-01-01T00:00:00Z",
+			sponsor_binding_id: id(93).toUpperCase(),
+			requested_by_user_id: id(94),
+			paid_by_chatgpt_plan: false,
+		};
+		expect(parseStaffExecutionActivity([{ ...row, ...pause }])[0]?.paused).toEqual({
+			until: "2099-01-01T00:00:00Z",
+			sponsorBindingId: id(93),
+			requestedByUserId: id(94),
+			paidByChatgptPlan: false,
+		});
+		// An older cloud, or a run that does not wait: nothing.
+		expect(parseStaffExecutionActivity([row])[0]).not.toHaveProperty("paused");
+		expect(parseStaffExecutionActivity([{ ...row, paused_until: null }])[0]).not.toHaveProperty("paused");
+		for (const entry of [
+			{ ...row, ...pause, job_status: "leased", activity: "working" },
+			{ ...row, ...pause, sponsor_binding_id: "not-a-uuid" },
+			{ ...row, ...pause, paid_by_chatgpt_plan: "no" },
+			{ ...row, ...pause, paused_until: "soon" },
+		])
+			expect(() => parseStaffExecutionActivity([entry])).toThrow();
+	});
+
+	it("shows an agent whose run waits at its login's usage limit as resting, not working", async () => {
+		const f = setup();
+		const paused: HostedStaffExecutionActivity = {
+			runId: id(92),
+			staffAgentId: staff.id,
+			sourceKind: "wake",
+			jobStatus: "queued",
+			activity: "waiting",
+			paused: { until: "2099-01-01T00:00:00Z", sponsorBindingId: id(93), paidByChatgptPlan: false },
+			updatedAt: timestamp,
+		};
+		f.company.store.set({ activity: [paused] });
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(f.company.pausedRunFor(staff.id)?.runId).toBe(id(92));
+		// Its pause is over (the reset passed): it is the agent's work again.
+		f.company.store.set({ activity: [{ ...paused, paused: { ...paused.paused!, until: "2000-01-01T00:00:00Z" } }] });
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.company.pausedRunFor(staff.id)).toBeUndefined();
+	});
+
 	it("waves only a live state; Needs you and roles stay still", () => {
 		expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Needs you");
 		expect(stateLine(AGENT_LOOK.idle, "Marketing Lead")).toBe("Marketing Lead");

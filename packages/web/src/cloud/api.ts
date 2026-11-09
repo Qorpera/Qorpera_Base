@@ -44,6 +44,7 @@ import {
 	parseFriends,
 	parseIncomingInvitations,
 	parseInvitation,
+	parsePausedRunMove,
 	parsePendingSessionInputs,
 	parseProfiles,
 	parseRoomDeliveryRetry,
@@ -499,6 +500,17 @@ export class CloudApi {
 				p_sponsor_version: sponsorVersion,
 			})
 			.then((value) => parseRoomDeliveryRetry(value, id));
+	}
+
+	/** The member whose own login pays for a run waiting at its usage limit moves it to another of their logins that can
+	 * pay now (20260930703000): it goes on there at once, from where it stopped. The cloud checks the login is theirs and
+	 * can pay; the run never comes back on the old one. */
+	movePausedRun(runId: string, connectionId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		const connection = requiredUuid(connectionId, "Model account");
+		return this.cloud
+			.rpc("qorpera_move_paused_run", { p_run_id: id, p_connection_id: connection })
+			.then((value) => parsePausedRunMove(value, id, connection));
 	}
 
 	// Conversations

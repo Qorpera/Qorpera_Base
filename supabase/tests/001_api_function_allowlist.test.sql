@@ -223,6 +223,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_picture_objects()', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_pictures(uuid[])', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_role(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_move_paused_run(uuid,uuid)', false, true, 'member: auth.uid() + qorpera_can_write_profile; only the member whose own login pays for the waiting run, to another of their own logins with room (20260930703000)'),
 	('public.qorpera_my_good_will()', false, true, 'member: self-scoped, the caller''s own companies (20260930566000)'),
 	('public.qorpera_native_host_call(uuid,text,text,jsonb)', true, false, 'native host (G2): the runner job''s lease token is checked first, with no lock; only listed calls in that run''s scope'),
 	('public.qorpera_native_host_call_long(uuid,text,text,jsonb)', true, false, 'native host (G2), the lease validator''s 25 s budget: the runner job''s lease token is checked first, with no lock; only listed calls of that budget in that run''s scope'),

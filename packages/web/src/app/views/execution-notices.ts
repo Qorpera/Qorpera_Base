@@ -114,9 +114,23 @@ function sentence(
 			});
 		case "qorpera.member-notification.provider-usage-limit/v1": {
 			// The member whose own login it is reads one line: the work waits on that login and goes on by itself
-			// (20260930575000). Older notices, and a company account's, get none: the run's card tells of the limit.
+			// (20260930575000; a run that can resume waits too, 20260930703000). Older notices, and a company account's, get
+			// none: the run's card tells of the limit.
 			if (subject.accountEmail === undefined) return undefined;
 			const account = subject.accountEmail;
+			// Its run could not wait (or was stopped): that work does not go on by itself (20260930703000). Its card in the
+			// agent's thread says how to continue it.
+			if (subject.runStopped)
+				return account
+					? t(
+							"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
+							{
+								account,
+							},
+						)
+					: t(
+							"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
+						);
 			const reset = Date.parse(subject.resetsAt ?? "");
 			const left = reset - Date.now();
 			if (Number.isFinite(reset) && left > 0) {

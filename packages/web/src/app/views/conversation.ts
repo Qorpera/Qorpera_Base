@@ -17,7 +17,7 @@ import {
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
@@ -62,6 +62,7 @@ import {
 	runFailureCard,
 	runFailureInterrupted,
 	runFailureReason,
+	runWaitingReason,
 } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
@@ -3533,10 +3534,14 @@ export class ConversationView {
 
 	#renderRunNotification(session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
-		const failed =
-			this.#isRoom || company.accessLost || !company.team?.capabilities.read
-				? undefined
-				: this.#company.failedRunFor(session?.staffAgentId);
+		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
+		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
+		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
+		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
+		if (waiting?.paused && (!failed || failed.earlier)) {
+			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
+			return;
+		}
 		const runId = failed?.activity.runId;
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
@@ -3694,27 +3699,101 @@ export class ConversationView {
 							: {}),
 					}),
 		);
-		if (focused) {
-			if (!hidden)
-				(
-					(focusedAction && focusedLogin
-						? this.#runNotification.querySelector<HTMLElement>(
-								`[data-action="${focusedAction}"][data-connection-id="${focusedLogin}"]`,
-							)
-						: null) ??
-					(focusedAction
-						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
-						: null) ??
-					this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
-				)?.focus({ preventScroll: true });
-			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
-				this.#panel?.focus();
-			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
-			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
-			else {
-				this.el.tabIndex = -1;
-				this.el.focus({ preventScroll: true });
-			}
+		if (focused) this.#refocusRunNotification(Boolean(hidden), focusedAction, focusedLogin);
+	}
+
+	/** Focus stays on the card's line after a redraw: on the same button (the same login's "Continue with …"), else its
+	 * first one; when the line went away, on what holds focus next. */
+	#refocusRunNotification(hidden: boolean, focusedAction: string | undefined, focusedLogin: string | undefined): void {
+		if (!hidden)
+			(
+				(focusedAction && focusedLogin
+					? this.#runNotification.querySelector<HTMLElement>(
+							`[data-action="${focusedAction}"][data-connection-id="${focusedLogin}"]`,
+						)
+					: null) ??
+				(focusedAction
+					? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+					: null) ??
+				this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+			)?.focus({ preventScroll: true });
+		else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered")) this.#panel?.focus();
+		else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+		else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+		else {
+			this.el.tabIndex = -1;
+			this.el.focus({ preventScroll: true });
+		}
+	}
+
+	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
+	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
+	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
+	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
+	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
+		const company = this.#company.store.get();
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
+		const payer = this.#execution?.payer(paused.sponsorBindingId);
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		// Never off a ChatGPT plan: its work stays on it.
+		const logins =
+			payer?.own === true && !paused.paidByChatgptPlan && canWrite
+				? (this.#execution?.continueLogins(paused.sponsorBindingId) ?? [])
+				: [];
+		const payerId = paused.requestedByUserId?.toLowerCase();
+		const payerName =
+			payer?.own !== true && !paused.paidByChatgptPlan && payerId && payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
+		const title = t("{name} is waiting to go on", { name: agentName });
+		const reason = runWaitingReason(paused.until, {
+			...payer,
+			...(logins.length ? { continuable: true } : {}),
+			...(payerName ? { payerName } : {}),
+		});
+		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
+		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
+		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
+		this.#runNotification.hidden = false;
+		replace(
+			this.#runNotification,
+			runFailureCard({
+				title,
+				reason,
+				...(logins.length || note
+					? {
+							continueWith: {
+								logins,
+								choose: (connectionId: string) => void this.#movePausedRun(runId, connectionId),
+								...(moving ? { continuing: moving } : {}),
+								...(note ? { note } : {}),
+							},
+						}
+					: {}),
+			}),
+		);
+		if (focused) this.#refocusRunNotification(false, focusedAction, focusedLogin);
+	}
+
+	/** "Continue with …" on a waiting run: the member's own move of it to that login, which the cloud checks is theirs and
+	 * can pay. The run goes on there at once; the line goes with the next read of the agents' activity. */
+	async #movePausedRun(runId: string, connectionId: string): Promise<void> {
+		if (this.#continuing || this.#disposed) return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		try {
+			await this.#company.movePausedRun(runId, connectionId);
+		} catch {
+			if (!this.#disposed) this.#continueNote = { runId, text: t("The work could not be moved. Try again.") };
+		} finally {
+			this.#continuing = undefined;
+			if (!this.#disposed) this.update();
 		}
 	}
 
