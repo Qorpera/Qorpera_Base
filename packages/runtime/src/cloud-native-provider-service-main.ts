@@ -498,7 +498,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								fetch: dispatch.fetch,
 							}),
 							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3), as it
-							// does a signed hook's secret (E3b-3).
+							// does a signed hook's secret (E3b-3); a vault_capture of a coding value goes there too.
 							...(secretBrokerOrigin && secretBrokerToken
 								? (() => {
 										const fills = new HttpCloudSecretBrokerClient({
@@ -507,7 +507,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 											companyId: state.companyId,
 											holder,
 										});
-										return { accountFills: fills, hookFills: fills };
+										return { accountFills: fills, hookFills: fills, codingValues: fills };
 									})()
 								: {}),
 						}),

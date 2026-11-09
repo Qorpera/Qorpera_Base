@@ -2,6 +2,8 @@ import {
 	CompanyComputerHookCaptureBoxes,
 	CompanyHookCaptureRefusedError,
 	captureCompanyHookSecret,
+	captureCompanyPageValue,
+	companyCodingValuesShown,
 } from "@qorpera/runtime/cloud-company-computer-hook-capture";
 import type { Locator, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +66,8 @@ function fakeStripe(
 		inFrame?: boolean;
 		reloadFails?: boolean;
 		clickFails?: boolean;
+		/** Which reads after the click fail, counting from 0, as a page that loads another document fails them. */
+		failReads?: number[];
 	} = {},
 ) {
 	const calls: string[] = [];
@@ -71,6 +75,7 @@ function fakeStripe(
 	let reads: string[] = [];
 	let revealed = false;
 	let reloaded = false;
+	let readsAfterClick = 0;
 	const mainFrame = {};
 	const send = vi.fn(async (method: string, _params?: unknown) => {
 		calls.push(method);
@@ -106,6 +111,8 @@ function fakeStripe(
 				calls.push(script.includes("showPopover") ? "cover" : "uncover");
 				return undefined;
 			}
+			if (revealed && options.failReads?.includes(readsAfterClick++))
+				throw new Error("Execution context was destroyed, most likely because of a navigation");
 			const shownBoxes = [
 				...(options.boxes ?? []),
 				...(revealed && options.revealedBox ? [options.revealedBox] : []),
@@ -465,5 +472,126 @@ describe("sealed hook captures waiting for their answer (E3c-3)", () => {
 		boxes.hold("r6", box(6));
 		boxes.clear();
 		expect(boxes.take("r6")).toBeUndefined();
+	});
+});
+
+describe("a coding value read off its service's page (20260930695000)", () => {
+	const token = `npm_${"Ab12Cd34Ef".repeat(3)}Gh12Kl`;
+	const npm = { site: "www.npmjs.com", shown: companyCodingValuesShown("^npm_[A-Za-z0-9]{36}$") };
+	const url = "https://www.npmjs.com/settings/acme/tokens/new";
+	/** The tokens page: the keys made before, listed cut off, as the service lists them. */
+	const listing = "Access Tokens npm_AbCd… npm_Zy98•••• Generate New Token";
+
+	it("reads the one key the click makes, under a cover, with no hook's address, and masks the page again", async () => {
+		const page = fakeStripe({ url, before: listing, shown: [`${listing} ${token} Copy`], reloaded: listing });
+		const seen: string[] = [];
+		await expect(
+			captureCompanyPageValue(page.page, page.control, npm, (value) => seen.push(value), timing),
+		).resolves.toBe(token);
+		// A listing of keys cut off shows none: no reload before the click.
+		expect(page.calls).toEqual([
+			"Page.enable",
+			"Page.addScriptToEvaluateOnNewDocument",
+			"cover",
+			"click",
+			"Runtime.evaluate",
+			"reload",
+			"Page.removeScriptToEvaluateOnNewDocument",
+			"uncover",
+			"detach",
+		]);
+		expect(new Set(seen)).toEqual(new Set([token]));
+	});
+
+	it("takes a key shown once, gone after the reload, as masked again; one still shown keeps the cover", async () => {
+		const once = fakeStripe({ url, before: listing, shown: [`Copy it now: ${token}`], reloaded: listing });
+		await expect(captureCompanyPageValue(once.page, once.control, npm, () => undefined, timing)).resolves.toBe(token);
+		const kept = fakeStripe({
+			url,
+			before: listing,
+			shown: [`Copy it now: ${token}`],
+			reloaded: `${listing} ${token}`,
+		});
+		expect(await refusal(captureCompanyPageValue(kept.page, kept.control, npm, () => undefined, timing))).toBe(
+			"VAULT_CAPTURE_NOT_HIDDEN",
+		);
+		expect(kept.calls).not.toContain("uncover");
+	});
+
+	it("reloads a page that already shows a key, and refuses one that still does", async () => {
+		const shown = fakeStripe({ url, before: `${listing} ${token}`, reloaded: listing, shown: [`New ${token}`] });
+		await expect(captureCompanyPageValue(shown.page, shown.control, npm, () => undefined, timing)).resolves.toBe(
+			token,
+		);
+		expect(shown.calls[0]).toBe("reload");
+		const still = fakeStripe({ url, before: `${listing} ${token}`, reloaded: `${listing} ${token}` });
+		expect(await refusal(captureCompanyPageValue(still.page, still.control, npm, () => undefined, timing))).toBe(
+			"VAULT_CAPTURE_AMBIGUOUS",
+		);
+		expect(still.handle.click).not.toHaveBeenCalled();
+	});
+
+	it("refuses another site, two keys, a cut one, and one that goes on everywhere", async () => {
+		const elsewhere = fakeStripe({ url: "https://github.com/settings/tokens/new", before: listing });
+		expect(
+			await refusal(captureCompanyPageValue(elsewhere.page, elsewhere.control, npm, () => undefined, timing)),
+		).toBe("VAULT_CAPTURE_WRONG_SITE");
+		const other = `npm_${"Zy98Xw76Vu".repeat(3)}Ts54Rq`;
+		for (const [shown, reason] of [
+			[`${token} ${other}`, "VAULT_CAPTURE_AMBIGUOUS"],
+			[`${token}…`, "VAULT_CAPTURE_PARTIAL"],
+			[`${token}0`, "VAULT_CAPTURE_PARTIAL"],
+			[`npm_${"Ab".repeat(10)}`, "VAULT_CAPTURE_NOT_SHOWN"],
+		]) {
+			const page = fakeStripe({ url, before: listing, shown: [shown], reloaded: listing });
+			expect(
+				await refusal(captureCompanyPageValue(page.page, page.control, npm, () => undefined, timing)),
+				shown,
+			).toBe(reason);
+		}
+	});
+
+	it("waits through the reads a new document fails while the key is awaited, never after it", async () => {
+		const loading = fakeStripe({
+			url,
+			before: listing,
+			shown: [`New ${token}`],
+			reloaded: listing,
+			failReads: [0, 1],
+		});
+		await expect(captureCompanyPageValue(loading.page, loading.control, npm, () => undefined, timing)).resolves.toBe(
+			token,
+		);
+		const moved = fakeStripe({ url, before: listing, shown: [`New ${token}`], reloaded: listing, failReads: [1] });
+		expect(await refusal(captureCompanyPageValue(moved.page, moved.control, npm, () => undefined, timing))).toBe(
+			"VAULT_CAPTURE_UNSTABLE",
+		);
+		// A page that never answers before the reload: nothing was shown in time, and the reload masks it again.
+		const lost = fakeStripe({ url, before: listing, reloaded: listing, failReads: [...Array(1000).keys()] });
+		expect(await refusal(captureCompanyPageValue(lost.page, lost.control, npm, () => undefined, timing))).toBe(
+			"VAULT_CAPTURE_NOT_SHOWN",
+		);
+		expect(lost.calls).toContain("uncover");
+	});
+
+	it("counts a key whole where some place shows it ending, never where any place cuts it", () => {
+		// The rendered text glues a button's label to the key; the text as drawn sets it apart.
+		expect(npm.shown(`${token}Copy\n${token}\nCopy`)).toEqual([
+			{ value: token, whole: true },
+			{ value: token, whole: true },
+		]);
+		expect(npm.shown(`${token}Copy`)).toEqual([{ value: token, whole: false }]);
+		const shown = companyCodingValuesShown("^(sk|rk)_(test|live)_[A-Za-z0-9]{24,247}$");
+		const key = `sk_live_${"Ab1".repeat(10)}`;
+		// A pattern of no fixed length takes the label as the key's: two keys, never one cut short.
+		expect(shown(`${key}Copy\n${key}`).map(({ value }) => value)).toEqual([`${key}Copy`, key]);
+		expect(shown(`${key}… ${key}`)).toEqual([
+			{ value: key, whole: false },
+			{ value: key, whole: false },
+		]);
+		expect(shown(`STRIPE_KEY=${key}`)).toEqual([{ value: key, whole: true }]);
+		// A listing's masked key, a publishable key and a word that ends in sk_live_ show none.
+		expect(shown(`sk_live_…4xYz pk_live_${"Ab1".repeat(10)} desk_live_${"Ab1".repeat(10)}`)).toEqual([]);
+		expect(() => companyCodingValuesShown("^sk_\\w+$")).toThrow("Coding value pattern is malformed");
 	});
 });

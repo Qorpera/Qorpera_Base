@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
+import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
 /* Thread interactions (design: THREAD-WIDGETS-DESIGN-20260922.md): an agent asks
@@ -27,56 +28,6 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Names in the cloud secret custody start with a letter. */
 const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
-/** A coding value's repository as GitHub compares it: owner/name in lower case (20260930693000). */
-const REPOSITORY_PATTERN = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
-/** A coding value's name: its environment variable's name in lower case (20260928549440). The kernel also refuses the
- * names a coding machine sets itself or that name a provider's login; the capture refuses them too. */
-const CODING_VALUE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const CODING_VALUE_NAME_REFUSED = /^(lc|git|ld|dyld|qorpera|ssh|xdg|docker|anthropic|claude|codex|openai)_/;
-/** The names a coding machine sets itself, as qorpera_coding_environment_name_allowed lists them: refused here too, so
- * the agent hears why before the card is sent. */
-const CODING_VALUE_NAMES_RESERVED: ReadonlySet<string> = new Set([
-	"home",
-	"path",
-	"tmpdir",
-	"tmp",
-	"temp",
-	"user",
-	"logname",
-	"shell",
-	"pwd",
-	"oldpwd",
-	"term",
-	"colorterm",
-	"columns",
-	"lines",
-	"lang",
-	"language",
-	"tz",
-	"bash_env",
-	"env",
-	"ifs",
-	"ps1",
-	"ps2",
-	"ps4",
-	"prompt_command",
-	"shellopts",
-	"bashopts",
-	"cdpath",
-	"globignore",
-	"hostname",
-	"shlvl",
-	"mail",
-	"mailpath",
-	"http_proxy",
-	"https_proxy",
-	"no_proxy",
-	"all_proxy",
-	"ftp_proxy",
-	"ssl_cert_file",
-	"ssl_cert_dir",
-	"node_extra_ca_certs",
-]);
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 // NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
@@ -150,13 +101,13 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				"Default vault. environment for a coding value: an environment variable your coding sessions get.",
 			),
 			repository: matching(
-				REPOSITORY_PATTERN,
+				CODING_VALUE_REPOSITORY,
 				"With connectorId environment only: the repository (owner/name, lower case) whose coding sessions get it.",
 			),
 		},
 		"surface secret: the member saves a value into the company vault; you never see it. " +
 			// The guidance lives here: ask_member's description is at its 4096-byte limit.
-			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat.",
+			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. A key you can make yourself on npm, GitHub, Stripe or Resend needs no card: make it on that site in your company computer's browser and save it with computer_browser vault_capture (codingValue).",
 	),
 	form: closedObject(
 		["domain", "fields"],
@@ -377,12 +328,11 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 				(!("connectorId" in payload) ||
 					(typeof payload.connectorId === "string" && VAULT_NAME_PATTERN.test(payload.connectorId))) &&
 				// A coding value (20260930693000): a name the capture takes, and the repository only beside it.
-				(!coding ||
-					(CODING_VALUE_NAME_PATTERN.test(payload.name) &&
-						!CODING_VALUE_NAME_REFUSED.test(payload.name) &&
-						!CODING_VALUE_NAMES_RESERVED.has(payload.name))) &&
+				(!coding || codingValueNameAllowed(payload.name)) &&
 				(!("repository" in payload) ||
-					(coding && typeof payload.repository === "string" && REPOSITORY_PATTERN.test(payload.repository))) &&
+					(coding &&
+						typeof payload.repository === "string" &&
+						CODING_VALUE_REPOSITORY.test(payload.repository))) &&
 				text(payload.label, 1, 80) &&
 				text(payload.purpose, 1, 300) &&
 				optionalEnum(payload, "kind", ["token", "password", "text"])

@@ -408,6 +408,32 @@ describe("filled values on one screen", () => {
 			expect(filled.shows(text), text).toBe(false);
 	});
 
+	it("hides the keys an agent takes as coding values with nothing typed, and not a listing's cut ones (20260930695000)", () => {
+		const filled = new CompanyComputerFilledValues();
+		const keys = [
+			`npm_${"Ab12Cd34Ef".repeat(3)}Gh12Kl`,
+			`ghp_${"a1".repeat(18)}`,
+			`github_pat_${"A_1".repeat(27)}x`,
+			`sk_live_${"Ab1".repeat(10)}`,
+			`rk_test_${"Ab1".repeat(10)}`,
+			"re_c1tpEyD8_NKFusih9vKVQknRAQfmFcWCv",
+		];
+		for (const key of keys) {
+			expect(filled.hide(`Your new key ${key} Copy`), key).toBe("Your new key [hidden] Copy");
+			expect(filled.hideText(`Moved to https://x.example/?k=${encodeURIComponent(key)}`), key).toBe(
+				"Moved to https://x.example/?k=[hidden]",
+			);
+			expect(filled.hideAddress(`https://x.example/keys?k%3D${key}`), key).toBe("https://x.example/keys?[hidden]");
+		}
+		for (const text of [
+			"Access tokens npm_AbCd… sk_live_…4xYz re_c1tp••••",
+			"Restricted key rk_live_51H…",
+			"const store_resource_name_for_the_page = 1",
+			`pk_live_${"Ab1".repeat(10)}`,
+		])
+			expect(filled.shows(text), text).toBe(false);
+	});
+
 	it("drops spent codes before it drops a password", () => {
 		let now = 0;
 		const filled = new CompanyComputerFilledValues(() => now);

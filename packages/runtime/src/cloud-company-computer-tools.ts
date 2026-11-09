@@ -12,6 +12,7 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
+import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
@@ -20,6 +21,17 @@ import {
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export type CompanyComputerBrowserRole = "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox" | "tab";
+/** The services an agent takes a coding value from itself (qorpera_coding_value_services, 20260930695000). */
+export const COMPANY_COMPUTER_CODING_VALUE_SERVICES = ["npm", "github", "stripe", "resend"] as const;
+/** A coding value an agent takes into the vault: an environment variable its coding sessions in one repository get. */
+export interface CompanyComputerCodingValue {
+	readonly service: (typeof COMPANY_COMPUTER_CODING_VALUE_SERVICES)[number];
+	/** The variable's name in lower case: npm_token for NPM_TOKEN. */
+	readonly variable: string;
+	/** owner/name in lower case. */
+	readonly repository: string;
+	readonly purpose: string;
+}
 export type CompanyComputerAction =
 	| { kind: "screen"; action: "open" | "release" }
 	| { kind: "browser"; action: "navigate"; url: string }
@@ -48,6 +60,15 @@ export type CompanyComputerAction =
 			name: string;
 			hook: string;
 			field: "signing_secret";
+	  }
+	/** A coding value the office reads off its service's site into the vault, after a click on the control that makes
+	 * or shows it (20260930695000). */
+	| {
+			kind: "browser";
+			action: "vault_capture";
+			role: "button" | "link";
+			name: string;
+			codingValue: CompanyComputerCodingValue;
 	  }
 	| { kind: "screenshot"; surface: "browser" | "desktop" }
 	| { kind: "desktop"; action: "click"; x: number; y: number; button: "left" | "middle" | "right" }
@@ -275,11 +296,45 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 			};
 		}
 		if (input.action === "vault_capture") {
+			if (input.role !== "button" && input.role !== "link") throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			// A coding value the office reads into the vault (20260930695000), as SQL's check reads it: a service it
+			// knows, a name a coding value may have, the repository owner/name in lower case, and a purpose of 1 to 300
+			// characters with no control character or space around it.
+			if ("codingValue" in input) {
+				keys(input, ["kind", "action", "role", "name", "codingValue"]);
+				const value = record(input.codingValue);
+				keys(value, ["service", "variable", "repository", "purpose"]);
+				const { service, variable, repository, purpose } = value;
+				if (
+					!COMPANY_COMPUTER_CODING_VALUE_SERVICES.includes(service as CompanyComputerCodingValue["service"]) ||
+					typeof variable !== "string" ||
+					!codingValueNameAllowed(variable) ||
+					typeof repository !== "string" ||
+					!CODING_VALUE_REPOSITORY.test(repository) ||
+					typeof purpose !== "string" ||
+					[...purpose].length < 1 ||
+					[...purpose].length > 300 ||
+					purpose !== purpose.trim() ||
+					/[\u0000-\u001f\u007f-\u009f]/.test(purpose)
+				)
+					throw new Error("INVALID_COMPUTER_ARGUMENTS");
+				return {
+					kind: "browser",
+					action: "vault_capture",
+					role: input.role,
+					name: text(input.name, 512),
+					codingValue: {
+						service: service as CompanyComputerCodingValue["service"],
+						variable,
+						repository,
+						purpose,
+					},
+				};
+			}
 			// A Stripe hook's secret the office reads into the vault (E3c-2), as SQL's check reads it.
 			keys(input, ["kind", "action", "role", "name", "hook", "field"]);
 			const hook = normalizeUuid(input.hook);
-			if ((input.role !== "button" && input.role !== "link") || hook === null || input.field !== "signing_secret")
-				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			if (hook === null || input.field !== "signing_secret") throw new Error("INVALID_COMPUTER_ARGUMENTS");
 			return {
 				kind: "browser",
 				action: "vault_capture",
@@ -479,6 +534,46 @@ const actionSchemas = {
 			hook: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
 			field: { const: "signing_secret" },
 		}),
+		// A coding value, read off its service's site into the vault after a click on the control that makes or shows it
+		// (20260930695000). The guidance lives here: the tools' shared description is near its 4096-byte limit.
+		actionSchema("browser", "vault_capture", {
+			role: { enum: ["button", "link"] },
+			name: {
+				type: "string",
+				maxLength: 512,
+				description:
+					"The control that makes or shows the key (Generate token, Create, Reveal), from your latest snapshot: the key first appears under the office's cover.",
+			},
+			codingValue: {
+				type: "object",
+				additionalProperties: false,
+				required: ["service", "variable", "repository", "purpose"],
+				description:
+					"A coding value you take into the vault yourself: a key a coding session needs as an environment variable, from npm (www.npmjs.com, access tokens), github (github.com, personal access tokens), stripe (dashboard.stripe.com, secret or restricted keys) or resend (resend.com, API keys). " +
+					"Make the key on that site in this browser (signed in with the company's account, vault_fill), fill in its form, then call this with the role and name of the button that creates it, or reveals it: the office clicks it, reads the key off the page and the vault saves it; your coding sessions in repository then get it as the variable in upper case. " +
+					"Never type, copy, paste, read out or screenshot a key, and never click what shows one outside this call: a key already shown is never taken (one a site shows only once is then lost: delete it and make a new one). " +
+					"For any other service, or a key only a person has, ask a member with ask_member surface secret, connectorId environment.",
+				properties: {
+					service: { enum: [...COMPANY_COMPUTER_CODING_VALUE_SERVICES] },
+					variable: {
+						type: "string",
+						pattern: "^[a-z][a-z0-9_]{0,63}$",
+						description: "The environment variable's name in lower case: npm_token for NPM_TOKEN.",
+					},
+					repository: {
+						type: "string",
+						pattern: CODING_VALUE_REPOSITORY.source,
+						description: "The repository (owner/name, lower case) whose coding sessions get it.",
+					},
+					purpose: {
+						type: "string",
+						minLength: 1,
+						maxLength: 300,
+						description: "What it is for, in plain words.",
+					},
+				},
+			},
+		}),
 	],
 	desktop: [
 		actionSchema("desktop", "click", { ...coordinates, button: { enum: ["left", "middle", "right"] } }),
@@ -567,7 +662,7 @@ export function createCompanyComputerTools(options: {
 					`${COMPANY_COMPUTER_TOOL_VERSION}. ${kind} on the cloud Company Computer and this agent's assigned screen only. ` +
 					"Use an authorized connector before the browser, and page actions before pixels. Requires live run, screen and resource/profile grants. " +
 					"Company website sign-ins are shared across agents; an assigned screen is not a private browser. Never sign personal accounts into the Company Computer. " +
-					"Access personal accounts only through a supported, authorized connector granted to the company. For a company account's login, password or authenticator code, use browser vault_fill {role, name, account, field} on the account's own website (a signed hook's secret: {role: textbox, name, hook, field: signing_secret} on its site): the vault types it into that box; never type or ask for a password yourself. A CAPTCHA, bot check, unusual activity warning or block page ends the attempt at once: never retry it; mark the account needs_person with company_account (a worker tells its agent). If the required connector or account is unavailable, report the blocker. " +
+					"Access personal accounts only through a supported, authorized connector granted to the company. For a company account's login, password or authenticator code, use browser vault_fill {role, name, account, field} on the account's own website (a signed hook's secret: {role: textbox, name, hook, field: signing_secret} on its site): the vault types it into that box; never type or ask for a password yourself. A key a coding session needs from npm, GitHub, Stripe or Resend: make it there and use browser vault_capture with codingValue. A CAPTCHA, bot check, unusual activity warning or block page ends the attempt at once: never retry it; mark the account needs_person with company_account (a worker tells its agent). If the required connector or account is unavailable, report the blocker. " +
 					"One driver per screen; member takeover cancels agent control. Keep operationKey stable for the same logical work. " +
 					"Writes, navigation, input and shell are effect-checked with durable receipts; an uncertain result requires reconciliation, never a new key. " +
 					"Screen release gives up occupancy without deleting desktop/browser state; idle policy controls power. " +

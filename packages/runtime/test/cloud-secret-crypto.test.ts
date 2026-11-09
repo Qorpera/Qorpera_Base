@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { sealCodingValueCapture } from "@qorpera/runtime/cloud-coding-value-capture-box";
 import { sealEventHookCapture } from "@qorpera/runtime/cloud-event-hook-capture-box";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { describe, expect, it } from "vitest";
@@ -151,5 +152,81 @@ describe("hook capture keys (E3c)", () => {
 		nodeOne.close();
 		nodeTwo.close();
 		other.close();
+	});
+});
+
+describe("coding value capture keys (20260930695000)", () => {
+	const company = "0f0e0d0c-0b0a-4908-8706-050403020100";
+	const value = {
+		companyId: company,
+		environmentId: "3F0E0D0C-0B0A-4908-8706-050403020103",
+		secretId: "2F0E0D0C-0B0A-4908-8706-050403020102",
+		keyId: "vault-root-1",
+	};
+	const call = {
+		companyId: company,
+		companyComputerId: randomUUID(),
+		computerGeneration: 2,
+		receiptId: randomUUID(),
+		service: "npm",
+		variable: "npm_token",
+	};
+	const token = `npm_${"Ab12".repeat(9)}`;
+
+	it("derives a value's key pair under its own info, never a hook's for the same id, fixed value", () => {
+		// Computed apart from this code (Python: RFC 5869 and RFC 7748 by hand, the hook's value above checked the same
+		// way), from the company key the hook test names.
+		const expected = "_LQM-IjN76YuHC-0R6oSWwELym3Yc7EZzWvE9d7v5D0";
+		const master = Buffer.from(Array.from({ length: 32 }, (_, index) => index));
+		const derived = new CloudSecretKeyring({}, { "vault-root-1": master });
+		const own = new CloudSecretKeyring({
+			"vault-root-1": Buffer.from("755b45a9b70ddefcd1a4fafc4e263014a631178d3df962ddc154bc171e15883b", "hex"),
+		});
+		expect(derived.codingValueCapturePublicKey(value)).toBe(expected);
+		expect(own.codingValueCapturePublicKey(value)).toBe(expected);
+		expect(derived.capturePublicKey(value)).not.toBe(expected);
+		expect(() => derived.codingValueCapturePublicKey({ ...value, secretId: "x" })).toThrow(
+			"Coding value capture key identity is invalid",
+		);
+		expect(() => derived.codingValueCapturePublicKey({ ...value, keyId: "unknown-kek" })).toThrow(
+			"Cloud secret wrapping key is unavailable",
+		);
+		derived.close();
+		own.close();
+	});
+
+	it("lists the key ids it holds, never a key", () => {
+		const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) }, { "vault-root-1": randomBytes(32) });
+		expect(keyring.keyIds()).toEqual(["company-kek-1", "vault-root-1"]);
+		keyring.close();
+		expect(keyring.keyIds()).toEqual([]);
+	});
+
+	it("opens a value sealed to its public key, on any copy of the vault, and never as a hook's capture", async () => {
+		const master = randomBytes(32);
+		const nodeOne = new CloudSecretKeyring({}, { "vault-root-1": master });
+		const nodeTwo = new CloudSecretKeyring({}, { "vault-root-1": Buffer.from(master) });
+		const box = sealCodingValueCapture(
+			{ value: token, site: "www.npmjs.com" },
+			/^npm_[A-Za-z0-9]{36}$/u,
+			nodeOne.codingValueCapturePublicKey(value),
+			call,
+		);
+		await expect(
+			nodeTwo.openCodingValueCapture(value, box, call, async (got) => got.value.toString("utf8")),
+		).resolves.toBe(token);
+		await expect(
+			nodeTwo.openCodingValueCapture({ ...value, secretId: randomUUID() }, box, call, async () => "opened"),
+		).rejects.toThrow("Coding value capture box does not open here");
+		// A hook's key for the same secret, and a hook's opener, never open it.
+		const hookCall = { ...call, hookId: randomUUID(), field: "signing_secret" as const };
+		await expect(nodeTwo.openCapture(value, box, hookCall, async () => "opened")).rejects.toThrow(
+			"Hook capture box is malformed",
+		);
+		await expect(
+			nodeTwo.openCapture(value, { ...box, schema: "qorpera.event-hook-capture-box/v1" }, hookCall, async () => "x"),
+		).rejects.toThrow("Hook capture box does not open here");
+		nodeOne.close();
+		nodeTwo.close();
 	});
 });

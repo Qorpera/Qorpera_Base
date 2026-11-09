@@ -8,6 +8,17 @@ import {
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
 import {
+	type CodingValueAuthority,
+	type CodingValueCaptureAnswer,
+	type CodingValueCaptureCall,
+	type CodingValueCaptureKey,
+	type CodingValueCaptureRequest,
+	type CodingValueCaptureVersion,
+	type CodingValuePrepareAnswer,
+	type CodingValueRefusal,
+	CodingValueVault,
+} from "./cloud-coding-value-vault.ts";
+import {
 	type CompanyAccountAnswer,
 	type CompanyAccountAuthority,
 	type CompanyAccountCall,
@@ -324,6 +335,11 @@ export interface CloudSecretBrokerAuthority {
 	replaceHookCaptureKey?: EventHookAuthority["replaceHookCaptureKey"];
 	readHookCapture?: EventHookAuthority["readHookCapture"];
 	storeHookCapture?: EventHookAuthority["storeHookCapture"];
+	/** Coding values an agent takes off a service's page (20260930695000); without all three, every such capture is
+	 * refused as unavailable. */
+	prepareCodingValueCapture?: CodingValueAuthority["prepareCodingValueCapture"];
+	readCodingValueCapture?: CodingValueAuthority["readCodingValueCapture"];
+	storeCodingValueCapture?: CodingValueAuthority["storeCodingValueCapture"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -970,6 +986,7 @@ export class CloudSecretBroker {
 	readonly #adapters = new Map<string, CloudSecretConnectorAdapter>();
 	readonly #companyAccounts: CompanyAccountVault | undefined;
 	readonly #eventHooks: EventHookVault | undefined;
+	readonly #codingValues: CodingValueVault | undefined;
 
 	constructor(options: {
 		authority: CloudSecretBrokerAuthority;
@@ -1007,6 +1024,18 @@ export class CloudSecretBroker {
 							replaceHookCaptureKey: replaceHookCaptureKey?.bind(options.authority),
 							readHookCapture: readHookCapture?.bind(options.authority),
 							storeHookCapture: storeHookCapture?.bind(options.authority),
+						},
+						keys: options.keyring,
+					})
+				: undefined;
+		const { prepareCodingValueCapture, readCodingValueCapture, storeCodingValueCapture } = options.authority;
+		this.#codingValues =
+			prepareCodingValueCapture && readCodingValueCapture && storeCodingValueCapture
+				? new CodingValueVault({
+						authority: {
+							prepareCodingValueCapture: prepareCodingValueCapture.bind(options.authority),
+							readCodingValueCapture: readCodingValueCapture.bind(options.authority),
+							storeCodingValueCapture: storeCodingValueCapture.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -1147,6 +1176,26 @@ export class CloudSecretBroker {
 	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
 		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
 		return this.#eventHooks.capture(request, signal);
+	}
+
+	/** A vault_capture of a coding value, before the office reads the page (20260930695000): the value's capture key
+	 * made, made again or kept. */
+	codingValuePrepare(
+		call: CodingValueCaptureCall,
+		signal: AbortSignal,
+	): Promise<CodingValuePrepareAnswer | CodingValueRefusal> {
+		if (!this.#codingValues) return Promise.reject(new Error("Coding values unavailable"));
+		return this.#codingValues.prepare(call, signal);
+	}
+
+	/** The same vault_capture after it, with the office's box: the version the vault holds, granted to the call's
+	 * repository; the value never leaves. */
+	codingValueCapture(
+		request: CodingValueCaptureRequest,
+		signal: AbortSignal,
+	): Promise<CodingValueCaptureAnswer | CodingValueRefusal> {
+		if (!this.#codingValues) return Promise.reject(new Error("Coding values unavailable"));
+		return this.#codingValues.capture(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -1656,6 +1705,7 @@ export class PostgresCloudSecretBrokerAuthority
 		EventVerificationAuthority,
 		CompanyAccountAuthority,
 		EventHookAuthority,
+		CodingValueAuthority,
 		BankSyncAuthority,
 		DigitalPostSyncAuthority
 {
@@ -1896,6 +1946,65 @@ export class PostgresCloudSecretBrokerAuthority
 					request.receiptId,
 					request.envelope,
 					createHash("sha256").update(request.idempotencyKey).digest("hex"),
+					stored.secretId,
+					stored.version,
+					stored.companyId,
+					stored.environmentId,
+					stored.keyId,
+					envelope,
+					stored.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// As openSignedHook: a query sent late carries zeros, which the database's envelope check refuses.
+			envelope.fill(0);
+		}
+	}
+
+	/** A coding value call's arguments after the broker's own: the binding, receipt, envelope and idempotency digest. */
+	#codingValueCall(call: CodingValueCaptureCall): unknown[] {
+		return [
+			this.#brokerAuthorityId,
+			this.#brokerCapabilitySha256,
+			JSON.stringify(call.binding),
+			call.receiptId,
+			call.envelope,
+			createHash("sha256").update(call.idempotencyKey).digest("hex"),
+		];
+	}
+
+	prepareCodingValueCapture(
+		call: CodingValueCaptureCall,
+		key: CodingValueCaptureKey,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_prepare_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text) as result",
+			[...this.#codingValueCall(call), key.secretId, key.keyId, key.publicKey],
+			signal,
+		);
+	}
+
+	readCodingValueCapture(call: CodingValueCaptureCall, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_read_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			this.#codingValueCall(call),
+			signal,
+		);
+	}
+
+	async storeCodingValueCapture(
+		call: CodingValueCaptureCall,
+		stored: CodingValueCaptureVersion,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(stored.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_folder_store_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::bigint,$9::uuid,$10::uuid,$11::text,$12::bytea,$13::text) as result",
+				[
+					...this.#codingValueCall(call),
 					stored.secretId,
 					stored.version,
 					stored.companyId,

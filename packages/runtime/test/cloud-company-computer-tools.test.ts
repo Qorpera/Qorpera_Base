@@ -184,7 +184,35 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 					field: { const: "signing_secret" },
 				},
 			},
+			// Or a coding value (20260930695000): its service, variable, repository and purpose, with the guidance.
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "codingValue"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_capture" },
+					role: { enum: ["button", "link"] },
+					name: { type: "string", maxLength: 512, description: expect.stringContaining("Generate token") },
+					codingValue: {
+						type: "object",
+						additionalProperties: false,
+						required: ["service", "variable", "repository", "purpose"],
+						description: expect.stringContaining("ask_member surface secret, connectorId environment"),
+						properties: {
+							service: { enum: ["npm", "github", "stripe", "resend"] },
+							variable: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$", description: expect.any(String) },
+							repository: { type: "string", pattern: expect.any(String), description: expect.any(String) },
+							purpose: { type: "string", minLength: 1, maxLength: 300, description: expect.any(String) },
+						},
+					},
+				},
+			},
 		]);
+		expect(browser.description).toContain("use browser vault_capture with codingValue");
+		const guidance = JSON.stringify(browser.inputSchema);
+		for (const words of ["Never type, copy, paste, read out or screenshot a key", "the variable in upper case"])
+			expect(guidance).toContain(words);
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -802,6 +830,57 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			{ ...capture, hook: "stripe-payments" },
 			{ ...capture, hook: 1 },
 			{ ...capture, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
+	it("reads a vault_capture of a coding value as SQL's check reads it, never a value (20260930695000)", () => {
+		const capture = {
+			kind: "browser",
+			action: "vault_capture",
+			role: "button",
+			name: "Generate token",
+			codingValue: {
+				service: "npm",
+				variable: "npm_token",
+				repository: "acme/web-app",
+				purpose: "Installs the company's private packages.",
+			},
+		};
+		expect(parseCompanyComputerAction(capture)).toEqual(capture);
+		expect(parseCompanyComputerAction({ ...capture, role: "link" })).toMatchObject({ role: "link" });
+		for (const service of ["github", "stripe", "resend"])
+			expect(
+				parseCompanyComputerAction({ ...capture, codingValue: { ...capture.codingValue, service } }),
+			).toMatchObject({ codingValue: { service } });
+		// 300 characters, not bytes.
+		expect(
+			parseCompanyComputerAction({ ...capture, codingValue: { ...capture.codingValue, purpose: "æ".repeat(300) } }),
+		).toMatchObject({ action: "vault_capture" });
+		const value = (field: Record<string, unknown>) => ({
+			...capture,
+			codingValue: { ...capture.codingValue, ...field },
+		});
+		for (const bad of [
+			{ ...capture, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+			{ ...capture, field: "signing_secret" },
+			{ ...capture, value: "npm_x" },
+			{ ...capture, role: "textbox" },
+			{ ...capture, name: " " },
+			{ ...capture, codingValue: "npm" },
+			value({ service: "gitlab" }),
+			value({ service: undefined }),
+			value({ variable: "NPM_TOKEN" }),
+			value({ variable: "path" }),
+			value({ variable: "openai_api_key" }),
+			value({ variable: "git_token" }),
+			value({ repository: "Acme/web-app" }),
+			value({ repository: "acme" }),
+			value({ purpose: "" }),
+			value({ purpose: " For packages." }),
+			value({ purpose: "For\npackages." }),
+			value({ purpose: "x".repeat(301) }),
+			value({ extra: true }),
 		])
 			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});

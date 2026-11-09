@@ -934,7 +934,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let seen: number | undefined;
 		// One publisher for the session's whole life: a capture it keeps for the perform answer outlives a new automation.
 		const screenshots = this.#options.screenshots(input.run);
-		// So are the boxes its hook captures sealed (E3c-3), each kept for its perform answer only.
+		// So are the boxes its captures sealed (a hook's secret, E3c-3; a coding value), each kept for its perform answer only.
 		const captures = new CompanyComputerHookCaptureBoxes();
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		// The run's folder report (F3 4f-2b) is kept while the run lives, not the session: a drain ends the session
@@ -1182,6 +1182,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							);
 						},
 						captureTarget: (target, checked) => input.effects.hookCaptureTarget(target, checked),
+						codingValueTarget: (target, checked) => input.effects.codingValueCaptureTarget(target, checked),
 						captures,
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);

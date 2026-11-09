@@ -9,6 +9,11 @@ import {
 	randomBytes,
 } from "node:crypto";
 import {
+	type CodingValueCapture,
+	type CodingValueCaptureIdentity,
+	openCodingValueCapture,
+} from "./cloud-coding-value-capture-box.ts";
+import {
 	type EventHookCapture,
 	type EventHookCaptureIdentity,
 	openEventHookCapture,
@@ -334,7 +339,8 @@ export function memberEnvelopeIdentity(identity: CloudSecretMemberEnvelopeIdenti
 const PKCS8_X25519 = Buffer.from("302e020100300506032b656e04220420", "hex");
 const SPKI_X25519_BYTES = 12;
 
-/** Which Stripe hook's capture key: the hook's reserved secret, under one of the company's keys (E3c). */
+/** Which capture key: the secret a captured value goes to (a Stripe hook's reserved secret, E3c; a coding value's,
+ * 20260930695000), under one of the company's keys. */
 export interface CloudHookCaptureKeyIdentity {
 	readonly companyId: string;
 	readonly environmentId: string;
@@ -342,14 +348,21 @@ export interface CloudHookCaptureKeyIdentity {
 	readonly keyId: string;
 }
 
-/** A hook's capture key pair from the company's key: HKDF-SHA256 with its own info, salted with the reserved
- * secret id and the environment (lowercase, "secretId:environmentId"), as an X25519 seed. Nothing is stored:
- * both copies of the vault derive the same pair, and the office seals to its public half. */
-function captureKey(companyKey: Uint8Array, identity: CloudHookCaptureKeyIdentity): KeyObject {
+/** The HKDF info of each kind of capture key: a hook's and a coding value's never coincide for one secret id. */
+const CAPTURE_KEY_INFO = {
+	hook: { info: "qorpera.event-hook-capture-key/v1", label: "Hook capture key identity" },
+	codingValue: { info: "qorpera.coding-value-capture-key/v1", label: "Coding value capture key identity" },
+} as const;
+type CaptureKeyKind = keyof typeof CAPTURE_KEY_INFO;
+
+/** A capture key pair from the company's key: HKDF-SHA256 with its kind's own info, salted with the secret id and the
+ * environment (lowercase, "secretId:environmentId"), as an X25519 seed. Nothing is stored: both copies of the vault
+ * derive the same pair, and the office seals to its public half. */
+function captureKey(companyKey: Uint8Array, identity: CloudHookCaptureKeyIdentity, kind: CaptureKeyKind): KeyObject {
 	if (![identity.companyId, identity.environmentId, identity.secretId].every((value) => UUID.test(value)))
-		throw new Error("Hook capture key identity is invalid");
+		throw new Error(`${CAPTURE_KEY_INFO[kind].label} is invalid`);
 	const salt = `${identity.secretId.toLowerCase()}:${identity.environmentId.toLowerCase()}`;
-	const seed = Buffer.from(hkdfSync("sha256", companyKey, salt, "qorpera.event-hook-capture-key/v1", 32));
+	const seed = Buffer.from(hkdfSync("sha256", companyKey, salt, CAPTURE_KEY_INFO[kind].info, 32));
 	const der = Buffer.concat([PKCS8_X25519, seed]);
 	try {
 		return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
@@ -357,6 +370,12 @@ function captureKey(companyKey: Uint8Array, identity: CloudHookCaptureKeyIdentit
 		seed.fill(0);
 		der.fill(0);
 	}
+}
+
+/** A private key's raw public half (32 bytes, base64url). */
+function rawPublicKey(privateKey: KeyObject): string {
+	const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
+	return Buffer.from(spki.subarray(SPKI_X25519_BYTES)).toString("base64url");
 }
 
 /** A broker keyring never exposes raw key material to an adapter. It holds each company's own keys
@@ -451,16 +470,21 @@ export class CloudSecretKeyring {
 		}
 	}
 
-	/** A hook's capture private key, under the key the company's envelopes use: its own key, or the derived one. */
-	#captureKey(identity: CloudHookCaptureKeyIdentity): KeyObject {
-		if (!KEY_ID.test(identity.keyId)) throw new Error("Hook capture key identity is invalid");
+	/** The key ids this keyring holds, own and derived: which one is a company's current key, the database says. */
+	keyIds(): string[] {
+		return [...this.#keys.keys(), ...this.#derived.keys()];
+	}
+
+	/** A capture private key, under the key the company's envelopes use: its own key, or the derived one. */
+	#captureKey(identity: CloudHookCaptureKeyIdentity, kind: CaptureKeyKind): KeyObject {
+		if (!KEY_ID.test(identity.keyId)) throw new Error(`${CAPTURE_KEY_INFO[kind].label} is invalid`);
 		const own = this.#keys.get(identity.keyId);
-		if (own) return captureKey(own, identity);
+		if (own) return captureKey(own, identity, kind);
 		const master = this.#derived.get(identity.keyId);
 		if (!master) throw new Error("Cloud secret wrapping key is unavailable");
 		const derived = derivedWrappingKey(master, identity.companyId);
 		try {
-			return captureKey(derived, identity);
+			return captureKey(derived, identity, kind);
 		} finally {
 			derived.fill(0);
 		}
@@ -468,8 +492,7 @@ export class CloudSecretKeyring {
 
 	/** The public half the office seals a hook's captured secret to (32 raw bytes, base64url). */
 	capturePublicKey(identity: CloudHookCaptureKeyIdentity): string {
-		const spki = createPublicKey(this.#captureKey(identity)).export({ format: "der", type: "spki" });
-		return Buffer.from(spki.subarray(SPKI_X25519_BYTES)).toString("base64url");
+		return rawPublicKey(this.#captureKey(identity, "hook"));
 	}
 
 	/** The captured secret inside a box the office sealed to this hook's capture key for exactly this call. */
@@ -480,10 +503,26 @@ export class CloudSecretKeyring {
 		callback: (capture: EventHookCapture) => Promise<T>,
 		nowMs = Date.now(),
 	): Promise<T> {
-		const privateKey = this.#captureKey(identity);
-		const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
-		const recipient = Buffer.from(spki.subarray(SPKI_X25519_BYTES)).toString("base64url");
-		return openEventHookCapture(privateKey, recipient, box, expected, callback, nowMs);
+		const privateKey = this.#captureKey(identity, "hook");
+		return openEventHookCapture(privateKey, rawPublicKey(privateKey), box, expected, callback, nowMs);
+	}
+
+	/** The public half the office seals a captured coding value to (20260930695000): the value's secret id's own pair,
+	 * under its own info, never a hook's. */
+	codingValueCapturePublicKey(identity: CloudHookCaptureKeyIdentity): string {
+		return rawPublicKey(this.#captureKey(identity, "codingValue"));
+	}
+
+	/** The coding value inside a box the office sealed to this value's capture key for exactly this call. */
+	async openCodingValueCapture<T>(
+		identity: CloudHookCaptureKeyIdentity,
+		box: unknown,
+		expected: CodingValueCaptureIdentity,
+		callback: (capture: CodingValueCapture) => Promise<T>,
+		nowMs = Date.now(),
+	): Promise<T> {
+		const privateKey = this.#captureKey(identity, "codingValue");
+		return openCodingValueCapture(privateKey, rawPublicKey(privateKey), box, expected, callback, nowMs);
 	}
 
 	close(): void {

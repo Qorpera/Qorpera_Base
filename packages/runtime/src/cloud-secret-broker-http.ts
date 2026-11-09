@@ -5,6 +5,18 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
+	CODING_VALUE_CAPTURE_REQUEST_SCHEMA,
+	CODING_VALUE_PREPARE_REQUEST_SCHEMA,
+	type CodingValueCaptureAnswer,
+	type CodingValueCaptureCall,
+	type CodingValueCaptureRequest,
+	type CodingValuePrepareAnswer,
+	type CodingValueRefusal,
+	parseCodingValueCaptureAnswer,
+	parseCodingValuePrepareAnswer,
+	parseCodingValueRequest,
+} from "./cloud-coding-value-vault.ts";
+import {
 	COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA,
 	COMPANY_ACCOUNT_REQUEST_SCHEMA,
 	type CompanyAccountAnswer,
@@ -1070,6 +1082,22 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
+			// An agent's vault_capture of a coding value (20260930695000): before the office reads the page, the value's
+			// capture key; after it, the office's box, sealed to that key, which only the vault opens. Same token, routing
+			// and lease proof; inside the client's 20 s.
+			if (path === "/v1/coding-value-captures" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const valueRequest = parseCodingValueRequest(await readRequest(request));
+				await this.#proven(
+					request,
+					"prepare" in valueRequest ? valueRequest.prepare.binding : valueRequest.capture.binding,
+				);
+				const answer =
+					"prepare" in valueRequest
+						? await scope.broker.codingValuePrepare(valueRequest.prepare, AbortSignal.timeout(15_000))
+						: await scope.broker.codingValueCapture(valueRequest.capture, AbortSignal.timeout(15_000));
+				response(reply, 200, answer as unknown as JsonValue);
+				return;
+			}
 			// A member's sign-in to the vault (Stateless Compute step 1, change 2B). The login
 			// gateway chooser names `<origin>/v1/model-logins/<company>/`; the web client's edge
 			// function posts its unchanged sign-in request there, server to server, with the
@@ -1574,6 +1602,68 @@ export class HttpCloudSecretBrokerClient {
 				}
 			},
 			// Past the broker's 15 s, inside the tool call's 30 s, after the office read the page.
+			20_000,
+			signal,
+		);
+	}
+
+	/** One vault_capture of a coding value, before the office reads the page (20260930695000): the value's capture key
+	 * is ready, or the database's refusal. */
+	codingValuePrepare(
+		call: CodingValueCaptureCall,
+		signal: AbortSignal,
+	): Promise<CodingValuePrepareAnswer | CodingValueRefusal> {
+		return this.#codingValue(
+			{ schema: CODING_VALUE_PREPARE_REQUEST_SCHEMA, ...call },
+			parseCodingValuePrepareAnswer,
+			signal,
+		);
+	}
+
+	/** The same vault_capture after it: the office's sealed box in, the version the vault holds after it out, or the
+	 * database's refusal. */
+	codingValueCapture(
+		request: CodingValueCaptureRequest,
+		signal: AbortSignal,
+	): Promise<CodingValueCaptureAnswer | CodingValueRefusal> {
+		return this.#codingValue(
+			{ schema: CODING_VALUE_CAPTURE_REQUEST_SCHEMA, ...request },
+			parseCodingValueCaptureAnswer,
+			signal,
+		);
+	}
+
+	#codingValue<T>(body: object, parse: (value: unknown) => T, signal: AbortSignal): Promise<T> {
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await this.#fetch(
+					`${this.#origin}/v1/coding-value-captures?company=${this.#companyId}`,
+					{
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${this.#runtimeToken}`,
+							"x-qorpera-identity": this.#holder(),
+							"content-type": "application/json",
+						},
+						body: cloudToolJsonText(body),
+						signal: requestSignal,
+					},
+				);
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					throw new Error("Cloud secret broker rejected the coding value capture");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+				} catch {
+					throw new Error("Cloud secret broker returned invalid data");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			// Past the broker's 15 s, inside the tool call's 30 s.
 			20_000,
 			signal,
 		);

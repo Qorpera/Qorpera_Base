@@ -833,6 +833,10 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   (`qorpera_native_office_hook_capture`), never from the native host. Every way a read ends masks the page again with a
   reload under the cover; a page that still shows the value has its tab closed. The box is held for the call's answer
   only once the page shows no check, so a stop answer carries none, and the gateway refuses a done read without one.
+  A coding value (migration `20260930695000`) is read off its service's page the same way
+  (`captureCompanyPageValue`, `cloud-company-computer-hook-capture.ts`), with the service's site and pattern instead of
+  the hook's address and `whsec_` shape, and stored by the broker's `/v1/coding-value-captures`
+  (`cloud-coding-value-vault.ts`).
 - **E3c-4, the hold** (migration `20260930345000`, SQL test 420) is built: the verifier's finish, intake's readiness,
   the broker's capture read and `lastRefusal`'s hold (point 5 above, "As built").
 

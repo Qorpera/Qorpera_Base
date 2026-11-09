@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { openCodingValueCapture } from "@qorpera/runtime/cloud-coding-value-capture-box";
 import { CompanyComputerFillKey, sealCompanyAccountFill } from "@qorpera/runtime/cloud-company-account-fill-box";
 import {
 	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
@@ -13,6 +14,7 @@ import {
 	CompanyComputerHookCaptureBoxes,
 	CompanyHookCaptureRefusedError,
 	captureCompanyHookSecret,
+	captureCompanyPageValue,
 } from "@qorpera/runtime/cloud-company-computer-hook-capture";
 import {
 	COMPANY_COMPUTER_SITE_SAMPLE,
@@ -35,6 +37,7 @@ import {
 vi.mock("../src/cloud-company-computer-hook-capture.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/cloud-company-computer-hook-capture.ts")>()),
 	captureCompanyHookSecret: vi.fn(),
+	captureCompanyPageValue: vi.fn(),
 }));
 
 const account = computerId(60);
@@ -92,6 +95,8 @@ function office(
 		popup?: boolean;
 		/** Where a vault_capture's box goes, and the boxes held for answers (E3c-3). */
 		captureTarget?: ConstructorParameters<typeof CompanyComputerGuestAutomation>[0]["captureTarget"];
+		/** Where a vault_capture of a coding value's box goes (20260930695000). */
+		codingValueTarget?: ConstructorParameters<typeof CompanyComputerGuestAutomation>[0]["codingValueTarget"];
 		captures?: CompanyComputerHookCaptureBoxes;
 	} = {},
 ) {
@@ -307,6 +312,7 @@ function office(
 		...(options.filled ? { filled: options.filled } : {}),
 		...(options.siteStops ? { siteStops: options.siteStops } : {}),
 		...(options.captureTarget ? { captureTarget: options.captureTarget } : {}),
+		...(options.codingValueTarget ? { codingValueTarget: options.codingValueTarget } : {}),
 		...(options.captures ? { captures: options.captures } : {}),
 	});
 	return {
@@ -1338,5 +1344,118 @@ describe("vault_capture of a Stripe hook's signing secret on the Company Compute
 		});
 		expect(await caught(both)).toMatchObject({ message: "VAULT_CAPTURE_NOT_HIDDEN" });
 		expect(both.page.close).toHaveBeenCalled();
+	});
+});
+
+describe("vault_capture of a coding value on the Company Computer (20260930695000)", () => {
+	const readPage = vi.mocked(captureCompanyPageValue);
+	const readHook = vi.mocked(captureCompanyHookSecret);
+	afterEach(() => {
+		readPage.mockReset();
+		readHook.mockReset();
+	});
+	const token = `npm_${"Ab12Cd34Ef".repeat(3)}Gh12Kl`;
+	const capture: CompanyComputerAction = {
+		kind: "browser",
+		action: "vault_capture",
+		role: "button",
+		name: "Generate token",
+		codingValue: { service: "npm", variable: "npm_token", repository: "acme/web", purpose: "Installs packages." },
+	};
+	const address = "https://www.npmjs.com/settings/acme/tokens/new";
+	function recipient() {
+		const pair = generateKeyPairSync("x25519");
+		const raw = pair.publicKey.export({ format: "der", type: "spki" }).subarray(12);
+		return { privateKey: pair.privateKey, publicKey: Buffer.from(raw).toString("base64url") };
+	}
+	const identity = () => {
+		const binding = computerBinding();
+		return {
+			companyId: binding.companyId,
+			companyComputerId: binding.companyComputerId,
+			computerGeneration: binding.computerGeneration,
+			receiptId: computerEffect().receiptId,
+			service: "npm",
+			variable: "npm_token",
+		};
+	};
+	/** An office that reads where the box goes from the database, as the guest's endpoint does. */
+	function capturing(key = recipient(), valuePattern = "^npm_[A-Za-z0-9]{36}$") {
+		const filled = new CompanyComputerFilledValues();
+		const captures = new CompanyComputerHookCaptureBoxes();
+		const codingValueTarget = vi.fn(async () => ({
+			...identity(),
+			site: "www.npmjs.com",
+			valuePattern,
+			capturePublicKey: key.publicKey,
+		}));
+		const captureTarget = vi.fn();
+		const f = office({ url: address, filled, codingValueTarget, captureTarget, captures });
+		return { ...f, vault: key, filled, captures, codingValueTarget, captureTarget };
+	}
+	const caught = (f: ReturnType<typeof office>) =>
+		perform(f, capture).then(
+			(content) => {
+				throw new Error(`answered ${JSON.stringify(content)}`);
+			},
+			(error: unknown) => error as Error,
+		);
+
+	it("reads the service's site and pattern from the database, seals the key to its capture key, and holds the box", async () => {
+		const f = capturing();
+		readPage.mockImplementationOnce(async (_page, _control, target, seen) => {
+			// The office reads with the service's site and its pattern, and no hook's address.
+			expect(target).toEqual({ site: "www.npmjs.com", shown: expect.any(Function) });
+			expect(target.shown(`New token ${token} Copy`)).toEqual([{ value: token, whole: true }]);
+			expect(target.shown("Tokens npm_AbCd…")).toEqual([]);
+			seen(token);
+			return token;
+		});
+		expect(((await perform(f, capture)) as unknown as { value: unknown }).value).toEqual({
+			action: "vault_capture",
+			tabId: expect.anything(),
+			completed: true,
+		});
+		expect(f.page.getByRole).toHaveBeenCalledWith("button", { name: "Generate token", exact: true });
+		expect(f.captureTarget).not.toHaveBeenCalled();
+		expect(readHook).not.toHaveBeenCalled();
+		// What the page showed stays hidden from the agent from now on.
+		expect(f.filled.current()).toEqual([token]);
+		const box = f.captures.take(computerEffect().receiptId);
+		expect(JSON.stringify(box)).not.toContain(token);
+		await expect(
+			openCodingValueCapture(f.vault.privateKey, f.vault.publicKey, box, identity(), async (got) => ({
+				...got,
+				value: got.value.toString("utf8"),
+			})),
+		).resolves.toMatchObject({ value: token, site: "www.npmjs.com" });
+	});
+
+	it("clicks nothing on an office that cannot read where a coding value's box goes", async () => {
+		const f = office({ url: address, captureTarget: vi.fn(), captures: new CompanyComputerHookCaptureBoxes() });
+		expect(await caught(f)).toMatchObject({
+			name: "CompanyComputerActionNotStartedError",
+			message: "VAULT_CAPTURE_UNAVAILABLE",
+		});
+		expect(f.page.getByRole).not.toHaveBeenCalled();
+		const refused = capturing();
+		refused.codingValueTarget.mockRejectedValueOnce(new Error("The coding value's capture key must be made again"));
+		expect(await caught(refused)).toMatchObject({ message: "VAULT_CAPTURE_UNAVAILABLE" });
+		expect(readPage).not.toHaveBeenCalled();
+	});
+
+	it("seals nothing the service's pattern does not take, and closes a tab that still shows the key", async () => {
+		const f = capturing();
+		readPage.mockResolvedValueOnce("npm_short");
+		expect(await caught(f)).toMatchObject({
+			name: "CompanyComputerActionFailedError",
+			message: "VAULT_CAPTURE_FAILED",
+		});
+		expect(f.captures.take(computerEffect().receiptId)).toBeUndefined();
+		const shown = capturing();
+		readPage.mockRejectedValueOnce(new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_HIDDEN"));
+		expect(await caught(shown)).toMatchObject({ message: "VAULT_CAPTURE_NOT_HIDDEN" });
+		expect(shown.page.close).toHaveBeenCalled();
+		expect(shown.captures.take(computerEffect().receiptId)).toBeUndefined();
 	});
 });

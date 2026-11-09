@@ -14,6 +14,7 @@ import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-
 import {
 	COMPANY_COMPUTER_NATIVE_SCHEMA,
 	type CompanyComputerAccountFills,
+	type CompanyComputerCodingValues,
 	type CompanyComputerHookFills,
 	createHttpCompanyComputerSessionFactory,
 	HttpCompanyComputerNativeEndpoint,
@@ -1003,6 +1004,163 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			stop,
 		);
 		expect(s.eventHookCapture).not.toHaveBeenCalled();
+	});
+
+	it("makes a coding value's capture key ready, then carries the office's box to the vault (20260930695000)", async () => {
+		const f = await fixture({ capabilities: ["browser"] });
+		const codingValue = {
+			service: "npm",
+			variable: "npm_token",
+			repository: "acme/web",
+			purpose: "Installs the private packages.",
+		};
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: { kind: "browser", action: "vault_capture", role: "button", name: "Generate token", codingValue },
+		};
+		const box = {
+			schema: "qorpera.coding-value-capture-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const read = { kind: "json", value: { action: "vault_capture", tabId: randomUUID(), completed: true } };
+		const answer = (rest: Record<string, unknown> = { content: read, box }) => ({
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			...rest,
+		});
+		const vault = () => ({
+			codingValuePrepare: vi.fn<CompanyComputerCodingValues["codingValuePrepare"]>(async () => ({
+				schema: "qorpera.coding-value-prepare-answer/v1",
+				variable: "npm_token",
+				replaced: false,
+			})),
+			codingValueCapture: vi.fn<CompanyComputerCodingValues["codingValueCapture"]>(async () => ({
+				schema: "qorpera.coding-value-capture-answer/v1",
+				variable: "npm_token",
+				repository: "acme/web",
+				version: 3,
+				unchanged: true,
+			})),
+		});
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(),
+		};
+		const endpoint = (body: unknown, codingValues?: CompanyComputerCodingValues) => {
+			const fetch = vi.fn(async () => Response.json(body));
+			return {
+				fetch,
+				endpoint: new HttpCompanyComputerNativeEndpoint({
+					run: f.run,
+					descriptor: f.descriptor,
+					url: f.url,
+					token: f.token,
+					holder: () => f.holder,
+					registry: f.registry,
+					fetch,
+					hookFills,
+					...(codingValues ? { codingValues } : {}),
+				}),
+			};
+		};
+		const v = vault();
+		const ok = endpoint(answer(), v);
+		const result = await ok.endpoint.perform(operation, f.lease, f.context);
+		expect(result).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: true,
+				captured: { service: "npm", variable: "npm_token", repository: "acme/web", version: 3, unchanged: true },
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain("ciphertext");
+		const call = {
+			binding: f.source.binding,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			envelope: cloudNativeToolOperationEnvelope(f.run.identity, operation),
+		};
+		expect(v.codingValuePrepare).toHaveBeenCalledWith(call, expect.any(AbortSignal));
+		expect(v.codingValueCapture).toHaveBeenCalledWith({ ...call, box }, expect.any(AbortSignal));
+		// The key is ready before the office reads the page, and the box reaches the vault after; no hook route is asked.
+		expect(v.codingValuePrepare.mock.invocationCallOrder[0]).toBeLessThan(ok.fetch.mock.invocationCallOrder[0]!);
+		expect(ok.fetch.mock.invocationCallOrder[0]).toBeLessThan(v.codingValueCapture.mock.invocationCallOrder[0]!);
+		expect(hookFills.eventHook).not.toHaveBeenCalled();
+		expect(hookFills.eventHookCapture).not.toHaveBeenCalled();
+		// The prepare's refusal is the call's answer and the office is never asked; nor is it on a host without the route.
+		const refusing = vault();
+		refusing.codingValuePrepare.mockResolvedValueOnce({
+			schema: "qorpera.coding-value-refusal/v1",
+			code: "42501",
+			message: "Only owners and admins can save coding values; ask one of them",
+		});
+		const refused = endpoint(answer(), refusing);
+		expect(await refused.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: false,
+				refused: { code: "42501", message: "Only owners and admins can save coding values; ask one of them" },
+			},
+		});
+		const bare = endpoint(answer());
+		expect(await bare.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: false,
+				refused: { code: "0A000", message: "Coding values are not set up for this company's computers" },
+			},
+		});
+		expect(refused.fetch).not.toHaveBeenCalled();
+		expect(bare.fetch).not.toHaveBeenCalled();
+		expect(refusing.codingValueCapture).not.toHaveBeenCalled();
+		// The store's refusal is the call's answer too.
+		const store = vault();
+		store.codingValueCapture.mockResolvedValueOnce({
+			schema: "qorpera.coding-value-refusal/v1",
+			code: "22023",
+			message: "The value read is not a whole key of npm",
+		});
+		expect(await endpoint(answer(), store).endpoint.perform(operation, f.lease, f.context)).toMatchObject({
+			value: { completed: false, refused: { code: "22023" } },
+		});
+		// The vault answering for another value or repository is no answer.
+		const otherPrepare = vault();
+		otherPrepare.codingValuePrepare.mockResolvedValueOnce({
+			schema: "qorpera.coding-value-prepare-answer/v1",
+			variable: "npm_auth_token",
+			replaced: false,
+		});
+		const otherStore = vault();
+		otherStore.codingValueCapture.mockResolvedValueOnce({
+			schema: "qorpera.coding-value-capture-answer/v1",
+			variable: "npm_token",
+			repository: "acme/other",
+			version: 1,
+			unchanged: false,
+		});
+		for (const other of [otherPrepare, otherStore])
+			await expect(endpoint(answer(), other).endpoint.perform(operation, f.lease, f.context)).rejects.toThrow(
+				"OFFICE_NATIVE_UNCONFIRMED",
+			);
+		// An answer without a box (the page stopped the agent) is the call's as the office gave it; nothing is stored.
+		const stop = {
+			kind: "json",
+			value: { action: "vault_capture", tabId: randomUUID(), completed: true, stop: "captcha", message: "Stop" },
+		};
+		const s = vault();
+		expect(await endpoint(answer({ content: stop }), s).endpoint.perform(operation, f.lease, f.context)).toEqual(
+			stop,
+		);
+		expect(s.codingValueCapture).not.toHaveBeenCalled();
 	});
 
 	it("carries the box a guest's vault_capture sealed in that call's answer only, and never a done read without one (E3c-3)", async () => {
