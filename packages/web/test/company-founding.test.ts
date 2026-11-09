@@ -190,7 +190,11 @@ describe("founding table", () => {
 		const text = visibleText(container);
 		expect(text).toContain("Connect ChatGPT");
 		expect(text).toContain("Invite friends");
-		expect(text).toContain("Your first message to the Co-Founder. Write it together.");
+		// The name is a labelled field; no sub-heading, no role line, and Cancel sits beside Start.
+		expect(container.querySelector("label.founding-name-label")?.textContent).toBe("Company name");
+		expect(container.querySelector(".founding-sub")?.hasAttribute("hidden")).toBe(true);
+		expect(container.querySelector(".founding-role-mine")).toBeNull();
+		expect(container.querySelector(".founding-actions .founding-cancel + .founding-ready")).not.toBeNull();
 		expect(text).toContain("Waiting for you to be ready");
 		expect(text).toContain("Everyone at the table becomes a founder of Nordlys Kaffe.");
 		expect(container.querySelector<HTMLButtonElement>(".founding-start")?.disabled).toBe(true);
@@ -198,26 +202,69 @@ describe("founding table", () => {
 		expect(text.toLowerCase()).not.toMatch(/billing|payment|plan|credit|computer hours|pays/);
 	});
 
+	it("cancels the new company with the red Cancel beside Start, once the other seats are gone", async () => {
+		let server = wire();
+		const { api } = mount(() => server);
+		const deleted = vi.spyOn(api, "deleteProfile").mockResolvedValue();
+		await settle();
+		const cancel = container.querySelector<HTMLButtonElement>(".founding-actions .founding-cancel")!;
+		expect(cancel.textContent).toBe("Cancel");
+		expect(cancel.classList.contains("btn-danger")).toBe(true);
+		// Bo is still at the table: his seat goes first.
+		expect(cancel.disabled).toBe(true);
+		const hint = [...container.querySelectorAll<HTMLElement>(".founding-hint")].find(
+			(line) => line.textContent === "To cancel, remove the other seats first.",
+		)!;
+		expect(hint.hidden).toBe(false);
+		expect(buttonNamed("Close the table")).toBeUndefined();
+		server = wire({ seats: [(wire().seats as Wire[])[0]], waitingFor: [] });
+		await controller!.refresh();
+		await settle();
+		expect(cancel.disabled).toBe(false);
+		expect(hint.hidden).toBe(true);
+		cancel.click();
+		await settle();
+		const dialog = document.querySelector<HTMLElement>(".modal")!;
+		expect(dialog.textContent).toContain("Cancel Nordlys Kaffe? It will not be started.");
+		[...dialog.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Cancel company")!
+			.click();
+		await settle();
+		expect(deleted).toHaveBeenCalledWith(table);
+	});
+
+	it("shows Cancel only to the table's owner", async () => {
+		mount(() => wire({ me: { userId: me, state: "joined", canEdit: true, canManage: false, canStart: false } }));
+		await settle();
+		expect(container.querySelector(".founding-cancel")?.hasAttribute("hidden")).toBe(true);
+		expect(buttonNamed("Leave the table")).toBeDefined();
+	});
+
 	it("keeps what you are typing, its caret and focus, across refreshes, and saves only when you leave it", async () => {
 		const { named } = mount(() => wire());
 		await settle();
-		const field = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
 		field.focus();
-		field.value = "Online shop. And roasting in Aar";
+		field.value = "Specialty coffee. And roasting in Aar";
 		field.setSelectionRange(5, 5);
 		await controller!.refresh();
 		await settle();
 		// The same field, untouched, with nothing saved.
-		expect(container.querySelector(".founding-role-mine")).toBe(field);
+		expect(container.querySelector("textarea.founding-vision")).toBe(field);
 		expect(document.activeElement).toBe(field);
-		expect(field.value).toBe("Online shop. And roasting in Aar");
+		expect(field.value).toBe("Specialty coffee. And roasting in Aar");
 		expect(field.selectionStart).toBe(5);
-		expect(named("qorpera_set_founder_role")).toEqual([]);
-		field.value = "Online shop. And roasting in Aarhus.";
+		expect(named("qorpera_update_company_founding")).toEqual([]);
+		field.value = "Specialty coffee. And roasting in Aarhus.";
 		field.blur();
 		await settle();
-		expect(named("qorpera_set_founder_role")).toEqual([
-			{ p_profile_id: table, p_expected_revision: 4, p_role: "Online shop. And roasting in Aarhus." },
+		expect(named("qorpera_update_company_founding")).toEqual([
+			{
+				p_profile_id: table,
+				p_expected_revision: 4,
+				p_company_name: "Nordlys Kaffe",
+				p_vision: "Specialty coffee. And roasting in Aarhus.",
+			},
 		]);
 	});
 
@@ -274,13 +321,13 @@ describe("founding table", () => {
 		expect(named("qorpera_update_company_founding")).toEqual([]);
 	});
 
-	it("keeps your role field and focus when someone joins or is invited while you type", async () => {
+	it("keeps the idea box and focus when someone joins or is invited while you type", async () => {
 		let server = wire();
 		const { named } = mount(() => server);
 		await settle();
-		const field = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
 		field.focus();
-		field.value = "Online shop. And roasting in Aar";
+		field.value = "Specialty coffee. And roasting in Aar";
 		server = wire({
 			seats: [
 				...(wire().seats as Wire[]),
@@ -299,9 +346,9 @@ describe("founding table", () => {
 		await controller!.refresh();
 		await settle();
 		expect(container.querySelectorAll(".founding-seat:not(.founding-seat-invite)").length).toBe(3);
-		expect(container.querySelector(".founding-role-mine")).toBe(field);
+		expect(container.querySelector("textarea.founding-vision")).toBe(field);
 		expect(document.activeElement).toBe(field);
-		expect(named("qorpera_set_founder_role")).toEqual([]);
+		expect(named("qorpera_update_company_founding")).toEqual([]);
 	});
 
 	it("says a used-up login is used up and when it resets, and Start still works alone", async () => {
@@ -407,11 +454,11 @@ describe("founding table", () => {
 		expect(controller!.store.get().table?.revision).toBe(5);
 	});
 
-	it("counts Ready after your own role save, and never on a table someone else changed", async () => {
+	it("counts Ready after your own idea save, and never on a table someone else changed", async () => {
 		let server = mine({ modelLoginReady: true });
 		const { named } = mount((name, args) => {
-			if (name === "qorpera_set_founder_role")
-				server = mine({ role: args.p_role, modelLoginReady: true }, wire({ revision: 5 }));
+			if (name === "qorpera_update_company_founding")
+				server = mine({ modelLoginReady: true }, wire({ vision: args.p_vision, revision: 5 }));
 			if (name === "qorpera_set_founder_ready") {
 				if (args.p_expected_revision !== server.revision) throw stale(name);
 				server = mine({ ready: true, modelLoginReady: true }, { ...server });
@@ -419,10 +466,10 @@ describe("founding table", () => {
 			return server;
 		});
 		await settle();
-		// Type a role, then press Ready: the role saves as the field loses focus, and Ready follows.
-		const field = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
+		// Type in the idea box, then press Ready: the idea saves as the box loses focus, and Ready follows.
+		const field = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
 		field.focus();
-		field.value = "Roasting.";
+		field.value = "Specialty coffee. Roasting.";
 		const ready = buttonNamed("Ready")!;
 		field.blur();
 		ready.click();
@@ -516,7 +563,7 @@ describe("founding table", () => {
 		expect(text).toContain("Bo invited you to start Nordlys Kaffe together.");
 		expect(text).toContain("Join the table");
 		expect(container.querySelector<HTMLElement>(".founding-bar")?.hidden).toBe(true);
-		expect(container.querySelector(".founding-role-mine")).toBeNull();
+		expect(container.querySelector("textarea.founding-vision")).toBeNull();
 		buttonNamed("Decline")!.click();
 		await settle();
 		expect(controller!.store.get().gone).toBe("declined");
@@ -1125,7 +1172,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		const calls: string[] = [];
 		vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
 			calls.push(name);
-			if (name === "qorpera_set_founder_role") throw new Error("Failed to fetch");
+			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
 			return mine(
 				{ ready: true, modelLoginReady: true },
 				wire({
@@ -1141,28 +1188,32 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		controller.store.subscribe(() => view.update());
 		view.update();
 		await settle();
-		const role = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
-		role.focus();
-		role.value = "Online shop and the photos.";
-		role.blur();
+		const idea = container.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Specialty coffee and the photos.";
+		idea.blur();
 		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
 		await settle();
-		expect(calls).toContain("qorpera_set_founder_role");
+		expect(calls).toContain("qorpera_update_company_founding");
 		expect(calls).not.toContain("qorpera_start_company_founding");
-		expect(role.value).toBe("Online shop and the photos.");
+		expect(idea.value).toBe("Specialty coffee and the photos.");
 	});
 
 	it("keeps Start and Ready off while any field's save failed, even after another field saved", async () => {
 		const { api, cloud } = fixture();
 		const calls: string[] = [];
-		let role = "Online shop.";
+		let companyName = "Nordlys Kaffe";
 		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
 			calls.push(name);
-			if (name === "qorpera_update_company_founding") throw new Error("Failed to fetch");
-			if (name === "qorpera_set_founder_role") role = String(args.p_role);
+			// The idea's save fails; a rename that keeps the table's idea goes through.
+			if (name === "qorpera_update_company_founding") {
+				if (args.p_vision !== "Specialty coffee.") throw new Error("Failed to fetch");
+				companyName = String(args.p_company_name);
+			}
 			return mine(
-				{ role, ready: false, modelLoginReady: true },
+				{ ready: false, modelLoginReady: true },
 				wire({
+					companyName,
 					waitingFor: [me],
 					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false },
 				}),
@@ -1180,13 +1231,13 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		idea.value = "Specialty coffee, roasted in Aarhus.";
 		idea.blur();
 		await settle();
-		const mineRole = container.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
-		mineRole.focus();
-		mineRole.value = "Roasting.";
-		mineRole.blur();
+		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		name.focus();
+		name.value = "Nordlys Roastery";
+		name.blur();
 		await settle();
-		expect(role).toBe("Roasting.");
-		// The role went through; the idea did not, so Ready (with Bo at the table) does nothing.
+		expect(companyName).toBe("Nordlys Roastery");
+		// The name went through; the idea did not, so Ready (with Bo at the table) does nothing.
 		[...container.querySelectorAll<HTMLButtonElement>("button")]
 			.find((item) => item.textContent === "Ready")!
 			.click();
@@ -1610,17 +1661,17 @@ describe("founding table in the app", () => {
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
 		expect(visibleText(root)).toContain("Invite friends");
-		// A role typed and not saved yet comes along to the rebuilt page.
-		const role = root.querySelector<HTMLTextAreaElement>(".founding-role-mine")!;
-		role.focus();
-		role.value = "Roasting, still typing";
+		// An idea typed and not saved yet comes along to the rebuilt page.
+		const idea = root.querySelector<HTMLTextAreaElement>("textarea.founding-vision")!;
+		idea.focus();
+		idea.value = "Roasting, still typing";
 		setLanguagePreference("da");
 		window.dispatchEvent(new Event("qorpera-language-change"));
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
 		expect(visibleText(root)).toContain("Inviter venner");
 		expect(visibleText(root)).not.toContain("Invite friends");
-		expect(root.querySelector<HTMLTextAreaElement>(".founding-role-mine")?.value).toBe("Roasting, still typing");
+		expect(root.querySelector<HTMLTextAreaElement>("textarea.founding-vision")?.value).toBe("Roasting, still typing");
 	});
 
 	it("opens the new-company box with what qorpera.com's arrow sent, and takes it out of the address", async () => {
