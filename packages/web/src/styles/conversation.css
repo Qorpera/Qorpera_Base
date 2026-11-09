@@ -48,10 +48,16 @@
 .thread-foot :is(.agent-wall-bar, .composer-drafts, .draft-notches) { pointer-events: none; }
 .thread-foot :is(.agent-wall-toggle, .draft-notches > *, .composer-drafts > :not(.draft-notches)),
 .thread-foot .agent-wall:not(.is-folded) { pointer-events: auto; }
-/* The composer stands above the coding pill's dock, so its menus (models, skills, names) open over the pill: the shell's
- * glass makes it a stacking context, which would hold the menus under the dock. */
+/* The composer stands above the coding pill's dock, so its menus (models, skills, names) open over the pill. The shell's
+ * glass is a layer behind its contents, not a filter on the shell: a filter would make the shell a stacking context and
+ * hold its menus under whatever stands beside it in the composer (a draft's button on the wall's line). */
 .thread-foot .composer { position: relative; z-index: 7; }
-.thread-foot :is(.notice, .company-notice, .run-failure-card, .composer-shell, .draft-notch, .draft-panel),
+.thread-foot .composer-shell { border-color: var(--glass-edge); background: transparent; box-shadow: var(--glass-shadow); }
+.thread-foot .composer-shell::before {
+	content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit; background: var(--glass-bg); pointer-events: none;
+	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+}
+.thread-foot :is(.notice, .company-notice, .run-failure-card, .draft-notch, .draft-panel),
 .thread-foot .agent-wall.is-folded .agent-wall-toggle,
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) {
 	border-color: var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow);

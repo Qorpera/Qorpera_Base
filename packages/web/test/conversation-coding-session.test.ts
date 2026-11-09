@@ -587,6 +587,11 @@ describe("the coding pill on the wall's line", () => {
 		// The composer stands over the coding dock (z-index 6), so its menus open over the pill.
 		expect(conversation).toContain(".thread-foot .composer { position: relative; z-index: 7; }");
 		expect(conversation).toMatch(/\.coding-dock \{[^}]*z-index: 6;/);
+		// The shell's glass is a layer behind it, never a filter on the shell, which would hold its menus under a draft's button.
+		expect(conversation).toMatch(
+			/\.thread-foot \.composer-shell::before \{[^}]*backdrop-filter: var\(--glass-blur\);/,
+		);
+		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-shell[,)][^{]*\{[^}]*backdrop-filter/);
 		// The Answering strip is measured inside the composer's shell: no margin of its own.
 		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-answer/);
 	});
