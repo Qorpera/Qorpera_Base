@@ -64,6 +64,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { withReply } from "../cloud/wall-reply.ts";
+import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
@@ -517,6 +518,7 @@ export class CompanyController {
 	readonly conversations = new Map<string, Store<ConversationState>>();
 	readonly #api: CloudApi;
 	#emailDraftClient: EmailDraftClient | undefined;
+	#worksFor: WorksForCalls | undefined;
 	readonly #emailDraftEditors = new Map<string, EmailDraftEditor>();
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
@@ -2158,6 +2160,12 @@ export class CompanyController {
 			this.#emailDraftEditors.set(interactionId, editor);
 		}
 		return editor;
+	}
+
+	/** Who each agent works for, and the asks that move one (cloud/works-for.ts; the Members page). */
+	worksFor(): WorksForCalls {
+		this.#worksFor ??= worksForCalls(this.#api.cloud, this.profile.profileId);
+		return this.#worksFor;
 	}
 
 	async loadEmailDraft(sessionId: string, interactionId: string): Promise<EmailDraftState> {

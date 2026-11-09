@@ -93,6 +93,7 @@ import {
 } from "./interface-blocks.ts";
 import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
 import { renderMailbox } from "./mailbox.ts";
+import { renderMembers } from "./members.ts";
 import { roleLabel } from "./team.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
@@ -327,6 +328,11 @@ export function renderInterface(
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
 		renderMailbox(container, company, name, writes?.openSettings ? { openSettings: writes.openSettings } : {});
+		return;
+	}
+	// The Members page draws who each agent works for (views/members.ts; Jonas, 9 November 2026).
+	if (entry.name === "members") {
+		renderMembers(container, company);
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).

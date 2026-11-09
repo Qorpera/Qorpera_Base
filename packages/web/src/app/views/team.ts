@@ -385,14 +385,29 @@ export function renderTeam(
 			deleting ? t("Delete company") : t("Leave company"),
 			() =>
 				void (async () => {
+					// Agents that work for a member who leaves go to the open pile (migration 20260930700000): say how
+					// many, so they can be handed over on the Members page first. A cloud without it says nothing.
+					const carried = deleting
+						? 0
+						: await company
+								.worksFor()
+								.read()
+								.then((read) => read.agents.filter((agent) => agent.userId === company.userId).length)
+								.catch(() => 0);
+					if (!current()) return;
 					const confirmed = await confirmDialog(
 						deleting
 							? t("Delete {company}? Type the company name to confirm.", {
 									company: profile.profileName,
 								})
-							: t("Leave {company}? You lose access until someone invites you again.", {
-									company: profile.profileName,
-								}),
+							: carried
+								? t(
+										"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.",
+										{ company: profile.profileName, n: String(carried) },
+									)
+								: t("Leave {company}? You lose access until someone invites you again.", {
+										company: profile.profileName,
+									}),
 						deleting ? t("Delete company") : t("Leave"),
 						true,
 						deleting ? profile.profileName : undefined,

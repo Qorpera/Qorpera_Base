@@ -1102,6 +1102,33 @@ environment.
 > Consent records stay. No call for the page set is listed here yet. This note records scope; it says nothing
 > about what is built.
 
+### Who each agent works for (20260930700000_agent_works_for)
+
+The Members page (Jonas, 9 Nov 2026). Each agent of a company except its Co-Founder works for one member, or for
+nobody: its row when one was saved, else the member who hired it while a member, else nobody (no known hirer). A member who leaves leaves their agents working for nobody, and every open ask that involves them is void.
+20260930701000 makes an agent's own work (its routines, wakes and the work handed to it) run on that member's login.
+Each call answers 42501 for a caller who is not a member of the company.
+
+- `qorpera_read_works_for(profile)`: `{schema: "qorpera.works-for/v1", may_ask, may_ask_for_others, agents, logins,
+  asks}`. `may_ask` is false for a viewer; `may_ask_for_others` is true for an owner or admin. `agents` is
+  `[{staff_agent_id, user_id (null: nobody), since (null: never moved)}]`. `logins` is one entry per member,
+  `{user_id, state, used_percent, resets_at}`: `state` is `ready`, `full` (every live login used up; `resets_at` the
+  first reset when known), `sign_in` (no live login, one needs a new sign-in) or `none`; `used_percent` is 0-100 of
+  the login with the most room, null when no fresh reading says. No email or account is shown. `asks` are the open
+  asks, `[{id, staff_agent_id, from_user_id, to_user_id, asked_by_user_id, asked_by_staff_agent_id,
+  answer_by_user_id, created_at}]`. Read it when the page opens, after each call below, and every 30 s while it is
+  open.
+- `qorpera_ask_works_for(profile, staff_agent, to_user)`: `{moved, ask_id}`. Asking for the member it already works
+  for, or taking (to = the caller) an agent that works for nobody, moves at once (`moved` true, no ask). Otherwise an
+  open ask answered by the side that did not ask: taking an agent asks the member it works for; offering one, by that
+  member or by an owner or admin, asks the member it would go to. A viewer cannot ask (42501) or receive (22023);
+  another member's agent can be offered only by them or an owner or admin (42501); one open ask per agent (55P03,
+  "Someone has already asked about that agent"); the Co-Founder or an archived agent is 22023.
+- `qorpera_answer_works_for(ask, yes)`: `{status, moved}`. The member asked says yes (`yes`, the agent moves) or no
+  (`no`); the member who asked may withdraw (`yes` false, `withdrawn`). A yes on an agent that meanwhile works for
+  someone else, or for a member who is now a viewer, is `void` and moves nothing. An ask already answered answers its
+  status. Anyone else is 42501.
+
 ### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under

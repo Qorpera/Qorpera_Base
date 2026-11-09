@@ -1,0 +1,146 @@
+/* The Members page (app/views/members.ts): who each agent works for, drawn big. Up to three members a mat each side
+ * by side; with more, a tile each and one member open below. Each member's colour is their person colour (`--seat`). */
+.members-page {
+	flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 16px; align-content: start;
+	padding: 18px 24px 28px;
+}
+.members-foot { margin: 0; color: var(--text-soft); font-size: 12.5px; }
+
+/* The split: one bar, the members' colours by how many agents each carries. */
+.members-split { display: grid; gap: 8px; }
+.members-split-bar { display: flex; gap: 3px; height: 12px; }
+.members-split-bar i { display: block; min-width: 6px; border-radius: 99px; transition: flex-grow var(--motion-base) var(--ease-spring); }
+.members-split-legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; color: var(--text-muted); font-size: 13px; }
+.members-split-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.members-split-legend i { width: 10px; height: 10px; border-radius: 50%; }
+.members-split-legend b { color: var(--text); font-weight: 650; }
+
+/* The Co-Founder's suggestion. */
+.members-suggest {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 16px; border-radius: 16px;
+	background: color-mix(in srgb, var(--composer-accent) 8%, var(--bg));
+	border: 1px solid color-mix(in srgb, var(--composer-accent) 18%, transparent);
+}
+.members-suggest p { flex: 1 1 240px; margin: 0; font-size: 14px; line-height: 1.45; }
+
+/* A face, a subscription, an agent. */
+.members-face {
+	display: grid; place-items: center; width: var(--face, 48px); height: var(--face, 48px); flex: none; border-radius: 50%;
+	background: var(--person-color); color: #fff; font-size: calc(var(--face, 48px) * 0.36); font-weight: 650;
+}
+.members-seat-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.members-who { display: grid; min-width: 0; }
+.members-who b { font-size: 16px; font-weight: 650; }
+.members-who span { color: var(--text-muted); font-size: 12.5px; }
+.members-sub { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--bg); font-size: 12.5px; }
+.members-sub-row { display: flex; justify-content: space-between; gap: 10px; color: var(--text-muted); white-space: nowrap; }
+.members-sub.is-compact .members-sub-row { flex-direction: column; gap: 0; white-space: normal; }
+.members-sub-row b { color: var(--text); font-weight: 600; }
+.members-meter { display: block; height: 6px; border-radius: 99px; background: var(--pane-strong); overflow: hidden; }
+.members-meter i { display: block; height: 100%; border-radius: 99px; }
+.members-sub.is-warn { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 45%, transparent); }
+.members-sub-warn { color: var(--warning); font-weight: 600; }
+.members-sub.is-none { display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); }
+.members-sub.is-compact { padding: 8px 10px; }
+.members-areas { display: flex; flex-wrap: wrap; align-items: start; gap: 14px 26px; }
+.members-areas > .members-empty, .members-areas > .members-incoming { flex: 1 1 100%; }
+.members-area { display: grid; gap: 6px; }
+.members-area-name { color: var(--text-muted); font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
+.members-crew { display: flex; flex-wrap: wrap; gap: 6px; }
+.members-agent {
+	display: grid; justify-items: center; align-content: start; gap: 1px; width: 86px; padding: 8px 2px 6px; border: 0; border-radius: 14px;
+	background: transparent; color: var(--text); font: inherit; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
+}
+.members-agent:hover { background: color-mix(in srgb, var(--text) 5%, transparent); transform: translateY(-2px); }
+.members-agent:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.members-agent.is-picked { background: color-mix(in srgb, var(--composer-accent) 14%, transparent); box-shadow: inset 0 0 0 2px var(--composer-accent); }
+.members-agent.is-asking { opacity: 0.45; }
+.members-agent-name { margin-top: 4px; font-size: 13px; font-weight: 650; }
+.members-agent-role { color: var(--text-soft); font-size: 11px; line-height: 1.2; text-align: center; }
+.members-empty {
+	display: grid; justify-items: center; gap: 4px; padding: 26px 14px; border: 1.5px dashed var(--border-strong);
+	border-radius: 14px; color: var(--text-muted); font-size: 13px; text-align: center;
+}
+.members-empty b { color: var(--text); font-weight: 600; }
+.members-incoming {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border: 1.5px dashed var(--seat);
+	border-radius: 14px; background: color-mix(in srgb, var(--seat) 8%, var(--bg)); font-size: 13px;
+}
+.members-incoming > span { flex: 1 1 140px; }
+.members-move {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; border-radius: 14px;
+	background: var(--text); color: var(--bg); font-size: 13.5px;
+}
+.members-move .btn { border-color: transparent; background: var(--bg); color: var(--text); }
+.members-move .members-move-to { box-shadow: inset 4px 0 0 var(--seat); padding-left: 14px; }
+.members-move .members-ghost { background: transparent; color: inherit; }
+.members-stage { display: grid; gap: 12px; }
+
+/* Layout 1: mats side by side, each tinted in its member's colour. */
+.members-mats { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.members-mat {
+	display: grid; gap: 14px; align-content: start; min-height: 360px; padding: 16px; border: 2px solid transparent;
+	border-radius: 22px; background: color-mix(in srgb, var(--seat) 13%, var(--bg));
+	transition: border-color var(--motion-fast) ease;
+}
+.members-mat.is-target { border-color: var(--seat); border-style: dashed; }
+
+@media (max-width: 760px) {
+	.members-page { padding: 14px 14px 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.members-agent, .members-split-bar i, .members-tile { transition: none; }
+}
+
+/* Many members: a summary line, a tile per member, and the open member's mat below. */
+.members-summary { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; color: var(--text-muted); font-size: 13.5px; }
+.members-summary b { color: var(--text); font-weight: 650; }
+.members-summary-warn { color: var(--warning); font-weight: 600; }
+.members-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.members-tile {
+	display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px; border: 1.5px solid var(--border);
+	border-radius: 16px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	transition: border-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring), background-color var(--motion-fast) ease;
+}
+.members-tile:hover { transform: translateY(-1px); border-color: var(--border-strong); }
+.members-tile:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 2px; }
+.members-tile.is-open { border-color: var(--seat); background: color-mix(in srgb, var(--seat) 13%, var(--bg)); box-shadow: inset 0 0 0 1px var(--seat); }
+.members-tile.is-target { border-style: dashed; border-color: var(--composer-accent); }
+.members-ring {
+	display: grid; place-items: center; border-radius: 50%;
+	background: conic-gradient(var(--seat) calc(var(--used) * 1%), var(--pane-strong) 0);
+}
+.members-ring.is-small { flex: none; width: 52px; height: 52px; }
+.members-ring.is-small .members-face { box-shadow: 0 0 0 3px var(--bg); }
+.members-tile.is-open .members-ring.is-small .members-face { box-shadow: 0 0 0 3px color-mix(in srgb, var(--seat) 13%, var(--bg)); }
+.members-tile-copy { display: grid; gap: 1px; min-width: 0; }
+.members-tile-name { overflow: hidden; font-size: 14px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.members-tile-count { color: var(--text-muted); font-size: 12px; }
+.members-tile-faces { display: flex; align-items: center; min-height: 24px; }
+.members-tile-faces .figure + .figure { margin-left: -6px; }
+.members-tile-faces small { margin-left: 4px; color: var(--text-soft); font-size: 11px; font-weight: 600; }
+.members-tile-warn { color: color-mix(in srgb, var(--warning) 70%, var(--text)); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
+.members-tile.is-warn .members-ring { background: conic-gradient(var(--warning) calc(var(--used) * 1%), var(--pane-strong) 0); }
+@media (max-width: 760px) {
+	/* On a phone the tiles are one row that scrolls sideways, the open member below. */
+	.members-tiles { display: flex; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: 4px; }
+	.members-tile { flex: 0 0 150px; scroll-snap-align: start; }
+}
+
+/* What the last call did; the asks the viewer answers; an agent waiting on an ask; the open pile. */
+.members-note { margin: 0; padding: 8px 12px; border-radius: 12px; background: var(--pane-strong); font-size: 13.5px; }
+.members-asks { display: grid; gap: 8px; }
+.members-ask {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 10px 14px; border-radius: 16px;
+	border: 1.5px solid var(--composer-accent); background: color-mix(in srgb, var(--composer-accent) 7%, var(--bg));
+}
+.members-ask p { flex: 1 1 220px; margin: 0; font-size: 14px; }
+.members-agent-wrap { display: grid; justify-items: center; gap: 2px; }
+.members-agent:disabled { cursor: default; }
+.members-agent:disabled:hover { transform: none; background: transparent; }
+.members-agent-pending { display: grid; justify-items: center; max-width: 96px; color: var(--text-muted); font-size: 11px; text-align: center; }
+.members-link { padding: 0; border: 0; background: none; color: var(--composer-accent); font: inherit; font-weight: 600; cursor: pointer; }
+.members-mat.is-pile { min-height: 0; border: 1.5px dashed var(--border-strong); background: transparent; }
+.members-pile-face { background: var(--pane-strong); color: var(--text-muted); }
+.members-tile:disabled { opacity: 0.45; cursor: default; transform: none; }
