@@ -25,8 +25,21 @@
 @keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; container: thread-body / inline-size; }
 .thread-conversation { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; container: thread-conversation / inline-size; }
-/* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
+/* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways. */
 .messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px calc(40px + var(--thread-foot, 0px)); scroll-padding-bottom: var(--thread-foot, 0px); display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
+/* A thread shows a slim scrollbar like Claude Code's: a thin grey pill with no track, inset from the edge, running past
+ * the composer, which stands over the thread with no background (Jonas, 10 Nov 2026). Other quiet scrollers keep no
+ * bar. Browsers with the WebKit scrollbar parts take the drawn pill (Chrome and Safari ignore those parts once
+ * scrollbar-width is set, so it goes back to auto); the rest take their own thin bar in the same colour. */
+.messages.scroll-quiet { scrollbar-width: auto; }
+.messages.scroll-quiet::-webkit-scrollbar { display: block; width: 12px; background: transparent; }
+.messages.scroll-quiet::-webkit-scrollbar-track { background: transparent; margin: 6px 0; }
+.messages.scroll-quiet::-webkit-scrollbar-thumb { min-height: 40px; border: 3px solid transparent; border-radius: 6px; background: var(--scrollbar-thumb) padding-box; }
+.messages.scroll-quiet::-webkit-scrollbar-thumb:hover, .messages.scroll-quiet::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-thumb-hover); }
+.messages.scroll-quiet::-webkit-scrollbar-button, .messages.scroll-quiet::-webkit-scrollbar-corner { display: none; }
+@supports not selector(::-webkit-scrollbar) {
+	.messages.scroll-quiet { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+}
 /* The live log (what a screen reader hears as new) and, above it, the older items "Show earlier"
    read: each lays its rows out as the thread did before it had two parts. The log fills the
    rest of the thread, so the empty line stays centred. */
