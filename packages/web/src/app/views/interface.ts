@@ -861,7 +861,7 @@ export function renderInterfaceFile(
 				h(
 					"header",
 					{ class: "interface-head" },
-					interfaceEmblem(file.emblem, file.colour, 30),
+					interfaceEmblem(file.emblem, 30),
 					h(
 						"div",
 						{ class: "interface-title" },

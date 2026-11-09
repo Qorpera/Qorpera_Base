@@ -101,7 +101,7 @@ function choicePicture(preview: string, context: InteractionCardContext): HTMLEl
 		return h(
 			"span",
 			{ class: "choice-picture is-app", "aria-hidden": "true" },
-			interfaceEmblem(null, null, 40),
+			interfaceEmblem(null, 40),
 			h("span", { class: "choice-app-name" }, app[1] ?? ""),
 		);
 	const box = h("span", { class: "choice-picture is-loading", "aria-hidden": "true" });

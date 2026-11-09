@@ -1342,7 +1342,7 @@ function drawInterfaces(
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
-		const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
+		const model = JSON.stringify([name, file.name, file.about, file.emblem, count]);
 		const kept = parts.interfaceRows.get(name);
 		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
 		rows.set(name, { shown: model, element });
@@ -1358,7 +1358,7 @@ function drawInterfaces(
 		const manifest = app.manifest;
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
-		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, manifest.colour]);
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
@@ -1413,7 +1413,7 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 		h(
 			"span",
 			{ class: "rail-app-stand" },
-			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 34),
+			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, 34),
 			countBadge(count),
 		),
 		h("span", { class: "rail-app-name" }, file.name),
@@ -1430,7 +1430,7 @@ function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 			draggable: "false",
 			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),
 	);
 }
@@ -1446,7 +1446,7 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 			draggable: "false",
 			title: count === 1 ? t("1 concept") : t("{count} concepts", { count }),
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", "purple", 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", 34)),
 		h("span", { class: "rail-app-name" }, label),
 	);
 }
