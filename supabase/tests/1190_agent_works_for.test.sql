@@ -214,7 +214,14 @@ begin
 		raise exception 'the ask to B is not void'; end if;
 end $$;
 
--- 7. C's account is deleted: the asks C made stay, with no one named as their asker, and Hugo and Jens work for nobody.
+-- 7. The owner asks to take Hugo, so C, whose account is then deleted, would answer. The asks C made stay with no one
+--    named as their asker, the open ask C would answer is void, and Hugo and Jens work for nobody.
+select pg_temp.as_member('a');
+set local role authenticated;
+delete from works_ask;
+insert into works_ask select (public.qorpera_ask_works_for('11900000-0000-4000-8000-000000000101',
+	'11900000-0000-4000-8000-000000000201', '11900000-0000-4000-8000-00000000000a') ->> 'ask_id')::uuid;
+reset role;
 delete from auth.users where id = '11900000-0000-4000-8000-00000000000c';
 do $$
 begin
@@ -223,6 +230,20 @@ begin
 		raise exception 'the asks of a deleted account are gone'; end if;
 	if exists (select 1 from public.qorpera_agent_works_for where profile_id = '11900000-0000-4000-8000-000000000101'
 		and user_id = '11900000-0000-4000-8000-00000000000c') then raise exception 'an agent works for a deleted account'; end if;
+	if (select status from public.qorpera_agent_works_for_asks where id = (select id from works_ask)) <> 'void'
+		or exists (select 1 from public.qorpera_agent_works_for_asks where profile_id = '11900000-0000-4000-8000-000000000101'
+			and status = 'open') then raise exception 'an open ask outlived the account that would answer it'; end if;
 end $$;
+-- The page reads, and the owner can take Hugo now.
+select pg_temp.as_member('a');
+set local role authenticated;
+do $$
+begin
+	if jsonb_array_length(public.qorpera_read_works_for('11900000-0000-4000-8000-000000000101') -> 'asks') <> 0 then
+		raise exception 'the page still shows an ask nobody can answer'; end if;
+	if not (public.qorpera_ask_works_for('11900000-0000-4000-8000-000000000101', '11900000-0000-4000-8000-000000000201',
+		'11900000-0000-4000-8000-00000000000a') ->> 'moved')::boolean then raise exception 'Hugo is still held'; end if;
+end $$;
+reset role;
 
 rollback;

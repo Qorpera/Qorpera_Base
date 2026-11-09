@@ -2031,6 +2031,61 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
+	it("says how many agents work for the member before leaving, with one dialog however often Leave is clicked", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({ ...team, role: "contributor" });
+		let answer: (value: unknown) => void = () => {};
+		const unexpected = vi.mocked(fixtureState.cloud.rpc).getMockImplementation();
+		vi.mocked(fixtureState.cloud.rpc).mockImplementation(async (name: string, args?: unknown) => {
+			if (name !== "qorpera_read_works_for") return unexpected?.(name, args as never);
+			return new Promise((resolve) => {
+				answer = resolve;
+			});
+		});
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		click(f.root, ".company-exit");
+		click(f.root, ".company-exit");
+		await settle();
+		// The count is read before the dialog opens.
+		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+		answer({
+			schema: "qorpera.works-for/v1",
+			may_ask: true,
+			may_ask_for_others: false,
+			agents: [id(41), id(42)].map((agent) => ({ staff_agent_id: agent, user_id: userA.id, since: null })),
+			logins: [],
+			asks: [],
+		});
+		await settle();
+		const dialogs = document.querySelectorAll('[role="alertdialog"]');
+		expect(dialogs).toHaveLength(1);
+		expect(dialogs[0]?.textContent).toContain("2 agents work for you: they go to the open pile");
+	});
+
+	it("asks to leave after two seconds when the agent count is slow to read", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({ ...team, role: "contributor" });
+		const unexpected = vi.mocked(fixtureState.cloud.rpc).getMockImplementation();
+		vi.mocked(fixtureState.cloud.rpc).mockImplementation(async (name: string, args?: unknown) =>
+			name === "qorpera_read_works_for" ? new Promise(() => {}) : unexpected?.(name, args as never),
+		);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		click(f.root, ".company-exit");
+		await vi.advanceTimersByTimeAsync(2100);
+		await settle();
+		const dialog = document.querySelector('[role="alertdialog"]');
+		expect(dialog?.textContent).toContain("You lose access until someone invites you again.");
+		expect(dialog?.textContent).not.toContain("agents work for you");
+	});
+
 	it("keeps settings and company membership after a failed deletion", async () => {
 		history.replaceState(null, "", "/#/");
 		const f = await setup();

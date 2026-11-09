@@ -4,8 +4,8 @@
 -- creation, because the member whose message starts work pays for it and for everything that follows from it. The other
 -- founder was a spectator. Jonas asked for a Members page that splits the agents between members "through simple and
 -- big visuals", and said yes to the rule behind it: each agent works for one member, who answers its questions and whose
--- subscription carries the agent's own work. This migration is the record and the moves; 20260930701000 makes the
--- agent's own work run on that member's login.
+-- subscription carries the work handed to the agent. This migration is the record and the moves; 20260930701000 makes
+-- that work run on that member's login.
 --
 -- * Who an agent works for (qorpera_agent_works_for_user): its row in qorpera_agent_works_for when it has one, which
 --   may say nobody (its member left); else the member who hired it, while a member; else nobody (no hirer is known).
@@ -19,7 +19,8 @@
 -- * The live read (qorpera_read_works_for) gives the page every agent with the member it works for, the open asks,
 --   and each member's login state as co-founders already see it at the founding table: connected or not, a new sign-in
 --   needed, how much of the login's usage window is used, and when a used-up login resets. Never an email or account.
--- * A member who leaves: the agents that worked for them work for nobody, and the asks that involve them are void.
+-- * A member who leaves: the agents that worked for them work for nobody, and the asks that involve them are void; so
+--   is an open ask whose member's account is deleted.
 -- Locks: an ask and an answer take the company's member rows FOR SHARE first (in user order), then the ask, then the
 -- agent's staff row: a member leaving (a delete of their row, whose trigger clears their agents and asks) waits for
 -- them or goes first, never in between, and the two never wait on each other the other way round. Two new tables; a
@@ -311,3 +312,21 @@ end $$;
 revoke all on function public.qorpera_works_for_member_left() from public, anon, authenticated, service_role;
 create trigger qorpera_works_for_member_left after delete on public.qorpera_profile_members
 	for each row execute function public.qorpera_works_for_member_left();
+
+-- An open ask whose member, or the member who answers it, lost their account (an account deletion clears the names
+-- before or after the member-left trigger runs) is void: nobody could answer it, and it would hold the agent.
+create function public.qorpera_works_for_ask_lost_member()
+returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+	-- 20260930700000
+	if new.status = 'open' and (new.to_user_id is null or new.answer_by_user_id is null) then
+		new.status := 'void';
+		new.answered_at := clock_timestamp();
+	end if;
+	return new;
+end $$;
+revoke all on function public.qorpera_works_for_ask_lost_member() from public, anon, authenticated, service_role;
+create trigger qorpera_works_for_ask_lost_member before update of to_user_id, answer_by_user_id
+	on public.qorpera_agent_works_for_asks
+	for each row execute function public.qorpera_works_for_ask_lost_member();

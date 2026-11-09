@@ -1114,8 +1114,9 @@ environment.
 
 The Members page (Jonas, 9 Nov 2026). Each agent of a company except its Co-Founder works for one member, or for
 nobody: its row when one was saved, else the member who hired it while a member, else nobody (no known hirer). A member who leaves leaves their agents working for nobody, and every open ask that involves them is void.
-20260930701000 makes the work handed to an agent by another agent run on that member's own login (never a ChatGPT
-plan login, never a company account; with none, it stays the chain starter's). A member's own message is still paid
+20260930701000 makes the work handed to an agent by another agent run on that member's own login: the login the
+first-choice order picks for new work of theirs, when it is theirs and not a ChatGPT plan login (otherwise, or with
+none, it stays the chain starter's). A member's own message is still paid
 by them, and a routine still by the member who saved it: moving an agent does not move its routines.
 Each call answers 42501 for a caller who is not a member of the company.
 

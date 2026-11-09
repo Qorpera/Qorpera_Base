@@ -2,7 +2,8 @@
 -- An ask and an answer hold the company's member rows FOR SHARE before anything else, so a leaving member's delete,
 -- whose trigger clears their agents and asks, comes wholly before or after them: an ask never lands on a member who
 -- left, and an answer and a departure never deadlock. Row locks show only across connections, so the company is
--- committed here and removed at the end. Waits are seen with pg_blocking_pids, never by wall-clock time.
+-- committed here and removed at the end. Waits are seen with pg_blocking_pids, never by wall-clock time; a third
+-- connection holds an answer midway.
 -- "Race shop": owner A, admin B, contributor C. Agents Xena and Yara work for B.
 
 insert into auth.users(id, email) values
@@ -24,7 +25,7 @@ insert into public.qorpera_agent_works_for(profile_id, staff_agent_id, user_id) 
 	('11930000-0000-4000-8000-000000000101', '11930000-0000-4000-8000-000000000201', '11930000-0000-4000-8000-00000000000b'),
 	('11930000-0000-4000-8000-000000000101', '11930000-0000-4000-8000-000000000202', '11930000-0000-4000-8000-00000000000b');
 
-select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['race_leave', 'race_act']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['race_leave', 'race_act', 'race_hold']) name;
 
 -- Runs p_act on race_act (as member p_as) while race_leave holds B's departure open; answers whether it waited for the
 -- departure, and what it answered or the SQLSTATE it raised.
@@ -84,19 +85,55 @@ values ('11930000-0000-4000-8000-000000000101', '11930000-0000-4000-8000-0000000
 	'11930000-0000-4000-8000-00000000000c', '11930000-0000-4000-8000-00000000000b', '11930000-0000-4000-8000-00000000000c',
 	'11930000-0000-4000-8000-000000000301');
 
+-- F6: C says yes to Yara, and is held at Yara's staff row (race_hold keeps it) with the members and the ask already
+-- taken; B starts leaving meanwhile. The departure waits for C's answer on the member rows, never the other way round,
+-- so both finish: Yara works for C, and B's departure finds nothing of B's to clear. (Before, the answer took the ask
+-- first and the departure took Yara's row first, and each waited for the other.)
 do $$
-declare v jsonb;
+declare v_hold integer; v_act integer; v_leave integer; v_answer text; v_act_waited boolean := false;
+	v_leave_waited boolean := false;
 begin
-	-- F6: C says yes to Yara while B leaves. The answer waits (no deadlock), then finds the ask void: Yara works for nobody.
-	v := pg_temp.while_b_leaves('c', $q$public.qorpera_answer_works_for('11930000-0000-4000-8000-000000000301', true) ->> 'status'$q$);
-	if not (v ->> 'waited')::boolean or v ->> 'answer' <> 'ok void' then
-		raise exception 'a yes while the asker left: %', v; end if;
+	select pid into v_hold from dblink('race_hold', 'select pg_backend_pid()') as b(pid integer);
+	select pid into v_act from dblink('race_act', 'select pg_backend_pid()') as b(pid integer);
+	select pid into v_leave from dblink('race_leave', 'select pg_backend_pid()') as b(pid integer);
+	perform dblink_exec('race_hold', 'begin');
+	perform * from dblink('race_hold', $q$select 1 from public.qorpera_profile_staff
+		where staff_agent_id = '11930000-0000-4000-8000-000000000202' for update$q$) as held(one integer);
+	perform dblink_exec('race_act', $q$set request.jwt.claims = '{"sub":"11930000-0000-4000-8000-00000000000c","role":"authenticated"}'$q$);
+	perform dblink_exec('race_act', 'set role authenticated');
+	perform dblink_send_query('race_act', $q$select public.qorpera_answer_works_for('11930000-0000-4000-8000-000000000301',
+		true) ->> 'status'$q$);
+	for attempt in 1..400 loop
+		v_act_waited := v_hold = any(pg_blocking_pids(v_act));
+		exit when v_act_waited or dblink_is_busy('race_act') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	if not v_act_waited then raise exception 'the answer did not reach the staff row'; end if;
+	perform dblink_exec('race_leave', 'begin');
+	perform dblink_send_query('race_leave', $q$delete from public.qorpera_profile_members
+		where profile_id = '11930000-0000-4000-8000-000000000101' and user_id = '11930000-0000-4000-8000-00000000000b'$q$);
+	for attempt in 1..400 loop
+		v_leave_waited := v_act = any(pg_blocking_pids(v_leave));
+		exit when v_leave_waited or dblink_is_busy('race_leave') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	if not v_leave_waited then raise exception 'the departure did not wait for the answer'; end if;
+	perform dblink_exec('race_hold', 'commit');
+	select answer into v_answer from dblink_get_result('race_act') as call(answer text);
+	perform * from dblink_get_result('race_act', false) as call(answer text);
+	perform dblink_exec('race_act', 'reset role');
+	perform * from dblink_get_result('race_leave') as call(answer text);
+	perform * from dblink_get_result('race_leave', false) as call(answer text);
+	perform dblink_exec('race_leave', 'commit');
+	if v_answer <> 'yes' then raise exception 'the held yes answered %', v_answer; end if;
 	if (select user_id from public.qorpera_agent_works_for where staff_agent_id = '11930000-0000-4000-8000-000000000202')
-		is not null then raise exception 'Yara moved on a void yes'; end if;
+		<> '11930000-0000-4000-8000-00000000000c' then raise exception 'Yara does not work for C'; end if;
+	if exists (select 1 from public.qorpera_profile_members where profile_id = '11930000-0000-4000-8000-000000000101'
+		and user_id = '11930000-0000-4000-8000-00000000000b') then raise exception 'B did not leave'; end if;
 end $$;
 
 -- At the end: remove what the test committed.
-select dblink_disconnect(name) from unnest(array['race_leave', 'race_act']) name;
+select dblink_disconnect(name) from unnest(array['race_leave', 'race_act', 'race_hold']) name;
 delete from public.qorpera_profiles where id = '11930000-0000-4000-8000-000000000101';
 delete from auth.users where id in ('11930000-0000-4000-8000-00000000000a', '11930000-0000-4000-8000-00000000000b',
 	'11930000-0000-4000-8000-00000000000c');
