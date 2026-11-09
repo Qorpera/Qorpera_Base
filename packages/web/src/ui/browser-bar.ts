@@ -3,7 +3,10 @@
  * cannot follow it; instead the page tells the browser its colour with `theme-color`, and
  * browsers that honour it (Safari with "Show color in tab bar", an installed web app, phone
  * browsers) paint their bar to match, in every theme (Jonas, 9 Nov 2026: the sidebar should
- * match the browser's bar whatever the browser). Browsers that ignore it keep their own. */
+ * match the browser's bar whatever the browser). Browsers that ignore it keep their own. Safari
+ * with that setting off (its default) ignores it too; there the sidebar takes Safari's own
+ * toolbar greys instead (ui/appearance.ts applyBrowserChrome, styles/tokens.css), and this tag
+ * then carries those greys, so the two match either way. */
 
 /** The first fully opaque background under the page's top-left corner. Dimming layers under a
  * dialog are see-through, so the bar keeps the colour beneath them. */
@@ -51,8 +54,9 @@ function opaque(color: string): boolean {
 }
 
 /** Keep `<meta name="theme-color">` on the top-left colour as routes, the theme, the window
- * size and the sidebar change. Reads at most once a frame. */
-export function watchBrowserBar(): () => void {
+ * size and the sidebar change. `root` is where the app draws its screens and dialogs. Reads at
+ * most once a frame. */
+export function watchBrowserBar(root: Element): () => void {
 	let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 	if (!meta) {
 		meta = document.createElement("meta");
@@ -70,12 +74,18 @@ export function watchBrowserBar(): () => void {
 		frame ??= requestAnimationFrame(update);
 	};
 	const system = window.matchMedia("(prefers-color-scheme: dark)");
-	// The sidebar shows, hides or moves through `hidden` and classes.
+	// The sidebar shows, hides or moves through `hidden` and classes; its colour follows the
+	// theme and, in Safari, the window going behind (ui/appearance.ts applyBrowserChrome).
 	const observer = new MutationObserver(schedule);
-	observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["hidden", "class"] });
-	// A dialog or layer added to the page itself (not every change inside it).
+	observer.observe(document.documentElement, {
+		subtree: true,
+		attributes: true,
+		attributeFilter: ["hidden", "class", "data-theme", "data-chrome", "data-window-inactive"],
+	});
+	// A screen or dialog put into the app, or a layer added to the page (not every change inside them).
 	const layers = new MutationObserver(schedule);
 	layers.observe(document.body, { childList: true });
+	if (root !== document.body) layers.observe(root, { childList: true });
 	window.addEventListener("hashchange", schedule);
 	window.addEventListener("resize", schedule);
 	window.addEventListener("qorpera-theme-change", schedule);
