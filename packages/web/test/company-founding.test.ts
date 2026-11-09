@@ -1639,11 +1639,76 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			.click();
 		expect(box.value).toBe("A café with takeaway");
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
-		expect(start).toHaveBeenCalledWith("A café with takeaway", "start");
+		expect(start).toHaveBeenCalledWith("A café with takeaway", "start", "");
 		[...container.querySelectorAll<HTMLButtonElement>("button")]
 			.find((item) => item.textContent?.includes("Invite friends"))!
 			.click();
-		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends");
+		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends", "");
+		hub.dispose();
+	});
+
+	it("names the company from the Company name field, or after the idea when it is left empty", async () => {
+		const { api, cloud } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		const names: unknown[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_open_company_founding") {
+				names.push(args.p_company_name);
+				return wire({ companyName: String(args.p_company_name), vision: "" });
+			}
+			if (name === "qorpera_update_company_founding") return wire({ vision: String(args.p_vision), revision: 5 });
+			throw new Error(`Unexpected RPC ${name}`);
+		});
+		const hub = new HubController(api, me);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const label = container.querySelector<HTMLLabelElement>("label.hero-name-label")!;
+		expect(label.textContent).toBe("Company name");
+		const field = container.querySelector<HTMLInputElement>(`#${label.htmlFor}`)!;
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		expect(field.placeholder).toBe("Named after your idea");
+		box.value = "A webshop with ceramics. We ship from Aarhus.";
+		box.dispatchEvent(new Event("input"));
+		// Empty, it says the name the idea gives.
+		expect(field.placeholder).toBe("A webshop with ceramics");
+		// Enter in the name goes on to the idea and starts nothing.
+		field.focus();
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		expect(document.activeElement).toBe(box);
+		expect(names).toEqual([]);
+		field.value = "  Lerværket  ";
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		await settle();
+		expect(names).toEqual(["Lerværket"]);
+		// Once the company is open, both fields are empty for the next one.
+		expect(field.value).toBe("");
+		expect(box.value).toBe("");
+		// A name with no idea, by Invite friends: the name is used, and emptied too.
+		field.value = "Nordlys Kaffe";
+		[...container.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent?.includes("Invite friends"))!
+			.click();
+		await settle();
+		expect(names).toEqual(["Lerværket", "Nordlys Kaffe"]);
+		expect(field.value).toBe("");
+		hub.dispose();
+	});
+
+	it("turns a pasted tab or new line in the name into a space, so the cloud takes it", async () => {
+		const { api, cloud } = fixture();
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
+		const names: unknown[] = [];
+		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_open_company_founding") {
+				names.push(args.p_company_name);
+				return wire({ companyName: String(args.p_company_name), vision: "" });
+			}
+			if (name === "qorpera_update_company_founding") return wire({ vision: String(args.p_vision), revision: 5 });
+			throw new Error(`Unexpected RPC ${name}`);
+		});
+		const hub = new HubController(api, me);
+		expect(await hub.startFromIdea("Coffee.", "start", "Nordlys\tKaffe\n ")).toBe(true);
+		expect(await hub.startFromIdea("Tea.", "start", "\t\n")).toBe(true);
+		expect(names).toEqual(["Nordlys Kaffe", "Tea"]);
 		hub.dispose();
 	});
 	it("empties the box once a table opens with its idea, also through Resume, and keeps it while none has", async () => {

@@ -1,6 +1,10 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
-import { CompanyFoundingApi, type FoundingTableEntry } from "../../cloud/company-founding.ts";
+import {
+	CompanyFoundingApi,
+	FOUNDING_NAME_MAX_CHARACTERS,
+	type FoundingTableEntry,
+} from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
 import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
@@ -243,11 +247,19 @@ export class HubController {
 		}
 	}
 
-	/** The new-company box: the table opens with a name taken from the idea, which the founders can change there.
-	 * True once the table is open. */
-	startFromIdea(idea: string, intent: CreationIntent): Promise<boolean> {
+	/** The new-company box: the table opens with the name typed over the box, or else one taken from the idea; the
+	 * founders can change it at the table. True once the table is open. */
+	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
 		const vision = idea.trim();
-		return this.createCompany(companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
+		// A pasted tab or new line becomes a space, as in a name taken from the idea: the cloud refuses control
+		// characters, and a refused name would stay as the pending creation.
+		const typed = name
+			.replace(/\p{Cc}/gu, " ")
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
+			.trim();
+		return this.createCompany(typed || companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
 	}
 
 	/** True once the table is open. */
@@ -317,7 +329,8 @@ export class HubController {
 			}
 			this.store.set({ creating: undefined, creationRetry: undefined });
 			void this.refresh();
-			if (creation.vision) this.onTableOpened?.(creation.vision);
+			// The box empties its fields for the next company, also after a name-only Invite friends.
+			this.onTableOpened?.(creation.vision ?? "");
 			// The arrow alone starts the company at once; its page shows the start, not a table (Jonas, 9 Nov 2026).
 			setFoundingIntent(table.profileId, {
 				...(creation.intent === "friends" ? { friends: true } : {}),
