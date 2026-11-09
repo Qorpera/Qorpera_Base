@@ -65,7 +65,7 @@ artifacts.push({
 // save_coding_value's clipboard helper (20260930705000): the executor runs it with node; it reads the desktop's
 // clipboard, seals the key in it for the vault and clears it.
 await build({
-	entryPoints: ["packages/runtime/src/cloud-machine-coding-value.ts"],
+	entryPoints: ["packages/runtime/src/cloud-machine-coding-value-main.ts"],
 	outfile: resolve(output, "cloud-machine-coding-value.mjs"),
 	bundle: true,
 	platform: "node",
@@ -77,7 +77,7 @@ await build({
 const codingValues = await readFile(resolve(output, "cloud-machine-coding-value.mjs"));
 artifacts.push({
 	file: "cloud-machine-coding-value.mjs",
-	source: "packages/runtime/src/cloud-machine-coding-value.ts",
+	source: "packages/runtime/src/cloud-machine-coding-value-main.ts",
 	installedPath: "/opt/qorpera-machine/cloud-machine-coding-value.mjs",
 	owner: "root:root",
 	mode: "0444",

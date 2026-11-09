@@ -1520,7 +1520,7 @@ describe("machine tools", () => {
 			try {
 				const result = await f.boundary.invoke("v1", "qorpera", "save_coding_value", args);
 				expect(result.success).toBe(true);
-				expect(f.content(result)).toEqual({
+				expect(f.content(result as never)).toEqual({
 					saved: { service: "npm", variable: "npm_token", repository: "acme/web", version: 2, unchanged: false },
 				});
 				const operation = f.execute.mock.calls[0]![0].operation;
@@ -1575,7 +1575,10 @@ describe("machine tools", () => {
 					f.gateway.codingValue.mockRejectedValueOnce(new CloudMachineCodingValueRefusal(code));
 					const result = await f.boundary.invoke("v2", "qorpera", "save_coding_value", args);
 					expect(result.success).toBe(true);
-					const answer = f.content(result) as { saved: boolean; refused: { reason: string; message: string } };
+					const answer = f.content(result as never) as {
+						saved: boolean;
+						refused: { reason: string; message: string };
+					};
 					expect(answer.saved).toBe(false);
 					expect(answer.refused.reason).toBe(code);
 					expect(answer.refused.message.length).toBeGreaterThan(20);
@@ -1594,7 +1597,7 @@ describe("machine tools", () => {
 			const f = fixture(undefined, false, values);
 			try {
 				const result = await f.boundary.invoke("v3", "qorpera", "save_coding_value", args);
-				expect(f.content(result)).toEqual({
+				expect(f.content(result as never)).toEqual({
 					saved: false,
 					refused: {
 						reason: "VAULT_REFUSED",

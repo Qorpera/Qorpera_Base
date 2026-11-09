@@ -254,11 +254,15 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 test("the image carries save_coding_value's clipboard helper as its own file, with xsel, and checks it on the desktop", async () => {
 	// 20260930705000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
 	const packager = read("scripts/package-machine-guest.mjs");
-	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-coding-value\.ts"\]/);
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-coding-value-main\.ts"\]/);
 	assert.match(
 		packager,
-		/file: "cloud-machine-coding-value\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-coding-value\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+		/file: "cloud-machine-coding-value\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-coding-value-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
 	);
+	// The runtime imports the helper's module (its refusal codes), and every service bundle with it: loading it runs
+	// nothing. Only its entry, which nothing imports, runs the program.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-coding-value.ts"), /process\.(argv|stdin|exitCode)|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-coding-value-main.ts"), /^runMachineCodingValueCli\(/m);
 	// The guest helper stays the manifest's first artifact: the build record and the proofs read its pin there.
 	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-coding-value.mjs"'));
 	assert.match(imageScript, /--arg helperSha256 "\$\(jq -r '\.artifacts\[0\]\.sha256' "\$PACKAGE\/manifest\.json"\)"/);
@@ -296,7 +300,7 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 	try {
 		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
 		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
-		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-coding-value.ts")], outfile: join(temporary, "coding-value.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-coding-value-main.ts")], outfile: join(temporary, "coding-value.mjs") });
 		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
 		const helper = await readFile(join(temporary, "coding-value.mjs"), "utf8");
 		assert.doesNotMatch(guest, /coding-value-machine|xsel/);

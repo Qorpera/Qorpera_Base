@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isUuid } from "@qorpera/contracts";
 import {
 	type CodingValueMachineIdentity,
 	codingValueMatches,
@@ -18,7 +17,9 @@ import {
  * It reads the clipboard of display :1 into memory (xsel, no file), takes the one whole key of the service in it,
  * seals it to the capture key (the coding value box's machine kind, cloud-coding-value-capture-box.ts), clears both
  * the clipboard and the primary selection on every path, and prints one JSON line: the sealed box, or a refusal code.
- * It never prints, logs or writes the value, nor anything of the clipboard: a refusal names only why. */
+ * It never prints, logs or writes the value, nor anything of the clipboard: a refusal names only why.
+ * The program itself is cloud-machine-coding-value-main.ts, which only the guest package bundles: this module is
+ * imported by the runtime too (its refusal codes), so it must never run anything when loaded. */
 
 export const MACHINE_CODING_VALUE_TARGET_SCHEMA = "qorpera.coding-value-machine-target/v1";
 export const MACHINE_CODING_VALUE_BOX_SCHEMA = "qorpera.machine-coding-value-box/v1";
@@ -65,7 +66,6 @@ export interface MachineCodingValuePorts {
 	now(): number;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TARGET_KEYS = [
 	"bootId",
 	"capturePublicKey",
@@ -93,7 +93,7 @@ function target(value: unknown): Target | null {
 		return null;
 	const ids = [input.companyId, input.companyMachineId, input.placementId, input.bootId, input.receiptId];
 	if (
-		!ids.every((id) => typeof id === "string" && UUID.test(id)) ||
+		!ids.every((id) => isUuid(id)) ||
 		typeof input.service !== "string" ||
 		typeof input.variable !== "string" ||
 		typeof input.capturePublicKey !== "string"
@@ -269,16 +269,4 @@ export async function runMachineCodingValueCli(options: {
 	const output = await saveCodingValueFromClipboard(await readTarget(options.stdin), ports);
 	options.stdout.write(`${JSON.stringify(output)}\n`);
 	return 0;
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	runMachineCodingValueCli({ stdin: process.stdin, stdout: process.stdout }).then(
-		(code) => {
-			process.exitCode = code;
-		},
-		() => {
-			process.stderr.write("MACHINE_CODING_VALUE_FAILED\n");
-			process.exitCode = 1;
-		},
-	);
 }
