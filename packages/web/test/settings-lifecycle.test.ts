@@ -10,7 +10,7 @@ import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
 import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
-import type { HostedAccountEntitlement, HostedAccountMatch, HostedFriend } from "../src/cloud/types.ts";
+import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
