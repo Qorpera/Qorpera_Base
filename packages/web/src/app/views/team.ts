@@ -10,6 +10,9 @@ import { worksForCount } from "./members.ts";
 
 const ROLES: HostedProfileRole[] = ["viewer", "contributor", "admin", "owner"];
 
+/** The companies whose Delete/Leave company confirmation is being prepared. */
+const confirming = new WeakSet<CompanyController>();
+
 /** How many agents work for the member: read now, or the Members page's last read when the read fails or is slow. */
 async function agentsWorkingFor(company: CompanyController): Promise<number> {
 	const read = company
@@ -400,7 +403,16 @@ export function renderTeam(
 					// Agents that work for a member who leaves go to the open pile (migration 20260930700000): read how
 					// many before asking, so they can be handed over on the Members page first. A cloud without the read,
 					// or one that does not answer within two seconds, counts none.
-					const carried = deleting ? 0 : await agentsWorkingFor(company);
+					// One confirmation at a time: a second click while the count is read (the button may be drawn again
+					// meanwhile) opens no second dialog.
+					if (confirming.has(company)) return;
+					confirming.add(company);
+					let carried = 0;
+					try {
+						carried = deleting ? 0 : await agentsWorkingFor(company);
+					} finally {
+						confirming.delete(company);
+					}
 					if (!current()) return;
 					const confirmed = await confirmDialog(
 						deleting

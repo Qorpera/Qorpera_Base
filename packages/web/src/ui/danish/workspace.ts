@@ -161,8 +161,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Take them": "Tag dem",
 	"Tap an agent, then send it here.": "Tryk på en agent, og send den hertil.",
 	"Tap who {agent} should work for. They say yes first.": "Tryk på, hvem {agent} skal arbejde for. De siger ja først.",
-	"These agents work for nobody. Take one, and its own work runs on your ChatGPT.":
-		"Disse agenter arbejder ikke for nogen. Tag en, så kører dens eget arbejde på din ChatGPT.",
+	"These agents work for nobody. Take one, and the work handed to it runs on your ChatGPT.":
+		"Disse agenter arbejder ikke for nogen. Tag en, så kører det arbejde, den får, på din ChatGPT.",
 	"Waiting for {member}": "Venter på {member}",
 	"Who each agent works for.": "Hvem hver agent arbejder for.",
 	"Work already running finishes on the login it started on. Only new work moves.":

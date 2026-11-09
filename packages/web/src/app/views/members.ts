@@ -10,7 +10,7 @@ import { interfaceRows } from "../interfaces.ts";
 
 /* The Members page (Jonas, 9 November 2026: "this interface should help clear up and delegate responsibility/ownership
  * between members, help you re-organize supervision and subscription commitments etc through simple and big visuals").
- * Each agent but the Co-Founder works for one member, whose subscription carries its own work (migrations
+ * Each agent but the Co-Founder works for one member, whose subscription carries the work handed to it (migrations
  * 20260930700000 and 20260930701000). Up to three members the page draws a mat per member, side by side; with more, every
  * member as a small tile and one of them opened big below (Jonas: "not sure how any of them scales ... let's say there
  * were 10"). An agent moves by an ask the other side says yes to; an agent nobody works for sits in the open pile. */
@@ -401,7 +401,7 @@ function suggestion(container: HTMLElement, ctx: Ctx): HTMLElement | null {
 			seat.agents.some((agent) => !open.has(agent.id)),
 	);
 	const roomiest = [...seats]
-		.filter((seat) => seat !== stuck && seat.login?.state === "ready")
+		.filter((seat) => seat !== stuck && seat.login?.state === "ready" && seat.member?.role !== "viewer")
 		.sort(
 			(a, b) => (a.login?.usedPercent ?? 50) - (b.login?.usedPercent ?? 50) || a.agents.length - b.agents.length,
 		)[0];
@@ -672,7 +672,9 @@ function seatHead(seat: Seat, size: number): HTMLElement {
 			h(
 				"span",
 				null,
-				seat.member ? count : t("These agents work for nobody. Take one, and its own work runs on your ChatGPT."),
+				seat.member
+					? count
+					: t("These agents work for nobody. Take one, and the work handed to it runs on your ChatGPT."),
 			),
 		),
 	);
