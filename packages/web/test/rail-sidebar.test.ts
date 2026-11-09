@@ -366,6 +366,27 @@ describe("rail sections and pins", () => {
 		draw();
 		expect(groups(rail)).toEqual([["Unassigned", "Cy"]]);
 	});
+	it("lists everyone in a section, pinned and hidden ones too, when a search names it", async () => {
+		const placements = { ...demo().placements, [dee.id]: { sectionId: research, position: 2 } };
+		const { rail, draw, ready } = companyWith({ ...demo(), placements, hidden: [ada.id] });
+		await ready;
+		await settle();
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
+		input.value = "resea";
+		draw();
+		expect(groups(rail)).toEqual([["Research", "Bo", "Ada"]]);
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+		// "Unassigned" names what is in no section.
+		input.value = "unassigned";
+		draw();
+		expect(groups(rail)).toEqual([["Unassigned", "Cy", "Fixture conversation"]]);
+		expect(rail.querySelectorAll(".rail-pin")).toHaveLength(0);
+		// A name still finds one agent, wherever it sits.
+		input.value = "bo";
+		draw();
+		expect(groups(rail)).toEqual([["Research", "Bo"]]);
+	});
 	it("folds hidden agents at the foot of the list, where they can be shown again", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 		const { rail, manage, openCard, ready } = companyWith({ ...demo(), hidden: [cy.id, dee.id], pinned: [] });
