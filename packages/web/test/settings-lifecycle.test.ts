@@ -1094,28 +1094,24 @@ describe("settings session lifecycle", () => {
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
-	it("reads the Leaderboard once its tab opens: awards, then friends by tasks done", async () => {
+	it("reads the Leaderboard once its tab opens: friends by tasks done, or by revenue", async () => {
 		const f = await setup();
-		const person = (id: string, name: string, me: boolean, tasks: number, streak: number) => ({
+		const person = (id: string, name: string, me: boolean, tasks: number, revenueOre: number) => ({
 			user_id: id,
 			display_name: name,
 			me,
 			last_seen_at: me ? null : timestamp,
-			active_days: 3,
-			streak,
 			companies: 1,
-			agents: 2,
 			tasks,
-			sales_ore: 0,
+			revenue_ore: revenueOre,
 		});
 		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
 			if (name === "qorpera_friends_leaderboard")
 				return {
 					since: "2026-11-02T00:00:00Z",
 					hidden: false,
-					people: [person(userA.id, "Account A", true, 10, 4), person(userB.id, "Account B", false, 20, 2)],
+					people: [person(userA.id, "Account A", true, 10, 500000), person(userB.id, "Account B", false, 20, 0)],
 					companies: [],
-					agents: [],
 				};
 			if (name === "qorpera_list_review_rules") return [];
 			throw new Error("Unexpected RPC");
@@ -1130,14 +1126,14 @@ describe("settings session lifecycle", () => {
 		expect(leaderboardCalls()).toEqual([["qorpera_friends_leaderboard", {}]]);
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
 		expect(content.querySelector("h1")?.textContent).toBe("Leaderboard");
-		// No tabs, periods or filters: awards, the ranking and one switch.
-		expect(content.querySelectorAll("[aria-pressed]")).toHaveLength(0);
-		expect(content.querySelector(".leaderboard-award")?.textContent).toContain("Longest streak");
-		const rows = [...content.querySelectorAll(".leaderboard-row")].map((row) => row.textContent ?? "");
-		expect(rows).toHaveLength(2);
-		expect(rows[0]).toContain("Account B");
-		expect(rows[1]).toContain("Account A");
-		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("4 days in a row");
+		const rows = () => [...content.querySelectorAll(".leaderboard-row")].map((row) => row.textContent ?? "");
+		expect(rows()).toHaveLength(2);
+		expect(rows()[0]).toContain("Account B");
+		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("Account A");
+		click(content, '[data-value="revenue"]');
+		expect(rows()[0]).toContain("Account A");
+		// The categories switch on the page; the board is read once.
+		expect(leaderboardCalls()).toHaveLength(1);
 		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
 	it("finds the member's own logins and the company's services on their own tabs", async () => {

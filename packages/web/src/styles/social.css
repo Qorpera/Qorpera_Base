@@ -63,25 +63,9 @@
 	.friends-window .person-actions { order: 4; margin-left: auto; }
 }
 
-/* Leaderboard: this week's awards, then you and your friends by tasks done. */
-.leaderboard-awards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-bottom: 18px; }
-.leaderboard-awards:empty { display: none; }
-.leaderboard-award {
-	display: flex; align-items: center; gap: 12px; min-width: 0; padding: 14px;
-	border: 1px solid #e3e3e0; border-radius: 14px; background: #fff;
-	animation: leaderboard-award-in 360ms var(--ease-spring, cubic-bezier(.2, .9, .3, 1.2)) both;
-}
-.leaderboard-award:nth-child(2) { animation-delay: 50ms; }
-.leaderboard-award:nth-child(3) { animation-delay: 100ms; }
-.leaderboard-award:nth-child(4) { animation-delay: 150ms; }
-.leaderboard-award:nth-child(5) { animation-delay: 200ms; }
-.leaderboard-award .figure { width: 44px; height: 44px; }
-.leaderboard-award .person-avatar, .leaderboard-award .company-logo { width: 40px; height: 40px; font-size: 14px; }
-.leaderboard-award-copy { display: grid; gap: 1px; min-width: 0; line-height: 1.3; }
-.leaderboard-award-copy small { color: var(--text-soft); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.leaderboard-award-copy strong { overflow: hidden; font-size: 13.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.leaderboard-award-copy span { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
-@keyframes leaderboard-award-in { from { opacity: 0; transform: translateY(6px) scale(.97); } }
+/* Leaderboard: Busiest | Revenue and Friends | Companies (the Settings | Storage switch), then the ranking. */
+.leaderboard-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.leaderboard-about { margin: 0 0 12px; color: var(--text-muted); font-size: 12.5px; }
 .leaderboard-visible { margin-top: 22px; padding-inline: 0; }
 .leaderboard-list { display: grid; gap: 12px; }
 .leaderboard-list[aria-busy] .leaderboard-rows { opacity: .55; transition: opacity 160ms ease; }
@@ -120,12 +104,11 @@
 	.leaderboard-score { justify-items: end; grid-template-columns: auto; }
 	.leaderboard-score small, .leaderboard-meter { display: none; }
 }
-@media (prefers-reduced-motion: reduce) { .leaderboard-meter-fill { transition: none; } .leaderboard-award { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .leaderboard-meter-fill { transition: none; } }
 
 :root[data-theme="dark"] .friends-window { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 80px rgb(0 0 0 / 60%); }
 :root[data-theme="dark"] .friends-window::backdrop { background: rgb(0 0 0 / 55%); }
 :root[data-theme="dark"] .person-meta-online { color: #4fd39b; }
-:root[data-theme="dark"] .leaderboard-award { border-color: rgba(255, 255, 255, 0.1); background: var(--overlay); }
 :root[data-theme="dark"] .leaderboard-rows { border-color: rgba(255, 255, 255, 0.1); background: var(--overlay); }
 :root[data-theme="dark"] .leaderboard-row + .leaderboard-row { border-top-color: rgba(255, 255, 255, 0.06); }
 :root[data-theme="dark"] .leaderboard-meter { background: rgba(255, 255, 255, 0.1); }

@@ -12,20 +12,17 @@ const ME = "11111111-1111-4111-8111-000000000001";
 const FRIEND = "11111111-1111-4111-8111-000000000002";
 const OTHER = "11111111-1111-4111-8111-000000000005";
 const COMPANY = "11111111-1111-4111-8111-000000000003";
-const AGENT = "11111111-1111-4111-8111-000000000004";
+const CAFE = "11111111-1111-4111-8111-000000000004";
 
-function person(userId: string, name: string, tasks: number, extra: Record<string, unknown> = {}) {
+function person(userId: string, name: string, tasks: number, revenueOre: number, extra: Record<string, unknown> = {}) {
 	return {
 		user_id: userId,
 		display_name: name,
 		me: userId === ME,
 		last_seen_at: null,
-		active_days: 2,
-		streak: 2,
 		companies: 1,
-		agents: 4,
 		tasks,
-		sales_ore: 0,
+		revenue_ore: revenueOre,
 		...extra,
 	};
 }
@@ -34,33 +31,13 @@ const BOARD = {
 	since: "2026-11-02T10:00:00Z",
 	hidden: false,
 	people: [
-		person(ME, "Jonas", 12, { streak: 5 }),
-		person(FRIEND, "Asger", 30),
-		person(OTHER, "Bo", 12, { streak: 0 }),
+		person(ME, "Jonas", 12, 1250000, { companies: 2 }),
+		person(FRIEND, "Asger", 30, 0),
+		person(OTHER, "Bo", 12, 340000),
 	],
 	companies: [
-		{
-			profile_id: COMPANY,
-			name: "Dekora",
-			members: [ME],
-			agents: 7,
-			tasks: 114,
-			sales_ore: 1250000,
-		},
-	],
-	agents: [
-		{
-			profile_id: COMPANY,
-			staff_agent_id: AGENT,
-			display_name: "Co-Founder",
-			role: "Co-Founder",
-			appearance_color: "native",
-			appearance_shape: "round",
-			template_id: "co-founder",
-			company_name: "Dekora",
-			runs: 36,
-			tasks: 26,
-		},
+		{ profile_id: COMPANY, name: "Dekora", members: [ME], tasks: 114, revenue_ore: 1250000 },
+		{ profile_id: CAFE, name: "Havnens Kaffebar", members: [FRIEND, OTHER], tasks: 42, revenue_ore: 0 },
 	],
 };
 
@@ -71,25 +48,25 @@ afterEach(() => {
 });
 
 describe("leaderboard answers", () => {
-	it("reads people, companies and agents", () => {
+	it("reads people and companies", () => {
 		const board = parseLeaderboard(BOARD);
-		expect(board.people.map((row) => [row.displayName, row.me, row.tasks, row.streak])).toEqual([
-			["Jonas", true, 12, 5],
-			["Asger", false, 30, 2],
-			["Bo", false, 12, 0],
+		expect(board.people.map((row) => [row.displayName, row.me, row.tasks, row.revenueOre])).toEqual([
+			["Jonas", true, 12, 1250000],
+			["Asger", false, 30, 0],
+			["Bo", false, 12, 340000],
 		]);
-		expect(board.companies[0]).toMatchObject({ name: "Dekora", members: [ME], tasks: 114, salesOre: 1250000 });
-		expect(board.agents[0]).toMatchObject({
-			displayName: "Co-Founder",
-			appearance: { color: "native", shape: "round" },
-			templateId: "co-founder",
-			tasks: 26,
+		expect(board.companies[0]).toEqual({
+			profileId: COMPANY,
+			name: "Dekora",
+			members: [ME],
+			tasks: 114,
+			revenueOre: 1250000,
 		});
 	});
 
 	it("refuses an answer it cannot trust", () => {
 		expect(() => parseLeaderboard({ ...BOARD, since: "soon" })).toThrow(CloudShapeError);
-		expect(() => parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", -1)] })).toThrow(CloudShapeError);
+		expect(() => parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", -1, 0)] })).toThrow(CloudShapeError);
 		expect(() => parseLeaderboard({ ...BOARD, hidden: "no" })).toThrow(CloudShapeError);
 	});
 
@@ -180,48 +157,47 @@ describe("leaderboard page", () => {
 			row.querySelector(".leaderboard-who strong")!.textContent,
 			row.querySelector(".leaderboard-score strong")!.textContent,
 		]);
-	const awards = (root: HTMLElement) =>
-		[...root.querySelectorAll(".leaderboard-award")].map((award) =>
-			[...award.querySelectorAll(".leaderboard-award-copy > *")].map((part) => part.textContent),
-		);
+	const pick = (root: HTMLElement, value: string) =>
+		root.querySelector<HTMLButtonElement>(`.leaderboard-bar [data-value="${value}"]`)!.click();
 	const toggle = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('.leaderboard-visible [role="switch"]')!;
 	const settled = (root: HTMLElement) =>
 		vi.waitFor(() => expect(toggle(root).getAttribute("aria-disabled")).toBeNull());
 
-	it("ranks you and your friends by tasks done, with shared places for ties", async () => {
+	it("ranks your friends by tasks done this week, with shared places for ties", async () => {
 		const { view } = await mount();
 		expect(rows(view.el)).toEqual([
 			["1", "Asger", "30"],
 			["2", "Jonas", "12"],
 			["2", "Bo", "12"],
 		]);
-		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · 5 days in a row");
+		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · 2 companies");
 		expect(view.el.querySelector(".is-place-1 .leaderboard-who strong")?.textContent).toBe("Asger");
-		// No tabs, periods or filters.
-		expect(view.el.querySelectorAll("[aria-pressed]")).toHaveLength(0);
+		expect(view.el.querySelector('[data-value="busiest"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(view.el.querySelector('[data-value="friends"]')?.getAttribute("aria-pressed")).toBe("true");
 	});
 
-	it("gives this week's awards to whoever earned them", async () => {
+	it("ranks by revenue, and companies as well as friends", async () => {
 		const { view } = await mount();
-		expect(awards(view.el)).toEqual([
-			["Star agent", "Co-Founder", "26 tasks done at Dekora"],
-			["Longest streak", "You", "5 days in a row"],
-			["Busiest team", "Dekora", "114 tasks done"],
-			["Biggest team", "Dekora", "7 agents"],
-			["Top seller", "Dekora", "DKK\u00a012,500 in sales"],
+		pick(view.el, "revenue");
+		expect(view.el.querySelector(".leaderboard-about")?.textContent).toBe("All sales so far, without VAT.");
+		// Revenue in kroner; nobody with nothing yet gets a place.
+		expect(rows(view.el)).toEqual([
+			["1", "Jonas", "DKK\u00a012,500"],
+			["2", "Bo", "DKK\u00a03,400"],
+			["–", "Asger", "DKK\u00a00"],
 		]);
-		// An award nobody earned stays away.
-		const quiet = parseLeaderboard({
-			...BOARD,
-			companies: [{ ...BOARD.companies[0], sales_ore: 0 }],
-			agents: [],
-		});
-		const second = await mount(quiet);
-		expect(awards(second.view.el).map((award) => award[0])).toEqual([
-			"Longest streak",
-			"Busiest team",
-			"Biggest team",
+		pick(view.el, "companies");
+		expect(rows(view.el)).toEqual([
+			["1", "Dekora", "DKK\u00a012,500"],
+			["–", "Havnens Kaffebar", "DKK\u00a00"],
 		]);
+		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You");
+		pick(view.el, "busiest");
+		expect(rows(view.el)).toEqual([
+			["1", "Dekora", "114"],
+			["2", "Havnens Kaffebar", "42"],
+		]);
+		expect(view.el.querySelectorAll(".leaderboard-who small")[1]?.textContent).toBe("Asger, Bo");
 	});
 
 	it("takes you off your friends' boards with the switch", async () => {
@@ -285,7 +261,7 @@ describe("leaderboard page", () => {
 	});
 
 	it("asks for friends when there are none", async () => {
-		const alone = parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", 12)] });
+		const alone = parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", 12, 0)] });
 		const { view, openFriends } = await mount(alone);
 		view.el.querySelector<HTMLButtonElement>(".leaderboard-invite button")!.click();
 		expect(openFriends).toHaveBeenCalledTimes(1);
