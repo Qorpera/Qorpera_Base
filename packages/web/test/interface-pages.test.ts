@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyInterfacePages, type InterfacePagesState } from "../src/app/interface-pages.ts";
-import { PagesView } from "../src/app/views/settings-pages.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type InterfacePageCalls,
@@ -13,8 +12,8 @@ import { CloudShapeError } from "../src/cloud/parse.ts";
 import { deferred, settle } from "./fixtures.ts";
 
 /* Interfaces C6a (supabase/CLIENT-CONTRACT.md "Pages"): which of its two pages a company shows, as the web reads it
- * (cloud/interface-pages.ts), follows it while the company is open (app/interface-pages.ts), and lets an owner or admin
- * switch it in Settings → Company (views/settings-pages.ts). */
+ * (cloud/interface-pages.ts) and follows it while the company is open (app/interface-pages.ts); an owner or admin hides or
+ * shows one from the rail (views/shell.ts). */
 
 const answer = (mailbox: boolean, members: boolean, mayChange = true) => ({
 	schema: "qorpera.member-interface-pages/v1",
@@ -166,150 +165,53 @@ describe("following the pages (app/interface-pages.ts)", () => {
 	});
 });
 
-describe("Settings → Company → Pages (views/settings-pages.ts)", () => {
-	/** The view on screen, reading `initial` from the cloud, or failing with `failure`. A null `role` is one not read
-	 * yet. */
-	function setup(initial: MemberInterfacePages, role: string | null = "owner", failure?: Error) {
-		const cloud: { pages: MemberInterfacePages; failure?: Error } = { pages: initial, failure };
-		const member: { role: string | undefined } = { role: role ?? undefined };
-		const calls = {
-			list: vi.fn<InterfacePageCalls["list"]>(async () => {
-				if (cloud.failure) throw cloud.failure;
-				return cloud.pages;
-			}),
-			set: vi.fn<InterfacePageCalls["set"]>(async (page, on) => {
-				const pages = cloud.pages.pages.map((entry) => (entry.page === page ? { page, on } : entry));
-				cloud.pages = { ...cloud.pages, pages };
-				return cloud.pages;
-			}),
-		};
-		const changed = vi.fn();
+describe("hiding and showing a page (app/interface-pages.ts set)", () => {
+	function follow(calls: InterfacePageCalls) {
+		const published: (InterfacePagesState | undefined)[] = [];
 		const stop = new AbortController();
-		const view = new PagesView(calls, stop.signal, () => member.role, changed);
-		document.body.append(view.el);
+		const pages = new CompanyInterfacePages(calls, (next) => published.push(next), stop.signal);
 		cleanup.push(() => stop.abort());
-		const switches = () => [...view.el.querySelectorAll<HTMLButtonElement>('[role="switch"]')];
-		const checked = () => switches().map((lever) => lever.getAttribute("aria-checked"));
-		const help = () => view.el.querySelector(".settings-help")?.textContent;
-		return { view, calls, changed, cloud, member, switches, checked, help };
+		return { pages, published };
 	}
 
-	it("lets an owner switch a page on and off, keeping the keyboard on the switch", async () => {
-		const f = setup(state(false, true));
-		expect(f.help()).toBe("Loading…");
-		await settle();
-		expect(f.switches().map((lever) => lever.getAttribute("aria-label"))).toEqual(["Mailbox", "Members"]);
-		expect(f.checked()).toEqual(["false", "true"]);
-		expect(f.switches().some((lever) => lever.hasAttribute("aria-disabled"))).toBe(false);
-		expect(f.help()).toBe("Switching a page off only hides it. Nothing it showed is removed.");
-		const sent = deferred<MemberInterfacePages>();
-		f.calls.set.mockReturnValueOnce(sent.promise);
-		f.switches()[0]!.focus();
-		f.switches()[0]!.click();
-		expect(f.calls.set).toHaveBeenCalledWith("mailbox", true);
-		// While it is sent, the other switch waits, and a second press sends nothing.
-		expect(f.switches().map((lever) => lever.getAttribute("aria-disabled"))).toEqual(["true", "true"]);
-		expect(f.switches()[0]!.getAttribute("aria-busy")).toBe("true");
-		f.switches()[0]!.click();
-		f.switches()[1]!.click();
-		expect(f.calls.set).toHaveBeenCalledOnce();
-		f.cloud.pages = state(true, true);
-		sent.resolve(f.cloud.pages);
-		await settle();
-		expect(f.checked()).toEqual(["true", "true"]);
-		expect(f.switches()[0]!.hasAttribute("aria-busy")).toBe(false);
-		expect(document.activeElement).toBe(f.switches()[0]);
-		expect(f.changed).toHaveBeenCalledOnce();
-		f.switches()[1]!.click();
-		await settle();
-		expect(f.calls.set).toHaveBeenLastCalledWith("members", false);
-		expect(f.checked()).toEqual(["true", "false"]);
-		expect(f.changed).toHaveBeenCalledTimes(2);
+	it("publishes the change's answer at once, and drops a read the change overtook", async () => {
+		const before = deferred<MemberInterfacePages>();
+		const list = vi.fn<InterfacePageCalls["list"]>().mockReturnValueOnce(before.promise);
+		const set = vi.fn<InterfacePageCalls["set"]>(async () => state(false, true));
+		const { pages, published } = follow({ list, set });
+		const reading = pages.refresh();
+		await pages.set("mailbox", false);
+		expect(set).toHaveBeenCalledExactlyOnceWith("mailbox", false);
+		expect(published).toEqual([state(false, true)]);
+		before.resolve(state(true, true));
+		await reading;
+		expect(published).toEqual([state(false, true)]);
 	});
 
-	it("shows anyone else the switches locked, and reads them again when the member's role changes", async () => {
-		const f = setup(state(true, false, false), "contributor");
+	it("runs changes one at a time, so an older answer never lands over a newer one", async () => {
+		const first = deferred<MemberInterfacePages>();
+		const answers = [first.promise, Promise.resolve(state(false, false))];
+		const set = vi.fn<InterfacePageCalls["set"]>(() => answers.shift()!);
+		const { pages, published } = follow({ list: vi.fn(), set });
+		const mailbox = pages.set("mailbox", false);
+		const members = pages.set("members", false);
 		await settle();
-		expect(f.checked()).toEqual(["true", "false"]);
-		expect(f.switches().map((lever) => lever.getAttribute("aria-disabled"))).toEqual(["true", "true"]);
-		expect(f.switches().every((lever) => lever.classList.contains("is-locked"))).toBe(true);
-		expect(f.help()).toBe("Only owners and admins can switch pages on or off.");
-		f.switches()[1]!.click();
-		await settle();
-		expect(f.calls.set).not.toHaveBeenCalled();
-		expect(f.changed).not.toHaveBeenCalled();
-		// The same role reads nothing again; a new one does.
-		f.view.update();
-		expect(f.calls.list).toHaveBeenCalledOnce();
-		f.member.role = "admin";
-		f.cloud.pages = state(true, false);
-		f.view.update();
-		await settle();
-		expect(f.calls.list).toHaveBeenCalledTimes(2);
-		expect(f.switches().some((lever) => lever.classList.contains("is-locked"))).toBe(false);
-		f.switches()[1]!.click();
-		await settle();
-		expect(f.calls.set).toHaveBeenCalledWith("members", true);
+		// The second waits for the first's answer.
+		expect(set).toHaveBeenCalledExactlyOnceWith("mailbox", false);
+		first.resolve(state(false, true));
+		await Promise.all([mailbox, members]);
+		expect(set).toHaveBeenLastCalledWith("members", false);
+		expect(published).toEqual([state(false, true), state(false, false)]);
 	});
 
-	it("reads nothing more when the member's role first arrives or is gone a moment: the cloud answered for it", async () => {
-		// The team isn't read yet, so the pages are read without a role.
-		const f = setup(state(false, true), null);
-		await settle();
-		f.member.role = "owner";
-		f.view.update();
-		f.member.role = undefined;
-		f.view.update();
-		f.member.role = "owner";
-		f.view.update();
-		await settle();
-		expect(f.calls.list).toHaveBeenCalledOnce();
-		f.member.role = "contributor";
-		f.view.update();
-		await settle();
-		expect(f.calls.list).toHaveBeenCalledTimes(2);
-	});
-
-	it("says when a switch fails, reads the pages back first, and lets the member try again", async () => {
-		const f = setup(state(false, true));
-		await settle();
-		f.calls.set.mockRejectedValueOnce(new Error("Network unavailable"));
-		f.switches()[1]!.click();
-		await settle();
-		// A change that failed may still have landed: the switches show what the cloud says.
-		expect(f.calls.list).toHaveBeenCalledTimes(2);
-		expect(f.checked()).toEqual(["false", "true"]);
-		expect(f.view.el.querySelector(".notice-danger")?.textContent).toBe("Members could not be changed. Try again.");
-		expect(f.changed).toHaveBeenCalledOnce();
-		f.switches()[1]!.click();
-		await settle();
-		expect(f.checked()).toEqual(["false", "false"]);
-		expect(f.view.el.querySelector(".notice-danger")).toBeNull();
-	});
-
-	it("says why the pages can't be read, and that a cloud without them has none yet", async () => {
-		const f = setup(state(false, false), "owner", new Error("Network unavailable"));
-		await settle();
-		expect(f.view.el.querySelector(".notice-danger")?.textContent).toBe("Network unavailable");
-		expect(f.switches()).toEqual([]);
-		expect(f.help()).toBeUndefined();
-		// Read again once the role changes, the switches show.
-		f.cloud.failure = undefined;
-		f.member.role = "admin";
-		f.view.update();
-		await settle();
-		expect(f.checked()).toEqual(["false", "false"]);
-		expect(f.view.el.querySelector(".notice-danger")).toBeNull();
-		const other = setup(state(false, false), "owner", missing());
-		await settle();
-		expect(other.view.el.querySelector(".notice-neutral")?.textContent).toBe(
-			"Pages are not available on this cloud yet.",
-		);
-		expect(other.switches()).toEqual([]);
-		// It doesn't ask again.
-		other.member.role = "admin";
-		other.view.update();
-		await settle();
-		expect(other.calls.list).toHaveBeenCalledOnce();
+	it("reads the pages again when a change fails, and says so", async () => {
+		const list = vi.fn<InterfacePageCalls["list"]>(async () => state(true, false));
+		const set = vi.fn<InterfacePageCalls["set"]>(async () => {
+			throw new Error("Network unavailable");
+		});
+		const { pages, published } = follow({ list, set });
+		await expect(pages.set("members", true)).rejects.toThrow("Network unavailable");
+		expect(list).toHaveBeenCalledOnce();
+		expect(published).toEqual([state(true, false)]);
 	});
 });

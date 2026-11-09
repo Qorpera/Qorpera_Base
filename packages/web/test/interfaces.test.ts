@@ -12,7 +12,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -343,6 +343,69 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(apps(element).hidden).toBe(true);
 		expect(drawer(element).hidden).toBe(true);
 		expect(element.querySelector(".rail-app")).toBeNull();
+	});
+
+	it("hides a page for everyone from its right-click, and shows it again from Hidden (owners and admins)", async () => {
+		const { element, controller } = rail(home);
+		const setInterfacePage = vi.fn(async (page: string, on: boolean) => {
+			const now = controller.store.get().interfacePages!;
+			controller.store.set({
+				interfacePages: { ...now, pages: now.pages.map((entry) => (entry.page === page ? { page, on } : entry)) },
+			});
+		});
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			route: home,
+			auth: new AuthController(fixture().cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+			setInterfacePage,
+		};
+		cleanup.push(() => context.auth.dispose());
+		const redraw = () => renderRail(element, controller, context);
+		redraw();
+		const rightClick = (target: Element) => {
+			const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+			target.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		const hiddenPages = () =>
+			[...element.querySelectorAll<HTMLButtonElement>(".rail-hidden-list .rail-row-page")].map((row) => [
+				row.querySelector("strong")?.textContent,
+				row.querySelector("small")?.textContent,
+			]);
+		// Mailbox is off: it waits in Hidden, from where an owner shows it.
+		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
+		expect(hiddenPages()).toEqual([["Mailbox", "Hidden for everyone"]]);
+		// Right-click on Members in the drawer: Hide from sidebar.
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(true);
+		expect(menuItems()).toEqual([["Hide from sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(setInterfacePage).toHaveBeenCalledExactlyOnceWith("members", false);
+		await settle();
+		redraw();
+		expect(icons(element)).toEqual([]);
+		expect(hiddenPages()).toEqual([
+			["Mailbox", "Hidden for everyone"],
+			["Members", "Hidden for everyone"],
+		]);
+		// A press on a hidden page offers to show it again.
+		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='members']")!.click();
+		expect(menuItems()).toEqual([["Show in sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(setInterfacePage).toHaveBeenLastCalledWith("members", true);
+		await settle();
+		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		// A member who may not change the pages gets the browser's own menu, and no hidden page.
+		controller.store.set({ interfacePages: { ...pages(false, true), mayChange: false } });
+		redraw();
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(false);
+		expect(hiddenPages()).toEqual([]);
 	});
 
 	it("links an agent's posted app to its own page, opens the drawer for it and marks it open there", () => {

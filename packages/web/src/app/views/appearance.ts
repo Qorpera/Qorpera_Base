@@ -34,10 +34,11 @@ export function renderAppearance(): HTMLElement {
 	const size = uiSizeChoices(() =>
 		replace(feedback, notice("danger", t("Your browser could not save the interface size preference."))),
 	);
+	// A part of General, under the account's settings.
 	return h(
 		"section",
-		{ class: "page settings-appearance" },
-		h("h1", null, uiText("Appearance")),
+		{ class: "settings-group settings-appearance" },
+		h("h2", null, uiText("Appearance")),
 		feedback,
 		// The pictures say what each group is; the groups keep their names for screen readers.
 		h(

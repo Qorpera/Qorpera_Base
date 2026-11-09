@@ -522,6 +522,17 @@ export function companyInterfaces(company: CompanyController): CompanyInterface[
 	return pagesShown(company.store.get().interfacePages).filter(({ file }) => listed(file, company));
 }
 
+/** The pages an owner or admin hid from the rail that would show there again: off, and this member may see them and
+ * their needs are met. Empty for everyone else, who can't show them. */
+export function hiddenCompanyInterfaces(company: CompanyController): CompanyInterface[] {
+	const pages = company.store.get().interfacePages;
+	if (!pages?.mayChange) return [];
+	return pages.pages.flatMap(({ page, on }) => {
+		const entry = on ? undefined : shippedInterfaces().find((candidate) => candidate.name === page);
+		return entry && memberMaySee(entry.file, company) && needsMet(entry.file, company) ? [entry] : [];
+	});
+}
+
 export function companyInterface(company: CompanyController, name: string): CompanyInterface | undefined {
 	return companyInterfaces(company).find((entry) => entry.name === name);
 }

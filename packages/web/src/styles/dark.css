@@ -160,7 +160,6 @@
 :root[data-theme="dark"] .picture-crop-stage { background: #111110; }
 :root[data-theme="dark"] :is(.account-picture-remove, .account-picture-remove .icon) { color: #ff9084; }
 :root[data-theme="dark"] :is(.settings-copy small, .settings-help, .connection-sign-in small, .settings-lead) { color: #a3a29d; }
-:root[data-theme="dark"] .settings-file-card > .icon:first-child { color: #8f8e89; }
 :root[data-theme="dark"] .settings-link:hover { background: #3a3a38; }
 :root[data-theme="dark"] .settings-choice-label { color: #9d9c97; }
 :root[data-theme="dark"] .settings-choice > input:checked ~ .settings-choice-label { color: #fff; }
