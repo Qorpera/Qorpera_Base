@@ -9,7 +9,6 @@ import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
-import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
 import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
@@ -82,6 +81,8 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_member_interface_offers" &&
 			name !== "qorpera_member_interface_supervisions" &&
 			name !== "qorpera_member_interface_pages" &&
+			// Leaving reads how many agents work for the member, so the confirmation can say it.
+			name !== "qorpera_read_works_for" &&
 			// The apps drawer's Sites entry: the company's sites are read once it opens.
 			name !== "qorpera_list_company_sites",
 	);
@@ -136,9 +137,11 @@ function storageFixture() {
 	return { source, list, history };
 }
 
-function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
+async function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
 	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
 	click(root, ".company-exit");
+	// Leaving first reads how many agents work for the member.
+	await settle();
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
 		const input = dialog.querySelector("input")!;
@@ -1885,42 +1888,9 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
-		expect(f.root.querySelector(".settings-memory-slot + .settings-company-exit > .company-exit")?.textContent).toBe(
+		expect(f.root.querySelector(".settings-rules-slot + .settings-company-exit > .company-exit")?.textContent).toBe(
 			"Delete company",
 		);
-		expect(sdkRpcs(f)).toEqual([]);
-	});
-	it("shows the company's memory under its agent rules, and saves a choice through the cloud API", async () => {
-		history.replaceState(null, "", "/#/");
-		const fixtureState = fixture();
-		const memory: CompanyMemory = {
-			profileId: profileA.profileId,
-			mode: "notebooks",
-			setAt: null,
-			effective: "notebooks",
-			betaOffered: true,
-			canManage: true,
-			runsInOtherMode: 0,
-		};
-		vi.mocked(fixtureState.api.getCompanyMemory).mockResolvedValue(memory);
-		const chosen = { ...memory, mode: "tree", setAt: timestamp, effective: "tree" } as const;
-		vi.spyOn(fixtureState.api, "setCompanyMemory").mockResolvedValue(chosen);
-		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-company");
-		await draw();
-		const section = f.root.querySelector<HTMLElement>(
-			".settings-staff-group + .settings-good-will-slot + .settings-rules-slot + .settings-memory-slot > .settings-memory",
-		)!;
-		expect(section.hidden).toBe(false);
-		// Leave or Delete company comes last: no pages and no storage card any more.
-		expect(f.root.querySelector(".settings-memory-slot + .settings-company-exit")).not.toBeNull();
-		expect(f.api.getCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
-		section.querySelector<HTMLInputElement>("input[type=radio][value=tree]")!.click();
-		await draw();
-		expect(f.api.setCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId, "tree");
-		expect(section.textContent).toContain("Saved. New runs use Shared context — Beta.");
-		expect(f.api.getCompanyMemory).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("shows founders what they may do with their own membership", async () => {
@@ -2016,7 +1986,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, action === "delete");
+		await confirmCompanyRemoval(f.root, action === "delete");
 		await draw();
 		expect(removal).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
 		expect(location.hash).toBe("#/");
@@ -2027,6 +1997,61 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
+	it("says how many agents work for the member before leaving, with one dialog however often Leave is clicked", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({ ...team, role: "contributor" });
+		let answer: (value: unknown) => void = () => {};
+		const unexpected = vi.mocked(fixtureState.cloud.rpc).getMockImplementation();
+		vi.mocked(fixtureState.cloud.rpc).mockImplementation(async (name: string, args?: unknown) => {
+			if (name !== "qorpera_read_works_for") return unexpected?.(name, args as never);
+			return new Promise((resolve) => {
+				answer = resolve;
+			});
+		});
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		click(f.root, ".company-exit");
+		click(f.root, ".company-exit");
+		await settle();
+		// The count is read before the dialog opens.
+		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+		answer({
+			schema: "qorpera.works-for/v1",
+			may_ask: true,
+			may_ask_for_others: false,
+			agents: [id(41), id(42)].map((agent) => ({ staff_agent_id: agent, user_id: userA.id, since: null })),
+			logins: [],
+			asks: [],
+		});
+		await settle();
+		const dialogs = document.querySelectorAll('[role="alertdialog"]');
+		expect(dialogs).toHaveLength(1);
+		expect(dialogs[0]?.textContent).toContain("2 agents work for you: they go to the open pile");
+	});
+
+	it("asks to leave after two seconds when the agent count is slow to read", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({ ...team, role: "contributor" });
+		const unexpected = vi.mocked(fixtureState.cloud.rpc).getMockImplementation();
+		vi.mocked(fixtureState.cloud.rpc).mockImplementation(async (name: string, args?: unknown) =>
+			name === "qorpera_read_works_for" ? new Promise(() => {}) : unexpected?.(name, args as never),
+		);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		click(f.root, ".company-exit");
+		await vi.advanceTimersByTimeAsync(2100);
+		await settle();
+		const dialog = document.querySelector('[role="alertdialog"]');
+		expect(dialog?.textContent).toContain("You lose access until someone invites you again.");
+		expect(dialog?.textContent).not.toContain("agents work for you");
+	});
+
 	it("keeps settings and company membership after a failed deletion", async () => {
 		history.replaceState(null, "", "/#/");
 		const f = await setup();
@@ -2034,7 +2059,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
@@ -2049,7 +2074,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		vi.mocked(f.api.getTeam).mockRejectedValue(
 			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
@@ -2072,7 +2097,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		vi.mocked(f.api.listProfiles).mockResolvedValue([profileB]);
 		f.auth(userB);
@@ -2100,7 +2125,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		click(f.root, ".settings-close");
 		open(f.root);
@@ -2123,7 +2148,7 @@ describe("settings session lifecycle", () => {
 			vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([]);
 		});
 		const f = await setup(fixtureState);
-		confirmCompanyRemoval(f.root, false);
+		await confirmCompanyRemoval(f.root, false);
 		await draw();
 		expect(location.hash).toBe("#/");
 		expect(f.root.querySelector(".team")).toBeNull();
@@ -2142,7 +2167,7 @@ describe("settings session lifecycle", () => {
 			click(f.root, "#settings-tab-company");
 			await draw();
 		}
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		const exit = f.root.querySelector(".company-exit")!;
 		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
@@ -2163,12 +2188,12 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true, profileB);
+		await confirmCompanyRemoval(f.root, true, profileB);
 		await draw();
 		pending.resolve([profileB]);
 		await draw();

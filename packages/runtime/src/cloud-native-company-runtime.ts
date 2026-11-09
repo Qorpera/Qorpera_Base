@@ -52,6 +52,7 @@ import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { cloudMachineTools } from "./cloud-machine-tools.ts";
+import { cloudMemberOfferTools } from "./cloud-member-offer-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
@@ -1027,6 +1028,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
 											// an agent owns the company's money.
 											...cloudGoodWillTools(binding, identity, this.#paths),
+											// The Co-Founder deals the team out between the members (20260930702000).
+											...(context.agentKind === "cofounder"
+												? cloudMemberOfferTools(binding, identity, this.#paths)
+												: []),
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
 											// Company sites (20260930550000): a static website from the company folder at a

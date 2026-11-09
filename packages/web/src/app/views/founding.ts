@@ -353,6 +353,9 @@ export class FoundingView {
 	readonly #bar: HTMLElement;
 	readonly #exit = new Slot();
 	readonly #startedSlot = new Slot();
+	/** A company starting by itself: its name and where its start is (FoundingState.autoStart). */
+	readonly #startingSlot = new Slot();
+	readonly #startingCancel: HTMLButtonElement;
 	readonly #opened = { connect: false };
 	/** The table as the Ready and Start buttons were last drawn: a click asks for what it showed. */
 	#seen: { revision: number; alone: boolean; ready: boolean; connected: boolean } = {
@@ -456,19 +459,18 @@ export class FoundingView {
 				else void founding.setReady(seen.revision, !seen.ready);
 			},
 		});
-		this.#cancel = button(
-			t("Cancel"),
-			() => {
-				const name = founding.store.get().table?.companyName ?? "";
-				void confirmDialog(t("Cancel {name}? It will not be started.", { name }), t("Cancel company"), true).then(
-					async (yes) => {
-						if (yes && (await founding.close())) navigate({ name: "hub" });
-					},
-				);
-			},
-			{ danger: true },
-		);
+		const cancel = () => {
+			const name = founding.store.get().table?.companyName ?? "";
+			void confirmDialog(t("Cancel {name}? It will not be started.", { name }), t("Cancel company"), true).then(
+				async (yes) => {
+					if (yes && (await founding.close())) navigate({ name: "hub" });
+				},
+			);
+		};
+		this.#cancel = button(t("Cancel"), cancel, { danger: true });
 		this.#cancel.classList.add("founding-cancel");
+		this.#startingCancel = button(t("Cancel"), cancel, { danger: true });
+		this.#startingCancel.classList.add("founding-cancel");
 		this.#start = h("button", {
 			type: "button",
 			class: "btn btn-primary founding-start",
@@ -578,11 +580,13 @@ export class FoundingView {
 		const table = state.table;
 		const mode = state.gone
 			? `gone:${state.gone}`
-			: !table
-				? "loading"
-				: table.phase === "started"
-					? "started"
-					: "open";
+			: state.autoStart && table?.phase !== "started"
+				? "starting"
+				: !table
+					? "loading"
+					: table.phase === "started"
+						? "started"
+						: "open";
 		if (mode !== this.#mode) {
 			this.#mode = mode;
 			this.#page.show(mode, () => this.#build(mode));
@@ -596,6 +600,37 @@ export class FoundingView {
 			this.#error.show(state.readError ?? "", () => (state.readError ? notice("danger", state.readError) : null));
 		else if (mode === "started") this.#started(table!);
 		else if (mode === "open") this.#open(table!);
+		else if (mode === "starting") this.#starting(table);
+	}
+
+	/** One founder, from the new-company box's arrow: no table, only the company starting, and the ChatGPT step
+	 * first when your account is not connected yet (Jonas, 9 Nov 2026). */
+	#starting(table: CompanyFounding | undefined): void {
+		const state = this.#founding.store.get();
+		const connect = table !== undefined && state.connectOpen === true;
+		const name = table?.companyName ?? "";
+		this.#startingSlot.show(`${name}\n${connect}`, () =>
+			h(
+				"header",
+				{ class: "founding-head" },
+				name ? h("h1", { class: "founding-name" }, name) : null,
+				connect
+					? h("p", { class: "founding-sub" }, t("Connect your ChatGPT account, and {name} starts.", { name }))
+					: spinner(name ? t("Starting {name}", { name }) : t("Starting your company")),
+			),
+		);
+		if (table) this.#connectPanel(table, connect);
+		const error = state.error ?? state.readError ?? "";
+		this.#error.show(`${error}\n${state.error !== undefined}`, () =>
+			error
+				? notice(
+						"danger",
+						error,
+						state.error ? button(t("Dismiss"), () => this.#founding.dismissError(), { small: true }) : null,
+					)
+				: null,
+		);
+		this.#startingCancel.hidden = !connect || !table?.me.canManage;
 	}
 
 	#build(mode: string): HTMLElement {
@@ -616,6 +651,15 @@ export class FoundingView {
 		if (mode === "loading")
 			return h("div", { class: "founding-page" }, spinner(t("Opening the table")), this.#error.el);
 		if (mode === "started") return h("div", { class: "founding-page founding-started" }, this.#startedSlot.el);
+		if (mode === "starting")
+			return h(
+				"div",
+				{ class: "founding-page founding-starting" },
+				this.#startingSlot.el,
+				this.#connect,
+				this.#error.el,
+				h("div", { class: "founding-actions" }, this.#startingCancel),
+			);
 		return h(
 			"div",
 			{ class: "founding-page" },
@@ -964,10 +1008,14 @@ export class FoundingView {
 		if (open && !this.#opened.connect) this.#connect.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
 		this.#opened.connect = open;
 		if (!open) return;
-		this.#connectText.textContent = t(
-			"Your own account, connected to {name}. It pays for the work you start there. You can be Ready once it is connected.",
-			{ name: table.companyName },
-		);
+		this.#connectText.textContent = this.#founding.store.get().autoStart
+			? t("Your own account, connected to {name}. It pays for the work you start there.", {
+					name: table.companyName,
+				})
+			: t(
+					"Your own account, connected to {name}. It pays for the work you start there. You can be Ready once it is connected.",
+					{ name: table.companyName },
+				);
 		const panel = this.#founding.connections().el;
 		if (panel.parentElement !== this.#connectBody) this.#connectBody.replaceChildren(panel);
 	}

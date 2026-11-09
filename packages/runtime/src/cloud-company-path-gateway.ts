@@ -53,6 +53,8 @@ export type CloudCompanyPathRpc =
 	// Good will (20260930566000): a month's payments, and sorting them.
 	| "qorpera_good_will_agent_list"
 	| "qorpera_good_will_agent_mark"
+	| "qorpera_cofounder_crew"
+	| "qorpera_offer_agents_to_member"
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"
