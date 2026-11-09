@@ -105,7 +105,7 @@ describe("which first screen stands while main.js loads", () => {
 			[SMALL_DEFAULT, MIN, MAX_SHARE * 100],
 		]);
 		expect(css).toMatch(
-			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 547\)/,
+			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 502\)/,
 		);
 	});
 });
