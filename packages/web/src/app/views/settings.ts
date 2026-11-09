@@ -490,9 +490,8 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
-		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
-		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
-			return;
+		// A dialog opened over Settings (a page shown across the window, or Storage's file window) keeps its own keys.
+		if (event.target instanceof Element && event.target.closest("dialog")?.open) return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
 				this.#search.value = "";
@@ -714,14 +713,13 @@ export class SettingsView {
 		if (browser.opened) this.#folderPath = undefined;
 	}
 
-	/** The company's storage under Storage's navigation: what is used of what it may hold. */
+	/** The company's storage under Storage's navigation: what it holds in total. */
 	#drawStorageUsage(): void {
 		if (!this.#company) {
 			replace(this.#storageUsage);
 			return;
 		}
-		const storage = storageSummary(this.#file, this.#fileError);
-		replace(this.#storageUsage, storage.meter, h("small", null, storage.text));
+		replace(this.#storageUsage, h("small", null, storageSummary(this.#file, this.#fileError)));
 	}
 
 	#select(choice: SettingsCategory): void {
@@ -1126,7 +1124,6 @@ export class SettingsView {
 					),
 				),
 		);
-		const storage = storageSummary(this.#file, this.#fileError);
 		replace(
 			panel.querySelector(".settings-file")!,
 			h(
@@ -1142,8 +1139,7 @@ export class SettingsView {
 					"div",
 					{ class: "settings-copy" },
 					h("strong", null, uiText("Storage")),
-					h("small", null, storage.text),
-					storage.meter,
+					h("small", null, storageSummary(this.#file, this.#fileError)),
 				),
 				icon("chevron"),
 			),
