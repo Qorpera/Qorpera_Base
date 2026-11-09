@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
@@ -232,8 +234,8 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		// Nothing of it in the header: the dock stands right above the composer.
 		expect(f.view.el.querySelector(".thread-header .coding-pill, .thread-header .coding-badge")).toBeNull();
-		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .coding-dock")!;
-		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
+		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot > .coding-dock")!;
+		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
 		expect(dock.hidden).toBe(false);
 		// Only the session still going, and alone it is the pill's one line.
 		expect(dock.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);
@@ -555,5 +557,51 @@ describe("coding sessions in the thread", () => {
 		expect(
 			f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill-summary .coding-pill-note")?.dataset.tone,
 		).toBe("working");
+	});
+});
+
+describe("the coding pill on the wall's line", () => {
+	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here (checked in headless Chrome at 600, 680
+	// and 1200px for PR #1557).
+	const conversation = readFileSync(resolve("src/styles/conversation.css"), "utf8");
+	const wall = readFileSync(resolve("src/styles/agent-wall.css"), "utf8");
+
+	it("joins the wall's line only on a wide thread, narrow only while folded", () => {
+		const shared =
+			conversation.match(/@container thread-conversation \(min-width: 48\.6em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(shared).toContain(".agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }");
+		// Unfolded (hover, focus or a tap) it keeps its usual width over the wall's button.
+		expect(shared).toContain(
+			'.coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }',
+		);
+		expect(shared).toContain(".agent-wall-toggle { max-width: 300px; }");
+		expect(conversation).toMatch(/\.thread-conversation \{[^}]*container: thread-conversation \/ inline-size;/);
+	});
+
+	it("lays the thread's foot over the messages, with everything its bands hold taking the pointer", () => {
+		expect(conversation).toMatch(/\.messages \{[^}]*padding: 16px 16px calc\(40px \+ var\(--thread-foot, 0px\)\);/);
+		// Every band passes the pointer through; whatever a band holds (a notice, the execution line's buttons, the pill,
+		// the composer's parts) takes it back, so no control is left out by a list.
+		expect(conversation).toContain(".thread-foot > * { pointer-events: none; }");
+		expect(conversation).toContain(".thread-foot > * > * { pointer-events: auto; }");
+		// The composer stands over the coding dock (z-index 6), so its menus open over the pill.
+		expect(conversation).toContain(".thread-foot .composer { position: relative; z-index: 7; }");
+		expect(conversation).toMatch(/\.coding-dock \{[^}]*z-index: 6;/);
+		// The shell's glass is a layer behind it, never a filter on the shell, which would hold its menus under a draft's button.
+		expect(conversation).toMatch(
+			/\.thread-foot \.composer-shell::before \{[^}]*backdrop-filter: var\(--glass-blur\);/,
+		);
+		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-shell[,)][^{]*\{[^}]*backdrop-filter/);
+		// The Answering strip is measured inside the composer's shell: no margin of its own.
+		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-answer/);
+	});
+
+	it("leaves a single draft its own place while coding sessions go", () => {
+		const sharing = wall
+			.split("\n")
+			.filter((line) => line.includes(".composer-drafts") && line.includes(".agent-wall"));
+		expect(sharing.length).toBeGreaterThanOrEqual(4);
+		for (const line of sharing) expect(line).toContain(".coding-dock[hidden] + .composer");
+		expect(wall).not.toMatch(/\.agent-wall[^{]*~ \.composer/);
 	});
 });

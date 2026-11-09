@@ -376,6 +376,9 @@ export class ConversationView {
 	 * render happens before the view is in the page, and a pane that shrinks or
 	 * grows (window, computer panel, composer) must keep showing the latest message. */
 	readonly #sizes: ResizeObserver | undefined;
+	/** What stands under the messages (notices, the wall, the coding pill, the composer), laid over the thread's foot
+	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
+	readonly #foot = h("div", { class: "thread-foot" });
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
@@ -786,8 +789,13 @@ export class ConversationView {
 		});
 		this.#messages.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
-			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes = new ResizeObserver(() => {
+				// The messages keep room under their last line for the foot laid over them.
+				this.#conversationPane.style.setProperty("--thread-foot", `${this.#foot.offsetHeight}px`);
+				this.#pinToBottom();
+			});
 			this.#sizes.observe(this.#messages);
+			this.#sizes.observe(this.#foot);
 		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		// A conversation opened comes in: the thread fades up in place (styles/motion.css).
 		playOnce(this.#messages, "is-entering");
@@ -797,11 +805,16 @@ export class ConversationView {
 			this.#header,
 			this.#messages,
 			this.#earlierStatus,
+			this.#foot,
+		);
+		this.#foot.append(
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
-			this.#coding.el,
+			// The wall before the coding sessions: with both showing, the sessions' pill sits on the wall's own line,
+			// level with its button (conversation.css).
 			this.#wall.el,
+			this.#coding.el,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);

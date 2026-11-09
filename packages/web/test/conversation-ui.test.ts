@@ -1118,11 +1118,17 @@ describe("conversation UI boundaries", () => {
 		const observers = stubResizeObserver();
 		const { view, messages, metrics } = loadedView();
 		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
-		expect(sizes.targets).toEqual([messages]);
+		// The foot laid over the messages' end too: the messages keep room for it under their last line.
+		const foot = view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot")!;
+		expect(sizes.targets).toEqual([messages, foot]);
 		document.body.append(view.el);
 		metrics.scrollHeight = 2000;
+		Object.defineProperty(foot, "offsetHeight", { configurable: true, get: () => 118 });
 		sizes.callback();
 		expect(metrics.scrollTop).toBe(1600);
+		expect(view.el.querySelector<HTMLElement>(".thread-conversation")?.style.getPropertyValue("--thread-foot")).toBe(
+			"118px",
+		);
 		// A reader who scrolled up to older messages is left there.
 		metrics.scrollTop = 500;
 		messages.dispatchEvent(new Event("scroll"));
@@ -1356,23 +1362,24 @@ describe("conversation UI boundaries", () => {
 	it("places the company notices above the coding sessions' dock, which sits right above the composer", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
-		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
-		// The failed-run line shares the band: notices first, then the run, the coding dock, then the composer.
+		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
+		// The failed-run line shares the band: notices first, then the run, the wall, the coding dock, then the composer.
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
-		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
+		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
+		const dock = slot?.nextElementSibling?.nextElementSibling as HTMLElement | null | undefined;
 		expect(dock?.classList.contains("coding-dock")).toBe(true);
 		expect(dock?.hidden).toBe(true);
-		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
 	});
 
 	it("places the failed-run line above the coding dock without a notification host", () => {
 		const f = setup();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
-		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(f.view.el.querySelector(".coding-dock + .agent-wall + footer.composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
+		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -1439,14 +1446,14 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card sits above the composer (only the coding dock and the wall between), below the notices, never in the thread.
+		// The card sits above the composer (only the wall and the coding dock between), below the notices, never in the thread.
 		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
-		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(f.view.el.querySelector(".coding-dock + .agent-wall + .composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
+		expect(f.view.el.querySelector(".agent-wall + .coding-dock + .composer")).not.toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();
