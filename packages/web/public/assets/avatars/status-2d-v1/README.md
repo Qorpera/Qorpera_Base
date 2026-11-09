@@ -11,8 +11,8 @@ canvases lazily, loads only the selected activity, accepts the static asset
 base URL (the product JS is bundled), and permits retry after a failed load.
 Its two read-back canvases are created with `willReadFrequently` (9 Nov 2026), so
 the per-frame `getImageData` calls do not stall on a GPU canvas.
-It keeps its last six prepared frames rather than one (several figures paint each
-frame; views of one agent no longer decode its frame again), and `recordedEyesBox`
+It keeps prepared frames rather than only the last one (see below; views of one
+agent no longer decode its frame again), and `recordedEyesBox`
 returns where `drawRecordedEyes` puts a frame's eyes, in the caller's units (the
 figure's 100), so the compositor draws, halves and cuts only that box (9 Nov 2026).
 A decode reads back only the eyes' and strokes' boxes. The decoded pixels are unchanged.
