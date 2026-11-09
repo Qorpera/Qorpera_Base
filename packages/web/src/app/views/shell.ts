@@ -1035,13 +1035,28 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const placedRooms: ReadonlyMap<string, HostedSession> = sidebar?.groupChats ? rooms : new Map();
 	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
 	const hidden = new Set(sidebar?.hidden ?? []);
+	// A search that names a section lists everyone in it, pinned ones too; "Unassigned" names
+	// what is in no section once there are sections to tell it from.
+	const sectionNames = sidebar?.sections ?? [];
+	const wholeSections = new Set(
+		railQuery
+			? sectionNames.filter((item) => matches(item.name)).map((item) => item.sectionId as string | undefined)
+			: [],
+	);
+	if (railQuery && sectionNames.length && matches(t("Unassigned"))) wholeSections.add(undefined);
+	const sectionOf = (itemId: string) => {
+		const placed = sidebar?.placements[itemId]?.sectionId;
+		return placed && sectionNames.some((item) => item.sectionId === placed) ? placed : undefined;
+	};
+	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
-		matches(`${agent!.displayName} ${agent!.role}`) &&
+		(matches(`${agent!.displayName} ${agent!.role}`) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
-		matches(placedRooms.get(roomId)?.title ?? "") && (!hidden.has(roomId) || Boolean(railQuery));
+		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&
+		(!hidden.has(roomId) || Boolean(railQuery));
 	const agentElement = (agent: HostedStaffAgent) =>
 		row(
 			`#/c/${profileId}/staff/${agent.id}`,
@@ -1137,7 +1152,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			.filter(
 				(session) =>
 					session.status === "open" &&
-					matches(session.title) &&
+					(matches(session.title) || wholeSections.has(undefined)) &&
 					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
 					!isAgentPairSession(session) &&
 					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
