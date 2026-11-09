@@ -132,7 +132,7 @@
 	.leaderboard-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.leaderboard-champion { gap: 16px; padding: 18px; }
 	.leaderboard-champion-figure .figure, .leaderboard-champion-figures.is-shared .figure { width: 84px; height: 84px; }
-	.leaderboard-champion-figure .person-avatar { width: 76px; height: 76px; font-size: 26px; }
+	.leaderboard-champion-figure .person-avatar, .leaderboard-champion-figures.is-shared .person-avatar { width: 76px; height: 76px; font-size: 26px; }
 	.leaderboard-champion-copy strong { font-size: 22px; }
 	.leaderboard-row { gap: 10px; padding-inline: 12px; }
 	.leaderboard-move { width: 30px; }
