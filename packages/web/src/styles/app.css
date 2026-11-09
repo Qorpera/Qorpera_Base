@@ -48,6 +48,8 @@ body {
 .scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* In-app links carry data-href instead of href (ui/dom.ts), so the browser gives them no pointer of its own. */
+a[data-href] { cursor: pointer; }
 h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
 h2 { font-size: 16px; font-weight: 650; margin-top: 24px; }
 h3 { font-size: 14px; font-weight: 650; margin-top: 16px; }
@@ -476,6 +478,10 @@ label > input, label > select { font-weight: 400; }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; align-self: start; padding-top: 3px; }
 .rail-row-copy strong { font-size: 13px; font-weight: 700; line-height: 16px; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
+/* The rail's names and lines draw with macOS's own text smoothing, as Messages' sidebar does:
+ * body's "antialiased" draws them about a fifth lighter than the native row beside them
+ * (Jonas, 9 Nov 2026). */
+.rail-row-copy, .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
@@ -680,6 +686,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	resize: none; background: transparent; color: var(--text); font: 18px / 26px var(--font-sans); overflow-y: auto;
 }
 .hero-idea::placeholder { color: var(--text-soft); }
+/* The box itself shows focus; the field inside it draws no edge of its own (Jonas, 9 November 2026). */
+textarea.hero-idea:focus-visible { outline: none; }
 .hero-row { display: flex; align-items: center; gap: 10px; }
 .hero-invite {
 	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;

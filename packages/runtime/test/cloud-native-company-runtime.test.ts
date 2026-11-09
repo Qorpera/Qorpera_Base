@@ -3132,6 +3132,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
 	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
 	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
+	// Later on 9 November 2026 that schema says a key an agent can make on npm, GitHub, Stripe or Resend is taken with
+	// computer_browser vault_capture instead (20260930695000); the names and descriptions are as before, so only the
+	// catalog text moved again.
 	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
 	// good_will_mark, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([

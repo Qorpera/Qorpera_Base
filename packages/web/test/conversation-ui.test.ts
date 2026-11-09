@@ -1511,7 +1511,7 @@ describe("conversation UI boundaries", () => {
 			recoveries: { [run.runId]: details },
 		});
 		await settle();
-		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		expect(card()?.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/file`);
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
 			"Fixture agent stopped with changes to review",
 		);
@@ -1526,7 +1526,7 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("A review did not finish");
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		expect(card()?.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/file`);
 		f.company.store.set({ team: undefined });
 		await settle();
 		expect(card()).toBeNull();
@@ -1637,7 +1637,7 @@ describe("conversation UI boundaries", () => {
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
 			"Fixture agent stopped with changes to review",
 		);
-		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		expect(card()?.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/file`);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 	});
@@ -2732,7 +2732,7 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(panel.querySelector(".pair-count")?.textContent).toBe("2 messages");
 		// Tab goes round the sheet's own controls, never out to the rail.
 		const controls = [
-			...panel.querySelectorAll<HTMLElement>(".pair-sheet :is(a[href], button:not(:disabled), [tabindex='0'])"),
+			...panel.querySelectorAll<HTMLElement>(".pair-sheet :is(a[data-href], button:not(:disabled), [tabindex='0'])"),
 		];
 		controls.at(-1)!.focus();
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));

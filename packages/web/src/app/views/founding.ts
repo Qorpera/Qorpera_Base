@@ -2,7 +2,6 @@ import {
 	type CompanyFounding,
 	FOUNDING_MAX_SEATS,
 	FOUNDING_NAME_MAX_CHARACTERS,
-	FOUNDING_ROLE_MAX_CHARACTERS,
 	type FounderSeat,
 } from "../../cloud/company-founding.ts";
 import type { FoundingField } from "../../cloud/founding-presence.ts";
@@ -13,10 +12,10 @@ import { navigate } from "../router.ts";
 import { mountCrown } from "./crown.ts";
 
 /* The founding table, drawn as writing the first message together (Jonas, 22 October 2026, hub round 3):
- * the company's name as the page's heading, then one box like qorpera.com's, with the Co-Founder's crown
+ * the company's name in a labelled field, then one box like qorpera.com's, with the Co-Founder's crown
  * looking over its edge and the people at the table beside it. The box holds the idea, which every founder
- * may edit, and each founder's own line (their role) in their colour. Under it, one chip per seat, then
- * Ready and Start. People only; no agents, no billing.
+ * may edit. Under it, one chip per seat, then Cancel, Ready and Start. People only; no agents, no billing.
+ * (Jonas, 9 November 2026: no role line, no sub-heading, Cancel in red beside Start.)
  *
  * The page is built once and updated in place while the table refreshes every few seconds: text
  * fields are never replaced, so typing, an accent or IME composition, the caret, focus and the
@@ -33,7 +32,6 @@ import { mountCrown } from "./crown.ts";
 export interface FoundingDrafts {
 	name?: string;
 	vision?: string;
-	role?: string;
 }
 
 /** The description's byte limit is 16 KiB; this many UTF-16 units always fits. */
@@ -321,9 +319,6 @@ export class FoundingView {
 	readonly #visionSlot = new Slot();
 	#name: SyncedField<HTMLInputElement> | undefined;
 	#vision: SyncedField<HTMLTextAreaElement> | undefined;
-	#role: SyncedField<HTMLTextAreaElement> | undefined;
-	readonly #roleSlot = new Slot();
-	readonly #lines = new Slot();
 	readonly #heads = new Slot();
 	readonly #crownStage = h("span", { class: "founding-crown", "aria-hidden": "true" });
 	readonly #invitation = new Slot();
@@ -345,6 +340,9 @@ export class FoundingView {
 	readonly #connectBody = h("div");
 	readonly #connectText = h("p", { class: "muted small" });
 	readonly #error = new Slot();
+	readonly #cancel: HTMLButtonElement;
+	/** With others at the table, Cancel waits until their seats are removed. */
+	readonly #cancelHint = h("p", { class: "founding-hint" });
 	readonly #ready: HTMLButtonElement;
 	readonly #start: HTMLButtonElement;
 	readonly #waiting = h("p", { class: "founding-hint" });
@@ -398,7 +396,6 @@ export class FoundingView {
 				"div",
 				{ class: "founding-sheet-head" },
 				h("h2", null, t("Invite friends")),
-				h("span", { class: "muted small" }, t("They join as co-founders.")),
 				h(
 					"button",
 					{
@@ -459,6 +456,19 @@ export class FoundingView {
 				else void founding.setReady(seen.revision, !seen.ready);
 			},
 		});
+		this.#cancel = button(
+			t("Cancel"),
+			() => {
+				const name = founding.store.get().table?.companyName ?? "";
+				void confirmDialog(t("Cancel {name}? It will not be started.", { name }), t("Cancel company"), true).then(
+					async (yes) => {
+						if (yes && (await founding.close())) navigate({ name: "hub" });
+					},
+				);
+			},
+			{ danger: true },
+		);
+		this.#cancel.classList.add("founding-cancel");
 		this.#start = h("button", {
 			type: "button",
 			class: "btn btn-primary founding-start",
@@ -471,7 +481,8 @@ export class FoundingView {
 		this.#bar = h(
 			"div",
 			{ class: "founding-bar" },
-			h("div", { class: "founding-actions" }, this.#ready, this.#start),
+			h("div", { class: "founding-actions" }, this.#cancel, this.#ready, this.#start),
+			this.#cancelHint,
 			this.#usedUp,
 			this.#waiting,
 			this.#owners,
@@ -487,15 +498,13 @@ export class FoundingView {
 	#unsaved(): boolean {
 		const table = this.#founding.store.get().table;
 		if (!table || table.phase !== "open") return false;
-		const role = table.seats.find((seat) => seat.userId === this.#founding.userId)?.role ?? "";
 		const typed = (field: SyncedField<HTMLInputElement | HTMLTextAreaElement> | undefined, carried?: string) =>
 			field ? (field.dirty ? field.el.value.trim() : undefined) : carried?.trim();
 		const differs = (words: string | undefined, server: string) => words !== undefined && words !== server;
 		const name = typed(this.#name, this.#carried.name);
 		return (
 			(name !== "" && differs(name, table.companyName)) ||
-			differs(typed(this.#vision, this.#carried.vision ?? this.#founding.pendingVision), table.vision) ||
-			differs(typed(this.#role, this.#carried.role), role)
+			differs(typed(this.#vision, this.#carried.vision ?? this.#founding.pendingVision), table.vision)
 		);
 	}
 
@@ -561,7 +570,6 @@ export class FoundingView {
 		return {
 			...(this.#name?.draft !== undefined ? { name: this.#name.draft } : {}),
 			...(this.#vision?.draft !== undefined ? { vision: this.#vision.draft } : {}),
-			...(this.#role?.draft !== undefined ? { role: this.#role.draft } : {}),
 		};
 	}
 
@@ -595,7 +603,7 @@ export class FoundingView {
 			const message = {
 				declined: t("You declined the invitation."),
 				left: t("You left the table."),
-				closed: t("You closed the table."),
+				closed: t("You cancelled the company."),
 				unavailable: t("This table is no longer available to you."),
 			}[mode.slice(5) as "declined" | "left" | "closed" | "unavailable"];
 			return h(
@@ -618,7 +626,7 @@ export class FoundingView {
 				{ class: "founding-ask" },
 				this.#crownStage,
 				this.#heads.el,
-				h("div", { class: "founding-box" }, this.#visionSlot.el, this.#lines.el, this.#roleSlot.el, this.#boxFoot),
+				h("div", { class: "founding-box" }, this.#visionSlot.el, this.#boxFoot),
 				this.#friends,
 			),
 			this.#seatList,
@@ -644,11 +652,11 @@ export class FoundingView {
 				return h("h1", { class: "founding-name" }, name);
 			}
 			const field = h("input", {
+				id: "foundingName",
 				class: "founding-name",
 				type: "text",
 				maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 				required: true,
-				"aria-label": t("Company name"),
 				autocomplete: "organization",
 			});
 			const syncedName = new SyncedField(
@@ -661,18 +669,25 @@ export class FoundingView {
 			);
 			this.#name = syncedName;
 			this.#watchLive(syncedName, "name");
-			return field;
+			// A field you can see is one, not the page's title (Jonas, 9 November 2026): a label over it, an edge round it.
+			return h(
+				"div",
+				{ class: "founding-name-field" },
+				h("label", { for: "foundingName", class: "founding-name-label" }, t("Company name")),
+				h("div", { class: "founding-name-box" }, field, icon("edit")),
+			);
 		});
 		this.#name?.show(table.companyName, followedName);
 
 		const invitedBy = mySeat?.invitedByUserId;
 		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
 		const sub = joined
-			? t("Your first message to the Co-Founder. Write it together.")
+			? ""
 			: inviter
 				? t("{name} invited you to start {company} together.", { name: inviter, company: table.companyName })
 				: t("You are invited to start {company} together.", { company: table.companyName });
 		if (this.#sub.textContent !== sub) this.#sub.textContent = sub;
+		this.#sub.hidden = !sub;
 		this.#invitation.show(`${table.me.state}`, () =>
 			table.me.state === "invited"
 				? h(
@@ -717,57 +732,6 @@ export class FoundingView {
 			visionText.hidden = !vision;
 			this.#paintVision(visionText, vision);
 		} else this.#paintVision(this.#carets, shownVision);
-
-		// Every other founder's own line, in their colour, as they write it; yours is the field under them.
-		const others = table.seats
-			.filter((seat) => seat.userId !== me && seat.state === "joined")
-			.map((seat) => {
-				const live = (state.liveText ?? []).find((item) => item.userId === seat.userId && item.field === "role");
-				const writing = live !== undefined && (live.unsaved || live.caret !== null);
-				return { seat, text: writing ? live.text : seat.role, caret: writing ? live.caret : null };
-			})
-			.filter((line) => line.text || line.caret !== null);
-		this.#lines.show(
-			others.map((line) => `${line.seat.userId}:${line.seat.displayName}:${line.caret}:${line.text}`).join("\n"),
-			() =>
-				others.length === 0
-					? null
-					: h(
-							"div",
-							{ class: "founding-lines" },
-							...others.map(({ seat, text, caret }) => {
-								const words = h("span");
-								writeMarked(words, text, caret === null ? [] : [{ at: caret, userId: seat.userId }]);
-								const line = h(
-									"p",
-									{ class: "founding-line" },
-									h("span", { class: "founding-line-who" }, seat.displayName),
-									words,
-								);
-								line.style.setProperty("--line-color", personColor(seat.userId));
-								return line;
-							}),
-						),
-		);
-		this.#roleSlot.show(joined ? "mine" : "none", () => {
-			if (!joined) {
-				this.#role = undefined;
-				return null;
-			}
-			const field = h("textarea", {
-				class: "founding-role founding-role-mine",
-				rows: 1,
-				maxlength: FOUNDING_ROLE_MAX_CHARACTERS,
-				placeholder: t("What will you do? Optional — one sentence is plenty."),
-				"aria-label": t("Your role"),
-			});
-			field.style.setProperty("--line-color", personColor(me));
-			const syncedRole = new SyncedField(field, (value) => void founding.setRole(value), this.#carried.role);
-			this.#role = syncedRole;
-			this.#watchLive(syncedRole, "role");
-			return field;
-		});
-		if (mySeat && joined) this.#role?.show(mySeat.role);
 
 		// The people at the table look over the box's edge, as the crown does. With live presence, the ones here now
 		// have a ring in their colour (you always), and someone writing a pulsing one.
@@ -888,6 +852,12 @@ export class FoundingView {
 		const startLabel = state.busy === "start" ? t("Starting…") : t("Start {name}", { name: table.companyName });
 		if (this.#start.textContent !== startLabel) this.#start.textContent = startLabel;
 		this.#start.disabled = state.busy === "start" || (alone ? !connected : !table.me.canStart);
+		// Cancel is the table's owner's; with others still at it, their seats go first.
+		const joinedCount = table.seats.filter((seat) => seat.state === "joined").length;
+		this.#cancel.hidden = !table.me.canManage;
+		this.#cancel.disabled = state.busy === "start" || joinedCount > 1;
+		this.#cancelHint.textContent = t("To cancel, remove the other seats first.");
+		this.#cancelHint.hidden = !table.me.canManage || joinedCount <= 1;
 		const usedUpAt = mySeat?.modelLoginUsedUp === true ? mySeat.modelLoginResetsAt : undefined;
 		this.#usedUp.hidden = usedUpAt === undefined;
 		this.#usedUp.textContent =
@@ -908,45 +878,26 @@ export class FoundingView {
 		this.#withdrawn.textContent = t("Invitations nobody has answered are withdrawn at Start.");
 		this.#withdrawn.hidden = !table.seats.some((seat) => seat.state === "invited");
 
-		const joinedCount = table.seats.filter((seat) => seat.state === "joined").length;
-		this.#exit.show(`${joined}\n${table.me.canManage}\n${joinedCount === 1}\n${table.companyName}`, () => {
-			if (!joined) return null;
-			if (!table.me.canManage)
-				return h(
-					"div",
-					{ class: "founding-exit" },
-					button(
-						t("Leave the table"),
-						() =>
-							void confirmDialog(
-								t("Leave the table for {name}?", { name: table.companyName }),
-								t("Leave"),
-								true,
-							).then(async (yes) => {
-								if (yes && (await founding.leave())) navigate({ name: "hub" });
-							}),
-						{ small: true },
-					),
-				);
-			return h(
-				"div",
-				{ class: "founding-exit" },
-				joinedCount === 1
-					? button(
-							t("Close the table"),
+		this.#exit.show(`${joined && !table.me.canManage}\n${table.companyName}`, () =>
+			joined && !table.me.canManage
+				? h(
+						"div",
+						{ class: "founding-exit" },
+						button(
+							t("Leave the table"),
 							() =>
 								void confirmDialog(
-									t("Close this table? {name} will not be started.", { name: table.companyName }),
-									t("Close the table"),
+									t("Leave the table for {name}?", { name: table.companyName }),
+									t("Leave"),
 									true,
 								).then(async (yes) => {
-									if (yes && (await founding.close())) navigate({ name: "hub" });
+									if (yes && (await founding.leave())) navigate({ name: "hub" });
 								}),
 							{ small: true },
-						)
-					: h("span", { class: "muted small" }, t("To close the table, remove the other seats first.")),
-			);
-		});
+						),
+					)
+				: null,
+		);
 	}
 
 	#friendsPanel(table: CompanyFounding, open: boolean): void {

@@ -553,6 +553,9 @@ export class CompanyFolderBrowser {
 		if (this.#viewer?.open) this.#viewer.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
+		// An embedded host (Storage in Settings) leaves with its owner, often while Settings fades out: stripping
+		// its look here would flash the bare, unstyled list for that fade. A page host is reused, so it is reset.
+		if (this.#options.embedded) return;
 		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
 	}
 

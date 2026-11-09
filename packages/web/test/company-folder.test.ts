@@ -507,6 +507,18 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.list).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps an embedded host's look when disposed, so Settings fading out shows no bare list", async () => {
+		const embedded = await opened({ embedded: true });
+		embedded.browser.dispose();
+		expect([...embedded.host.classList]).toEqual(
+			expect.arrayContaining(["files-page", "folder-page", "storage-browser", "is-embedded"]),
+		);
+		const page = await opened();
+		page.browser.dispose();
+		expect(page.host.classList.contains("files-page")).toBe(false);
+		expect(page.host.classList.contains("storage-browser")).toBe(false);
+	});
+
 	it("paginates Recents and ignores an in-flight answer after disposal", async () => {
 		const { host, browser, fake } = await opened({ embedded: true });
 		fake.client.history.mockResolvedValueOnce({ asOfSeq: 4, items: [], next: 3 });

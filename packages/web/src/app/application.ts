@@ -22,6 +22,7 @@ import { createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { nativeColorOf } from "../ui/avatar.ts";
+import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -145,6 +146,7 @@ export function mountApplication(
 	window.addEventListener("qorpera-language-change", onLanguage);
 	window.addEventListener("qorpera-time-zone-change", redrawScreens);
 	const unwatchTheme = watchTheme();
+	const unwatchBrowserBar = watchBrowserBar(root);
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;
@@ -1954,6 +1956,7 @@ export function mountApplication(
 		window.removeEventListener("qorpera-language-change", onLanguage);
 		window.removeEventListener("qorpera-time-zone-change", redrawScreens);
 		unwatchTheme();
+		unwatchBrowserBar();
 		closeSettings(false);
 		closeFeedback(false);
 		closeFriends(false);

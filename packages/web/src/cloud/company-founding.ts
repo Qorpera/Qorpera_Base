@@ -216,12 +216,6 @@ export class CompanyFoundingApi {
 			throw new CloudShapeError("declined invitation");
 		return null;
 	}
-	setRole(profileId: string, expectedRevision: number, role: string): Promise<CompanyFounding> {
-		return this.#call("qorpera_set_founder_role", profileId, {
-			p_expected_revision: revision(expectedRevision),
-			p_role: role.trim(),
-		});
-	}
 	setReady(profileId: string, expectedRevision: number, ready: boolean): Promise<CompanyFounding> {
 		return this.#call("qorpera_set_founder_ready", profileId, {
 			p_expected_revision: revision(expectedRevision),

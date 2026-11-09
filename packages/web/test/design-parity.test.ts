@@ -475,7 +475,7 @@ describe("shell presentation lifecycle", () => {
 		const disc = (status: Element | null) =>
 			!status ? "none" : status.classList.contains("alert-mark") ? "red" : "green";
 		for (const { agent, figure, line, disc: shown } of rows) {
-			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
+			const link = rail.querySelector(`a[data-href$="/staff/${agent.id}"]`)!;
 			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
 			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
@@ -485,8 +485,9 @@ describe("shell presentation lifecycle", () => {
 			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
 			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
 			const words = [agent.displayName, "Analyst", state].filter(Boolean).join(" · ");
-			expect(link.getAttribute("aria-label"), agent.displayName).toBe(state ? words : null);
-			expect(link.getAttribute("title"), agent.displayName).toBe(words);
+			expect(link.getAttribute("aria-label"), agent.displayName).toBe(words);
+			// No hover popup: the row shows the name and role already (Jonas, 9 Nov 2026).
+			expect(link.hasAttribute("title"), agent.displayName).toBe(false);
 		}
 		// The Co-Founder's failed room delivery reads the same way on its card.
 		const card = rail.querySelector(".cofounder-home")!;
@@ -501,7 +502,7 @@ describe("shell presentation lifecycle", () => {
 		stubFigureMotion();
 		const f = companyFixture();
 		const { rail, draw } = mountRail(f);
-		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
+		const disc = () => rail.querySelector(`a[data-href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
 		const failed = {
 			runId: id(70),
 			staffAgentId: staff.id,
@@ -530,7 +531,9 @@ describe("shell presentation lifecycle", () => {
 		if (kind === "cofounder") f.company.store.set({ staff: [{ ...staff, templateId: "co-founder" }] });
 		const { rail, draw } = mountRail(f);
 		const row = () =>
-			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
+			rail.querySelector<HTMLElement>(
+				kind === "cofounder" ? ".cofounder-home" : `a[data-href$="/staff/${staff.id}"]`,
+			)!;
 		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
 		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
@@ -558,7 +561,7 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ activity: [] });
 		draw();
 		expect(disc()).toBeNull();
-		expect(row().hasAttribute("aria-label")).toBe(false);
+		expect(row().getAttribute("aria-label")).not.toContain("A run did not finish");
 		f.company.store.set({
 			activity: [failed],
 			recoveries: {
@@ -743,7 +746,7 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	};
 	f.company.store.set({ organization, organizationState: "ready" });
 	const { rail } = mountRail(f);
-	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
+	expect(rail.querySelector('a[data-href*="/responsibility/"], a[data-href*="/project/"]')).toBeNull();
 	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
 		staff.displayName,
 	);
@@ -754,7 +757,7 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
 	// Search and the add button share the top row, search first.
 	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
-	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[data-href$="/new"]')).not.toBeNull();
 	// The search folds out of its button over the tabs.
 	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
@@ -773,8 +776,8 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	const toolbar = rail.querySelector(".rail-toolbar"),
 		list = rail.querySelector(".rail-scroll"),
 		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
-		row = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!,
-		otherRow = rail.querySelector<HTMLElement>(`a[href$="/staff/${other.id}"]`)!;
+		row = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!,
+		otherRow = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${other.id}"]`)!;
 	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
 	row.focus();
 	const listChanges = new MutationObserver(() => {});
@@ -783,14 +786,14 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	draw();
 	expect(listChanges.takeRecords()).toHaveLength(0);
 	listChanges.disconnect();
-	expect(rail.querySelector(`a[href$="/staff/${staff.id}"]`)).toBe(row);
+	expect(rail.querySelector(`a[data-href$="/staff/${staff.id}"]`)).toBe(row);
 	expect(document.activeElement).toBe(row);
 	// A change rebuilds only the row it touches, inside the same list, and focus moves to the rebuilt row.
 	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
 	draw();
-	const rebuilt = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
+	const rebuilt = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
 	expect(rebuilt).not.toBe(row);
-	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBe(otherRow);
+	expect(rail.querySelector(`a[data-href$="/staff/${other.id}"]`)).toBe(otherRow);
 	expect(document.activeElement).toBe(rebuilt);
 	// When the focused row goes away, focus moves to the row now in its place, not to the page.
 	otherRow.focus();
@@ -801,8 +804,8 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 		],
 	});
 	draw();
-	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBeNull();
-	expect(document.activeElement).toBe(rail.querySelector(`a[href$="/chat/${session.sessionId}"]`));
+	expect(rail.querySelector(`a[data-href$="/staff/${other.id}"]`)).toBeNull();
+	expect(document.activeElement).toBe(rail.querySelector(`a[data-href$="/chat/${session.sessionId}"]`));
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
 	// Every keystroke filters, composed text included, and redraws never move the field.
@@ -869,7 +872,7 @@ it("moves the current row in place, keeps notices and moved rows, and retries fi
 	const other = { ...staff, id: id(93), displayName: "Third agent" };
 	f.company.store.set({ staff: [staff, other], sessionsError: "Conversations are unavailable." });
 	const { rail, draw } = mountRail(f);
-	const at = (agent: typeof staff) => rail.querySelector<HTMLElement>(`a[href$="/staff/${agent.id}"]`)!;
+	const at = (agent: typeof staff) => rail.querySelector<HTMLElement>(`a[data-href$="/staff/${agent.id}"]`)!;
 	const row = at(staff),
 		otherRow = at(other),
 		alert = rail.querySelector(".rail-scroll > [role=alert]");

@@ -656,7 +656,7 @@ describe("account and route ownership", () => {
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
 		const f = mounted(hash);
 		await draw();
-		expect(f.root.querySelector(".company-card[href]")?.textContent).toContain(profileA.profileName);
+		expect(f.root.querySelector(".company-card[data-href]")?.textContent).toContain(profileA.profileName);
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
@@ -775,7 +775,7 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")).toBeNull();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
-		expect(f.root.querySelector('.account-popover a[href$="/team"]')).toBeNull();
+		expect(f.root.querySelector('.account-popover a[data-href$="/team"]')).toBeNull();
 		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
 		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		await draw();
@@ -1066,12 +1066,12 @@ describe("account and route ownership", () => {
 		expect(page.querySelector('[aria-label="Show in Storage"]')).not.toBeNull();
 		// Opened straight from a link, it leads back to the company; it has no Close, as a page has none.
 		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
-		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 		expect(back.getAttribute("aria-label")).toBe("Back to the company");
 		expect(page.querySelector('[aria-label="Close"]')).toBeNull();
 		// The rail's icon for it is a link to this page, marked as the open one.
 		const icon = f.root.querySelector<HTMLAnchorElement>(
-			`.rail a.rail-app[href="#/c/${profileA.profileId}/a/sales-board"]`,
+			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
 		);
 		expect(icon?.getAttribute("aria-current")).toBe("page");
 		// The company's redraws keep the page as it is.
@@ -1126,7 +1126,7 @@ describe("account and route ownership", () => {
 		const page = appPage(f.root)!;
 		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
 		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
-		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(back.getAttribute("aria-label")).toBe("Back to the conversation");
 	});
 
@@ -1166,7 +1166,7 @@ describe("account and route ownership", () => {
 	const conceptItems = (root: HTMLElement) =>
 		[...root.querySelectorAll<HTMLAnchorElement>(".concepts-side a.concepts-item")].map((item) => [
 			item.querySelector(".concepts-item-title")?.textContent,
-			item.getAttribute("href"),
+			item.getAttribute("data-href"),
 			item.getAttribute("aria-current"),
 		]);
 	const conceptFrame = (root: HTMLElement) =>
@@ -1185,7 +1185,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".thread")).toBeNull();
 		// The side panel: the way back to the company, the heading and one item per concept, the newest first and open.
 		const back = view.querySelector<HTMLAnchorElement>("a.concepts-back")!;
-		expect(back.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 		expect(back.textContent).toBe(profileA.profileName);
 		expect(back.getAttribute("aria-label")).toBe(`Back to ${profileA.profileName}`);
 		expect(view.querySelector(".concepts-heading")?.textContent).toBe("Concepts");
@@ -1193,7 +1193,7 @@ describe("account and route ownership", () => {
 			["Shop B", `#/c/${profileA.profileId}/concepts/shop-b`, "page"],
 			["Shop A", `#/c/${profileA.profileId}/concepts/shop-a`, null],
 		]);
-		const a = view.querySelector(`a.concepts-item[href$="/shop-a"]`)!;
+		const a = view.querySelector(`a.concepts-item[data-href$="/shop-a"]`)!;
 		expect(a.querySelector(".concepts-item-about")?.textContent).toBe("A calm shop");
 		expect(a.querySelector(".concepts-item-by")?.textContent).toBe("Made by Fixture agent");
 		expect(a.querySelector(".concepts-thumb svg.interface-emblem")).not.toBeNull();
@@ -1203,7 +1203,7 @@ describe("account and route ownership", () => {
 		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
 		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
 		// The posted app that is no concept is not listed.
-		expect(view.querySelector(`a.concepts-item[href$="/sales-board"]`)).toBeNull();
+		expect(view.querySelector(`a.concepts-item[data-href$="/sales-board"]`)).toBeNull();
 		// The company's redraws keep the viewer and its frame as they are.
 		const frame = conceptFrame(f.root);
 		await vi.advanceTimersByTimeAsync(2000);
@@ -1228,13 +1228,13 @@ describe("account and route ownership", () => {
 		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
 		const first = conceptFrame(f.root)!;
 		expect(first.title).toBe("App: Shop A");
-		const item = view.querySelector<HTMLAnchorElement>(`a.concepts-item[href$="/shop-b"]`)!;
-		location.hash = item.getAttribute("href")!;
+		const item = view.querySelector<HTMLAnchorElement>(`a.concepts-item[data-href$="/shop-b"]`)!;
+		location.hash = item.getAttribute("data-href")!;
 		await draw();
 		await draw();
 		// The same viewer and side panel, the same item element; only the stage's frame is new.
 		expect(concepts(f.root)).toBe(view);
-		expect(view.querySelector(`a.concepts-item[href$="/shop-b"]`)).toBe(item);
+		expect(view.querySelector(`a.concepts-item[data-href$="/shop-b"]`)).toBe(item);
 		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual(["page", null]);
 		expect(first.isConnected).toBe(false);
 		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
@@ -1243,7 +1243,7 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
-		expect(view.querySelector(".concepts-status a")?.getAttribute("href")).toBe(
+		expect(view.querySelector(".concepts-status a")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/concepts/shop-b`,
 		);
 	});
@@ -1254,7 +1254,7 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		const view = concepts(f.root)!;
-		const offer = () => view.querySelector(".concepts-status a")?.getAttribute("href");
+		const offer = () => view.querySelector(".concepts-status a")?.getAttribute("data-href");
 		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
 		// The newest one is taken away: the same words, but the offer moves to the one that is newest now.
 		fake.remove("apps/shop-b");
@@ -1294,7 +1294,8 @@ describe("account and route ownership", () => {
 			const f = mounted(`#/c/${profileA.profileId}/concepts`);
 			await draw();
 			await draw();
-			const thumb = () => f.root.querySelector<HTMLElement>(`a.concepts-item[href$="/shop-b"] .concepts-thumb`)!;
+			const thumb = () =>
+				f.root.querySelector<HTMLElement>(`a.concepts-item[data-href$="/shop-b"] .concepts-thumb`)!;
 			const shown = () => thumb().querySelector("img")?.getAttribute("src") ?? null;
 			// Named but not there yet: the emblem.
 			expect(shown()).toBeNull();
@@ -1411,11 +1412,11 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		const entry = f.root.querySelector<HTMLAnchorElement>(".rail .rail-apps-drawer a.rail-concepts");
-		expect(entry?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/concepts`);
+		expect(entry?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/concepts`);
 		expect(entry?.querySelector(".rail-app-name")?.textContent).toBe("Concepts");
 		// The concepts have no icon of their own; the posted app that is no concept keeps its own.
-		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/shop-b"]`)).toBeNull();
-		expect(f.root.querySelector(`.rail a.rail-app[href$="/a/sales-board"]`)).not.toBeNull();
+		expect(f.root.querySelector(`.rail a.rail-app[data-href$="/a/shop-b"]`)).toBeNull();
+		expect(f.root.querySelector(`.rail a.rail-app[data-href$="/a/sales-board"]`)).not.toBeNull();
 		// A concept's card in a chat opens the Concepts viewer at it, which leads back to the conversation.
 		const prose = markdown("See [Shop A](app:shop-a).");
 		f.root.querySelector(".thread")!.append(prose);
@@ -1426,7 +1427,7 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
-		expect(concepts(f.root)?.querySelector("a.concepts-back")?.getAttribute("href")).toBe(
+		expect(concepts(f.root)?.querySelector("a.concepts-back")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
 		);
 		// A concept's own app link opens the Concepts viewer at it; an app that is no concept keeps its page.
@@ -1502,7 +1503,7 @@ describe("account and route ownership", () => {
 		search.dispatchEvent(new Event("input"));
 		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
-		expect(rail.querySelector('a[href$="/team"]')).toBeNull();
+		expect(rail.querySelector('a[data-href$="/team"]')).toBeNull();
 	});
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {
