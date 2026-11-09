@@ -429,15 +429,15 @@
 .company-logo-picture { position: absolute; inset: 4%; width: 92%; height: 92%; object-fit: contain; border-radius: 22%; pointer-events: none; user-select: none; }
 
 /* Settings → Company → Brand: the official name and logo. */
-.settings-brand-row { display: flex; align-items: flex-end; gap: 16px; }
-/* The logo is the size of the member pictures below it (54 px), with the name in line with their names and standing
- * on its bottom edge. */
+.settings-brand-row { display: flex; align-items: flex-end; gap: 18px; }
+/* The logo and the gap after it are the member rows' (.company-person: 52 px and 18 px), so the name starts in line
+ * with the members' names; it stands on the logo's bottom edge. */
 .settings-brand-picture { flex: none; }
-.settings-brand-logo { position: relative; display: grid; place-items: center; width: 54px; height: 54px; padding: 0; border: 0; border-radius: 14px; background: transparent; cursor: default; }
+.settings-brand-logo { position: relative; display: grid; place-items: center; width: 52px; height: 52px; padding: 0; border: 0; border-radius: 14px; background: transparent; cursor: default; }
 .settings-brand-logo.is-changeable { cursor: pointer; }
 .settings-brand-logo:not(.is-changeable) .account-picture-badge { display: none; }
 .settings-brand-logo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.settings-brand-logo .figure, .settings-brand-logo .company-logo { width: 54px; height: 54px; }
+.settings-brand-logo .figure, .settings-brand-logo .company-logo { width: 52px; height: 52px; }
 /* A smaller badge that hangs further off the corner, so it covers less of the logo than the account picture's. */
 .settings-brand-logo .account-picture-badge { right: -7px; bottom: -7px; width: 20px; height: 20px; }
 .settings-brand-logo .account-picture-badge .icon { width: 11px; height: 11px; }
