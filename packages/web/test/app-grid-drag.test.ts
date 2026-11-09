@@ -290,4 +290,39 @@ describe("the apps drawer's order", () => {
 		expect(drops).toEqual([]);
 		expect(ends()).toBe(2);
 	});
+
+	it("measures true places when a new drag starts while the last move is still gliding", () => {
+		const { element, drops, icon } = setup(["mailbox", "members", "bank", "app:shop"]);
+		// Each icon glides as a browser would: until its animation finishes, its box is offset by the animation's start.
+		const offsets = new Map<Element, { dx: number; dy: number }>();
+		for (const item of element.children) {
+			vi.spyOn(item as HTMLElement, "getBoundingClientRect").mockImplementation(() => {
+				const index = [...element.children].indexOf(item);
+				const box = new DOMRect((index % 4) * 50, Math.floor(index / 4) * 60, 50, 60);
+				const offset = offsets.get(item);
+				return offset ? new DOMRect(box.x + offset.dx, box.y + offset.dy, box.width, box.height) : box;
+			});
+			(item as HTMLElement).animate = ((frames: Keyframe[]) => {
+				const [dx = 0, dy = 0] = String(frames[0]?.translate ?? "0 0")
+					.split(" ")
+					.map((part) => Number.parseFloat(part));
+				offsets.set(item, { dx, dy });
+				const done = () => offsets.delete(item);
+				return { finish: done, cancel: done, addEventListener: () => {} } as unknown as Animation;
+			}) as HTMLElement["animate"];
+		}
+		// Alt+Right moves Mailbox one place; Members glides back from Mailbox's old place.
+		icon("mailbox").focus();
+		icon("mailbox").dispatchEvent(
+			new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true }),
+		);
+		expect(gridOrder(element)).toEqual(["members", "mailbox", "bank", "app:shop"]);
+		expect(offsets.has(icon("members"))).toBe(true);
+		// Mid-glide, Bank is dragged onto the first place. Members stands there once its glide ends.
+		pointer("pointerdown", 125, 30, icon("bank"));
+		pointer("pointermove", 25, 30);
+		expect(gridOrder(element)).toEqual(["bank", "members", "mailbox", "app:shop"]);
+		pointer("pointerup", 25, 30);
+		expect(drops.at(-1)).toEqual(["bank", "members", "mailbox", "app:shop"]);
+	});
 });

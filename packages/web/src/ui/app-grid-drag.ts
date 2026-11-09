@@ -43,8 +43,9 @@ export function gridOrder(grid: HTMLElement): string[] {
 	return itemsIn(grid).map(keyOf);
 }
 
-/** Moves `item` to stand before `before` (or last), the other icons gliding from where they stood. */
-function moveGliding(grid: HTMLElement, item: HTMLElement, before: Element | null): void {
+/** Moves `item` to stand before `before` (or last), the other icons gliding from where they stood. Each glide is kept in
+ * `moving` until it ends, so a lift can finish them first and measure the places where the icons really stand. */
+function moveGliding(grid: HTMLElement, item: HTMLElement, before: Element | null, moving: Set<Animation>): void {
 	const others = itemsIn(grid).filter((other) => other !== item);
 	const from = new Map(others.map((other) => [other, other.getBoundingClientRect()]));
 	grid.insertBefore(item, before);
@@ -57,8 +58,19 @@ function moveGliding(grid: HTMLElement, item: HTMLElement, before: Element | nul
 		const dx = was.left - now.left;
 		const dy = was.top - now.top;
 		if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
-		other.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], { duration: GLIDE_MS, easing: curve });
+		track(
+			moving,
+			other.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], { duration: GLIDE_MS, easing: curve }),
+		);
 	}
+}
+
+/** Keeps `animation` in `moving` until it finishes or is cancelled. */
+function track(moving: Set<Animation>, animation: Animation): void {
+	moving.add(animation);
+	const done = () => moving.delete(animation);
+	animation.addEventListener?.("finish", done);
+	animation.addEventListener?.("cancel", done);
 }
 
 interface Drag {
@@ -84,6 +96,8 @@ export class AppGridDrag {
 	readonly #grid: HTMLElement;
 	readonly #hooks: () => AppGridDragHooks;
 	#drag: Drag | undefined;
+	/** The glides and settles running now. */
+	readonly #moving = new Set<Animation>();
 
 	constructor(grid: HTMLElement, hooks: () => AppGridDragHooks, signal: AbortSignal) {
 		this.#grid = grid;
@@ -160,6 +174,9 @@ export class AppGridDrag {
 				this.#drag = undefined;
 				return;
 			}
+			// An earlier move may still be gliding: its icons jump to where they stand, so the places are measured true.
+			for (const animation of [...this.#moving]) animation.finish();
+			this.#moving.clear();
 			const rect = item.getBoundingClientRect();
 			drag.lifted = {
 				item,
@@ -176,7 +193,7 @@ export class AppGridDrag {
 		const target = slots.findIndex((slot) => inside(slot, event.clientX, event.clientY));
 		const others = itemsIn(this.#grid).filter((other) => other !== item);
 		if (target >= 0 && others.length + 1 === slots.length && itemsIn(this.#grid).indexOf(item) !== target)
-			moveGliding(this.#grid, item, others[target] ?? null);
+			moveGliding(this.#grid, item, others[target] ?? null, this.#moving);
 		this.#follow(drag.lifted, event.clientX, event.clientY);
 	}
 
@@ -224,7 +241,13 @@ export class AppGridDrag {
 		item.style.translate = "";
 		item.classList.remove("is-lifted");
 		if (!left || reducedMotion() || typeof item.animate !== "function") return;
-		item.animate([{ translate: left }, { translate: "0 0" }], { duration: SETTLE_MS, easing: easing("--ease-out") });
+		track(
+			this.#moving,
+			item.animate([{ translate: left }, { translate: "0 0" }], {
+				duration: SETTLE_MS,
+				easing: easing("--ease-out"),
+			}),
+		);
 	}
 
 	/** Alt with an arrow moves the focused icon one place: left and up go earlier, right and down later. */
@@ -240,7 +263,7 @@ export class AppGridDrag {
 		const index = items.indexOf(item);
 		const target = items[index + (earlier ? -1 : 1)];
 		if (!target) return;
-		moveGliding(this.#grid, item, earlier ? target : target.nextElementSibling);
+		moveGliding(this.#grid, item, earlier ? target : target.nextElementSibling, this.#moving);
 		item.focus({ preventScroll: true });
 		const hooks = this.#hooks();
 		hooks.drop(gridOrder(this.#grid));
