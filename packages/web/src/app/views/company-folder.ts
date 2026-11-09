@@ -566,12 +566,11 @@ export class CompanyFolderBrowser {
 		this.#busy = true;
 		const focus = document.activeElement;
 		this.#root.inert = true;
-		// A modal window is not made inert by its ancestors, so its content rests on its own. Focus stays in the window,
-		// where Escape is the window's.
+		// A modal window is not made inert by its ancestors, so its content rests on its own. Focus waits on the window
+		// itself, where Escape is the window's: the control that had it may rest or go (a Try again is removed at once).
 		if (this.#viewer?.open) {
 			this.#preview.inert = true;
-			if (!this.#viewer.contains(document.activeElement) || this.#preview.contains(document.activeElement))
-				this.#viewer.focus({ preventScroll: true });
+			if (document.activeElement !== this.#viewer) this.#viewer.focus({ preventScroll: true });
 		}
 		this.#say("");
 		try {

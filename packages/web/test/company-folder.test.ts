@@ -1182,10 +1182,32 @@ describe("a folder-v2 company's Company File", () => {
 		expect(visibleText(said)).toContain("The Company File could not be read just now.");
 		expect(said?.querySelector("button")?.textContent).toBe("Try again");
 		expect(document.activeElement).toBe(download);
+		// Try again, pressed in the window, goes as the retry starts: focus waits on the window, so Escape stays its own.
+		// The retry reads the folder again.
+		let hold!: () => void;
+		const listed = fake.client.list.getMockImplementation()!;
+		fake.client.list.mockImplementationOnce(async (...args) => {
+			await new Promise<void>((resolve) => {
+				hold = resolve;
+			});
+			return listed(...args);
+		});
+		const retry = said!.querySelector<HTMLButtonElement>("button")!;
+		retry.focus();
+		retry.click();
+		expect(retry.isConnected).toBe(false);
+		expect(document.activeElement).toBe(viewer);
+		const waiting = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		viewer.dispatchEvent(waiting);
+		expect(waiting.defaultPrevented).toBe(true);
+		expect(viewer.open).toBe(true);
+		hold();
+		await settle();
+		expect(preview.inert).toBe(false);
+		expect(viewer.open).toBe(true);
 		await click(viewer.querySelector('.files-preview-head [aria-label="Close readme.txt"]'));
 		expect(viewer.contains(host.querySelector(".files-status"))).toBe(false);
 		expect(host.querySelector(".files-retries")?.nextElementSibling).toBe(host.querySelector(".files-root"));
-		expect(status(host)).toContain("could not be read");
 	});
 
 	it("keeps the standalone browser's preview beside the files, with no window and no scrolling", async () => {
