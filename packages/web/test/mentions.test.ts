@@ -298,6 +298,7 @@ describe("mentions in a group chat", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 		const row = rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${other.sessionId}"]`)!;
 		expect(row.querySelector(".rail-mention")?.textContent).toBe("@");

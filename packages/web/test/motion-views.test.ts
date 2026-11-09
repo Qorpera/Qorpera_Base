@@ -77,6 +77,7 @@ describe("rail rows that come back", () => {
 				invitations: 0,
 				openSettings: () => {},
 				openFeedback: () => {},
+				openFriends: () => {},
 			});
 		draw();
 		return { rail, draw };

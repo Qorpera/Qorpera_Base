@@ -8,6 +8,17 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { fixture, id, profileA, settle, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
+/** jsdom does not implement the native dialog methods the Friends window opens and closes with. */
+function stubDialogs(): void {
+	const dialog = HTMLDialogElement.prototype;
+	dialog.showModal ??= function (this: HTMLDialogElement) {
+		this.open = true;
+	};
+	dialog.close ??= function (this: HTMLDialogElement) {
+		this.open = false;
+	};
+}
+stubDialogs();
 afterEach(() => {
 	dispose?.();
 	document.body.replaceChildren();
@@ -59,15 +70,18 @@ describe("account actions with the shared stylesheets", () => {
 		dispose = mountApplication(root, f.cloud, f.api);
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
+		// The friends button beside the account carries a dot while an invitation waits.
+		expect(root.querySelector(".account-friends .account-friends-dot")).not.toBeNull();
 		root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
 		const menuItem = root.querySelector<HTMLButtonElement>('[data-account-action="friends"]')!;
 		expect(menuItem.querySelector(".account-count")?.textContent).toBe("1");
 		expect(root.querySelector('.account-popover a[href="#/invitations"]')).toBeNull();
 		menuItem.click();
 		await settle();
-		const dialog = root.querySelector<HTMLElement>(".settings-dialog")!;
-		expect(dialog.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
-		expect(dialog.querySelector("#settings-tab-friends .settings-tab-count")?.textContent).toBe("1");
+		// Friends open as a window of their own, not in Settings.
+		expect(root.querySelector(".settings-dialog")).toBeNull();
+		const dialog = root.querySelector<HTMLElement>(".friends-window")!;
+		expect(dialog.querySelector("h1")?.textContent).toBe("Friends");
 		const rows = [...dialog.querySelectorAll<HTMLElement>(".person-row")];
 		expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([profileA.profileName, "Friend"]);
 		for (const row of rows) {

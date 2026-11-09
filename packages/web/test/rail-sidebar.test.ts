@@ -119,6 +119,7 @@ function companyWith(
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: actions,
 			...(extra.cardless ? {} : { openAgentCard: openCard, openGroupCard: openGroup }),
 		});

@@ -215,7 +215,9 @@ describe("actual product conversation attachments", () => {
 			name === "qorpera_member_digital_post" ||
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
-			name === "qorpera_member_interface_pages";
+			name === "qorpera_member_interface_pages" ||
+			// The account marks itself online for its friends (online-mark.ts).
+			name === "qorpera_mark_online";
 		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {

@@ -1,0 +1,144 @@
+/* Social (9 Nov 2026): the friends button beside the account, the Friends window, friends' last online time, and
+ * Settings → Leaderboard. */
+
+/* The friends button, left of the account in the top bar (Jonas's sketch). */
+.account-menu:not(.account-menu-rail):has(> .account-friends) { display: flex; align-items: center; gap: 4px; }
+.account-friends {
+	position: relative; display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0;
+	border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.account-friends .icon { width: 19px; height: 19px; }
+.account-friends:hover { background: var(--hover); color: var(--text); }
+.account-friends:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.account-friends-dot {
+	position: absolute; top: 6px; right: 5px; width: 8px; height: 8px; border-radius: 50%;
+	background: var(--accent); box-shadow: 0 0 0 2px var(--chrome);
+}
+/* Inside a company the friends button sits in Settings' header instead (Jonas, 9 Nov 2026). */
+.account-menu-rail .account-friends { display: none; }
+
+/* The friends button in Settings' header, left of Settings | Storage: a plain icon and word, no fill (Jonas). */
+.settings-friends {
+	display: inline-flex; flex: none; align-items: center; gap: 7px; min-height: 34px; padding: 5px 8px;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.settings-friends .icon { width: 16px; height: 16px; }
+.settings-friends:hover { color: var(--text); }
+.settings-friends:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+@media (max-width: 560px) {
+	.settings-friends { font-size: 0; gap: 0; }
+}
+
+/* A person's picture with a green dot while they are online. */
+.person-face { position: relative; display: inline-grid; flex: none; }
+.person-online-dot {
+	position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%;
+	background: #2fb67c; box-shadow: 0 0 0 2px var(--overlay);
+}
+.person-meta-online { color: #1f8f5f; font-weight: 550; }
+
+/* The Friends window: Settings' Friends page in a dialog of its own. */
+.friends-window {
+	width: min(620px, calc(100vw - 32px)); max-width: none; max-height: min(720px, calc(100dvh - 48px));
+	margin: auto; padding: 0; overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px;
+	background: var(--overlay); color: var(--text); box-shadow: 0 24px 80px rgb(0 0 0 / 24%); font-family: var(--font-sans);
+}
+.friends-window[open] { display: flex; flex-direction: column; }
+.friends-window::backdrop { background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); }
+.friends-window-body { min-height: 0; overflow-y: auto; padding: 26px 28px 28px; }
+.friends-window h1 { margin: 0 44px 18px 0; font-family: var(--font-display); font-size: 22px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.25; }
+.friends-window .settings-lead { margin: -10px 0 18px; }
+.friends-window-close {
+	position: absolute; top: 18px; right: 18px; z-index: 1; display: grid; place-items: center; width: 32px; height: 32px;
+	padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer;
+}
+.friends-window-close:hover, .friends-window-close:focus-visible { background: var(--hover); color: var(--text); }
+.friends-window-close .icon { width: 18px; height: 18px; }
+@media (max-width: 560px) {
+	.friends-window-body { padding: 20px 16px 18px; }
+	/* Name and address get the whole first line; the second holds when they were last online and the buttons. */
+	.friends-window .person-row { flex-wrap: wrap; row-gap: 6px; }
+	.friends-window .person-copy { flex: 1 1 calc(100% - 50px); }
+	.friends-window .person-meta { display: block; order: 3; flex: 1 1 auto; padding-left: 46px; }
+	.friends-window .person-actions { order: 4; margin-left: auto; }
+}
+
+/* Leaderboard (direction C, "Champion of the week"): four wide tabs, the leader's banner, the ranking. */
+.leaderboard-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: -6px 0 18px; border-bottom: 1px solid var(--border); }
+.leaderboard-tab {
+	display: grid; align-content: start; gap: 2px; min-width: 0; padding: 12px 14px 13px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+	border-radius: 10px 10px 0 0; background: transparent; color: var(--text-muted); font: inherit; text-align: left; cursor: pointer;
+	transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+.leaderboard-tab strong { font-size: 14px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.leaderboard-tab small { color: var(--text-soft); font-size: 11.5px; }
+.leaderboard-tab:hover { background: var(--hover); color: var(--text); }
+.leaderboard-tab[aria-selected="true"] { border-bottom-color: var(--text); color: var(--text); }
+.leaderboard-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.leaderboard-champion {
+	position: relative; overflow: hidden; display: flex; align-items: center; gap: 28px; min-height: 150px; margin-bottom: 16px;
+	padding: 22px 30px; border: 1px solid var(--border); border-radius: 20px; background: var(--header-surface);
+}
+.leaderboard-champion.is-open { min-height: 0; }
+.leaderboard-champion-figures { position: relative; display: flex; flex: none; }
+.leaderboard-champion-figures.is-shared .leaderboard-champion-figure + .leaderboard-champion-figure { margin-left: -34px; animation-delay: .35s; }
+.leaderboard-champion-figures.is-shared .figure { width: 104px; height: 104px; }
+.leaderboard-champion-figure { position: relative; flex: none; animation: leaderboard-cheer 1.9s cubic-bezier(.3, 1.5, .5, 1) infinite; }
+.leaderboard-champion-figure .figure { width: 128px; height: 128px; }
+.leaderboard-champion-copy { position: relative; display: grid; gap: 4px; min-width: 0; }
+.leaderboard-champion-copy small { color: #8a6510; font-size: 11.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.leaderboard-champion-copy strong { overflow: hidden; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-champion-copy span { color: var(--text-muted); font-size: 14.5px; }
+.leaderboard-champion-copy .leaderboard-champion-timing { color: var(--text-soft); font-size: 12.5px; }
+.leaderboard-confetti { position: absolute; top: -20px; width: 7px; height: 12px; border-radius: 2px; animation: leaderboard-fall 3.4s linear infinite; }
+.leaderboard-confetti.is-1 { left: 8%; background: #f2b84b; }
+.leaderboard-confetti.is-2 { left: 21%; width: 6px; height: 6px; border-radius: 50%; background: #7f8ff0; animation-delay: .8s; }
+.leaderboard-confetti.is-3 { left: 36%; background: #ef6f6c; animation-delay: 1.9s; }
+.leaderboard-confetti.is-4 { left: 49%; width: 6px; height: 6px; border-radius: 50%; background: #4fbf8f; animation-delay: .4s; }
+.leaderboard-confetti.is-5 { left: 63%; background: #f2b84b; animation-delay: 2.5s; }
+.leaderboard-confetti.is-6 { left: 76%; width: 6px; height: 6px; border-radius: 50%; background: #ef6f6c; animation-delay: 1.3s; }
+.leaderboard-confetti.is-7 { left: 88%; background: #7f8ff0; animation-delay: 2.9s; }
+.leaderboard-confetti.is-8 { left: 95%; width: 6px; height: 6px; border-radius: 50%; background: #f2b84b; animation-delay: .1s; }
+@keyframes leaderboard-cheer { 0%, 60%, 100% { transform: translateY(0) rotate(0); } 70% { transform: translateY(-16px) rotate(-6deg); } 82% { transform: translateY(-5px) rotate(5deg); } }
+@keyframes leaderboard-fall { from { transform: translateY(0) rotate(0); } to { transform: translateY(240px) rotate(320deg); } }
+.leaderboard-visible { margin-top: 22px; padding-inline: 0; }
+.leaderboard-list { display: grid; gap: 12px; }
+.leaderboard-list[aria-busy] .leaderboard-rows { opacity: .55; transition: opacity 160ms ease; }
+.leaderboard-rows { margin: 0; padding: 0; list-style: none; border: 1px solid #e3e3e0; border-radius: 14px; background: #fff; overflow: hidden; }
+.leaderboard-row { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 9px 18px; }
+.leaderboard-row + .leaderboard-row { border-top: 1px solid #f0f0ee; }
+.leaderboard-row.is-me { background: color-mix(in srgb, var(--composer-accent) 6%, transparent); }
+.leaderboard-place { flex: none; width: 22px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.leaderboard-move { flex: none; width: 40px; color: var(--text-soft); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.leaderboard-move.is-up { color: #1f8f5f; }
+.leaderboard-move.is-down { color: #c2453b; }
+.leaderboard-row .figure { width: 40px; height: 40px; }
+.leaderboard-who { display: grid; flex: 1; gap: 2px; min-width: 0; line-height: 1.3; }
+.leaderboard-who strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-who small { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.is-me .leaderboard-who small { color: var(--blue); }
+.leaderboard-score { flex: none; font-size: 15px; font-weight: 680; font-variant-numeric: tabular-nums; }
+.leaderboard-invite {
+	display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px;
+	border: 1px dashed #d4d4d0; border-radius: 13px;
+}
+.leaderboard-invite > span { display: grid; gap: 2px; }
+.leaderboard-invite strong { font-size: 13px; }
+.leaderboard-invite small { color: var(--text-muted); font-size: 12px; }
+@media (max-width: 640px) {
+	.leaderboard-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.leaderboard-champion { gap: 16px; padding: 18px; }
+	.leaderboard-champion-figure .figure, .leaderboard-champion-figures.is-shared .figure { width: 84px; height: 84px; }
+	.leaderboard-champion-copy strong { font-size: 22px; }
+	.leaderboard-row { gap: 10px; padding-inline: 12px; }
+	.leaderboard-move { width: 30px; }
+}
+@media (prefers-reduced-motion: reduce) { .leaderboard-champion-figure, .leaderboard-confetti { animation: none; } .leaderboard-confetti { display: none; } }
+
+:root[data-theme="dark"] .friends-window { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 80px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .friends-window::backdrop { background: rgb(0 0 0 / 55%); }
+:root[data-theme="dark"] .person-meta-online { color: #4fd39b; }
+:root[data-theme="dark"] .leaderboard-champion-copy small { color: #e5c36a; }
+:root[data-theme="dark"] .leaderboard-rows { border-color: rgba(255, 255, 255, 0.1); background: var(--overlay); }
+:root[data-theme="dark"] .leaderboard-row + .leaderboard-row { border-top-color: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .leaderboard-invite { border-color: rgba(255, 255, 255, 0.16); }
