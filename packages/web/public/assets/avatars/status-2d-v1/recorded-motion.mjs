@@ -13,6 +13,9 @@ export function loadRecordedMotion(state, base) {
     [source, colors, front, eyeMask, eyeRaster, soft] = Array.from({length:6}, () => {
       const canvas=document.createElement('canvas');canvas.width=canvas.height=160;return canvas;
     });
+    // prepare() reads source and eyeMask back every new frame: keep them in memory rather than on
+    // the GPU, where each getImageData is a stall (Safari's GPU process most of all).
+    for (const canvas of [source, eyeMask]) canvas.getContext('2d', {willReadFrequently:true});
   }
   const run=Promise.all(recordedClips[state].atlases.map(async file=>{
     const image=new Image();image.src=new URL(file,base);await image.decode();return image;

@@ -6,6 +6,7 @@ interface Draw {
 	target: HTMLCanvasElement;
 	source: CanvasImageSource;
 	size: number[];
+	quality: ImageSmoothingQuality;
 }
 let draws: Draw[];
 let clears: HTMLCanvasElement[];
@@ -14,11 +15,13 @@ beforeEach(() => {
 	draws = [];
 	clears = [];
 	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
-		return {
-			imageSmoothingQuality: "low",
+		const context = {
+			imageSmoothingQuality: "medium" as ImageSmoothingQuality,
 			clearRect: () => clears.push(this),
-			drawImage: (source: CanvasImageSource, ...size: number[]) => draws.push({ target: this, source, size }),
-		} as unknown as CanvasRenderingContext2D;
+			drawImage: (source: CanvasImageSource, ...size: number[]) =>
+				draws.push({ target: this, source, size, quality: context.imageSmoothingQuality }),
+		};
+		return context as unknown as CanvasRenderingContext2D;
 	});
 });
 afterEach(() => vi.restoreAllMocks());
@@ -29,7 +32,8 @@ function surface(): HTMLCanvasElement {
 	return canvas;
 }
 
-/** Every draw is an exact 2:1 step: each target is half its source. */
+/** Every draw is an exact 2:1 step: each target is half its source, sampled plainly
+ * (bilinear at 2:1 is the 2x2 average; "high" costs more for nothing). */
 function expectHalvings(from: CanvasImageSource, to: number): void {
 	let source = from,
 		size = 512;
@@ -38,6 +42,7 @@ function expectHalvings(from: CanvasImageSource, to: number): void {
 		expect(draw.source).toBe(source);
 		expect([draw.target.width, draw.target.height]).toEqual([size, size]);
 		expect(draw.size).toEqual([0, 0, size, size]);
+		expect(draw.quality).toBe("low");
 		source = draw.target;
 	}
 	expect(size).toBe(to);

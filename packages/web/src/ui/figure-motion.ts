@@ -269,8 +269,15 @@ function paint(entry: LiveMotion): void {
 		}
 		ec.globalAlpha = 1;
 		ec.setTransform(1, 0, 0, 1, 0, 0);
-		ec.globalCompositeOperation = "destination-in";
-		ec.drawImage(asset.source, 0, 0, 512, 512);
+		// The eyes are cut to the body after halving, at the body's own level: the same silhouette
+		// (its level is cached), on a quarter or less of the pixels. Cut at 512 instead, a full 512px
+		// composite ran for every moving figure on every frame; with the halving it was most of the
+		// page's main-thread time while agents worked (and in Safari visible as dropped frames).
+		const eyesLevel = reduce(eyesCanvas, bucket) as HTMLCanvasElement;
+		const lc = eyesLevel.getContext("2d")!;
+		lc.globalCompositeOperation = "destination-in";
+		lc.drawImage(level(`${surface}:source`, asset.source, bucket), 0, 0, bucket, bucket);
+		lc.globalCompositeOperation = "source-over";
 		ctx.save();
 		ctx.translate(50 + p.x, 50 + p.y);
 		ctx.rotate((p.turn * Math.PI) / 180);
@@ -281,8 +288,8 @@ function paint(entry: LiveMotion): void {
 		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		// The eyes (recorded ones are a small raster, stretched) are drawn at
-		// 512 as the studio draws them, then halved to the body's level.
-		ctx.drawImage(reduce(eyesCanvas, bucket), 0, 0, 100, 100);
+		// 512 as the studio draws them, then halved to the body's level and cut to it.
+		ctx.drawImage(eyesLevel, 0, 0, 100, 100);
 		ctx.restore();
 	}
 	ctx.fillStyle = entry.shown;
@@ -320,8 +327,9 @@ function paint(entry: LiveMotion): void {
 	canvas.dataset.frame = String(sample);
 	if (step) canvas.dataset.clip = clip;
 	else delete canvas.dataset.clip;
-	canvas.hidden = false;
-	entry.fallback.hidden = true;
+	// Only on the first paint: rewriting an unchanged attribute every frame still costs a style check.
+	if (canvas.hidden) canvas.hidden = false;
+	if (!entry.fallback.hidden) entry.fallback.hidden = true;
 }
 
 /** Repaint a ready figure whose shown colour the theme has changed. */
