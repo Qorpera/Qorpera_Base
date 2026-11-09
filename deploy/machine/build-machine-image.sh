@@ -211,9 +211,16 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	desktop key ctrl+l && desktop type about:blank && desktop key Return
 	desktop click 800 500
 	desktop shot /tmp/desktop.png | grep -q " 1600 x 1000$" || { echo "the screenshot is not 1600x1000" >&2; exit 1; }
+	# A program gets its arguments as given (no $ expansion by systemd), and none starts on a stopped desktop.
+	desktop run sh -c "v=literal; echo \"\${v} \\\$HOME\" > /tmp/desktop-run"
+	for _ in $(seq 1 50); do [[ -s /tmp/desktop-run ]] && break; sleep 0.1; done
+	[[ $(cat /tmp/desktop-run) == "literal \$HOME" ]] || { echo "desktop run changed its arguments: $(cat /tmp/desktop-run)" >&2; exit 1; }
 	desktop stop
 	if systemctl is-active --quiet qorpera-machine-desktop.service; then echo "the desktop did not stop" >&2; exit 1; fi
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	if desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi
+	sleep 1
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "a program runs without the desktop" >&2; exit 1; }
 	# Nothing of that check stays in the desktop account but its panel layout.
 	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
 		-exec rm -rf -- {} +

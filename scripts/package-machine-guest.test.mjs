@@ -228,6 +228,21 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		"\tsystemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service\n",
 	])
 		assert.ok(imageScript.includes(line), line);
+	// A program on the desktop: refused unless the desktop is active, stopped with it, its arguments not expanded by
+	// systemd, and start/stop/launch take turns under one lock (review r1 F3, F4).
+	const command = read("deploy/machine/desktop");
+	assert.match(command, /systemd-run --quiet --collect --expand-environment=no /);
+	assert.match(command, /-p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT"/);
+	assert.doesNotMatch(command, /PartOf=/);
+	assert.match(command, /start \| stop \| open \| run\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
+	for (const line of [
+		'\t[[ $(cat /tmp/desktop-run) == "literal \\$HOME" ]]',
+		'\tif desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The proof changes nothing on its host: no module loads, no firewall rules (review r1 F1).
+	const proof = read("scripts/prove-machine-desktop-vm.sh");
+	assert.doesNotMatch(proof, /modprobe|iptables -[ID]/);
 	const cli = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "help"], { encoding: "utf8" });
 	assert.equal(cli.status, 0);
 	for (const command of ["start", "stop", "status", "shot", "open", "run", "click", "double", "move", "drag", "type", "key", "scroll", "windows"])

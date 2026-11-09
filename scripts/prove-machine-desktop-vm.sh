@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# The machine desktop (deploy/machine/README.md, "The desktop"), proven on a node's test machine: builds the real
-# company machine image with deploy/machine/build-machine-image.sh in a nested LXD project, network and pool this run
-# claims, boots a machine from it, and drives its desktop the way an agent does with machine_run: start, open a page
+# The machine desktop (deploy/machine/README.md, "The desktop"), proven in a throwaway VM with nested LXD: builds the
+# real company machine image with deploy/machine/build-machine-image.sh in a nested LXD project, network and pool this
+# run claims, boots a machine from it, and drives its desktop the way an agent does with machine_run: start, open a page
 # in Chromium, type, click, screenshot, stop. It also measures how busy an idle desktop with Chromium keeps the machine
 # (the idle rule). Everything it made is deleted at the end. The screenshot is printed as base64 between markers.
 #
-# node scripts/run-on-node.mjs --machine node02 --sudo -- bash scripts/prove-machine-desktop-vm.sh </dev/null
+# It changes nothing on its host but what it claims, so the host must already let a nested bridge reach the internet
+# with the build script's NIC filters: br_netfilter loaded (LXD's IPv6 filter needs it; nodes load it at bootstrap) and
+# no FORWARD drop. It refuses otherwise. The shared test machines are not such a host (Docker drops forwarding there,
+# and br_netfilter is not loaded): run it as root in a throwaway VM made for it. A node's real image build
+# (build-machine-image.sh) runs the same desktop checks on the builder itself.
+#
+# QORPERA_DESKTOP_PROOF_HOST=yes bash scripts/prove-machine-desktop-vm.sh   (as root, in that VM)
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ $# -eq 0 ]] || fail "usage: prove-machine-desktop-vm.sh"
-[[ $(id -u) == 0 ]] || fail "run through run-on-node.mjs --sudo"
-[[ $(hostname) == qorpera-testvm-node0[12] ]] || fail "only a node's test machine runs this proof"
-[[ -f /etc/qorpera-test-machine-versions && -c /dev/kvm ]] || fail "operator test VM and nested KVM required"
+[[ $(id -u) == 0 ]] || fail "run as root"
+[[ ${QORPERA_DESKTOP_PROOF_HOST:-} == yes ]] || fail "run only in a throwaway VM made for this proof (QORPERA_DESKTOP_PROOF_HOST=yes)"
+[[ $(hostname) != qorpera-testvm-node0[12] ]] || fail "the shared test machines are not a host for this proof"
+[[ -c /dev/kvm ]] || fail "nested KVM required"
+grep -q '^br_netfilter ' /proc/modules || fail "br_netfilter is not loaded: this proof does not load it on its host"
+[[ $(iptables -S FORWARD 2>/dev/null | head -1) != "-P FORWARD DROP" ]] || fail "the host drops forwarded traffic"
 [[ $(lxc remote get-default) == local ]] || fail "LXD must target its local Unix socket"
 lxd_dir=/var/snap/lxd/common/lxd
 (($(df --output=avail -B1 "$lxd_dir" | tail -1) >= 30 * 1024 * 1024 * 1024)) || fail "less than 30 GiB free under $lxd_dir"
@@ -26,8 +35,6 @@ network="qmd$suffix"
 vm="qmd-vm-$suffix"
 work=$(mktemp -d /tmp/qorpera-machine-desktop.XXXXXXXX)
 made=()
-loaded_br_netfilter=0
-forward_rules=0
 cleanup() {
 	local status=$?
 	trap - EXIT
@@ -44,14 +51,6 @@ cleanup() {
 	done
 	[[ " ${made[*]} " != *" network "* ]] || lxc --force-local network delete "$network" </dev/null || status=1
 	[[ " ${made[*]} " != *" pool "* ]] || lxc --force-local storage delete "$pool" </dev/null || status=1
-	if ((forward_rules)); then
-		iptables -D DOCKER-USER -i "$network" -j ACCEPT || status=1
-		iptables -D DOCKER-USER -o "$network" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || status=1
-	fi
-	# The bridge filter this run loaded goes again, unless something else came to use it meanwhile.
-	if ((loaded_br_netfilter)) && [[ $(awk '$1 == "br_netfilter" {print $3}' /proc/modules) == 0 ]]; then
-		modprobe -r br_netfilter || status=1
-	fi
 	rm -rf -- "$work"
 	echo "cleanup done (status $status)"
 	exit "$status"
@@ -66,12 +65,6 @@ node scripts/package-machine-guest.mjs --out "$work/guest" --folder-program "$wo
 node_version=$(jq -er .node.version deploy/coding-machine/coding-image.json)
 node_sha256=$(jq -er .node.sha256 deploy/coding-machine/coding-image.json)
 
-# The build script filters the builder's NIC (MAC, IPv4 and IPv6), and LXD's IPv6 filter needs bridge netfilter,
-# which nodes load at bootstrap and the shared test machine does not: load it for this run only.
-if ! grep -q '^br_netfilter ' /proc/modules; then
-	modprobe br_netfilter
-	loaded_br_netfilter=1
-fi
 # Fresh names only; never adopt or touch another run's resources. Both projects keep their own image store, so the
 # build script exports the image from the build space and imports it into the machines project, as on a node whose
 # build space has its own store.
@@ -79,10 +72,6 @@ lxc --force-local storage create "$pool" dir </dev/null
 made+=(pool)
 lxc --force-local network create "$network" ipv4.address=auto ipv4.nat=true ipv6.address=none </dev/null
 made+=(network)
-# Docker on the test machine drops forwarded traffic (FORWARD policy DROP): let this run's bridge out, and back.
-iptables -I DOCKER-USER -i "$network" -j ACCEPT
-iptables -I DOCKER-USER -o "$network" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-forward_rules=1
 for project in "$build" "$machines"; do
 	lxc --force-local project create "$project" -c features.images=true -c features.profiles=false \
 		-c features.storage.volumes=true </dev/null

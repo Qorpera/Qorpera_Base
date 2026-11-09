@@ -13,6 +13,7 @@ desktop shot FILE             save a PNG of the whole screen to FILE (for exampl
                               then read it with company_read to see the screen); prints FILE, its size and pixels
 desktop open URL              open URL in Chromium on the desktop, maximized (a new window or tab)
 desktop run PROGRAM [ARG...]  start a program on the desktop as the desktop's user; it keeps running after this ends
+                              (programs on the desktop save in /home/desktop: copy what matters into /company as root)
 desktop click X Y [BUTTON]    click at X,Y (pixels from the top left); BUTTON left (default), middle or right
 desktop double X Y            double-click at X,Y
 desktop move X Y              move the pointer to X,Y
@@ -27,14 +28,23 @@ running() { [[ $(systemctl is-active "$UNIT" 2>/dev/null || true) == active ]] &
 need() { running || { echo "the desktop is not running: desktop start" >&2; exit 1; }; }
 number() { [[ ${1:-} =~ ^[0-9]{1,5}$ ]] || { echo "not a pixel position: ${1:-}" >&2; exit 2; }; }
 # A program on the desktop runs in a unit of its own in the machine's slice, as the desktop's user: it outlives the
-# command that started it and stops with the desktop.
+# command that started it and stops with the desktop. Requisite refuses its start unless the desktop is active, and
+# BindsTo stops it whenever the desktop stops, so no program outlives a stop however the two race. Its arguments
+# reach it as given: no $ expansion by systemd.
 launch() {
-	systemd-run --quiet --collect --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
-		-p WorkingDirectory=/home/desktop -p PartOf="$UNIT" -p After="$UNIT" \
+	systemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
+		-p WorkingDirectory=/home/desktop -p Requisite="$UNIT" -p BindsTo="$UNIT" -p After="$UNIT" \
 		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR=/run/qorpera-desktop -- "$@"
 }
 command=${1:-help}
 shift || true
+# Starting, stopping and launching take turns, so a stop never meets a launch half done.
+case $command in
+start | stop | open | run)
+	exec 9>/run/qorpera-desktop.lock
+	flock 9
+	;;
+esac
 case $command in
 start)
 	if ! running; then
