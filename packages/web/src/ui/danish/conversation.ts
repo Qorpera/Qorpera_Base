@@ -180,6 +180,17 @@ export const CONVERSATION: Record<string, string> = {
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
 	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).":
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen nulstilles ({time}).",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again when the limit resets ({time}), or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen nulstilles ({time}), eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets, or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen er nulstillet, eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets. Only {name} can continue it now with another of their logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen er nulstillet. Kun {name} kan fortsætte det nu med et andet af sine logins.",
+	"Continue with {account}": "Fortsæt med {account}",
+	"Continuing…": "Fortsætter…",
+	"Send your message to continue with {account}.": "Send din besked for at fortsætte med {account}.",
+	"Your last run stopped because a login reached its usage limit. Please continue that work.":
+		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
 	"The run lost its connection while it was working. This is usually brief.":

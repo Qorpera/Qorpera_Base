@@ -56,6 +56,7 @@ import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import {
+	classifyRunFailure,
 	manageUsageLink,
 	planUsageLimitReason,
 	runFailureCard,
@@ -385,6 +386,10 @@ export class ConversationView {
 	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
+	/** The login a stopped run's card is continuing its work with now ("Continue with …"). */
+	#continuing: { runId: string; connectionId: string } | undefined;
+	/** What the card says after its last pick: that it failed, or that the member's own message continues the work. */
+	#continueNote: { runId: string; text: string } | undefined;
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
@@ -3535,18 +3540,45 @@ export class ConversationView {
 			recovery?.usageLimit === true &&
 			recovery.paidByChatgptPlan === true &&
 			recovery.requestedByUserId === this.#company.userId.toLowerCase();
+		const payer = recovery ? this.#execution?.payer(recovery.sponsorBindingId) : undefined;
+		const usageLimit =
+			recovery !== undefined &&
+			!proposalId &&
+			!review &&
+			classifyRunFailure(recovery.lastError, recovery.jobStatus, recovery.usageLimit) === "usage_limit";
+		// The work never moves by itself: the member whose own login paid may continue it with another login of theirs
+		// that can pay now, by their own pick here (never off a ChatGPT plan). Their next message here runs on it.
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		const logins =
+			usageLimit &&
+			payer?.own === true &&
+			recovery?.paidByChatgptPlan !== true &&
+			canWrite &&
+			this.#actions.sendMessage &&
+			runId
+				? (this.#execution?.continueLogins(recovery?.sponsorBindingId) ?? [])
+				: [];
+		// Anyone else reads who can: the member the run was started for, whose login pays for it.
+		const payerId = recovery?.requestedByUserId?.toLowerCase();
+		const payerName =
+			usageLimit && payer?.own !== true && payerId && payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
 		const reason = proposalId
 			? t("Its changes wait for your decision.")
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(
-							recovery.lastError,
-							recovery.jobStatus,
-							recovery.usageLimit,
-							this.#execution?.payer(recovery.sponsorBindingId),
-						)
+					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
+							...payer,
+							...(logins.length ? { continuable: true } : {}),
+							...(payerName ? { payerName } : {}),
+						})
 					: undefined;
+		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
+		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
+		// Picks wait while the logins are read or a message is on its way.
+		const continueWaiting = logins.length > 0 && this.#execution?.locked === true;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
 		const canRetry =
@@ -3566,11 +3598,17 @@ export class ConversationView {
 			retryState,
 			canRetry,
 			ownPlanLimit,
+			logins,
+			continuing,
+			continueNote,
+			continueWaiting,
 		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
 		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		// A "Continue with …" button keeps focus on its own login.
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -3616,14 +3654,33 @@ export class ConversationView {
 						retryError: retryState?.error,
 						dismiss,
 						action,
+						...(logins.length || continueNote
+							? {
+									continueWith: {
+										logins,
+										choose: (connectionId: string) => {
+											if (runId) void this.#continueRun(runId, connectionId);
+										},
+										...(continuing ? { continuing } : {}),
+										...(continueWaiting ? { waiting: true } : {}),
+										...(continueNote ? { note: continueNote } : {}),
+									},
+								}
+							: {}),
 					}),
 		);
 		if (focused) {
 			if (!hidden)
 				(
+					(focusedAction && focusedLogin
+						? this.#runNotification.querySelector<HTMLElement>(
+								`[data-action="${focusedAction}"][data-connection-id="${focusedLogin}"]`,
+							)
+						: null) ??
 					(focusedAction
 						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
-						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+						: null) ??
+					this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
 				)?.focus({ preventScroll: true });
 			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
 				this.#panel?.focus();
@@ -3634,5 +3691,59 @@ export class ConversationView {
 				this.el.focus({ preventScroll: true });
 			}
 		}
+	}
+
+	/** "Continue with …" on a run that stopped at its login's usage limit: the member's own pick of that login for this
+	 * conversation, as the Login page picks it, then their message asking the agent to go on, which runs on that login
+	 * (a member continues by sending a message, as in a coding session). A message the member has started here is never
+	 * replaced: it stays for them to send, and the card says so. Nothing moves without this click. */
+	async #continueRun(runId: string, connectionId: string): Promise<void> {
+		const execution = this.#execution;
+		const account = execution?.logins.find((login) => login.connectionId === connectionId)?.account;
+		if (
+			!execution ||
+			!account ||
+			this.#continuing ||
+			this.#submitting ||
+			this.#disposed ||
+			!this.#actions.sendMessage
+		)
+			return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		let moved = false;
+		try {
+			moved = await execution.continueWith(connectionId);
+		} finally {
+			this.#continuing = undefined;
+		}
+		if (this.#disposed) return;
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const started =
+			Boolean(this.#composer.value.trim()) ||
+			Boolean(conversation.draft?.trim()) ||
+			Boolean(conversation.attachments?.length) ||
+			Boolean(conversation.answering) ||
+			conversation.sending ||
+			Boolean(conversation.retrySend);
+		if (!moved || started) {
+			this.#continueNote = {
+				runId,
+				text: moved
+					? t("Send your message to continue with {account}.", { account })
+					: t("The login could not be chosen. Try again."),
+			};
+			this.update();
+			if (moved && !this.#composer.disabled) this.#composer.focus({ preventScroll: true });
+			return;
+		}
+		this.#edits.declare(0, this.#composer.value.length);
+		this.#composer.value = t(
+			"Your last run stopped because a login reached its usage limit. Please continue that work.",
+		);
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+		this.update();
+		this.#submit();
 	}
 }

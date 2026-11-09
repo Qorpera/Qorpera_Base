@@ -1985,8 +1985,8 @@ describe("the composer's Login page", () => {
 });
 
 describe("a failed run at its login's usage limit", () => {
-	const LIMIT =
-		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account.";
+	const STOPPED = "The model account paying for this work reached its usage limit, so the work stopped.";
+	const LIMIT = `${STOPPED} It does not move to another account.`;
 	it("says when the limit resets, from the member's own login that paid for the run", async () => {
 		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
 		const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
@@ -2023,10 +2023,13 @@ describe("a failed run at its login's usage limit", () => {
 			unsettledOperations: 0,
 		};
 		const reason = () => f.view.el.querySelector(".run-failure-reason")?.textContent;
-		// The first login paid (its sponsor binding): its full window's reset.
+		// The first login paid (its sponsor binding): its full window's reset. The second login can pay now, so the
+		// member may continue the work with it.
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(100) } } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again when the limit resets (${fmtTime(reset)}).`);
+		expect(reason()).toBe(
+			`${STOPPED} It can run again when the limit resets (${fmtTime(reset)}), or you can continue it now with another of your logins.`,
+		);
 		// The second login has no full window: no time is known.
 		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(101) } } });
 		await settle();
@@ -2072,6 +2075,177 @@ describe("a failed run at its login's usage limit", () => {
 		await settle();
 		expect(reason()).toBe(
 			"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
+		);
+	});
+});
+
+describe("continuing a run that stopped at its login's usage limit", () => {
+	const STOPPED = "The model account paying for this work reached its usage limit, so the work stopped.";
+	const LATER = fmtTime("2099-01-01T00:00:00.000Z");
+	const NOTE = "Your last run stopped because a login reached its usage limit. Please continue that work.";
+	const run = {
+		runId: id(171),
+		staffAgentId: staff.id,
+		sourceKind: "wake" as const,
+		jobStatus: "failed" as const,
+		activity: "needs_attention" as const,
+		updatedAt: timestamp,
+	};
+	const recovery = {
+		runId: run.runId,
+		sourceKind: run.sourceKind,
+		jobStatus: run.jobStatus,
+		lastError:
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]; durable attempt output requires review",
+		usageLimit: true,
+		unsettledOperations: 0,
+		durableOutcome: true,
+		requestedByUserId: userA.id,
+		// The first login (connection id(90)) paid.
+		sponsorBindingId: id(100),
+	};
+	const reason = (view: ConversationView) => view.el.querySelector(".run-failure-reason")?.textContent;
+	const buttons = (view: ConversationView) =>
+		[...view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+	const continueButton = (view: ConversationView) =>
+		view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="continue-run"]');
+
+	it("offers the member whose login paid their other login, and goes on there with one click", async () => {
+		// The founder's case (9 Nov 2026): the agent's work stopped on the first login, while the thread already pays
+		// with the second, which has room.
+		const f = setup(false, withUsage([0, 40]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It can run again when the limit resets (${LATER}), or you can continue it now with another of your logins.`,
+		);
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1", "Dismiss"]);
+		expect(continueButton(f.view)?.dataset.connectionId).toBe(id(91));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		continueButton(f.view)!.click();
+		await settle();
+		// The member's own message, on the login they chose: nothing else moved.
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, NOTE, expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("moves the conversation to the chosen login by the cloud's choice, then asks the agent to go on", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1", "Dismiss"]);
+		expect(choose).not.toHaveBeenCalled();
+		select.mockResolvedValue(id(91));
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, NOTE, expect.any(AbortSignal));
+	});
+
+	it("never sends when the cloud keeps the conversation on another login", async () => {
+		// A turn of the member's waiting at the used-up login keeps it the conversation's (20260930580000).
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledOnce();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"The login could not be chosen. Try again.",
+		);
+	});
+
+	it("keeps a message the member has started, and lets them send it on the chosen login", async () => {
+		const f = setup(false, withUsage([0, 40]));
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		type(f.view, "My own words");
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector("textarea")!.value).toBe("My own words");
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"Send your message to continue with Model account 1.",
+		);
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("offers nothing when no other login of the member's can pay, or the work is not theirs to move", async () => {
+		const f = setup(false, withUsage([0, 0]));
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		// None of their other logins can pay now: the work waits for the reset, as before.
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again when the limit resets (${LATER}).`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// Another member's login paid: no offer here, and the card names who can continue it.
+		f.listConnections.mockResolvedValue(withUsage([40, 40]));
+		refresh();
+		await settle();
+		f.company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userB.id,
+						email: "b@example.invalid",
+						displayName: "Anna",
+						role: "contributor",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(199), requestedByUserId: userB.id } },
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It can run again once the limit resets. Only Anna can continue it now with another of their logins.`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// A ChatGPT plan's limit is told in OpenAI's words, with no other login offered.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, paidByChatgptPlan: true } } });
+		await settle();
+		expect(reason(f.view)).toBe(
+			"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.",
+		);
+		expect(continueButton(f.view)).toBeNull();
+		// Another failure is not a usage limit: nothing to continue with.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		// Their own login, but they may not write here.
+		f.company.store.set({
+			team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } },
+			recoveries: { [run.runId]: recovery },
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again once the limit resets.`,
 		);
 	});
 });

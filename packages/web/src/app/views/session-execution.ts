@@ -548,6 +548,27 @@ export class SessionExecutionView {
 		await this.#pick(connectionId);
 	}
 
+	/** The logins a run that stopped at its usage limit may go on with, from its card ("Continue with …"): those the
+	 * Login page lists, less the login that paid for the run. None unless that login is this member's own: only the
+	 * member whose login paid chooses where the work goes on, and only with their own logins that can pay now. */
+	continueLogins(sponsorBindingId: string | undefined): readonly SessionLogin[] {
+		const paid = new Set(
+			(this.#observed?.connections ?? [])
+				.filter((connection) => sponsorBindingId !== undefined && connection.sponsorBindingId === sponsorBindingId)
+				.map((connection) => connection.connectionId),
+		);
+		return paid.size ? this.logins.filter((login) => !paid.has(login.connectionId)) : [];
+	}
+
+	/** The member's pick of one of the logins `continueLogins` offers, for this conversation, as the Login page picks
+	 * it. Answers whether the conversation now pays with that login, once the cloud's choice is read again: the
+	 * member's next message here runs on it. */
+	async continueWith(connectionId: string): Promise<boolean> {
+		if (this.locked || !this.logins.some((login) => login.connectionId === connectionId)) return false;
+		if (this.#own() !== connectionId && !(await this.#pick(connectionId))) return false;
+		return !this.#lifetime.signal.aborted && this.#own() === connectionId && this.canSend;
+	}
+
 	/** The conversation's own login: the cloud's choice where the cloud chooses, else the one it keeps. */
 	#own(): string | undefined {
 		return this.#serverSelection
@@ -571,19 +592,22 @@ export class SessionExecutionView {
 		);
 	}
 
-	/** The member's own pick of a login for this conversation: their permission to pay with it. */
-	async #pick(connectionId: string): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return;
+	/** The member's own pick of a login for this conversation: their permission to pay with it. Answers whether it was
+	 * taken; the cloud's choice has been read again by then. */
+	async #pick(connectionId: string): Promise<boolean> {
+		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return false;
 		if (!this.#serverSelection) {
+			let picked = false;
 			try {
 				this.#company.setExecutionSponsor(this.#sessionId, this.#observed, connectionId);
 				this.#error = undefined;
+				picked = true;
 			} catch {
 				this.#error = t("The login could not be chosen. Try again.");
 			}
 			this.#render();
 			this.#changed();
-			return;
+			return picked;
 		}
 		this.#busy = true;
 		this.#render();
@@ -597,12 +621,13 @@ export class SessionExecutionView {
 		} finally {
 			this.#busy = false;
 		}
-		if (this.#lifetime.signal.aborted) return;
-		if (picked) void this.refresh();
+		if (this.#lifetime.signal.aborted) return false;
+		if (picked) await this.refresh();
 		else {
 			this.#render();
 			this.#changed();
 		}
+		return picked;
 	}
 
 	#render(): void {
