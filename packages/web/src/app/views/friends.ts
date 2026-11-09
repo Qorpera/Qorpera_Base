@@ -9,7 +9,9 @@ import type { HubController } from "./hub.ts";
 import { roleLabel } from "./team.ts";
 
 /* Friends: the account's address book, and the company invitations waiting
- * for it. A company invitation can only reach someone this account is already
+ * for it. It opens as a window of its own (friends-window.ts), from the
+ * friends button beside the account and from the account menu. Each friend
+ * shows when they were last online (migration 20260930690000). A company invitation can only reach someone this account is already
  * friends with (the desktop enforces the same rule), so this tab is where that
  * list is grown. Five RPCs, nothing else: qorpera_list_friends,
  * _find_account_by_email, _send_friend_request, _respond_friend_request,
@@ -192,24 +194,76 @@ function isFriend(state: FriendsState, address: string): boolean {
 	return state.friends.some((friend) => friend.email.toLowerCase() === address);
 }
 
+/** Within this long of the last mark a friend counts as online now: an open tab marks every four minutes. */
+const ONLINE_MS = 5 * 60_000;
+
+/** When someone was last online, in words: "Online now", or "Last online 3 hours ago" / "… Nov 2, 2026". */
+export function lastOnline(iso: string | null | undefined, now = Date.now()): { online: boolean; text: string } | null {
+	const time = iso ? Date.parse(iso) : Number.NaN;
+	if (!iso || !Number.isFinite(time)) return null;
+	const ago = Math.max(0, now - time);
+	if (ago < ONLINE_MS) return { online: true, text: t("Online now") };
+	const words = new Intl.RelativeTimeFormat(presentationLocale(), { numeric: "auto" });
+	const minutes = Math.floor(ago / 60_000);
+	const when =
+		minutes < 60
+			? words.format(-minutes, "minute")
+			: minutes < 24 * 60
+				? words.format(-Math.floor(minutes / 60), "hour")
+				: minutes < 7 * 24 * 60
+					? words.format(-Math.floor(minutes / (24 * 60)), "day")
+					: fmtDate(iso);
+	return { online: false, text: t("Last online {when}", { when }) };
+}
+
+/** A person's picture, with a green dot while they are online. */
+export function personFace(name: string, userId: string, online: boolean): HTMLElement {
+	return h(
+		"span",
+		{ class: online ? "person-face is-online" : "person-face" },
+		personAvatar(name, userId),
+		online ? h("span", { class: "person-online-dot", "aria-hidden": "true" }) : null,
+	);
+}
+
+/** What a row says on its right: a plain line, or when an accepted friend was last online. */
+type RowMeta = string | { text: string; title: string; online: boolean };
+
 function personRow(
 	friend: Pick<HostedFriend, "userId" | "email" | "displayName">,
-	meta: string,
+	meta: RowMeta,
 	...actions: HTMLElement[]
 ): HTMLElement {
+	const presence = typeof meta === "string" ? undefined : meta;
 	return h(
 		"div",
 		{ class: "person-row" },
-		personAvatar(friend.displayName, friend.userId),
+		presence
+			? personFace(friend.displayName, friend.userId, presence.online)
+			: personAvatar(friend.displayName, friend.userId),
 		h(
 			"div",
 			{ class: "person-copy" },
 			h("strong", null, friend.displayName),
 			h("span", { class: "muted small" }, friend.email),
 		),
-		h("span", { class: "muted small person-meta" }, meta),
+		h(
+			"span",
+			{
+				class: presence?.online ? "small person-meta person-meta-online" : "muted small person-meta",
+				...(presence?.title ? { title: presence.title } : {}),
+			},
+			typeof meta === "string" ? meta : meta.text,
+		),
 		h("div", { class: "person-actions" }, ...actions),
 	);
+}
+
+/** An accepted friend's meta: when they were last online, with the friendship's start on hover. */
+function friendMeta(friend: HostedFriend, now: number): RowMeta {
+	const since = t("since {date}", { date: fmtDate(friend.since) });
+	const seen = lastOnline(friend.lastSeenAt, now);
+	return seen ? { text: seen.text, title: t("Friends {since}", { since }), online: seen.online } : since;
 }
 
 function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
@@ -408,9 +462,12 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		loading,
 		empty,
 		[found, checking && query, outcome, lookup?.failed],
+		// "Last online" counts in minutes: a draw in a new minute writes the times again.
+		Math.floor(Date.now() / 60_000),
 	]);
 	if (shown === parts.shown) return;
 	parts.shown = shown;
+	const now = Date.now();
 	replace(
 		parts.results,
 		found ? group(t("Add a friend"), [personRow(found, "")]) : null,
@@ -454,7 +511,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 			accepted.map((friend) =>
 				personRow(
 					friend,
-					t("since {date}", { date: fmtDate(friend.since) }),
+					friendMeta(friend, now),
 					button(t("Remove"), () => void friends.remove(friend), { disabled: busy(friend) }),
 				),
 			),

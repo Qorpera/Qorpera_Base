@@ -90,6 +90,7 @@ function mountRail(f: ReturnType<typeof companyFixture>, section: "home" | "file
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 	draw();
 	const layout = new RailLayout(frame, rail);

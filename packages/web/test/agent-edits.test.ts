@@ -148,6 +148,7 @@ describe("a figure being saved", () => {
 				route: { name: "company", profileId: profileA.profileId, section: "file" },
 				openSettings() {},
 				openFeedback() {},
+				openFriends() {},
 			});
 			return mount.mock.calls.map(([, figure, color]) => ({ figure, color }));
 		};

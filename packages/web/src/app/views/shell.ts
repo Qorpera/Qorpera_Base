@@ -48,6 +48,8 @@ export interface ShellContext {
 	invitations: number;
 	openSettings: (tab?: SettingsTab) => void;
 	openFeedback: () => void;
+	/** Friends, a window of its own beside the account (friends-window.ts). */
+	openFriends: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
@@ -72,6 +74,8 @@ export interface ShellContext {
 let accountMenu: HTMLElement | undefined;
 let accountMenuOpen = false;
 let accountTrigger: HTMLButtonElement | undefined;
+/** The friends button left of the account (Jonas's sketch, 9 Nov 2026); it opens the Friends window. */
+let accountFriends: HTMLButtonElement | undefined;
 let accountPopover: HTMLElement | undefined;
 let accountUserId: string | undefined;
 /** What the menu last showed; a redraw that changes none of it leaves the menu alone. */
@@ -135,7 +139,20 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				items[next]?.focus();
 			}
 		});
-		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
+		accountFriends = h(
+			"button",
+			{
+				type: "button",
+				class: "account-friends",
+				onclick: (event: MouseEvent) => {
+					event.stopPropagation();
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+		);
+		accountMenu = h("div", { class: "account-menu" }, accountFriends, accountTrigger, accountPopover);
 		document.addEventListener("click", (event) => {
 			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
 		});
@@ -162,7 +179,18 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
-	// Friends and the company invitations waiting for this account share one settings tab.
+	// Friends and the company invitations waiting for this account share the Friends window.
+	const friendsLabel =
+		context.invitations > 0
+			? t("Friends: {count} company invitations waiting", { count: context.invitations })
+			: t("Friends");
+	accountFriends!.setAttribute("aria-label", friendsLabel);
+	accountFriends!.title = friendsLabel;
+	replace(
+		accountFriends!,
+		icon("friends"),
+		context.invitations > 0 ? h("span", { class: "account-friends-dot", "aria-hidden": "true" }) : null,
+	);
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
 		h(
 			"button",
@@ -192,7 +220,22 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
 		settingsItem("general", "settings", phrase("Account and settings")),
-		settingsItem("friends", "friends", phrase("Friends"), context.invitations),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "friends",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+			h("span", { class: "account-item-label" }, uiText(phrase("Friends"))),
+			context.invitations > 0 ? h("span", { class: "account-count" }, String(context.invitations)) : null,
+		),
 		h(
 			"button",
 			{

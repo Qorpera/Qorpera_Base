@@ -569,10 +569,10 @@ describe("account and route ownership", () => {
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(1);
-		expect(root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(root.querySelector(".friends-window")).not.toBeNull();
 		auth(userA);
 		await draw();
-		expect(root.querySelector(".settings-overlay")).toBeNull();
+		expect(root.querySelector(".friends-window")).toBeNull();
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
@@ -781,9 +781,10 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
 		await draw();
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector(".friends-window")).not.toBeNull();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
+		f.root.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
 		location.hash = "#/account";
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
@@ -865,6 +866,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
 		};
 		renderRail(rail, controller, context);
@@ -1486,6 +1488,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		};
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
