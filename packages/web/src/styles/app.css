@@ -477,6 +477,10 @@ label > input, label > select { font-weight: 400; }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; align-self: start; padding-top: 3px; }
 .rail-row-copy strong { font-size: 13px; font-weight: 700; line-height: 16px; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
+/* The rail's names and lines draw with macOS's own text smoothing, as Messages' sidebar does:
+ * body's "antialiased" draws them about a fifth lighter than the native row beside them
+ * (Jonas, 9 Nov 2026). */
+.rail-row-copy, .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
