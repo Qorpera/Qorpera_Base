@@ -11,6 +11,7 @@ import {
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
+import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
@@ -49,6 +50,8 @@ export interface ShellContext {
 	invitations: number;
 	openSettings: (tab?: SettingsTab) => void;
 	openFeedback: () => void;
+	/** Friends, a window of its own beside the account (friends-window.ts). */
+	openFriends: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
@@ -76,6 +79,8 @@ export interface ShellContext {
 let accountMenu: HTMLElement | undefined;
 let accountMenuOpen = false;
 let accountTrigger: HTMLButtonElement | undefined;
+/** The friends button left of the account (Jonas's sketch, 9 Nov 2026); it opens the Friends window. */
+let accountFriends: HTMLButtonElement | undefined;
 let accountPopover: HTMLElement | undefined;
 let accountUserId: string | undefined;
 /** What the menu last showed; a redraw that changes none of it leaves the menu alone. */
@@ -139,7 +144,20 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				items[next]?.focus();
 			}
 		});
-		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
+		accountFriends = h(
+			"button",
+			{
+				type: "button",
+				class: "account-friends",
+				onclick: (event: MouseEvent) => {
+					event.stopPropagation();
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+		);
+		accountMenu = h("div", { class: "account-menu" }, accountFriends, accountTrigger, accountPopover);
 		document.addEventListener("click", (event) => {
 			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
 		});
@@ -166,7 +184,18 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
-	// Friends and the company invitations waiting for this account share one settings tab.
+	// Friends and the company invitations waiting for this account share the Friends window.
+	const friendsLabel =
+		context.invitations > 0
+			? t("Friends: {count} company invitations waiting", { count: context.invitations })
+			: t("Friends");
+	accountFriends!.setAttribute("aria-label", friendsLabel);
+	accountFriends!.title = friendsLabel;
+	replace(
+		accountFriends!,
+		icon("friends"),
+		context.invitations > 0 ? h("span", { class: "account-friends-dot", "aria-hidden": "true" }) : null,
+	);
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
 		h(
 			"button",
@@ -196,7 +225,22 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
 		settingsItem("general", "settings", phrase("Account and settings")),
-		settingsItem("friends", "friends", phrase("Friends"), context.invitations),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "friends",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+			h("span", { class: "account-item-label" }, uiText(phrase("Friends"))),
+			context.invitations > 0 ? h("span", { class: "account-count" }, String(context.invitations)) : null,
+		),
 		h(
 			"button",
 			{
@@ -296,6 +340,10 @@ interface RailParts {
 	/** The route the drawer was last opened for: an interface's page opens it once. */
 	appsRoute: string;
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
+	/** The member's own order of the drawer's icons, by key, as last dragged on this device (empty: the default). */
+	appsOrder: readonly string[];
+	/** Dragging the drawer's icons to reorder them. */
+	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
@@ -354,6 +402,24 @@ interface HiddenParts {
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
+/** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
+const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
+function storedAppsOrder(profileId: string): string[] {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(`${APPS_ORDER_KEY}:${profileId}`) ?? "[]");
+		return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+	} catch {
+		return [];
+	}
+}
+function storeAppsOrder(profileId: string, order: readonly string[]): void {
+	try {
+		localStorage.setItem(`${APPS_ORDER_KEY}:${profileId}`, JSON.stringify(order));
+	} catch {
+		/* The order lasts this view. */
+	}
+}
+
 function storedAppsOpen(profileId: string): boolean {
 	try {
 		return localStorage.getItem(`${APPS_OPEN_KEY}:${profileId}`) === "1";
@@ -518,6 +584,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOpen: storedAppsOpen(company.profile.profileId),
 			appsRoute: "",
 			interfaceRows: new Map(),
+			appsOrder: storedAppsOrder(company.profile.profileId),
+			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
 			add,
@@ -553,6 +621,20 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			redraw,
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
+		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
+		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
+			appsGrid,
+			() => ({
+				canDrag: () => created.appsOpen && !created.apps.inert,
+				drop: (order) => {
+					created.appsOrder = order;
+					storeAppsOrder(company.profile.profileId, order);
+				},
+				// Whatever changed while an icon was lifted draws now, the order kept or not.
+				end: () => created.redraw(),
+			}),
+			company.signal,
+		);
 		// The four windows open or close the interfaces; the choice is kept for this company on this device.
 		apps.addEventListener(
 			"click",
@@ -1132,7 +1214,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						row(
 							`hidden-page:${entry.name}`,
 							"",
-							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem, colour: entry.file.colour },
+							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
 							false,
 							hiddenPageRow,
 						),
@@ -1247,6 +1329,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	zone(parts.unassigned.el, Boolean(sidebar));
 	parts.unassigned.title.hidden = !sectioned;
+	// With no one in it, Unassigned is not a category: its title shows only while an agent
+	// is dragged, so it can still be dropped there (styles/app.css).
+	parts.unassigned.el.classList.toggle("is-empty", !unassignedRows.length);
 	// Without sections the list is not a group: nothing would name it but a hidden title.
 	if (sectioned) {
 		parts.unassigned.el.setAttribute("role", "group");
@@ -1365,15 +1450,15 @@ function drawInterfaces(
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
 	let waiting = 0;
-	const elements = shown.map((entry, index) => {
+	const elements = shown.map((entry) => {
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
-		const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
+		const model = JSON.stringify([name, file.name, file.about, file.emblem, count]);
 		const kept = parts.interfaceRows.get(name);
 		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
 		rows.set(name, { shown: model, element });
-		element.style.setProperty("--i", String(index));
+		element.dataset.appKey = name;
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1385,11 +1470,11 @@ function drawInterfaces(
 		const manifest = app.manifest;
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
-		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, manifest.colour]);
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		element.dataset.appKey = key;
 		element.classList.toggle("active", app.name === activeApp);
 		if (app.name === activeApp) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1402,7 +1487,7 @@ function drawInterfaces(
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId), concepts);
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		element.dataset.appKey = key;
 		const open = route.name === "company" && route.section === "concepts";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
@@ -1424,7 +1509,10 @@ function drawInterfaces(
 		elements.push(element);
 	}
 	parts.interfaceRows = rows;
-	reconcile(parts.appsGrid, elements);
+	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
+	for (const [index, element] of ordered.entries()) element.style.setProperty("--i", String(index));
+	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
+	if (!parts.appsDrag.dragging) reconcile(parts.appsGrid, ordered);
 	const dot = waiting > 0 && !parts.appsOpen;
 	parts.apps.classList.toggle("has-waiting", dot);
 	const label = dot ? `${t("Apps")}, ${t("{count} waiting", { count: waiting })}` : t("Apps");
@@ -1455,7 +1543,7 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 		h(
 			"span",
 			{ class: "rail-app-stand" },
-			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 34),
+			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, 34),
 			countBadge(count),
 		),
 		h("span", { class: "rail-app-name" }, file.name),
@@ -1472,7 +1560,7 @@ function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 			draggable: "false",
 			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),
 	);
 }
@@ -1488,7 +1576,7 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 			draggable: "false",
 			title: count === 1 ? t("1 concept") : t("{count} concepts", { count }),
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", "purple", 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", 34)),
 		h("span", { class: "rail-app-name" }, label),
 	);
 }
@@ -1503,7 +1591,7 @@ function sitesIcon(href: string, count: number): HTMLElement {
 			draggable: "false",
 			title: count === 1 ? t("1 site") : t("{count} sites", { count }),
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", "blue", 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
 		h("span", { class: "rail-app-name" }, t("Sites")),
 	);
 }
@@ -1885,7 +1973,6 @@ function hiddenPageRow(model: {
 	name: string;
 	title: string;
 	emblem: CompanyInterface["file"]["emblem"];
-	colour: CompanyInterface["file"]["colour"];
 }): HTMLElement {
 	const row = h(
 		"button",
@@ -1896,11 +1983,7 @@ function hiddenPageRow(model: {
 			"data-page-name": model.title,
 			"aria-haspopup": "menu",
 		},
-		h(
-			"span",
-			{ class: "rail-row-stand" },
-			interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, model.colour, 34),
-		),
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, 34)),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for you"))),
 	);
 	row.addEventListener("click", (event) => {

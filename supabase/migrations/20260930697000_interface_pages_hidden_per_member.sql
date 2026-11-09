@@ -26,7 +26,7 @@ revoke all on public.qorpera_member_hidden_interface_pages from public, anon, au
 
 create or replace function public.qorpera_interface_pages_json(p_environment_id uuid, p_user uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
-	-- 20260930692000 (hidden per member), 20260930583000 (Mailbox and Bank on by default), 20260930520000 (Bank page)
+	-- 20260930697000 (hidden per member), 20260930583000 (Mailbox and Bank on by default), 20260930520000 (Bank page)
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1',
 		'pages', (select jsonb_agg(jsonb_build_object(
 					'page', listed.page,
@@ -51,7 +51,7 @@ create function public.qorpera_set_interface_page_hidden(p_environment_id uuid, 
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_user uuid := (public.qorpera_member_folder_actor(p_environment_id) ->> 'userId')::uuid; v_profile uuid;
 begin
-	-- 20260930692000 (hidden per member)
+	-- 20260930697000 (hidden per member)
 	if p_page is null or p_page not in ('mailbox', 'members', 'bank') or p_hidden is null then
 		raise exception 'Only the Mailbox, Members and Bank pages can be hidden or shown' using errcode = '22023'; end if;
 	select file.profile_id into v_profile from public.qorpera_company_files as file

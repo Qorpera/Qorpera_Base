@@ -8,16 +8,15 @@ import { uiScale } from "./scale.ts";
  * app's scale. Exported for index.html's static rail (ui/boot.ts, styles/boot.css), which a test ties to these. */
 export const COMPACT = 80;
 export const MIN = 240;
-/** The earlier 456px made a tenth narrower twice (half again the desktop's 304px rail), chosen as the app was drawn larger.
- * Three pinned cards fit a row at this width (four need about 393). */
-export const DEFAULT = 369;
-/** The rail's default before the app was scaled up. Explicit resized widths span both sizes. */
-export const SMALL_DEFAULT = 456;
-/** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
-export const MAX_SHARE = 0.4;
-/** Version 4 came with the 369px default: widths stored before it are not carried over,
+/** The earlier 369px made a tenth wider (Jonas, 9 Nov 2026; a fifth was too much). 369 was 456 made a tenth narrower twice. */
+export const DEFAULT = 406;
+/** The Small size's default, a tenth wider with DEFAULT (was 456). Explicit resized widths span both sizes. */
+export const SMALL_DEFAULT = 502;
+/** The rail may take at most 44% of the window: the earlier two fifths made a tenth wider with the default. */
+export const MAX_SHARE = 0.44;
+/** Version 5 came with the wider default (443px, then 406px before it shipped): widths stored before it are not carried over,
  * so every member starts once from the new default. */
-export const STORAGE_KEY = "qorpera.web.rail-width.v4";
+export const STORAGE_KEY = "qorpera.web.rail-width.v5";
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {

@@ -119,6 +119,7 @@ function companyWith(
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: actions,
 			...(extra.cardless ? {} : { openAgentCard: openCard, openGroupCard: openGroup }),
 		});
@@ -426,6 +427,27 @@ describe("rail sections and pins", () => {
 			await settle();
 			expect(divided(rail)).toEqual(expected);
 		}
+	});
+	it("marks Unassigned empty when every agent is in a section, so its title shows only while dragging", async () => {
+		const unassigned = (rail: HTMLElement) =>
+			[...rail.querySelectorAll<HTMLElement>(".rail-section")].find(
+				(group) => group.querySelector(".rail-section-title")!.textContent === "Unassigned",
+			)!;
+		const everyone: CompanySidebar = {
+			...demo(),
+			placements: Object.fromEntries(roster.map((itemId, position) => [itemId, { sectionId: research, position }])),
+			pinned: [],
+		};
+		const { rail, company, ready } = companyWith(everyone);
+		company.store.set({ ...company.store.get(), sessions: [] });
+		await ready;
+		await settle();
+		expect(unassigned(rail).classList.contains("is-empty")).toBe(true);
+		expect(unassigned(rail).querySelector(".rail-section-list")!.children).toHaveLength(0);
+		// An open conversation in no agent's thread lands in Unassigned, and the title is back.
+		company.store.set({ ...company.store.get(), sessions: [session] });
+		await settle();
+		expect(unassigned(rail).classList.contains("is-empty")).toBe(false);
 	});
 });
 

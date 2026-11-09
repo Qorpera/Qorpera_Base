@@ -28,9 +28,17 @@ import {
 } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
+const { showModal, close } = HTMLDialogElement.prototype;
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+	// jsdom has no modal dialogs; the Friends window is one.
+	HTMLDialogElement.prototype.showModal = function () {
+		this.open = true;
+	};
+	HTMLDialogElement.prototype.close = function () {
+		this.open = false;
+	};
 	history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
 });
 afterEach(() => {
@@ -39,6 +47,8 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	HTMLDialogElement.prototype.showModal = showModal;
+	HTMLDialogElement.prototype.close = close;
 });
 async function draw() {
 	await settle();
@@ -51,25 +61,30 @@ async function setup(f = fixture()) {
 	await draw();
 	return { ...f, root };
 }
+/** The RPC names called so far, besides the app marking the account online (online-mark.ts), which it does at
+ * sign-in whatever is open. */
+function rpcNames(f: { cloud: Cloud }): string[] {
+	return vi
+		.mocked(f.cloud.rpc)
+		.mock.calls.map(([name]) => name)
+		.filter((name) => name !== "qorpera_mark_online");
+}
 /** The SDK RPCs Settings made, besides the Company tab's rules list (its only one until Company connections opens) and the
  * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
  * C6d), Settings reading the pages too. The mail's read includes Digital Post's state, which Company connections'
  * Digital Post card reads too (test/digital-post.test.ts). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
-	return vi
-		.mocked(f.cloud.rpc)
-		.mock.calls.map(([name]) => name)
-		.filter(
-			(name) =>
-				name !== "qorpera_list_review_rules" &&
-				!name.startsWith("qorpera_member_mail_") &&
-				name !== "qorpera_member_digital_post" &&
-				name !== "qorpera_member_interface_offers" &&
-				name !== "qorpera_member_interface_supervisions" &&
-				name !== "qorpera_member_interface_pages" &&
-				// The apps drawer's Sites entry: the company's sites are read once it opens.
-				name !== "qorpera_list_company_sites",
-		);
+	return rpcNames(f).filter(
+		(name) =>
+			name !== "qorpera_list_review_rules" &&
+			!name.startsWith("qorpera_member_mail_") &&
+			name !== "qorpera_member_digital_post" &&
+			name !== "qorpera_member_interface_offers" &&
+			name !== "qorpera_member_interface_supervisions" &&
+			name !== "qorpera_member_interface_pages" &&
+			// The apps drawer's Sites entry: the company's sites are read once it opens.
+			name !== "qorpera_list_company_sites",
+	);
 }
 function click(root: Element, selector: string) {
 	root.querySelector<HTMLButtonElement>(selector)!.click();
@@ -77,6 +92,12 @@ function click(root: Element, selector: string) {
 function open(root: Element) {
 	click(root, ".account-trigger");
 	click(root, '[data-account-action="settings"]');
+}
+/** Opens the Friends window from the account menu, as a member does. */
+function openFriendsWindow(root: Element): HTMLDialogElement {
+	click(root, ".account-trigger");
+	click(root, '[data-account-action="friends"]');
+	return root.querySelector<HTMLDialogElement>(".friends-window")!;
 }
 /** The settings pages the nav shows, by id. */
 function navTabs(root: Element): string[] {
@@ -87,8 +108,8 @@ function navTabs(root: Element): string[] {
 function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
-const ACCOUNT_TABS = ["general", "friends", "ai-subscriptions"];
-const ALL_TABS = ["general", "company", "friends", "ai-subscriptions", "company-connections"];
+const ACCOUNT_TABS = ["general", "leaderboard", "ai-subscriptions"];
+const ALL_TABS = ["general", "company", "leaderboard", "ai-subscriptions", "company-connections"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -181,12 +202,7 @@ describe("settings session lifecycle", () => {
 			// On the company list itself the rail needs no way back to it.
 			expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 			// The pages are switched from the rail now: Settings read none, and no rules until the Company tab draws them.
-			expect(
-				vi
-					.mocked(f.cloud.rpc)
-					.mock.calls.map(([name]) => name)
-					.filter((name) => name !== "qorpera_list_review_rules"),
-			).toEqual([]);
+			expect(rpcNames(f).filter((name) => name !== "qorpera_list_review_rules")).toEqual([]);
 		},
 	);
 	it("preserves the selected company and focus when the profile list refreshes", async () => {
@@ -233,7 +249,7 @@ describe("settings session lifecycle", () => {
 			company,
 			() => {},
 			() => {},
-			"friends",
+			"appearance",
 		);
 		document.body.append(view.el);
 		dispose = () => {
@@ -395,12 +411,12 @@ describe("settings session lifecycle", () => {
 		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
 		expect(selectedTab(f.root)).toBe("general");
 		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(true);
-		// A search never brings a company page back (inside a company, "invitations" finds Company and Friends).
+		// A search never brings a company page back (inside a company, "agents" finds Company and Leaderboard too).
 		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
-		search.value = "invitations";
+		search.value = "ranking";
 		search.dispatchEvent(new Event("input"));
-		expect(navTabs(f.root)).toEqual(["friends"]);
-		expect(selectedTab(f.root)).toBe("friends");
+		expect(navTabs(f.root)).toEqual(["leaderboard"]);
+		expect(selectedTab(f.root)).toBe("leaderboard");
 		click(f.root, ".settings-close");
 		// Inside a company, its pages and Storage are there as before.
 		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
@@ -529,6 +545,19 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
+	it("opens the Friends window from the button beside Settings | Storage", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		const header = f.root.querySelector(".settings-header")!;
+		const friends = header.querySelector<HTMLButtonElement>(".settings-friends")!;
+		// Inside a company it stands left of the Settings | Storage switch.
+		expect(friends.nextElementSibling?.classList.contains("settings-modes")).toBe(true);
+		friends.click();
+		await draw();
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+	});
 	it("opens all eight tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -540,7 +569,7 @@ describe("settings session lifecycle", () => {
 			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
 				(tab) => tab.textContent,
 			),
-		).toEqual(["General", "Company", "Friends", "AI subscriptions", "Company connections"]);
+		).toEqual(["General", "Company", "Leaderboard", "AI subscriptions", "Company connections"]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Appearance is part of General, under the account's settings; the agent rules are not.
@@ -881,6 +910,21 @@ describe("settings session lifecycle", () => {
 			closeLarge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
+			// Tab in the file's own window over Settings is the window's: Settings' trap leaves it alone.
+			const viewer = f.root.querySelector<HTMLDialogElement>(".settings-storage-content dialog.storage-viewer")!;
+			expect(viewer.open).toBe(true);
+			const history = [...viewer.querySelectorAll<HTMLButtonElement>(".files-preview-actions button")].at(-1)!;
+			history.focus();
+			const onwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+			history.dispatchEvent(onwards);
+			expect(onwards.defaultPrevented).toBe(false);
+			expect(document.activeElement).toBe(history);
+			// Escape again closes the window, and Settings still stays.
+			(document.activeElement ?? document.body).dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+			expect(viewer.open).toBe(false);
+			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
 		} finally {
 			dialog.showModal = showModal;
 			dialog.close = close;
@@ -1000,14 +1044,60 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		await draw();
 		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
-		// Company lists the invitations it sent, Friends the ones waiting for this account.
-		search.value = "invitations";
+		// Company holds the good will counted on sales, Leaderboard ranks friends by them; General has neither.
+		search.value = "sales";
 		search.dispatchEvent(new Event("input"));
 		const shown = [
 			...f.root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]'),
 		].filter((tab) => !tab.hidden);
-		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
+		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
+	});
+	it("reads the Leaderboard once its tab opens: busiest friends, then top earners", async () => {
+		const f = await setup();
+		const person = (id: string, name: string, me: boolean, tasks: number, revenueOre: number) => ({
+			user_id: id,
+			display_name: name,
+			me,
+			last_seen_at: me ? null : timestamp,
+			companies: 1,
+			tasks,
+			last_week_tasks: 0,
+			revenue_ore: revenueOre,
+			main_profile_id: null,
+		});
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_friends_leaderboard")
+				return {
+					since: "2026-11-02T00:00:00Z",
+					until: "2026-11-09T00:00:00Z",
+					week: 45,
+					hidden: false,
+					people: [person(userA.id, "Account A", true, 10, 500000), person(userB.id, "Account B", false, 20, 0)],
+					companies: [],
+				};
+			if (name === "qorpera_list_review_rules") return [];
+			throw new Error("Unexpected RPC");
+		});
+		const leaderboardCalls = () =>
+			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_friends_leaderboard");
+		open(f.root);
+		await draw();
+		expect(leaderboardCalls()).toEqual([]);
+		click(f.root, "#settings-tab-leaderboard");
+		await draw();
+		expect(leaderboardCalls()).toEqual([["qorpera_friends_leaderboard", {}]]);
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+		expect(content.querySelector("h1")?.textContent).toBe("Leaderboard");
+		const rows = () => [...content.querySelectorAll(".leaderboard-row")].map((row) => row.textContent ?? "");
+		expect(rows()).toHaveLength(2);
+		expect(rows()[0]).toContain("Account B");
+		expect(content.querySelector(".leaderboard-row.is-me")?.textContent).toContain("Account A");
+		click(content, '[data-board="earning-friends"]');
+		expect(rows()[0]).toContain("Account A");
+		// The categories switch on the page; the board is read once.
+		expect(leaderboardCalls()).toHaveLength(1);
+		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
 	it("finds the member's own logins and the company's services on their own tabs", async () => {
 		const f = await setup();
@@ -1055,7 +1145,7 @@ describe("settings session lifecycle", () => {
 			"GitHub was not connected. The sign-in was cancelled before access was granted.",
 		);
 	});
-	it("accepts a company invitation from the Friends tab and opens that company", async () => {
+	it("accepts a company invitation from the Friends window and opens that company", async () => {
 		const fixtureState = fixture();
 		const invitation = {
 			id: id(43),
@@ -1075,10 +1165,14 @@ describe("settings session lifecycle", () => {
 			vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
 		});
 		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
-		expect(f.root.querySelector("#settings-tab-friends .settings-tab-count")?.textContent).toBe("1");
-		const row = f.root.querySelector(".settings-dialog .person-row")!;
+		// The waiting invitation shows on the friends button and on the account menu's Friends item.
+		expect(f.root.querySelector(".account-friends .account-friends-dot")).not.toBeNull();
+		click(f.root, ".account-trigger");
+		expect(f.root.querySelector('[data-account-action="friends"] .account-count')?.textContent).toBe("1");
+		click(f.root, '[data-account-action="friends"]');
+		await draw();
+		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		const row = f.root.querySelector(".friends-window .person-row")!;
 		expect(row.textContent).toContain(profileB.profileName);
 		// The expiry sits in the second line, which stays visible on phones.
 		expect(row.querySelector(".person-copy > span")?.textContent).toMatch(/^Invited as contributor · expires \S/);
@@ -1087,10 +1181,12 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(accept).toHaveBeenCalledExactlyOnceWith(invitation.id);
 		expect(location.hash).toBe(`#/c/${profileB.profileId}`);
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector(".account-friends .account-friends-dot")).toBeNull();
+		// The company opens, and the Friends window gives way to it.
+		expect(f.root.querySelector(".friends-window")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
 	});
-	it("declines a company invitation without leaving settings", async () => {
+	it("declines a company invitation without closing the Friends window", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([
 			{
@@ -1110,17 +1206,18 @@ describe("settings session lifecycle", () => {
 			vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([]);
 		});
 		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
-		[...f.root.querySelectorAll<HTMLButtonElement>(".settings-dialog .person-row button")]
+		// The friends button beside the account opens the window too.
+		click(f.root, ".account-friends");
+		await draw();
+		[...f.root.querySelectorAll<HTMLButtonElement>(".friends-window .person-row button")]
 			.find((button) => button.textContent === "Decline")!
 			.click();
 		await draw();
 		expect(decline).toHaveBeenCalledExactlyOnceWith(id(43));
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
-		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends .settings-tab-count")!.hidden).toBe(true);
-		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain(profileB.profileName);
+		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		expect(f.root.querySelector(".account-friends .account-friends-dot")).toBeNull();
+		expect(f.root.querySelector(".friends-window")?.textContent).not.toContain(profileB.profileName);
 	});
 	it("sends a friend request only to an address an account holds", async () => {
 		const f = await setup();
@@ -1130,12 +1227,11 @@ describe("settings session lifecycle", () => {
 			.mockImplementation(async (email) =>
 				email === "new@example.invalid" ? { userId: id(45), email, displayName: "New Person", self: false } : null,
 			);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
-			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
-			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.friends-window .panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".friends-window .panel")!,
 			names = () => [...panel().querySelectorAll(".person-row strong")].map((name) => name.textContent),
 			typeIn = async (value: string) => {
 				field.value = value;
@@ -1170,7 +1266,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(send).toHaveBeenCalledExactlyOnceWith("new@example.invalid");
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector("#settings-content")?.textContent).toContain("Request sent to new@example.invalid.");
+		expect(f.root.querySelector(".friends-window")?.textContent).toContain("Request sent to new@example.invalid.");
 		expect(field.value).toBe("");
 		expect(names()).toEqual([]);
 		// An address already answered is not asked again, until "no account" may have changed.
@@ -1195,12 +1291,11 @@ describe("settings session lifecycle", () => {
 					? slow.promise
 					: Promise.resolve({ userId: userA.id, email, displayName: "Me", self: true }),
 			);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
-			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
-			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.friends-window .panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".friends-window .panel")!,
 			names = () => [...panel().querySelectorAll(".person-row strong")].map((name) => name.textContent),
 			typeIn = async (value: string) => {
 				field.value = value;
@@ -1237,12 +1332,11 @@ describe("settings session lifecycle", () => {
 		const f = await setup();
 		const send = vi.spyOn(f.api, "sendFriendRequest").mockResolvedValue();
 		const find = vi.mocked(f.api.findAccountByEmail).mockRejectedValueOnce(new Error("The network is down."));
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
-			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
-			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.friends-window .panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".friends-window .panel")!,
 			typeIn = async (value: string) => {
 				field.value = value;
 				field.dispatchEvent(new Event("input"));
@@ -1279,10 +1373,9 @@ describe("settings session lifecycle", () => {
 			.mockImplementation(async (email) =>
 				email === "new@example.invalid" ? { userId: id(45), email, displayName: "New Person", self: false } : null,
 			);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
 			enter = () =>
 				field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 		field.value = "nobody@example.invalid";
@@ -1317,7 +1410,7 @@ describe("settings session lifecycle", () => {
 		expect(field.value).toBe("second@example.invalid");
 		refused.reject(new Error("The cloud refused it."));
 		await draw();
-		expect(f.root.querySelector("#settings-content")?.textContent).toContain("The cloud refused it.");
+		expect(f.root.querySelector(".friends-window")?.textContent).toContain("The cloud refused it.");
 		expect(field.value).toBe("second@example.invalid");
 	});
 	it("looks up a friend's address again once they are no longer a friend", async () => {
@@ -1337,12 +1430,11 @@ describe("settings session lifecycle", () => {
 		const find = vi
 			.mocked(f.api.findAccountByEmail)
 			.mockImplementation(async (email) => ({ userId: userB.id, email, displayName: "Friend B", self: false }));
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
-			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
-			panel = () => f.root.querySelector(".settings-dialog .panel")!;
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.friends-window .panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".friends-window .panel")!;
 		// A friend's address shows the friend, and is not looked up.
 		field.value = userB.email!;
 		field.dispatchEvent(new Event("input"));
@@ -1371,12 +1463,11 @@ describe("settings session lifecycle", () => {
 			{ ...friend, userId: id(44), email: "carl@example.invalid", displayName: "Carl" },
 		]);
 		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+		const field = f.root.querySelector<HTMLInputElement>(".friends-window .panel-search input")!,
 			names = () =>
-				[...f.root.querySelectorAll(".settings-dialog .person-row strong")].map((name) => name.textContent);
+				[...f.root.querySelectorAll(".friends-window .person-row strong")].map((name) => name.textContent);
 		expect(names()).toEqual(["Émile", "Carl"]);
 		// Every removal that took the field out of the page, even if it was put back afterwards.
 		const removed: Node[] = [],
@@ -1397,24 +1488,18 @@ describe("settings session lifecycle", () => {
 		expect(fieldRemovals()).toEqual([]);
 		expect(document.activeElement).toBe(field);
 		expect(names()).toEqual(["Émile"]);
-		// The company list arriving mid-composition selects the open tab again; nothing it shows changed.
-		const row = f.root.querySelector(".settings-dialog .person-row");
-		const back = f.root.querySelector<HTMLAnchorElement>(".settings-nav .settings-back")!;
-		expect(f.api.getTeam).not.toHaveBeenCalled();
+		// The company list arriving mid-composition draws the window again; nothing it shows changed.
+		const row = f.root.querySelector(".friends-window .person-row");
 		profiles.resolve([profileA]);
 		await draw();
-		// Settings took up the account's only company (they start it: no picker shows it any more),
-		// and the rail still ends with its way back, hidden here on the company list.
-		expect(f.api.getTeam).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
-		expect(f.root.querySelector(".settings-nav")!.lastElementChild).toBe(back);
-		expect(back.hidden).toBe(true);
+		expect(f.api.listProfiles).toHaveBeenCalled();
 		expect(fieldRemovals()).toEqual([]);
 		expect(document.activeElement).toBe(field);
 		expect(field.value).toBe("é");
-		expect(f.root.querySelector(".settings-dialog .person-row")).toBe(row);
+		expect(f.root.querySelector(".friends-window .person-row")).toBe(row);
 		observer.disconnect();
 	});
-	it("draws the Friends dates again in a time zone chosen while the tab was hidden", async () => {
+	it("draws the Friends dates again in a time zone chosen while the window was closed", async () => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture();
 		// 23:30 UTC on 5 September is already 6 September in Auckland.
@@ -1431,22 +1516,22 @@ describe("settings session lifecycle", () => {
 		expect(setTimeZonePreference("UTC")).toBe(true);
 		try {
 			const f = await setup(fixtureState);
-			open(f.root);
-			click(f.root, "#settings-tab-friends");
+			openFriendsWindow(f.root);
 			await draw();
-			const row = () => f.root.querySelector(".settings-dialog .person-row")?.textContent;
+			const row = () => f.root.querySelector(".friends-window .person-row")?.textContent;
 			expect(row()).toContain("since Sep 5, 2026");
-			click(f.root, "#settings-tab-general");
+			click(f.root, ".friends-window-close");
+			expect(f.root.querySelector(".friends-window")).toBeNull();
 			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
 			await draw();
-			click(f.root, "#settings-tab-friends");
+			openFriendsWindow(f.root);
 			await draw();
 			expect(row()).toContain("since Sep 6, 2026");
 		} finally {
 			setTimeZonePreference("system");
 		}
 	});
-	it("draws the Friends rows again when the tab is shown again, so a company logo is live", async () => {
+	it("draws the Friends rows again when the window opens again, so a company logo is live", async () => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([
@@ -1464,23 +1549,22 @@ describe("settings session lifecycle", () => {
 			},
 		]);
 		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-friends");
+		openFriendsWindow(f.root);
 		await draw();
-		const logo = () => f.root.querySelector(".settings-dialog .person-row .company-logo");
+		const logo = () => f.root.querySelector(".friends-window .person-row .company-logo");
 		const first = logo();
 		expect(first?.isConnected).toBe(true);
 		// Off the page the logo's figure stops; a theme or size change would not reach it.
-		click(f.root, "#settings-tab-general");
+		click(f.root, ".friends-window-close");
 		await draw();
 		expect(first?.isConnected).toBe(false);
-		click(f.root, "#settings-tab-friends");
+		click(f.root, ".account-friends");
 		await draw();
 		expect(logo()).not.toBeNull();
 		expect(logo()).not.toBe(first);
 		expect(logo()?.isConnected).toBe(true);
 	});
-	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends tab", async () => {
+	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends window", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
 			{
@@ -1496,21 +1580,22 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		// A settings search that hides the Friends tab is cleared on the way there.
-		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
-		search.value = "team";
-		search.dispatchEvent(new Event("input"));
-		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(true);
 		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
 		expect(f.root.querySelector(".invite-results")?.textContent).toContain("Friend B");
+		expect(f.api.listFriends).toHaveBeenCalledTimes(1);
 		[...f.root.querySelectorAll<HTMLButtonElement>(".company-invite button")]
 			.find((button) => button.textContent === "Add a friend")!
 			.click();
-		expect(search.value).toBe("");
-		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(false);
-		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
-		expect(document.activeElement).toBe(f.root.querySelector(".panel-search input"));
-		expect(f.api.listFriends).toHaveBeenCalledTimes(1);
+		// Settings close and the Friends window opens over the conversation, its search field ready to type in.
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+		const friendsWindow = f.root.querySelector<HTMLDialogElement>(".friends-window")!;
+		expect(friendsWindow.open).toBe(true);
+		expect(document.activeElement).toBe(friendsWindow.querySelector(".panel-search input"));
+		await draw();
+		// The window reads the list for itself.
+		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
+		expect(friendsWindow.querySelector(".person-row")?.textContent).toContain("Friend B");
 	});
 	it("closes nested confirmation before settings, and cancels it on sign-out", async () => {
 		const f = await setup();

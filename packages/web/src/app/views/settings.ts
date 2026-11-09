@@ -15,8 +15,9 @@ import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { CompanyFolderBrowser } from "./company-folder.ts";
-import { FriendsController, renderFriends } from "./friends.ts";
+import { FriendsController } from "./friends.ts";
 import type { HubController } from "./hub.ts";
+import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
@@ -42,11 +43,11 @@ const TABS = [
 			"people team members invitations staff memory notebooks shared context beta delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
 	},
 	{
-		id: "friends",
-		label: phrase("Friends"),
-		icon: "friends",
+		id: "leaderboard",
+		label: phrase("Leaderboard"),
+		icon: "trophy",
 		keywords:
-			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
+			"friends compare ranking awards streak tasks agents companies sales leaderboard venner sammenlign rangliste priser stime opgaver agenter virksomheder salg",
 	},
 	{
 		id: "ai-subscriptions",
@@ -87,11 +88,13 @@ export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
 	readonly #auth: AuthController;
-	readonly #hub: HubController;
+	/** The account's friends, for the Company tab's invitation picker; the list itself is the Friends window's. */
 	readonly #friends: FriendsController;
-	/** Company invitations waiting on the Friends tab, as the profile menu counts them. */
-	readonly #invitationCount = h("span", { class: "settings-tab-count", hidden: true });
 	readonly #close: () => void;
+	/** Opens the Friends window (Settings close first). */
+	readonly #openFriends: () => void;
+	/** Leaderboard, read once its tab shows. */
+	#leaderboard: LeaderboardView | undefined;
 	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
@@ -176,13 +179,14 @@ export class SettingsView {
 		close: () => void,
 		companyRemoved: (profileId: string) => void,
 		tab: SettingsTab = "general",
+		openFriends: () => void = () => {},
 	) {
 		this.#api = api;
 		this.#auth = auth;
-		this.#hub = hub;
 		this.#friends = new FriendsController(api);
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
+		this.#openFriends = openFriends;
 		this.#borrowedCompany = company;
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
@@ -209,7 +213,6 @@ export class SettingsView {
 				},
 				icon(tab.icon),
 				uiText(tab.label),
-				tab.id === "friends" ? this.#invitationCount : null,
 			);
 			this.#tabs.set(tab.id, button);
 			tablist.append(button);
@@ -245,6 +248,23 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
+		// Friends, a window of its own, beside Settings | Storage (Jonas, 9 Nov 2026): inside a company the friends
+		// button lives here rather than in the rail. Plain, with no fill or dot; its label says when invitations wait.
+		const friendsButton = h(
+			"button",
+			{ type: "button", class: "settings-friends", onclick: () => this.#openFriends() },
+			icon("friends"),
+			uiText(phrase("Friends")),
+		);
+		const countInvitations = () => {
+			const waiting = hub.store.get().invitations.length;
+			const label =
+				waiting > 0 ? t("Friends: {count} company invitations waiting", { count: waiting }) : t("Friends");
+			friendsButton.setAttribute("aria-label", label);
+			friendsButton.title = label;
+		};
+		countInvitations();
+		this.#lifetime.signal.addEventListener("abort", hub.store.subscribe(countInvitations));
 		const modes = this.#modes;
 		for (const [mode, label] of [
 			["settings", phrase("Settings")],
@@ -320,6 +340,7 @@ export class SettingsView {
 					"header",
 					{ class: "settings-header" },
 					h("div", { class: "settings-search", role: "search" }, icon("search"), search, this.#storageSearch),
+					friendsButton,
 					modes,
 					h(
 						"button",
@@ -346,20 +367,11 @@ export class SettingsView {
 			.getAccountEntitlement()
 			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
 			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
-		// The friends list also feeds the Company tab's invitation picker.
+		// The friends list feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
-			if (this.#tab === "friends") this.#drawFriends();
-			else if (this.#tab === "company") this.#drawCompany();
+			if (this.#tab === "company") this.#drawCompany();
 		});
 		void this.#friends.refresh();
-		this.#lifetime.signal.addEventListener(
-			"abort",
-			hub.store.subscribe(() => {
-				this.#countInvitations();
-				if (this.#tab === "friends") this.#drawFriends();
-			}),
-		);
-		this.#countInvitations();
 		this.#switchMode(this.#mode);
 	}
 
@@ -445,9 +457,8 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
-		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
-		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
-			return;
+		// A dialog opened over Settings (a page shown across the window, or Storage's file window) keeps its own keys.
+		if (event.target instanceof Element && event.target.closest("dialog")?.open) return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
 				this.#search.value = "";
@@ -671,17 +682,15 @@ export class SettingsView {
 		if (browser.opened) this.#folderPath = undefined;
 	}
 
-	/** The company's storage under Storage's navigation: what is used of what it may hold. */
+	/** The company's storage under Storage's navigation: what it holds in total. */
 	#drawStorageUsage(): void {
 		if (!this.#company) {
 			replace(this.#storageUsage);
 			return;
 		}
-		const storage = storageSummary(this.#file, this.#fileError);
 		replace(
 			this.#storageUsage,
-			storage.meter,
-			h("small", null, storage.text),
+			h("small", null, storageSummary(this.#file, this.#fileError)),
 			this.#fileError
 				? button(
 						uiText("Retry"),
@@ -704,7 +713,7 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
-		else if (tab === "friends") this.#drawFriends();
+		else if (tab === "leaderboard") this.#drawLeaderboard();
 		else if (tab === "company") this.#drawCompany();
 		else if (tab === "ai-subscriptions" && !this.#company) this.#drawAccountSubscriptions();
 		else if (this.#company) {
@@ -850,20 +859,12 @@ export class SettingsView {
 		if (this.#myGoodWillSlot.firstChild !== (mine ?? null)) replace(this.#myGoodWillSlot, mine);
 	}
 
-	#drawFriends(): void {
+	#drawLeaderboard(): void {
 		if (this.#lifetime.signal.aborted) return;
-		let panel = this.#panels.get("friends");
-		if (!panel) {
-			panel = h("div");
-			this.#panels.set("friends", panel);
-		}
-		renderFriends(this.#friends, this.#hub, panel);
-	}
-
-	#countInvitations(): void {
-		const count = this.#hub.store.get().invitations.length;
-		this.#invitationCount.textContent = count ? String(count) : "";
-		this.#invitationCount.hidden = count === 0;
+		if (!this.#leaderboard) {
+			this.#leaderboard = new LeaderboardView(this.#api, this.#lifetime.signal, () => this.#openFriends());
+			this.#panels.set("leaderboard", this.#leaderboard.el);
+		} else if (!this.#leaderboard.el.isConnected) void this.#leaderboard.load();
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
@@ -1017,15 +1018,8 @@ export class SettingsView {
 				signal: this.#companyLifetime.signal,
 				embedded: true,
 				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
-				addFriend: () => {
-					// A settings search can hide the Friends tab; clear it so the open tab shows in the menu.
-					if (this.#tabs.get("friends")?.hidden) {
-						this.#search.value = "";
-						this.#search.dispatchEvent(new Event("input"));
-					}
-					this.#select("friends");
-					this.#panels.get("friends")?.querySelector<HTMLInputElement>(".panel-search input")?.focus();
-				},
+				// Friends are a window of their own: Settings close and it opens on its search field.
+				addFriend: () => this.#openFriends(),
 				onCompanyRemoved: (profileId) => {
 					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
 					this.#companyRemoved(profileId);

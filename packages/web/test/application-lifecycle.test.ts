@@ -35,6 +35,7 @@ import { folderFake } from "./folder-fake.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
+	stubDialogs();
 	vi.useFakeTimers();
 	vi.stubGlobal("crypto", webcrypto);
 	// The usage refresh behind each account check hashes with crypto.subtle,
@@ -77,17 +78,20 @@ function mounted(hash = "#/") {
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
 }
-/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
-function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
-	// jsdom does not implement the native dialog methods the card opens and closes with.
+/** jsdom does not implement the native dialog methods the Friends window and agent cards open and closes with. */
+function stubDialogs(): void {
 	const dialog = HTMLDialogElement.prototype;
 	dialog.showModal ??= function (this: HTMLDialogElement) {
 		this.open = true;
 	};
-	dialog.show ??= dialog.showModal;
 	dialog.close ??= function (this: HTMLDialogElement) {
 		this.open = false;
 	};
+}
+/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
+function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
+	stubDialogs();
+	HTMLDialogElement.prototype.show ??= HTMLDialogElement.prototype.showModal;
 	root
 		.querySelector(`.rail [data-agent-id="${agentId}"], .rail [data-cofounder-id="${agentId}"]`)!
 		.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
@@ -569,10 +573,10 @@ describe("account and route ownership", () => {
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(1);
-		expect(root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(root.querySelector(".friends-window")).not.toBeNull();
 		auth(userA);
 		await draw();
-		expect(root.querySelector(".settings-overlay")).toBeNull();
+		expect(root.querySelector(".friends-window")).toBeNull();
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
@@ -781,9 +785,10 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
 		await draw();
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector(".friends-window")).not.toBeNull();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
+		f.root.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
 		location.hash = "#/account";
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
@@ -865,6 +870,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
 		};
 		renderRail(rail, controller, context);
@@ -1486,6 +1492,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		};
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });

@@ -2,8 +2,8 @@ import type { Cloud } from "./client.ts";
 import { array, CloudShapeError, oneOf, record } from "./parse.ts";
 
 /* Which pages a member's rail shows (Interfaces C6a; migrations 20260930509000_interface_pages,
- * 20260930520000_interface_page_bank and 20260930692000_interface_pages_hidden_per_member, supabase/CLIENT-CONTRACT.md
- * "Pages"). A company has at most three, Mailbox, Members and Bank. Since 20260930692000 each member hides or shows
+ * 20260930520000_interface_page_bank and 20260930697000_interface_pages_hidden_per_member, supabase/CLIENT-CONTRACT.md
+ * "Pages"). A company has at most three, Mailbox, Members and Bank. Since 20260930697000 each member hides or shows
  * them on their own rail (Jonas, 9 Nov 2026); before it, an owner or admin switched them for everyone. The web draws a
  * page from the definition it ships, never from the folder's QorperaOS/interfaces/. */
 
@@ -12,7 +12,7 @@ export type InterfacePageName = (typeof INTERFACE_PAGES)[number];
 
 export interface MemberInterfacePages {
 	/** The pages, in the Interfaces tab's order: the company's switch (`on`), and whether the caller hid the page from
-	 * their own rail (`hidden`, absent on a cloud from before 20260930692000). */
+	 * their own rail (`hidden`, absent on a cloud from before 20260930697000). */
 	readonly pages: readonly { readonly page: InterfacePageName; readonly on: boolean; readonly hidden?: boolean }[];
 	/** The caller is an owner or admin, who may switch them for the company. */
 	readonly mayChange: boolean;

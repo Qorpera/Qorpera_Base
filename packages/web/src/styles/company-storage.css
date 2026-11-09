@@ -1,6 +1,5 @@
 /* The company folder inside the shared Settings / Storage window (company-folder.ts, embedded): a title row with the
- * type filter, sort and view switch; an icon or list view; a preview beside the files when there is room, or in their
- * place when there is not; and Recents, grouped by day. Rules that size by room use the `storage` container, in em of its 14px text so they follow the UI size. */
+ * type filter, sort and view switch; an icon or list view; a file's preview in its own window over Settings; and Recents, grouped by day. Rules that size by room use the `storage` container, in em of its 14px text so they follow the UI size. */
 .storage-browser, .files-page.storage-browser {
 	--files-folder: #4a8ef0;
 	--storage-doc: #3f78d8; --storage-pdf: #d8473e; --storage-sheet: #23955a; --storage-image: #8460d4; --storage-other: #7d7d78;
@@ -85,6 +84,9 @@
 }
 .storage-browser .is-grid .files-kind { width: 60px; height: 60px; transition: transform var(--motion-fast, 120ms) var(--ease-out, ease); }
 .storage-browser .is-grid .files-row-main:hover .files-kind { transform: translateY(-1px); }
+/* A press answers at once: the icon gives a little under the finger (over the hover's lift; a list icon keeps its
+ * centring). */
+.storage-browser .is-grid .files-row-main:is(:active, :hover:active) .files-kind { transform: scale(0.93); transition-duration: 60ms; }
 .storage-browser .is-grid .storage-name-cell { width: 100%; align-items: center; gap: 2px; }
 .storage-browser .is-grid .files-name {
 	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal;
@@ -103,7 +105,8 @@
 .storage-columns span:nth-child(3) { text-align: right; }
 .storage-browser .is-list { display: flex; flex-direction: column; gap: 1px; padding-top: 4px; }
 .storage-browser .is-list .files-row-main { position: relative; width: 100%; min-height: 38px; padding: 7px 10px 7px 42px; }
-.storage-browser .is-list .files-kind { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); }
+.storage-browser .is-list .files-kind { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); transition: transform var(--motion-fast) var(--ease-out); }
+.storage-browser .is-list .files-row-main:active .files-kind { transform: translateY(-50%) scale(0.9); transition-duration: 60ms; }
 .storage-browser .is-list .files-kind .icon { width: 18px; height: 18px; }
 .storage-browser .is-list .files-kind.is-folder .icon { fill: color-mix(in srgb, var(--files-folder) 30%, transparent); }
 .storage-browser .is-list .files-name { font-size: 13px; }
@@ -111,31 +114,42 @@
 .storage-modified, .storage-kind-label { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storage-browser .files-size { width: auto; color: var(--text-muted); font-size: 12px; }
 
-/* ---- preview: beside the files when there is room ---- */
-.storage-browser.is-embedded .files-body { gap: 0; }
-.storage-browser.is-embedded .files-preview { min-width: 0; }
-.storage-browser.is-embedded .files-preview-head { min-height: 34px; }
-.storage-browser.is-embedded .files-preview-head h2 { font-size: 15px; }
-.storage-browser.is-embedded :is(.files-doc, .files-text, .files-image) { max-height: none; }
-.storage-browser.is-embedded .files-doc { font-size: 13.5px; line-height: 1.6; }
-.storage-browser.is-embedded .files-image { margin-inline: auto; }
-.storage-browser.is-embedded .files-doc :is(ul, ol) { padding-left: 1.4em; }
-
-@container storage (min-width: 50em) {
-	.storage-browser.is-embedded.has-preview .files-body { grid-template-columns: minmax(0, 1fr) clamp(260px, 38%, 360px); }
-	.storage-browser.is-embedded.has-preview .files-main { padding-right: 20px; }
-	.storage-browser.is-embedded .files-preview {
-		position: sticky; top: 0; max-height: min(560px, calc(100dvh - 210px)); overflow: auto;
-		padding: 0 2px 8px 20px; border-left: 1px solid var(--border);
-	}
-	.storage-browser.is-embedded.has-preview .storage-columns, .storage-browser.is-embedded.has-preview .is-list .files-row-main { grid-template-columns: minmax(0, 1fr) 72px; }
-	.storage-browser.is-embedded.has-preview :is(.storage-columns span:nth-child(2), .storage-columns span:nth-child(4), .is-list .storage-modified, .is-list .storage-kind-label) { display: none; }
+/* ---- preview: its own window over Settings, the way a picture is viewed ---- */
+.storage-viewer[open] { display: flex; }
+.storage-viewer::backdrop { background: rgb(20 20 19 / 32%); }
+/* The window grows out of its file's icon and shrinks back into it (company-folder.ts, #zoom), so the dialogs' own
+ * rise is off here. What the read brings fades into the waiting window. */
+.surface-dialog.storage-viewer[open], .surface-dialog.storage-viewer::backdrop { animation: none; }
+.storage-viewer .files-preview-body.is-arriving { animation: storage-viewer-arrive var(--motion-base) var(--ease-out) both; }
+@keyframes storage-viewer-arrive { from { opacity: 0; transform: translateY(4px); } }
+.storage-viewer .skeleton-lines { max-width: 720px; margin-inline: auto; }
+:root[data-theme="dark"] .storage-viewer::backdrop { background: rgb(0 0 0 / 55%); }
+.storage-viewer {
+	flex-direction: column; width: min(960px, calc(100vw - 48px)); height: min(900px, calc(100dvh - 48px));
+	max-width: none; max-height: none; margin: auto; overflow: hidden;
 }
-/* Narrow: the preview takes the files' place, and its close button brings them back. */
-@container storage (max-width: 49.99em) {
-	.storage-browser.is-embedded.has-preview .files-body { grid-template-columns: minmax(0, 1fr); }
-	.storage-browser.is-embedded.has-preview :is(.files-main, .files-crumbs, .storage-toolbar) { display: none; }
-	.storage-browser.is-embedded .files-preview { position: static; padding: 0; border: 0; }
+.storage-viewer .files-preview { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 0; border: 0; animation: none; }
+.storage-viewer .files-preview-head { min-height: 56px; padding: 10px 12px 10px 24px; border-bottom: 1px solid var(--border); }
+.storage-viewer .files-preview-head h2 { font-size: 15px; }
+.storage-viewer .files-preview > .files-note { margin: 12px 24px 0; }
+.storage-viewer :is(.files-preview-body, .folder-history) { flex: 1; min-height: 0; margin: 0; padding: 20px 24px; overflow: auto; }
+.storage-viewer .files-preview > .btn { margin: 0 24px 16px; align-self: flex-start; }
+.storage-viewer .files-preview-actions { margin: 0; padding: 12px 24px; border-top: 1px solid var(--border); }
+.storage-viewer :is(.files-doc, .files-text, .files-image) { max-height: none; }
+.storage-viewer .files-doc { max-width: 720px; margin-inline: auto; overflow: visible; font-size: 14.5px; line-height: 1.65; }
+.storage-viewer .files-doc :is(ul, ol) { padding-left: 1.4em; }
+.storage-viewer .files-text { min-height: 100%; }
+/* A picture fills the window's body, as large as it fits. */
+.storage-viewer .files-preview-body:has(> .files-image) { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; overflow: hidden; background: var(--pane); }
+.storage-viewer .files-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* What an action says, under the window's foot. */
+.storage-viewer > :is(.files-status, .files-retries) { margin: 0; padding: 0 24px 14px; }
+.storage-viewer .files-blank { height: 100%; justify-content: center; }
+.storage-viewer .files-page-view { display: flex; flex-direction: column; height: 100%; }
+.storage-viewer .files-page-stage { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.storage-viewer .files-page-frame { flex: 1; height: auto; min-height: 320px; }
+@media (max-width: 640px) {
+	.storage-viewer { width: 100vw; height: 100dvh; border-radius: 0; }
 }
 @container storage (max-width: 40em) {
 	.storage-columns, .storage-browser .is-list .files-row-main { grid-template-columns: minmax(0, 1fr) 64px 72px; gap: 10px; }

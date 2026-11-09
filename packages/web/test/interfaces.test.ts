@@ -231,6 +231,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: {},
 		};
 		const draw = (next: Route = route) => renderRail(element, controller, { ...context, route: next });
@@ -392,6 +393,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: {},
 			hideInterfacePage,
 		};
@@ -695,6 +697,7 @@ figure = "agent"
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: {},
 		});
 		// The search looks through the agents only; the pages have their own icons.

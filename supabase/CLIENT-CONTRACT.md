@@ -982,7 +982,7 @@ by their keys, never with a lowercase literal.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930692000_interface_pages_hidden_per_member)
+### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
 three pages in its Interfaces tab, Mailbox, Members and Bank. Mailbox and Bank are on and Members off until an owner or admin switches one (20260930583000). A client draws
@@ -993,7 +993,7 @@ caller who is not a member of a folder-v2 company with that environment.
 
 - `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
   `pages` being `[{page, on, hidden}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an
-  owner or admin. `hidden` (20260930692000) is whether the caller hid the page from their own rail: a client that reads
+  owner or admin. `hidden` (20260930697000) is whether the caller hid the page from their own rail: a client that reads
   it shows a page unless the member hid it (Members once the company has a second member), whatever `on` says, and
   offers Hide and Show; a client finds `hidden` on every page or treats the answer as one from before it, where `on`
   decides. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
@@ -1002,8 +1002,8 @@ caller who is not a member of a folder-v2 company with that environment.
 - `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
   admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers
   the pages as they are then, in the same shape. Switching a page to what it is changes nothing. The web no longer
-  offers it (20260930692000).
-- `qorpera_set_interface_page_hidden(environment, page, hidden)` (20260930692000): any member hides a page from their
+  offers it (20260930697000).
+- `qorpera_set_interface_page_hidden(environment, page, hidden)` (20260930697000): any member hides a page from their
   own rail or shows it again; nobody else's rail and none of the company's data change. A caller who is not a member is
   42501, another page name or a null 22023, a company being deleted 55000. Answers the pages as they are then, in the
   same shape. Hiding a hidden page, or showing a shown one, changes nothing.
@@ -1446,7 +1446,7 @@ renders only these surfaces and never agent-authored HTML:
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
 | `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
-| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer |
+| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
 | `draft` | `platform`, `connectorId`, `from`, `to[]`, `cc?[]`, `subject?`, `body`, `replyTo?`, `threadRef?` | `sent`, `discarded` | `{sentSummary?}` for sent |

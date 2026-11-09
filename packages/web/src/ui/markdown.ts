@@ -161,7 +161,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 								"data-app-name": app,
 								title: t("Open {name}", { name: app }),
 							},
-							h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", null, 30)),
+							h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 30)),
 							h(
 								"span",
 								{ class: "app-card-copy" },

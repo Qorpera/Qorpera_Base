@@ -110,17 +110,18 @@
 
 /* One draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
  * its width, which a draft's preview is measured against. Several drafts, an open draft or a note take their own place
- * above the composer, clear of the wall's button. */
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
+ * above the composer, clear of the wall's button. So does a draft while coding sessions go: their pill has the line's left
+ * (conversation.css), so the draft keeps its own place. */
+.agent-wall:not([hidden]) + .coding-dock[hidden] + .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
 	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
 }
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
+.agent-wall:not([hidden]) + .coding-dock[hidden] + .composer > .composer-drafts .draft-notch { pointer-events: auto; }
 /* Room for that button on the line, on both sides so the wall's stays centred. */
-.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
+.agent-wall:has(+ .coding-dock[hidden] + .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
 /* A narrow conversation, on a phone or beside a panel: the button says only its first count, and gives up the centre. */
 @container agent-wall (max-width: 30em) {
 	.agent-wall-summary > :not(:first-child) { display: none; }
-	.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
+	.agent-wall:has(+ .coding-dock[hidden] + .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
 }
 /* A finger's reach, without a bigger outline. */
 @media (pointer: coarse) { .agent-wall-toggle { position: relative; } .agent-wall-toggle::after { content: ""; position: absolute; inset: -6px 0; } .agent-wall .agent-wall-answer::after { content: ""; position: absolute; inset: -8px -4px; } }

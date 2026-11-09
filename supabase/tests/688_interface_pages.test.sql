@@ -37,7 +37,7 @@ begin
 	if p_answer ->> 'error' is distinct from p_state then
 		raise exception 'Expected SQLSTATE %, got %', p_state, p_answer using errcode = 'QTF01'; end if;
 end $$;
--- The answer for Mailbox, Members and Bank on or off, with the pages the caller hid (20260930692000).
+-- The answer for Mailbox, Members and Bank on or off, with the pages the caller hid (20260930697000).
 create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default true,
 	p_hidden text[] default '{}') returns jsonb language sql as $$
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1', 'pages', jsonb_build_array(
@@ -205,7 +205,7 @@ begin
 		raise exception 'The other company''s switch reached 634''s: %', pg_temp.c6_list(1); end if;
 end $$;
 
--- 4b. Hiding is each member's own (20260930692000). A viewer hides Members and Bank: their own list says so, the
+-- 4b. Hiding is each member's own (20260930697000). A viewer hides Members and Bank: their own list says so, the
 -- owner's and a contributor's don't, and the company's switch is as it was. Hiding again changes nothing; showing
 -- again takes the row away. No other page, no null, and nobody outside the company. None of it touches the data.
 do $$

@@ -86,7 +86,7 @@ describe("the pages answer (cloud/interface-pages.ts)", () => {
 		]);
 	});
 
-	it("reads each member's own hidden pages once the cloud answers them (20260930692000)", () => {
+	it("reads each member's own hidden pages once the cloud answers them (20260930697000)", () => {
 		const read = parseInterfacePages({
 			...answer(true, false),
 			pages: [

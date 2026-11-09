@@ -112,11 +112,12 @@ describe("the captions the kernel state produces", () => {
 		}
 	});
 
-	it("draws each harness with its maker's own mark", () => {
-		// OpenAI's mark for Codex (as on the Connections card), the Claude spark for Claude Code.
+	it("draws each harness with its own mark", () => {
+		// Codex's prompt ">_" (so it reads as coding, not as ChatGPT), the Claude spark for Claude Code.
 		const codex = harnessMark("codex", 14);
-		expect(codex.getAttribute("viewBox")).toBe("146.694 227.042 267.198 264.812");
-		expect(codex.querySelector("path")?.getAttribute("d")).toMatch(/^M249\.176 323\.434V298\.276/);
+		expect(codex.getAttribute("viewBox")).toBe("3 3 18 18");
+		expect(codex.querySelector("path")?.getAttribute("d")).toBe("M5.5 7.5 10 12l-4.5 4.5M12.5 17h6");
+		expect(codex.querySelector("path")?.getAttribute("stroke")).toBe("currentColor");
 		expect(codex.getAttribute("width")).toBe("14");
 		const claude = harnessMark("claude-code", 14);
 		expect(claude.getAttribute("viewBox")).toBe("0 0 24 24");

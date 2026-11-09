@@ -1,6 +1,6 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Secret cards in an agent's own thread on folder-v2: a run cannot raise a secret card with no vault name, a bad name or
--- connector, or a form whose password field has nowhere to go; a "provided" answer never carries a value, needs the
+-- connector, a repository that is not a coding value's or a coding value's name the capture refuses (20260930693000), or a form whose password field has nowhere to go; a "provided" answer never carries a value, needs the
 -- secret in the company vault, and joins the transcript with the vault reference only (ported from snapshot-v1 in the
 -- legacy sweep).
 create function pg_temp.ti_card(p_binding jsonb, p_event uuid, p_data jsonb) returns jsonb language sql as $$
@@ -34,6 +34,12 @@ begin
 	perform pg_temp.ti_card(v_binding, '59000000-0000-4000-8000-000000000597',
 		'{"schema":"qorpera.interaction/v1","surface":"secret","title":"Connect Linear",
 			"payload":{"name":"api-key","label":"Linear API key","purpose":"Filing issues.","connectorId":"linear"}}');
+	-- A coding value (20260930693000): the connector environment, a name a coding value may have, and the repository
+	-- whose coding sessions need it.
+	perform pg_temp.ti_card(v_binding, '59000000-0000-4000-8000-000000000598',
+		'{"schema":"qorpera.interaction/v1","surface":"secret","title":"Token for private packages",
+			"payload":{"name":"npm_token","label":"NPM_TOKEN","purpose":"Installs the private packages.","kind":"token",
+				"connectorId":"environment","repository":"acme/web"}}');
 	for v_bad in select value from jsonb_array_elements(jsonb_build_array(
 		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
 			'payload', jsonb_build_object('label', 'Token', 'purpose', 'Posting.')),
@@ -41,11 +47,33 @@ begin
 			'payload', jsonb_build_object('domain', 'accounts.example.com', 'fields', jsonb_build_array(
 				jsonb_build_object('id', 'password', 'label', 'Password', 'type', 'password')))),
 		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
-			'payload', jsonb_build_object('name', '1bad', 'label', 'Token', 'purpose', 'Posting.', 'connectorId', 'Slack!'))
+			'payload', jsonb_build_object('name', '1bad', 'label', 'Token', 'purpose', 'Posting.', 'connectorId', 'Slack!')),
+		-- A repository only for a coding value, and only owner/name in lower case; a coding value's name as the capture
+		-- takes it (no PATH, no git_*, no hyphen).
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'api-key', 'label', 'Key', 'purpose', 'Filing.', 'connectorId', 'linear',
+				'repository', 'acme/web')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'api-key', 'label', 'Key', 'purpose', 'Filing.', 'repository', 'acme/web')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'npm_token', 'label', 'Token', 'purpose', 'Packages.',
+				'connectorId', 'environment', 'repository', 'Acme/Web')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'npm_token', 'label', 'Token', 'purpose', 'Packages.',
+				'connectorId', 'environment', 'repository', 'acme')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'path', 'label', 'Path', 'purpose', 'Packages.',
+				'connectorId', 'environment')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'git_token', 'label', 'Token', 'purpose', 'Packages.',
+				'connectorId', 'environment')),
+		jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+			'payload', jsonb_build_object('name', 'npm-token', 'label', 'Token', 'purpose', 'Packages.',
+				'connectorId', 'environment'))
 	)) loop
 		v_index := v_index + 1;
 		perform pg_temp.base_error(format('select pg_temp.ti_card(%L, %L, %L)', v_binding,
-			'59000000-0000-4000-8000-0000000005a' || v_index::text, v_bad), '22023', 'interaction request is invalid');
+			'59000000-0000-4000-8000-000000000' || (600 + v_index)::text, v_bad), '22023', 'interaction request is invalid');
 	end loop;
 	perform pg_temp.base_public_send(v_binding, 'final', 'ti-final');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'jobId')::uuid,

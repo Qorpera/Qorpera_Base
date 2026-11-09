@@ -42,6 +42,7 @@ import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
+import { watchOnline } from "./online-mark.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -57,6 +58,7 @@ import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
+import { FriendsWindow } from "./views/friends-window.ts";
 import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
@@ -146,6 +148,26 @@ export function mountApplication(
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;
+	let friendsWindow: FriendsWindow | undefined;
+	/** Friends see this account online while a tab is in front (online-mark.ts). */
+	const online = watchOnline(
+		() => api.markOnline(),
+		() => Boolean(auth.userId),
+	);
+	function closeFriends(restoreFocus = true): void {
+		if (!friendsWindow) return;
+		friendsWindow.dispose();
+		friendsWindow = undefined;
+		if (restoreFocus) frame.querySelector<HTMLElement>(".account-friends")?.focus();
+	}
+	/** Friends as a window of its own, over whatever is open; Settings close first. */
+	function openFriends(): void {
+		if (friendsWindow || feedback || !auth.userId) return;
+		if (settings) closeSettings(false);
+		friendsWindow = new FriendsWindow(api, hub, () => closeFriends());
+		root.append(friendsWindow.el);
+		friendsWindow.open();
+	}
 	function closeFeedback(restoreFocus = true): void {
 		if (!feedback) return;
 		feedback.dispose();
@@ -153,7 +175,7 @@ export function mountApplication(
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
 	function openFeedback(): void {
-		if (feedback || settings || !auth.userId) return;
+		if (feedback || settings || friendsWindow || !auth.userId) return;
 		feedback = new FeedbackView(api, () => closeFeedback());
 		root.append(feedback.el);
 		feedback.open();
@@ -174,6 +196,7 @@ export function mountApplication(
 	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
 	function openSettings(tab?: SettingsTab, folderPath?: string): void {
 		if (settings || feedback || !auth.userId) return;
+		closeFriends(false);
 		settings = new SettingsView(
 			api,
 			auth,
@@ -183,6 +206,7 @@ export function mountApplication(
 			() => closeSettings(),
 			companyRemovedHandler(),
 			tab,
+			openFriends,
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -269,10 +293,10 @@ export function mountApplication(
 		if (!apps) return;
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
 			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
-			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.colour, manifest.about]) : "";
+			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.about]) : "";
 			if (!manifest || card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, manifest.colour, 30));
+			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, 30));
 			const note = card.querySelector(".app-card-note");
 			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
 		}
@@ -341,6 +365,8 @@ export function mountApplication(
 		checkoutReturn = takeGoodWillReturn() ?? checkoutReturn;
 		closeSettings(false);
 		closeFeedback(false);
+		// An accepted company invitation opens the company: the Friends window gives way to it.
+		closeFriends(false);
 		settingsAfterHome = undefined;
 		routeRevision++;
 		resolvingRoute = undefined;
@@ -427,7 +453,9 @@ export function mountApplication(
 			}
 			closeSettings(false);
 			closeFeedback(false);
+			closeFriends(false);
 			accountUserId = userId;
+			online.mark();
 			pictures.reset();
 			accountRevision++;
 			routeRevision++;
@@ -464,6 +492,7 @@ export function mountApplication(
 			auth,
 			openSettings,
 			openFeedback,
+			openFriends,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
@@ -1858,7 +1887,7 @@ export function mountApplication(
 							h(
 								"header",
 								{ class: "sites-page-heading" },
-								interfaceEmblem("globe", "blue", 40),
+								interfaceEmblem("globe", 40),
 								h(
 									"div",
 									null,
@@ -1891,7 +1920,7 @@ export function mountApplication(
 						teamFeedback = next;
 						render();
 					},
-					{ onCompanyRemoved: companyRemovedHandler(), addFriend: () => openSettings("friends") },
+					{ onCompanyRemoved: companyRemovedHandler(), addFriend: openFriends },
 				);
 				return;
 		}
@@ -1920,6 +1949,8 @@ export function mountApplication(
 		unwatchTheme();
 		closeSettings(false);
 		closeFeedback(false);
+		closeFriends(false);
+		online.stop();
 		auth.dispose();
 		hub.dispose();
 		teardownFounding();

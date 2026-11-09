@@ -43,6 +43,8 @@ export interface HostedFriend {
 	status: HostedFriendStatus;
 	direction: "incoming" | "outgoing";
 	since: string;
+	/** When an accepted friend was last online (migration 20260930690000); never for a pending request. */
+	lastSeenAt?: string;
 }
 
 /* The account `qorpera_find_account_by_email` found for a whole address. The

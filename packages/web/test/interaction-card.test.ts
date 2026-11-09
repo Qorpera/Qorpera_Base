@@ -151,6 +151,35 @@ describe("interaction cards", () => {
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
 
+	it("says where a coding value goes, as this member's save makes it, instead of saying the agent never sees it", () => {
+		const coding = (payload: Record<string, unknown>, savesForCompany = true) =>
+			renderInteractionCard(
+				item({
+					surface: "secret",
+					title: "Token for private packages",
+					payload: {
+						name: "npm_token",
+						label: "NPM_TOKEN",
+						purpose: "Installs the private packages.",
+						connectorId: "environment",
+						...payload,
+					},
+				}),
+				context({ provideSecret: vi.fn(async () => {}), savesForCompany }),
+			).textContent;
+		// An owner or admin: the company's value, for the card's repository.
+		expect(coding({ repository: "acme/web" })).toContain(
+			"Coding sessions in acme/web get it as NPM_TOKEN; it never shows in the chat.",
+		);
+		// A contributor on the same card saves their own, which every repository's sessions of theirs get: it says so.
+		const own =
+			"Saved as your own in the company vault: your coding sessions in every repository get it as NPM_TOKEN.";
+		expect(coding({ repository: "acme/web" }, false)).toContain(own);
+		expect(coding({ repository: "acme/web" }, false)).not.toContain("Coding sessions in acme/web");
+		expect(coding({}, false)).toContain(own);
+		expect(coding({})).not.toContain("The agent never sees the value");
+	});
+
 	it("keeps historical form cards skippable without suggesting that fields can be filled", () => {
 		const request: InteractionRequest = {
 			surface: "form",
