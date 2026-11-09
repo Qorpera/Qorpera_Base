@@ -61,6 +61,9 @@ export interface InteractionCardContext {
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
+	/** A secret saved from this card is the company's, not the member's own (app/company.ts secretSavedForCompany): for a
+	 * coding value it decides which repositories' sessions get it, which the card says. */
+	savesForCompany?: boolean;
 	emailDraft?: EmailDraftEditor;
 	loadEmailDraft?: () => Promise<EmailDraftState>;
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
@@ -388,6 +391,11 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	} else if (request.surface === "secret") {
 		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : "";
 		if (purpose) body.push(h("p", { class: "interaction-text" }, purpose));
+		// A coding value (20260930693000): an environment variable the agent's coding sessions get, so the card says so
+		// instead of "the agent never sees it".
+		const coding = request.payload.connectorId === "environment";
+		const repository = typeof request.payload.repository === "string" ? request.payload.repository : "";
+		const variable = typeof request.payload.name === "string" ? request.payload.name.toUpperCase() : "";
 		if (open && context.provideSecret) {
 			const label = typeof request.payload.label === "string" ? request.payload.label : t("Secret");
 			const field = h("input", {
@@ -428,7 +436,19 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					"p",
 					{ class: "interaction-note" },
 					icon("lock"),
-					` ${t("Encrypted in the company vault. The agent never sees the value, only that it was saved.")}`,
+					` ${
+						coding
+							? repository && context.savesForCompany
+								? t(
+										"Encrypted in the company vault. Coding sessions in {repository} get it as {variable}; it never shows in the chat.",
+										{ repository, variable },
+									)
+								: t(
+										"Saved as your own in the company vault: your coding sessions in every repository get it as {variable}. It never shows in the chat.",
+										{ variable },
+									)
+							: t("Encrypted in the company vault. The agent never sees the value, only that it was saved.")
+					}`,
 				),
 			);
 			actions.push(pill(t("Decline"), () => answer("declined"), "quiet", busy));

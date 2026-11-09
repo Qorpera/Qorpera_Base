@@ -2713,6 +2713,9 @@ export class ConversationView {
 					// What the card shows of an answer; the input it went out as is not shown.
 					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
+					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
+					// moves it).
+					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -2761,6 +2764,7 @@ export class ConversationView {
 									? {
 											provideSecret: (value: string) =>
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
 									: {}),
 							},
