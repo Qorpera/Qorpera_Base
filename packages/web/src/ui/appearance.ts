@@ -148,6 +148,63 @@ function reveal(changes: boolean, apply: () => void): void {
 	shown?.finished?.catch(() => undefined);
 }
 
+/** Safari on a Mac draws its toolbar in one grey while the window is in front and in a
+ * darker one behind; the sidebars take the same two greys so they read as one surface with
+ * it (Jonas, 9 Nov 2026; styles/tokens.css). Other browsers, iPads and an installed web app
+ * keep the design's own sidebar grey. */
+export function safariOnMac(): boolean {
+	const agent = navigator.userAgent;
+	return (
+		/Macintosh/.test(agent) &&
+		/Safari\//.test(agent) &&
+		!/Chrome|Chromium|CriOS|FxiOS|Firefox|Edg|OPR/.test(agent) &&
+		(navigator.maxTouchPoints ?? 0) < 2 &&
+		!window.matchMedia("(display-mode: standalone)").matches
+	);
+}
+
+/** Marks Safari and whether its window is in front. Focus inside an iframe of the page still
+ * counts as in front: document.hasFocus() covers nested frames. A page cannot tell its window
+ * going behind from focus moving into Safari's own address bar (Cmd-L), so the sidebar also
+ * takes the darker grey while the member types an address. */
+export function applyBrowserChrome(): void {
+	const root = document.documentElement;
+	if (!safariOnMac()) {
+		delete root.dataset.chrome;
+		delete root.dataset.windowInactive;
+		return;
+	}
+	root.dataset.chrome = "safari";
+	if (document.hasFocus()) delete root.dataset.windowInactive;
+	else root.dataset.windowInactive = "";
+}
+
+/** Keep the in-front mark current. Once the page itself loses focus, the focus and blur
+ * events of the window can go to an iframe instead (focus moved into one, or comes back to
+ * one when the window returns), so it looks every half second until the page has focus again. */
+function watchBrowserChrome(): () => void {
+	applyBrowserChrome();
+	if (document.documentElement.dataset.chrome !== "safari") return () => undefined;
+	let poll: ReturnType<typeof setInterval> | undefined;
+	const onFocus = () => {
+		if (poll !== undefined) clearInterval(poll);
+		poll = undefined;
+		applyBrowserChrome();
+	};
+	const onBlur = () => {
+		// Focus moving into a frame blurs the page first; look once it has landed.
+		setTimeout(applyBrowserChrome, 0);
+		poll ??= setInterval(applyBrowserChrome, 500);
+	};
+	window.addEventListener("focus", onFocus);
+	window.addEventListener("blur", onBlur);
+	return () => {
+		if (poll !== undefined) clearInterval(poll);
+		window.removeEventListener("focus", onFocus);
+		window.removeEventListener("blur", onBlur);
+	};
+}
+
 /** Follow the device's appearance and choices made in other tabs. */
 export function watchTheme(): () => void {
 	const system = window.matchMedia(SYSTEM_DARK);
@@ -169,7 +226,9 @@ export function watchTheme(): () => void {
 	window.addEventListener("keydown", key, { capture: true, passive: true });
 	system.addEventListener("change", applyTheme);
 	window.addEventListener("storage", onStorage);
+	const stopChrome = watchBrowserChrome();
 	return () => {
+		stopChrome();
 		window.removeEventListener("pointerdown", press, { capture: true });
 		window.removeEventListener("keydown", key, { capture: true });
 		system.removeEventListener("change", applyTheme);

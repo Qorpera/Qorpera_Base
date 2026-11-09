@@ -146,7 +146,7 @@ export function mountApplication(
 	window.addEventListener("qorpera-language-change", onLanguage);
 	window.addEventListener("qorpera-time-zone-change", redrawScreens);
 	const unwatchTheme = watchTheme();
-	const unwatchBrowserBar = watchBrowserBar();
+	const unwatchBrowserBar = watchBrowserBar(root);
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;

@@ -54,7 +54,7 @@ describe("the browser's bar takes the page's top-left colour", () => {
 	it("looks through Settings' dimming to the inert sidebar, also after a theme change", () => {
 		const frame = layer("rgb(255, 255, 255)");
 		const rail = layer("rgb(233, 231, 230)", frame);
-		stop = watchBrowserBar();
+		stop = watchBrowserBar(document.body);
 		frame.inert = true;
 		layer("rgba(20, 20, 19, 0.48)");
 		expect(topLeftColor()).toBe("rgb(233, 231, 230)");
@@ -66,11 +66,33 @@ describe("the browser's bar takes the page's top-left colour", () => {
 
 	it("sets theme-color at once and follows the sidebar hiding", async () => {
 		const rail = layer("rgb(233, 231, 230)");
-		stop = watchBrowserBar();
+		stop = watchBrowserBar(document.body);
 		expect(bar()).toBe("rgb(233, 231, 230)");
 		rail.hidden = true;
 		await settle();
 		expect(bar()).toBe("rgb(250, 250, 250)");
+	});
+
+	it("reads again when the app puts a screen into its root after the watch starts", async () => {
+		const root = layer("transparent");
+		stop = watchBrowserBar(root);
+		expect(bar()).toBe("rgb(250, 250, 250)");
+		const frame = layer("rgb(255, 255, 255)", root);
+		layer("rgb(233, 231, 230)", frame);
+		await settle();
+		expect(bar()).toBe("rgb(233, 231, 230)");
+	});
+
+	it("follows the sidebar's grey when the Safari window goes behind", async () => {
+		const rail = layer("rgb(246, 246, 247)");
+		stop = watchBrowserBar(document.body);
+		expect(bar()).toBe("rgb(246, 246, 247)");
+		// tokens.css swaps the grey on this mark; jsdom has no such stylesheet, so the test does.
+		rail.style.backgroundColor = "rgb(233, 234, 235)";
+		document.documentElement.dataset.windowInactive = "";
+		await settle();
+		expect(bar()).toBe("rgb(233, 234, 235)");
+		delete document.documentElement.dataset.windowInactive;
 	});
 
 	it("skips hidden and fully faded boxes", () => {
