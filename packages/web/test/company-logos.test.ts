@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 
-import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyLogos } from "../src/app/company-logos.ts";
-import { renamedVision, VISION_PATH } from "../src/app/views/settings-brand.ts";
 import type { CloudApi } from "../src/cloud/api.ts";
 import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 import {
@@ -419,20 +417,5 @@ describe("keeping the logo in step with the folder", () => {
 			{ op: "mkdir", path: COMPANY_BRAND_FOLDER },
 			{ op: "write", path: COMPANY_LOGO_PATH, text: "<svg>picked</svg>" },
 		]);
-	});
-});
-
-describe("renaming", () => {
-	it("rewrites the vision's heading, or adds one", () => {
-		expect(renamedVision("# Old name\n\nWhat we build.\n", "New name")).toBe("# New name\n\nWhat we build.\n");
-		expect(renamedVision("\n# Old\nText", "Ny")).toBe("\n# Ny\nText");
-		expect(renamedVision("What we build.\n", "New name")).toBe("# New name\n\nWhat we build.\n");
-	});
-
-	it("writes a name the vision reads back whole, also one ending in #", () => {
-		for (const name of ["Acme #", "C#", "Plain"]) {
-			const parsed = parseCompanyStateFile(VISION_PATH, renamedVision("# Old\n\nWhat we build.\n", name));
-			expect(parsed?.ok && parsed.file.kind === "vision" ? parsed.file.name : null).toBe(name);
-		}
 	});
 });

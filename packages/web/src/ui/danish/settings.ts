@@ -660,10 +660,6 @@ export const SETTINGS: Record<string, string> = {
 	"Choose a new logo": "Vælg et nyt logo",
 	"Company logo": "Virksomhedens logo",
 	"Remove logo": "Fjern logo",
-	"Rename the company": "Omdøb virksomheden",
-	"The company's vision could not be read.": "Virksomhedens vision kunne ikke læses.",
 	"The logo could not be removed.": "Logoet kunne ikke fjernes.",
 	"The logo could not be saved.": "Logoet kunne ikke gemmes.",
-	"The name could not be saved. Try again.": "Navnet kunne ikke gemmes. Prøv igen.",
-	"The name could not be saved.": "Navnet kunne ikke gemmes.",
 };

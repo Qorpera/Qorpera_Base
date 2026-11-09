@@ -977,7 +977,6 @@ export class SettingsView {
 				},
 				folder,
 				signal: lifetime,
-				renamed: () => void this.#hub.refresh(),
 			});
 			if (company.store.get().team?.capabilities.write)
 				void companyLogos()

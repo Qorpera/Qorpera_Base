@@ -706,14 +706,13 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("Your first job is building the vision with the founders");
 	expect(cofounder).toContain("You hire and manage: domain work, such as research, finance, sales or product");
 	expect(cofounder).toContain(
-		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, a strategist who works out the options and weighs them, and a Branding & Identity specialist who owns the company's name, logo and look",
+		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, a strategist who works out the options and weighs them, and a Branding & Identity specialist who owns the company's logo and look",
 	);
 	// v11 (Jonas, 9 November 2026): the Branding & Identity specialist makes a first identity at once, with the official
-	// logo where the app shows it, and keeps the brand current; a new name is the founders' to choose.
+	// logo where the app shows it, and keeps the brand current; renaming the company is deferred.
 	expect(cofounder).toContain("the official logo saved as QorperaOS/brand/logo.svg");
-	expect(cofounder).toContain(
-		"the name is the founders' to choose, and once a founder agrees you write it as the first line of QorperaOS/vision/vision.md",
-	);
+	expect(cofounder).toContain("It leaves the company's name as it is");
+	expect(cofounder).not.toContain("proposes a new name");
 	expect(cofounder).toContain("brand and identity, suppliers and stock");
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
 	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
@@ -1533,7 +1532,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "11b0570669dfd66b5c2105ded7cd2dcaa116de7c23c299ffda8ea2edb6927967",
+			instructions: "c5d00fc273b402a42c2642ee394afd113e055541083df6517b1406455ecb59c3",
 			prompt: "b977f3f5470e4ccbc6447ff08181b2c2f87af2c060f75ac4701d2ff6bcfae503",
 		},
 	],
@@ -1541,7 +1540,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "d3cab99067f17d3ede375caf272e2ace278d863ff28bd4152f47ba79554d0cfd",
+			instructions: "929cea482bfa54940c20612ee214dff3bd9c08419e55642355f54b5a908ecd1a",
 			prompt: "66f25cc5ef4d70fcc0b6bd5d99f380af44ada6767d268949c7a76651db9615f3",
 		},
 	],
@@ -1549,7 +1548,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "11b0570669dfd66b5c2105ded7cd2dcaa116de7c23c299ffda8ea2edb6927967",
+			instructions: "c5d00fc273b402a42c2642ee394afd113e055541083df6517b1406455ecb59c3",
 			prompt: "40c00e9827e26a1f3748104a3e26aaf9c5a0dc84232933d429374350dc1251db",
 		},
 	],

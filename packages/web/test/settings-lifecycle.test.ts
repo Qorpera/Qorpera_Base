@@ -558,9 +558,10 @@ describe("settings session lifecycle", () => {
 		const brand = f.root.querySelector<HTMLElement>("#settings-content .settings-brand")!;
 		expect(brand.querySelector("h2")?.textContent).toBe("Brand");
 		expect(brand.querySelector(".settings-brand-name strong")?.textContent).toBe(profileA.profileName);
-		// The owner may change both: the logo button opens the picker, and a quiet pencil renames the company.
+		// The owner may change the logo; the name is shown, and renaming is deferred.
 		expect(brand.querySelector<HTMLButtonElement>(".settings-brand-logo")!.disabled).toBe(false);
-		expect(brand.querySelector(".settings-brand-rename")?.getAttribute("aria-label")).toBe("Rename the company");
+		expect(brand.querySelector(".settings-brand-rename")).toBeNull();
+		expect(brand.querySelector("input[type=text]")).toBeNull();
 		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
 		// Only the name and the logo: the brand's colours, fonts and guide stay in the company file.
 		expect(brand.querySelector(".settings-brand-note")).toBeNull();

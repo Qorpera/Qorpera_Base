@@ -1,8 +1,7 @@
-import { writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
 import type { WebMemberFolder } from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
-import { button, companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
+import { companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
@@ -10,33 +9,18 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
 /* Settings → Company → Brand (Jonas, 9 Nov 2026): the company's official name and logo. The logo is the company folder's
  * QorperaOS/brand/logo.svg, which the company's Branding & Identity agent draws and keeps up to date; an owner or admin
  * chooses another the way they choose their own picture (fitted to a rounded square), or removes it. The name is the
- * first line of the company's vision, QorperaOS/vision/vision.md, which renaming rewrites. Colours, fonts and the brand
- * guide live beside the logo in the brand folder; this section shows only the official name and logo (Jonas, 9 Nov
- * 2026: no note and no brand-files button here, and a quiet rename). */
-
-export const VISION_PATH = "QorperaOS/vision/vision.md";
+ * first line of the company's vision and is shown, not changed here: renaming is deferred (Jonas, 9 Nov 2026), since a
+ * new name also has to reach the business registry, mail and the rest. Colours, fonts and the brand guide live beside
+ * the logo in the brand folder; this section shows only the official name and logo. */
 
 export interface CompanyBrandOptions {
 	readonly profileId: string;
 	readonly name: () => string;
-	/** Owners and admins change the name and the logo; everyone sees them. */
+	/** Owners and admins change the logo; everyone sees it. */
 	readonly canManage: () => boolean;
 	/** The company folder as the member, for each change (it re-checks the member's authority). */
 	readonly folder: () => WebMemberFolder;
 	readonly signal: AbortSignal;
-	/** Told after a rename was saved, with the new name. */
-	readonly renamed: (name: string) => void;
-}
-
-/** The vision's text with `name` as its first line, `# <name>`; a vision without a heading gets one. */
-export function renamedVision(text: string, name: string): string {
-	const lines = text.split("\n");
-	const first = lines.findIndex((line) => line.trim() !== "");
-	// The shared writer's heading, so a name ending in `#` reads back whole (`# Acme # #`).
-	const heading = writeVisionFile(name, "").split("\n")[0]!;
-	if (first >= 0 && /^#\s/.test(lines[first]!.trim())) lines[first] = heading;
-	else lines.unshift(heading, "");
-	return lines.join("\n");
 }
 
 export class CompanyBrandView {
@@ -49,9 +33,6 @@ export class CompanyBrandView {
 	readonly #error = h("div", { class: "settings-brand-error" });
 	readonly #menu: HTMLElement;
 	#busy = false;
-	#editing = false;
-	/** The name just saved, shown until the company's own name follows (the cloud converges it from the vision). */
-	#savedName: string | undefined;
 
 	constructor(options: CompanyBrandOptions) {
 		this.#options = options;
@@ -136,27 +117,7 @@ export class CompanyBrandView {
 		this.#logoButton.setAttribute("aria-label", label);
 		this.#logoButton.title = manage ? label : "";
 		if (!manage) this.#setMenu(false);
-		if (this.#editing) return;
-		const current = this.#options.name();
-		if (this.#savedName === current) this.#savedName = undefined;
-		replace(
-			this.#nameSlot,
-			h("strong", null, this.#savedName ?? current),
-			manage
-				? h(
-						"button",
-						{
-							type: "button",
-							class: "icon-button settings-brand-rename",
-							"aria-label": t("Rename the company"),
-							title: t("Rename the company"),
-							disabled: this.#busy,
-							onclick: () => this.#startRename(),
-						},
-						icon("edit"),
-					)
-				: null,
-		);
+		replace(this.#nameSlot, h("strong", null, this.#options.name()));
 	}
 
 	#hasLogo(): boolean {
@@ -194,67 +155,6 @@ export class CompanyBrandView {
 			() => store.remove(this.#options.profileId, this.#options.folder, this.#options.signal),
 			phrase("The logo could not be removed."),
 		);
-	}
-
-	#startRename(): void {
-		this.#editing = true;
-		const input = h("input", {
-			type: "text",
-			class: "settings-brand-name-input",
-			value: this.#savedName ?? this.#options.name(),
-			maxlength: "120",
-			"aria-label": t("Company name"),
-		});
-		const save = () => void this.#rename(input.value);
-		const cancel = () => {
-			this.#editing = false;
-			this.update();
-		};
-		input.onkeydown = (event: KeyboardEvent) => {
-			if (event.isComposing) return;
-			if (event.key === "Enter") {
-				event.preventDefault();
-				save();
-			} else if (event.key === "Escape") {
-				event.preventDefault();
-				event.stopPropagation();
-				cancel();
-			}
-		};
-		replace(
-			this.#nameSlot,
-			input,
-			button(t("Save"), save, { small: true, primary: true }),
-			button(t("Cancel"), cancel, { small: true }),
-		);
-		input.focus();
-		input.select();
-	}
-
-	async #rename(raw: string): Promise<void> {
-		const name = raw.replace(/\s+/g, " ").trim();
-		if (!name || name === this.#options.name()) {
-			this.#editing = false;
-			this.update();
-			return;
-		}
-		await this.#run(async () => {
-			const folder = this.#options.folder();
-			const read = await folder.read(VISION_PATH, this.#options.signal);
-			const file = read.entry?.file;
-			if (!file || !read.entry?.version) throw new Error(t("The company's vision could not be read."));
-			const text = new TextDecoder().decode(await folder.readFile(file, this.#options.signal));
-			const answer = await folder.commit(
-				`company-rename-${crypto.randomUUID()}`,
-				[{ op: "write", path: VISION_PATH, text: renamedVision(text, name), expectedVersion: read.entry.version }],
-				this.#options.signal,
-			);
-			if (answer.units.some((unit) => unit.outcome !== "saved"))
-				throw new Error(t("The name could not be saved. Try again."));
-			this.#savedName = name;
-			this.#editing = false;
-			this.#options.renamed(name);
-		}, phrase("The name could not be saved."));
 	}
 
 	async #run(action: () => Promise<void>, failure: string): Promise<void> {
