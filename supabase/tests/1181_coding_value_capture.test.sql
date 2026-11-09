@@ -17,6 +17,12 @@
 -- 20260930698000 (step 2) adds the broker's description of what a capture key is derived from: before and after the
 -- prepare (1), after the company's key turned (4), refused for another receipt (1) and outside the broker's session (5),
 -- and its grant (6). It writes nothing.
+-- 20260930705000 (save from the machine) adds 7: a save_coding_value call off a company machine of the company, on
+-- the same broker calls and the coding executor's read (qorpera_authorize_machine_coding_value): a full describe,
+-- prepare, executor read, broker read (the machine, its placement and its boot instead of a computer) and store with
+-- its grant; refusals that write nothing (the call's tool, version, arguments, key and target, a receipt of another
+-- call or tool, another company's machine, a stopped machine, a machine of another name, a contributor requester); the
+-- grants, the call check, the observations' list and the marker.
 
 -- The company's broker authority; another company's, for 5.
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
@@ -916,6 +922,369 @@ begin
 			'qorpera_folder_store_coding_value_capture', 'qorpera_native_office_coding_value_capture',
 			'qorpera_valid_office_browser_action'],
 		'6: the marker''s bodies');
+end $$;
+
+-- 7. Save from the machine (20260930705000) ---------------------------------------------------------------------------------
+
+-- The company's task machine m-1181, started by Alice's run and running a boot on its placement (reserved on a node, as
+-- an executor's custody leaves it); a stopped one; and another company's machine of the same name, running.
+select set_config('session_replication_role', 'replica', true);
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id,
+	started_by_run_id, started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime,
+	desired_state)
+select machine.id, machine.profile_id, machine.environment_id, machine.name, 'Saves keys.', run.staff_agent_id, run.id,
+	machine.receipt_id, run.requested_by_user_id, 2, 4294967296, 21474836480, 'standard', 'task', machine.desired_state
+from public.qorpera_execution_runs as run
+cross join (values
+	('11810000-0000-4000-8000-0000000007a1'::uuid, '92400000-0000-4000-8000-000000000010'::uuid,
+		'92400000-0000-4000-8000-000000000020'::uuid, 'm-1181', '11810000-0000-4000-8000-0000000007a9'::uuid, 'running'),
+	('11810000-0000-4000-8000-0000000007a2', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+		'm-1181-asleep', '11810000-0000-4000-8000-0000000007aa', 'stopped'),
+	('11810000-0000-4000-8000-0000000007a3', '11810000-0000-4000-8000-000000000011', '11810000-0000-4000-8000-0000000007e3',
+		'm-1181', '11810000-0000-4000-8000-0000000007ab', 'running')
+) as machine(id, profile_id, environment_id, name, receipt_id, desired_state)
+where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding,
+	instance_sha256, running_at, boot_id)
+values ('11810000-0000-4000-8000-0000000007b1', '11810000-0000-4000-8000-0000000007a1', '92400000-0000-4000-8000-000000000010',
+		'mx-1181', repeat('8', 64), '{"providerId": "machine-1181"}', repeat('7', 64), clock_timestamp(),
+		'11810000-0000-4000-8000-0000000007c1'),
+	('11810000-0000-4000-8000-0000000007b3', '11810000-0000-4000-8000-0000000007a3', '11810000-0000-4000-8000-000000000011',
+		'mx-1181', repeat('8', 64), '{"providerId": "machine-1181"}', repeat('6', 64), clock_timestamp(),
+		'11810000-0000-4000-8000-0000000007c3');
+insert into public.qorpera_runtime_machine_allocations(id, profile_id, company_machine_placement_id, provider_adapter,
+	instance_sha256, reserved_at)
+select placement.id, placement.profile_id, placement.id, 'lxd', placement.instance_sha256, clock_timestamp()
+from public.qorpera_company_machine_placements as placement
+where placement.id in ('11810000-0000-4000-8000-0000000007b1', '11810000-0000-4000-8000-0000000007b3');
+insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256, cpu_millis,
+	memory_bytes, reserved_at)
+select placement.id, '11810000-0000-4000-8000-0000000007d1', 'machine', 'machine-1181', repeat('4', 64), 2000, 4294967296,
+	clock_timestamp()
+from public.qorpera_company_machine_placements as placement
+where placement.id in ('11810000-0000-4000-8000-0000000007b1', '11810000-0000-4000-8000-0000000007b3');
+select set_config('session_replication_role', 'origin', true);
+
+-- One save_coding_value call's operation envelope, as the machine tools write it: gh_release_token for
+-- qorpera/qorpera_base off m-1181, unless the arguments (p_value), the operation (p_operation) or the target (p_target)
+-- change.
+create function pg_temp.cv_machine_envelope(p_key text, p_value jsonb default '{}', p_operation jsonb default '{}',
+	p_target jsonb default '{}') returns text
+language plpgsql security definer as $$
+begin
+	perform pg_temp.base_claims('service_role');
+	return jsonb_build_object('schema', 'qorpera.cloud-tool-operation/v2',
+		'principals', (public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.base_binding')::jsonb) -> 'identity')
+			- array['assignmentId', 'runnerId', 'leaseId', 'sponsorVersion', 'providerConnectionId', 'providerConnectionVersion'],
+		'operation', jsonb_build_object('tool', 'save_coding_value', 'toolVersion', 'qorpera.machine-tools/v1',
+			'logicalOperationKey', p_key, 'requiresCompanyRevision', false,
+			'arguments', jsonb_build_object('operationKey', p_key, 'machine', 'm-1181', 'service', 'github',
+				'variable', 'gh_release_token', 'repository', 'qorpera/qorpera_base', 'purpose', 'Publishes releases.') || p_value,
+			'target', jsonb_build_object('realm', 'company_machine', 'machineId', '11810000-0000-4000-8000-0000000007a1')
+				|| p_target) || p_operation)::text;
+end $$;
+-- Receipt n begins as the call of an envelope (as save_coding_value's receipt unless another tool's key is named);
+-- cv_mend completes it.
+create function pg_temp.cv_mbegin(p_n text, p_envelope text, p_tool text default 'save_coding_value')
+returns void language plpgsql security definer as $$
+begin
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
+		('11810000-0000-4000-8000-0000000001' || p_n)::uuid, p_tool || ':' || (p_envelope::jsonb #>> '{operation,logicalOperationKey}'),
+		encode(extensions.digest(p_envelope, 'sha256'), 'hex'), repeat('e', 64), false);
+end $$;
+create function pg_temp.cv_mend(p_n text, p_envelope text) returns void language plpgsql security definer as $$
+begin
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
+		('11810000-0000-4000-8000-0000000001' || p_n)::uuid, encode(extensions.digest(p_envelope, 'sha256'), 'hex'), '{}'::jsonb);
+end $$;
+-- The coding executor's read of receipt n's call, as the service role, for m-1181 unless another machine is named.
+create function pg_temp.cv_exec(p_n text, p_envelope text, p_machine text default '11810000-0000-4000-8000-0000000007a1')
+returns text language plpgsql as $$
+declare v text;
+begin
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v := pg_temp.cv_try(format('select public.qorpera_authorize_machine_coding_value(%L::jsonb, %L::jsonb, %L, %L)',
+		current_setting('qorpera_test.base_binding'), jsonb_build_object('machineId', p_machine),
+		'11810000-0000-4000-8000-0000000001' || p_n, p_envelope));
+	reset role;
+	return v;
+end $$;
+
+-- 7.1 A first save: no key until the broker prepares it; then the executor's read, the broker's read and the store.
+select set_config('qorpera_test.cv_env71', pg_temp.cv_machine_envelope('cv-71'), true);
+select pg_temp.cv_mbegin('71', current_setting('qorpera_test.cv_env71'));
+select set_config('qorpera_test.cv_exec71a', pg_temp.cv_exec('71', current_setting('qorpera_test.cv_env71')), true);
+select set_config('qorpera_test.cv_c70', pg_temp.cv_counts()::text, true);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.cv_desc71a', pg_temp.cv_call('71', current_setting('qorpera_test.cv_env71'), null,
+	'qorpera_folder_describe_coding_value_capture'), true);
+select set_config('qorpera_test.cv_prep71', pg_temp.cv_call('71', current_setting('qorpera_test.cv_env71'),
+	pg_temp.cv_prepare_args('206'), 'qorpera_folder_prepare_coding_value_capture'), true);
+select set_config('qorpera_test.cv_c71', pg_temp.cv_counts()::text, true);
+reset session authorization;
+select set_config('qorpera_test.cv_exec71', pg_temp.cv_exec('71', current_setting('qorpera_test.cv_env71')), true);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.cv_read71', pg_temp.cv_call('71', current_setting('qorpera_test.cv_env71')), true);
+select set_config('qorpera_test.cv_store71', pg_temp.cv_call('71', current_setting('qorpera_test.cv_env71'),
+	pg_temp.cv_store_args(1, '\x0371', '206'), 'qorpera_folder_store_coding_value_capture'), true);
+select set_config('qorpera_test.cv_c72', pg_temp.cv_counts()::text, true);
+reset session authorization;
+select pg_temp.cv_mend('71', current_setting('qorpera_test.cv_env71'));
+
+do $$
+declare
+	v_run uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+	v_exec jsonb := pg_temp.cv_answer(current_setting('qorpera_test.cv_exec71'));
+begin
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_exec71a') = '55000:The coding value''s capture key must be made again',
+		'7: no key before the prepare: ' || current_setting('qorpera_test.cv_exec71a'));
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_desc71a')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-description/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
+			'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'gh_release_token', 'keyId', 'company-kek-2',
+			'current', false),
+		'7: the description before the prepare: ' || current_setting('qorpera_test.cv_desc71a'));
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_prep71')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-key/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
+			'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'gh_release_token', 'keyId', 'company-kek-2',
+			'secretId', '11810000-0000-4000-8000-000000000206', 'current', true, 'replaced', false,
+			'capturePublicKey', current_setting('qorpera_test.cv_key1'))
+			and pg_temp.cv_delta(current_setting('qorpera_test.cv_c71')::jsonb, current_setting('qorpera_test.cv_c70')::jsonb)
+				= '{"keys": 1}',
+		'7: the prepare makes the key: ' || current_setting('qorpera_test.cv_prep71'));
+	-- The executor's read: where m-1181 runs, and what the helper checks, seals to and binds the box to.
+	perform pg_temp.base_assert(v_exec = jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1',
+			'state', 'authorized', 'machineId', '11810000-0000-4000-8000-0000000007a1',
+			'placementId', '11810000-0000-4000-8000-0000000007b1', 'bootId', '11810000-0000-4000-8000-0000000007c1',
+			'executorOwner', 'mx-1181', 'providerId', 'machine-1181', 'receiptId', '11810000-0000-4000-8000-000000000171',
+			'target', jsonb_build_object('schema', 'qorpera.coding-value-machine-target/v1', 'service', 'github',
+				'valuePattern', '^(github_pat_[A-Za-z0-9_]{82}|ghp_[A-Za-z0-9]{36})$', 'variable', 'gh_release_token',
+				'companyId', '92400000-0000-4000-8000-000000000010', 'companyMachineId', '11810000-0000-4000-8000-0000000007a1',
+				'placementId', '11810000-0000-4000-8000-0000000007b1', 'bootId', '11810000-0000-4000-8000-0000000007c1',
+				'receiptId', '11810000-0000-4000-8000-000000000171', 'capturePublicKey', current_setting('qorpera_test.cv_key1'))),
+		'7: the executor''s read: ' || current_setting('qorpera_test.cv_exec71'));
+	-- The broker's read names the machine, its placement and its boot, never a computer.
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_read71')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-context/v1', 'secretId', '11810000-0000-4000-8000-000000000206', 'version', 1,
+			'service', 'github', 'site', 'github.com', 'valuePattern', '^(github_pat_[A-Za-z0-9_]{82}|ghp_[A-Za-z0-9]{36})$',
+			'variable', 'gh_release_token', 'repository', 'qorpera/qorpera_base',
+			'companyId', '92400000-0000-4000-8000-000000000010', 'environmentId', '92400000-0000-4000-8000-000000000020',
+			'keyId', 'company-kek-2', 'capturePublicKey', current_setting('qorpera_test.cv_key1'),
+			'receiptId', '11810000-0000-4000-8000-000000000171', 'companyMachineId', '11810000-0000-4000-8000-0000000007a1',
+			'placementId', '11810000-0000-4000-8000-0000000007b1', 'bootId', '11810000-0000-4000-8000-0000000007c1'),
+		'7: the broker''s read: ' || current_setting('qorpera_test.cv_read71'));
+	-- The store: the secret, version 1, the grant issued by the owner, the two audit rows on this receipt.
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_store71')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-stored/v1', 'variable', 'gh_release_token', 'repository', 'qorpera/qorpera_base',
+			'secretId', '11810000-0000-4000-8000-000000000206', 'version', 1, 'replayed', false)
+			and pg_temp.cv_delta(current_setting('qorpera_test.cv_c72')::jsonb, current_setting('qorpera_test.cv_c71')::jsonb)
+				= '{"secrets": 1, "versions": 1, "events": 2, "grants": 1}'
+			and exists (select 1 from public.qorpera_cloud_secrets where id = '11810000-0000-4000-8000-000000000206'
+				and secret_name = 'gh_release_token' and connector_id = 'environment' and owner_kind = 'company'
+				and purpose = 'Publishes releases.' and current_version = 1
+				and created_by_user_id = '92400000-0000-4000-8000-000000000001')
+			and exists (select 1 from public.qorpera_coding_environment_grants where secret_id = '11810000-0000-4000-8000-000000000206'
+				and repository = 'qorpera/qorpera_base' and status = 'active'
+				and issued_by_user_id = '92400000-0000-4000-8000-000000000001')
+			and (select array_agg(event_type order by id) from public.qorpera_cloud_secret_audit_events
+				where receipt_id = '11810000-0000-4000-8000-000000000171' and run_id = v_run)
+				= array['coding_value_captured', 'environment_grant_issued'],
+		'7: the store: ' || current_setting('qorpera_test.cv_store71'));
+end $$;
+
+-- 7.2 Refusals write nothing. A run has one executing receipt at a time: each call below is begun, refused and completed
+-- before the next.
+select set_config('qorpera_test.cv_env72', pg_temp.cv_machine_envelope('cv-72'), true);
+select pg_temp.cv_mbegin('72', current_setting('qorpera_test.cv_env72'));
+create function pg_temp.cv_env72(p_path text[], p_value jsonb) returns text language sql as $$
+	select jsonb_set(current_setting('qorpera_test.cv_env72')::jsonb, p_path, p_value)::text
+$$;
+grant execute on function pg_temp.cv_env72(text[], jsonb) to qorpera_secret_broker;
+select set_config('qorpera_test.cv_c73', pg_temp.cv_counts()::text, true);
+select set_config('qorpera_test.cv_7e', pg_temp.cv_differ(jsonb_build_array(
+	jsonb_build_array('executor: the call', pg_temp.cv_exec('72', current_setting('qorpera_test.cv_env72')),
+		'ok:' || jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'authorized',
+			'machineId', '11810000-0000-4000-8000-0000000007a1', 'placementId', '11810000-0000-4000-8000-0000000007b1',
+			'bootId', '11810000-0000-4000-8000-0000000007c1', 'executorOwner', 'mx-1181', 'providerId', 'machine-1181',
+			'receiptId', '11810000-0000-4000-8000-000000000172',
+			'target', (pg_temp.cv_answer(current_setting('qorpera_test.cv_exec71')) -> 'target')
+				|| '{"receiptId": "11810000-0000-4000-8000-000000000172"}')::text),
+	jsonb_build_array('executor: a receipt never begun', pg_temp.cv_exec('79', current_setting('qorpera_test.cv_env72')),
+		'42501:Machine coding value receipt is unavailable'),
+	jsonb_build_array('executor: another call''s receipt', pg_temp.cv_exec('71', current_setting('qorpera_test.cv_env72')),
+		'42501:Machine coding value receipt is unavailable'),
+	jsonb_build_array('executor: another machine than the call''s', pg_temp.cv_exec('72', current_setting('qorpera_test.cv_env72'),
+		'11810000-0000-4000-8000-0000000007a2'), '22023:Machine coding value request is malformed'),
+	jsonb_build_array('executor: machine_run', pg_temp.cv_exec('72', pg_temp.cv_env72('{operation,tool}', '"machine_run"')),
+		'22023:Machine coding value request is malformed'),
+	jsonb_build_array('executor: variable path', pg_temp.cv_exec('72',
+		pg_temp.cv_env72('{operation,arguments,variable}', '"path"')), '22023:Machine coding value request is malformed'),
+	jsonb_build_array('executor: repository in capitals', pg_temp.cv_exec('72',
+		pg_temp.cv_env72('{operation,arguments,repository}', '"Qorpera/Qorpera_Base"')),
+		'22023:Machine coding value request is malformed'),
+	jsonb_build_array('executor: not json', pg_temp.cv_exec('72', 'not json'), '22023:Machine coding value request is malformed')
+)), true);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.cv_read72', pg_temp.cv_call('72', current_setting('qorpera_test.cv_env72')), true);
+select set_config('qorpera_test.cv_7x', pg_temp.cv_differ(jsonb_build_array(
+	jsonb_build_array('call: machine_run', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,tool}', '"machine_run"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('call: another version', pg_temp.cv_call('72',
+		pg_temp.cv_env72('{operation,toolVersion}', '"qorpera.machine-tools/v2"')), '22023:coding value capture call is malformed'),
+	jsonb_build_array('call: another schema', pg_temp.cv_call('72', pg_temp.cv_env72('{schema}', '"qorpera.cloud-tool-operation/v1"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('call: another key', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,arguments,operationKey}', '"cv-7x"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('call: a value too', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,arguments,value}', '"ghp_x"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('call: no machine', pg_temp.cv_call('72', (current_setting('qorpera_test.cv_env72')::jsonb
+		#- '{operation,arguments,machine}')::text), '22023:coding value capture call is malformed'),
+	jsonb_build_array('call: a screen too', pg_temp.cv_call('72',
+		pg_temp.cv_env72('{operation,target,screenId}', '"11810000-0000-4000-8000-000000000999"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('call: a computer''s realm', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,target,realm}',
+		'"company_computer"')), '22023:coding value capture call is malformed'),
+	jsonb_build_array('call: another service', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,arguments,service}', '"pypi"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('variable: path', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,arguments,variable}', '"path"')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('variable: git_token', pg_temp.cv_call('72',
+		pg_temp.cv_env72('{operation,arguments,variable}', '"git_token"')), '22023:coding value capture call is malformed'),
+	jsonb_build_array('repository: in capitals', pg_temp.cv_call('72',
+		pg_temp.cv_env72('{operation,arguments,repository}', '"Qorpera/Qorpera_Base"')), '22023:coding value capture call is malformed'),
+	jsonb_build_array('repository: no owner', pg_temp.cv_call('72',
+		pg_temp.cv_env72('{operation,arguments,repository}', '"qorpera_base"')), '22023:coding value capture call is malformed'),
+	jsonb_build_array('purpose: empty', pg_temp.cv_call('72', pg_temp.cv_env72('{operation,arguments,purpose}', '""')),
+		'22023:coding value capture call is malformed'),
+	jsonb_build_array('receipt: another call''s', pg_temp.cv_call('71', current_setting('qorpera_test.cv_env72')),
+		'42501:coding value capture receipt is unavailable'),
+	jsonb_build_array('receipt: never begun', pg_temp.cv_call('79', current_setting('qorpera_test.cv_env72')),
+		'42501:coding value capture receipt is unavailable')
+)), true);
+select set_config('qorpera_test.cv_c74', pg_temp.cv_counts()::text, true);
+reset session authorization;
+
+-- A requester who is no longer an owner or admin saves nothing.
+savepoint cv_machine_demoted;
+select set_config('session_replication_role', 'replica', true);
+update public.qorpera_profile_members set role = 'contributor'
+where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000001';
+select set_config('session_replication_role', 'origin', true);
+select set_config('qorpera_test.cv_exec72d', pg_temp.cv_exec('72', current_setting('qorpera_test.cv_env72')), true);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.cv_7d', pg_temp.cv_differ(jsonb_build_array(
+	jsonb_build_array('describe', pg_temp.cv_call('72', current_setting('qorpera_test.cv_env72'), null,
+		'qorpera_folder_describe_coding_value_capture'), '42501:Only owners and admins can save coding values; ask one of them'),
+	jsonb_build_array('read', pg_temp.cv_call('72', current_setting('qorpera_test.cv_env72')),
+		'42501:Only owners and admins can save coding values; ask one of them'),
+	jsonb_build_array('store', pg_temp.cv_call('72', current_setting('qorpera_test.cv_env72'), pg_temp.cv_store_args(2, '\x0372', '206'),
+		'qorpera_folder_store_coding_value_capture'), '42501:Only owners and admins can save coding values; ask one of them'))),
+	true);
+reset session authorization;
+do $$
+begin
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_exec72d')
+				= '42501:Only owners and admins can save coding values; ask one of them'
+			and current_setting('qorpera_test.cv_7d') = '',
+		E'7: a contributor''s run: ' || current_setting('qorpera_test.cv_exec72d') || E'\n' || current_setting('qorpera_test.cv_7d'));
+end $$;
+rollback to savepoint cv_machine_demoted;
+select pg_temp.cv_mend('72', current_setting('qorpera_test.cv_env72'));
+
+-- The same call's digest under another tool's receipt key; the other company's machine of the same name; the company's
+-- stopped machine; a machine of another name than the call's: each with its own receipt, refused, then completed.
+select set_config('qorpera_test.cv_c75', pg_temp.cv_counts()::text, true);
+create function pg_temp.cv_refused(p_n text, p_envelope text, p_tool text, p_machine text, p_executor text, p_broker text,
+	p_prepare boolean default false) returns text language plpgsql as $$
+declare v_found text;
+begin
+	perform pg_temp.cv_mbegin(p_n, p_envelope, p_tool);
+	v_found := pg_temp.cv_differ(jsonb_build_array(jsonb_build_array('executor ' || p_n, pg_temp.cv_exec(p_n, p_envelope, p_machine),
+		p_executor)));
+	execute 'set local session authorization qorpera_secret_broker';
+	v_found := v_found || pg_temp.cv_differ(jsonb_build_array(
+		jsonb_build_array('read ' || p_n, pg_temp.cv_call(p_n, p_envelope), p_broker),
+		jsonb_build_array('store ' || p_n, pg_temp.cv_call(p_n, p_envelope, pg_temp.cv_store_args(2, '\x0373', '206'),
+			'qorpera_folder_store_coding_value_capture'), p_broker))
+		|| case when p_prepare then jsonb_build_array(jsonb_build_array('prepare ' || p_n, pg_temp.cv_call(p_n, p_envelope,
+			pg_temp.cv_prepare_args('207', 'key2'), 'qorpera_folder_prepare_coding_value_capture'), p_broker)) else '[]' end);
+	execute 'reset session authorization';
+	perform pg_temp.cv_mend(p_n, p_envelope);
+	return v_found;
+end $$;
+select set_config('qorpera_test.cv_7y', concat(
+	pg_temp.cv_refused('73', pg_temp.cv_machine_envelope('cv-73'), 'machine_run', '11810000-0000-4000-8000-0000000007a1',
+		'42501:Machine coding value receipt is unavailable', '42501:coding value capture receipt is unavailable'),
+	pg_temp.cv_refused('74', pg_temp.cv_machine_envelope('cv-74', '{}', '{}', '{"machineId": "11810000-0000-4000-8000-0000000007a3"}'),
+		'save_coding_value', '11810000-0000-4000-8000-0000000007a3', '42501:Machine coding value authority is unavailable',
+		'42501:company machine is not running', true),
+	pg_temp.cv_refused('75', pg_temp.cv_machine_envelope('cv-75', '{"machine": "m-1181-asleep"}', '{}',
+		'{"machineId": "11810000-0000-4000-8000-0000000007a2"}'), 'save_coding_value', '11810000-0000-4000-8000-0000000007a2',
+		'ok:' || jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
+			'reason', 'MACHINE_NOT_RUNNING', 'machine', 'm-1181-asleep')::text, '42501:company machine is not running'),
+	pg_temp.cv_refused('76', pg_temp.cv_machine_envelope('cv-76', '{"machine": "m-1181-asleep"}'), 'save_coding_value',
+		'11810000-0000-4000-8000-0000000007a1', '42501:Machine coding value authority is unavailable',
+		'42501:company machine is not running')), true);
+select set_config('qorpera_test.cv_c76', pg_temp.cv_counts()::text, true);
+
+do $$
+begin
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_read72')) #>> '{version}' = '2'
+			and pg_temp.cv_answer(current_setting('qorpera_test.cv_read72')) #>> '{bootId}' = '11810000-0000-4000-8000-0000000007c1'
+			and pg_temp.cv_answer(current_setting('qorpera_test.cv_read72')) #> '{current,version}' = '1'
+			and not pg_temp.cv_answer(current_setting('qorpera_test.cv_read72')) ?| array['companyComputerId', 'computerGeneration'],
+		'7: the second call reads: ' || current_setting('qorpera_test.cv_read72'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_7e') = '',
+		E'7: executor reads that differ:\n' || current_setting('qorpera_test.cv_7e'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_7x') = '',
+		E'7: refusals that differ:\n' || current_setting('qorpera_test.cv_7x'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_7y') = '',
+		E'7: other calls'' refusals that differ:\n' || current_setting('qorpera_test.cv_7y'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_c74') = current_setting('qorpera_test.cv_c73')
+			and pg_temp.cv_delta(current_setting('qorpera_test.cv_c76')::jsonb, current_setting('qorpera_test.cv_c75')::jsonb)
+				= '{"receipts": 4}',
+		'7: a refusal stored ' || pg_temp.cv_delta(current_setting('qorpera_test.cv_c74')::jsonb,
+			current_setting('qorpera_test.cv_c73')::jsonb)::text || ' / ' || pg_temp.cv_delta(
+			current_setting('qorpera_test.cv_c76')::jsonb, current_setting('qorpera_test.cv_c75')::jsonb)::text);
+end $$;
+
+-- 7.3 Grants, the call check, the observations' list and the marker.
+do $$
+declare
+	v_role text;
+	v_call jsonb := jsonb_build_object('operationKey', 'k-1', 'machine', 'm-1181', 'service', 'npm', 'variable', 'npm_token',
+		'repository', 'qorpera/qorpera_base', 'purpose', 'Publishes the SDK.');
+begin
+	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
+		perform pg_temp.base_assert(has_function_privilege(v_role,
+				'public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)', 'execute') = (v_role = 'service_role')
+				and not has_function_privilege(v_role, 'public.qorpera_valid_machine_coding_value_call(jsonb)', 'execute')
+				and not has_function_privilege(v_role, 'public.qorpera_folder_coding_value_capture_context('
+					|| 'public.qorpera_cloud_secret_broker_authorities,jsonb,uuid,text,text,boolean)', 'execute'),
+			format('7: the grants for %s', v_role));
+	end loop;
+	perform pg_temp.base_assert(public.qorpera_valid_machine_coding_value_call(v_call)
+			and not public.qorpera_valid_machine_coding_value_call(v_call - 'machine')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"value": "npm_x"}')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"machine": "M-1181"}')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"operationKey": ""}')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"variable": "ld_preload"}')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"purpose": "a\tb"}')
+			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"service": null}')
+			and not public.qorpera_valid_machine_coding_value_call('[]'),
+		'7: the call check');
+	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
+			where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure), '''save_coding_value''') > 0,
+		'7: the observations'' list');
+	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
+			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
+			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930705000') > 0) = array[
+			'qorpera_authorize_machine_coding_value', 'qorpera_folder_coding_value_capture_context',
+			'qorpera_folder_read_coding_value_capture', 'qorpera_record_runtime_observation',
+			'qorpera_valid_machine_coding_value_call'],
+		'7: the marker''s bodies');
 end $$;
 
 rollback;

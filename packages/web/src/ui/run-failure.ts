@@ -132,6 +132,11 @@ export interface RunPayer {
 	own?: boolean;
 	/** Said only for a usage limit, and only while it is ahead. */
 	resetsAt?: string;
+	/** The card offers the member whose own login paid their other logins that can pay now ("Continue with …"). */
+	continuable?: boolean;
+	/** For anyone else: the name of the member whose login paid, the only one who can continue the work on another
+	 * login of theirs. */
+	payerName?: string;
 }
 
 /** Where OpenAI sends a member to manage their ChatGPT plan's usage (Sign in with ChatGPT UI guidelines). */
@@ -163,12 +168,50 @@ export function runFailureReason(
 ): string {
 	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
 	const resetsAt = payer.resetsAt;
-	if (kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now())
+	const time = kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now() ? fmtTime(resetsAt) : undefined;
+	// The work never moves by itself. The member whose own login paid may continue it with another login of theirs that
+	// can pay now (the card's "Continue with …"); anyone else reads who can.
+	if (kind === "usage_limit" && payer.own === true && payer.continuable === true)
+		return time
+			? t(
+					"The model account paying for this work reached its usage limit, so the work stopped. It can run again when the limit resets ({time}), or you can continue it now with another of your logins.",
+					{ time },
+				)
+			: t(
+					"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets, or you can continue it now with another of your logins.",
+				);
+	if (kind === "usage_limit" && payer.own !== true && payer.payerName)
+		return t(
+			"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets. Only {name} can continue it now with another of their logins.",
+			{ name: payer.payerName },
+		);
+	if (time)
 		return t(
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).",
-			{ time: fmtTime(resetsAt) },
+			{ time },
 		);
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
+}
+
+/** Why a run waits at its login's usage limit, until `until` (20260930703000): it goes on by itself, on the same login,
+ * then. The member whose own login pays may continue it now with another login of theirs (the card's "Continue with …",
+ * `payer.continuable`); anyone else reads who can. */
+export function runWaitingReason(until: string, payer: RunPayer = {}): string {
+	const time = fmtTime(until);
+	if (payer.own === true && payer.continuable === true)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}), or you can continue it now with another of your logins.",
+			{ time },
+		);
+	if (payer.own !== true && payer.payerName)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}). Only {name} can continue it now with another of their logins.",
+			{ time, name: payer.payerName },
+		);
+	return t(
+		"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}).",
+		{ time },
+	);
 }
 
 // The coding executor's own words for a turn that ended with no coding_finish or
@@ -301,14 +344,30 @@ export interface RunFailureCard {
 	retrying?: boolean;
 	/** What went wrong with the last Try again. */
 	retryError?: string;
-	dismiss: () => void;
+	/** Absent for a run that waits rather than failed: there is nothing to dismiss. */
+	dismiss?: () => void;
 	/** A link that replaces Try again, e.g. "Review" for a run that left a proposal. */
 	action?: HTMLElement;
+	/** A run that stopped at its usage limit, for the member whose own login paid: their other logins that can pay now,
+	 * each a "Continue with …" button. Nothing goes on until they pick one. */
+	continueWith?: RunFailureContinue;
+}
+
+export interface RunFailureContinue {
+	logins: readonly { connectionId: string; account: string }[];
+	choose: (connectionId: string) => void;
+	/** The login being continued with now. */
+	continuing?: string;
+	/** No pick now: a read of the logins or a message is on its way. */
+	waiting?: boolean;
+	/** What the last pick left to say: that it failed, or that the member's own message continues the work. */
+	note?: string;
 }
 
 /** A failed run, shown as one quiet line right above the composer, in the same
  * band and shape as a company notice, with Dismiss and, for an interrupted run,
- * Try again. Dismissing is durable: the run stops counting against the agent. */
+ * Try again. Dismissing is durable: the run stops counting against the agent. A run
+ * waiting at its login's usage limit takes the same line with no Dismiss. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
 	const guarded = (action: () => void) => (event: MouseEvent) => {
@@ -328,10 +387,31 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		primary.dataset.action = "retry-run";
 		if (busy) primary.setAttribute("aria-disabled", "true");
 	}
-	const dismiss = button(t("Dismiss"), guarded(card.dismiss), { small: true });
-	dismiss.classList.add("run-failure-secondary");
-	dismiss.dataset.action = "dismiss-run";
-	if (busy) dismiss.setAttribute("aria-disabled", "true");
+	const onDismiss = card.dismiss;
+	const dismiss = onDismiss ? button(t("Dismiss"), guarded(onDismiss), { small: true }) : null;
+	if (dismiss) {
+		dismiss.classList.add("run-failure-secondary");
+		dismiss.dataset.action = "dismiss-run";
+		if (busy) dismiss.setAttribute("aria-disabled", "true");
+	}
+	const offer = card.continueWith;
+	const held = offer !== undefined && (offer.continuing !== undefined || offer.waiting === true);
+	const logins = (offer?.logins ?? []).map((login) => {
+		const choose = button(
+			offer?.continuing === login.connectionId
+				? t("Continuing…")
+				: t("Continue with {account}", { account: login.account }),
+			(event: MouseEvent) => {
+				if (!held && event.detail < 2) offer?.choose(login.connectionId);
+			},
+			{ small: true },
+		);
+		choose.classList.add("run-failure-continue");
+		choose.dataset.action = "continue-run";
+		choose.dataset.connectionId = login.connectionId;
+		if (held) choose.setAttribute("aria-disabled", "true");
+		return choose;
+	});
 	return h(
 		"div",
 		{
@@ -339,15 +419,15 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 			role: "group",
 			"aria-label": card.title,
 			onkeydown: (event: KeyboardEvent) => {
-				if (!matchesKey(event, "dismiss")) return;
+				if (!onDismiss || !matchesKey(event, "dismiss")) return;
 				event.preventDefault();
 				event.stopPropagation();
-				if (!busy) card.dismiss();
+				if (!busy) onDismiss();
 			},
 		},
 		h(
 			"div",
-			{ class: "run-failure-card" },
+			{ class: logins.length ? "run-failure-card has-logins" : "run-failure-card" },
 			h(
 				"p",
 				{ class: "run-failure-text" },
@@ -356,8 +436,10 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 				card.reason ? h("span", { class: "run-failure-reason" }, card.reason) : null,
 				card.retryError ? " " : null,
 				card.retryError ? h("span", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
+				offer?.note ? " " : null,
+				offer?.note ? h("span", { class: "run-failure-note", role: "status" }, offer.note) : null,
 			),
-			h("div", { class: "run-failure-actions" }, primary, dismiss),
+			h("div", { class: "run-failure-actions" }, primary, ...logins, dismiss),
 		),
 	);
 }

@@ -6,6 +6,7 @@ import { createWebNativeSubscription } from "../../cloud/native-subscription.ts"
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import { companyLogos } from "../../ui/company-logos.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
@@ -19,9 +20,9 @@ import { FriendsController } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
+import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
-import { MemoryView } from "./settings-memory.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -40,7 +41,7 @@ const TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff memory notebooks shared context beta delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
+			"people team members invitations staff delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions virksomhed personer medlemmer invitationer agenter roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
 	},
 	{
 		id: "leaderboard",
@@ -156,8 +157,7 @@ export class SettingsView {
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
-	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
-	#memory: MemoryView | undefined;
+	#brand: CompanyBrandView | undefined;
 	/** The company's good will, on the Company tab. */
 	#goodWill: GoodWillView | undefined;
 	/** General with no company open: the good will of the member's companies. */
@@ -451,7 +451,6 @@ export class SettingsView {
 		this.#accountSubscriptions?.dispose();
 		this.#services?.dispose();
 		this.#rules?.dispose();
-		this.#memory?.dispose();
 		this.#goodWill?.dispose();
 		this.#myGoodWill?.dispose();
 		this.#friends.dispose();
@@ -891,8 +890,7 @@ export class SettingsView {
 		this.#services = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
-		this.#memory?.dispose();
-		this.#memory = undefined;
+		this.#brand = undefined;
 		this.#goodWill?.dispose();
 		this.#goodWill = undefined;
 		this.#myGoodWill?.dispose();
@@ -913,7 +911,6 @@ export class SettingsView {
 				}
 				this.#services?.update();
 				this.#rules?.update();
-				this.#memory?.update();
 				this.#drawCompany();
 				if (this.#folder || this.#mode === "storage") this.#drawStorage();
 			});
@@ -936,6 +933,7 @@ export class SettingsView {
 			team = h("div", { class: "settings-team" });
 			replace(
 				panel,
+				h("div", { class: "settings-brand-slot" }),
 				team,
 				h(
 					"section",
@@ -945,20 +943,41 @@ export class SettingsView {
 				),
 				h("div", { class: "settings-good-will-slot" }),
 				h("div", { class: "settings-rules-slot" }),
-				h("div", { class: "settings-memory-slot" }),
 				h("div", { class: "settings-company-exit" }),
 			);
 		}
-		if (this.#tab === "company" && !this.#memory) {
-			const profileId = company.profile.profileId;
-			this.#memory = new MemoryView(
-				{
-					read: () => this.#api.getCompanyMemory(profileId),
-					choose: (mode) => this.#api.setCompanyMemory(profileId, mode),
+		// The name and the logo, built once the Company tab shows; opening it also brings the logo everyone sees in step
+		// with the company folder's logo.svg (the Branding & Identity agent may have drawn a new one).
+		if (this.#tab === "company" && !this.#brand) {
+			const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			const folder = () => {
+				const team = company.store.get().team;
+				if (!team || company.store.get().accessLost) throw new Error(t("Company access changed."));
+				return new WebCompanyFiles(this.#api.cloud, company.profile, company.userId, team.role, lifetime, () => {
+					if (this.#company !== company || company.store.get().accessLost)
+						throw new Error(t("Company access changed."));
+				}).folder();
+			};
+			this.#brand = new CompanyBrandView({
+				profileId: company.profile.profileId,
+				name: () => company.profile.profileName,
+				canManage: () => {
+					const role = company.store.get().team?.role;
+					return role === "owner" || role === "admin";
 				},
-				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
-				() => company.store.get().team?.role,
-			);
+				folder,
+				signal: lifetime,
+			});
+			if (company.store.get().team?.capabilities.write)
+				void companyLogos()
+					?.sync(company.profile.profileId, folder, lifetime)
+					.then(() => this.#brand?.update())
+					.catch(() => undefined);
+		}
+		const brandSlot = panel.querySelector<HTMLElement>(".settings-brand-slot")!;
+		if (this.#brand) {
+			if (brandSlot.firstChild !== this.#brand.el) replace(brandSlot, this.#brand.el);
+			this.#brand.update();
 		}
 		// Good will, under Staff at work (design A): read once the Company tab shows, kept until the company changes.
 		if (this.#tab === "company" && !this.#goodWill) {
@@ -984,8 +1003,6 @@ export class SettingsView {
 			);
 		const rulesSlot = panel.querySelector<HTMLElement>(".settings-rules-slot")!;
 		if (this.#rules && rulesSlot.firstChild !== this.#rules.el) replace(rulesSlot, this.#rules.el);
-		const memorySlot = panel.querySelector<HTMLElement>(".settings-memory-slot")!;
-		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("data-href")

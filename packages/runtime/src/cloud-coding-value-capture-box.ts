@@ -21,6 +21,16 @@ const KIND: CaptureBoxKind = {
 	info: "qorpera.coding-value-capture/v1",
 	label: "Coding value capture",
 };
+/** A coding value off a company machine's clipboard (save_coding_value, 20260930705000): the same box, sealed to the
+ * same capture key, under its own schemas and info and bound to the machine, its placement and its boot instead of a
+ * computer and its generation. It was read off no page, so it names no site. */
+const MACHINE_KIND: CaptureBoxKind = {
+	box: "qorpera.coding-value-machine-box/v1",
+	payload: "qorpera.coding-value-machine-capture/v1",
+	info: "qorpera.coding-value-machine-capture/v1",
+	label: "Coding value machine capture",
+	siteless: true,
+};
 /** A service's name, as qorpera_coding_value_services keeps it. */
 const SERVICE = /^[a-z][a-z0-9-]{0,31}$/;
 /** A coding value's name: its environment variable's in lower case (20260928549440). */
@@ -53,6 +63,24 @@ export interface CodingValueCapture {
 	readonly value: Buffer;
 	/** The page's host the value was read on. */
 	readonly site: string;
+	readonly capturedAtMs: number;
+}
+
+/** Who sealed a machine's box: the helper on one boot of one company machine's placement, for one save_coding_value
+ * call (effect receipt), with one service's value of one name. */
+export interface CodingValueMachineIdentity {
+	readonly companyId: string;
+	readonly companyMachineId: string;
+	readonly placementId: string;
+	readonly bootId: string;
+	readonly receiptId: string;
+	readonly service: string;
+	readonly variable: string;
+}
+
+export interface CodingValueMachineCapture {
+	/** The value's bytes (UTF-8). The opener's callback has them; they are zeroed after it. */
+	readonly value: Buffer;
 	readonly capturedAtMs: number;
 }
 
@@ -116,6 +144,33 @@ function associatedData(value: CodingValueCaptureIdentity): Buffer {
 	return Buffer.from(JSON.stringify({ schema: KIND.box, ...identity(value) }), "utf8");
 }
 
+function machineAssociatedData(value: CodingValueMachineIdentity): Buffer {
+	if (
+		![value.companyId, value.companyMachineId, value.placementId, value.bootId, value.receiptId].every((id) =>
+			isUuid(id),
+		) ||
+		typeof value.service !== "string" ||
+		!SERVICE.test(value.service) ||
+		typeof value.variable !== "string" ||
+		!VARIABLE.test(value.variable)
+	)
+		throw new Error("Coding value machine capture identity is malformed");
+	const { companyId, companyMachineId, placementId, bootId, receiptId, service, variable } = value;
+	return Buffer.from(
+		JSON.stringify({
+			schema: MACHINE_KIND.box,
+			companyId,
+			companyMachineId,
+			placementId,
+			bootId,
+			receiptId,
+			service,
+			variable,
+		}),
+		"utf8",
+	);
+}
+
 /** The office's side: the value read off the service's site, whole by the service's pattern, sealed to the value's
  * capture key for one tool call. */
 export function sealCodingValueCapture(
@@ -171,7 +226,62 @@ export async function openCodingValueCapture<T>(
 		nowMs,
 	);
 	try {
-		return await callback({ value, site, capturedAtMs });
+		// An office's kind has a site: the opener checked it.
+		return await callback({ value, site: site as string, capturedAtMs });
+	} finally {
+		value.fill(0);
+	}
+}
+
+/** The machine helper's side (save_coding_value): the value read off the machine's clipboard, whole by the service's
+ * pattern, sealed to the value's capture key for one call on one boot of the machine. */
+export function sealCodingValueMachineCapture(
+	value: string,
+	pattern: RegExp,
+	recipientPublicKey: string,
+	expected: CodingValueMachineIdentity,
+	nowMs = Date.now(),
+): Record<string, string> {
+	const ad = machineAssociatedData(expected);
+	if (typeof value !== "string" || !codingValueMatches(value, pattern))
+		throw new Error("Coding value machine capture value is malformed");
+	return sealCaptureBox(
+		MACHINE_KIND,
+		{ service: expected.service, variable: expected.variable, value, capturedAtMs: nowMs },
+		recipientPublicKey,
+		ad,
+	);
+}
+
+/** The vault's side: the value inside a machine's box sealed to this key pair for exactly this identity, given to the
+ * callback and zeroed after it; or an error. Its shape is checked here; the service's pattern, by the caller. */
+export async function openCodingValueMachineCapture<T>(
+	privateKey: KeyObject,
+	recipientPublicKey: string,
+	box: unknown,
+	expected: CodingValueMachineIdentity,
+	callback: (capture: CodingValueMachineCapture) => Promise<T>,
+	nowMs = Date.now(),
+): Promise<T> {
+	const { value, capturedAtMs } = openCaptureBox(
+		MACHINE_KIND,
+		privateKey,
+		recipientPublicKey,
+		box,
+		machineAssociatedData(expected),
+		(payload) => {
+			if (
+				Object.keys(payload).sort().join() !== "capturedAtMs,schema,service,value,variable" ||
+				payload.service !== expected.service ||
+				payload.variable !== expected.variable ||
+				!VALUE.test(payload.value as string)
+			)
+				throw new Error("Coding value machine capture is malformed");
+		},
+		nowMs,
+	);
+	try {
+		return await callback({ value, capturedAtMs });
 	} finally {
 		value.fill(0);
 	}

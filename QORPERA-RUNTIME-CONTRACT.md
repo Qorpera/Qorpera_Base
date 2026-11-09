@@ -2487,6 +2487,32 @@ itself. What changed:
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 
+2026-11-09 amendment: a run in Agent notebooks mode waits at its usage limit
+too (founder: make "Work will go on by itself when it resets" true; migration
+20260930703000). Since 20260930539000 such a run, which keeps no run log,
+resumes from its own receipts after a cut-off, but at a usage limit it still
+ended, failed and waiting for review. Now:
+
+- At its login's usage limit it pauses as a run with a log does, on the same
+  login, and goes on from its receipts at the reset (or once a usage reading
+  shows room), with nothing to press. A run that cannot resume still stops: a
+  narrow run, one that already sent its final answer, a coding session's turn
+  (its session's next turn waits instead), a run in tree mode with no log, one
+  out of attempts or with an unsettled step. Its card, its agent and the
+  usage-limit notice say that the work stopped and does not go on by itself.
+- While it waits, it holds its conversation (one run at a time, 20260930538000);
+  its members may stop it as they stop a working run. The agents' activity says
+  until when, whose login pays and whether its member may move it.
+- The member whose own login pays for a waiting run may move it, by their own
+  pick, to another of their logins that can pay now, on the run's own computer
+  identity: never onto or off a ChatGPT plan, never from a login that may work
+  while the member is away onto one that may not, never a routine's run (its
+  routine names its payer). The run, its wake and its reservation move together,
+  and the move is recorded; the wake's identity changes only with that record,
+  as it does with a recorded sponsor handoff. The run then goes on at once from
+  its receipts or log on the chosen login, so it never also comes back on the
+  old one. Nothing else moves, and nothing moves by itself.
+
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
@@ -2517,6 +2543,25 @@ pay for it (their own, for its harness, allowed to work while they are away,
 not a ChatGPT plan); a pick moves the session's payer to that login's binding
 from its next turn, never while a turn runs. Nothing moves a session by itself,
 and nobody but its owner moves it.
+
+2026-11-09 amendment: work handed to an agent is paid by the member the agent
+works for (founder, 9 November 2026, the Members page; migrations
+20260930700000 and 20260930701000). Each agent but the Co-Founder works for one
+member: its saved row, else the member who hired it while a member, else nobody.
+A move needs the other side's yes, and a member who leaves leaves their agents
+with nobody. A coworker wake (one agent hands work to another) is requested by
+the receiving agent's member and paid by that member's own login, the one the
+first-choice order above picks for new work of theirs, only when it is their
+own (never a company account) and not a ChatGPT plan login; whatever paid the
+sending run does not decide it. When the agent works for nobody, for the sending
+run's requester, or its member has no such login, the wake is requested and
+paid as above (the sending run's requester and login). This supersedes, for
+coworker wakes only, "everything that follows from them — coworker messages"
+in the 2026-09-28 amendment and "a coworker's" wake staying on the run's login
+in the 2026-10-04 list above. A member's own turns and room posts, routines
+(paid by their saver; moving an agent does not move them), workers, machine
+events, reviews and human tasks are unchanged, and no running work changes
+payer.
 
 Routines follow the same rule (migration 20260930095000):
 

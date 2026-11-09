@@ -1,8 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	type CodingValueCaptureIdentity,
+	type CodingValueMachineIdentity,
 	codingValuePattern,
 	sealCodingValueCapture,
+	sealCodingValueMachineCapture,
 } from "@qorpera/runtime/cloud-coding-value-capture-box";
 import {
 	type CodingValueAuthority,
@@ -528,6 +530,107 @@ describe("a coding value's capture", () => {
 				"Coding value capture unconfirmed",
 			);
 		}
+	});
+});
+
+// 20260930705000: save_coding_value, off a company machine's clipboard. The same request and capture key; the database's
+// read binds the box to the machine, its placement and its boot, and the machine helper's box names no site.
+describe("a coding value saved off a company machine", () => {
+	const machine: CodingValueMachineIdentity = {
+		companyId,
+		companyMachineId: "99800000-0000-4000-8000-0000000000b1",
+		placementId: "99800000-0000-4000-8000-0000000000b2",
+		bootId: "99800000-0000-4000-8000-0000000000b3",
+		receiptId,
+		service: "npm",
+		variable: "npm_token",
+	};
+	/** The read of a save_coding_value call: the machine's binding instead of the computer's. */
+	const machineContext = (f: ReturnType<typeof fixture>, overrides: Record<string, unknown> = {}) => {
+		const { companyComputerId: _computer, computerGeneration: _generation, ...rest } = f.context();
+		return {
+			...rest,
+			companyMachineId: machine.companyMachineId,
+			placementId: machine.placementId,
+			bootId: machine.bootId,
+			...overrides,
+		};
+	};
+	const machineBox = (f: ReturnType<typeof fixture>, identity = machine, value = token, at = now) =>
+		sealCodingValueMachineCapture(value, codingValuePattern(npmPattern), f.publicKey(), identity, at);
+
+	it("stores the machine's box as the next version, granted as an office's capture is", async () => {
+		const f = fixture();
+		f.read.mockResolvedValue(machineContext(f));
+		expect(await f.vault.capture({ ...call(), box: machineBox(f) }, signal())).toEqual({
+			schema: "qorpera.coding-value-capture-answer/v1",
+			variable: "npm_token",
+			repository: "acme/web",
+			version: 1,
+			unchanged: false,
+		});
+		await expect(opened(f.keyring, f.stored[0] as CodingValueCaptureVersion)).resolves.toEqual({ value: token });
+		expect(f.sent[0]?.every((byte) => byte === 0)).toBe(true);
+		// Equal to the version the vault holds: stored all the same, and said so.
+		const same = fixture();
+		same.read.mockResolvedValue(machineContext(same, { version: 2, current: same.held(token) }));
+		expect(await same.vault.capture({ ...call(), box: machineBox(same) }, signal())).toMatchObject({
+			version: 2,
+			unchanged: true,
+		});
+	});
+
+	it("opens a box only for the machine, placement, boot and call the database names, and never an office's", async () => {
+		const f = fixture();
+		f.read.mockResolvedValue(machineContext(f));
+		for (const box of [
+			machineBox(f, { ...machine, bootId: randomUUID() }),
+			machineBox(f, { ...machine, placementId: randomUUID() }),
+			machineBox(f, { ...machine, companyMachineId: randomUUID() }),
+			machineBox(f, { ...machine, receiptId: randomUUID() }),
+			machineBox(f, { ...machine, variable: "npm_auth_token" }),
+			// An office's box for the same call never opens as a machine's.
+			f.box(),
+		])
+			await expect(f.vault.capture({ ...call(), box }, signal())).rejects.toThrow(
+				"Coding value capture unconfirmed",
+			);
+		// Nor a machine's box under an office's read.
+		const office = fixture();
+		await expect(office.vault.capture({ ...call(), box: machineBox(office) }, signal())).rejects.toThrow(
+			"Coding value capture unconfirmed",
+		);
+		// A read with both bindings, or part of one, is not the database's.
+		for (const other of [
+			{ companyComputerId: randomUUID(), computerGeneration: 3 },
+			{ bootId: undefined },
+			{ placementId: "not a uuid" },
+		]) {
+			const bad = fixture();
+			bad.read.mockResolvedValue(machineContext(bad, other));
+			await expect(bad.vault.capture({ ...call(), box: machineBox(bad) }, signal())).rejects.toThrow(
+				"Coding value capture unconfirmed",
+			);
+		}
+		for (const g of [f, office]) expect(g.store).not.toHaveBeenCalled();
+	});
+
+	it("checks the key against the service's pattern again, and refuses one read too long ago", async () => {
+		// The helper checked the machine's own copy of the pattern; the database's is the one that counts.
+		const shape = fixture();
+		shape.read.mockResolvedValue(machineContext(shape, { valuePattern: "^npm_[A-Za-z0-9]{37}$" }));
+		expect(await shape.vault.capture({ ...call(), box: machineBox(shape) }, signal())).toEqual({
+			schema: "qorpera.coding-value-refusal/v1",
+			code: "22023",
+			message: "The value read is not a whole key of npm",
+		});
+		const late = fixture({}, { at: now + 90_001 });
+		late.read.mockResolvedValue(machineContext(late));
+		expect(await late.vault.capture({ ...call(), box: machineBox(late) }, signal())).toMatchObject({
+			schema: "qorpera.coding-value-refusal/v1",
+			code: "55000",
+		});
+		for (const f of [shape, late]) expect(f.store).not.toHaveBeenCalled();
 	});
 });
 

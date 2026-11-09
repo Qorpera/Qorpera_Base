@@ -8,5 +8,6 @@ export {
 	drawRecordedEyes,
 	drawWorkingStrokes,
 	loadRecordedMotion,
+	recordedEyesBox,
 } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
 export { createWorkingSchedule, stepKey, workingStep } from "./working-sequence.ts";

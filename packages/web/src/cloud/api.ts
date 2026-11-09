@@ -10,6 +10,14 @@ import {
 } from "./coding-session.ts";
 import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
 import {
+	COMPANY_LOGO_BUCKET,
+	type CompanyLogo,
+	type CompanyLogoChange,
+	isCompanyLogoName,
+	parseCompanyLogoChange,
+	parseCompanyLogos,
+} from "./company-logos.ts";
+import {
 	type FoundingPresenceHandle,
 	type FoundingPresenceListener,
 	joinFoundingPresence,
@@ -31,7 +39,6 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
-import { type CompanyMemory, type CompanyMemoryMode, chooseCompanyMemory, readCompanyMemory } from "./memory-mode.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
@@ -45,6 +52,7 @@ import {
 	parseFriends,
 	parseIncomingInvitations,
 	parseInvitation,
+	parsePausedRunMove,
 	parsePendingSessionInputs,
 	parseProfiles,
 	parseRoomDeliveryRetry,
@@ -134,11 +142,6 @@ export class CloudApi {
 		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
 	}
 
-	/** The company's memory: Agent notebooks or the Shared context beta (C5). Any member may read it. */
-	getCompanyMemory(profileId: string): Promise<CompanyMemory> {
-		return readCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"));
-	}
-
 	/** The company's good will: its months, invoices and the card that pays them. Any member may read it. */
 	getCompanyGoodWill(profileId: string): Promise<CompanyGoodWill> {
 		return readCompanyGoodWill(this.cloud, requiredUuid(profileId, "Profile id"));
@@ -152,11 +155,6 @@ export class CloudApi {
 	/** Stripe's page where a founder saves the card that pays the company's good will. */
 	startGoodWillCard(profileId: string): Promise<string> {
 		return startGoodWillCard(this.cloud, requiredUuid(profileId, "Profile id"));
-	}
-
-	/** Owners and admins choose the memory of runs that start from now on. */
-	setCompanyMemory(profileId: string, mode: CompanyMemoryMode): Promise<CompanyMemory> {
-		return chooseCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"), mode);
 	}
 
 	/** Whether the company is out of computer hours, so new work waits until hours are added
@@ -297,6 +295,67 @@ export class CloudApi {
 		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
 		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).remove([objectName]);
 		if (error) throw error;
+	}
+
+	// Company logos (migration 20260930696000): a PNG drawn from the company folder's QorperaOS/brand/logo.svg, which
+	// members, invitees and friends of members may see; a member who may write the folder publishes it.
+
+	listCompanyLogos(profileIds: readonly string[]): Promise<CompanyLogo[]> {
+		if (profileIds.length > 200) throw new Error("Ask for at most 200 logos at a time.");
+		return this.cloud
+			.rpc("qorpera_company_logos", { p_profile_ids: profileIds.map((id) => requiredUuid(id, "Company id")) })
+			.then(parseCompanyLogos);
+	}
+
+	/** Resolves true when this call stored the PNG, false when it was already there. */
+	async uploadCompanyLogo(objectName: string, picture: Blob): Promise<boolean> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).upload(objectName, picture, {
+			contentType: "image/png",
+			// The name is the SVG's hash, so the drawing behind it never changes.
+			cacheControl: "31536000",
+			upsert: false,
+		});
+		if (!error) return true;
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	/** The PNGs a company's logo folder holds, for a member who may publish its logo (the others see none). */
+	async listCompanyLogoObjects(profileId: string): Promise<{ objectName: string; createdAt: number }[]> {
+		const folder = requiredUuid(profileId, "Company id").toLowerCase();
+		const { data, error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).list(folder, { limit: 100 });
+		if (error) throw error;
+		return (data ?? []).flatMap((item) => {
+			const objectName = `${folder}/${item.name}`;
+			if (!isCompanyLogoName(objectName, folder)) return [];
+			const createdAt = Date.parse(item.created_at ?? "");
+			return [{ objectName, createdAt: Number.isFinite(createdAt) ? createdAt : 0 }];
+		});
+	}
+
+	async downloadCompanyLogo(objectName: string): Promise<Blob> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { data, error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).download(objectName);
+		if (error || !data) throw error ?? new Error("The logo is unavailable.");
+		return data;
+	}
+
+	async deleteCompanyLogo(objectName: string): Promise<void> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).remove([objectName]);
+		if (error) throw error;
+	}
+
+	/** Makes the uploaded PNG the company's logo, or takes it away (`objectName` null) once the folder has none. */
+	publishCompanyLogo(profileId: string, objectName: string | null): Promise<CompanyLogoChange> {
+		if (objectName !== null && !isCompanyLogoName(objectName, profileId)) throw new Error("Invalid logo name.");
+		return this.cloud
+			.rpc("qorpera_publish_company_logo", {
+				p_profile_id: requiredUuid(profileId, "Company id"),
+				p_object_name: objectName,
+			})
+			.then(parseCompanyLogoChange);
 	}
 
 	setMemberPicture(objectName: string): Promise<MemberPictureChange> {
@@ -510,6 +569,17 @@ export class CloudApi {
 				p_sponsor_version: sponsorVersion,
 			})
 			.then((value) => parseRoomDeliveryRetry(value, id));
+	}
+
+	/** The member whose own login pays for a run waiting at its usage limit moves it to another of their logins that can
+	 * pay now (20260930703000): it goes on there at once, from where it stopped. The cloud checks the login is theirs and
+	 * can pay; the run never comes back on the old one. */
+	movePausedRun(runId: string, connectionId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		const connection = requiredUuid(connectionId, "Model account");
+		return this.cloud
+			.rpc("qorpera_move_paused_run", { p_run_id: id, p_connection_id: connection })
+			.then((value) => parsePausedRunMove(value, id, connection));
 	}
 
 	// Conversations

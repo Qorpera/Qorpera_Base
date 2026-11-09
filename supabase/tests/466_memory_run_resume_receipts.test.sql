@@ -8,8 +8,8 @@
 -- neither, until it has recorded that it was told of the unknown one. Then a completed step replays its stored result
 -- (the runtime checks the call's authority around that) and does not run again, the unknown one never runs
 -- again, other inputs under a key are refused, and a new step runs. A run in Agent tree mode with no log, a run out of
--- attempts, a refused run, a run at its usage limit, a narrow run and a coding session's turn keep today's path. The
--- cut-off of a run with a log is 991.
+-- attempts, a refused run, a narrow run and a coding session's turn keep today's path; a run at its usage limit pauses
+-- (20260930703000; 1194 moves and resumes one). The cut-off of a run with a log is 991.
 
 -- An attempt's native start, as the runner records it (as 991 does).
 create function pg_temp.rr_begin(p_binding jsonb) returns jsonb language plpgsql as $$
@@ -163,7 +163,16 @@ select pg_temp.rr_fail(current_setting('qorpera_test.base_binding')::jsonb, 'Nat
 select pg_temp.rr_today('a refused run does not resume') \g /dev/null
 rollback to savepoint rr_refused;
 
--- A run at its login's usage limit ends as before: no pause, and its lease running out after the limit neither.
+-- A run at its login's usage limit pauses on the same login until the reset (20260930703000; it ended here before), and so
+-- does one whose lease runs out after the limit.
+create function pg_temp.rr_paused(p_message text) returns void language plpgsql as $$
+begin
+	perform pg_temp.base_assert((select status = 'queued' and dispatch_deferred_until > clock_timestamp() + interval '29 hours'
+			from public.qorpera_runner_jobs where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid)
+		and pg_temp.rr_events(pg_temp.rr_run(), 'run_paused') = 1 and pg_temp.rr_events(pg_temp.rr_run(), 'run_cut_off') = 0
+		and pg_temp.rr_events(pg_temp.rr_run(), 'review_pending') = 0, p_message);
+end
+$$;
 savepoint rr_limit;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
@@ -171,7 +180,7 @@ begin
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_record_provider_usage_signal(v_binding, 'usage_limit', clock_timestamp() + interval '30 hours');
 	perform pg_temp.rr_fail(v_binding, 'Native provider bridge request failed (429) [usage limit]');
-	perform pg_temp.rr_today('a run at its usage limit fails');
+	perform pg_temp.rr_paused('a run at its usage limit pauses');
 end
 $$;
 rollback to savepoint rr_limit;
@@ -182,7 +191,7 @@ begin
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_record_provider_usage_signal(v_binding, 'usage_limit', clock_timestamp() + interval '30 hours');
 	perform pg_temp.rr_expire((v_binding ->> 'jobId')::uuid);
-	perform pg_temp.rr_today('a run cut off after its usage limit fails');
+	perform pg_temp.rr_paused('a run cut off after its usage limit pauses');
 end
 $$;
 rollback to savepoint rr_limit_cut_off;

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { fmtTime } from "../src/ui/dom.ts";
-import { codingFailureReason, runFailureInterrupted, runFailureReason } from "../src/ui/run-failure.ts";
+import {
+	codingFailureReason,
+	runFailureInterrupted,
+	runFailureReason,
+	runWaitingReason,
+} from "../src/ui/run-failure.ts";
 
 // The runner's own failure when the cloud refuses a run's completion for good (runtime cloud-runner-worker.ts).
 const COMPLETION_REFUSED =
@@ -196,6 +201,52 @@ describe("why a run stopped, in the member's words", () => {
 		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
 		expect(runFailureReason(refused, "failed", false, { own: true, resetsAt: reset })).toMatch(PROVIDER_REFUSED);
 		expect(runFailureReason(budget, "failed", false, { own: true, resetsAt: reset })).toMatch(QORPERA_REFUSED);
+	});
+
+	it("offers the member whose own login paid to continue with another of theirs, and tells anyone else who can", () => {
+		const budget = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED");
+		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		const stopped = "The model account paying for this work reached its usage limit, so the work stopped.";
+		// The card offers their other logins: the work waits for the reset, or goes on now by their pick.
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset, continuable: true })).toBe(
+			`${stopped} It can run again when the limit resets (${fmtTime(reset)}), or you can continue it now with another of your logins.`,
+		);
+		expect(runFailureReason(budget, "failed", true, { own: true, continuable: true })).toBe(
+			`${stopped} It can run again once the limit resets, or you can continue it now with another of your logins.`,
+		);
+		// No other login of theirs can pay now: the work waits, as before.
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset, continuable: false })).toBe(
+			`${stopped} It does not move to another account. It can run again when the limit resets (${fmtTime(reset)}).`,
+		);
+		// Anyone else reads who can continue it, never an offer of their own.
+		expect(runFailureReason(budget, "failed", true, { own: false, payerName: "Anna", continuable: true })).toBe(
+			`${stopped} It can run again once the limit resets. Only Anna can continue it now with another of their logins.`,
+		);
+		expect(runFailureReason(budget, "failed", true, { continuable: true })).toBe(
+			`${stopped} It does not move to another account. It can run again once the limit resets.`,
+		);
+		// Another failure never reads as continuable.
+		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+		expect(runFailureReason(refused, "failed", false, { own: true, continuable: true })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(refused, "failed", false, { own: false, payerName: "Anna" })).toMatch(
+			PROVIDER_REFUSED_FOR_OTHERS,
+		);
+	});
+
+	it("says a waiting run goes on by itself at the reset, and who may continue it now (20260930703000)", () => {
+		const until = new Date(Date.now() + 30 * 3_600_000).toISOString();
+		const waits = `The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets (${fmtTime(until)})`;
+		expect(runWaitingReason(until, { own: true, continuable: true })).toBe(
+			`${waits}, or you can continue it now with another of your logins.`,
+		);
+		expect(runWaitingReason(until, { own: true })).toBe(`${waits}.`);
+		expect(runWaitingReason(until, { own: false, payerName: "Anna" })).toBe(
+			`${waits}. Only Anna can continue it now with another of their logins.`,
+		);
+		// The member's own login names no one; anyone else with no name reads the plain words.
+		expect(runWaitingReason(until, { own: true, payerName: "Anna" })).toBe(`${waits}.`);
+		expect(runWaitingReason(until)).toBe(`${waits}.`);
+		expect(runWaitingReason(until, { continuable: true })).toBe(`${waits}.`);
 	});
 
 	it("asks the member whose own login paid to check it, and tells anyone else who can", () => {

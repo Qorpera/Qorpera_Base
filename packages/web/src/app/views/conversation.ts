@@ -7,6 +7,7 @@ import {
 	interfaceChangeUndoable,
 } from "../../cloud/interface-changes.ts";
 import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
+import { planLogin } from "../../cloud/native-subscription.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -17,7 +18,7 @@ import {
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
@@ -56,11 +57,13 @@ import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import {
+	classifyRunFailure,
 	manageUsageLink,
 	planUsageLimitReason,
 	runFailureCard,
 	runFailureInterrupted,
 	runFailureReason,
+	runWaitingReason,
 } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
@@ -238,6 +241,12 @@ export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 /** What an agent's card can open in the agent's chat. */
 export type AgentPage = "computer" | "wall";
 
+/** The login a stopped run's "Continue with …" picked: its message is sent on that login only. */
+interface ContinueLogin {
+	runId: string;
+	connectionId: string;
+}
+
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
@@ -274,6 +283,8 @@ export class ConversationView {
 	#cannotSend = true;
 	#submitting = false;
 	#working = false;
+	/** The agent's run waits at its login's usage limit (20260930703000): it shows no work, but it may be stopped. */
+	#waitingRun = false;
 	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
@@ -288,7 +299,9 @@ export class ConversationView {
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
-	#sendSoon: { text: string; answering?: string; files: readonly File[]; until: number } | undefined;
+	#sendSoon:
+		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
+		| undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -385,6 +398,10 @@ export class ConversationView {
 	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
+	/** The login a stopped run's card is continuing its work with now ("Continue with …"). */
+	#continuing: { runId: string; connectionId: string } | undefined;
+	/** What the card says after its last pick: that it failed, or that the member's own message continues the work. */
+	#continueNote: { runId: string; text: string } | undefined;
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
@@ -1503,7 +1520,12 @@ export class ConversationView {
 		// The run controller reports once while this view is still being built.
 		if (this.#disposed || !this.#send) return;
 		const empty = !this.#composer.value.trim() && !this.#attachments.count;
-		const stop = empty && this.#working && (this.#run?.stoppable === true || this.#run?.stopping === true);
+		// A run waiting at its login's usage limit is no work in progress, yet it holds the conversation until it goes on:
+		// the member may stop it as they stop a working run (20260930703000).
+		const stop =
+			empty &&
+			(this.#working || this.#waitingRun) &&
+			(this.#run?.stoppable === true || this.#run?.stopping === true);
 		if (stop !== this.#stopMode) {
 			this.#stopMode = stop;
 			replace(this.#send, stop ? h("span", { class: "composer-stop", "aria-hidden": "true" }) : icon("send"));
@@ -1800,7 +1822,8 @@ export class ConversationView {
 		return parts;
 	}
 
-	#submit(): void {
+	/** Sends the composer's message. `login`: a stopped run's "Continue with …" sends it only on that login. */
+	#submit(login?: ContinueLogin): void {
 		const text = this.#composer.value;
 		this.#sendSoon = undefined;
 		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
@@ -1810,6 +1833,7 @@ export class ConversationView {
 				...(answering ? { answering } : {}),
 				files: [...(attachments ?? [])],
 				until: Date.now() + 2000,
+				...(login ? { login } : {}),
 			};
 			return;
 		}
@@ -1846,6 +1870,16 @@ export class ConversationView {
 					files.some((file, index) => file !== currentFiles[index])
 				)
 					return;
+				// The account check chose another login meanwhile (another tab's pick, or the cloud's): "Continue with …"
+				// never sends on a login the member did not pick there. Its words leave the composer, and the card says so.
+				if (login && current.executionSponsor?.connectionId !== login.connectionId) {
+					this.#continueNote = { runId: login.runId, text: t("The login could not be chosen. Try again.") };
+					this.#edits.declare(0, this.#composer.value.length);
+					this.#composer.value = "";
+					this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+					return;
+				}
+				// Read at once by the send, before anything else may run: the message goes on this login.
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
 					if (answered) this.#wall.answerSent(answered);
@@ -1925,6 +1959,7 @@ export class ConversationView {
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
 		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
 		this.#syncWall(
@@ -1966,7 +2001,7 @@ export class ConversationView {
 				soon.files.every((file, index) => file === files[index]) &&
 				Date.now() <= soon.until
 			)
-				queueMicrotask(() => this.#submit());
+				queueMicrotask(() => this.#submit(soon.login));
 		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
@@ -3508,10 +3543,14 @@ export class ConversationView {
 
 	#renderRunNotification(session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
-		const failed =
-			this.#isRoom || company.accessLost || !company.team?.capabilities.read
-				? undefined
-				: this.#company.failedRunFor(session?.staffAgentId);
+		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
+		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
+		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
+		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
+		if (waiting?.paused && (!failed || failed.earlier)) {
+			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
+			return;
+		}
 		const runId = failed?.activity.runId;
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
@@ -3535,18 +3574,50 @@ export class ConversationView {
 			recovery?.usageLimit === true &&
 			recovery.paidByChatgptPlan === true &&
 			recovery.requestedByUserId === this.#company.userId.toLowerCase();
+		const payer = recovery ? this.#execution?.payer(recovery.sponsorBindingId) : undefined;
+		const usageLimit =
+			recovery !== undefined &&
+			!proposalId &&
+			!review &&
+			classifyRunFailure(recovery.lastError, recovery.jobStatus, recovery.usageLimit) === "usage_limit";
+		// The work never moves by itself: the member whose own login paid may continue it with another login of theirs
+		// that can pay now, by their own pick here (never off a ChatGPT plan). Their next message here runs on it.
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		const logins =
+			usageLimit &&
+			payer?.own === true &&
+			recovery?.paidByChatgptPlan !== true &&
+			canWrite &&
+			this.#actions.sendMessage &&
+			runId
+				? (this.#execution?.continueLogins(recovery?.sponsorBindingId) ?? [])
+				: [];
+		// Anyone else reads who can: the member the run was started for, whose login pays for it.
+		const payerId = recovery?.requestedByUserId?.toLowerCase();
+		// Never for a ChatGPT plan: no other login continues its work (its member reads OpenAI's words).
+		const payerName =
+			usageLimit &&
+			payer?.own !== true &&
+			recovery?.paidByChatgptPlan !== true &&
+			payerId &&
+			payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
 		const reason = proposalId
 			? t("Its changes wait for your decision.")
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(
-							recovery.lastError,
-							recovery.jobStatus,
-							recovery.usageLimit,
-							this.#execution?.payer(recovery.sponsorBindingId),
-						)
+					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
+							...payer,
+							...(logins.length ? { continuable: true } : {}),
+							...(payerName ? { payerName } : {}),
+						})
 					: undefined;
+		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
+		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
+		// Picks wait while the logins are read or a message is on its way.
+		const continueWaiting = logins.length > 0 && this.#execution?.locked === true;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
 		const canRetry =
@@ -3566,11 +3637,17 @@ export class ConversationView {
 			retryState,
 			canRetry,
 			ownPlanLimit,
+			logins,
+			continuing,
+			continueNote,
+			continueWaiting,
 		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
 		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		// A "Continue with …" button keeps focus on its own login.
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -3616,23 +3693,176 @@ export class ConversationView {
 						retryError: retryState?.error,
 						dismiss,
 						action,
+						...(logins.length || continueNote
+							? {
+									continueWith: {
+										logins,
+										choose: (connectionId: string) => {
+											if (runId) void this.#continueRun(runId, connectionId);
+										},
+										...(continuing ? { continuing } : {}),
+										...(continueWaiting ? { waiting: true } : {}),
+										...(continueNote ? { note: continueNote } : {}),
+									},
+								}
+							: {}),
 					}),
 		);
-		if (focused) {
-			if (!hidden)
-				(
-					(focusedAction
-						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
-						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
-				)?.focus({ preventScroll: true });
-			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
-				this.#panel?.focus();
-			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
-			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
-			else {
-				this.el.tabIndex = -1;
-				this.el.focus({ preventScroll: true });
-			}
+		if (focused) this.#refocusRunNotification(Boolean(hidden), focusedAction, focusedLogin);
+	}
+
+	/** Focus stays on the card's line after a redraw: on the same button (the same login's "Continue with …"), else its
+	 * first one; when the line went away, on what holds focus next. */
+	#refocusRunNotification(hidden: boolean, focusedAction: string | undefined, focusedLogin: string | undefined): void {
+		if (!hidden)
+			(
+				(focusedAction && focusedLogin
+					? this.#runNotification.querySelector<HTMLElement>(
+							`[data-action="${focusedAction}"][data-connection-id="${focusedLogin}"]`,
+						)
+					: null) ??
+				(focusedAction
+					? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+					: null) ??
+				this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+			)?.focus({ preventScroll: true });
+		else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered")) this.#panel?.focus();
+		else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+		else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+		else {
+			this.el.tabIndex = -1;
+			this.el.focus({ preventScroll: true });
 		}
+	}
+
+	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
+	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
+	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
+	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
+	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
+		const company = this.#company.store.get();
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
+		const payer = this.#execution?.payer(paused.sponsorBindingId);
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		// Only where the cloud can make the move (qorpera_move_paused_run): never a routine's run or one that no longer
+		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
+		// paying one may.
+		const logins =
+			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+				? (this.#execution?.continueLogins(
+						paused.sponsorBindingId,
+						(connection) =>
+							!planLogin(connection) && (!paused.paidWhileAway || connection.allowAutonomous === true),
+					) ?? [])
+				: [];
+		const payerId = paused.requestedByUserId?.toLowerCase();
+		const payerName =
+			payer?.own !== true && !paused.paidByChatgptPlan && payerId && payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
+		const title = t("{name} is waiting to go on", { name: agentName });
+		const reason = runWaitingReason(paused.until, {
+			...payer,
+			...(logins.length ? { continuable: true } : {}),
+			...(payerName ? { payerName } : {}),
+		});
+		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
+		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
+		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
+		this.#runNotification.hidden = false;
+		replace(
+			this.#runNotification,
+			runFailureCard({
+				title,
+				reason,
+				...(logins.length || note
+					? {
+							continueWith: {
+								logins,
+								choose: (connectionId: string) => void this.#movePausedRun(runId, connectionId),
+								...(moving ? { continuing: moving } : {}),
+								...(note ? { note } : {}),
+							},
+						}
+					: {}),
+			}),
+		);
+		if (focused) this.#refocusRunNotification(false, focusedAction, focusedLogin);
+	}
+
+	/** "Continue with …" on a waiting run: the member's own move of it to that login, which the cloud checks is theirs and
+	 * can pay. The run goes on there at once; the line goes with the next read of the agents' activity. */
+	async #movePausedRun(runId: string, connectionId: string): Promise<void> {
+		if (this.#continuing || this.#disposed) return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		try {
+			await this.#company.movePausedRun(runId, connectionId);
+		} catch {
+			if (!this.#disposed) this.#continueNote = { runId, text: t("The work could not be moved. Try again.") };
+		} finally {
+			this.#continuing = undefined;
+			if (!this.#disposed) this.update();
+		}
+	}
+
+	/** "Continue with …" on a run that stopped at its login's usage limit: the member's own pick of that login for this
+	 * conversation, as the Login page picks it, then their message asking the agent to go on, which runs on that login
+	 * (a member continues by sending a message, as in a coding session). A message the member has started here is never
+	 * replaced: it stays for them to send, and the card says so. Nothing moves without this click. */
+	async #continueRun(runId: string, connectionId: string): Promise<void> {
+		const execution = this.#execution;
+		const account = execution?.logins.find((login) => login.connectionId === connectionId)?.account;
+		if (
+			!execution ||
+			!account ||
+			this.#continuing ||
+			this.#submitting ||
+			this.#disposed ||
+			!this.#actions.sendMessage
+		)
+			return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		let moved = false;
+		try {
+			moved = await execution.continueWith(connectionId);
+		} finally {
+			this.#continuing = undefined;
+		}
+		if (this.#disposed) return;
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const started =
+			Boolean(this.#composer.value.trim()) ||
+			Boolean(conversation.draft?.trim()) ||
+			Boolean(conversation.attachments?.length) ||
+			Boolean(conversation.answering) ||
+			conversation.sending ||
+			Boolean(conversation.retrySend);
+		if (!moved || started) {
+			this.#continueNote = {
+				runId,
+				text: moved
+					? t("Send your message to continue with {account}.", { account })
+					: t("The login could not be chosen. Try again."),
+			};
+			this.update();
+			if (moved && !this.#composer.disabled) this.#composer.focus({ preventScroll: true });
+			return;
+		}
+		this.#edits.declare(0, this.#composer.value.length);
+		this.#composer.value = t(
+			"Your last run stopped because a login reached its usage limit. Please continue that work.",
+		);
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+		this.update();
+		this.#submit({ runId, connectionId });
 	}
 }

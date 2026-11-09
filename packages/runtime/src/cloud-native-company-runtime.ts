@@ -51,7 +51,8 @@ import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
-import { cloudMachineTools } from "./cloud-machine-tools.ts";
+import { type CloudMachineCodingValues, cloudMachineTools } from "./cloud-machine-tools.ts";
+import { cloudMemberOfferTools } from "./cloud-member-offer-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
@@ -175,6 +176,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
@@ -204,6 +206,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
+		 * save_coding_value. */
+		codingValues?: CloudMachineCodingValues;
 		/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
 		 * run (legacy sweep step C, C-P1). */
 		folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
@@ -227,6 +232,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
+		this.#codingValues = options.codingValues;
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
 	}
@@ -1027,6 +1033,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
 											// an agent owns the company's money.
 											...cloudGoodWillTools(binding, identity, this.#paths),
+											// The Co-Founder deals the team out between the members (20260930702000).
+											...(context.agentKind === "cofounder"
+												? cloudMemberOfferTools(binding, identity, this.#paths)
+												: []),
 											// The agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(binding, identity, this.#paths, folder.client),
 											// Company sites (20260930550000): a static website from the company folder at a
@@ -1051,6 +1061,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											operations,
 											gateway: machineGateway,
 											worker: work.isWorker,
+											...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
 										})
 									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,

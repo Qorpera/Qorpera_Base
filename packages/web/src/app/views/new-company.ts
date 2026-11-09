@@ -279,7 +279,14 @@ class NewCompanyView {
 		if (statusKey !== this.#statusKey) {
 			this.#statusKey = statusKey;
 			const parts: HTMLElement[] = [];
-			if (busy) parts.push(spinner(t("Opening a table for {name}", { name: state.creating!.name })));
+			if (busy)
+				parts.push(
+					spinner(
+						state.creating!.intent === "start"
+							? t("Starting {name}", { name: state.creating!.name })
+							: t("Opening a table for {name}", { name: state.creating!.name }),
+					),
+				);
 			else if (paused) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
 			if (state.error) parts.push(notice("danger", state.error));
 			if (state.creationRetry && !busy) {
