@@ -2301,8 +2301,28 @@ describe("a run waiting at its login's usage limit", () => {
 		sourceKind: "wake",
 		jobStatus: "queued",
 		activity: "waiting",
-		paused: { until, sponsorBindingId, requestedByUserId: userA.id, paidByChatgptPlan: false, ...extra },
+		paused: {
+			until,
+			sponsorBindingId,
+			requestedByUserId: userA.id,
+			paidByChatgptPlan: false,
+			paidWhileAway: true,
+			movable: true,
+			...extra,
+		},
 		updatedAt: timestamp,
+	});
+	/** The member's logins as the list reads them, each allowed to work while they are away unless said otherwise. */
+	const away = (
+		observed: NativeExecutionConnections,
+		extra: Record<string, unknown>[] = [],
+	): NativeExecutionConnections => ({
+		...observed,
+		connections: observed.connections.map((connection, index) => ({
+			...connection,
+			allowAutonomous: true,
+			...extra[index],
+		})),
 	});
 	const title = (view: ConversationView) => view.el.querySelector(".run-failure-title")?.textContent;
 	const reason = (view: ConversationView) => view.el.querySelector(".run-failure-reason")?.textContent;
@@ -2313,7 +2333,7 @@ describe("a run waiting at its login's usage limit", () => {
 
 	it("offers the member whose login pays to move it, and moves the run itself with one click", async () => {
 		// The first login (connection id(90), binding id(100)) pays and is at its limit; the second has room.
-		const f = setup(false, withUsage([0, 40]));
+		const f = setup(false, away(withUsage([0, 40])));
 		await settle();
 		const move = vi.spyOn(f.api, "movePausedRun").mockResolvedValue(undefined);
 		f.company.store.set({ activity: [paused(id(100))] });
@@ -2334,7 +2354,7 @@ describe("a run waiting at its login's usage limit", () => {
 	});
 
 	it("says so when the move is refused, and keeps the line", async () => {
-		const f = setup(false, withUsage([0, 40]));
+		const f = setup(false, away(withUsage([0, 40])));
 		await settle();
 		vi.spyOn(f.api, "movePausedRun").mockRejectedValue(new Error("This login cannot pay for this work now"));
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([paused(id(100))]);
@@ -2347,14 +2367,14 @@ describe("a run waiting at its login's usage limit", () => {
 	});
 
 	it("offers nothing to anyone else, nor for a ChatGPT plan, nor without another login that can pay", async () => {
-		const f = setup(false, withUsage([0, 0]));
+		const f = setup(false, away(withUsage([0, 0])));
 		await settle();
 		f.company.store.set({ activity: [paused(id(100))] });
 		await settle();
 		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
 		expect(buttons(f.view)).toEqual([]);
 		// Another member's login pays: the line names who can move it.
-		f.listConnections.mockResolvedValue(withUsage([40, 40]));
+		f.listConnections.mockResolvedValue(away(withUsage([40, 40])));
 		refresh();
 		await settle();
 		f.company.store.set({
@@ -2394,8 +2414,35 @@ describe("a run waiting at its login's usage limit", () => {
 		expect(continueButton(f.view)).toBeNull();
 	});
 
+	it("offers only logins the move can use, and none for work that cannot move", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		// A routine's run, or one that no longer resumes: the cloud never moves it.
+		f.company.store.set({ activity: [paused(id(100), { movable: false })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(continueButton(f.view)).toBeNull();
+		// A login that may not work while the member is away never takes over a login that may.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { allowAutonomous: false }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+		// Never onto a ChatGPT plan.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { loginKind: "chatgpt_plan" }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+	});
+
 	it("shows above an earlier failure, and the failure again once the run goes on", async () => {
-		const f = setup(false, withUsage([0, 40]));
+		const f = setup(false, away(withUsage([0, 40])));
 		await settle();
 		const earlier: HostedStaffExecutionActivity = {
 			runId: id(173),

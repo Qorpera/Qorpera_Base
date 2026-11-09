@@ -2500,8 +2500,9 @@ ended, failed and waiting for review. Now:
   (its session's next turn waits instead), a run in tree mode with no log, one
   out of attempts or with an unsettled step. Its card, its agent and the
   usage-limit notice say that the work stopped and does not go on by itself.
-- While it waits, it holds its conversation (one run at a time, 20260930538000),
-  and the agents' activity says until when and whose login pays.
+- While it waits, it holds its conversation (one run at a time, 20260930538000);
+  its members may stop it as they stop a working run. The agents' activity says
+  until when, whose login pays and whether its member may move it.
 - The member whose own login pays for a waiting run may move it, by their own
   pick, to another of their logins that can pay now, on the run's own computer
   identity: never onto or off a ChatGPT plan, never from a login that may work

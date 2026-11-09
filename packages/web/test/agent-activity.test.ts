@@ -248,12 +248,16 @@ describe("shared agent activity", () => {
 			sponsor_binding_id: id(93).toUpperCase(),
 			requested_by_user_id: id(94),
 			paid_by_chatgpt_plan: false,
+			paid_while_away: true,
+			movable: true,
 		};
 		expect(parseStaffExecutionActivity([{ ...row, ...pause }])[0]?.paused).toEqual({
 			until: "2099-01-01T00:00:00Z",
 			sponsorBindingId: id(93),
 			requestedByUserId: id(94),
 			paidByChatgptPlan: false,
+			paidWhileAway: true,
+			movable: true,
 		});
 		// An older cloud, or a run that does not wait: nothing.
 		expect(parseStaffExecutionActivity([row])[0]).not.toHaveProperty("paused");
@@ -262,6 +266,8 @@ describe("shared agent activity", () => {
 			{ ...row, ...pause, job_status: "leased", activity: "working" },
 			{ ...row, ...pause, sponsor_binding_id: "not-a-uuid" },
 			{ ...row, ...pause, paid_by_chatgpt_plan: "no" },
+			{ ...row, ...pause, movable: undefined },
+			{ ...row, ...pause, paid_while_away: null },
 			{ ...row, ...pause, paused_until: "soon" },
 		])
 			expect(() => parseStaffExecutionActivity([entry])).toThrow();
@@ -275,7 +281,13 @@ describe("shared agent activity", () => {
 			sourceKind: "wake",
 			jobStatus: "queued",
 			activity: "waiting",
-			paused: { until: "2099-01-01T00:00:00Z", sponsorBindingId: id(93), paidByChatgptPlan: false },
+			paused: {
+				until: "2099-01-01T00:00:00Z",
+				sponsorBindingId: id(93),
+				paidByChatgptPlan: false,
+				paidWhileAway: true,
+				movable: true,
+			},
 			updatedAt: timestamp,
 		};
 		f.company.store.set({ activity: [paused] });

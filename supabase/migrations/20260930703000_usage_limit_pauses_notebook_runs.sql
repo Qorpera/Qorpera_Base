@@ -22,8 +22,9 @@
 --   (qorpera_execution_run_payer_moves); the wake's identity guard admits exactly that recorded move, as it admits a
 --   recorded sponsor handoff. The run then goes on at once from its receipts or log on the chosen login, so it never
 --   also comes back later on the old one.
--- * The agents' activity says when a run waits for a usage limit, until when, and whose login pays (paused_until,
---   sponsor_binding_id, requested_by_user_id, paid_by_chatgpt_plan), so the thread can say so and offer the move.
+-- * The agents' activity says when a run waits for a usage limit, until when, whose login pays and whether its member may
+--   move it (paused_until, sponsor_binding_id, requested_by_user_id, paid_by_chatgpt_plan, paid_while_away, movable), so
+--   the thread can say so and offer the move only where it can be made.
 -- * A worker whose run still stops at a usage limit tells its agent that the work stopped and does not go on by itself
 --   (qorpera_worker_usage_limit_text); the usage-limit notice says whether its run stopped (run_stopped).
 -- Locks: the move takes the job FOR UPDATE, then the run, the wake, the reservation and the target connection, in the
@@ -80,16 +81,27 @@ language sql stable security definer set search_path = '' as $$
 $$;
 
 -- What the agents' activity says of a run waiting for a usage limit: until when, the login (binding) that pays, the member
--- it was started for, and whether a ChatGPT plan pays. Empty for any other run.
+-- it was started for, whether a ChatGPT plan pays, whether its login may work while that member is away, and whether its
+-- member may move it at all (qorpera_move_paused_run's own conditions on the run: a member's login, no routine's run,
+-- one that still resumes). Empty for any other run.
 create function public.qorpera_run_usage_pause_json(p_run_id uuid)
 returns jsonb
 language sql stable security definer set search_path = '' as $$
 	-- 20260930703000
 	select coalesce((select jsonb_build_object('paused_until', pause.until, 'sponsor_binding_id', run.sponsor_binding_id,
-			'requested_by_user_id', run.requested_by_user_id,
-			'paid_by_chatgpt_plan', public.qorpera_sponsor_version_is_chatgpt_plan(run.sponsor_binding_id, run.sponsor_version))
+			'requested_by_user_id', run.requested_by_user_id, 'paid_by_chatgpt_plan', plan.paid,
+			'paid_while_away', sponsor.allow_autonomous,
+			'movable', sponsor.sponsor_kind = 'member_connection' and not plan.paid
+				and exists (select 1 from public.qorpera_wake_occurrences as wake where wake.run_id = run.id
+					and wake.wake_kind <> 'routine' and wake.sponsor_binding_id = run.sponsor_binding_id
+					and wake.sponsor_version = run.sponsor_version)
+				and public.qorpera_run_resumes_from_log(run.id))
 		from public.qorpera_execution_runs as run
+		join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = run.sponsor_binding_id
+			and sponsor.version = run.sponsor_version
 		cross join lateral (select public.qorpera_run_usage_pause(run.id) as until) as pause
+		cross join lateral (select public.qorpera_sponsor_version_is_chatgpt_plan(run.sponsor_binding_id, run.sponsor_version)
+			as paid) as plan
 		where run.id = p_run_id and pause.until is not null), '{}'::jsonb)
 $$;
 

@@ -458,7 +458,12 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 	if (activity.paused_until === undefined || activity.paused_until === null) return {};
 	if (activity.job_status !== "queued") throw new CloudShapeError("a paused run that is not queued");
-	if (typeof activity.paid_by_chatgpt_plan !== "boolean") throw new CloudShapeError("paused run plan");
+	if (
+		typeof activity.paid_by_chatgpt_plan !== "boolean" ||
+		typeof activity.paid_while_away !== "boolean" ||
+		typeof activity.movable !== "boolean"
+	)
+		throw new CloudShapeError("paused run payer");
 	return {
 		paused: {
 			until: timestamp(activity.paused_until, "activity pause time"),
@@ -467,6 +472,8 @@ function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 				? {}
 				: { requestedByUserId: uuid(activity.requested_by_user_id, "paused run member") }),
 			paidByChatgptPlan: activity.paid_by_chatgpt_plan,
+			paidWhileAway: activity.paid_while_away,
+			movable: activity.movable,
 		},
 	};
 }

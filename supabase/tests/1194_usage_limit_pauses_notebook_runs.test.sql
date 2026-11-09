@@ -74,7 +74,8 @@ begin
 			and (v_row ->> 'paused_until')::timestamptz = (pg_temp.np_job()).dispatch_deferred_until
 			and v_row ->> 'sponsor_binding_id' = current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id'
 			and v_row ->> 'requested_by_user_id' = '92400000-0000-4000-8000-000000000001'
-			and v_row -> 'paid_by_chatgpt_plan' = 'false', 'the activity says the run waits: ' || coalesce(v_row::text, 'none'));
+			and v_row -> 'paid_by_chatgpt_plan' = 'false' and v_row -> 'paid_while_away' = 'true' and v_row -> 'movable' = 'true',
+			'the activity says the run waits: ' || coalesce(v_row::text, 'none'));
 	end loop;
 	perform pg_temp.base_assert(not has_function_privilege('authenticated', 'public.qorpera_run_usage_pause(uuid)', 'EXECUTE')
 		and not has_function_privilege('authenticated', 'public.qorpera_run_usage_pause_json(uuid)', 'EXECUTE')
@@ -84,6 +85,14 @@ begin
 		'only the move is a member''s call');
 end
 $$;
+
+-- A run that no longer resumes (made narrow by its machine) waits, but is not to be moved: the activity says so.
+savepoint np_narrow;
+create or replace function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
+returns boolean language sql stable set search_path = '' as $$ select true $$;
+select pg_temp.base_assert(pg_temp.np_activity('92400000-0000-4000-8000-000000000001') -> 'movable' = 'false',
+	'a narrow run is not movable') \g /dev/null
+rollback to savepoint np_narrow;
 
 -- 3. The owner's second login, signed in as the first was and consented for unattended work, with its own sponsor.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');

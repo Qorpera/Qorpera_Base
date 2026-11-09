@@ -250,6 +250,10 @@ export interface PausedRun {
 	/** The member the run was started for, whose login pays for it. */
 	requestedByUserId?: string;
 	paidByChatgptPlan: boolean;
+	/** The login that pays may work while its member is away: only such a login of theirs may take the run over. */
+	paidWhileAway: boolean;
+	/** Its member may move it at all: a member's own login pays, it is no routine's run, and it still resumes. */
+	movable: boolean;
 }
 
 /** A worker's own run, for a member's Stop (qorpera_get_worker_run_control; gap 4b, 20260930002800). */

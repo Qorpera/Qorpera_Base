@@ -7,6 +7,7 @@ import {
 	interfaceChangeUndoable,
 } from "../../cloud/interface-changes.ts";
 import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
+import { planLogin } from "../../cloud/native-subscription.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -282,6 +283,8 @@ export class ConversationView {
 	#cannotSend = true;
 	#submitting = false;
 	#working = false;
+	/** The agent's run waits at its login's usage limit (20260930703000): it shows no work, but it may be stopped. */
+	#waitingRun = false;
 	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
@@ -1517,7 +1520,12 @@ export class ConversationView {
 		// The run controller reports once while this view is still being built.
 		if (this.#disposed || !this.#send) return;
 		const empty = !this.#composer.value.trim() && !this.#attachments.count;
-		const stop = empty && this.#working && (this.#run?.stoppable === true || this.#run?.stopping === true);
+		// A run waiting at its login's usage limit is no work in progress, yet it holds the conversation until it goes on:
+		// the member may stop it as they stop a working run (20260930703000).
+		const stop =
+			empty &&
+			(this.#working || this.#waitingRun) &&
+			(this.#run?.stoppable === true || this.#run?.stopping === true);
 		if (stop !== this.#stopMode) {
 			this.#stopMode = stop;
 			replace(this.#send, stop ? h("span", { class: "composer-stop", "aria-hidden": "true" }) : icon("send"));
@@ -1951,6 +1959,7 @@ export class ConversationView {
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
 		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
 		this.#syncWall(
@@ -3735,10 +3744,16 @@ export class ConversationView {
 		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
 		const payer = this.#execution?.payer(paused.sponsorBindingId);
 		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
-		// Never off a ChatGPT plan: its work stays on it.
+		// Only where the cloud can make the move (qorpera_move_paused_run): never a routine's run or one that no longer
+		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
+		// paying one may.
 		const logins =
-			payer?.own === true && !paused.paidByChatgptPlan && canWrite
-				? (this.#execution?.continueLogins(paused.sponsorBindingId) ?? [])
+			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+				? (this.#execution?.continueLogins(
+						paused.sponsorBindingId,
+						(connection) =>
+							!planLogin(connection) && (!paused.paidWhileAway || connection.allowAutonomous === true),
+					) ?? [])
 				: [];
 		const payerId = paused.requestedByUserId?.toLowerCase();
 		const payerName =
