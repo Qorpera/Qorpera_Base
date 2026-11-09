@@ -1199,6 +1199,41 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
 		});
 
+		it("never starts over an invitation sent while Ready was out: the table shows", async () => {
+			const { api, cloud } = fixture();
+			const calls: string[] = [];
+			let ready = false;
+			const dag = {
+				userId: id(903),
+				displayName: "Dag",
+				state: "invited",
+				role: "",
+				invitedByUserId: me,
+				ready: false,
+				modelLoginReady: false,
+				creator: false,
+			};
+			vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+				calls.push(name);
+				if (name === "qorpera_set_founder_ready") ready = true;
+				const anna = { ...(wire().seats as Wire[])[0], modelLoginReady: true, ready };
+				// Another tab invited Dag while Ready was on its way: Ready's answer has him, at the same revision.
+				return wire({
+					seats: ready ? [anna, dag] : [anna],
+					waitingFor: ready ? [] : [me],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: ready },
+				});
+			});
+			setFoundingIntent(table, { start: true });
+			const controller = open(api);
+			await settle();
+			await settle();
+			expect(calls).toContain("qorpera_set_founder_ready");
+			expect(calls).not.toContain("qorpera_start_company_founding");
+			expect(controller.store.get().autoStart).toBe(false);
+			expect(container.querySelector("textarea.founding-vision")).not.toBeNull();
+		});
+
 		it("shows the table when someone else sits at it", async () => {
 			const { api, cloud } = fixture();
 			const calls: string[] = [];

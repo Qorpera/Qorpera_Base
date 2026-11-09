@@ -396,8 +396,10 @@ export class FoundingController {
 			return;
 		}
 		this.#autoStarting = true;
-		// Started, or not: either way it is over (a start that failed leaves the table, with what went wrong).
-		void this.startAlone(table.revision).then(() => {
+		// Started, or not: either way it is over (a start that failed leaves the table, with what went wrong). An
+		// invitation sent from another tab while Ready was out does not move the revision, and Start would withdraw
+		// it: the table Ready answered with must still be yours alone.
+		void this.startAlone(table.revision, (now) => now.seats.length === 1).then(() => {
 			this.#autoStarting = false;
 			if (!this.disposed) this.#endAutoStart();
 		});
@@ -516,14 +518,16 @@ export class FoundingController {
 		});
 	}
 
-	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. */
-	async startAlone(seenRevision: number): Promise<void> {
+	/** Alone at the table, Start is one press: Ready on the table as you see it, then Start. `onlyIf` checks the
+	 * table Ready answered with before Start goes out. */
+	async startAlone(seenRevision: number, onlyIf?: (table: CompanyFounding) => boolean): Promise<void> {
 		// The field you left as you pressed saves first; a save clears Ready, so Ready is read after it. If the
 		// save failed, nothing happens (Ready and Start check that too).
 		if (!(await this.#editsSaved())) return;
 		if (!this.store.get().table?.seats.find((seat) => seat.userId === this.userId)?.ready)
 			await this.setReady(seenRevision, true);
-		if (this.store.get().table?.me.canStart) await this.start();
+		const table = this.store.get().table;
+		if (table?.me.canStart && (!onlyIf || onlyIf(table))) await this.start();
 	}
 
 	async invite(friendUserId: string): Promise<void> {
