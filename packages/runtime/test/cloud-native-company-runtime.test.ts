@@ -1113,6 +1113,8 @@ it.each([
 				"update_memory",
 				"update_skill",
 				"update_wall",
+				// The Co-Founder deals the team out between the members (20260930702000).
+				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1125,7 +1127,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v10",
+			schema: "qorpera.hire-overlay/v11",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3133,6 +3135,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 9 November 2026 that schema says a key an agent can make on npm, GitHub, Stripe or Resend is taken with
 	// computer_browser vault_capture instead (20260930695000); the names and descriptions are as before, so only the
 	// catalog text moved again.
+	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
+	// good_will_mark, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3154,6 +3158,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"add_review_rule",
 		"good_will_list",
 		"good_will_mark",
+		"crew_and_members",
+		"offer_agents_to_member",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3175,9 +3181,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"191f2be753041608873dbce02cc6f32cf9312cef670a8267e34fcf178ec2277b",
+		"0fe15d58585bb83d8459e4bcf4e78f2d6e2fa4dbe91644bffd626a10805e6348",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"b0d9eaf1e29eb0e9db4985c9ebe051485822e7dfab6e9f0cf1c51d017dbca2bf",
+		"a34407857878d40f8f4d78f446c56a2ec202ade97b2df1fcd25a76f7d9a0f018",
 	);
 });

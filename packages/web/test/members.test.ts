@@ -145,6 +145,8 @@ describe("the Members page", () => {
 				askedByAgentId: null,
 				answerByUserId: userA.id,
 				createdAt: timestamp,
+				why: null,
+				batch: null,
 			},
 		];
 		const read = works({
@@ -192,6 +194,69 @@ describe("the Members page", () => {
 		await settle();
 		expect(agentButton(container, "Bo")?.disabled).toBe(true);
 		expect(container.querySelector(".members-suggest")).toBeNull();
+	});
+
+	it("shows the Co-Founder's asks of one area as one card with its reason, and answers them together", async () => {
+		const asks = [id(43), id(44)].map((agentId, n) => ({
+			id: id(95 + n),
+			agentId,
+			fromUserId: sofie.userId,
+			toUserId: userA.id,
+			askedByUserId: null,
+			askedByAgentId: cofounder.id,
+			answerByUserId: userA.id,
+			createdAt: timestamp,
+			why: "You said you want to run growth.",
+			batch: id(97),
+		}));
+		const read = works({
+			agents: crew.map((entry) => ({
+				agentId: entry.id,
+				userId: entry.id === id(43) || entry.id === id(44) ? sofie.userId : userA.id,
+			})),
+			asks,
+		});
+		const { container, calls } = page([ann, sofie], read);
+		await settle();
+		const cards = container.querySelectorAll(".members-ask");
+		expect(cards).toHaveLength(1);
+		expect(cards[0]?.textContent).toContain("Kaya, your Co-Founder, asks you to take Clara and Astrid.");
+		expect(cards[0]?.querySelector(".members-ask-why")?.textContent).toBe("“You said you want to run growth.”");
+		click(container, "Yes");
+		await settle();
+		expect(calls.answer).toHaveBeenCalledWith(id(95), true);
+		expect(calls.answer).toHaveBeenCalledWith(id(96), true);
+		expect(container.querySelector(".members-note")?.textContent).toBe("Clara and Astrid now work for you.");
+	});
+
+	it("keeps a member's separate asks as separate cards, each answered on its own", async () => {
+		const asks = [id(43), id(44)].map((agentId, n) => ({
+			id: id(98 + n),
+			agentId,
+			fromUserId: sofie.userId,
+			toUserId: userA.id,
+			askedByUserId: sofie.userId,
+			askedByAgentId: null,
+			answerByUserId: userA.id,
+			createdAt: timestamp,
+			why: null,
+			batch: null,
+		}));
+		const read = works({
+			agents: crew.map((entry) => ({
+				agentId: entry.id,
+				userId: entry.id === id(43) || entry.id === id(44) ? sofie.userId : userA.id,
+			})),
+			asks,
+		});
+		const { container, calls } = page([ann, sofie], read);
+		await settle();
+		const cards = [...container.querySelectorAll(".members-ask")];
+		expect(cards).toHaveLength(2);
+		cards[1]?.querySelectorAll("button")[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		await settle();
+		expect(calls.answer).toHaveBeenCalledTimes(1);
+		expect(calls.answer).toHaveBeenCalledWith(id(99), false);
 	});
 
 	it("never draws a late answer over the view that took the page's place", async () => {

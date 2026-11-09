@@ -17,8 +17,8 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * release of tree blocks, M1b-3), 20260930204000 (the primary view and its record, M1b-4a), 20260930220000 (branches,
  * M4), 20260930231000 (run logs, W1b), 20260930300000 (tree writer, M1b-4b-2), 20260930300100 (the admission split,
  * M1b-4b-3), 20260930340000 (resumed attempts, W5b-2), 20260930341000 (worker memory, W4b), 20260930539000 (a
- * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites), 20260930566000 (good will) and
- * 20260930618000 (the run's check around a tool call) list them, without the two
+ * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites), 20260930566000 (good will),
+ * 20260930618000 (the run's check around a tool call) and 20260930702000 (the Co-Founder's offers of agents) list them, without the two
  * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
  * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model request's
  * fence's. */
@@ -40,6 +40,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_bind_native_company_context", "standard"],
 	["qorpera_check_company_path_mutation", "standard"],
 	["qorpera_check_native_run", "standard"],
+	["qorpera_cofounder_crew", "standard"],
 	["qorpera_commit_company_path_mutation", "standard"],
 	["qorpera_company_machines_available", "standard"],
 	["qorpera_company_presence_scope", "standard"],
@@ -107,6 +108,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_native_presence_forget", "standard"],
 	["qorpera_native_presence_register", "standard"],
 	["qorpera_native_presence_subject", "standard"],
+	["qorpera_offer_agents_to_member", "standard"],
 	["qorpera_prepare_company_path_approval", "standard"],
 	["qorpera_prepare_company_path_mutation", "standard"],
 	["qorpera_prepare_routine_login", "standard"],

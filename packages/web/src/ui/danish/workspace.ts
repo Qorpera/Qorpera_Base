@@ -194,6 +194,11 @@ export const WORKSPACE: Record<string, string> = {
 	"{n} agents work for {m} members.": "{n} agenter arbejder for {m} medlemmer.",
 	"{n} can't work right now": "{n} kan ikke arbejde lige nu",
 	"{n} with no agents yet": "{n} uden agenter endnu",
+	"{agent}, your Co-Founder,": "{agent}, din Co-Founder,",
+	"{first} and {last}": "{first} og {last}",
+	"{agents} stay where they are.": "{agents} bliver, hvor de er.",
+	"{agents} now work for {member}.": "{agents} arbejder nu for {member}.",
+	"{moved} of them moved; the others moved meanwhile.": "{moved} af dem flyttede; de andre er flyttet imens.",
 	"You carry {n} agents and {other} none. Shall {other} take {area}?":
 		"Du bærer {n} agenter og {other} ingen. Skal {other} tage {area}?",
 	"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.":
