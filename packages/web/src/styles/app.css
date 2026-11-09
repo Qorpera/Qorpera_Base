@@ -198,8 +198,9 @@ label > input, label > select { font-weight: 400; }
 .account-popover {
 	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 232px;
 	display: flex; flex-direction: column; gap: 1px; padding: 6px;
-	border: 1px solid var(--border); border-radius: 14px; background: var(--overlay);
-	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	/* A crisp thin edge carries the shape; the shadow only lifts it. */
+	border: 1px solid var(--border-strong); border-radius: 10px; background: var(--overlay);
+	box-shadow: 0 8px 24px rgba(11, 11, 11, 0.1), 0 1px 3px rgba(11, 11, 11, 0.06);
 	max-height: calc(100dvh - var(--titlebar-height) - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 /* An author `display` beats the browser's [hidden] rule, so restore it. */
@@ -490,7 +491,7 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
-.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
+.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
  * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */
 .skeleton-rail-search { grid-area: 1 / 2; height: var(--rail-control); margin-right: calc(2 * var(--rail-control) + 12px); border-radius: 11px; }
@@ -516,8 +517,9 @@ label > input, label > select { font-weight: 400; }
 .account-menu-rail .account-chip { width: 45px; height: 45px; font-size: 18px; }
 /* The member's name at 1.5x the 14px body text. */
 .account-menu-rail .account-trigger-name { flex: 1; min-width: 0; max-width: none; font-size: 21px; }
+/* A fixed width from the rail's left edge, so a wide rail never stretches the menu. */
 .account-menu-rail .account-popover {
-	top: auto; bottom: calc(100% + 8px); left: 0; right: 0; width: auto;
+	top: auto; bottom: calc(100% + 8px); left: 0; right: auto; width: 232px; max-width: calc(100vw - 16px);
 	max-height: calc(100dvh - var(--titlebar-height) - 88px);
 }
 
