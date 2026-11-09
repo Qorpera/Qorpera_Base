@@ -41,6 +41,18 @@ MISE_VERSION=2026.10.10
 MISE_SHA256=7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
 TYPESCRIPT_VERSION=7.0.2
 TSX_VERSION=4.23.15
+# What starts nothing at a machine's boot (it stays installed).
+BOOT_DISABLED_UNITS="ModemManager.service multipathd.service multipathd.socket open-iscsi.service iscsid.socket \
+open-vm-tools.service vgauth.service udisks2.service apport.service apport-forward.socket apport-autoreport.path \
+apport-autoreport.timer networkd-dispatcher.service ubuntu-advantage.service ua-reboot-cmds.service ua-timer.timer \
+lvm2-monitor.service lvm2-lvmpolld.socket dm-event.socket blk-availability.service ufw.service console-setup.service \
+keyboard-setup.service setvtrgb.service grub-initrd-fallback.service grub2-common.service secureboot-db.service \
+motd-news.timer man-db.timer update-notifier-download.timer update-notifier-motd.timer mdcheck_continue.timer \
+mdcheck_start.timer mdmonitor-oneshot.timer e2scrub_all.timer e2scrub_reap.service xfs_scrub_all.timer \
+dpkg-db-backup.timer snapd.seeded.service snapd.service snapd.autoimport.service snapd.core-fixup.service \
+snapd.recovery-chooser-trigger.service snapd.snap-repair.timer snapd.system-shutdown.service sysstat.service \
+sysstat-collect.timer sysstat-summary.timer sysstat-rotate.timer tpm-udev.path lxd-installer.socket dmesg.service \
+finalrd.service"
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
 EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
@@ -93,7 +105,7 @@ for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sl
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
 	UV_SHA256="$UV_SHA256" MISE_VERSION="$MISE_VERSION" MISE_SHA256="$MISE_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
-	TSX_VERSION="$TSX_VERSION" bash -euo pipefail -c '
+	TSX_VERSION="$TSX_VERSION" BOOT_DISABLED_UNITS="$BOOT_DISABLED_UNITS" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
@@ -134,13 +146,26 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# name hands activation to systemd). That work counts like any other, so a quiet machine looked busy and never slept
 	# (C8 MA-5b). A masked unit refuses every start, the bus activation too.
 	systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd.service
+	# A machine is a VM with one disk and one card, which wakes when an agent waits for it (perf sprint A5, 7 Nov 2026).
+	# What it has no use for starts nothing at boot: disabled, not removed, so an agent can still install or enable it
+	# (snapd.socket stays, and starts snapd on the first snap command).
+	for unit in $BOOT_DISABLED_UNITS; do systemctl disable "$unit" 2>/dev/null || true; done
+	# A boot goes through an initramfs made for this hardware, without the network, iSCSI, LVM, RAID or multipath, and
+	# does not print every kernel line through its emulated serial port. Secure boot is unchanged: neither is signed.
+	printf "%s\n" "hostonly=\"yes\"" "hostonly_mode=\"sloppy\"" \
+		"omit_dracutmodules+=\" network network-manager systemd-networkd net-lib iscsi nbd nfs cifs fcoe fcoe-uefi lvm dm dmraid mdraid multipath plymouth cloud-initramfs-dyn-netconf bluetooth crypt tpm2-tss \"" \
+		>/etc/dracut.conf.d/90-qorpera-machine.conf
+	dracut --force --regenerate-all
+	echo "GRUB_CMDLINE_LINUX_DEFAULT=\"console=tty1 console=ttyS0 quiet systemd.show_status=false\"" >/etc/default/grub.d/90-qorpera-machine.cfg
+	update-grub
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
-lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" bash -euo pipefail -c '
+lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
+	BOOT_DISABLED_UNITS="$BOOT_DISABLED_UNITS" bash -euo pipefail -c '
 	systemctl daemon-reload
 	systemctl enable qorpera-machine-watchdog.timer
 	# Checks the reviewed image must pass.
@@ -181,6 +206,15 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		service=$(sed -n "s/^SystemdService=//p" "$bus")
 		[[ -n $service && $(systemctl is-enabled "$service" || true) == masked ]] ||
 			{ echo "the bus file $bus can still start fwupd" >&2; exit 1; }
+	done
+	# A boot is what the wake waits for: nothing it has no use for starts, its initramfs is the small one, and Docker and
+	# the snap command still answer when first asked.
+	for unit in $BOOT_DISABLED_UNITS; do
+		[[ $(systemctl is-enabled "$unit" 2>/dev/null || true) != enabled ]] || { echo "$unit still starts at boot" >&2; exit 1; }
+	done
+	for unit in docker.socket snapd.socket; do [[ $(systemctl is-enabled "$unit") == enabled ]]; done
+	for initrd in /boot/initrd.img-*; do
+		(( $(stat -L -c %s "$initrd") < 41943040 )) || { echo "$initrd is not the small initramfs" >&2; exit 1; }
 	done
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
 		/etc/systemd/system/qorpera-machine-folder.service
