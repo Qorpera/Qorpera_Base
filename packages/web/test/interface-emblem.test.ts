@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from "vitest";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 
