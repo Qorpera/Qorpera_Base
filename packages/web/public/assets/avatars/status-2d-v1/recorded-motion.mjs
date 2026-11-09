@@ -2,13 +2,14 @@ import { recordedClips } from './recorded-clips.mjs';
 import { workingPalette } from './working-palette.mjs';
 
 const sheets={};
-let source, eyeMask, soft;
-// The last few prepared frames, most recent last. Views of one agent share its clock and
-// several agents paint each frame, so a single cached frame was decoded again for every
-// view after another agent's (Bo's rail and thread figures around Astrid's: three decodes
-// for two frames). Each slot holds what the draw functions read.
-const slots=[], SLOTS=6;
-let current;
+let source, eyeMask, soft, colors, front;
+// Prepared frames by state and frame, least recently used first, each cropped to what it holds:
+// the eyes' raster and the two stroke layers, each with a clear pixel around it so a stretched
+// draw smooths its edge as the whole 160px layer did. A frame's preparation never changes and
+// the clips repeat (Working is one 10.8 s loop), so after a first pass figures no longer decode
+// frames at all. About 10 MB for every frame of every clip; the oldest go past BUDGET bytes.
+const slots=new Map(), BUDGET=32*1024*1024;
+let current, held=0;
 // Full-frame arrays that prepare() fills from small read-backs (see readBox).
 const pixelsAt=new Uint8ClampedArray(160*160*4), coreAt=new Uint8ClampedArray(160*160*4), expandedAt=new Uint8ClampedArray(160*160*4);
 // Copies the box [x0,y0,x1,y1] of ctx's canvas into `into` (a 160x160 RGBA array) at its place,
@@ -26,20 +27,30 @@ function readBox(ctx,box,into) {
 }
 const clampBox=(box)=>[Math.max(0,box[0]),Math.max(0,box[1]),Math.min(160,box[2]),Math.min(160,box[3])];
 const loading = new Map();
-function slot() {
-  const canvas=()=>{const c=document.createElement('canvas');c.width=c.height=160;return c;};
-  return {key:'', colors:canvas(), front:canvas(), eyeRaster:canvas(), eyePath:undefined, eyeBox:null};
+// A canvas holding the box [x0,y0,x1,y1] of a 160px layer: `from` is the layer's ImageData, or
+// its canvas (read back at once), or null. Never drawn from a shared canvas: WebKit may run such a
+// copy only after later calls have changed the shared canvas (the next frame's preparation).
+function crop(from,box) {
+  if(!box)return null;
+  const [x0,y0,x1,y1]=box,w=x1-x0,h=y1-y0,canvas=document.createElement('canvas');
+  canvas.width=w;canvas.height=h;
+  const pixels=from instanceof ImageData?from:from.getContext('2d').getImageData(x0,y0,w,h);
+  canvas.getContext('2d').putImageData(pixels,from instanceof ImageData?-x0:0,from instanceof ImageData?-y0:0,from instanceof ImageData?x0:0,from instanceof ImageData?y0:0,w,h);
+  return {canvas,x:x0,y:y0};
 }
 
 export function loadRecordedMotion(state, base) {
   if (!recordedClips[state]) return Promise.resolve();
   if (loading.has(state)) return loading.get(state);
   if (!source) {
-    [source, eyeMask, soft] = Array.from({length:3}, () => {
+    [source, eyeMask, soft, colors, front] = Array.from({length:5}, () => {
       const canvas=document.createElement('canvas');canvas.width=canvas.height=160;return canvas;
     });
     // prepare() reads source and eyeMask back every new frame: keep them in memory rather than on
     // the GPU, where each getImageData is a stall (Safari's GPU process most of all).
+    // colors and front are read back once per new frame too, but stay as they were: in WebKit a
+    // willReadFrequently canvas draws with another backend, whose destination-in leaves strokes
+    // outside the front layer's circle.
     for (const canvas of [source, eyeMask]) canvas.getContext('2d', {willReadFrequently:true});
   }
   const run=Promise.all(recordedClips[state].atlases.map(async file=>{
@@ -52,11 +63,10 @@ export function loadRecordedMotion(state, base) {
 function prepare(state,frame) {
   const key=state+':'+frame;
   if(current?.key===key)return;
-  const hit=slots.find(s=>s.key===key);
-  if(hit){slots.splice(slots.indexOf(hit),1);slots.push(hit);current=hit;return;}
-  const into=slots.length<SLOTS?slot():slots.shift();
-  into.key='';slots.push(into);current=into;
-  const {colors,front,eyeRaster}=into;
+  const hit=slots.get(key);
+  if(hit){slots.delete(key);slots.set(key,hit);current=hit;return;}
+  // Prepared on the shared 160px layers, then cropped into the frame's slot (the end of this function).
+  const into={key};
   const data=recordedClips[state].frames[frame], tile=frame%130, sheet=sheets[state][Math.floor(frame/130)];
   const eyePath=new Path2D();into.eyePath=eyePath;
   for(const ring of data.eyes) {
@@ -97,7 +107,7 @@ function prepare(state,frame) {
     if(x<ex0)ex0=x;if(x>ex1)ex1=x;if(y<ey0)ey0=y;if(y>ey1)ey1=y;
   }
   into.eyeBox=ex1<0?null:[ex0,ey0,ex1+1,ey1+1];
-  eyeRaster.getContext('2d').putImageData(eyes,0,0);
+  into.eyes=crop(eyes,into.eyeBox&&clampBox([into.eyeBox[0]-1,into.eyeBox[1]-1,into.eyeBox[2]+1,into.eyeBox[3]+1]));
   // Recover transparency from the recording's background, avoiding dark
   // fringes when its colored strokes are displayed on a light surface.
   const backgroundAt=(x,y)=>(x+.5-data.c[0])**2+(y+.5-data.c[1])**2<data.c[2]**2?[255,255,255]:[8,10,8];
@@ -157,7 +167,13 @@ function prepare(state,frame) {
   c.clearRect(0,0,160,160);c.drawImage(soft,0,0);
   const f=front.getContext('2d');f.clearRect(0,0,160,160);f.globalCompositeOperation='source-over';f.drawImage(colors,0,0);
   f.globalCompositeOperation='destination-in';f.beginPath();f.arc(data.c[0],data.c[1],data.c[2]+1,0,Math.PI*2);f.fill();f.globalCompositeOperation='source-over';
-  into.key=key;
+  // The strokes reach a pixel past their runs, and the half-pixel blur a little further.
+  const strokes=right<left||bottom<top?null:clampBox([left-4,top-4,right+5,bottom+5]);
+  into.colors=crop(colors,strokes);
+  into.front=crop(front,strokes);
+  into.bytes=[into.eyes,into.colors,into.front].reduce((sum,part)=>sum+(part?part.canvas.width*part.canvas.height*4:0),0)+256;
+  slots.set(key,into);current=into;held+=into.bytes;
+  for(const [old,slot] of slots){if(held<=BUDGET||old===key)break;slots.delete(old);held-=slot.bytes;}
 }
 
 export function drawRecordedReference(canvas,state,frame,outline=false) {
@@ -185,7 +201,9 @@ export function drawRecordedEyes(ctx,eyes,state,frame,field) {
   prepare(state,frame);
   ctx.save();ctx.fillStyle='#fff';
   placeEyeField(ctx,eyes,field);
-  ctx.drawImage(current.eyeRaster,0,0);ctx.restore();
+  const part=current.eyes;
+  if(part)ctx.drawImage(part.canvas,part.x,part.y);
+  ctx.restore();
 }
 
 // Where drawRecordedEyes would put this frame's eyes, in the caller's units:
@@ -212,6 +230,8 @@ export function drawWorkingStrokes(ctx,frame,isFront,field) {
   // the eyes. Source circle diameter 112 px maps to an 80-unit avatar body.
   ctx.save();
   if(field){ctx.translate(50,50);ctx.rotate(field.tilt*Math.PI/180);ctx.scale(field.mirror?-1:1,1);ctx.translate(-50,-50);}
-  ctx.drawImage(isFront?current.front:current.colors,50-80/112*80,50-80/112*80,160*80/112,160*80/112);
+  // The 160px layer drawn 160*80/112 units wide: each crop at its own place and size in it.
+  const part=isFront?current.front:current.colors,k=80/112;
+  if(part)ctx.drawImage(part.canvas,50-80/112*80+part.x*k,50-80/112*80+part.y*k,part.canvas.width*k,part.canvas.height*k);
   ctx.restore();
 }

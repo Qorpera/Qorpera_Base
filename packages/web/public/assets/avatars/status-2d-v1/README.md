@@ -16,6 +16,11 @@ frame; views of one agent no longer decode its frame again), and `recordedEyesBo
 returns where `drawRecordedEyes` puts a frame's eyes, in the caller's units (the
 figure's 100), so the compositor draws, halves and cuts only that box (9 Nov 2026).
 A decode reads back only the eyes' and strokes' boxes. The decoded pixels are unchanged.
+Prepared frames are kept (least recently used first, 32 MB at most), each cropped to its
+eyes and strokes with a clear pixel around them, so a repeated frame is never decoded again;
+a slot is filled from read-backs, never drawn from a shared canvas (WebKit may run such a
+draw after the shared canvas has changed). The stroke canvases keep their default backend:
+in WebKit a `willReadFrequently` canvas draws `destination-in` differently.
 Its eye extraction, placement, and stroke compositing remain the studio's.
 
 The TypeScript compositor in `src/ui/figure-motion.ts` ports the studio's
