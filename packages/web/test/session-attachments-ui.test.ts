@@ -202,9 +202,10 @@ describe("actual product conversation attachments", () => {
 		text.dispatchEvent(new Event("input"));
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
-		await vi.waitFor(() => expect(f.root.querySelector(".received-file")).not.toBeNull());
+		// The sent image shows in the thread once the cloud has it, read once through the verified bytes route.
+		await vi.waitFor(() => expect(f.root.querySelector(".received-file.has-thumbnail img")).not.toBeNull());
 		expect(text.value).toBe("");
-		expect(f.requests()).toHaveLength(2);
+		expect(f.requests()).toHaveLength(3);
 		button(f.root, "Preview Image attachment").click();
 		await vi.waitFor(() => expect(document.querySelector("dialog img")).not.toBeNull());
 		expect(f.requests()).toHaveLength(3);
@@ -270,7 +271,10 @@ describe("actual product conversation attachments", () => {
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
 		expect(f.requests()[0]![0]).toBe(f.requests()[1]![0]);
-		expect(f.requests()).toHaveLength(3);
+		// Two uploads and one turn; the thread's own read of the sent image for its thumbnail may follow.
+		expect(f.requests().filter(([url]) => !String(url).includes("/member-session-attachments/input/"))).toHaveLength(
+			3,
+		);
 	});
 	it("fences an account change during upload and clears local images", async () => {
 		const f = await setup(),
