@@ -1150,6 +1150,98 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.open).toBe(false);
 	});
 
+	it("opens the file window at once while the file is read, and fades the file in", async () => {
+		const { fake, host } = await opened({ embedded: true });
+		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
+		let read!: () => void;
+		const reading = fake.client.readFile.getMockImplementation()!;
+		fake.client.readFile.mockImplementationOnce(async (...args) => {
+			await new Promise<void>((resolve) => {
+				read = resolve;
+			});
+			return reading(...args);
+		});
+		row(host, "readme.txt")!.click();
+		await settle();
+		// The window is there before the read answers: the file's name, and lines where its content comes.
+		expect(viewer.open).toBe(true);
+		expect(viewer.querySelector(".files-preview-head h2")?.textContent).toBe("readme.txt");
+		expect(viewer.querySelector(".skeleton-lines")).not.toBeNull();
+		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(true);
+		read();
+		await settle();
+		expect(viewer.querySelector(".skeleton-lines")).toBeNull();
+		expect(viewer.querySelector(".files-text")?.textContent).toBe("Hello.");
+		expect(viewer.querySelector(".files-preview-body")?.classList.contains("is-arriving")).toBe(true);
+		// History draws in the same window with no fade.
+		await click(action(host, "History"));
+		expect(viewer.querySelector(".is-arriving")).toBeNull();
+		// A read that fails takes the waiting window away again and says so under the list.
+		await click(viewer.querySelector('.files-preview-head [aria-label^="Close"]'));
+		fake.client.readFile.mockRejectedValueOnce(new Error("lost"));
+		await click(row(host, "readme.txt"));
+		expect(viewer.open).toBe(false);
+		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(status(host)).toContain("could not be read");
+	});
+
+	it("grows the file window out of its file and lets it shrink back before it closes", async () => {
+		const { host } = await opened({ embedded: true });
+		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
+		/** Each animation the window plays, finished by hand. */
+		const played: { keyframes: Keyframe[]; options: KeyframeAnimationOptions; finish(): void; cancel: () => void }[] =
+			[];
+		viewer.animate = vi.fn((keyframes: Keyframe[], options: KeyframeAnimationOptions) => {
+			let finish!: () => void;
+			let fail!: (error: Error) => void;
+			const finished = new Promise<void>((resolve, reject) => {
+				finish = resolve;
+				fail = reject;
+			});
+			finished.catch(() => {});
+			const each = { keyframes, options, finish, cancel: vi.fn(() => fail(new Error("cancelled"))) };
+			played.push(each);
+			return { finished, cancel: each.cancel } as unknown as Animation;
+		}) as unknown as typeof viewer.animate;
+		await click(row(host, "readme.txt"));
+		// It opens growing (the window and its backdrop), from the file's icon or, with no layout, rising in place.
+		expect(played.map((each) => each.options.direction ?? "normal")).toEqual(["normal", "normal"]);
+		expect(played[0]!.keyframes[0]!.transform).toBe("translateY(10px) scale(0.96)");
+		expect(played[1]!.options.pseudoElement).toBe("::backdrop");
+		played.splice(0);
+		const pressed = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		viewer.dispatchEvent(pressed);
+		// It goes back the way it came, still open and showing the file, out of reach, until the motion ends.
+		expect(played.map((each) => each.options.direction)).toEqual(["reverse", "reverse"]);
+		expect(viewer.open).toBe(true);
+		expect(viewer.querySelector(".files-text")?.textContent).toBe("Hello.");
+		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(true);
+		expect(host.classList.contains("has-preview")).toBe(false);
+		// Escape again while it goes changes nothing.
+		viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(played).toHaveLength(2);
+		for (const each of played) each.finish();
+		await settle();
+		expect(viewer.open).toBe(false);
+		expect(viewer.querySelector(".files-text")).toBeNull();
+		expect(document.activeElement).toBe(row(host, "readme.txt"));
+		// Opened again while it goes, it stays open with the new file.
+		await click(row(host, "readme.txt"));
+		played.splice(0);
+		viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(viewer.open).toBe(true);
+		const leaving = [...played];
+		// A folder link revealed meanwhile (the list itself is out of reach under the window).
+		await click(row(host, "logo.png"));
+		expect(viewer.getAttribute("aria-label")).toBe("logo.png");
+		for (const each of leaving) expect(each.cancel).toHaveBeenCalled();
+		for (const each of leaving) each.finish();
+		await settle();
+		expect(viewer.open).toBe(true);
+		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(false);
+		expect(viewer.contains(host.querySelector(".files-status"))).toBe(true);
+	});
+
 	it("rests the file window while an action runs and says what failed inside it, back under the list once closed", async () => {
 		const { fake, host } = await opened({ embedded: true });
 		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;

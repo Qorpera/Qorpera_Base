@@ -15,9 +15,10 @@ import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { reducedMotion } from "../../ui/motion.ts";
 import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
-import { listSkeleton } from "../../ui/skeleton.ts";
+import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
@@ -228,6 +229,10 @@ export class CompanyFolderBrowser {
 	/** Inside Settings, the preview's own window over Settings; null in the standalone browser, where it sits beside
 	 * the files. It stays inside the browser's root, so it rests with the list while an action runs. */
 	readonly #viewer: HTMLDialogElement | null;
+	/** The window going back into its file: it is still open, with what it showed, until the motion ends. */
+	#leaving: { readonly motion: Animation[] } | null = null;
+	/** Set while the window shows a file still being read, so what comes in fades in. */
+	#loading = false;
 	readonly #search: HTMLInputElement;
 	readonly #frames: PageFrames;
 	/** A page's view, kept while the same page stays open. */
@@ -914,8 +919,26 @@ export class CompanyFolderBrowser {
 
 	async #open(entry: CloudMemberFolderEntry, refresh = false): Promise<void> {
 		if (!entry.file && entry.target === null) return;
-		if (refresh || this.#opened?.path !== entry.path || this.#opened?.version)
+		if (!refresh && this.#opened?.path === entry.path && !this.#opened.version) return;
+		// Inside Settings the window opens at once, out of the file, and the file fills it once it is read.
+		const waiting = this.#viewer !== null && !refresh;
+		if (waiting) this.#drawLoading(entry.path);
+		try {
 			await this.#show({ path: entry.path, file: entry.file, target: entry.target });
+		} catch (error) {
+			if (waiting && this.#loading) {
+				this.#loading = false;
+				if (this.#opened) this.#drawFile();
+				else this.#close();
+			}
+			throw error;
+		}
+	}
+
+	/** The window, open while a file is read: its name, and lines that breathe where its content comes. */
+	#drawLoading(path: string): void {
+		this.#panel(baseName(path), [h("div", { class: "files-preview-body" }, linesSkeleton(t("Loading")))], [], path);
+		this.#loading = true;
 	}
 
 	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
@@ -939,22 +962,80 @@ export class CompanyFolderBrowser {
 	}
 
 	#close(): void {
+		if (this.#leaving) return;
+		this.#loading = false;
 		const path = this.#viewer?.open ? this.#opened?.path : undefined;
-		if (this.#viewer?.open) {
-			this.#viewer.close();
-			this.#root.before(this.#status, this.#retries);
-		}
+		// The window goes back into its file before it closes; what it shows stays until then.
+		const motion = this.#viewer?.open ? this.#zoom(path, "out") : [];
+		if (this.#viewer?.open) this.#root.before(this.#status, this.#retries);
 		this.#forget(this.#opened);
 		this.#opened = null;
-		this.#preview.hidden = true;
-		this.#preview.replaceChildren();
 		this.#host.classList.remove("has-preview");
 		for (const row of this.#list.querySelectorAll(".files-row.is-open")) row.classList.remove("is-open");
-		// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
-		if (path !== undefined)
-			[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
-				.find((row) => row.dataset.path === path)
-				?.focus({ preventScroll: true });
+		const done = () => {
+			this.#leaving = null;
+			this.#preview.inert = false;
+			if (this.#viewer?.open) this.#viewer.close();
+			this.#preview.hidden = true;
+			this.#preview.replaceChildren();
+			// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
+			if (path !== undefined)
+				[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
+					.find((row) => row.dataset.path === path)
+					?.focus({ preventScroll: true });
+		};
+		if (!motion.length) {
+			done();
+			return;
+		}
+		const leaving = { motion };
+		this.#leaving = leaving;
+		this.#preview.inert = true;
+		this.#viewer?.focus({ preventScroll: true });
+		void Promise.all(motion.map((each) => each.finished)).then(
+			() => this.#leaving === leaving && done(),
+			// Cancelled: a file opened again while the window went (#panel takes it back).
+			() => {},
+		);
+	}
+
+	/** The file's icon in the list, when it shows there: where the window comes from and goes back to. */
+	#tile(path: string | undefined): Element | null {
+		if (path === undefined || this.#section !== "documents") return null;
+		const row = [...this.#list.querySelectorAll<HTMLElement>(".files-row-main")].find(
+			(each) => each.dataset.path === path,
+		);
+		return row?.querySelector(".files-kind") ?? null;
+	}
+
+	/** The window grows out of its file's icon, the way a picture opens, and shrinks back into it; with no icon in
+	 * sight it rises in place. Nothing moves under reduced motion or without an animation engine. */
+	#zoom(path: string | undefined, way: "in" | "out"): Animation[] {
+		const viewer = this.#viewer;
+		if (!viewer || reducedMotion() || typeof viewer.animate !== "function") return [];
+		const box = viewer.getBoundingClientRect();
+		const from = this.#tile(path)?.getBoundingClientRect();
+		let start = "translateY(10px) scale(0.96)";
+		if (from && from.width > 0 && box.width > 0) {
+			const x = from.left + from.width / 2 - (box.left + box.width / 2);
+			const y = from.top + from.height / 2 - (box.top + box.height / 2);
+			start = `translate(${Math.round(x)}px, ${Math.round(y)}px) scale(${Math.max(0.2, from.width / box.width).toFixed(3)})`;
+		}
+		const timing: KeyframeAnimationOptions =
+			way === "in"
+				? { duration: 300, easing: "cubic-bezier(0.2, 0.9, 0.25, 1)", fill: "both" }
+				: { duration: 200, easing: "cubic-bezier(0.4, 0, 0.8, 0.6)", fill: "both", direction: "reverse" };
+		return [
+			viewer.animate(
+				[
+					{ transform: start, opacity: 0 },
+					{ opacity: 1, offset: 0.35 },
+					{ transform: "none", opacity: 1 },
+				],
+				timing,
+			),
+			viewer.animate([{ opacity: 0 }, { opacity: 1 }], { ...timing, pseudoElement: "::backdrop" }),
+		];
 	}
 
 	#forget(opened: Opened | null): void {
@@ -969,8 +1050,13 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** `tools`: icon buttons before Close. */
-	#panel(title: string, children: (HTMLElement | null)[], tools: HTMLElement[] = []): void {
+	/** `tools`: icon buttons before Close. `from`: the file whose icon the window grows out of when it opens. */
+	#panel(
+		title: string,
+		children: (HTMLElement | null)[],
+		tools: HTMLElement[] = [],
+		from: string | undefined = this.#opened?.path,
+	): void {
 		replace(
 			this.#preview,
 			h(
@@ -987,12 +1073,25 @@ export class CompanyFolderBrowser {
 		this.#preview.setAttribute("aria-label", title);
 		this.#preview.hidden = false;
 		this.#host.classList.add("has-preview");
+		// What a read brings in fades into the window that waited for it.
+		if (this.#loading) {
+			this.#loading = false;
+			this.#preview.querySelector(".files-preview-body")?.classList.add("is-arriving");
+		}
 		if (this.#viewer) {
 			this.#viewer.setAttribute("aria-label", title);
+			// Opened again while it went back into its file: it stays, as it is now.
+			if (this.#leaving) {
+				for (const each of this.#leaving.motion) each.cancel();
+				this.#leaving = null;
+				this.#viewer.append(this.#status, this.#retries);
+				this.#preview.inert = this.#busy;
+			}
 			if (!this.#viewer.open && this.#viewer.isConnected) {
 				// What an action says, and a lost restore's Try again, show in the window: the page under it is out of reach.
 				this.#viewer.append(this.#status, this.#retries);
 				this.#viewer.showModal();
+				this.#zoom(from, "in");
 				// Opened while an action runs: it rests until the action is done.
 				this.#preview.inert = this.#busy;
 			}
