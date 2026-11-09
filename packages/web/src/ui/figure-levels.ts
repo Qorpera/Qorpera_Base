@@ -27,7 +27,10 @@ function halve(
 		const next = canvasFor(size);
 		const nc = next.getContext("2d")!;
 		if (reused) nc.clearRect(0, 0, size, size);
-		nc.imageSmoothingQuality = "high";
+		// At exactly 2:1, plain bilinear sampling lands between four source pixels: the 2x2
+		// average itself. "high" adds nothing there (WebKit's is further from that average) and
+		// costs 1.5x (WebKit) to 4x (Chromium) per step, which the eyes pay every frame.
+		nc.imageSmoothingQuality = "low";
 		nc.drawImage(current, 0, 0, size, size);
 		current = next;
 	}
