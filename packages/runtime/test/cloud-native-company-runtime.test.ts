@@ -3139,6 +3139,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// catalog text moved again.
 	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
 	// good_will_mark, so they moved again.
+	// Later on 9 November 2026 ask_member's secret card schema says such a key is saved off the machine's clipboard with
+	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
+	// descriptions are as before, so only the catalog text moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3186,6 +3189,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ce5d20ab168c29e85e223dd7c0a47c2e0572702777a9ea7c4db9f85ad6dfe932",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"10413103d1c0a82ff68526c25f5d6cba3b97d4cf7dbea8ca451b4a730f545d55",
+		"531de109925aea69b40b1307b75f802632711ce12b16abceb14afadd0410a84a",
 	);
 });

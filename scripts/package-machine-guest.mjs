@@ -10,6 +10,9 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // Since F3 step 6c it also carries the company folder's program (the build
 // RECORD names, made by scripts/build-folder-program.mjs) and its unit, which
 // mounts the folder at /company once the host hands the machine a view.
+// Since 20260930705000 it also carries save_coding_value's clipboard helper,
+// built as its own file after the guest helper, so the guest helper (the
+// manifest's first artifact, whose sha-256 the executor pins) stays as it was.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
@@ -58,6 +61,28 @@ artifacts.push({
 	mode: "0444",
 	sha256: createHash("sha256").update(helper).digest("hex"),
 	bytes: helper.length,
+});
+// save_coding_value's clipboard helper (20260930705000): the executor runs it with node; it reads the desktop's
+// clipboard, seals the key in it for the vault and clears it.
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-coding-value.ts"],
+	outfile: resolve(output, "cloud-machine-coding-value.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const codingValues = await readFile(resolve(output, "cloud-machine-coding-value.mjs"));
+artifacts.push({
+	file: "cloud-machine-coding-value.mjs",
+	source: "packages/runtime/src/cloud-machine-coding-value.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-coding-value.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(codingValues).digest("hex"),
+	bytes: codingValues.length,
 });
 for (const unit of units) {
 	const bytes = await readFile(`deploy/machine/${unit}`);

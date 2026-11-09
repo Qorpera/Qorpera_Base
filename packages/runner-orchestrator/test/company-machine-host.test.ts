@@ -12,14 +12,20 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
-import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
+import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
+	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
 	LxdCompanyMachineHost,
 } from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
-import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import type {
+	LxdExecPipeRequest,
+	LxdExecStreamRequest,
+	LxdInstanceRecord,
+	LxdTrackedInstanceAction,
+} from "../src/lxd-client.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
@@ -3355,4 +3361,107 @@ it("keeps company machine journals apart from coding machines'", async () => {
 	const f = await fixture();
 	await f.host.pass(f.signal);
 	await expect(mkdir(join(state.controlPath, "company-machines", id(6)))).rejects.toThrow(/EEXIST/);
+});
+
+// 20260930705000: save_coding_value runs the image's clipboard helper on the machine, on the boot SQL named, with SQL's
+// target on its stdin; only its one line of stdout (a box or a refusal code) comes back.
+describe("a machine's clipboard helper", () => {
+	const box = {
+		schema: "qorpera.coding-value-machine-box/v1",
+		ephemeralPublicKey: "ZXBo",
+		iv: "aXY",
+		tag: "dGFn",
+		ciphertext: "Y2lwaGVy",
+	};
+	const run = {
+		placementId: id(6),
+		bootId: id(7),
+		receiptId: id(8),
+		target: { schema: "qorpera.coding-value-machine-target/v1" },
+	};
+	async function piped(answer: { exitCode: number; stdout: string }) {
+		const f = await fixture();
+		const pipe = vi.fn(
+			async (_project: string, _name: string, _request: LxdExecPipeRequest, _signal: AbortSignal) => ({
+				exitCode: answer.exitCode,
+				stdout: Buffer.from(answer.stdout),
+				stderrTail: Buffer.alloc(0),
+			}),
+		);
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe };
+	}
+
+	it("runs the helper as the executor runs it, on SQL's boot with SQL's target, and answers its box", async () => {
+		const { f, pipe } = await piped({
+			exitCode: 0,
+			stdout: `${JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box })}\n`,
+		});
+		expect(await f.host.codingValue(run, f.signal)).toEqual({ box });
+		const [project, name, request] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(request.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_CODING_VALUE_HELPER,
+		]);
+		expect(COMPANY_MACHINE_CODING_VALUE_HELPER).toBe("/opt/qorpera-machine/cloud-machine-coding-value.mjs");
+		expect(JSON.parse(Buffer.from(request.stdin as Uint8Array).toString("utf8"))).toEqual(run.target);
+		expect(request).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 16384, stderrTailBytes: 0 });
+		// No command of the machine's is started or recorded for it.
+		expect(f.methods()).not.toContain("qorpera_authorize_machine_command");
+	});
+
+	it("answers the helper's refusal, another boot and an earlier image by code, and fails on anything else", async () => {
+		for (const [answer, outcome] of [
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-refusal/v1", code: "CLIPBOARD_EMPTY" }),
+				},
+				{ refused: "CLIPBOARD_EMPTY" },
+			],
+			[{ exitCode: 97, stdout: "" }, { refused: "MACHINE_BOOT_CHANGED" }],
+			[{ exitCode: 98, stdout: "" }, { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" }],
+		] as const) {
+			const { f } = await piped(answer);
+			expect(await f.host.codingValue(run, f.signal)).toEqual(outcome);
+		}
+		for (const [answer, error] of [
+			[{ exitCode: 1, stdout: "MACHINE_CODING_VALUE_FAILED" }, "COMPANY_MACHINE_CODING_VALUE_FAILED"],
+			[{ exitCode: 0, stdout: "npm_not json" }, "COMPANY_MACHINE_CODING_VALUE_INVALID"],
+			[
+				{ exitCode: 0, stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box, value: "x" }) },
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box: { ...box, value: "x" } }),
+				},
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-refusal/v1", code: "lower case" }),
+				},
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+		] as const) {
+			const { f } = await piped(answer);
+			await expect(f.host.codingValue(run, f.signal)).rejects.toThrow(error);
+		}
+		const { f } = await piped({ exitCode: 0, stdout: "" });
+		await expect(f.host.codingValue({ ...run, bootId: "boot" }, f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_CODING_VALUE_INVALID",
+		);
+		// A client without the pipe exec: never run.
+		const bare = await fixture();
+		await expect(bare.host.codingValue(run, bare.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
+	});
 });

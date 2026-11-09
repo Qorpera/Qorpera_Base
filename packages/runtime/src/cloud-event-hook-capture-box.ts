@@ -31,6 +31,8 @@ export interface CaptureBoxKind {
 	readonly info: string;
 	/** "Hook capture", "Coding value capture". */
 	readonly label: string;
+	/** A kind read off no page (a machine's clipboard, 20260930705000): its payload has no `site`. */
+	readonly siteless?: true;
 }
 
 const HOOK_KIND: CaptureBoxKind = {
@@ -159,7 +161,8 @@ export function sealCaptureBox(
 
 /**
  * The vault's side of any capture box: the payload of a box of this kind sealed to this key pair under exactly
- * `associatedData`, with its schema checked, its `site` a host and its `capturedAtMs` within the box's lifetime;
+ * `associatedData`, with its schema checked, its `site` a host (none for a siteless kind) and its `capturedAtMs` within
+ * the box's lifetime;
  * or an error ("<label> box is malformed", "<label> box does not open here", "<label> is malformed", "<label>
  * expired"). `parse` checks the rest of the payload (its keys included) and keeps what the caller needs, as long as
  * the returned buffer `value` lives: the caller zeroes it.
@@ -172,7 +175,7 @@ export function openCaptureBox<T>(
 	associatedData: Buffer,
 	parse: (payload: Record<string, unknown>) => T,
 	nowMs: number,
-): { readonly value: Buffer; readonly site: string; readonly capturedAtMs: number; readonly parsed: T } {
+): { readonly value: Buffer; readonly site: string | undefined; readonly capturedAtMs: number; readonly parsed: T } {
 	if (
 		!box ||
 		typeof box !== "object" ||
@@ -213,7 +216,7 @@ export function openCaptureBox<T>(
 			Array.isArray(payload) ||
 			payload.schema !== kind.payload ||
 			typeof payload.value !== "string" ||
-			!captureSiteValid(payload.site) ||
+			(kind.siteless ? Object.hasOwn(payload, "site") : !captureSiteValid(payload.site)) ||
 			!Number.isSafeInteger(payload.capturedAtMs)
 		)
 			throw new Error(`${kind.label} is malformed`);
@@ -223,7 +226,7 @@ export function openCaptureBox<T>(
 		if (capturedAtMs < nowMs - EVENT_HOOK_CAPTURE_LIFETIME_MS || capturedAtMs > nowMs + CLOCK_SKEW_MS)
 			throw new Error(`${kind.label} expired`);
 		value = Buffer.from(payload.value, "utf8");
-		return { value, site: payload.site as string, capturedAtMs, parsed };
+		return { value, site: kind.siteless ? undefined : (payload.site as string), capturedAtMs, parsed };
 	} catch (error) {
 		value?.fill(0);
 		if (error instanceof Error && error.message === `${kind.label} expired`) throw error;
@@ -280,7 +283,8 @@ export async function openEventHookCapture<T>(
 		nowMs,
 	);
 	try {
-		return await callback({ field: expected.field, value, site, capturedAtMs });
+		// A hook's kind has a site: the opener checked it.
+		return await callback({ field: expected.field, value, site: site as string, capturedAtMs });
 	} finally {
 		value.fill(0);
 	}

@@ -4,11 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
+	CloudMachineCodingValueRefusal,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
 	CloudMachineCommandUnanswered,
 } from "../src/cloud-machine-command-http.ts";
-import { CLOUD_MACHINE_START_ANSWER_MS, cloudMachineTools } from "../src/cloud-machine-tools.ts";
+import {
+	CLOUD_MACHINE_START_ANSWER_MS,
+	type CloudMachineCodingValues,
+	cloudMachineTools,
+} from "../src/cloud-machine-tools.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import {
 	type CloudNativeToolOperations,
@@ -20,6 +25,7 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
 function fixture(
 	machines: { name: string; state: string }[] = [{ name: "build-a", state: "running" }],
 	worker = false,
+	codingValues?: CloudMachineCodingValues,
 ) {
 	const { authority, binding } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
@@ -91,6 +97,17 @@ function fixture(
 			async (scope, commandId) => receipt(scope.machineId, commandId, "cancelled") as never,
 		),
 		wake: vi.fn<NonNullable<CloudMachineCommandGateway["wake"]>>(async () => false),
+		codingValue: vi.fn<NonNullable<CloudMachineCommandGateway["codingValue"]>>(async (_scope, input) => ({
+			schema: "qorpera.machine-coding-value/v1",
+			commandId: input.commandId,
+			box: {
+				schema: "qorpera.coding-value-machine-box/v1",
+				ephemeralPublicKey: "e",
+				iv: "i",
+				tag: "t",
+				ciphertext: "c",
+			},
+		})),
 	};
 	const execute = vi.fn<CloudNativeToolOperations["execute"]>(async (options) => {
 		await options.authorize(options.operation, identity, options.signal);
@@ -111,6 +128,7 @@ function fixture(
 		operations: { execute },
 		gateway,
 		worker,
+		...(codingValues ? { codingValues } : {}),
 	});
 	const run = new AbortController();
 	const boundary = new CloudNativeToolBoundary({
@@ -1389,5 +1407,214 @@ describe("machine tools", () => {
 		} finally {
 			f.boundary.close();
 		}
+	});
+
+	// 20260930705000: save_coding_value, a key the agent copied on its machine's desktop, into the vault.
+	describe("save_coding_value", () => {
+		const vault = () => {
+			const values = {
+				codingValuePrepare: vi.fn<CloudMachineCodingValues["codingValuePrepare"]>(async () => ({
+					schema: "qorpera.coding-value-prepare-answer/v1" as const,
+					variable: "npm_token",
+					replaced: false,
+				})),
+				codingValueCapture: vi.fn<CloudMachineCodingValues["codingValueCapture"]>(async () => ({
+					schema: "qorpera.coding-value-capture-answer/v1" as const,
+					variable: "npm_token",
+					repository: "acme/web",
+					version: 2,
+					unchanged: false,
+				})),
+			};
+			return values;
+		};
+		const args = {
+			operationKey: "npm-key",
+			machine: "build-a",
+			service: "npm",
+			variable: "npm_token",
+			repository: "acme/web",
+			purpose: "Installs the private packages.",
+		};
+
+		it("is offered to a company agent's run with the vault, never to a worker or without the vault", () => {
+			const agent = fixture(undefined, false, vault());
+			const helper = fixture(undefined, true, vault());
+			const without = fixture();
+			try {
+				expect(agent.tools.map((tool) => tool.name).at(-1)).toBe("save_coding_value");
+				expect(helper.tools.map((tool) => tool.name)).not.toContain("save_coding_value");
+				expect(without.tools.map((tool) => tool.name)).not.toContain("save_coding_value");
+				expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("save_coding_value");
+				const save = agent.tools.find((tool) => tool.name === "save_coding_value")!;
+				expect(Buffer.byteLength(save.description)).toBeLessThanOrEqual(4096);
+				for (const words of [
+					"press the site's own Copy button",
+					"You never pass the key",
+					"clears the clipboard",
+					"Never type, paste, print, echo or write a key anywhere",
+					"take no desktop shot while a key is on the screen: shots are kept in the company folder",
+					"ask_member with surface secret and connectorId environment",
+					"owner or an admin",
+				])
+					expect(save.description).toContain(words);
+				expect(save.inputSchema).toMatchObject({
+					additionalProperties: false,
+					required: ["operationKey", "machine", "service", "variable", "repository", "purpose"],
+				});
+				expect(Object.keys(save.inputSchema.properties as object).sort()).toEqual([
+					"machine",
+					"operationKey",
+					"purpose",
+					"repository",
+					"service",
+					"variable",
+				]);
+				expect((save.inputSchema.properties as Record<string, { enum?: unknown }>).service?.enum).toEqual([
+					"npm",
+					"github",
+					"stripe",
+					"resend",
+				]);
+			} finally {
+				for (const f of [agent, helper, without]) f.boundary.close();
+			}
+		});
+
+		it("takes where the key goes and the machine, never a key, checked as the database checks them", () => {
+			const f = fixture(undefined, false, vault());
+			try {
+				const save = f.tools.find((tool) => tool.name === "save_coding_value")!;
+				expect(save.parseArguments(args)).toEqual(args);
+				// A purpose is one line of plain text.
+				expect(save.parseArguments({ ...args, purpose: "  Installs\nthe  packages. " })).toMatchObject({
+					purpose: "Installs the packages.",
+				});
+				for (const bad of [
+					{ ...args, value: `npm_${"a".repeat(36)}` },
+					{ ...args, service: "pypi" },
+					{ ...args, service: "NPM" },
+					{ ...args, variable: "NPM_TOKEN" },
+					{ ...args, variable: "path" },
+					{ ...args, variable: "git_token" },
+					{ ...args, variable: "openai_api_key" },
+					{ ...args, repository: "Acme/Web" },
+					{ ...args, repository: "web" },
+					{ ...args, repository: "acme/web/src" },
+					{ ...args, purpose: " " },
+					{ ...args, purpose: "x".repeat(301) },
+					{ ...args, purpose: "bell\u0007" },
+					{ ...args, machine: "Build A" },
+					{ ...args, operationKey: "" },
+					(({ purpose: _purpose, ...rest }) => rest)(args),
+				])
+					expect(() => save.parseArguments(bad), JSON.stringify(bad)).toThrow();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("saves through one receipt: the vault's key, the machine's box, then the vault's store", async () => {
+			const values = vault();
+			const f = fixture(undefined, false, values);
+			try {
+				const result = await f.boundary.invoke("v1", "qorpera", "save_coding_value", args);
+				expect(result.success).toBe(true);
+				expect(f.content(result)).toEqual({
+					saved: { service: "npm", variable: "npm_token", repository: "acme/web", version: 2, unchanged: false },
+				});
+				const operation = f.execute.mock.calls[0]![0].operation;
+				expect(operation).toEqual({
+					tool: "save_coding_value",
+					toolVersion: "qorpera.machine-tools/v1",
+					logicalOperationKey: "npm-key",
+					arguments: args,
+					target: { realm: "company_machine", machineId: f.listed[0]!.machineId },
+					requiresCompanyRevision: false,
+				});
+				const call = {
+					binding: f.binding,
+					receiptId: f.receiptId,
+					idempotencyKey: "b".repeat(64),
+					envelope: cloudNativeToolOperationEnvelope(f.identity, operation),
+				};
+				expect(values.codingValuePrepare).toHaveBeenCalledWith(call, expect.any(AbortSignal));
+				expect(f.gateway.codingValue).toHaveBeenCalledWith(
+					{ machineId: f.listed[0]!.machineId },
+					{ commandId: f.receiptId, envelope: call.envelope },
+					expect.any(AbortSignal),
+				);
+				const box = (await f.gateway.codingValue.mock.results[0]!.value).box;
+				expect(values.codingValueCapture).toHaveBeenCalledWith({ ...call, box }, expect.any(AbortSignal));
+				expect(values.codingValuePrepare.mock.invocationCallOrder[0]).toBeLessThan(
+					f.gateway.codingValue.mock.invocationCallOrder[0]!,
+				);
+				expect(f.gateway.codingValue.mock.invocationCallOrder[0]).toBeLessThan(
+					values.codingValueCapture.mock.invocationCallOrder[0]!,
+				);
+				// The model sees where it went and its version, never the box.
+				expect(JSON.stringify(result)).not.toContain("ciphertext");
+				// No command ran on the machine.
+				expect(f.gateway.start).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers the machine's and the vault's refusals in words, and stores nothing after one", async () => {
+			for (const code of [
+				"CLIPBOARD_EMPTY",
+				"CLIPBOARD_NOT_A_KEY",
+				"CLIPBOARD_MORE_THAN_ONE_KEY",
+				"DESKTOP_NOT_RUNNING",
+				"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+			] as const) {
+				const values = vault();
+				const f = fixture(undefined, false, values);
+				try {
+					f.gateway.codingValue.mockRejectedValueOnce(new CloudMachineCodingValueRefusal(code));
+					const result = await f.boundary.invoke("v2", "qorpera", "save_coding_value", args);
+					expect(result.success).toBe(true);
+					const answer = f.content(result) as { saved: boolean; refused: { reason: string; message: string } };
+					expect(answer.saved).toBe(false);
+					expect(answer.refused.reason).toBe(code);
+					expect(answer.refused.message.length).toBeGreaterThan(20);
+					expect(values.codingValueCapture).not.toHaveBeenCalled();
+				} finally {
+					f.boundary.close();
+				}
+			}
+			// The vault's refusal comes first: the machine is never asked.
+			const values = vault();
+			values.codingValuePrepare.mockResolvedValueOnce({
+				schema: "qorpera.coding-value-refusal/v1",
+				code: "42501",
+				message: "Only owners and admins can save coding values; ask one of them",
+			});
+			const f = fixture(undefined, false, values);
+			try {
+				const result = await f.boundary.invoke("v3", "qorpera", "save_coding_value", args);
+				expect(f.content(result)).toEqual({
+					saved: false,
+					refused: {
+						reason: "VAULT_REFUSED",
+						code: "42501",
+						message: "Only owners and admins can save coding values; ask one of them",
+					},
+				});
+				expect(f.gateway.codingValue).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+			// A machine that is not running: no receipt.
+			const asleep = fixture([{ name: "build-a", state: "stopped" }], false, vault());
+			try {
+				const result = await asleep.boundary.invoke("v4", "qorpera", "save_coding_value", args);
+				expect(result.contentItems[0]!.text).toContain("MACHINE_NOT_RUNNING");
+				expect(asleep.execute).not.toHaveBeenCalled();
+			} finally {
+				asleep.boundary.close();
+			}
+		});
 	});
 });

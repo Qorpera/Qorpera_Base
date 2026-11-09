@@ -15,7 +15,9 @@
 # that needs a screen: TigerVNC's X server and a plain XFCE session on display :1
 # as the account `desktop`, started only by the agents' `desktop start`, with
 # Chromium (the coding image's pinned build) and xdotool behind the `desktop`
-# command (README, "The desktop"). An agent that has a Dockerfile builds
+# command (README, "The desktop"), and xsel with save_coding_value's clipboard
+# helper (20260930705000), which seals a key copied on the desktop for the vault
+# and clears the clipboard. An agent that has a Dockerfile builds
 # and runs it inside its machine; images are not made from Dockerfiles.
 #
 # The builder runs in the node's declared image build space (the observer
@@ -57,7 +59,7 @@ EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8
 exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
-for file in cloud-machine-guest.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
+for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
 	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
 	qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
@@ -109,7 +111,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
-		x11-utils x11-xserver-utils xdotool wmctrl scrot apparmor \
+		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor \
 		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
 		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
 		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-dejavu-core fonts-liberation \
@@ -165,6 +167,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd.service
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
@@ -221,6 +224,38 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi
 	sleep 1
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "a program runs without the desktop" >&2; exit 1; }
+	# save_coding_value (20260930705000): no clipboard manager keeps what is copied, and the clipboard helper seals a key
+	# copied on the desktop (a made-up npm one), prints only the box, leaves both selections empty, and refuses an empty
+	# clipboard and a stopped desktop with a code. It runs as the executor runs it: root, the target on stdin.
+	[[ -z $(command -v xfce4-clipman || true) ]] || { echo "a clipboard manager would keep copied keys" >&2; exit 1; }
+	desktop start
+	node - <<"JS"
+	const { execFileSync, spawnSync } = require("node:child_process");
+	const crypto = require("node:crypto");
+	const fs = require("node:fs");
+	const env = { DISPLAY: ":1", PATH: "/usr/bin:/bin" };
+	const fail = (why) => { console.error(why); process.exit(1); };
+	const key = `npm_${crypto.randomBytes(18).toString("hex")}`;
+	// xsel serves what it is given from a process of its own, which wants a home.
+	for (const selection of ["--clipboard", "--primary"])
+		execFileSync("/usr/bin/xsel", ["--logfile", "/dev/null", selection, "--input"],
+			{ input: key, env: { ...env, HOME: "/root" }, stdio: ["pipe", "ignore", "ignore"] });
+	const id = () => crypto.randomUUID();
+	const target = { schema: "qorpera.coding-value-machine-target/v1", service: "npm", valuePattern: "^npm_[A-Za-z0-9]{36}$",
+		variable: "npm_token", companyId: id(), companyMachineId: id(), placementId: id(),
+		bootId: fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), receiptId: id(),
+		capturePublicKey: crypto.generateKeyPairSync("x25519").publicKey.export({ format: "der", type: "spki" }).subarray(12).toString("base64url") };
+	const helper = () => spawnSync("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-coding-value.mjs"], { input: JSON.stringify(target), encoding: "utf8" });
+	const read = (selection) => execFileSync("/usr/bin/xsel", ["--logfile", "/dev/null", selection, "--output"], { env, encoding: "utf8" });
+	const sealed = helper();
+	if (sealed.status !== 0 || JSON.parse(sealed.stdout).schema !== "qorpera.machine-coding-value-box/v1") fail("the clipboard helper sealed no box");
+	if (sealed.stdout.includes(key.slice(4)) || sealed.stderr.includes(key.slice(4))) fail("the clipboard helper printed the key");
+	if (read("--clipboard") !== "" || read("--primary") !== "") fail("the clipboard helper left the key on the clipboard");
+	if (JSON.parse(helper().stdout).code !== "CLIPBOARD_EMPTY") fail("the clipboard helper did not refuse an empty clipboard");
+	execFileSync("/usr/local/bin/desktop", ["stop"], { stdio: "ignore" });
+	if (JSON.parse(helper().stdout).code !== "DESKTOP_NOT_RUNNING") fail("the clipboard helper did not refuse a stopped desktop");
+JS
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	# Nothing of that check stays in the desktop account but its panel layout.
 	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
 		-exec rm -rf -- {} +

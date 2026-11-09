@@ -250,3 +250,61 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 	const unknown = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "fly"], { encoding: "utf8" });
 	assert.equal(unknown.status, 2);
 });
+
+test("the image carries save_coding_value's clipboard helper as its own file, with xsel, and checks it on the desktop", async () => {
+	// 20260930705000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-coding-value\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-coding-value\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-coding-value\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The guest helper stays the manifest's first artifact: the build record and the proofs read its pin there.
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-coding-value.mjs"'));
+	assert.match(imageScript, /--arg helperSha256 "\$\(jq -r '\.artifacts\[0\]\.sha256' "\$PACKAGE\/manifest\.json"\)"/);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-coding-value.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("xsel"));
+	// The build's own check: a key copied on the desktop is sealed, never printed, both selections left empty, and an
+	// empty clipboard and a stopped desktop refused; no clipboard manager keeps what is copied.
+	for (const line of [
+		'\t[[ -z $(command -v xfce4-clipman || true) ]] || { echo "a clipboard manager would keep copied keys" >&2; exit 1; }\n',
+		'spawnSync("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-coding-value.mjs"]',
+		'fail("the clipboard helper printed the key")',
+		'fail("the clipboard helper left the key on the clipboard")',
+		'fail("the clipboard helper did not refuse an empty clipboard")',
+		'fail("the clipboard helper did not refuse a stopped desktop")',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The check's script sits in the build's single-quoted script: it must hold no single quote.
+	const check = imageScript.slice(imageScript.indexOf('\tnode - <<"JS"\n'), imageScript.indexOf("\nJS\n"));
+	assert.ok(check.length > 0 && !check.includes("'"));
+	// The executor runs it where the image put it.
+	assert.match(
+		read("packages/runner-orchestrator/src/company-machine-host.ts"),
+		/COMPANY_MACHINE_CODING_VALUE_HELPER = "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs"/,
+	);
+	// Built with the packager's options, the guest helper holds none of it, and the clipboard helper reads the clipboard
+	// with xsel against the desktop's display only.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-coding-value-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-coding-value.ts")], outfile: join(temporary, "coding-value.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "coding-value.mjs"), "utf8");
+		assert.doesNotMatch(guest, /coding-value-machine|xsel/);
+		assert.match(helper, /"\/usr\/bin\/xsel"/);
+		assert.match(helper, /DISPLAY = ":1"/);
+		assert.ok(helper.length < 65536, `the clipboard helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+

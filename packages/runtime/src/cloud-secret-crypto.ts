@@ -11,7 +11,10 @@ import {
 import {
 	type CodingValueCapture,
 	type CodingValueCaptureIdentity,
+	type CodingValueMachineCapture,
+	type CodingValueMachineIdentity,
 	openCodingValueCapture,
+	openCodingValueMachineCapture,
 } from "./cloud-coding-value-capture-box.ts";
 import {
 	type EventHookCapture,
@@ -518,6 +521,19 @@ export class CloudSecretKeyring {
 	): Promise<T> {
 		const privateKey = this.#captureKey(identity, "codingValue");
 		return openCodingValueCapture(privateKey, rawPublicKey(privateKey), box, expected, callback, nowMs);
+	}
+
+	/** The coding value inside a box a company machine's helper sealed to the same capture key for exactly this
+	 * save_coding_value call on that machine's boot (20260930705000). */
+	async openCodingValueMachineCapture<T>(
+		identity: CloudHookCaptureKeyIdentity,
+		box: unknown,
+		expected: CodingValueMachineIdentity,
+		callback: (capture: CodingValueMachineCapture) => Promise<T>,
+		nowMs = Date.now(),
+	): Promise<T> {
+		const privateKey = this.#captureKey(identity, "codingValue");
+		return openCodingValueMachineCapture(privateKey, rawPublicKey(privateKey), box, expected, callback, nowMs);
 	}
 
 	close(): void {

@@ -38,7 +38,13 @@ import {
  *   (qorpera_folder_store_coding_value_capture). A value equal to the version the vault holds is stored all the same:
  *   the store is the only call that records this call's capture and issues the repository's grant, and the database,
  *   which never sees a value, cannot tell the two apart. The answer says it was unchanged.
- * The value never leaves the vault but sealed into it; the answers carry its name, repository and version only. */
+ * The value never leaves the vault but sealed into it; the answers carry its name, repository and version only.
+ *
+ * Since 20260930705000 the same two calls also serve save_coding_value, an agent's save of a coding value off its
+ * company machine's clipboard: the same request (the call's receipt, idempotency key and envelope, here the machine
+ * tool's), the same capture key, and the machine helper's box (cloud-coding-value-capture-box.ts, its machine kind),
+ * which the database's read binds to the machine, its placement and its boot instead of a computer and its
+ * generation. Read off no page, it names no site: only the service's pattern is checked, here as on the machine. */
 
 export const CODING_VALUE_PREPARE_REQUEST_SCHEMA = "qorpera.coding-value-prepare-request/v1";
 export const CODING_VALUE_CAPTURE_REQUEST_SCHEMA = "qorpera.coding-value-capture-request/v1";
@@ -59,7 +65,8 @@ const REPOSITORY = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,
 /** How many times a prepare follows the id the database names before it is left unconfirmed. */
 const PREPARE_IDS = 3;
 
-/** One `computer_browser` `vault_capture` of a coding value, as the native host began it. */
+/** One `computer_browser` `vault_capture` of a coding value, or one `save_coding_value` (20260930705000), as the native
+ * host began it. */
 export interface CodingValueCaptureCall {
 	readonly binding: CloudNativeToolBinding;
 	readonly receiptId: string;
@@ -330,8 +337,11 @@ interface CaptureContext {
 	readonly environmentId: string;
 	readonly keyId: string;
 	readonly receiptId: string;
-	readonly companyComputerId: string;
-	readonly computerGeneration: number;
+	/** What the box is bound to: an office's computer at its boot generation (computer_browser vault_capture), or a
+	 * company machine's placement and boot (save_coding_value). */
+	readonly boundTo:
+		| { readonly companyComputerId: string; readonly computerGeneration: number }
+		| { readonly companyMachineId: string; readonly placementId: string; readonly bootId: string };
 	/** The version the vault holds, sealed under this broker's key; none before the first. */
 	readonly current?: HeldVersion;
 	/** This call stored its value already. */
@@ -357,11 +367,14 @@ function captureContext(value: unknown): CaptureContext {
 			"keyId",
 			"capturePublicKey",
 			"receiptId",
-			"companyComputerId",
-			"computerGeneration",
 		],
-		["current", "captured"],
+		["companyComputerId", "computerGeneration", "companyMachineId", "placementId", "bootId", "current", "captured"],
 	);
+	// One binding or the other, whole.
+	const computer = ["companyComputerId", "computerGeneration"].filter((key) => input[key] !== undefined).length;
+	const machine = ["companyMachineId", "placementId", "bootId"].filter((key) => input[key] !== undefined).length;
+	if (!((computer === 2 && machine === 0) || (computer === 0 && machine === 3)))
+		throw new Error("Coding value capture context is malformed");
 	const { service, site, valuePattern, variable, repository, keyId } = input;
 	if (
 		input.schema !== CONTEXT_SCHEMA ||
@@ -396,13 +409,22 @@ function captureContext(value: unknown): CaptureContext {
 		environmentId: parseUuid(input.environmentId, "Coding value environment"),
 		keyId,
 		receiptId: parseUuid(input.receiptId, "Coding value capture receipt"),
-		companyComputerId: parseUuid(input.companyComputerId, "Company Computer"),
-		computerGeneration: parseInteger(
-			input.computerGeneration,
-			"Company Computer generation",
-			1,
-			Number.MAX_SAFE_INTEGER,
-		),
+		boundTo:
+			computer === 2
+				? {
+						companyComputerId: parseUuid(input.companyComputerId, "Company Computer"),
+						computerGeneration: parseInteger(
+							input.computerGeneration,
+							"Company Computer generation",
+							1,
+							Number.MAX_SAFE_INTEGER,
+						),
+					}
+				: {
+						companyMachineId: parseUuid(input.companyMachineId, "Company machine"),
+						placementId: parseUuid(input.placementId, "Company machine placement"),
+						bootId: parseUuid(input.bootId, "Company machine boot"),
+					},
 		...(captured === undefined
 			? {}
 			: {
@@ -551,67 +573,77 @@ export class CodingValueVault {
 			if (context.receiptId !== request.receiptId) throw new Error("Coding value capture context is malformed");
 			if (context.captured) return captureAnswer(context, context.captured.version, false);
 			const pattern = codingValuePattern(context.valuePattern);
-			const { companyId, environmentId, secretId, keyId, service, site } = context;
-			return await this.#keys
-				.openCodingValueCapture(
-					{ companyId, environmentId, secretId, keyId },
-					request.box,
-					{
-						companyId,
-						companyComputerId: context.companyComputerId,
-						computerGeneration: context.computerGeneration,
-						receiptId: context.receiptId,
-						service,
-						variable: context.variable,
-					},
-					async (capture) => {
-						// The office checked both; the vault checks them again against the database's own.
-						if (capture.site !== site) throw vaultRefused("22023", `Values of ${service} are taken from ${site}`);
-						const value = capture.value.toString("utf8");
-						if (!codingValueMatches(value, pattern))
-							throw vaultRefused("22023", `The value read is not a whole key of ${service}`);
-						const unchanged =
-							context.current !== undefined &&
-							(await heldValueIs(this.#keys, context.current, context, VALUE_FIELD, capture.value));
-						// Stored when unchanged too: the store records this call's capture and grants the value to the
-						// call's repository, which no other call does.
-						const encryptedEnvelope = this.#keys.seal(
-							{ [VALUE_FIELD]: value },
-							{ companyId, environmentId, secretId, version: context.version, keyId },
+			const { companyId, environmentId, secretId, keyId, service, site, variable, receiptId, boundTo } = context;
+			// The office or the machine checked the value; the vault checks it again against the database's pattern.
+			const store = async (value: Buffer): Promise<CodingValueCaptureAnswer> => {
+				const text = value.toString("utf8");
+				if (!codingValueMatches(text, pattern))
+					throw vaultRefused("22023", `The value read is not a whole key of ${service}`);
+				const unchanged =
+					context.current !== undefined &&
+					(await heldValueIs(this.#keys, context.current, context, VALUE_FIELD, value));
+				// Stored when unchanged too: the store records this call's capture and grants the value to the call's
+				// repository, which no other call does.
+				const encryptedEnvelope = this.#keys.seal(
+					{ [VALUE_FIELD]: text },
+					{ companyId, environmentId, secretId, version: context.version, keyId },
+				);
+				try {
+					const version = storedVersion(
+						await this.#authority.storeCodingValueCapture(
+							request,
+							{
+								secretId,
+								version: context.version,
+								companyId,
+								environmentId,
+								keyId,
+								encryptedEnvelope,
+								envelopeSha256: createHash("sha256").update(encryptedEnvelope).digest("hex"),
+							},
+							signal,
+						),
+						context,
+					);
+					return captureAnswer(context, version, unchanged);
+				} finally {
+					encryptedEnvelope.fill(0);
+				}
+			};
+			const key = { companyId, environmentId, secretId, keyId };
+			const opened =
+				"companyComputerId" in boundTo
+					? this.#keys.openCodingValueCapture(
+							key,
+							request.box,
+							{ companyId, ...boundTo, receiptId, service, variable },
+							async (capture) => {
+								if (capture.site !== site)
+									throw vaultRefused("22023", `Values of ${service} are taken from ${site}`);
+								return store(capture.value);
+							},
+							this.#now(),
+						)
+					: this.#keys.openCodingValueMachineCapture(
+							key,
+							request.box,
+							{ companyId, ...boundTo, receiptId, service, variable },
+							(capture) => store(capture.value),
+							this.#now(),
 						);
-						try {
-							const version = storedVersion(
-								await this.#authority.storeCodingValueCapture(
-									request,
-									{
-										secretId,
-										version: context.version,
-										companyId,
-										environmentId,
-										keyId,
-										encryptedEnvelope,
-										envelopeSha256: createHash("sha256").update(encryptedEnvelope).digest("hex"),
-									},
-									signal,
-								),
-								context,
-							);
-							return captureAnswer(context, version, unchanged);
-						} finally {
-							encryptedEnvelope.fill(0);
-						}
-					},
-					this.#now(),
+			return await opened.catch((error: unknown) => {
+				// Read too long before it reached the vault: nothing was stored.
+				if (
+					error instanceof Error &&
+					(error.message === "Coding value capture expired" ||
+						error.message === "Coding value machine capture expired")
 				)
-				.catch((error: unknown) => {
-					// Read too long before it reached the vault: nothing was stored.
-					if (error instanceof Error && error.message === "Coding value capture expired")
-						throw vaultRefused(
-							"55000",
-							"The value was read too long ago and was not stored; capture it again, or make a new one if the page no longer shows it",
-						);
-					throw error;
-				});
+					throw vaultRefused(
+						"55000",
+						"The value was read too long ago and was not stored; capture it again, or make a new one if the page no longer shows it",
+					);
+				throw error;
+			});
 		} finally {
 			context.current?.envelope.fill(0);
 		}

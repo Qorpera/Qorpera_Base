@@ -1,8 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
+	authorizeMachineCodingValue,
+	authorizeMachineCommand,
+} from "../../../deploy/coding-worker/machine-command-authority.ts";
+import {
+	localMachineCodingValue,
 	localMachineWake,
 	MachineCommandRouter,
 	machineCommandRoutes,
@@ -10,11 +14,14 @@ import {
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineCodingValueHttpRequest,
+	CloudMachineCodingValueRefusal,
 	type CloudMachineCommandHttpRequest,
 	CloudMachineCommandRefusal,
 	CloudMachineCommandUnanswered,
 	type CloudMachineWakeHttpRequest,
 	createHttpCloudMachineCommandGateway,
+	parseCloudMachineCodingValueHttpRequest,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
@@ -690,5 +697,218 @@ describe("machine command authority", () => {
 			credential: async () => "",
 		});
 		await expect(noMachines.execute(f.request, f.signal)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+	});
+});
+
+// 20260930705000: save_coding_value's route on the executor's ingress: SQL's read for the call's own receipt, the
+// clipboard helper on the machine's node (or its peer), and the box back, or a refusal by its code.
+describe("a machine's coding value", () => {
+	const box = {
+		schema: "qorpera.coding-value-machine-box/v1",
+		ephemeralPublicKey: "ZXBo",
+		iv: "aXY",
+		tag: "dGFn",
+		ciphertext: "Y2lwaGVy",
+	};
+	function fixture() {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const commandId = randomUUID();
+		const placementId = randomUUID();
+		const bootId = randomUUID();
+		const request: CloudMachineCodingValueHttpRequest = {
+			schema: "qorpera.machine-command-http/v1",
+			binding,
+			scope: { machineId },
+			action: "coding_value",
+			input: { commandId, envelope: JSON.stringify({ schema: "qorpera.cloud-tool-operation/v2" }) },
+		};
+		const target = {
+			schema: "qorpera.coding-value-machine-target/v1",
+			service: "npm",
+			valuePattern: "^npm_[A-Za-z0-9]{36}$",
+			variable: "npm_token",
+			companyId: randomUUID(),
+			companyMachineId: machineId,
+			placementId,
+			bootId,
+			receiptId: commandId,
+			capturePublicKey: "k".repeat(43),
+		};
+		const answer = {
+			schema: "qorpera.machine-coding-value-authority/v1",
+			state: "authorized",
+			machineId,
+			placementId,
+			bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			receiptId: commandId,
+			target,
+		};
+		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
+		const host = {
+			codingValue: vi.fn(async () => ({ box }) as { box: Record<string, string> } | { refused: string }),
+		};
+		const router = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: { call },
+			credential: async () => "",
+			codingValueLocal: localMachineCodingValue(host),
+		});
+		return { binding, request, target, answer, call, host, router, signal: new AbortController().signal };
+	}
+
+	it("asks SQL for the call's own receipt, runs the helper on this node with SQL's target, and answers the box", async () => {
+		const f = fixture();
+		expect(await f.router.codingValue(f.request, f.signal)).toEqual({
+			schema: "qorpera.machine-coding-value/v1",
+			commandId: f.request.input.commandId,
+			box,
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_authorize_machine_coding_value",
+			{
+				p_binding: f.binding,
+				p_scope: f.request.scope,
+				p_receipt_id: f.request.input.commandId,
+				p_envelope: f.request.input.envelope,
+			},
+			f.signal,
+		);
+		expect(f.host.codingValue).toHaveBeenCalledWith(
+			{
+				placementId: f.answer.placementId,
+				bootId: f.answer.bootId,
+				receiptId: f.request.input.commandId,
+				target: f.target,
+			},
+			f.signal,
+		);
+	});
+
+	it("turns a stopped machine and the helper's codes into the agent's refusals, and anything else into a failure", async () => {
+		const f = fixture();
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-coding-value-authority/v1",
+			state: "refused",
+			reason: "MACHINE_NOT_RUNNING",
+			machine: "build-a",
+		});
+		await expect(f.router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
+		expect(f.host.codingValue).not.toHaveBeenCalled();
+		for (const code of ["CLIPBOARD_EMPTY", "CLIPBOARD_MORE_THAN_ONE_KEY", "MACHINE_IMAGE_WITHOUT_CODING_VALUES"]) {
+			f.host.codingValue.mockResolvedValueOnce({ refused: code });
+			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
+			expect(error).toMatchObject({ code });
+		}
+		f.host.codingValue.mockResolvedValueOnce({ refused: "SOMETHING_ELSE" });
+		await expect(f.router.codingValue(f.request, f.signal)).rejects.toThrow("MACHINE_CODING_VALUE_FAILED");
+		// SQL's read for another machine, receipt, placement or boot is no authority.
+		for (const other of [
+			{ machineId: randomUUID() },
+			{ receiptId: randomUUID() },
+			{ target: { ...f.target, placementId: randomUUID() } },
+			{ target: { ...f.target, bootId: randomUUID() } },
+			{ target: { ...f.target, schema: "qorpera.coding-value-capture-target/v1" } },
+			{ target: null },
+			{ executorOwner: "" },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, ...other });
+			await expect(
+				authorizeMachineCodingValue({ call: f.call }, f.request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+		}
+	});
+
+	it("crosses the ingress with the run's own lease: the box back, a refusal as 409 with its code", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const lease = randomBytes(32).toString("base64url");
+		const http = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: async (binding, holder) => {
+				if (holder !== `job.${binding.jobId.toLowerCase()}.${lease}`)
+					throw new Error("native binding proof is refused");
+			},
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(f.router, { call: f.call }, false) },
+		});
+		const port = await http.start();
+		cleanups.push(() => http.close());
+		const gateway = (holder: string) =>
+			createHttpCloudMachineCommandGateway({
+				url: `http://127.0.0.1:${port}`,
+				token,
+				binding: f.binding,
+				holder: () => holder,
+				allowLoopback: true,
+			});
+		const own = gateway(`job.${f.binding.jobId.toLowerCase()}.${lease}`);
+		expect(await own.codingValue!(f.request.scope, f.request.input, f.signal)).toEqual({
+			schema: "qorpera.machine-coding-value/v1",
+			commandId: f.request.input.commandId,
+			box,
+		});
+		f.host.codingValue.mockResolvedValueOnce({ refused: "CLIPBOARD_NOT_A_KEY" });
+		await expect(own.codingValue!(f.request.scope, f.request.input, f.signal)).rejects.toMatchObject({
+			code: "CLIPBOARD_NOT_A_KEY",
+		});
+		// Without the run's lease nothing is asked of SQL, and the machine is never reached.
+		const calls = f.call.mock.calls.length;
+		await expect(
+			gateway(`job.${f.binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`).codingValue!(
+				f.request.scope,
+				f.request.input,
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+		expect(f.host.codingValue).toHaveBeenCalledTimes(2);
+	});
+
+	it("goes once to the peer whose node runs the machine, which never forwards, and its refusal stays the agent's", async () => {
+		const f = fixture();
+		const sent: string[] = [];
+		const router = new MachineCommandRouter({
+			owner: "mx-c",
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+			],
+			control: { call: f.call },
+			credential: async () => randomBytes(32).toString("base64url"),
+			fetch: (async (input: string | URL | Request) => {
+				sent.push(String(input));
+				return new Response(JSON.stringify({ code: "DESKTOP_NOT_RUNNING" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		await expect(router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: "DESKTOP_NOT_RUNNING" });
+		expect(sent).toEqual(["https://node-a.example/v1/machine-commands/coding-value"]);
+		await expect(router.codingValue(f.request, f.signal, true)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(sent).toHaveLength(1);
+	});
+
+	it("reads only its own request shape", () => {
+		const f = fixture();
+		expect(parseCloudMachineCodingValueHttpRequest(f.request)).toEqual(f.request);
+		for (const bad of [
+			{ ...f.request, action: "start" },
+			{ ...f.request, input: { ...f.request.input, value: "npm_x" } },
+			{ ...f.request, input: { ...f.request.input, commandId: "x" } },
+			{ ...f.request, input: { ...f.request.input, envelope: "" } },
+			{ ...f.request, input: { ...f.request.input, envelope: "x".repeat(65537) } },
+			{ ...f.request, scope: { machineId: f.request.scope.machineId, placementId: randomUUID() } },
+		])
+			expect(() => parseCloudMachineCodingValueHttpRequest(bad)).toThrow("Machine command gateway unavailable");
 	});
 });

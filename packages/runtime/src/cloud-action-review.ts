@@ -288,6 +288,10 @@ export function cloudActionEffect(
 		// whether a boot has it is decided per boot, after the review (RUNTIME-FOLDER-TEST-MACHINES.md, Q2).
 		case "machine_run":
 			return "external";
+		// A key saved off a machine's clipboard into the vault and granted to a repository's coding sessions changes who
+		// can use what (20260930705000), as computer_browser vault_capture of a coding value does.
+		case "save_coding_value":
+			return "external";
 		// A networked command can reach the internet, and so can what is typed into one. An offline command (F3 4d:
 		// `network: false`, the run's own tool's default) reaches only the computer and the company folder, as does
 		// input to one the run started so. A start that does not say is an older runtime's, run with the network.
@@ -783,6 +787,15 @@ export function describeCloudAction(
 		title = "Run a command on a company machine";
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
+	} else if (tool.name === "save_coding_value") {
+		// 20260930705000: the key itself is on the machine's clipboard, never in the call; the card names its service, the
+		// variable a coding session gets it as, and where.
+		title = "Save a key for coding sessions from a company machine into the vault";
+		target = text(args.machine) || null;
+		add("service", args.service);
+		add("variable", typeof args.variable === "string" ? args.variable.toUpperCase() : undefined);
+		add("repository", args.repository);
+		add("purpose", args.purpose);
 	} else if (tool.name === "send_mail") {
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>
