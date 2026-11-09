@@ -423,7 +423,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
 		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
 	"Computer access is not available yet.": "Adgang til computeren er ikke tilgængelig endnu.",
-	"This company has no machine yet.": "Denne virksomhed har ingen maskine endnu.",
+	"{name} has not started a machine yet. Agents start one when a task needs it.":
+		"{name} har ikke startet en maskine endnu. Agenter starter en, når en opgave kræver det.",
 	"The machine is restarting. It comes back on its own.": "Maskinen genstarter. Den kommer tilbage af sig selv.",
 	"This machine has been retired.": "Denne maskine er taget ud af brug.",
 	"The machine is off. An owner or admin can start it.":
@@ -452,6 +453,18 @@ export const WORKSPACE: Record<string, string> = {
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
 		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
+
+	// app/views/agent-machines.ts ("Working" is in conversation.ts)
+	Running: "Kører",
+	Starting: "Starter",
+	"Waiting for room": "Venter på plads",
+	"Going to sleep": "Går i dvale",
+	Asleep: "I dvale",
+	"Being deleted": "Slettes",
+	"{name}'s machines": "{name}s maskiner",
+	Machines: "Maskiner",
+	"Latest commands": "Seneste kommandoer",
+	"Ended with code {code}": "Sluttede med kode {code}",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",

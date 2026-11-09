@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `CloudMemberCompanyComputerClient.machines()` reads `qorpera_list_company_machines` (the company's machines, newest first, each with its latest commands) as `MemberCompanyMachine[]`. Fields it does not use are ignored, so additions to the view do not break it.
 - A coding brief's `repository` may be one kept in Qorpera, `qorpera/<owner>/<name>` (own code storage, slice 1); the refusal says so.
 - Interface apps: `app.toml` takes `concept = true` (a concept of the company's product, for the web's Concepts viewer) and `cover = "<path>"` (a .png, .jpg or .webp in the app's folder, checked as the entry is; `APP_COVER_KINDS`). `AppManifest` has `concept` (default false) and `cover` (default null); `writeAppManifest` writes both when set.
 - `CloudMemberFolderClient`: its function calls and object reads no longer set `cache: "no-store"`, which made Chrome send a CORS preflight before every call (perf sprint A6, 7 Nov 2026). No browser stores the answer to a POST, and the objects' route answers `private, no-store` itself. A commit keeps the option.

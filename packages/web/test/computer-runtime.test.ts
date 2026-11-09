@@ -136,6 +136,134 @@ function spyViewer(close = vi.fn(async () => {})) {
 	return vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close });
 }
 
+describe("the agent's own machines, when the company has no desktop machine", () => {
+	const noDesktop = {
+		companyId: profileA.profileId,
+		environmentId: profileA.environmentId,
+		staffAgentId: staff.id,
+		canManage: true,
+		computers: 0,
+		placement: "none",
+		computer: null,
+	};
+	let next = 100;
+	const command = (head: string, state = "succeeded", exitCode: number | null = 0) => ({
+		commandId: id(next++),
+		command: head,
+		startedAt: "2026-11-09T10:00:00Z",
+		endedAt: state === "running" ? null : "2026-11-09T10:00:05Z",
+		state,
+		exitCode,
+	});
+	const machine = (name: string, overrides: Record<string, unknown> = {}) => ({
+		machineId: id(next++),
+		name,
+		purpose: `Purpose of ${name}`,
+		state: "stopped",
+		cpus: 2,
+		memoryGiB: 4,
+		diskGiB: 20,
+		image: "ubuntu",
+		lifetime: "task",
+		startedBy: { staffAgentId: staff.id, runId: id(next++), name: staff.displayName },
+		node: null,
+		queuePosition: null,
+		waitingFor: null,
+		runningSince: null,
+		stoppedBy: null,
+		commandsRunning: 0,
+		lastError: null,
+		createdAt: "2026-11-09T09:00:00Z",
+		updatedAt: "2026-11-09T09:00:00Z",
+		commands: [],
+		...overrides,
+	});
+	const list = (...machines: unknown[]) => ({ schema: "qorpera.company-machines/v1", machines });
+	const shown = (p: ComputerPanel) =>
+		[...p.el.querySelectorAll<HTMLElement>(".computer-machine")].map((row) => ({
+			name: row.querySelector(".computer-machine-name")?.textContent,
+			state: row.querySelector(".computer-machine-state")?.textContent,
+			commands: [...row.querySelectorAll(".computer-machine-commands code")].map((code) => code.textContent),
+		}));
+
+	it("lists the machines the agent started, active ones first, and starts nothing", async () => {
+		const f = setup({
+			qorpera_member_agent_office: noDesktop,
+			qorpera_list_company_machines: list(
+				machine("asleep-one"),
+				machine("someone-elses", {
+					state: "running",
+					startedBy: { staffAgentId: id(99), runId: null, name: "Other" },
+				}),
+				machine("removed", { state: "deleted" }),
+				machine("busy", {
+					state: "running",
+					commandsRunning: 1,
+					commands: [
+						command("python3 - <<'PY'\n  print(1)\nPY", "running", null),
+						command("ls", "failed", 2),
+						command("pwd"),
+						command("whoami"),
+					],
+				}),
+				machine("queued", { state: "waiting", waitingFor: "COMPUTER_HOURS_EXHAUSTED" }),
+			),
+		});
+		const p = await opened(f.computer);
+		expect(shown(p)).toEqual([
+			{
+				name: "busy",
+				state: "Working",
+				commands: ["python3 - <<'PY' print(1) PY", "ls", "pwd"],
+			},
+			{ name: "queued", state: "Waiting for computer hours", commands: [] },
+			{ name: "asleep-one", state: "Asleep", commands: [] },
+		]);
+		expect(p.el.querySelector(".computer-machine-purpose")?.textContent).toBe("Purpose of busy");
+		expect(p.el.querySelector(".computer-loading")?.hasAttribute("hidden")).toBe(true);
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_list_company_machines"]);
+		expect(JSON.parse(String(f.fetch.mock.calls[1]![1]?.body))).toEqual({ p_profile_id: profileA.profileId });
+	});
+	it("keeps the list current while it is shown, and reads nothing while no thread shows it", async () => {
+		let state = "starting";
+		const f = setup({
+			qorpera_member_agent_office: noDesktop,
+			qorpera_list_company_machines: () => list(machine("job", { machineId: id(60), state })),
+		});
+		const p = await opened(f.computer);
+		expect(shown(p)[0]?.state).toBe("Starting");
+		state = "running";
+		await vi.advanceTimersByTimeAsync(5000);
+		await settle();
+		expect(shown(p)[0]?.state).toBe("Running");
+		p.detach();
+		const reads = methods(f).length;
+		await vi.advanceTimersByTimeAsync(15000);
+		await settle();
+		expect(methods(f).length).toBe(reads);
+		p.attach(document.body, () => p.dispose());
+		state = "stopping";
+		await vi.advanceTimersByTimeAsync(5000);
+		await settle();
+		expect(shown(p)[0]?.state).toBe("Going to sleep");
+	});
+	it("keeps the last list when a later read fails, and offers Try again when the first one does", async () => {
+		const f = setup({ qorpera_member_agent_office: noDesktop });
+		const p = await opened(f.computer);
+		expect(statusLine(p)).toBe("The computer could not be reached. Try again.");
+		f.replies.qorpera_list_company_machines = list(machine("job"));
+		action(p.el, "Try again").click();
+		await settle();
+		await settle();
+		expect(shown(p).map((row) => row.name)).toEqual(["job"]);
+		f.replies.qorpera_list_company_machines = { schema: "something-else" };
+		await vi.advanceTimersByTimeAsync(5000);
+		await settle();
+		expect(shown(p).map((row) => row.name)).toEqual(["job"]);
+		expect(p.el.querySelector(".computer-loading")?.hasAttribute("hidden")).toBe(true);
+	});
+});
+
 describe("several computers per company", () => {
 	const scope2 = { ...scope, companyComputerId: id(40), logicalComputerId: id(41) };
 	const binding2 = { ...binding, ...scope2, screenId: id(42) };
@@ -512,10 +640,17 @@ describe("automatic computer popover", () => {
 		const unavailable = new ComputerPanel(staff);
 		cleanup.push(() => unavailable.dispose());
 		expect(statusLine(unavailable)).toBe("Computer access is not available yet.");
-		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
+		const f = setup({
+			qorpera_member_office_catalog: { ...catalog, scope: null },
+			qorpera_list_company_machines: { schema: "qorpera.company-machines/v1", machines: [] },
+		});
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("This company has no machine yet.");
-		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
+		expect(statusLine(p)).toBe("Fixture agent has not started a machine yet. Agents start one when a task needs it.");
+		expect(methods(f)).toEqual([
+			"qorpera_member_agent_office",
+			"qorpera_member_office_catalog",
+			"qorpera_list_company_machines",
+		]);
 		expect(p.el.textContent).not.toContain("Open computer");
 	});
 	it("offers retry after a failed read and opens automatically after retry succeeds", async () => {

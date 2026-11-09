@@ -1,5 +1,5 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import type { CompanyComputerWait } from "@qorpera/cloud-client/cloud-member-company-computer";
+import type { CompanyComputerWait, MemberCompanyMachine } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
@@ -9,9 +9,12 @@ import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { agentMachines, machineList } from "./agent-machines.ts";
 
 /** Thrown inside the open flow when the agent's screen belongs on another computer. */
 const MOVED = Symbol("moved");
+/** How often an open panel rereads the agent's machines. */
+export const MACHINES_POLL_MS = 5000;
 
 /**
  * Opening the thread's computer is the explicit intent to start and watch it.
@@ -155,6 +158,45 @@ export class ComputerPanel {
 			unavailable(text);
 			this.#retry.hidden = false;
 		};
+		/**
+		 * The company has no desktop machine: the panel lists the machines the agent
+		 * started itself (a shell, no screen) and keeps them current while it is shown.
+		 * Only a failed first read ends here, for Try again; later ones keep the last list.
+		 */
+		const showMachines = async (): Promise<never> => {
+			let shown: HTMLElement | undefined;
+			let drawn: string | undefined;
+			for (;;) {
+				if (drawn === undefined || (this.attached && !document.hidden)) {
+					let machines: MemberCompanyMachine[] | undefined;
+					try {
+						machines = agentMachines(await computer.client.machines(signal), agent.id);
+					} catch (error) {
+						if (drawn === undefined) throw error;
+					}
+					signal.throwIfAborted();
+					const key = machines && JSON.stringify([this.#name, machines]);
+					if (machines && key !== drawn) {
+						drawn = key;
+						shown?.remove();
+						shown = undefined;
+						if (machines.length === 0) {
+							this.#loading.hidden = false;
+							unavailable(
+								t("{name} has not started a machine yet. Agents start one when a task needs it.", {
+									name: this.#name,
+								}),
+							);
+						} else {
+							shown = machineList(machines, this.#name);
+							this.#loading.hidden = true;
+							this.#body.append(shown);
+						}
+					}
+				}
+				await wait(MACHINES_POLL_MS, signal);
+			}
+		};
 		/** A backend that predates several computers per company answered once: stop asking. */
 		let single = false;
 		/** The computer that shows this agent's screen. A company can run several; a
@@ -166,15 +208,12 @@ export class ComputerPanel {
 				single = true;
 				const catalog = await computer.client.catalog(signal);
 				signal.throwIfAborted();
-				if (!catalog.scope) {
-					unavailable(t("This company has no machine yet."));
-					return undefined;
-				}
+				if (!catalog.scope) return showMachines();
 				return { scope: catalog.scope, canManage: catalog.canManage, number: 1, computers: 1 };
 			}
 			if (!placed.computer) {
-				if (placed.computers === 0) unavailable(t("This company has no machine yet."));
-				else if (placed.placement === "denied")
+				if (placed.computers === 0) return showMachines();
+				if (placed.placement === "denied")
 					unavailable(t("{name} does not have access to the computer.", { name: agent.displayName }));
 				else if (placed.placement === "new")
 					blocked(t("All computers are in use. An owner or admin can start another machine."));

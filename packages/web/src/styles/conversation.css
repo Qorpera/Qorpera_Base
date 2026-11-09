@@ -556,6 +556,25 @@
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
 .computer-loading p { margin: 0; max-width: 280px; color: #b9bbc1; font-size: 12px; line-height: 1.5; }
 .computer-panel .computer-retry { min-height: 28px; padding: 3px 12px; border: 1px solid rgb(255 255 255 / 20%); border-radius: 6px; color: #fff; background: rgb(255 255 255 / 8%); font-size: 12px; cursor: pointer; }
+/* With no desktop machine the preview lists the agent's own machines (app/views/agent-machines.ts): a shell each, no screen. The list scrolls inside the 16:9 box; the title leaves room for the close button. */
+.computer-machines { height: 100%; overflow: auto; padding: 12px 12px 14px; overscroll-behavior: contain; }
+.computer-machines-title { margin: 2px 32px 9px 2px; color: #8e9097; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.computer-machine-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.computer-machine { padding: 8px 10px 9px; border-radius: 6px; background: rgb(255 255 255 / 5%); }
+.computer-machine-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.computer-machine-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6f7178; }
+.computer-machine[data-state=running] .computer-machine-dot { background: #5ec27a; box-shadow: 0 0 0 3px rgb(94 194 122 / 18%); }
+.computer-machine:is([data-state=starting], [data-state=waiting]) .computer-machine-dot { background: #e0b252; }
+.computer-machine-name { min-width: 0; overflow: hidden; color: #f1f1f3; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.computer-machine-state { flex: none; margin-left: auto; color: #b9bbc1; font-size: 11px; }
+.computer-machine[data-state=running] .computer-machine-state { color: #8fd6a3; }
+.computer-machine-purpose { display: -webkit-box; margin: 3px 0 0 15px; overflow: hidden; color: #b9bbc1; font-size: 12px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.computer-machine-commands { display: grid; gap: 2px; margin: 6px 0 0 15px; padding: 0; list-style: none; }
+.computer-machine-commands li { display: flex; align-items: baseline; gap: 10px; min-width: 0; color: #8e9097; font-size: 11px; line-height: 1.5; }
+.computer-machine-commands code { flex: 1; min-width: 0; overflow: hidden; color: #c9cbd1; font-family: var(--font-mono); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.computer-machine-commands li[data-state=running] code { color: #8fd6a3; }
+.computer-machine-commands li:not([data-state=running], [data-state=succeeded]) code { color: #e39a8c; }
+.computer-machine-commands time { flex: none; font-variant-numeric: tabular-nums; }
 /* The canvas fills the popover. Controls float over it only when needed. */
 .computer-panel .screen-viewer-embedded { position: absolute; inset: 0; z-index: 2; background: #24262a; }
 .computer-panel:not(.is-entered) .screen-viewer-frame { display: block; padding: 0; }
