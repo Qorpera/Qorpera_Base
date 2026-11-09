@@ -62,9 +62,7 @@ export const SETTINGS: Record<string, string> = {
 	"Clear search": "Ryd søgning",
 
 	// Storage (app/views/storage-summary.ts)
-	"{used} used of {total}": "{used} brugt af {total}",
-	"{used} used": "{used} brugt",
-	"Company storage used": "Brugt virksomhedslager",
+	"{used} in total": "{used} i alt",
 	"Loading storage…": "Henter lager…",
 	"Storage information unavailable": "Lageroplysninger ikke tilgængelige",
 	"Open a company to see its storage.": "Åbn en virksomhed for at se dens lager.",

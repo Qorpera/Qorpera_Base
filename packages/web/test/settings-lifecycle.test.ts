@@ -918,6 +918,14 @@ describe("settings session lifecycle", () => {
 			closeLarge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
+			// Escape again closes the file's own window over Settings, and Settings still stays.
+			const viewer = f.root.querySelector<HTMLDialogElement>(".settings-storage-content dialog.storage-viewer")!;
+			expect(viewer.open).toBe(true);
+			(document.activeElement ?? document.body).dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+			expect(viewer.open).toBe(false);
+			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
 		} finally {
 			dialog.showModal = showModal;
 			dialog.close = close;

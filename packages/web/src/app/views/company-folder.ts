@@ -21,7 +21,7 @@ import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
- * with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
+ * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
  * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
  * poll backs it up. */
 
@@ -225,6 +225,9 @@ export class CompanyFolderBrowser {
 	readonly #views = h("div", { class: "storage-view-toggle", role: "group", "aria-label": t("File view") });
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
 	readonly #preview = h("aside", { class: "files-preview" });
+	/** Inside Settings, the preview's own window over Settings; null in the standalone browser, where it sits beside
+	 * the files. It stays inside the browser's root, so it rests with the list while an action runs. */
+	readonly #viewer: HTMLDialogElement | null;
 	readonly #search: HTMLInputElement;
 	readonly #frames: PageFrames;
 	/** A page's view, kept while the same page stays open. */
@@ -245,7 +248,6 @@ export class CompanyFolderBrowser {
 	#pendingSection: "documents" | "recents" | null = null;
 	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
 	#pendingPath: string | null = null;
-	#revealPreview = false;
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
@@ -279,6 +281,25 @@ export class CompanyFolderBrowser {
 			});
 		this.#stop = new AbortController();
 		this.#frames = new PageFrames(this.#stop.signal);
+		this.#viewer = options.embedded
+			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
+			: null;
+		// Escape and a click beside the window close it, never while an action runs.
+		this.#viewer?.addEventListener(
+			"cancel",
+			(event) => {
+				event.preventDefault();
+				if (!this.#busy) this.#close();
+			},
+			{ signal: this.#stop.signal },
+		);
+		this.#viewer?.addEventListener(
+			"click",
+			(event) => {
+				if (event.target === this.#viewer && !this.#busy) this.#close();
+			},
+			{ signal: this.#stop.signal },
+		);
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 		// A folder link in a document shown here opens what it names here.
 		this.#preview.addEventListener(
@@ -388,10 +409,13 @@ export class CompanyFolderBrowser {
 		host.addEventListener(
 			"keydown",
 			(event) => {
-				if (event.key !== "Escape" || this.#preview.hidden || this.#busy || event.defaultPrevented) return;
-				if (!this.#preview.contains(event.target as Node) && !this.#list.contains(event.target as Node)) return;
+				if (event.key !== "Escape" || this.#preview.hidden || event.defaultPrevented) return;
+				const target = event.target as Node;
+				const inViewer = this.#viewer?.contains(target) === true;
+				if (!inViewer && (this.#busy || (!this.#preview.contains(target) && !this.#list.contains(target)))) return;
+				// Escape in the window is the window's, even while an action runs: Settings under it stays open.
 				event.preventDefault();
-				this.#close();
+				if (!this.#busy) this.#close();
 			},
 			{ signal: this.#stop.signal },
 		);
@@ -423,7 +447,7 @@ export class CompanyFolderBrowser {
 					h("div", { class: "files-list-more" }, this.#more),
 					this.#count,
 				),
-				this.#preview,
+				this.#viewer ?? this.#preview,
 			),
 		);
 		replace(this.#root, this.#documents, this.#recents);
@@ -519,6 +543,7 @@ export class CompanyFolderBrowser {
 		void this.#hints?.close();
 		this.#downloads?.close();
 		this.#large?.close(false);
+		if (this.#viewer?.open) this.#viewer.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
 		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
@@ -569,11 +594,9 @@ export class CompanyFolderBrowser {
 				(!document.activeElement || document.activeElement === document.body)
 			)
 				focus.focus();
-			if (this.#revealPreview) {
-				this.#revealPreview = false;
-				if (!this.#disposed && !this.#pendingSection && !this.#preview.hidden)
-					this.#preview.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-			}
+			// The window was drawn while the root rested, so nothing in it could take focus then.
+			if (!this.#disposed && this.#viewer?.open && !this.#viewer.contains(document.activeElement))
+				this.#viewer.focus({ preventScroll: true });
 			this.#navigate();
 		}
 	}
@@ -884,7 +907,6 @@ export class CompanyFolderBrowser {
 		if (!entry.file && entry.target === null) return;
 		if (refresh || this.#opened?.path !== entry.path || this.#opened?.version)
 			await this.#show({ path: entry.path, file: entry.file, target: entry.target });
-		if (!refresh && this.#options.embedded) this.#revealPreview = true;
 	}
 
 	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
@@ -908,7 +930,15 @@ export class CompanyFolderBrowser {
 	}
 
 	#close(): void {
-		this.#revealPreview = false;
+		if (this.#viewer?.open) {
+			this.#viewer.close();
+			// Focus goes back to the file's row; the list was out of reach while the window was open.
+			const path = this.#opened?.path;
+			if (path !== undefined)
+				[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
+					.find((row) => row.dataset.path === path)
+					?.focus({ preventScroll: true });
+		}
 		this.#forget(this.#opened);
 		this.#opened = null;
 		this.#preview.hidden = true;
@@ -947,6 +977,10 @@ export class CompanyFolderBrowser {
 		this.#preview.setAttribute("aria-label", title);
 		this.#preview.hidden = false;
 		this.#host.classList.add("has-preview");
+		if (this.#viewer) {
+			this.#viewer.setAttribute("aria-label", title);
+			if (!this.#viewer.open && this.#viewer.isConnected) this.#viewer.showModal();
+		}
 	}
 
 	#drawFile(): void {
@@ -1507,7 +1541,6 @@ export class CompanyFolderBrowser {
 		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
 		else this.#drawList(false);
 		await this.#show({ path, file: entry.file, target: entry.target });
-		if (this.#options.embedded) this.#revealPreview = true;
 	}
 
 	/** Opens a file's or a link's folder and the file or link, when it is still there. */
@@ -1525,6 +1558,5 @@ export class CompanyFolderBrowser {
 		this.#drawList(false);
 		this.#setSection("documents");
 		await this.#show({ path, file: entry.file, target: entry.target });
-		if (this.#options.embedded) this.#revealPreview = true;
 	}
 }

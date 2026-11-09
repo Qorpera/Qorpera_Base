@@ -268,7 +268,15 @@ function source(fake: ReturnType<typeof folderFake>) {
 }
 
 const disposers: (() => void)[] = [];
+// jsdom does not implement the native dialog methods the embedded preview's window opens and closes with.
+const { showModal, close } = HTMLDialogElement.prototype;
 beforeEach(() => {
+	HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+		this.open = true;
+	};
+	HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+		this.open = false;
+	};
 	vi.stubGlobal("crypto", webcrypto);
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	URL.createObjectURL = vi.fn(() => "blob:fixture-picture");
@@ -276,6 +284,8 @@ beforeEach(() => {
 });
 afterEach(() => {
 	for (const dispose of disposers.splice(0)) dispose();
+	HTMLDialogElement.prototype.showModal = showModal;
+	HTMLDialogElement.prototype.close = close;
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -1090,17 +1100,18 @@ describe("a folder-v2 company's Company File", () => {
 		document.body.removeEventListener("click", outside);
 	});
 
-	it("reveals an embedded file after input is enabled, including from Recents, without scrolling for a refresh", async () => {
+	it("opens an embedded file in its own window over Settings, focused once input is enabled, and closes it", async () => {
 		vi.useFakeTimers();
 		const { fake, src, host, browser } = await opened({ embedded: true });
-		const preview = host.querySelector<HTMLElement>(".files-preview")!;
-		const reveal = vi.fn(() => {
-			expect(host.querySelector<HTMLElement>(".files-root")?.inert).toBe(false);
-			expect(preview.hidden).toBe(false);
-		});
-		preview.scrollIntoView = reveal;
+		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
+		expect(viewer.open).toBe(false);
+		expect(viewer.contains(host.querySelector(".files-preview"))).toBe(true);
 		await click(row(host, "readme.txt"));
-		expect(reveal).toHaveBeenCalledExactlyOnceWith({ block: "nearest", inline: "nearest" });
+		expect(viewer.open).toBe(true);
+		expect(viewer.getAttribute("aria-label")).toBe("readme.txt");
+		expect(host.querySelector<HTMLElement>(".files-root")?.inert).toBe(false);
+		expect(document.activeElement).toBe(viewer);
+		// A refresh redraws it in place.
 		fake.contents.set("readme.txt", "Changed while reading.");
 		fake.bump(5);
 		fake.changes.push({
@@ -1113,23 +1124,40 @@ describe("a folder-v2 company's Company File", () => {
 		src.hint(5);
 		await vi.advanceTimersByTimeAsync(1100);
 		await settle();
-		expect(host.querySelector(".files-text")?.textContent).toBe("Changed while reading.");
-		expect(reveal).toHaveBeenCalledTimes(1);
+		expect(viewer.open).toBe(true);
+		expect(viewer.querySelector(".files-text")?.textContent).toBe("Changed while reading.");
+		// Escape is the window's: it closes, Settings under it never sees it, and focus goes back to the file's row.
+		const pressed = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		viewer.dispatchEvent(pressed);
+		expect(pressed.defaultPrevented).toBe(true);
+		expect(viewer.open).toBe(false);
+		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(document.activeElement).toBe(row(host, "readme.txt"));
+		// From Recents too; a click beside the window closes it.
 		browser.showRecents();
 		await settle();
 		await click(host.querySelector(".storage-recents button.folder-history-path"));
-		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
-		expect(reveal).toHaveBeenCalledTimes(2);
+		expect(viewer.open).toBe(true);
+		expect(viewer.querySelector(".files-text")?.textContent).toBe("line one");
+		viewer.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(viewer.open).toBe(false);
+		// The window's own close button closes it too.
 		await click(row(host, "log.txt"));
-		expect(reveal).toHaveBeenCalledTimes(3);
+		expect(viewer.open).toBe(true);
+		await click(viewer.querySelector('.files-preview-head [aria-label="Close log.txt"]'));
+		expect(viewer.open).toBe(false);
+		browser.dispose();
+		expect(viewer.open).toBe(false);
 	});
 
-	it("leaves scrolling to the standalone file browser layout", async () => {
+	it("keeps the standalone browser's preview beside the files, with no window and no scrolling", async () => {
 		const { host } = await opened();
 		const reveal = vi.fn();
 		host.querySelector<HTMLElement>(".files-preview")!.scrollIntoView = reveal;
 		await click(row(host, "readme.txt"));
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
+		expect(host.querySelector("dialog")).toBeNull();
+		expect(host.querySelector(".files-body > .files-preview")?.hasAttribute("hidden")).toBe(false);
 		expect(reveal).not.toHaveBeenCalled();
 	});
 

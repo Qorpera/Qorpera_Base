@@ -355,11 +355,11 @@ describe("shell presentation lifecycle", () => {
 		view.updateProfiles([]);
 		view.updateProfiles([profileB]);
 		await settle();
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B in total");
 		pending.resolve({ ...file, storageUsedBytes: 99 });
 		await settle();
 		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B in total");
 	});
 	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
 		const mount = stubFigureMotion();
