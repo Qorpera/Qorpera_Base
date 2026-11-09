@@ -387,7 +387,8 @@ export class ConversationView {
 	#refreshFade: () => void = () => {};
 	/** Re-pins the thread to its end when the message pane gets its size: the first
 	 * render happens before the view is in the page, and a pane that shrinks or
-	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	 * grows (window, computer panel, composer), or messages that grow after they are
+	 * drawn, must keep showing the latest message. */
 	readonly #sizes: ResizeObserver | undefined;
 	/** What stands under the messages (notices, the wall, the coding pill, the composer), laid over the thread's foot
 	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
@@ -813,6 +814,8 @@ export class ConversationView {
 			});
 			this.#sizes.observe(this.#messages);
 			this.#sizes.observe(this.#foot);
+			// A message that grows after it is drawn (a sent image's picture arriving) keeps the latest one in view too.
+			this.#sizes.observe(this.#log);
 		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		// A conversation opened comes in: the thread fades up in place (styles/motion.css).
 		playOnce(this.#messages, "is-entering");
