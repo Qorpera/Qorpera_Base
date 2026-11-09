@@ -137,6 +137,7 @@ export const WORKSPACE: Record<string, string> = {
 	Shared: "Fælles",
 	"Open pile": "Åben bunke",
 	// The Members page: who each agent works for (app/views/members.ts)
+	Members: "Medlemmer",
 	"1 agent": "1 agent",
 	"1 agent works for you": "1 agent arbejder for dig",
 	"1 agent works for {member}": "1 agent arbejder for {member}",
