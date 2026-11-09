@@ -2416,6 +2416,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
+	// Nor on its notebook: it reports to its agent, which keeps the notebook.
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Your notebook");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
@@ -3181,9 +3183,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"0fe15d58585bb83d8459e4bcf4e78f2d6e2fa4dbe91644bffd626a10805e6348",
+		"ce5d20ab168c29e85e223dd7c0a47c2e0572702777a9ea7c4db9f85ad6dfe932",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"a34407857878d40f8f4d78f446c56a2ec202ade97b2df1fcd25a76f7d9a0f018",
+		"10413103d1c0a82ff68526c25f5d6cba3b97d4cf7dbea8ca451b4a730f545d55",
 	);
 });

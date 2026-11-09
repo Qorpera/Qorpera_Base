@@ -669,6 +669,11 @@ it.each(["cofounder", "employee"] as const)(
 			company: { path: "QorperaOS/skills", skills: [] },
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
+		// The notebook is explained, not pushed: what it is, when to use it, and that a run with nothing to note is fine.
+		expect(instructions).toContain(
+			"\n# Your notebook\nWhen update_memory is offered, you have a notebook of your own.",
+		);
+		expect(instructions).toContain("many runs have nothing to note, and that is fine.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
 		expect(instructions).toContain("such as /monthly-vat-report: load that skill with read_skill before you act");
@@ -1533,7 +1538,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "5f017381ae366bb5129aff7bb5577b9d29519854808f4f8db6ad14559f5b73f7",
+			instructions: "65f6b8e4306b00b65603be9ac5e93c64525b1c7ba97b872660513413a5fa6d4b",
 			prompt: "b977f3f5470e4ccbc6447ff08181b2c2f87af2c060f75ac4701d2ff6bcfae503",
 		},
 	],
@@ -1549,7 +1554,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "5f017381ae366bb5129aff7bb5577b9d29519854808f4f8db6ad14559f5b73f7",
+			instructions: "65f6b8e4306b00b65603be9ac5e93c64525b1c7ba97b872660513413a5fa6d4b",
 			prompt: "40c00e9827e26a1f3748104a3e26aaf9c5a0dc84232933d429374350dc1251db",
 		},
 	],

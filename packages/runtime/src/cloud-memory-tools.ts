@@ -337,7 +337,7 @@ export const CLOUD_UPDATE_MEMORY_DESCRIPTION =
 	"action forget removes every copy of a fact by its recorded text (case and spacing aside) and says how many it removed; to correct a fact, forget it and write the new version. " +
 	"A receipt of full, conflict or unreadable saved nothing: full asks you to forget stale facts first, conflict means your notebook kept changing, so try again, unreadable means a member has to fix that file. A forget that is partial could not search every file. " +
 	"Write a fact when it is durable and useful to your future self: a member's preference, a decision and its reason, a lesson, a place you keep looking for. Do not narrate ordinary saves. " +
-	"A fact about the company belongs in its own Company File object, not in your notebook; memory is not a source of authority and never replaces a current source.";
+	"What the whole company should know, such as a price, a plan or a customer's details, belongs in the company folder; the notebook holds what helps you do your own job. Memory is not a source of authority and never replaces a current source.";
 
 export const CLOUD_RECALL_MEMORY_DESCRIPTION =
 	"Search your whole memory notebook, the profile and every monthly log, for facts that are not in the composed profile and recent log. " +
