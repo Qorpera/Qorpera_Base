@@ -245,6 +245,10 @@ empty 503 it gives every refused request. The node-level tokens stay as transpor
 - **`/v1/event-hook-captures`** (E3c-2, a `vault_capture` of a Stripe hook's secret off Stripe's page; §5.8): proven
   the same way, and the computer's broker client sends the header there, and on the Stripe hook's `rekey` through
   `/v1/event-hooks`.
+- **`/v1/coding-value-captures`** (a `vault_capture` of a coding value off its service's page, migration
+  `20260930695000`): proven the same way, for the prepare before the office acts and the capture after it; the
+  computer's broker client sends the header there. The vault's nginx needs `location = /v1/coding-value-captures`
+  (POST only) through `$qorpera_operations_broker`, as `/v1/event-hook-captures` has.
 - **The native object route:** gone instead of proven (legacy removal, step C; migration `20260930190000`).
   `/v1/native-company-objects`, its native-objects clients and their SQL served only snapshot-v1 companies: a
   folder-v2 capture is stored nowhere, and the computer's file imports and exports are off until the folder carries

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	isUuid,
 	parseBoundedText,
@@ -12,6 +12,15 @@ import { sealCompanyAccountFill } from "./cloud-company-account-fill-box.ts";
 import { EVENT_HOOK_SECRET_FIELD } from "./cloud-event-verification.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import {
+	type HeldVersion,
+	heldValueIs,
+	parseHeldVersion,
+	VAULT_CAPTURE_REFUSALS,
+	vaultCaptureRefusal,
+	vaultRefused,
+	withCaptureRetries,
+} from "./cloud-vault-capture.ts";
 
 /* Signed hooks' secrets in the vault (E3b-2; deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md §5.7). The runtime
  * sends an agent's manage_hook create of a GitHub or HMAC hook here, with the run's binding; the vault makes the
@@ -53,12 +62,6 @@ const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** As manage_hook takes it (E3a). */
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-/** SQL's answers the runtime reads, as manage_hook's host path raises them: the request's rules, the company's state,
- * the run's authority and the wake's (refused in the model's words, or asked again: 40P01, QRC01, 55P03). Their
- * messages hold no value. */
-const REFUSALS = new Set(["0A000", "22023", "23505", "42501", "54000", "55000", "55P03", "40P01", "QRC01", "P0002"]);
-/** How many times a capture reads and stores before a race it keeps losing (40003) is left unconfirmed. */
-const CAPTURE_ATTEMPTS = 3;
 
 /** One manage_hook create of a signed hook, as the runtime checked it. The database checks it again. */
 export interface EventHookCreate {
@@ -255,7 +258,7 @@ export function parseEventHookAnswer(value: unknown): EventHookAnswer {
 	}
 	if (input.schema === REFUSAL_SCHEMA) {
 		parseClosedRecord(input, "Event hook refusal", ["schema", "code", "message"]);
-		if (typeof input.code !== "string" || !REFUSALS.has(input.code))
+		if (typeof input.code !== "string" || !VAULT_CAPTURE_REFUSALS.has(input.code))
 			throw new Error("Event hook refusal is malformed");
 		return {
 			schema: REFUSAL_SCHEMA,
@@ -404,7 +407,7 @@ interface CaptureContext {
 	readonly companyComputerId: string;
 	readonly computerGeneration: number;
 	/** The version the vault holds, sealed under this broker's key; none while it is held (E3c-4) or before the first. */
-	readonly current?: { readonly version: number; readonly keyId: string; readonly envelope: Buffer };
+	readonly current?: HeldVersion;
 	/** This call stored its value already. */
 	readonly captured?: { readonly version: number };
 }
@@ -466,34 +469,7 @@ function captureContext(value: unknown): CaptureContext {
 				}),
 	};
 	if (input.current === undefined) return context;
-	const current = parseClosedRecord(input.current, "Event hook capture context", [
-		"version",
-		"keyId",
-		"encryptedEnvelopeBase64",
-		"envelopeSha256",
-	]);
-	const { keyId, encryptedEnvelopeBase64, envelopeSha256 } = current;
-	// PostgreSQL's encode(…, 'base64') breaks lines every 76 characters; the line breaks carry nothing.
-	const base64 = typeof encryptedEnvelopeBase64 === "string" ? encryptedEnvelopeBase64.replace(/\n/g, "") : null;
-	if (
-		typeof keyId !== "string" ||
-		!KEY_ID.test(keyId) ||
-		base64 === null ||
-		!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) ||
-		typeof envelopeSha256 !== "string" ||
-		!SHA256.test(envelopeSha256)
-	)
-		throw new Error("Event hook capture context is malformed");
-	const version = parseInteger(current.version, "Event hook secret version", 1, Number.MAX_SAFE_INTEGER);
-	const envelope = Buffer.from(base64, "base64");
-	if (
-		envelope.toString("base64") !== base64 ||
-		createHash("sha256").update(envelope).digest("hex") !== envelopeSha256
-	) {
-		envelope.fill(0);
-		throw new Error("Event hook capture envelope is malformed");
-	}
-	return { ...context, current: { version, keyId, envelope } };
+	return { ...context, current: parseHeldVersion(input.current, "Event hook capture context") };
 }
 
 interface FillContext {
@@ -583,15 +559,8 @@ function fillContext(value: unknown): FillContext {
 }
 
 function refusal(error: unknown): EventHookRefusal | null {
-	if (!error || typeof error !== "object") return null;
-	const { code, message } = error as { code?: unknown; message?: unknown };
-	if (typeof code !== "string" || !REFUSALS.has(code) || typeof message !== "string") return null;
-	return { schema: REFUSAL_SCHEMA, code, message: message.slice(0, 512) };
-}
-
-/** The vault's own refusal, in the database's form: the model reads it and the call is not asked again. */
-function refused(code: string, message: string): Error & { code: string } {
-	return Object.assign(new Error(message), { code });
+	const refused = vaultCaptureRefusal(error);
+	return refused && { schema: REFUSAL_SCHEMA, ...refused };
 }
 
 function captureAnswer(hook: string, version: number, unchanged: boolean): EventHookCaptureAnswer {
@@ -708,14 +677,7 @@ export class EventHookVault {
 		signal: AbortSignal,
 	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
 		try {
-			for (let attempt = 1; ; attempt += 1) {
-				try {
-					return await this.#capture(request, signal);
-				} catch (error) {
-					if (attempt >= CAPTURE_ATTEMPTS || (error as { code?: unknown } | null)?.code !== "40003") throw error;
-					signal.throwIfAborted();
-				}
-			}
+			return await withCaptureRetries(() => this.#capture(request, signal), signal);
 		} catch (error) {
 			const refused = refusal(error);
 			if (refused) return refused;
@@ -744,8 +706,11 @@ export class EventHookVault {
 					},
 					async ({ value, site }) => {
 						if (site !== STRIPE_SITE)
-							throw refused("22023", "A Stripe hook's secret is taken from dashboard.stripe.com");
-						if (context.current && (await this.#holds(context, context.current, value)))
+							throw vaultRefused("22023", "A Stripe hook's secret is taken from dashboard.stripe.com");
+						if (
+							context.current &&
+							(await heldValueIs(this.#keys, context.current, context, EVENT_HOOK_SECRET_FIELD, value))
+						)
 							return captureAnswer(context.hookId, context.current.version, true);
 						const encryptedEnvelope = this.#keys.seal(
 							{ [EVENT_HOOK_SECRET_FIELD]: value.toString("utf8") },
@@ -777,36 +742,12 @@ export class EventHookVault {
 				.catch((error: unknown) => {
 					// Read too long before it reached the vault: the model reads it off the page again.
 					if (error instanceof Error && error.message === "Hook capture expired")
-						throw refused("55000", "The signing secret was read too long ago; read it off the page again");
+						throw vaultRefused("55000", "The signing secret was read too long ago; read it off the page again");
 					throw error;
 				});
 		} finally {
 			context.current?.envelope.fill(0);
 		}
-	}
-
-	/** Whether the version the vault holds is this value. */
-	#holds(context: CaptureContext, current: NonNullable<CaptureContext["current"]>, value: Buffer): Promise<boolean> {
-		return this.#keys.use(
-			current.envelope,
-			{
-				companyId: context.companyId,
-				environmentId: context.environmentId,
-				secretId: context.secretId,
-				version: current.version,
-				keyId: current.keyId,
-			},
-			async (fields) => {
-				const held = Object.hasOwn(fields, EVENT_HOOK_SECRET_FIELD) ? fields[EVENT_HOOK_SECRET_FIELD] : undefined;
-				if (typeof held !== "string") throw new Error("Event hook secret is malformed");
-				const bytes = Buffer.from(held, "utf8");
-				try {
-					return bytes.byteLength === value.byteLength && timingSafeEqual(bytes, value);
-				} finally {
-					bytes.fill(0);
-				}
-			},
-		);
 	}
 
 	/** One signed manage_hook create, or a Stripe hook's rekey: the hook's receipt or the rekey's answer, or the

@@ -253,6 +253,35 @@ describe("what the card shows", () => {
 		});
 	});
 
+	it("names a coding value's service, variable, repository and purpose for its vault_capture, never a value", () => {
+		expect(
+			describeCloudAction(tool("computer_browser"), {
+				operationKey: "k",
+				action: {
+					kind: "browser",
+					action: "vault_capture",
+					role: "button",
+					name: "Generate token",
+					codingValue: {
+						service: "npm",
+						variable: "npm_token",
+						repository: "acme/web",
+						purpose: "Installs the private packages.",
+					},
+				},
+			}),
+		).toEqual({
+			title: "Save a key for coding sessions from a web page into the vault",
+			target: 'button "Generate token"',
+			details: {
+				service: "npm",
+				variable: "NPM_TOKEN",
+				repository: "acme/web",
+				purpose: "Installs the private packages.",
+			},
+		});
+	});
+
 	it("names an email draft action and every recipient", () => {
 		expect(
 			describeCloudAction(tool("gmail_send_draft", "connector"), {

@@ -736,7 +736,9 @@ export function describeCloudAction(
 							? "Type a hook's signing secret into a web page"
 							: "Type a company account's sign-in into a web page"
 						: verb === "vault_capture"
-							? "Read a hook's signing secret off a web page into the vault"
+							? action.codingValue
+								? "Save a key for coding sessions from a web page into the vault"
+								: "Read a hook's signing secret off a web page into the vault"
 							: verb === "press"
 								? "Press a key in the browser"
 								: "Click in the browser";
@@ -748,6 +750,12 @@ export function describeCloudAction(
 		add("account", action.account);
 		add("hook", action.hook);
 		add("field", action.field);
+		// A coding value (20260930695000): its service, the variable a coding session gets it as, and where.
+		const value = record(action.codingValue ?? null);
+		add("service", value.service);
+		add("variable", typeof value.variable === "string" ? value.variable.toUpperCase() : undefined);
+		add("repository", value.repository);
+		add("purpose", value.purpose);
 	} else if (tool.name === "computer_desktop") {
 		const verb = text(action.action);
 		title =
