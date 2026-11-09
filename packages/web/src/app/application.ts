@@ -154,6 +154,9 @@ export function mountApplication(
 		if (!friendsWindow) return;
 		friendsWindow.dispose();
 		friendsWindow = undefined;
+		// Settings stayed open behind it: their invitation picker reads the friends list again, so a friend added or
+		// removed in the window shows there.
+		settings?.refreshFriends();
 		if (!restoreFocus) return;
 		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
 		(

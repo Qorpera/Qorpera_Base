@@ -10,7 +10,7 @@ import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
 import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
-import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
+import type { HostedAccountEntitlement, HostedAccountMatch, HostedFriend } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
@@ -1682,6 +1682,21 @@ describe("settings session lifecycle", () => {
 		// The window reads the list for itself.
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(friendsWindow.querySelector(".person-row")?.textContent).toContain("Friend B");
+		// A friend added in the window shows in Settings' picker once the window closes.
+		const before = vi.mocked(f.api.listFriends).mock.results[0]!.value as Promise<HostedFriend[]>;
+		const friendC: HostedFriend = {
+			...(await before)[0]!,
+			userId: id(77),
+			email: "friend-c@example.test",
+			displayName: "Friend C",
+		};
+		vi.mocked(f.api.listFriends).mockResolvedValue([...(await before), friendC]);
+		friendsWindow.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		await draw();
+		expect(f.api.listFriends).toHaveBeenCalledTimes(3);
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
+		expect(f.root.querySelector(".invite-results")?.textContent).toContain("Friend C");
 	});
 	it("closes nested confirmation before settings, and cancels it on sign-out", async () => {
 		const f = await setup();

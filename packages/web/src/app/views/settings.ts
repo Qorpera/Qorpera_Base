@@ -414,6 +414,11 @@ export class SettingsView {
 		this.#switchMode(this.#mode);
 	}
 
+	/** Reads the friends list again (the Friends window, opened over Settings, may have changed it). */
+	refreshFriends(): void {
+		if (!this.#lifetime.signal.aborted) void this.#friends.refresh();
+	}
+
 	/** The open tab, so a language change can reopen Settings where it was. */
 	get tab(): SettingsTab {
 		return this.#mode === "storage" ? (this.#storageSection === "recents" ? "recents" : "storage") : this.#tab;
