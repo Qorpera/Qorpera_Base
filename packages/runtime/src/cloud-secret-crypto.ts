@@ -470,11 +470,6 @@ export class CloudSecretKeyring {
 		}
 	}
 
-	/** The key ids this keyring holds, own and derived: which one is a company's current key, the database says. */
-	keyIds(): string[] {
-		return [...this.#keys.keys(), ...this.#derived.keys()];
-	}
-
 	/** A capture private key, under the key the company's envelopes use: its own key, or the derived one. */
 	#captureKey(identity: CloudHookCaptureKeyIdentity, kind: CaptureKeyKind): KeyObject {
 		if (!KEY_ID.test(identity.keyId)) throw new Error(`${CAPTURE_KEY_INFO[kind].label} is invalid`);

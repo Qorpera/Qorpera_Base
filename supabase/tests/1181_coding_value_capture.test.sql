@@ -14,6 +14,9 @@
 --    lease, the authority, the receipt, the envelope, the version, the key, Postgres' own session; a contributor's run,
 --    a worker's run, a company being deleted, a removed secret (the prepare makes the key again for a new id);
 -- 6. the grants, the closed tables, the seeded services, the browser action, the audit types and the marker.
+-- 20260930698000 (step 2) adds the broker's description of what a capture key is derived from: before and after the
+-- prepare (1), after the company's key turned (4), refused for another receipt (1) and outside the broker's session (5),
+-- and its grant (6). It writes nothing.
 
 -- The company's broker authority; another company's, for 5.
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
@@ -187,6 +190,11 @@ select set_config('qorpera_test.cv_office11a', pg_temp.cv_office('11', current_s
 select set_config('qorpera_test.cv_c10', pg_temp.cv_counts()::text, true);
 set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.cv_read11a', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11')), true);
+select set_config('qorpera_test.cv_desc11a', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11'), null,
+	'qorpera_folder_describe_coding_value_capture'), true);
+-- Another receipt than the call's: refused.
+select set_config('qorpera_test.cv_desc11x', pg_temp.cv_call('99', current_setting('qorpera_test.cv_env11'), null,
+	'qorpera_folder_describe_coding_value_capture'), true);
 select set_config('qorpera_test.cv_prep11', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11'),
 	pg_temp.cv_prepare_args('201'), 'qorpera_folder_prepare_coding_value_capture'), true);
 select set_config('qorpera_test.cv_c11', pg_temp.cv_counts()::text, true);
@@ -198,6 +206,8 @@ reset session authorization;
 select set_config('qorpera_test.cv_office11', pg_temp.cv_office('11', current_setting('qorpera_test.cv_env11')), true);
 set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.cv_read11', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11')), true);
+select set_config('qorpera_test.cv_desc11', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11'), null,
+	'qorpera_folder_describe_coding_value_capture'), true);
 select set_config('qorpera_test.cv_store11', pg_temp.cv_call('11', current_setting('qorpera_test.cv_env11'),
 	pg_temp.cv_store_args(1), 'qorpera_folder_store_coding_value_capture'), true);
 select set_config('qorpera_test.cv_c13', pg_temp.cv_counts()::text, true);
@@ -232,6 +242,21 @@ begin
 			and current_setting('qorpera_test.cv_read11a') = v_again,
 		'1: no key before the prepare: ' || current_setting('qorpera_test.cv_office11a') || ' / '
 			|| current_setting('qorpera_test.cv_read11a'));
+	-- The description: the company, the environment, the value and the authority's key; no id the value keeps and no
+	-- current key before the prepare (which wrote only the key: the counts below), the key's id and public half after.
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_desc11a')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-description/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
+			'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'npm_token', 'keyId', 'company-kek-1',
+			'current', false),
+		'1: the description before the prepare: ' || current_setting('qorpera_test.cv_desc11a'));
+	perform pg_temp.base_assert(pg_temp.cv_answer(current_setting('qorpera_test.cv_desc11')) = jsonb_build_object(
+			'schema', 'qorpera.coding-value-capture-description/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
+			'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'npm_token', 'keyId', 'company-kek-1',
+			'secretId', '11810000-0000-4000-8000-000000000201', 'current', true,
+			'capturePublicKey', current_setting('qorpera_test.cv_key1')),
+		'1: the description after the prepare: ' || current_setting('qorpera_test.cv_desc11'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.cv_desc11x') = '42501:coding value capture receipt is unavailable',
+		'1: the description for another receipt: ' || current_setting('qorpera_test.cv_desc11x'));
 	v_key := jsonb_build_object('schema', 'qorpera.coding-value-capture-key/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
 		'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'npm_token', 'keyId', 'company-kek-1',
 		'secretId', '11810000-0000-4000-8000-000000000201', 'current', true, 'replaced', false,
@@ -452,7 +477,13 @@ select set_config('qorpera_test.cv_4x', pg_temp.cv_differ(jsonb_build_array(
 		'qorpera_folder_store_coding_value_capture'), '55000:The coding value''s capture key must be made again'),
 	jsonb_build_array('prepare: the old key', pg_temp.cv_call('14', current_setting('qorpera_test.cv_env14'),
 		pg_temp.cv_prepare_args('201', 'key2', 'company-kek-1'), 'qorpera_folder_prepare_coding_value_capture'),
-		'42501:coding value capture key is unavailable'))), true);
+		'42501:coding value capture key is unavailable'),
+	-- The description names the new key, the id the value keeps, and a key that is not current.
+	jsonb_build_array('describe', pg_temp.cv_call('14', current_setting('qorpera_test.cv_env14'), null,
+		'qorpera_folder_describe_coding_value_capture'), 'ok:' || jsonb_build_object(
+		'schema', 'qorpera.coding-value-capture-description/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
+		'environmentId', '92400000-0000-4000-8000-000000000020', 'variable', 'npm_token', 'keyId', 'company-kek-2',
+		'secretId', '11810000-0000-4000-8000-000000000201', 'current', false)::text))), true);
 select set_config('qorpera_test.cv_c40', pg_temp.cv_counts()::text, true);
 select set_config('qorpera_test.cv_prep14a', pg_temp.cv_call('14', current_setting('qorpera_test.cv_env14'),
 	pg_temp.cv_prepare_args('203', 'key2'), 'qorpera_folder_prepare_coding_value_capture'), true);
@@ -659,6 +690,8 @@ select set_config('qorpera_test.cv_5y', pg_temp.cv_differ(jsonb_build_array(
 		'qorpera_folder_prepare_coding_value_capture'), '42501:cloud secret broker authority is required'),
 	jsonb_build_array('read', pg_temp.cv_call('15', current_setting('qorpera_test.cv_env15')),
 		'42501:cloud secret broker authority is required'),
+	jsonb_build_array('describe', pg_temp.cv_call('15', current_setting('qorpera_test.cv_env15'), null,
+		'qorpera_folder_describe_coding_value_capture'), '42501:cloud secret broker authority is required'),
 	jsonb_build_array('store', pg_temp.cv_call('15', current_setting('qorpera_test.cv_env15'), pg_temp.cv_store_args(4, '\x0305'),
 		'qorpera_folder_store_coding_value_capture'), '42501:cloud secret broker authority is required'))), true);
 
@@ -800,11 +833,12 @@ declare
 	v_hook jsonb := jsonb_build_object('kind', 'browser', 'action', 'vault_capture', 'role', 'button', 'name', 'Reveal',
 		'hook', 'a1810000-0000-4000-8000-000000000abc', 'field', 'signing_secret');
 begin
-	-- Who may run each function: the broker its three, the host the office's read, nobody the rest.
+	-- Who may run each function: the broker its four, the host the office's read, nobody the rest.
 	for v_function, v_granted in select call.fn, call.roles from (values
 		('public.qorpera_folder_prepare_coding_value_capture(uuid,text,jsonb,uuid,text,text,uuid,text,text)',
 			array['qorpera_secret_broker']),
 		('public.qorpera_folder_read_coding_value_capture(uuid,text,jsonb,uuid,text,text)', array['qorpera_secret_broker']),
+		('public.qorpera_folder_describe_coding_value_capture(uuid,text,jsonb,uuid,text,text)', array['qorpera_secret_broker']),
 		('public.qorpera_folder_store_coding_value_capture(uuid,text,jsonb,uuid,text,text,uuid,bigint,uuid,uuid,text,bytea,text)',
 			array['qorpera_secret_broker']),
 		('public.qorpera_native_office_coding_value_capture(jsonb,jsonb,jsonb,text,uuid,text)', array['service_role']),

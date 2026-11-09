@@ -429,6 +429,7 @@ describe("filled values on one screen", () => {
 			"Access tokens npm_AbCd… sk_live_…4xYz re_c1tp••••",
 			"Restricted key rk_live_51H…",
 			"const store_resource_name_for_the_page = 1",
+			"re_render_the_page_again_after_update()",
 			`pk_live_${"Ab1".repeat(10)}`,
 		])
 			expect(filled.shows(text), text).toBe(false);

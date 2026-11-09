@@ -335,8 +335,9 @@ export interface CloudSecretBrokerAuthority {
 	replaceHookCaptureKey?: EventHookAuthority["replaceHookCaptureKey"];
 	readHookCapture?: EventHookAuthority["readHookCapture"];
 	storeHookCapture?: EventHookAuthority["storeHookCapture"];
-	/** Coding values an agent takes off a service's page (20260930695000); without all three, every such capture is
-	 * refused as unavailable. */
+	/** Coding values an agent takes off a service's page (20260930695000, 20260930698000); without all four, every such
+	 * capture is refused as unavailable. */
+	describeCodingValueCapture?: CodingValueAuthority["describeCodingValueCapture"];
 	prepareCodingValueCapture?: CodingValueAuthority["prepareCodingValueCapture"];
 	readCodingValueCapture?: CodingValueAuthority["readCodingValueCapture"];
 	storeCodingValueCapture?: CodingValueAuthority["storeCodingValueCapture"];
@@ -1028,11 +1029,13 @@ export class CloudSecretBroker {
 						keys: options.keyring,
 					})
 				: undefined;
-		const { prepareCodingValueCapture, readCodingValueCapture, storeCodingValueCapture } = options.authority;
+		const { describeCodingValueCapture, prepareCodingValueCapture, readCodingValueCapture, storeCodingValueCapture } =
+			options.authority;
 		this.#codingValues =
-			prepareCodingValueCapture && readCodingValueCapture && storeCodingValueCapture
+			describeCodingValueCapture && prepareCodingValueCapture && readCodingValueCapture && storeCodingValueCapture
 				? new CodingValueVault({
 						authority: {
+							describeCodingValueCapture: describeCodingValueCapture.bind(options.authority),
 							prepareCodingValueCapture: prepareCodingValueCapture.bind(options.authority),
 							readCodingValueCapture: readCodingValueCapture.bind(options.authority),
 							storeCodingValueCapture: storeCodingValueCapture.bind(options.authority),
@@ -1972,6 +1975,14 @@ export class PostgresCloudSecretBrokerAuthority
 			call.envelope,
 			createHash("sha256").update(call.idempotencyKey).digest("hex"),
 		];
+	}
+
+	describeCodingValueCapture(call: CodingValueCaptureCall, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_describe_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			this.#codingValueCall(call),
+			signal,
+		);
 	}
 
 	prepareCodingValueCapture(

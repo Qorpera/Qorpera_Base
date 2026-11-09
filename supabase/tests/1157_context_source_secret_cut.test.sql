@@ -38,6 +38,33 @@ begin
 	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('whsec_ whsec_short') = 'whsec_ whsec_short',
 		'a bare or short whsec_ stays');
 
+	-- 20260930698100: the keys an agent takes as coding values, as the runtime cuts them: plain, with the prefix's `_`
+	-- URL-encoded or JSON-escaped (twice, inside a JSON string), Resend's where a word or a JSON escape starts it; never
+	-- a short one, a publishable key, `re_` inside a word or a snake_case name.
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('k npm_' || repeat('T7fakeNotASecret', 3) || ';')
+		= 'k npm_[REDACTED];', 'npm');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('k=npm%5F' || repeat('T7fakeNotASecret', 3) || '&')
+		= 'k=npm_[REDACTED]&', 'npm, URL-encoded prefix');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('"npm\\u005F' || repeat('T7fakeNotASecret', 3) || '"')
+		= '"npm_[REDACTED]"', 'npm, prefix escaped twice');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('ghp_' || repeat('T7fakeNotASecret', 3))
+		= 'ghp_[REDACTED]', 'GitHub classic');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('github_pat_' || repeat('T7fake_NotASecret', 5) || ' x')
+		= 'github_pat_[REDACTED] x', 'GitHub fine-grained');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('sk_live_' || repeat('T7fakeNotASecret', 2)
+			|| ' rk_test_' || repeat('T7fakeNotASecret', 2)) = 'sk_[REDACTED] rk_[REDACTED]', 'Stripe');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('Bearer re_T7fakeNo_tASecretT7fakeNot')
+		= 'Bearer re_[REDACTED]', 'Resend');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('"a\nre_T7fakeNo_tASecretT7fakeNot"')
+		= '"a\nre_[REDACTED]"', 'Resend after a JSON escape');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('npm_' || repeat('T7fake', 5)
+			|| ' pk_live_' || repeat('T7fakeNotASecret', 2) || ' store_re_T7fakeNotASecretT7fake'
+			|| ' re_render_the_page_again_after_update')
+		= 'npm_' || repeat('T7fake', 5) || ' pk_live_' || repeat('T7fakeNotASecret', 2) || ' store_re_T7fakeNotASecretT7fake'
+			|| ' re_render_the_page_again_after_update', 'what is not a key stays');
+	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_redact_webhook_secrets(text)'::regprocedure),
+		'20260930698100') > 0, 'the rule names its migration');
+
 	-- A secret the first excerpt's end (4 KiB) would cut in two: cut out of the whole text first, so neither the excerpt
 	-- nor the next page holds a part of it. Where the output starts in the continuation's text is measured first.
 	perform set_config('qorpera_test.t7_text', 'T7MARK', true);

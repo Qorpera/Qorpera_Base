@@ -27,8 +27,11 @@ import {
  * connector instead of a hook's secret. One computer_browser vault_capture with a codingValue comes here twice, both
  * times as the native host began it (its receipt, its idempotency key and its operation envelope):
  * - prepare, before the office acts: the value's capture key, made under the company's current key for the id the
- *   database names (qorpera_folder_prepare_coding_value_capture). The broker derives the key pair from the company's key
- *   and stores nothing; the database keeps the public half, and the office reads it from there itself.
+ *   database names (qorpera_folder_prepare_coding_value_capture). What the key is derived from (the company, the
+ *   environment, the authority's current key id and the id the value keeps) the database describes first
+ *   (qorpera_folder_describe_coding_value_capture, 20260930698000), with whether the key it keeps is current, so a
+ *   current key is never made again. The broker derives the key pair from the company's key and stores nothing; the
+ *   database keeps the public half, and the office reads it from there itself.
  * - capture, after it, with the office's sealed box: the vault opens it, checks the value against the service's pattern
  *   and its site, seals it as the next version of the value (`{value}`, as a member's coding value is sealed) and
  *   stores it, which also grants it to the call's repository in the run requester's name
@@ -43,9 +46,9 @@ const REFUSAL_SCHEMA = "qorpera.coding-value-refusal/v1";
 const PREPARE_ANSWER_SCHEMA = "qorpera.coding-value-prepare-answer/v1";
 const CAPTURE_ANSWER_SCHEMA = "qorpera.coding-value-capture-answer/v1";
 const KEY_SCHEMA = "qorpera.coding-value-capture-key/v1";
+const DESCRIPTION_SCHEMA = "qorpera.coding-value-capture-description/v1";
 const CONTEXT_SCHEMA = "qorpera.coding-value-capture-context/v1";
 const STORED_SCHEMA = "qorpera.coding-value-capture-stored/v1";
-const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 /** The one field a coding value's envelope holds (cloud-secret-broker.ts, environmentValue). */
 const VALUE_FIELD = "value";
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -53,8 +56,6 @@ const VARIABLE = /^[a-z][a-z0-9_]{0,63}$/;
 const SERVICE = /^[a-z][a-z0-9-]{0,31}$/;
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const REPOSITORY = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
-/** The database's words when the key id the broker sealed under is not the company's current one. */
-const OTHER_KEY = "coding value capture key is unavailable";
 /** How many times a prepare follows the id the database names before it is left unconfirmed. */
 const PREPARE_IDS = 3;
 
@@ -117,6 +118,7 @@ export interface CodingValueCaptureAnswer {
 
 /** The broker-role database calls (20260930695000). */
 export interface CodingValueAuthority {
+	describeCodingValueCapture(call: CodingValueCaptureCall, signal: AbortSignal): Promise<unknown>;
 	prepareCodingValueCapture(
 		call: CodingValueCaptureCall,
 		key: CodingValueCaptureKey,
@@ -239,25 +241,44 @@ export function isCodingValueRefusal(answer: { readonly schema: string }): answe
 	return answer.schema === REFUSAL_SCHEMA;
 }
 
-/** Whose value the call takes: the run's company and environment, as the envelope's principals name them (the
- * database's begin held them to the run, and the receipt's input digest is this envelope's), and the variable. */
-interface CallTarget {
+/** What the database describes for a call's capture key: whose value it is, the company key it is derived under, the
+ * id the value keeps (none before a key was reserved for it), and the key it keeps when that one is current. */
+interface Description {
 	readonly companyId: string;
 	readonly environmentId: string;
 	readonly variable: string;
+	readonly keyId: string;
+	readonly secretId?: string;
+	readonly current: boolean;
+	readonly capturePublicKey?: string;
 }
 
-function callTarget(envelope: string): CallTarget {
-	const input = parseRecord(JSON.parse(envelope), "Coding value capture call");
-	const principals = parseRecord(input.principals, "Coding value capture call");
-	const operation = parseRecord(input.operation, "Coding value capture call");
-	const value = parseRecord(parseRecord(operation.arguments, "Coding value capture call").codingValue, "Coding value");
-	if (input.schema !== OPERATION_SCHEMA || typeof value.variable !== "string" || !VARIABLE.test(value.variable))
-		throw new Error("Coding value capture call is malformed");
+function description(value: unknown): Description {
+	const input = parseClosedRecord(
+		value,
+		"Coding value capture description",
+		["schema", "companyId", "environmentId", "variable", "keyId", "current"],
+		["secretId", "capturePublicKey"],
+	);
+	const { variable, keyId, current, capturePublicKey } = input;
+	if (
+		input.schema !== DESCRIPTION_SCHEMA ||
+		typeof variable !== "string" ||
+		!VARIABLE.test(variable) ||
+		typeof keyId !== "string" ||
+		!KEY_ID.test(keyId) ||
+		typeof current !== "boolean" ||
+		(current ? input.secretId === undefined || typeof capturePublicKey !== "string" : capturePublicKey !== undefined)
+	)
+		throw new Error("Coding value capture description is malformed");
 	return {
-		companyId: parseUuid(principals.companyId, "Coding value company"),
-		environmentId: parseUuid(principals.environmentId, "Coding value environment"),
-		variable: value.variable,
+		companyId: parseUuid(input.companyId, "Coding value company"),
+		environmentId: parseUuid(input.environmentId, "Coding value environment"),
+		variable,
+		keyId,
+		...(input.secretId === undefined ? {} : { secretId: parseUuid(input.secretId, "Coding value secret") }),
+		current,
+		...(typeof capturePublicKey === "string" ? { capturePublicKey } : {}),
 	};
 }
 
@@ -269,7 +290,7 @@ interface PreparedKey {
 }
 
 /** What the database answers for a prepare under `keyId`: the key it keeps (current), or the id to derive for. */
-function preparedKey(value: unknown, target: CallTarget, keyId: string): PreparedKey {
+function preparedKey(value: unknown, target: Description): PreparedKey {
 	const input = parseClosedRecord(
 		value,
 		"Coding value capture key",
@@ -282,7 +303,7 @@ function preparedKey(value: unknown, target: CallTarget, keyId: string): Prepare
 		parseUuid(input.companyId, "Coding value company") !== target.companyId ||
 		parseUuid(input.environmentId, "Coding value environment") !== target.environmentId ||
 		input.variable !== target.variable ||
-		input.keyId !== keyId ||
+		input.keyId !== target.keyId ||
 		typeof input.current !== "boolean" ||
 		(current
 			? typeof input.replaced !== "boolean" || typeof input.capturePublicKey !== "string"
@@ -436,8 +457,6 @@ export class CodingValueVault {
 	readonly #keys: CloudSecretKeyring;
 	readonly #newId: () => string;
 	readonly #now: () => number;
-	/** The company key id the database last took: tried first, so a prepare usually asks once. */
-	#keyId: string | undefined;
 
 	constructor(options: {
 		authority: CodingValueAuthority;
@@ -453,31 +472,16 @@ export class CodingValueVault {
 
 	/**
 	 * The value's capture key, before the office reads the page: ready (made, made again or kept), or the database's
-	 * refusal. Nothing is stored here: the database keeps the public half of a pair the vault derives. The database
-	 * names the company's current key only by taking it, so each key this vault holds is offered in turn (the one it
-	 * took last first) until one is taken; one it does not hold leaves the call unconfirmed.
+	 * refusal. Nothing is stored here: the database keeps the public half of a pair the vault derives, under the company
+	 * key the database describes; one this vault does not hold leaves the call unconfirmed. A write that met another
+	 * prepare of the value (40003) describes and prepares again.
 	 */
 	async prepare(
 		call: CodingValueCaptureCall,
 		signal: AbortSignal,
 	): Promise<CodingValuePrepareAnswer | CodingValueRefusal> {
 		try {
-			const target = callTarget(call.envelope);
-			const last = this.#keyId;
-			const keyIds = [
-				...(last && this.#keys.has(last) ? [last] : []),
-				...this.#keys.keyIds().filter((keyId) => keyId !== last),
-			];
-			for (const keyId of keyIds) {
-				try {
-					return await withCaptureRetries(() => this.#prepare(call, target, keyId, signal), signal);
-				} catch (error) {
-					const other = vaultCaptureRefusal(error);
-					if (other?.code !== "42501" || other.message !== OTHER_KEY) throw error;
-					signal.throwIfAborted();
-				}
-			}
-			throw new Error("Coding value key is unavailable");
+			return await withCaptureRetries(() => this.#prepare(call, signal), signal);
 		} catch (error) {
 			const refused = refusal(error);
 			if (refused) return refused;
@@ -485,34 +489,33 @@ export class CodingValueVault {
 		}
 	}
 
-	/** A prepare under one company key: for a new id, then for the id the database names (a value of that name it keeps
-	 * already, or the key's reserved id), until it keeps the key. */
-	async #prepare(
-		call: CodingValueCaptureCall,
-		target: CallTarget,
-		keyId: string,
-		signal: AbortSignal,
-	): Promise<CodingValuePrepareAnswer> {
+	/** Described first; a current key is kept as it is, and any other is made for the id the value keeps (a new one when
+	 * it keeps none), then for the id the database names if that changed meanwhile, until the database keeps it. */
+	async #prepare(call: CodingValueCaptureCall, signal: AbortSignal): Promise<CodingValuePrepareAnswer> {
+		const target = description(await this.#authority.describeCodingValueCapture(call, signal));
+		const { companyId, environmentId, keyId } = target;
+		if (!this.#keys.has(keyId)) throw new Error("Coding value key is unavailable");
 		const derive = (secretId: string) =>
-			this.#keys.codingValueCapturePublicKey({
-				companyId: target.companyId,
-				environmentId: target.environmentId,
-				secretId,
-				keyId,
-			});
-		let secretId = this.#newId();
+			this.#keys.codingValueCapturePublicKey({ companyId, environmentId, secretId, keyId });
+		// The office seals to the key the database keeps: it must be this vault's own for that id, or the box would never
+		// open here.
+		if (target.current) {
+			if (target.capturePublicKey !== derive(target.secretId as string))
+				throw new Error("Coding value capture key differs");
+			return { schema: PREPARE_ANSWER_SCHEMA, variable: target.variable, replaced: false };
+		}
+		let secretId = target.secretId ?? this.#newId();
 		if (!isUuid(secretId)) throw new Error("Coding value secret id is malformed");
 		for (let asked = 1; ; asked += 1) {
-			const publicKey = derive(secretId);
 			const answer = preparedKey(
-				await this.#authority.prepareCodingValueCapture(call, { secretId, keyId, publicKey }, signal),
+				await this.#authority.prepareCodingValueCapture(
+					call,
+					{ secretId, keyId, publicKey: derive(secretId) },
+					signal,
+				),
 				target,
-				keyId,
 			);
-			this.#keyId = keyId;
 			if (answer.current) {
-				// The office seals to the key the database keeps: it must be this vault's own for that id, or the box
-				// would never open here.
 				if (answer.capturePublicKey !== derive(answer.secretId))
 					throw new Error("Coding value capture key differs");
 				return { schema: PREPARE_ANSWER_SCHEMA, variable: target.variable, replaced: answer.replaced === true };

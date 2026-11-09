@@ -83,11 +83,37 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * for a context source's whole text before it is paged (`qorpera_redact_webhook_secrets`, 20260930657200). */
 const WEBHOOK_SECRET =
 	/whsec(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9+/=]|%[0-9A-Fa-f]{2}|\\{1,2}(?:\/|u[0-9A-Fa-f]{4})){10,}/g;
-const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
-/** Text with every webhook signing secret cut out, as every text tool result has it (E3c-2), and as everything else
- * the host sends Codex has it: the context message, the developer instructions, every turn's input. */
+/**
+ * Each secret cut out, and what replaces it: a webhook signing secret, and the keys an agent takes into the vault as
+ * coding values (20260930695000), as their services write them, at least as long as the shortest whole key: npm's
+ * `npm_`, GitHub's `ghp_` and `github_pat_`, Stripe's `sk_`/`rk_` with `test_` or `live_`, and Resend's `re_` where it
+ * starts a word (or follows a JSON escape such as `\n`) and has a capital letter in its first 80 characters, as a
+ * random key does and a snake_case name (`re_render_the_page_again`) does not. Each `_` may be URL-encoded or
+ * JSON-escaped, as a whsec_ secret's prefix may; the rest of a key is letters and digits, which neither encoding
+ * changes. A cut keeps the prefix, never shorter than the match, and a cut JSON text stays valid. SQL keeps the same
+ * rules (`qorpera_redact_webhook_secrets`, 20260930698100).
+ */
+const SECRET_CUTS: readonly (readonly [RegExp, string])[] = [
+	[WEBHOOK_SECRET, "whsec_[REDACTED]"],
+	[/npm(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{36,}/g, "npm_[REDACTED]"],
+	[/ghp(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{36,}/g, "ghp_[REDACTED]"],
+	[
+		/github(?:_|%5[Ff]|\\{1,2}u005[Ff])pat(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9_]|%5[Ff]|\\{1,2}u005[Ff]){82,}/g,
+		"github_pat_[REDACTED]",
+	],
+	[/([sr]k)(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:test|live)(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{24,}/g, "$1_[REDACTED]"],
+	[
+		/(?:(?<![A-Za-z0-9_])|(?<=\\[nrt]))re(?:_|%5[Ff]|\\{1,2}u005[Ff])(?=[A-Za-z0-9_%\\]{0,80}[A-Z])(?:[A-Za-z0-9_]|%5[Ff]|\\{1,2}u005[Ff]){20,}/g,
+		"re_[REDACTED]",
+	],
+];
+/** Text with every webhook signing secret and coding value key cut out, as every text tool result has it (E3c-2,
+ * 20260930695000), and as everything else the host sends Codex has it: the context message, the developer
+ * instructions, every turn's input. */
 export function redactCloudWebhookSecrets(text: string): string {
-	return text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+	let cut = text;
+	for (const [secret, replacement] of SECRET_CUTS) cut = cut.replace(secret, replacement);
+	return cut;
 }
 /** A JSON value with the same cut in each of its texts, its keys included. */
 export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {

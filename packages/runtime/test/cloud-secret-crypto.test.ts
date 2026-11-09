@@ -195,13 +195,6 @@ describe("coding value capture keys (20260930695000)", () => {
 		own.close();
 	});
 
-	it("lists the key ids it holds, never a key", () => {
-		const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) }, { "vault-root-1": randomBytes(32) });
-		expect(keyring.keyIds()).toEqual(["company-kek-1", "vault-root-1"]);
-		keyring.close();
-		expect(keyring.keyIds()).toEqual([]);
-	});
-
 	it("opens a value sealed to its public key, on any copy of the vault, and never as a hook's capture", async () => {
 		const master = randomBytes(32);
 		const nodeOne = new CloudSecretKeyring({}, { "vault-root-1": master });

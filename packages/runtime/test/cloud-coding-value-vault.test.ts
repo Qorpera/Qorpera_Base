@@ -122,6 +122,17 @@ function fixture(authority: Partial<CodingValueAuthority> = {}, options: { at?: 
 		replaced,
 		capturePublicKey: publicKey(id, key),
 	});
+	/** The database's description of the call's capture key, as qorpera_folder_describe_coding_value_capture gives it:
+	 * by default no key yet, and no id the value keeps. */
+	const described = (overrides: Record<string, unknown> = {}) => ({
+		schema: "qorpera.coding-value-capture-description/v1",
+		companyId,
+		environmentId,
+		variable: "npm_token",
+		keyId,
+		current: false,
+		...overrides,
+	});
 	/** The database's answer to a capture's read, as qorpera_folder_read_coding_value_capture gives it. */
 	const context = (overrides: Record<string, unknown> = {}) => ({
 		schema: "qorpera.coding-value-capture-context/v1",
@@ -157,6 +168,7 @@ function fixture(authority: Partial<CodingValueAuthority> = {}, options: { at?: 
 	const stored: CodingValueCaptureVersion[] = [];
 	/** The buffers the vault handed over, by reference: zeroed once the call is over. */
 	const sent: Uint8Array[] = [];
+	const describe = vi.fn<CodingValueAuthority["describeCodingValueCapture"]>(async () => described());
 	const prepare = vi.fn<CodingValueAuthority["prepareCodingValueCapture"]>(async (_call, key) => {
 		keys.push(key);
 		return kept(key.secretId);
@@ -175,6 +187,7 @@ function fixture(authority: Partial<CodingValueAuthority> = {}, options: { at?: 
 		};
 	});
 	const fake: CodingValueAuthority = {
+		describeCodingValueCapture: describe,
 		prepareCodingValueCapture: prepare,
 		readCodingValueCapture: read,
 		storeCodingValueCapture: store,
@@ -189,6 +202,7 @@ function fixture(authority: Partial<CodingValueAuthority> = {}, options: { at?: 
 	return {
 		keyring,
 		publicKey,
+		described,
 		kept,
 		context,
 		held,
@@ -196,6 +210,7 @@ function fixture(authority: Partial<CodingValueAuthority> = {}, options: { at?: 
 		keys,
 		stored,
 		sent,
+		describe,
 		prepare,
 		read,
 		store,
@@ -214,7 +229,7 @@ function opened(keyring: CloudSecretKeyring, version: CodingValueCaptureVersion)
 const signal = () => AbortSignal.timeout(5000);
 
 describe("a coding value's capture key", () => {
-	it("is made for a new id under the company's key, and its public half alone goes to the database", async () => {
+	it("is described first, then made for a new id under the company's key, its public half alone sent", async () => {
 		const f = fixture();
 		const request = call();
 		expect(await f.vault.prepare(request, signal())).toEqual({
@@ -222,12 +237,64 @@ describe("a coding value's capture key", () => {
 			variable: "npm_token",
 			replaced: false,
 		});
+		expect(f.describe).toHaveBeenCalledWith(request, expect.anything());
 		expect(f.prepare).toHaveBeenCalledOnce();
 		expect(f.prepare).toHaveBeenCalledWith(request, { secretId, keyId, publicKey: f.publicKey() }, expect.anything());
+		expect(f.describe.mock.invocationCallOrder[0]).toBeLessThan(f.prepare.mock.invocationCallOrder[0]!);
 		expect(f.publicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 	});
 
-	it("is made again for the id the database names: a value of that name it keeps already, or a reserved one", async () => {
+	it("is made for the id the value keeps, under the key id the database names", async () => {
+		const f = fixture({}, { keyIds: ["company-kek-1", "company-kek-2"] });
+		f.describe.mockResolvedValueOnce(f.described({ secretId: reservedId, keyId: "company-kek-2" }));
+		f.prepare.mockResolvedValueOnce(f.kept(reservedId, true, "company-kek-2"));
+		expect(await f.vault.prepare(call(), signal())).toMatchObject({ replaced: true });
+		expect(f.prepare.mock.calls.map(([, key]) => key)).toEqual([
+			{ secretId: reservedId, keyId: "company-kek-2", publicKey: f.publicKey(reservedId, "company-kek-2") },
+		]);
+		// A key id this vault does not hold: nothing is prepared.
+		const other = fixture();
+		other.describe.mockResolvedValueOnce(other.described({ keyId: "company-kek-9" }));
+		await expect(other.vault.prepare(call(), signal())).rejects.toThrow("Coding value capture unconfirmed");
+		expect(other.prepare).not.toHaveBeenCalled();
+	});
+
+	it("keeps a current key without making it again, only when it is this vault's own for that id", async () => {
+		const f = fixture();
+		f.describe.mockResolvedValueOnce(
+			f.described({ secretId: reservedId, current: true, capturePublicKey: f.publicKey(reservedId) }),
+		);
+		expect(await f.vault.prepare(call(), signal())).toEqual({
+			schema: "qorpera.coding-value-prepare-answer/v1",
+			variable: "npm_token",
+			replaced: false,
+		});
+		expect(f.prepare).not.toHaveBeenCalled();
+		const forged = fixture();
+		forged.describe.mockResolvedValueOnce(
+			forged.described({ secretId: reservedId, current: true, capturePublicKey: forged.publicKey() }),
+		);
+		await expect(forged.vault.prepare(call(), signal())).rejects.toThrow("Coding value capture unconfirmed");
+		expect(forged.prepare).not.toHaveBeenCalled();
+		for (const other of [
+			{ current: true },
+			{ current: true, secretId: reservedId },
+			{ capturePublicKey: f.publicKey() },
+			{ keyId: " " },
+			{ variable: "NPM_TOKEN" },
+			{ schema: "qorpera.coding-value-capture-key/v1" },
+			{ extra: true },
+		]) {
+			const bad = fixture();
+			bad.describe.mockResolvedValueOnce(bad.described(other));
+			await expect(bad.vault.prepare(call(), signal()), JSON.stringify(other)).rejects.toThrow(
+				"Coding value capture unconfirmed",
+			);
+			expect(bad.prepare).not.toHaveBeenCalled();
+		}
+	});
+
+	it("follows the id the database names when it changed since the description, and never far", async () => {
 		const f = fixture();
 		f.prepare
 			.mockResolvedValueOnce({
@@ -240,16 +307,11 @@ describe("a coding value's capture key", () => {
 				current: false,
 			})
 			.mockResolvedValueOnce(f.kept(reservedId, true));
-		expect(await f.vault.prepare(call(), signal())).toEqual({
-			schema: "qorpera.coding-value-prepare-answer/v1",
-			variable: "npm_token",
-			replaced: true,
-		});
+		expect(await f.vault.prepare(call(), signal())).toMatchObject({ replaced: true });
 		expect(f.prepare.mock.calls.map(([, key]) => key)).toEqual([
 			{ secretId, keyId, publicKey: f.publicKey() },
 			{ secretId: reservedId, keyId, publicKey: f.publicKey(reservedId) },
 		]);
-		// A database that keeps naming other ids is never followed far.
 		const restless = fixture();
 		let n = 0;
 		restless.prepare.mockImplementation(async () => ({
@@ -263,22 +325,14 @@ describe("a coding value's capture key", () => {
 		}));
 		await expect(restless.vault.prepare(call(), signal())).rejects.toThrow("Coding value capture unconfirmed");
 		expect(restless.prepare).toHaveBeenCalledTimes(3);
-	});
-
-	it("keeps a current key only when it is this vault's own for that id", async () => {
-		const f = fixture();
-		f.prepare.mockResolvedValue(f.kept(reservedId));
-		expect(await f.vault.prepare(call(), signal())).toMatchObject({ replaced: false });
-		const forged = fixture();
-		forged.prepare.mockResolvedValue({ ...forged.kept(reservedId), capturePublicKey: forged.publicKey() });
-		await expect(forged.vault.prepare(call(), signal())).rejects.toThrow("Coding value capture unconfirmed");
-		// Another company, environment, variable or key in the answer: unconfirmed.
+		// A prepare's answer for another company, environment, value or key, or the key not this vault's: unconfirmed.
 		for (const other of [
 			{ companyId: randomUUID() },
 			{ environmentId: randomUUID() },
 			{ variable: "npm_auth_token" },
 			{ keyId: "company-kek-2" },
 			{ current: false },
+			{ capturePublicKey: f.publicKey(reservedId) },
 			{ extra: true },
 		]) {
 			const bad = fixture();
@@ -289,47 +343,29 @@ describe("a coding value's capture key", () => {
 		}
 	});
 
-	it("offers each company key it holds until the database takes one, and that one first from then on", async () => {
-		const f = fixture({}, { keyIds: ["company-kek-1", "company-kek-2"] });
-		f.prepare.mockImplementation(async (_call, key) => {
-			if (key.keyId !== "company-kek-2") throw databaseError("42501", "coding value capture key is unavailable");
-			return f.kept(key.secretId, false, "company-kek-2");
-		});
-		expect(await f.vault.prepare(call(), signal())).toMatchObject({ variable: "npm_token" });
-		expect(f.prepare.mock.calls.map(([, key]) => key.keyId)).toEqual(["company-kek-1", "company-kek-2"]);
-		expect(f.prepare.mock.calls[1]?.[1].publicKey).toBe(f.publicKey(secretId, "company-kek-2"));
-		f.prepare.mockClear();
-		await f.vault.prepare(call(), signal());
-		expect(f.prepare.mock.calls.map(([, key]) => key.keyId)).toEqual(["company-kek-2"]);
-		// None taken: the broker cannot serve this company, unconfirmed.
-		const none = fixture({
-			prepareCodingValueCapture: vi.fn(async () => {
-				throw databaseError("42501", "coding value capture key is unavailable");
-			}),
-		});
-		await expect(none.vault.prepare(call(), signal())).rejects.toThrow("Coding value capture unconfirmed");
-	});
-
-	it("passes the database's refusals on in their own words, and makes the key again after a write that met another", async () => {
-		for (const [code, message] of [
-			["42501", "Only owners and admins can save coding values; ask one of them"],
-			["42501", "coding value secret id is taken"],
-			["0A000", "Coding values need a company on the company folder"],
-		] as const) {
-			const f = fixture({
-				prepareCodingValueCapture: vi.fn(async () => {
+	it("passes the database's refusals on in their own words, and asks again after a write that met another", async () => {
+		for (const step of ["describe", "prepare"] as const)
+			for (const [code, message] of [
+				["42501", "coding value capture receipt is unavailable"],
+				["42501", "Only owners and admins can save coding values; ask one of them"],
+				["0A000", "Coding values need a company on the company folder"],
+			] as const) {
+				const fail = vi.fn(async () => {
 					throw databaseError(code, message);
-				}),
-			});
-			expect(await f.vault.prepare(call(), signal())).toEqual({
-				schema: "qorpera.coding-value-refusal/v1",
-				code,
-				message,
-			});
-		}
+				});
+				const f = fixture(
+					step === "describe" ? { describeCodingValueCapture: fail } : { prepareCodingValueCapture: fail },
+				);
+				expect(await f.vault.prepare(call(), signal())).toEqual({
+					schema: "qorpera.coding-value-refusal/v1",
+					code,
+					message,
+				});
+			}
 		const raced = fixture();
 		raced.prepare.mockRejectedValueOnce(databaseError("40003", "coding value capture outcome is unconfirmed"));
 		expect(await raced.vault.prepare(call(), signal())).toMatchObject({ replaced: false });
+		expect(raced.describe).toHaveBeenCalledTimes(2);
 		expect(raced.prepare).toHaveBeenCalledTimes(2);
 	});
 });
@@ -568,6 +604,7 @@ describe("coding values over the broker", () => {
 			brokerCapability,
 		});
 		const request = call();
+		await authority.describeCodingValueCapture(request, signal());
 		await authority.prepareCodingValueCapture(request, { secretId, keyId, publicKey: "k" }, signal());
 		await authority.readCodingValueCapture(request, signal());
 		await authority.storeCodingValueCapture(
@@ -576,6 +613,7 @@ describe("coding values over the broker", () => {
 			signal(),
 		);
 		expect(queries.map((query) => query.text)).toEqual([
+			"select public.qorpera_folder_describe_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
 			"select public.qorpera_folder_prepare_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text) as result",
 			"select public.qorpera_folder_read_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
 			"select public.qorpera_folder_store_coding_value_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::bigint,$9::uuid,$10::uuid,$11::text,$12::bytea,$13::text) as result",
@@ -589,6 +627,7 @@ describe("coding values over the broker", () => {
 			createHash("sha256").update("c".repeat(64)).digest("hex"),
 		];
 		expect(queries.map((query) => query.values)).toEqual([
+			head,
 			[...head, secretId, keyId, "k"],
 			head,
 			[...head, secretId, 2, companyId, environmentId, keyId, Buffer.from("sealed"), "e".repeat(64)],
@@ -656,7 +695,7 @@ describe("coding values over the broker", () => {
 			message: "This company is being deleted",
 		});
 		// Without the runtime's token or the run's own lease, refused before the database is asked anything.
-		const calls = f.read.mock.calls.length + f.prepare.mock.calls.length;
+		const calls = f.describe.mock.calls.length + f.read.mock.calls.length + f.prepare.mock.calls.length;
 		await expect(
 			client(own, randomBytes(32).toString("base64url")).codingValuePrepare(request, signal()),
 		).rejects.toThrow("Cloud secret broker rejected the coding value capture");
@@ -664,7 +703,7 @@ describe("coding values over the broker", () => {
 			await expect(client(holder).codingValueCapture({ ...request, box }, signal())).rejects.toThrow(
 				"Cloud secret broker rejected the coding value capture",
 			);
-		expect(f.read.mock.calls.length + f.prepare.mock.calls.length).toBe(calls);
+		expect(f.describe.mock.calls.length + f.read.mock.calls.length + f.prepare.mock.calls.length).toBe(calls);
 		expect(f.stored).toHaveLength(1);
 		// A broker whose database cannot serve coding values takes none.
 		const bare = new CloudSecretBroker({ authority: base, keyring: f.keyring, adapters: [] });

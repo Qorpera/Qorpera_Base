@@ -429,6 +429,42 @@ describe("cloud-owned native tool boundary", () => {
 		expect(result.content.text).toBe(`Config: ${cut}`);
 	});
 
+	// Made up for these tests: never real keys. The keys an agent takes as coding values (20260930695000), cut as a
+	// signing secret is, with the same rules as SQL's (1157).
+	const fake = "T7fakeNotASecret";
+	it.each([
+		["npm", `k npm_${fake.repeat(3)};`, "k npm_[REDACTED];"],
+		["npm, URL-encoded prefix", `k=npm%5F${fake.repeat(3)}&`, "k=npm_[REDACTED]&"],
+		["npm, prefix JSON-escaped", `"npm\\u005F${fake.repeat(3)}"`, '"npm_[REDACTED]"'],
+		["GitHub classic", `ghp_${fake.repeat(3)}`, "ghp_[REDACTED]"],
+		["GitHub fine-grained", `github_pat_${"T7fake_NotASecret".repeat(5)} x`, "github_pat_[REDACTED] x"],
+		["Stripe", `sk_live_${fake.repeat(2)} rk_test_${fake.repeat(2)}`, "sk_[REDACTED] rk_[REDACTED]"],
+		["Resend", "Bearer re_T7fakeNo_tASecretT7fakeNot", "Bearer re_[REDACTED]"],
+		["Resend after a JSON escape", '"a\\nre_T7fakeNo_tASecretT7fakeNot"', '"a\\nre_[REDACTED]"'],
+	])("cuts a coding value key written %s out of an answer", async (_name, text, cut) => {
+		expect(redactCloudWebhookSecrets(text)).toBe(cut);
+		const { call } = fixture({ execute: async () => ({ kind: "text", value: `Config: ${text}` }) });
+		const { result } = await call();
+		expect(result.content.text).toBe(`Config: ${cut}`);
+	});
+
+	it("leaves what is not a coding value key: a short one, a publishable key, re_ in a word or a snake_case name", () => {
+		const text = [
+			`npm_${"T7fake".repeat(5)}`,
+			`pk_live_${fake.repeat(2)}`,
+			`store_re_${fake}T7fake`,
+			"re_render_the_page_again_after_update",
+			"ghp_short",
+		].join(" ");
+		expect(redactCloudWebhookSecrets(text)).toBe(text);
+		// A cut JSON text stays valid, never grows, and never matches again.
+		const serialized = JSON.stringify({ npm: `npm_${fake.repeat(3)}`, quoted: `re_T7fakeNo_tASecretT7fakeNot"end` });
+		const cut = redactCloudWebhookSecrets(serialized);
+		expect(JSON.parse(cut)).toEqual({ npm: "npm_[REDACTED]", quoted: 're_[REDACTED]"end' });
+		expect(cut.length).toBeLessThanOrEqual(serialized.length);
+		expect(redactCloudWebhookSecrets(cut)).toBe(cut);
+	});
+
 	it("leaves JSON valid where it cuts an escaped secret, and leaves what is not one", () => {
 		const value = {
 			php: "whsec_T7f\\/akeNotASecret",
