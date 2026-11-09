@@ -105,7 +105,7 @@ describe("which first screen stands while main.js loads", () => {
 			[SMALL_DEFAULT, MIN, MAX_SHARE * 100],
 		]);
 		expect(css).toMatch(
-			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 456\)/,
+			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 547\)/,
 		);
 	});
 });
@@ -128,7 +128,7 @@ describe("the head script", () => {
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("sign-in");
 		localStorage.setItem(AUTH_STORAGE_KEY, "{}");
-		localStorage.setItem("qorpera.web.rail-width.v4", "412");
+		localStorage.setItem("qorpera.web.rail-width.v5", "412");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("thread");
 		expect(document.documentElement.style.getPropertyValue("--boot-rail")).toBe("412");
@@ -184,10 +184,10 @@ describe("the head script", () => {
 	it("leaves a compact rail's thread and a width RailLayout would not take alone", () => {
 		localStorage.setItem(AUTH_STORAGE_KEY, "{}");
 		history.replaceState(null, "", `/#/c/${COMPANY}`);
-		localStorage.setItem("qorpera.web.rail-width.v4", "80");
+		localStorage.setItem("qorpera.web.rail-width.v5", "80");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBeUndefined();
-		localStorage.setItem("qorpera.web.rail-width.v4", "120");
+		localStorage.setItem("qorpera.web.rail-width.v5", "120");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("thread");
 		expect(document.documentElement.style.getPropertyValue("--boot-rail")).toBe("");
