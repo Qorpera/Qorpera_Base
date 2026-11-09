@@ -1074,7 +1074,9 @@ describe("conversation UI boundaries", () => {
 			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
 			// The account marks itself online for its friends (online-mark.ts).
-			name === "qorpera_mark_online";
+			name === "qorpera_mark_online" ||
+			// Company figures ask for the company's logo (app/company-logos.ts).
+			name === "qorpera_company_logos";
 		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

@@ -112,6 +112,7 @@
 .picture-crop-view { --px: 1px; position: absolute; left: 0; top: 0; width: 288px; height: 288px; transform-origin: 0 0; }
 .picture-crop-image { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .picture-crop-circle { position: absolute; left: 24px; top: 24px; width: 240px; height: 240px; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55), inset 0 0 0 2px rgba(255, 255, 255, 0.9); pointer-events: none; }
+.picture-crop-circle.is-square { border-radius: 22%; }
 .picture-crop-zoom-row { display: flex; align-items: center; gap: 10px; color: var(--text-soft); }
 .picture-crop-zoom { flex: 1; min-width: 0; accent-color: var(--primary); }
 .picture-crop-zoom-small .icon { width: 14px; height: 14px; }
@@ -432,3 +433,24 @@
 .preference-picker-option > .icon { width: 15px; height: 15px; flex: none; margin-right: -2px; }
 .preference-picker-empty { margin: 0; padding: 12px 15px 14px; color: #797975; font-size: 12.5px; }
 .preference-picker-empty[hidden] { display: none; }
+
+/* Company logos (ui/company-logos.ts): a company's own logo covers its figure, in a rounded square. */
+.company-logo.has-logo > :not(img.company-logo-picture) { visibility: hidden; }
+.company-logo-picture { position: absolute; inset: 4%; width: 92%; height: 92%; object-fit: contain; border-radius: 22%; pointer-events: none; user-select: none; }
+
+/* Settings → Company → Brand: the official name and logo. */
+.settings-brand-row { display: flex; align-items: center; gap: 20px; }
+.settings-brand-picture { flex: none; }
+.settings-brand-logo { position: relative; display: grid; place-items: center; width: 88px; height: 88px; padding: 0; border: 0; border-radius: 22px; background: transparent; cursor: default; }
+.settings-brand-logo.is-changeable { cursor: pointer; }
+.settings-brand-logo:not(.is-changeable) .account-picture-badge { display: none; }
+.settings-brand-logo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.settings-brand-logo .figure, .settings-brand-logo .company-logo { width: 88px; height: 88px; }
+.settings-brand-logo[aria-busy] { opacity: .6; }
+.settings-brand-copy { display: grid; gap: 8px; min-width: 0; justify-items: start; }
+.settings-brand-name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.settings-brand-name strong { overflow: hidden; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
+.settings-brand-name-input { min-width: 0; width: min(320px, 100%); font-size: 15px; }
+.settings-brand-note { margin: 0; max-width: 46ch; color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
+.settings-brand-error:empty { display: none; }
+@media (max-width: 560px) { .settings-brand-row { align-items: flex-start; gap: 14px; } .settings-brand-logo, .settings-brand-logo .figure { width: 64px; height: 64px; } }

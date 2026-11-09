@@ -62,12 +62,17 @@ async function setup(f = fixture()) {
 	return { ...f, root };
 }
 /** The RPC names called so far, besides the app marking the account online (online-mark.ts), which it does at
- * sign-in whatever is open. */
+ * sign-in whatever is open, and the company logos its figures ask for and keep current (app/company-logos.ts). */
 function rpcNames(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => name !== "qorpera_mark_online");
+		.filter(
+			(name) =>
+				name !== "qorpera_mark_online" &&
+				name !== "qorpera_company_logos" &&
+				name !== "qorpera_publish_company_logo",
+		);
 }
 /** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and the
  * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
@@ -598,6 +603,25 @@ describe("settings session lifecycle", () => {
 		// The company list itself needs no way back.
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
+	});
+	it("shows the company's name and logo at the head of the Company tab", async () => {
+		const f = await setup();
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		const brand = f.root.querySelector<HTMLElement>("#settings-content .settings-brand")!;
+		expect(brand.querySelector("h2")?.textContent).toBe("Brand");
+		expect(brand.querySelector(".settings-brand-name strong")?.textContent).toBe(profileA.profileName);
+		// The owner may change both: the logo button opens the picker, and Rename is offered.
+		expect(brand.querySelector<HTMLButtonElement>(".settings-brand-logo")!.disabled).toBe(false);
+		expect([...brand.querySelectorAll("button")].some((button) => button.textContent === "Rename")).toBe(true);
+		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
+		// The brand's colours, fonts and guide are files: the button opens them in Storage.
+		[...brand.querySelectorAll<HTMLButtonElement>("button")]
+			.find((button) => button.textContent === "Open brand files")!
+			.click();
+		await draw();
+		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
 	});
 	it("opens the Friends window from the button beside Settings | Storage", async () => {
 		const f = await setup();

@@ -19,6 +19,7 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { nativeColorOf } from "../ui/avatar.ts";
+import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -29,6 +30,7 @@ import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui
 import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
@@ -104,6 +106,9 @@ export function mountApplication(
 	// Every initials disc on the page shows the person's own picture through this store.
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
+	// Every company figure shows the company's own logo through this store, once it has one.
+	const logos = new CompanyLogos(api);
+	setCompanyLogos(logos);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": t("Company navigation") });
@@ -451,6 +456,7 @@ export function mountApplication(
 			accountUserId = userId;
 			online.mark();
 			pictures.reset();
+			logos.reset();
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
@@ -643,6 +649,25 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
+			// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
+			const syncLogo = controller.store.subscribe(() => {
+				const team = controller.store.get().team;
+				if (!team || controller.store.get().accessLost) return;
+				syncLogo();
+				if (!team.capabilities.write) return;
+				const current = () => {
+					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+						throw new Error(t("Company access changed."));
+				};
+				void logos
+					.sync(
+						profile.profileId,
+						() => new WebCompanyFiles(cloud, profile, userId, team.role, controller.signal, current).folder(),
+						controller.signal,
+					)
+					.catch(() => undefined);
+			});
 			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
@@ -1869,6 +1894,8 @@ export function mountApplication(
 		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
+		logos.reset();
+		if (companyLogos() === logos) setCompanyLogos(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
 		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);

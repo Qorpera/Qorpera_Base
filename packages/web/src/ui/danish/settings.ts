@@ -664,4 +664,21 @@ export const SETTINGS: Record<string, string> = {
 	"Busiest this week, so far": "Travlest denne uge indtil nu",
 	"{amount} each": "{amount} hver",
 	"Sharing the lead": "Deler føringen",
+	// Settings → Company → Brand (views/settings-brand.ts) and company logos (app/company-logos.ts)
+	"The logo could not be removed. Try again.": "Logoet kunne ikke fjernes. Prøv igen.",
+	"The logo could not be saved. Try again.": "Logoet kunne ikke gemmes. Prøv igen.",
+	"Add a company logo": "Tilføj et logo",
+	Brand: "Brand",
+	"Change the company logo": "Skift logoet",
+	"Choose a new logo": "Vælg et nyt logo",
+	"Company logo": "Virksomhedens logo",
+	"Open brand files": "Åbn brandfilerne",
+	"Remove logo": "Fjern logo",
+	"The company's vision could not be read.": "Virksomhedens vision kunne ikke læses.",
+	"The logo could not be removed.": "Logoet kunne ikke fjernes.",
+	"The logo could not be saved.": "Logoet kunne ikke gemmes.",
+	"The name could not be saved. Try again.": "Navnet kunne ikke gemmes. Prøv igen.",
+	"The name could not be saved.": "Navnet kunne ikke gemmes.",
+	"Your Branding & Identity agent keeps the brand up to date. Its colours, fonts and brand guide live in the company file.":
+		"Jeres brand- og identitetsagent holder brandet opdateret. Farver, skrifttyper og brandguide ligger i virksomhedsfilen.",
 };

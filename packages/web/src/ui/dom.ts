@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { attachCompanyLogo } from "./company-logos.ts";
 import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
 import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
@@ -378,9 +379,12 @@ export function companyColor(seed: string): string {
 	return COMPANY_COLORS[Number(seedHash(seed, 131n) % BigInt(COMPANY_COLORS.length))] ?? COMPANY_COLORS[0];
 }
 
+/** A company's logo: its own, laid over its figure once the logo store has it (ui/company-logos.ts), else the figure
+ * derived from its id. `seed` is the company's id. */
 export function companyLogo(seed: string, className = ""): HTMLElement {
 	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
+	attachCompanyLogo(logo, seed);
 	return logo;
 }
 

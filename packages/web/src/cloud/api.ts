@@ -10,6 +10,14 @@ import {
 } from "./coding-session.ts";
 import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
 import {
+	COMPANY_LOGO_BUCKET,
+	type CompanyLogo,
+	type CompanyLogoChange,
+	isCompanyLogoName,
+	parseCompanyLogoChange,
+	parseCompanyLogos,
+} from "./company-logos.ts";
+import {
 	type FoundingPresenceHandle,
 	type FoundingPresenceListener,
 	joinFoundingPresence,
@@ -297,6 +305,54 @@ export class CloudApi {
 		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
 		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).remove([objectName]);
 		if (error) throw error;
+	}
+
+	// Company logos (migration 20260930696000): a PNG drawn from the company folder's QorperaOS/brand/logo.svg, which
+	// members, invitees and friends of members may see; a member who may write the folder publishes it.
+
+	listCompanyLogos(profileIds: readonly string[]): Promise<CompanyLogo[]> {
+		if (profileIds.length > 200) throw new Error("Ask for at most 200 logos at a time.");
+		return this.cloud
+			.rpc("qorpera_company_logos", { p_profile_ids: profileIds.map((id) => requiredUuid(id, "Company id")) })
+			.then(parseCompanyLogos);
+	}
+
+	/** Resolves true when this call stored the PNG, false when it was already there. */
+	async uploadCompanyLogo(objectName: string, picture: Blob): Promise<boolean> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).upload(objectName, picture, {
+			contentType: "image/png",
+			// The name is the SVG's hash, so the drawing behind it never changes.
+			cacheControl: "31536000",
+			upsert: false,
+		});
+		if (!error) return true;
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	async downloadCompanyLogo(objectName: string): Promise<Blob> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { data, error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).download(objectName);
+		if (error || !data) throw error ?? new Error("The logo is unavailable.");
+		return data;
+	}
+
+	async deleteCompanyLogo(objectName: string): Promise<void> {
+		if (!isCompanyLogoName(objectName)) throw new Error("Invalid logo name.");
+		const { error } = await this.cloud.supabase.storage.from(COMPANY_LOGO_BUCKET).remove([objectName]);
+		if (error) throw error;
+	}
+
+	/** Makes the uploaded PNG the company's logo, or takes it away (`objectName` null) once the folder has none. */
+	publishCompanyLogo(profileId: string, objectName: string | null): Promise<CompanyLogoChange> {
+		if (objectName !== null && !isCompanyLogoName(objectName, profileId)) throw new Error("Invalid logo name.");
+		return this.cloud
+			.rpc("qorpera_publish_company_logo", {
+				p_profile_id: requiredUuid(profileId, "Company id"),
+				p_object_name: objectName,
+			})
+			.then(parseCompanyLogoChange);
 	}
 
 	setMemberPicture(objectName: string): Promise<MemberPictureChange> {
