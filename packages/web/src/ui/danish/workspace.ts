@@ -647,9 +647,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The bank summary can't be read": "Bankoversigten kan ikke læses",
 	"Its file in the company folder doesn't follow the bank summary format.":
 		"Dens fil i virksomhedsmappen følger ikke formatet for bankoversigten.",
-	"No bank yet": "Ingen bank endnu",
-	"When the company's bank is connected, its saldo and what comes in and goes out show here.":
-		"Når virksomhedens bank er forbundet, vises saldoen og hvad der kommer ind og går ud her.",
 	"{bank} paused sharing on {date}.": "{bank} stoppede med at dele den {date}.",
 	"Banks ask again every 180 days. It takes half a minute with MitID.":
 		"Banker spørger igen hver 180. dag. Det tager et halvt minut med MitID.",
@@ -664,6 +661,44 @@ export const WORKSPACE: Record<string, string> = {
 		"Saldo og det, der går ind og ud, vises her inden for få minutter.",
 	"An owner or admin can connect the company's bank.": "En ejer eller administrator kan forbinde virksomhedens bank.",
 	"Connect the bank": "Forbind banken",
+	"Let's get the company a bank account": "Lad os skaffe virksomheden en bankkonto",
+	"{name} does the paperwork. You only sign with MitID when it's your turn.":
+		"{name} klarer papirarbejdet. Du skriver kun under med MitID, når det er din tur.",
+	"The finance agent": "Økonomiagenten",
+	"Already have a bank account?": "Har I allerede en bankkonto?",
+	"Step {step} of {steps}": "Trin {step} af {steps}",
+	"Bank setup": "Opsætning af bank",
+	"Hire a finance agent": "Ansæt en økonomiagent",
+	"{name} finds one for the company. Getting the bank in place is their job.":
+		"{name} finder en til virksomheden. Det er deres job at få banken på plads.",
+	"The Co-Founder finds one for the company. Getting the bank in place is their job.":
+		"Co-Founderen finder en til virksomheden. Det er deres job at få banken på plads.",
+	"{name} is on the team.": "{name} er med på holdet.",
+	"Register the company": "Registrér virksomheden",
+	"{name} helps you choose between ApS and sole trader, and prepares the registration on virk.dk. You sign with MitID.":
+		"{name} hjælper dig med at vælge mellem ApS og enkeltmandsvirksomhed og forbereder registreringen på virk.dk. Du skriver under med MitID.",
+	"CVR {number}": "CVR {number}",
+	Registered: "Registreret",
+	"Open a business account": "Åbn en erhvervskonto",
+	"{name} finds a bank Qorpera can read and fills in the application. You sign with MitID.":
+		"{name} finder en bank, som Qorpera kan læse, og udfylder ansøgningen. Du skriver under med MitID.",
+	Opened: "Åbnet",
+	"Connect it here": "Forbind den her",
+	"Half a minute with MitID on the bank's own page. Then the saldo shows here.":
+		"Et halvt minut med MitID på bankens egen side. Så vises saldoen her.",
+	"Ask {name} to hire one": "Bed {name} om at ansætte en",
+	"Ask the Co-Founder to hire one": "Bed Co-Founderen om at ansætte en",
+	"Please hire a finance agent for the company. I'd like them to register the company with a CVR number and open a business bank account that Qorpera can read.":
+		"Vil du ansætte en økonomiagent til virksomheden? Jeg vil gerne have, at de registrerer virksomheden med et CVR-nummer og åbner en erhvervskonto, som Qorpera kan læse.",
+	"Ask {name} to start": "Bed {name} om at gå i gang",
+	"Please register the company with a CVR number and open a business bank account that Qorpera can read. Tell me when I need to sign with MitID.":
+		"Vil du registrere virksomheden med et CVR-nummer og åbne en erhvervskonto, som Qorpera kan læse? Sig til, når jeg skal skrive under med MitID.",
+	"Please open a business bank account for the company that Qorpera can read. Tell me when I need to sign with MitID.":
+		"Vil du åbne en erhvervskonto til virksomheden, som Qorpera kan læse? Sig til, når jeg skal skrive under med MitID.",
+	"Your turn": "Din tur",
+	"{name} has something for you to sign.": "{name} har noget, du skal skrive under på.",
+	"{name} is on it": "{name} er i gang",
+	"The thread could not be opened.": "Tråden kunne ikke åbnes.",
 	"The bank connection could not be read.": "Bankforbindelsen kunne ikke læses.",
 	"Connect again": "Forbind igen",
 	"Connect the company's bank": "Forbind virksomhedens bank",

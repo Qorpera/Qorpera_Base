@@ -3,7 +3,8 @@
  * and no agent edits it, so the interface format the runtime reads stays as it is. The definition gives the page its
  * name, words and access for the Interfaces tab, and names the bank summary (app/bank-summary.ts) as a file source, so
  * the folder reader (app/interface-folder.ts) reads and follows it as it does any page's file. views/bank.ts draws the
- * page itself. The first block's own text keeps the page listed while the company has no summary yet. */
+ * page itself. The first block's own text keeps the page listed while the company has no summary yet. The last block
+ * names how far the bank setup is (app/bank-setup.ts), which the page shows while no bank is connected. */
 
 /** Where the company folder keeps the bank summary. */
 export const BANK_SUMMARY_PATH = "bank/summary.json";
@@ -36,4 +37,9 @@ text = "The company's bank account."
 id = "summary"
 kind = "text"
 from = "file:bank/summary.json"
+
+[[view.block]]
+id = "setup"
+kind = "text"
+from = "file:finance/bank-setup.json"
 `;

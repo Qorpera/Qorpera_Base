@@ -1,8 +1,11 @@
 import type { HostedConnectorConnection, HostedConnectorReturn, WebConnectors } from "../../cloud/connectors.ts";
+import type { HostedStaffAgent } from "../../cloud/types.ts";
+import { agentFigure, figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { h, replace, spinner } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { BANK_SUMMARY_PATH } from "../bank-page.ts";
+import { BANK_SETUP_PATH, type BankSetup, parseBankSetup } from "../bank-setup.ts";
 import {
 	type BankCategory,
 	type BankPoint,
@@ -20,7 +23,15 @@ import type { CompanyController } from "../company.ts";
  *
  * Connect the bank (an owner or admin, from the empty page, or Connect again when the bank paused sharing): the member
  * picks the bank, logs in at the bank itself with MitID, and comes back here, where the sign-in is finished. The vault
- * keeps the bank's session and the summary arrives in the folder a few minutes later. */
+ * keeps the bank's session and the summary arrives in the folder a few minutes later.
+ *
+ * Until a bank is connected, the page is about getting the company one from inside Qorpera (Jonas, 10 November 2026:
+ * most companies register and open their account here). The company's finance agent does the paperwork; the
+ * Co-Founder only hires that agent. Four steps: a finance agent on the team, the company registered (CVR), a business
+ * account opened, and the account connected here. The first is read from the team, the middle two from what the
+ * finance agent keeps in the folder (app/bank-setup.ts), and the last is Connect the bank. Each step's button opens the
+ * agent's thread with a message waiting in its composer; nothing is sent until the member sends it. A member who
+ * already has an account connects it from the small "Already have a bank account?" in the page's corner. */
 
 /** What the page needs for the company's bank connection (cloud/connectors.ts). */
 export type BankConnectionClient = Pick<WebConnectors, "list" | "beginSignIn" | "finishSignIn">;
@@ -175,6 +186,10 @@ class BankView {
 	readonly #company: CompanyController;
 	#text: string | undefined;
 	#summary: BankSummary | null = null;
+	#setupText: string | undefined;
+	#setup: BankSetup | null = null;
+	/** A thread is being opened from a setup step: its buttons wait. */
+	#opening = false;
 	#tab: Tab = "overview";
 	#range: Range = "year";
 	#hover = -1;
@@ -295,16 +310,31 @@ class BankView {
 	}
 
 	/** Draws the summary when its text, the language or the company's state it shows changed. */
-	update(text: string | undefined, loading: boolean): void {
-		// The connect controls depend on the member's role, so a role change draws the page again.
-		const role = this.#company.store.get().team?.role ?? null;
-		const key = JSON.stringify([text ?? null, loading, presentationLocale(), role]);
+	update(text: string | undefined, setupText: string | undefined, loading: boolean): void {
+		// The connect controls depend on the member's role, so a role change draws the page again; the setup steps
+		// name the Co-Founder and the finance agent, and offer to write to them.
+		const state = this.#company.store.get();
+		const role = state.team?.role ?? null;
+		const finance = this.#financeAgent();
+		const cofounder = this.#company.staffById(this.#company.cofounderId());
+		const team = [
+			finance?.id,
+			finance?.displayName,
+			finance?.appearance,
+			cofounder?.displayName,
+			state.team?.capabilities.write ?? false,
+		];
+		const key = JSON.stringify([text ?? null, setupText ?? null, loading, presentationLocale(), role, team]);
 		if (key === this.el.dataset.drawn) return;
 		this.el.dataset.drawn = key;
 		if (text !== this.#text) {
 			this.#text = text;
 			this.#summary = text === undefined ? null : parseBankSummary(text);
 			this.#hover = -1;
+		}
+		if (setupText !== this.#setupText) {
+			this.#setupText = setupText;
+			this.#setup = parseBankSetup(setupText);
 		}
 		this.#draw(loading);
 	}
@@ -407,26 +437,254 @@ class BankView {
 				...note,
 				h("p", null, t("Its saldo and what comes in and goes out show here within a few minutes.")),
 			);
-		return h(
-			"div",
-			{ class: "bank-empty" },
-			h("h1", null, t("No bank yet")),
-			...note,
+		return this.#setupPage(note);
+	}
+
+	/** The company's finance agent: the first active agent hired from the finance template. */
+	#financeAgent(): HostedStaffAgent | undefined {
+		return this.#company.store
+			.get()
+			.staff.filter((agent) => agent.employmentStatus === "active" && agent.templateId === "financial-officer")
+			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+	}
+
+	/** No bank yet: the way to one from inside Qorpera, done by the company's finance agent. */
+	#setupPage(note: HTMLElement[]): HTMLElement {
+		const state = this.#company.store.get();
+		const finance = this.#financeAgent();
+		const cofounder = this.#company.staffById(this.#company.cofounderId());
+		// A Co-Founder still called Co-Founder reads as "the Co-Founder"; one the company named goes by its name.
+		const cofounderName =
+			cofounder && cofounder.displayName.trim().toLowerCase() !== "co-founder" ? cofounder.displayName : undefined;
+		const setup = this.#setup;
+		const mayWrite = state.team?.capabilities.write === true && !state.accessLost;
+		const agentName = finance?.displayName ?? t("The finance agent");
+		const companyDone = setup?.company.status === "done";
+		const accountDone = setup?.account.status === "done";
+		const done = [finance !== undefined, companyDone, accountDone, false];
+		const here = done.indexOf(false);
+		const status = here === 1 ? setup?.company.status : here === 2 ? setup?.account.status : undefined;
+		const talk = (agent: HostedStaffAgent, label: string, text: string | undefined, primary = true) =>
 			h(
-				"p",
-				null,
-				this.#canConnect() || this.#connection === undefined
-					? t("When the company's bank is connected, its saldo and what comes in and goes out show here.")
-					: t("An owner or admin can connect the company's bank."),
-			),
-			this.#canConnect() && this.#bank === null
-				? h(
+				"button",
+				{
+					type: "button",
+					class: primary ? "btn btn-primary" : "btn",
+					disabled: this.#opening,
+					onclick: () => void this.#talk(agent, text),
+				},
+				label,
+			);
+		const actions: (HTMLElement | null)[] = [];
+		if (here === 0 && cofounder && mayWrite)
+			actions.push(
+				talk(
+					cofounder,
+					cofounderName
+						? t("Ask {name} to hire one", { name: cofounderName })
+						: t("Ask the Co-Founder to hire one"),
+					t(
+						"Please hire a finance agent for the company. I'd like them to register the company with a CVR number and open a business bank account that Qorpera can read.",
+					),
+				),
+			);
+		if ((here === 1 || here === 2) && finance && mayWrite) {
+			if (status === "working" || status === "your_turn")
+				actions.push(
+					talk(
+						finance,
+						t("Open {name}'s thread", { name: finance.displayName }),
+						undefined,
+						status === "your_turn",
+					),
+				);
+			else
+				actions.push(
+					talk(
+						finance,
+						t("Ask {name} to start", { name: finance.displayName }),
+						here === 1
+							? t(
+									"Please register the company with a CVR number and open a business bank account that Qorpera can read. Tell me when I need to sign with MitID.",
+								)
+							: t(
+									"Please open a business bank account for the company that Qorpera can read. Tell me when I need to sign with MitID.",
+								),
+					),
+				);
+		}
+		if (here === 3) {
+			if (this.#canConnect() && this.#bank === null)
+				actions.push(
+					h(
 						"button",
 						{ type: "button", class: "btn btn-primary", onclick: () => this.#openConnect(undefined, undefined) },
 						t("Connect the bank"),
+					),
+				);
+			else if (this.#connection !== undefined && !this.#canConnect())
+				actions.push(h("p", { class: "bank-setup-hint" }, t("An owner or admin can connect the company's bank.")));
+		}
+		const progress =
+			status === "your_turn"
+				? h(
+						"div",
+						{ class: "bank-setup-turn", role: "status" },
+						h("span", { class: "bank-setup-pill" }, t("Your turn")),
+						h("span", null, setup?.yourTurn ?? t("{name} has something for you to sign.", { name: agentName })),
+					)
+				: status === "working"
+					? h(
+							"div",
+							{ class: "bank-setup-working", role: "status" },
+							h("span", { class: "bank-setup-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+							t("{name} is on it", { name: agentName }),
+						)
+					: null;
+		const steps: { title: string; text: string; result: string }[] = [
+			{
+				title: t("Hire a finance agent"),
+				text: cofounderName
+					? t("{name} finds one for the company. Getting the bank in place is their job.", {
+							name: cofounderName,
+						})
+					: t("The Co-Founder finds one for the company. Getting the bank in place is their job."),
+				result: t("{name} is on the team.", { name: agentName }),
+			},
+			{
+				title: t("Register the company"),
+				text: t(
+					"{name} helps you choose between ApS and sole trader, and prepares the registration on virk.dk. You sign with MitID.",
+					{ name: agentName },
+				),
+				result: setup?.company.cvr ? t("CVR {number}", { number: setup.company.cvr }) : t("Registered"),
+			},
+			{
+				title: t("Open a business account"),
+				text: t("{name} finds a bank Qorpera can read and fills in the application. You sign with MitID.", {
+					name: agentName,
+				}),
+				result: setup?.account.bank ?? t("Opened"),
+			},
+			{
+				title: t("Connect it here"),
+				text: t("Half a minute with MitID on the bank's own page. Then the saldo shows here."),
+				result: "",
+			},
+		];
+		const figure = finance
+			? agentFigure(finance, finance.displayName, { size: 76, className: "bank-setup-figure" })
+			: figureElement("acorn", undefined, { size: 76, still: true, className: "bank-setup-figure is-waiting" });
+		return h(
+			"div",
+			{ class: "bank-setup" },
+			this.#canConnect() && this.#bank === null && here !== 3
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "bank-setup-have",
+							onclick: () => this.#openConnect(undefined, undefined),
+						},
+						t("Already have a bank account?"),
 					)
 				: null,
+			h(
+				"div",
+				{ class: "bank-setup-column" },
+				h(
+					"div",
+					{ class: "bank-setup-hero" },
+					figure,
+					h("h1", null, t("Let's get the company a bank account")),
+					h(
+						"p",
+						null,
+						t("{name} does the paperwork. You only sign with MitID when it's your turn.", { name: agentName }),
+					),
+				),
+				...note,
+				h(
+					"div",
+					{ class: "bank-setup-progress" },
+					h("span", null, t("Step {step} of {steps}", { step: here + 1, steps: steps.length })),
+					h(
+						"span",
+						{
+							class: "bank-setup-bar",
+							role: "progressbar",
+							"aria-label": t("Bank setup"),
+							"aria-valuemin": "0",
+							"aria-valuemax": String(steps.length),
+							"aria-valuenow": String(here),
+						},
+						h("i", { style: `--done: ${here / steps.length}` }),
+					),
+				),
+				h(
+					"ol",
+					{ class: "bank-setup-steps" },
+					steps.map((step, index) =>
+						h(
+							"li",
+							{
+								class: `bank-setup-step ${index < here ? "is-done" : index === here ? "is-here" : "is-next"}`,
+								style: `--i: ${index}`,
+								...(index === here ? { "aria-current": "step" } : {}),
+							},
+							h(
+								"span",
+								{ class: "bank-setup-mark", "aria-hidden": "true" },
+								index < here ? "✓" : String(index + 1),
+							),
+							h(
+								"div",
+								{ class: "bank-setup-body" },
+								h("h2", null, step.title),
+								h("p", null, index < here ? step.result : step.text),
+								index === here ? progress : null,
+								index === here && actions.length ? h("div", { class: "bank-setup-actions" }, ...actions) : null,
+							),
+						),
+					),
+				),
+			),
 		);
+	}
+
+	/** Opens the agent's thread, with `text` waiting in its composer when it isn't there already. Nothing is sent. If
+	 * the member has moved on by the time the thread is ready, the text still waits, but the page stays where they are. */
+	async #talk(agent: HostedStaffAgent, text: string | undefined): Promise<void> {
+		if (this.#opening) return;
+		const company = this.#company;
+		const profileId = company.profile.profileId;
+		const from = location.hash;
+		const isCofounder = agent.id === company.cofounderId();
+		this.#opening = true;
+		this.#note = undefined;
+		this.#redraw();
+		try {
+			let sessionId: string;
+			if (isCofounder) {
+				const opened = await company.openCofounderConversation();
+				if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+				sessionId = opened.sessionId;
+			} else sessionId = await company.openStaffConversation(agent);
+			if (this.#lifetime.signal.aborted) return;
+			if (text && !(company.conversation(sessionId).get().draft ?? "").includes(text))
+				company.addToDraft(sessionId, { text, quotes: [] });
+			if (location.hash === from)
+				location.hash = isCofounder ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			this.#note = {
+				tone: "error",
+				text: error instanceof Error && error.message ? error.message : t("The thread could not be opened."),
+			};
+		} finally {
+			this.#opening = false;
+		}
+		this.#redraw();
 	}
 
 	#paused(summary: BankSummary): HTMLElement {
@@ -1320,5 +1578,9 @@ export function renderBank(container: HTMLElement, company: CompanyController, o
 		views.set(container, view);
 		replace(container, view.el);
 	}
-	view.update(state.interfaceFolder?.files.get(BANK_SUMMARY_PATH), state.interfaceFolder === undefined);
+	view.update(
+		state.interfaceFolder?.files.get(BANK_SUMMARY_PATH),
+		state.interfaceFolder?.files.get(BANK_SETUP_PATH),
+		state.interfaceFolder === undefined,
+	);
 }
