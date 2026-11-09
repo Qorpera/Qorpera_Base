@@ -8,13 +8,33 @@
 /** The first fully opaque background under the page's top-left corner. Dimming layers under a
  * dialog are see-through, so the bar keeps the colour beneath them. */
 export function topLeftColor(): string | undefined {
-	// A document without layout (a test's) has nothing under any point.
-	if (typeof document.elementsFromPoint !== "function") return undefined;
-	for (const element of document.elementsFromPoint(1, 1)) {
-		const color = getComputedStyle(element).backgroundColor;
-		if (opaque(color)) return color;
+	for (const element of stackAt(1, 1)) {
+		const style = getComputedStyle(element);
+		if (style.visibility === "hidden" || style.opacity === "0") continue;
+		if (opaque(style.backgroundColor)) return style.backgroundColor;
 	}
 	return undefined;
+}
+
+/** The elements whose boxes cover a point, topmost first, by position rather than hit testing:
+ * hit testing skips inert parts of the page, such as the whole frame behind Settings, which
+ * still paint under its see-through dimming. Paint order is taken as document order, later and
+ * deeper on top, which holds for the page's corner (overlays are appended to the body last). */
+function stackAt(x: number, y: number): Element[] {
+	const found: Element[] = [document.body];
+	const visit = (parent: Element) => {
+		for (const child of parent.children) {
+			const box = child.getBoundingClientRect();
+			if (box.left <= x && x < box.right && box.top <= y && y < box.bottom) {
+				found.push(child);
+				visit(child);
+			} else if (box.width === 0 && box.height === 0 && getComputedStyle(child).display === "contents") {
+				visit(child);
+			}
+		}
+	};
+	visit(document.body);
+	return found.reverse();
 }
 
 function opaque(color: string): boolean {
@@ -50,9 +70,12 @@ export function watchBrowserBar(): () => void {
 		frame ??= requestAnimationFrame(update);
 	};
 	const system = window.matchMedia("(prefers-color-scheme: dark)");
-	// The sidebar shows, hides or moves through `hidden` and classes; a route draws into the page.
+	// The sidebar shows, hides or moves through `hidden` and classes.
 	const observer = new MutationObserver(schedule);
 	observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["hidden", "class"] });
+	// A dialog or layer added to the page itself (not every change inside it).
+	const layers = new MutationObserver(schedule);
+	layers.observe(document.body, { childList: true });
 	window.addEventListener("hashchange", schedule);
 	window.addEventListener("resize", schedule);
 	window.addEventListener("qorpera-theme-change", schedule);
@@ -61,6 +84,7 @@ export function watchBrowserBar(): () => void {
 	return () => {
 		if (frame !== undefined) cancelAnimationFrame(frame);
 		observer.disconnect();
+		layers.disconnect();
 		window.removeEventListener("hashchange", schedule);
 		window.removeEventListener("resize", schedule);
 		window.removeEventListener("qorpera-theme-change", schedule);
