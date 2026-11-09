@@ -1501,7 +1501,8 @@ function drawInterfaces(
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`, sites);
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
+		element.dataset.appKey = key;
 		const open = route.name === "company" && route.section === "sites";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");

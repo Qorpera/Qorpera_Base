@@ -357,6 +357,14 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
 		expect(entry.getAttribute("aria-current")).toBe("page");
 		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		// It is ordered like every other entry: it carries its key, and an order the member kept puts it first.
+		expect(entry.dataset.appKey).toBe("sites");
+		expect(icons(element).map(([name]) => name)).toEqual(["Members", "Sites"]);
+		localStorage.setItem(`qorpera.web.rail-apps-order:${profileA.profileId}`, JSON.stringify(["sites"]));
+		const ordered = rail(home);
+		ordered.controller.store.set({ siteCount: 2 });
+		ordered.draw();
+		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Members"]);
 		controller.store.set({ siteCount: 0 });
 		draw();
 		expect(element.querySelector(".rail-sites")).toBeNull();
