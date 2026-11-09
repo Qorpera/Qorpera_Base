@@ -136,7 +136,8 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
 					const scale = uiScale();
-					place(child, parent.right - 2 * scale, row.top - 5 * scale, parent.left + 2 * scale);
+					// The submenu's first row lines up with its trigger: its padding (6px) plus its border (1px).
+					place(child, parent.right - 2 * scale, row.top - 7 * scale, parent.left + 2 * scale);
 					submenu = { el: child, trigger };
 					trigger.setAttribute("aria-expanded", "true");
 					trigger.classList.add("is-open");
