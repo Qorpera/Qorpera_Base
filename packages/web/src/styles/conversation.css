@@ -586,20 +586,20 @@
 /* A message's images, one at a time over the dimmed thread with no frame around them (Jonas, 10 Nov 2026): the arrows,
  * the arrow keys or a swipe go through the message's images. */
 dialog.surface-dialog.image-viewer-dialog { inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: hidden; color: #fff; }
-dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var(--motion-base, 200ms) var(--ease-out, ease-out) both; }
+dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var(--motion-base) var(--ease-out) both; }
 @keyframes image-viewer-in { from { opacity: 0; } }
 :root .image-viewer-dialog::backdrop, :root[data-theme="dark"] .image-viewer-dialog::backdrop { background: rgb(12 12 11 / 86%); }
 .image-viewer-dialog > .surface-dialog-content { position: absolute; inset: 0; padding: 0; }
-.image-viewer-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: 56px 84px; touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }
-.image-viewer-stage img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; transform: translateX(var(--image-viewer-drag, 0)); transition: transform 220ms var(--ease-out, ease-out); -webkit-user-drag: none; }
+.image-viewer-stage { position: absolute; inset: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; padding: 56px 84px; touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }
+.image-viewer-stage img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; transform: translateX(var(--image-viewer-drag, 0)); transition: transform var(--motion-base) var(--ease-out); -webkit-user-drag: none; }
 .image-viewer-stage.is-dragging img { transition: none; }
-.image-viewer-stage img.is-from-next { animation: image-viewer-from-next 220ms var(--ease-out, ease-out) backwards; }
-.image-viewer-stage img.is-from-previous { animation: image-viewer-from-previous 220ms var(--ease-out, ease-out) backwards; }
+.image-viewer-stage img.is-from-next { animation: image-viewer-from-next var(--motion-base) var(--ease-out) backwards; }
+.image-viewer-stage img.is-from-previous { animation: image-viewer-from-previous var(--motion-base) var(--ease-out) backwards; }
 @keyframes image-viewer-from-next { from { opacity: 0; transform: translateX(36px); } }
 @keyframes image-viewer-from-previous { from { opacity: 0; transform: translateX(-36px); } }
 .image-viewer-note { margin: 0; color: rgb(255 255 255 / 72%); font-size: 13px; text-align: center; }
 .image-viewer-dialog .surface-tools { top: 14px; right: 14px; }
-.image-viewer-dialog .surface-close, .image-viewer-nav { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgb(255 255 255 / 12%); color: #fff; cursor: pointer; transition: background 120ms ease, opacity 120ms ease; }
+.image-viewer-dialog .surface-close, .image-viewer-nav { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgb(255 255 255 / 12%); color: #fff; cursor: pointer; transition: background var(--motion-fast) ease, opacity var(--motion-fast) ease; }
 .image-viewer-dialog .surface-close { width: 36px; height: 36px; }
 .image-viewer-dialog .surface-close:hover, .image-viewer-nav:hover:not(:disabled) { background: rgb(255 255 255 / 22%); color: #fff; }
 .image-viewer-nav { position: absolute; top: 50%; width: 44px; height: 44px; margin-top: -22px; padding: 0; }

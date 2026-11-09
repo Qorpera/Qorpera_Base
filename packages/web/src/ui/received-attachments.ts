@@ -20,6 +20,8 @@ interface Slot {
 	loading?: Promise<string | undefined>;
 	/** The card has been on screen, so its thumbnail is wanted. */
 	seen: boolean;
+	/** The thread is waiting on the bytes to place the thumbnail (a read the viewer began included). */
+	placing: boolean;
 	/** The thumbnail failed; a click retries it. */
 	failed: boolean;
 }
@@ -73,7 +75,7 @@ export class ReceivedAttachments {
 					status,
 				),
 			) as HTMLButtonElement;
-			const slot: Slot = { index, attachment, card, visual, status, seen: false, failed: false };
+			const slot: Slot = { index, attachment, card, visual, status, seen: false, placing: false, failed: false };
 			card.onclick = () => void this.#open(slot);
 			this.#slots.push(slot);
 			this.el.append(card);
@@ -128,23 +130,30 @@ export class ReceivedAttachments {
 	#thumbnail(slot: Slot): void {
 		if (
 			slot.card.classList.contains("has-thumbnail") ||
-			slot.loading ||
+			slot.placing ||
 			slot.failed ||
 			this.#message.pending ||
 			!this.#showsThumbnail(slot.attachment)
 		)
 			return;
-		this.#fetch(slot).then(
-			(url) => {
-				if (!url) this.#settle(slot, t("Preview unavailable"));
-				else this.#place(slot, url);
-			},
-			() => {
-				if (this.#lifetime.signal.aborted) return;
-				slot.failed = true;
-				this.#settle(slot, t("Preview failed · retry"));
-			},
-		);
+		// A read already under way (the viewer reading ahead) is joined, not skipped.
+		slot.placing = true;
+		this.#fetch(slot)
+			.then(
+				(url) => {
+					if (slot.card.classList.contains("has-thumbnail")) return;
+					if (!url) this.#settle(slot, t("Preview unavailable"));
+					else this.#place(slot, url);
+				},
+				() => {
+					if (this.#lifetime.signal.aborted) return;
+					slot.failed = true;
+					this.#settle(slot, t("Preview failed · retry"));
+				},
+			)
+			.finally(() => {
+				slot.placing = false;
+			});
 	}
 
 	/** The safe image's object URL, or undefined for bytes that may not be shown. */
@@ -254,8 +263,11 @@ export class ReceivedAttachments {
 						draggable: "false",
 						class: from ? (from > 0 ? "is-from-next" : "is-from-previous") : "",
 					});
-					image.onerror = () =>
-						replace(stage, h("p", { class: "image-viewer-note" }, t("This image could not be displayed.")));
+					// Only the picture still shown may say it failed: one stepped away from can report late.
+					image.onerror = () => {
+						if (ticket === shown && this.#preview === viewer)
+							replace(stage, h("p", { class: "image-viewer-note" }, t("This image could not be displayed.")));
+					};
 					replace(stage, image);
 				},
 				() => {

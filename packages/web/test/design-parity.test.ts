@@ -758,6 +758,69 @@ describe("received content presentation", () => {
 		// The PDF stays out of the viewer, and every image was read once.
 		expect(load.mock.calls.map(([, index]) => index).sort()).toEqual([0, 2, 3]);
 	});
+	it("keeps the viewer's current image when one stepped away from fails late, and places a thumbnail read ahead", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		// Cards load only as they come on screen.
+		const watched: Element[] = [];
+		let intersect: IntersectionObserverCallback = () => {};
+		vi.stubGlobal(
+			"IntersectionObserver",
+			class {
+				constructor(callback: IntersectionObserverCallback) {
+					intersect = callback;
+				}
+				observe(target: Element) {
+					watched.push(target);
+				}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const third = deferred<Blob>();
+		const load = vi.fn((_id: string, index: number) =>
+			index === 2 ? third.promise : Promise.resolve(new Blob([`png${index}`], { type: "image/png" })),
+		);
+		const view = new ReceivedAttachments(
+			{ ...imageMessage, attachmentCount: 3, attachments: [image("a"), image("b"), image("c")] },
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		const cards = [...view.el.querySelectorAll<HTMLButtonElement>(".received-image")];
+		expect(watched).toEqual(cards);
+		expect(load).not.toHaveBeenCalled();
+		cards[0]!.click();
+		await settle();
+		const first = document.querySelector<HTMLImageElement>(".image-viewer-dialog img")!;
+		expect(first.getAttribute("src")).toBe("blob:one");
+		document.querySelector<HTMLButtonElement>('.image-viewer-dialog [aria-label="Next image"]')!.click();
+		await settle();
+		// The second's step read the third ahead; it is still on its way.
+		expect(load.mock.calls.map(([, index]) => index)).toEqual([0, 1, 2]);
+		first.dispatchEvent(new Event("error"));
+		expect(document.querySelector(".image-viewer-dialog img")?.getAttribute("src")).toBe("blob:two");
+		expect(document.querySelector(".image-viewer-note")).toBeNull();
+		// Closed before the third arrived, then its card comes on screen: it waits on that same read.
+		document.querySelector<HTMLButtonElement>(".image-viewer-dialog .surface-close")!.click();
+		intersect(
+			[{ target: cards[2]!, isIntersecting: true } as unknown as IntersectionObserverEntry],
+			{} as IntersectionObserver,
+		);
+		expect(cards[2]!.classList.contains("awaits-thumbnail")).toBe(true);
+		third.resolve(new Blob(["png2"], { type: "image/png" }));
+		await settle();
+		expect(cards[2]!.classList.contains("has-thumbnail")).toBe(true);
+		expect(cards[2]!.querySelector("img")?.getAttribute("src")).toBe("blob:three");
+		expect(load).toHaveBeenCalledTimes(3);
+	});
 	it("puts a thread image that fails back on its card with a retry", async () => {
 		const reference = { sha256: "b".repeat(64), bytes: 2048, mediaType: "image/png" };
 		const load = vi
