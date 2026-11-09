@@ -532,7 +532,7 @@ describe("settings session lifecycle", () => {
 		const back = nav.querySelector<HTMLAnchorElement>(".settings-back")!;
 		expect(nav.lastElementChild).toBe(back);
 		expect(back.hidden).toBe(false);
-		expect(back.getAttribute("href")).toBe("#/");
+		expect(back.getAttribute("data-href")).toBe("#/");
 		expect(back.textContent).toBe("Back to companies");
 		expect(back.querySelector("svg.icon")).not.toBeNull();
 		back.click();
@@ -540,7 +540,7 @@ describe("settings session lifecycle", () => {
 		expect(location.hash).toBe("#/");
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
-		expect(f.root.querySelector(".company-card[href]")).not.toBeNull();
+		expect(f.root.querySelector(".company-card[data-href]")).not.toBeNull();
 		// The company list itself needs no way back.
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
@@ -594,17 +594,17 @@ describe("settings session lifecycle", () => {
 		});
 		// Storage has its own place in the header, and the pages are hidden and shown from the rail.
 		expect(f.root.querySelector(".settings-dialog :is(.settings-file-card, .settings-pages)")).toBeNull();
-		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).toBeNull();
+		expect(f.root.querySelector('.settings-dialog a[data-href$="/file"]')).toBeNull();
 		// No company execution controls, and no Organization or Approvals pages to link to.
 		expect(
 			f.root.querySelector(
-				'.settings-dialog :is(.company-execution, .settings-execution, a[href$="/organization"], a[href$="/approvals"])',
+				'.settings-dialog :is(.company-execution, .settings-execution, a[data-href$="/organization"], a[data-href$="/approvals"])',
 			),
 		).toBeNull();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toMatch(
 			/Company execution|Organization|Approvals/,
 		);
-		expect(f.root.querySelector('.account-popover a[href$="/file"]')).toBeNull();
+		expect(f.root.querySelector('.account-popover a[data-href$="/file"]')).toBeNull();
 		click(f.root, ".settings-close");
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
@@ -2022,7 +2022,7 @@ describe("settings session lifecycle", () => {
 		expect(location.hash).toBe("#/");
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
-		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.root.querySelector(".company-card[data-href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
@@ -2038,7 +2038,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
-		expect(f.root.querySelector(".company-card[href]")!.textContent).toContain(profileA.profileName);
+		expect(f.root.querySelector(".company-card[data-href]")!.textContent).toContain(profileA.profileName);
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(1);
 	});
 	it("refreshes the hub even when revocation arrives before the deletion response", async () => {
@@ -2061,7 +2061,7 @@ describe("settings session lifecycle", () => {
 		pending.resolve();
 		await draw();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.root.querySelector(".company-card[data-href]")).toBeNull();
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("ignores a deletion response from a previous account", async () => {
@@ -2127,7 +2127,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(location.hash).toBe("#/");
 		expect(f.root.querySelector(".team")).toBeNull();
-		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.root.querySelector(".company-card[data-href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
@@ -2173,7 +2173,7 @@ describe("settings session lifecycle", () => {
 		pending.resolve([profileB]);
 		await draw();
 		expect(f.api.deleteProfile).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.root.querySelector(".company-card[data-href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(3);
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(sdkRpcs(f)).toEqual([]);

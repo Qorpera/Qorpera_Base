@@ -1,10 +1,10 @@
 /* Rail rows glide to their new places instead of jumping: a new hire pushing the list
  * down, a row dropped elsewhere, a search narrowing the list. Each row is found again
- * by where it leads (its href), so a row rebuilt for a new state still glides. */
+ * by where it leads (its data-href), so a row rebuilt for a new state still glides. */
 
 import { easing, reducedMotion } from "./motion.ts";
 
-const ROWS = ":is(.rail-row, .rail-pin, .cofounder-home)[href]";
+const ROWS = ":is(.rail-row, .rail-pin, .cofounder-home)[data-href]";
 
 export type RowPlaces = Map<string, { left: number; top: number }>;
 
@@ -14,7 +14,7 @@ function placesIn(list: HTMLElement): RowPlaces {
 	for (const row of list.querySelectorAll<HTMLElement>(ROWS)) {
 		if (!row.offsetParent) continue;
 		const rect = row.getBoundingClientRect();
-		places.set(row.getAttribute("href")!, {
+		places.set(row.getAttribute("data-href")!, {
 			left: rect.left - frame.left + list.scrollLeft,
 			top: rect.top - frame.top + list.scrollTop,
 		});
@@ -34,7 +34,7 @@ export function glideRows(list: HTMLElement, before: RowPlaces | undefined): voi
 	const after = placesIn(list);
 	const curve = easing("--ease-spring");
 	for (const row of list.querySelectorAll<HTMLElement>(ROWS)) {
-		const href = row.getAttribute("href")!;
+		const href = row.getAttribute("data-href")!;
 		const from = before.get(href);
 		const to = after.get(href);
 		if (!from || !to) continue;

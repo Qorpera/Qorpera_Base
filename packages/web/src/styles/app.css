@@ -47,6 +47,8 @@ body {
 .scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* In-app links carry data-href instead of href (ui/dom.ts), so the browser gives them no pointer of its own. */
+a[data-href] { cursor: pointer; }
 h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
 h2 { font-size: 16px; font-weight: 650; margin-top: 24px; }
 h3 { font-size: 14px; font-weight: 650; margin-top: 16px; }

@@ -325,7 +325,7 @@ export class SettingsView {
 				class: "settings-overlay",
 				onclick: (event: MouseEvent) => {
 					if (event.target === this.el) close();
-					else if (event.target instanceof Element && event.target.closest("a[href^='#/']")) close();
+					else if (event.target instanceof Element && event.target.closest("a[data-href^='#/']")) close();
 				},
 			},
 			h(
@@ -479,7 +479,7 @@ export class SettingsView {
 		if (event.key !== "Tab") return;
 		const fields = [
 			...this.el.querySelectorAll<HTMLElement>(
-				"button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],summary,[tabindex='0']",
+				"button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],a[data-href],summary,[tabindex='0']",
 			),
 		].filter((field) => {
 			const closed = field.closest("details:not([open])");
@@ -988,7 +988,7 @@ export class SettingsView {
 		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
-			? document.activeElement?.closest("a")?.getAttribute("href")
+			? document.activeElement?.closest("a")?.getAttribute("data-href")
 			: undefined;
 		replace(
 			staffList,
@@ -998,7 +998,7 @@ export class SettingsView {
 				.map((agent) =>
 					h(
 						"a",
-						{ href: `#/c/${company.profile.profileId}/staff/${agent.id}`, title: agent.displayName },
+						{ href: `#/c/${company.profile.profileId}/staff/${agent.id}` },
 						agentFigure(agent, agent.displayName, { size: 46 }),
 						h("small", null, agent.displayName),
 					),
@@ -1006,7 +1006,7 @@ export class SettingsView {
 		);
 		if (staffFocus)
 			[...staffList.querySelectorAll("a")]
-				.find((link) => link.getAttribute("href") === staffFocus)
+				.find((link) => link.getAttribute("data-href") === staffFocus)
 				?.focus({ preventScroll: true });
 		renderTeam(
 			this.#api,
