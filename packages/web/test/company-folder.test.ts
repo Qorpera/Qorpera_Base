@@ -1168,6 +1168,8 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.querySelector(".files-preview-head h2")?.textContent).toBe("readme.txt");
 		expect(viewer.querySelector(".skeleton-lines")).not.toBeNull();
 		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(true);
+		// Focus waits on the window while the file is read, so Escape is the window's, not Settings'.
+		expect(document.activeElement).toBe(viewer);
 		read();
 		await settle();
 		expect(viewer.querySelector(".skeleton-lines")).toBeNull();
@@ -1225,6 +1227,21 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.open).toBe(false);
 		expect(viewer.querySelector(".files-text")).toBeNull();
 		expect(document.activeElement).toBe(row(host, "readme.txt"));
+		// The shrink held its end only until the window closed: it is dropped, so nothing stays on the window.
+		for (const each of played) expect(each.cancel).toHaveBeenCalled();
+		// Under reduced motion it opens with no motion at all, and nothing earlier lingers.
+		vi.stubGlobal("matchMedia", (query: string) => ({
+			matches: query.includes("reduce"),
+			addEventListener() {},
+			removeEventListener() {},
+		}));
+		played.splice(0);
+		await click(row(host, "readme.txt"));
+		expect(viewer.open).toBe(true);
+		expect(played).toHaveLength(0);
+		await click(viewer.querySelector('.files-preview-head [aria-label="Close readme.txt"]'));
+		expect(viewer.open).toBe(false);
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 		// Opened again while it goes, it stays open with the new file.
 		await click(row(host, "readme.txt"));
 		played.splice(0);

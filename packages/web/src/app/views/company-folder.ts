@@ -231,6 +231,8 @@ export class CompanyFolderBrowser {
 	readonly #viewer: HTMLDialogElement | null;
 	/** The window going back into its file: it is still open, with what it showed, until the motion ends. */
 	#leaving: { readonly motion: Animation[] } | null = null;
+	/** The window's last motion: dropped before the next, so a held end never stays on the closed window. */
+	#motion: Animation[] = [];
 	/** Set while the window shows a file still being read, so what comes in fades in. */
 	#loading = false;
 	readonly #search: HTMLInputElement;
@@ -976,6 +978,7 @@ export class CompanyFolderBrowser {
 			this.#leaving = null;
 			this.#preview.inert = false;
 			if (this.#viewer?.open) this.#viewer.close();
+			for (const each of this.#motion.splice(0)) each.cancel();
 			this.#preview.hidden = true;
 			this.#preview.replaceChildren();
 			// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
@@ -1012,6 +1015,8 @@ export class CompanyFolderBrowser {
 	 * sight it rises in place. Nothing moves under reduced motion or without an animation engine. */
 	#zoom(path: string | undefined, way: "in" | "out"): Animation[] {
 		const viewer = this.#viewer;
+		// The last motion goes first, whatever comes next: its held end must not stay on the window or be measured.
+		for (const each of this.#motion.splice(0)) each.cancel();
 		if (!viewer || reducedMotion() || typeof viewer.animate !== "function") return [];
 		const box = viewer.getBoundingClientRect();
 		const from = this.#tile(path)?.getBoundingClientRect();
@@ -1023,9 +1028,10 @@ export class CompanyFolderBrowser {
 		}
 		const timing: KeyframeAnimationOptions =
 			way === "in"
-				? { duration: 300, easing: "cubic-bezier(0.2, 0.9, 0.25, 1)", fill: "both" }
-				: { duration: 200, easing: "cubic-bezier(0.4, 0, 0.8, 0.6)", fill: "both", direction: "reverse" };
-		return [
+				? { duration: 300, easing: "cubic-bezier(0.2, 0.9, 0.25, 1)" }
+				: // Held at its end until the window closes (#close drops it then).
+					{ duration: 200, easing: "cubic-bezier(0.4, 0, 0.8, 0.6)", fill: "forwards", direction: "reverse" };
+		this.#motion = [
 			viewer.animate(
 				[
 					{ transform: start, opacity: 0 },
@@ -1036,6 +1042,7 @@ export class CompanyFolderBrowser {
 			),
 			viewer.animate([{ opacity: 0 }, { opacity: 1 }], { ...timing, pseudoElement: "::backdrop" }),
 		];
+		return this.#motion;
 	}
 
 	#forget(opened: Opened | null): void {
@@ -1092,8 +1099,10 @@ export class CompanyFolderBrowser {
 				this.#viewer.append(this.#status, this.#retries);
 				this.#viewer.showModal();
 				this.#zoom(from, "in");
-				// Opened while an action runs: it rests until the action is done.
+				// Opened while an action runs: it rests until the action is done, and focus waits on the window itself
+				// (the content's Close it took on opening is out of reach now), so Escape stays the window's.
 				this.#preview.inert = this.#busy;
+				if (this.#busy) this.#viewer.focus({ preventScroll: true });
 			}
 		}
 	}
