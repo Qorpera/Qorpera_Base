@@ -64,6 +64,12 @@ insert into public.qorpera_account_active_days (user_id, day)
 select '11800000-0000-4000-8000-00000000000a', (clock_timestamp() at time zone 'UTC')::date - back
 from unnest(array[1, 2, 6, 7]) back;
 
+-- C was online every day for the 450 days up to yesterday: a streak counts them all, anchored on yesterday while
+-- today has no mark yet, and on today once C marks itself online.
+insert into public.qorpera_account_active_days (user_id, day)
+select '11800000-0000-4000-8000-00000000000c', (clock_timestamp() at time zone 'UTC')::date - back
+from generate_series(1, 450) back;
+
 -- C asks A: a pending request shows no last online time either way.
 select set_config('request.jwt.claims', '{"sub":"11800000-0000-4000-8000-00000000000c","email":"board-c@example.test","role":"authenticated","user_metadata":{}}', true);
 set local role authenticated;
@@ -77,10 +83,18 @@ begin
 	if v ->> 'status' is distinct from 'pending' or v ? 'last_seen_at' and v ->> 'last_seen_at' is not null then
 		raise exception 'C sees A''s last online time on a pending request: %', v;
 	end if;
-	-- C's board holds only C.
+	-- C's board holds only C, with the whole streak up to yesterday.
 	select public.qorpera_friends_leaderboard() into v;
 	if jsonb_array_length(v -> 'people') <> 1 or v -> 'people' -> 0 ->> 'user_id' <> '11800000-0000-4000-8000-00000000000c' then
 		raise exception 'C''s board shows someone who is not a friend: %', v;
+	end if;
+	if (v -> 'people' -> 0 ->> 'streak')::int <> 450 then
+		raise exception 'C''s 450-day streak up to yesterday is not counted whole: %', v;
+	end if;
+	perform public.qorpera_mark_online();
+	select public.qorpera_friends_leaderboard() into v;
+	if (v -> 'people' -> 0 ->> 'streak')::int <> 451 then
+		raise exception 'C''s streak does not reach today once C is online: %', v;
 	end if;
 end
 $$;

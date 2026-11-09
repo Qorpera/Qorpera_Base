@@ -196,7 +196,7 @@ begin
 			(with days as (
 				select active.day, active.day + (row_number() over (order by active.day desc))::integer as island
 				from public.qorpera_account_active_days active
-				where active.user_id = account.id and active.day <= v_today and active.day > v_today - 400
+				where active.user_id = account.id and active.day <= v_today
 			)
 			select count(*) from days
 			where days.island = (select anchor.island from days anchor
