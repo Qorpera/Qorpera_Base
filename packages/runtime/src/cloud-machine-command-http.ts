@@ -10,6 +10,7 @@ import {
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
 // Machine commands travel the coding executor's command gateway (the same
@@ -19,6 +20,10 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 // /v1/machine-commands/wake asks the machines' executors for a pass now: it
 // carries no authority (each step of that pass asks SQL) and gives nothing away
 // but "look again".
+// /v1/machine-commands/coding-value (save_coding_value, 20260930705000) runs
+// the image's fixed clipboard helper on the machine for one executing receipt,
+// as SQL authorizes it (qorpera_authorize_machine_coding_value): its answer is
+// the box the helper sealed the key in, which only the vault opens, or why not.
 
 /** The machine tools' operation version: receipts and the executor's check both use it. */
 export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
@@ -50,6 +55,42 @@ export type CloudMachineCommandHttpRequest = Readonly<
 		| { action: "cancel"; input: { commandId: string } }
 	)
 >;
+/** save_coding_value's request (20260930705000): its receipt and its operation envelope, whose digest the receipt
+ * holds. SQL reads everything else, the helper's target too, from them. */
+export type CloudMachineCodingValueInput = { commandId: string; envelope: string };
+export type CloudMachineCodingValueHttpRequest = Readonly<{
+	schema: "qorpera.machine-command-http/v1";
+	binding: CloudNativeToolBinding;
+	scope: CloudMachineCommandScope;
+	action: "coding_value";
+	input: CloudMachineCodingValueInput;
+}>;
+export const CLOUD_MACHINE_CODING_VALUE_SCHEMA = "qorpera.machine-coding-value/v1";
+/** The helper's box, sealed to the value's capture key: never the value. */
+export interface CloudMachineCodingValueAnswer {
+	readonly schema: typeof CLOUD_MACHINE_CODING_VALUE_SCHEMA;
+	readonly commandId: string;
+	readonly box: Readonly<Record<string, string>>;
+}
+/** Why a machine sealed nothing, sent back as 409 with its code: the helper's own refusals, a machine that is not
+ * running, and one whose image has no helper yet (it gets it once it sleeps and wakes from the current image). */
+export const CLOUD_MACHINE_CODING_VALUE_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+	...MACHINE_CODING_VALUE_REFUSALS,
+] as const;
+export type CloudMachineCodingValueRefusalCode = (typeof CLOUD_MACHINE_CODING_VALUE_REFUSALS)[number];
+export class CloudMachineCodingValueRefusal extends Error {
+	readonly code: CloudMachineCodingValueRefusalCode;
+	constructor(code: CloudMachineCodingValueRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMachineCodingValueRefusal(code: unknown): code is CloudMachineCodingValueRefusalCode {
+	return (CLOUD_MACHINE_CODING_VALUE_REFUSALS as readonly unknown[]).includes(code);
+}
+
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
 	start(
@@ -66,6 +107,13 @@ export interface CloudMachineCommandGateway {
 	/** Asks for a pass now. With `wait`, it answers once a step took the machine somewhere (true), or after
 	 * CLOUD_MACHINE_WAKE_WAIT_MS at most (false); the caller then looks at what SQL says. */
 	wake?(scope: CloudMachineCommandScope, wait: boolean, signal: AbortSignal): Promise<boolean>;
+	/** save_coding_value (20260930705000): the clipboard helper's box for one executing receipt, or its refusal
+	 * (CloudMachineCodingValueRefusal). Sent once: the helper clears the clipboard, so a second send finds nothing. */
+	codingValue?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineCodingValueInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineCodingValueAnswer>;
 }
 
 /** How long a wake with `wait` stays open at the executor, well inside the gateway's and the client's bounds. */
@@ -154,6 +202,49 @@ export function parseCloudMachineWakeHttpRequest(value: unknown): CloudMachineWa
 		scope: Object.freeze({ machineId: scope.machineId }),
 		action: "wake",
 		input: Object.freeze({ wait: body.wait }),
+	});
+}
+export function parseCloudMachineCodingValueHttpRequest(value: unknown): CloudMachineCodingValueHttpRequest {
+	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = record(input.scope, ["machineId"]);
+	const body = record(input.input, ["commandId", "envelope"]);
+	if (
+		input.schema !== "qorpera.machine-command-http/v1" ||
+		input.action !== "coding_value" ||
+		typeof scope.machineId !== "string" ||
+		!UUID.test(scope.machineId) ||
+		typeof body.commandId !== "string" ||
+		!UUID.test(body.commandId) ||
+		typeof body.envelope !== "string" ||
+		!body.envelope ||
+		Buffer.byteLength(body.envelope) > 65536
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(input.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action: "coding_value",
+		input: Object.freeze({ commandId: body.commandId, envelope: body.envelope }),
+	});
+}
+/** The executor's answer to exactly this request: its receipt and a box of the helper's shape. */
+export function parseCloudMachineCodingValueAnswer(
+	request: CloudMachineCodingValueHttpRequest,
+	value: unknown,
+): CloudMachineCodingValueAnswer {
+	const answer = record(value, ["schema", "commandId", "box"]);
+	const box = record(answer.box, ["schema", "ephemeralPublicKey", "iv", "tag", "ciphertext"]);
+	if (
+		answer.schema !== CLOUD_MACHINE_CODING_VALUE_SCHEMA ||
+		answer.commandId !== request.input.commandId ||
+		Object.values(box).some((part) => typeof part !== "string" || !part || part.length > 8192)
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MACHINE_CODING_VALUE_SCHEMA,
+		commandId: request.input.commandId,
+		box: Object.freeze({ ...(box as Record<string, string>) }),
 	});
 }
 function validToken(value: string): boolean {
@@ -336,6 +427,68 @@ export function createHttpCloudMachineCommandGateway(options: {
 				throw new Error(ERROR);
 			}
 		},
+		codingValue: async (scope, input, signal) => {
+			try {
+				const admitted = parseCloudMachineCodingValueHttpRequest({
+					schema: "qorpera.machine-command-http/v1",
+					binding,
+					scope,
+					action: "coding_value",
+					input,
+				});
+				const body = JSON.stringify(admitted);
+				if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error(ERROR);
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/coding-value`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: {
+								authorization: `Bearer ${options.token}`,
+								"content-type": "application/json",
+								...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+							},
+							body,
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown };
+							if (isCloudMachineCodingValueRefusal(code)) throw new CloudMachineCodingValueRefusal(code);
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMachineCodingValueAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 16384, requestSignal),
+								),
+							),
+						);
+					},
+					30000,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMachineCodingValueRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
 	});
 }
 
@@ -367,6 +520,12 @@ export interface CloudMachineCommandServiceOptions {
 	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
 	/** Asks the machines' executors for a pass now; true once a step took the machine somewhere. */
 	wake?(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
+	/** save_coding_value (20260930705000): authorized in SQL and run on the machine's node, or forwarded there; a
+	 * refusal is a CloudMachineCodingValueRefusal. */
+	codingValue?(
+		request: CloudMachineCodingValueHttpRequest,
+		signal: AbortSignal,
+	): Promise<CloudMachineCodingValueAnswer>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

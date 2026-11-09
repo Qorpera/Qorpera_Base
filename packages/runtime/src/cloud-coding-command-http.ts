@@ -12,8 +12,11 @@ import {
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
 	CLOUD_MACHINE_WAKE_SCHEMA,
+	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	parseCloudMachineCodingValueAnswer,
+	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineWakeHttpRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
@@ -373,10 +376,13 @@ export class HttpCloudCodingCommandService {
 				? /^\/v1\/machine-commands\/(start|read|cancel)$/.exec(request.url ?? "")
 				: null;
 			const wakeRoute = this.#options.machines?.wake && request.url === "/v1/machine-commands/wake";
+			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
+			const codingValueRoute =
+				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute) ||
+				(!route && !machineRoute && !wakeRoute && !codingValueRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -396,6 +402,24 @@ export class HttpCloudCodingCommandService {
 			if (wakeRoute && this.#options.machines?.wake) {
 				const told = await this.#options.machines.wake(parseCloudMachineWakeHttpRequest(body), controller.signal);
 				replyJson(reply, 200, { schema: CLOUD_MACHINE_WAKE_SCHEMA, told });
+				return;
+			}
+			if (codingValueRoute && this.#options.machines?.codingValue) {
+				const admitted = parseCloudMachineCodingValueHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineCodingValueAnswer(
+							admitted,
+							await this.#options.machines.codingValue(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
 				return;
 			}
 			if (machineRoute && this.#options.machines) {

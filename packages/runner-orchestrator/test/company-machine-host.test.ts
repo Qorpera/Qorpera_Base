@@ -12,14 +12,20 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
-import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
+import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
+	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
 	LxdCompanyMachineHost,
 } from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
-import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import type {
+	LxdExecPipeRequest,
+	LxdExecStreamRequest,
+	LxdInstanceRecord,
+	LxdTrackedInstanceAction,
+} from "../src/lxd-client.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
@@ -87,6 +93,8 @@ async function fixture(
 		folder?: boolean;
 		passHoldMs?: number;
 		guestReadyTimeoutMs?: number;
+		codingValueTimeoutMs?: number;
+		codingValueClearTimeoutMs?: number;
 	} = {},
 ) {
 	const { folder: withFolder, ...pins } = options;
@@ -3355,4 +3363,197 @@ it("keeps company machine journals apart from coding machines'", async () => {
 	const f = await fixture();
 	await f.host.pass(f.signal);
 	await expect(mkdir(join(state.controlPath, "company-machines", id(6)))).rejects.toThrow(/EEXIST/);
+});
+
+// 20260930705000: save_coding_value runs the image's clipboard helper on the machine, on the boot SQL named, with SQL's
+// target on its stdin; only its one line of stdout (a box or a refusal code) comes back. A run that did not end cleanly
+// is followed by the executor's own clear (`--clear-only`), on the same boot, under its own deadline.
+describe("a machine's clipboard helper", () => {
+	const box = {
+		schema: "qorpera.coding-value-machine-box/v1",
+		ephemeralPublicKey: "ZXBo",
+		iv: "aXY",
+		tag: "dGFn",
+		ciphertext: "Y2lwaGVy",
+	};
+	const run = {
+		placementId: id(6),
+		bootId: id(7),
+		receiptId: id(8),
+		target: { schema: "qorpera.coding-value-machine-target/v1" },
+	};
+	const cleared = `${JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })}\n`;
+	type Answer = { exitCode: number; stdout: string } | "hang";
+	/** The helper's run answers `answer` (or hangs until its signal aborts); its clear answers `clear`. Each call is
+	 * kept with whether its signal was aborted when it was made. */
+	async function piped(
+		answer: Answer,
+		clear: Answer = { exitCode: 0, stdout: cleared },
+		deadlines: { codingValueTimeoutMs?: number; codingValueClearTimeoutMs?: number } = {},
+	) {
+		const f = await fixture(deadlines);
+		const calls: { request: LxdExecPipeRequest; name: string; signal: AbortSignal; abortedAtCall: boolean }[] = [];
+		const pipe = vi.fn(async (_project: string, name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push({ request, name, signal, abortedAtCall: signal.aborted });
+			const given = request.command.at(-1) === "--clear-only" ? clear : answer;
+			if (given === "hang")
+				return new Promise<never>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			return { exitCode: given.exitCode, stdout: Buffer.from(given.stdout), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+	/** The executor's own clear: the same helper with --clear-only, on the same machine and boot. */
+	const clearCommand = [
+		"/bin/sh",
+		"-c",
+		expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+		id(7),
+		"/usr/bin/node",
+		"/opt/qorpera-machine/cloud-machine-coding-value.mjs",
+		"--clear-only",
+	];
+
+	it("runs the helper as the executor runs it, on SQL's boot with SQL's target, and answers its box", async () => {
+		const { f, pipe } = await piped({
+			exitCode: 0,
+			stdout: `${JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box })}\n`,
+		});
+		expect(await f.host.codingValue(run, f.signal)).toEqual({ box });
+		const [project, name, request] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(request.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_CODING_VALUE_HELPER,
+		]);
+		expect(COMPANY_MACHINE_CODING_VALUE_HELPER).toBe("/opt/qorpera-machine/cloud-machine-coding-value.mjs");
+		expect(JSON.parse(Buffer.from(request.stdin as Uint8Array).toString("utf8"))).toEqual(run.target);
+		expect(request).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 16384, stderrTailBytes: 0 });
+		// It ended cleanly, its own clear with it: no second exec. No command of the machine's is started or recorded.
+		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(f.methods()).not.toContain("qorpera_authorize_machine_command");
+	});
+
+	it("answers the helper's refusal, another boot and an earlier image by code, with no clear of its own", async () => {
+		for (const [answer, outcome] of [
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-refusal/v1", code: "CLIPBOARD_EMPTY" }),
+				},
+				{ refused: "CLIPBOARD_EMPTY" },
+			],
+			// Neither ran the helper: another boot's clipboard went with it, and an earlier image has neither it nor xsel.
+			[{ exitCode: 97, stdout: "" }, { refused: "MACHINE_BOOT_CHANGED" }],
+			[{ exitCode: 98, stdout: "" }, { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" }],
+		] as const) {
+			const { f, pipe } = await piped(answer);
+			expect(await f.host.codingValue(run, f.signal)).toEqual(outcome);
+			expect(pipe).toHaveBeenCalledTimes(1);
+		}
+		const { f } = await piped({ exitCode: 0, stdout: "" });
+		await expect(f.host.codingValue({ ...run, bootId: "boot" }, f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_CODING_VALUE_INVALID",
+		);
+		// A client without the pipe exec: never run.
+		const bare = await fixture();
+		await expect(bare.host.codingValue(run, bare.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
+	});
+
+	it("clears the clipboard itself after a failed exit or an answer that is not the helper's", async () => {
+		for (const [answer, error] of [
+			[{ exitCode: 1, stdout: "MACHINE_CODING_VALUE_FAILED" }, "COMPANY_MACHINE_CODING_VALUE_FAILED"],
+			[{ exitCode: 137, stdout: "" }, "COMPANY_MACHINE_CODING_VALUE_FAILED"],
+			[{ exitCode: 0, stdout: "" }, "COMPANY_MACHINE_CODING_VALUE_INVALID"],
+			[{ exitCode: 0, stdout: "npm_not json" }, "COMPANY_MACHINE_CODING_VALUE_INVALID"],
+			[
+				{ exitCode: 0, stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box, value: "x" }) },
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box: { ...box, value: "x" } }),
+				},
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+			[
+				{
+					exitCode: 0,
+					stdout: JSON.stringify({ schema: "qorpera.machine-coding-value-refusal/v1", code: "lower case" }),
+				},
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			],
+		] as const) {
+			const { f, calls } = await piped(answer);
+			await expect(f.host.codingValue(run, f.signal), JSON.stringify(answer)).rejects.toThrow(error);
+			expect(calls.map((call) => call.request.command)).toEqual([expect.anything(), clearCommand]);
+			expect(calls[1]).toMatchObject({ name: lxdCompanyMachineName(id(6)), abortedAtCall: false });
+			expect(calls[1]!.request).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+			expect(calls[1]!.request.stdin).toBeUndefined();
+		}
+	});
+
+	it("clears the clipboard itself when the request is cancelled mid-run, on its own signal and the same boot", async () => {
+		const { f, calls } = await piped("hang");
+		const request = new AbortController();
+		const saving = f.host.codingValue(run, request.signal);
+		await vi.waitFor(() => expect(calls).toHaveLength(1));
+		request.abort(new Error("the gateway's request ended"));
+		await expect(saving).rejects.toThrow("the gateway's request ended");
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.signal.aborted).toBe(true);
+		// The clear came after the cancellation, under a signal of its own that the request's abort never reached.
+		expect(calls[1]!.request.command).toEqual(clearCommand);
+		expect(calls[1]!.name).toBe(calls[0]!.name);
+		expect(calls[1]!.abortedAtCall).toBe(false);
+		expect(calls[1]!.signal).not.toBe(calls[0]!.signal);
+		expect(calls[1]!.signal.aborted).toBe(false);
+	});
+
+	it("clears the clipboard itself when the helper outlives its deadline, which kills it", async () => {
+		const { f, calls } = await piped("hang", undefined, { codingValueTimeoutMs: 50 });
+		await expect(f.host.codingValue(run, f.signal)).rejects.toThrow();
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.signal.aborted).toBe(true);
+		expect(f.signal.aborted).toBe(false);
+		expect(calls[1]!.request.command).toEqual(clearCommand);
+		expect(calls[1]!.abortedAtCall).toBe(false);
+	});
+
+	it("logs only a fixed word when its own clear fails, and nothing when the machine restarted meanwhile", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			for (const clear of [
+				{ exitCode: 1, stdout: "" },
+				{ exitCode: 0, stdout: "something else" },
+				"hang",
+			] as const) {
+				errors.mockClear();
+				// Its own deadline ends a clear that never answers.
+				const { f, calls } = await piped({ exitCode: 1, stdout: "" }, clear, { codingValueClearTimeoutMs: 50 });
+				await expect(f.host.codingValue(run, f.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_FAILED");
+				expect(calls).toHaveLength(2);
+				if (clear === "hang") expect(calls[1]!.signal.aborted).toBe(true);
+				expect(errors.mock.calls).toEqual([["COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED"]]);
+			}
+			errors.mockClear();
+			const restarted = await piped({ exitCode: 1, stdout: "" }, { exitCode: 97, stdout: "" });
+			await expect(restarted.f.host.codingValue(run, restarted.f.signal)).rejects.toThrow(
+				"COMPANY_MACHINE_CODING_VALUE_FAILED",
+			);
+			expect(restarted.calls).toHaveLength(2);
+			expect(errors).not.toHaveBeenCalled();
+		} finally {
+			errors.mockRestore();
+		}
+	});
 });

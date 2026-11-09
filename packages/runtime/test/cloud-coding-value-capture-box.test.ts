@@ -6,7 +6,9 @@ import {
 	codingValueMatches,
 	codingValuePattern,
 	openCodingValueCapture,
+	openCodingValueMachineCapture,
 	sealCodingValueCapture,
+	sealCodingValueMachineCapture,
 } from "@qorpera/runtime/cloud-coding-value-capture-box";
 import {
 	EVENT_HOOK_CAPTURE_LIFETIME_MS,
@@ -203,5 +205,71 @@ describe("a service's pattern", () => {
 		expect([...`Secret key ${key} Copy`.matchAll(finder)].map((match) => match[0])).toEqual([key]);
 		expect([...`NAME=${key}`.matchAll(finder)].map((match) => match[0])).toEqual([key]);
 		expect([...`desk_live_${"Ab1".repeat(10)}`.matchAll(finder)]).toEqual([]);
+	});
+});
+
+// 20260930705000: a key off a company machine's clipboard (save_coding_value) goes in the same box under its own schemas
+// and info, bound to the machine, its placement and its boot, and naming no site.
+describe("coding value machine box", () => {
+	const machine = {
+		companyId: identity.companyId,
+		companyMachineId: "79900000-0000-4000-8000-000000000040",
+		placementId: "79900000-0000-4000-8000-000000000050",
+		bootId: "79900000-0000-4000-8000-000000000060",
+		receiptId: identity.receiptId,
+		service: "npm",
+		variable: "npm_token",
+	};
+	const openMachine = (key: ReturnType<typeof recipient>, box: unknown, expected = machine, at = now + 1000) =>
+		openCodingValueMachineCapture(
+			key.privateKey,
+			key.publicKey,
+			box,
+			expected,
+			async (got) => ({ ...got, value: got.value.toString("utf8") }),
+			at,
+		);
+
+	it("opens only as a machine's box, for exactly that machine's boot and call, never as an office's", async () => {
+		const key = recipient();
+		const box = sealCodingValueMachineCapture(token, npm, key.publicKey, machine, now);
+		expect(box.schema).toBe("qorpera.coding-value-machine-box/v1");
+		expect(JSON.stringify(box)).not.toContain(token.slice(4));
+		expect(await openMachine(key, box)).toEqual({ value: token, capturedAtMs: now });
+		for (const other of [
+			{ bootId: "79900000-0000-4000-8000-000000000061" },
+			{ placementId: "79900000-0000-4000-8000-000000000051" },
+			{ companyMachineId: "79900000-0000-4000-8000-000000000041" },
+			{ receiptId: "79900000-0000-4000-8000-000000000031" },
+			{ variable: "npm_auth_token" },
+		])
+			await expect(openMachine(key, box, { ...machine, ...other }), JSON.stringify(other)).rejects.toThrow(
+				/Coding value machine capture/,
+			);
+		await expect(openMachine(recipient(), box)).rejects.toThrow("does not open here");
+		// The two kinds never open as each other, even for one call.
+		await expect(opened(key, box)).rejects.toThrow("Coding value capture box is malformed");
+		const office = sealCodingValueCapture(capture, npm, key.publicKey, identity, now);
+		await expect(openMachine(key, office)).rejects.toThrow("Coding value machine capture box is malformed");
+		await expect(openMachine(key, { ...office, schema: "qorpera.coding-value-machine-box/v1" })).rejects.toThrow(
+			"does not open here",
+		);
+		// Read too long ago.
+		await expect(openMachine(key, box, machine, now + EVENT_HOOK_CAPTURE_LIFETIME_MS + 1)).rejects.toThrow(
+			"Coding value machine capture expired",
+		);
+	});
+
+	it("seals only a whole key of the service, for a well-formed machine identity", () => {
+		const key = recipient();
+		expect(() => sealCodingValueMachineCapture(`${token}x`, npm, key.publicKey, machine, now)).toThrow(
+			"Coding value machine capture value is malformed",
+		);
+		expect(() =>
+			sealCodingValueMachineCapture(token, npm, key.publicKey, { ...machine, bootId: "boot" }, now),
+		).toThrow("Coding value machine capture identity is malformed");
+		expect(() =>
+			sealCodingValueMachineCapture(token, npm, key.publicKey, { ...machine, service: "NPM" }, now),
+		).toThrow("Coding value machine capture identity is malformed");
 	});
 });

@@ -33,7 +33,7 @@ import {
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
-import type { LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
+import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -67,6 +67,22 @@ const DELIVERY_MS = 30000;
 /** A start on a machine with a folder runs in its guest only on the boot it was let in on (`$0`): the guest's shell
  * compares the kernel's boot id at the exec, then runs the helper (`$@`). The helper's own start takes no boot. */
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
+/** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
+ * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
+export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
+/** The helper runs only on the boot SQL named (`$0`; else exit 97) and only where the image has it (`$2`; else exit 98,
+ * an earlier image: the machine gets it once it sleeps and wakes from the current one). */
+const CODING_VALUE_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"';
+/** One JSON line: a box (five base64url parts) or a refusal's code. */
+const CODING_VALUE_OUTPUT_BYTES = 16384;
+/** The helper reads the clipboard and clears it, each xsel killed after 4 s (cloud-machine-coding-value.ts,
+ * MACHINE_XSEL_MS; the clears side by side): about 8 s, so its own clear runs well before this deadline, which is inside
+ * the gateway's 30 s. */
+const CODING_VALUE_MS = 20000;
+/** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
+ * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
+const CODING_VALUE_CLEAR_MS = 10000;
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
 const LOG_LIMIT_BYTES = 67108864;
 /** One NAS storage check's own bound, as the coding host's. It runs from the check's start: the wait for the checks
@@ -161,7 +177,8 @@ export interface CompanyMachineHostOptions {
 		| "pushInstanceFile"
 		| "execInstance"
 	> &
-		Partial<LxdInstanceExecStreamClient>;
+		Partial<LxdInstanceExecStreamClient> &
+		Partial<LxdInstanceExecPipeClient>;
 	/** The node's folder service (F3 6d): each boot of a test machine gets its own company folder view, its commands'
 	 * windows and boundaries go through it, and their output leaves only once the machine's reads are released. Without
 	 * it, machines run without /company. It needs the client's execInstanceStream (the view's hand-over). */
@@ -183,6 +200,10 @@ export interface CompanyMachineHostOptions {
 	passHoldMs?: number;
 	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
 	agentPlug?: AgentPlug;
+	/** How long save_coding_value's helper may run (default 20 s), and the executor's own clear after it (10 s): the
+	 * tests' own shorter ones. */
+	codingValueTimeoutMs?: number;
+	codingValueClearTimeoutMs?: number;
 }
 
 /** One placement of a machine as SQL lists it for this executor
@@ -232,6 +253,19 @@ export interface CompanyMachineCommandAuthority {
 	/** Why the machine lost the command, when SQL ended it lost for the machine's folder (6e-2a): a key of CLOUD_MACHINE_FOLDER_LOST. */
 	folderLost?: string | null;
 }
+/** save_coding_value's run on a machine of this node (20260930705000), as SQL authorized it
+ * (qorpera_authorize_machine_coding_value): where it runs, and the helper's target, given to the helper as SQL wrote it. */
+export interface CompanyMachineCodingValue {
+	placementId: string;
+	bootId: string;
+	receiptId: string;
+	target: Record<string, unknown>;
+}
+/** The helper's answer: the box it sealed the key in, or why it sealed nothing (its code). */
+export type CompanyMachineCodingValueOutcome =
+	| { readonly box: Readonly<Record<string, string>> }
+	| { readonly refused: string };
+
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
 	bootId: string;
@@ -1669,6 +1703,128 @@ export class LxdCompanyMachineHost {
 	/** The steps still running, once they ended. */
 	async settled(): Promise<void> {
 		await Promise.allSettled([...this.#work.values()]);
+	}
+
+	/**
+	 * save_coding_value (20260930705000): the image's clipboard helper on a machine of this node, as root, on exactly the
+	 * boot SQL named, with SQL's target on its stdin. It reads the desktop's clipboard, seals the one key of the service
+	 * in it to the value's capture key and clears the clipboard; its stdout (one JSON line: the box or a refusal code) is
+	 * read here within its bound and never logged, and its stderr is dropped. LXD records no output. It runs once: a
+	 * failure is the call's, never run again.
+	 *
+	 * A run that did not end cleanly (the request cancelled or past its deadline, which kills the helper, a failed exit,
+	 * an answer lost or not the helper's) may have left the key on the clipboard, which Chromium keeps owning: the
+	 * executor then clears it itself (#clearCodingValue), on the same boot, whatever ended the run.
+	 */
+	async codingValue(run: CompanyMachineCodingValue, signal: AbortSignal): Promise<CompanyMachineCodingValueOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
+		if (![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)))
+			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
+		let clean = false;
+		try {
+			const outcome = await this.#runCodingValue(pipe, run, signal);
+			clean = true;
+			return outcome;
+		} finally {
+			if (!clean) await this.#clearCodingValue(pipe, run);
+		}
+	}
+	/** One run of the helper and its answer. Another boot (exit 97) and an earlier image (98) never ran it. */
+	async #runCodingValue(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineCodingValue,
+		signal: AbortSignal,
+	): Promise<CompanyMachineCodingValueOutcome> {
+		const result = await pipe(
+			this.#policy.project,
+			lxdCompanyMachineName(run.placementId),
+			{
+				command: [
+					"/bin/sh",
+					"-c",
+					CODING_VALUE_ON_BOOT,
+					run.bootId,
+					"/usr/bin/node",
+					COMPANY_MACHINE_CODING_VALUE_HELPER,
+				],
+				environment: {},
+				cwd: "/",
+				stdin: Buffer.from(JSON.stringify(run.target), "utf8"),
+				maxStdoutBytes: CODING_VALUE_OUTPUT_BYTES,
+				stderrTailBytes: 0,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(this.#options.codingValueTimeoutMs ?? CODING_VALUE_MS)]),
+		);
+		if (result.exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
+		if (result.exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
+		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_CODING_VALUE_FAILED");
+		let output: Record<string, unknown>;
+		try {
+			output = record(
+				JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(result.stdout)),
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			);
+		} catch {
+			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
+		}
+		const keys = Object.keys(output).sort().join();
+		if (output.schema === "qorpera.machine-coding-value-refusal/v1" && keys === "code,schema") {
+			if (typeof output.code !== "string" || !/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code))
+				throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
+			return { refused: output.code };
+		}
+		const box = output.box;
+		if (
+			output.schema !== "qorpera.machine-coding-value-box/v1" ||
+			keys !== "box,schema" ||
+			!box ||
+			typeof box !== "object" ||
+			Array.isArray(box) ||
+			Object.keys(box).sort().join() !== "ciphertext,ephemeralPublicKey,iv,schema,tag" ||
+			Object.values(box).some((part) => typeof part !== "string" || !/^[A-Za-z0-9_./-]{1,8192}$/.test(part))
+		)
+			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
+		return { box: Object.freeze({ ...(box as Record<string, string>) }) };
+	}
+	/** The executor's own clear of the machine's clipboard and primary selection: the same packaged helper with
+	 * `--clear-only`, on the run's boot only (another boot's clipboard went with it: exit 97, nothing to do), under its
+	 * own deadline and never the request's signal. It never throws; a failure is logged as a fixed word alone. */
+	async #clearCodingValue(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineCodingValue,
+	): Promise<void> {
+		try {
+			const cleared = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(run.placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						CODING_VALUE_ON_BOOT,
+						run.bootId,
+						"/usr/bin/node",
+						COMPANY_MACHINE_CODING_VALUE_HELPER,
+						"--clear-only",
+					],
+					environment: {},
+					cwd: "/",
+					maxStdoutBytes: 4096,
+					stderrTailBytes: 0,
+				},
+				AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
+			);
+			if (cleared.exitCode === 97) return;
+			if (
+				cleared.exitCode !== 0 ||
+				new TextDecoder("utf8", { fatal: true }).decode(cleared.stdout).trim() !==
+					JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })
+			)
+				throw new Error("COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED");
+		} catch {
+			console.error("COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED");
+		}
 	}
 
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
