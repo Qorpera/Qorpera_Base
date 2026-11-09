@@ -56,7 +56,12 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function page(members: HostedProfileMember[], read: WorksFor, staffList: HostedStaffAgent[] = [cofounder, ...crew]) {
+function page(
+	members: HostedProfileMember[],
+	read: WorksFor,
+	staffList: HostedStaffAgent[] = [cofounder, ...crew],
+	reader: () => Promise<WorksFor> = async () => read,
+) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	controller.store.set({
@@ -67,7 +72,7 @@ function page(members: HostedProfileMember[], read: WorksFor, staffList: HostedS
 	});
 	cleanup.push(() => controller.stop());
 	const calls: WorksForCalls = {
-		read: vi.fn(async () => read),
+		read: vi.fn(reader),
 		ask: vi.fn(async () => ({ moved: false, askId: id(90) })),
 		answer: vi.fn(async () => ({ status: "yes" as const, moved: true })),
 	};
@@ -148,7 +153,9 @@ describe("the Members page", () => {
 		});
 		const { container, calls } = page([ann, sofie], read);
 		await settle();
-		expect(container.querySelector(".members-ask")?.textContent).toContain("Sofie asks you to take Clara.");
+		expect(container.querySelector(".members-ask")?.textContent).toContain(
+			"Sofie asks you to take Clara. Your ChatGPT then carries the work handed to Clara.",
+		);
 		expect(agentButton(container, "Clara")?.disabled).toBe(true);
 		expect(container.textContent).toContain("Waiting for you");
 		click(container, "Yes");
@@ -185,6 +192,37 @@ describe("the Members page", () => {
 		await settle();
 		expect(agentButton(container, "Bo")?.disabled).toBe(true);
 		expect(container.querySelector(".members-suggest")).toBeNull();
+	});
+
+	it("never draws a late answer over the view that took the page's place", async () => {
+		let answer: (value: WorksFor) => void = () => {};
+		const late = new Promise<WorksFor>((resolve) => {
+			answer = resolve;
+		});
+		const { container } = page([ann, sofie], works(), [cofounder, ...crew], () => late);
+		expect(container.querySelector(".members-page")).not.toBeNull();
+		// The app shows a conversation in the same container; the read answers afterwards.
+		container.replaceChildren(document.createElement("section"));
+		container.firstElementChild!.textContent = "a conversation";
+		answer(works());
+		await settle();
+		expect(container.textContent).toBe("a conversation");
+	});
+
+	it("keeps the seat of a member made a viewer while agents work for them, and sends them nothing", async () => {
+		const viewer = { ...sofie, role: "viewer" as const };
+		const read = works({
+			agents: crew.map((entry) => ({ agentId: entry.id, userId: entry.id === id(41) ? sofie.userId : userA.id })),
+		});
+		const { container } = page([ann, viewer], read);
+		await settle();
+		expect(
+			[...container.querySelectorAll(".members-mat")].map((mat) => mat.querySelector(".members-who b")?.textContent),
+		).toEqual(["Ann (you)", "Sofie Lund"]);
+		agentButton(container, "Clara")?.click();
+		expect([...container.querySelectorAll(".members-move button")].map((button) => button.textContent)).toEqual([
+			"Cancel",
+		]);
 	});
 
 	it("puts agents that work for nobody in the open pile", async () => {

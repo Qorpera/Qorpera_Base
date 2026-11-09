@@ -20,7 +20,10 @@
 --   and each member's login state as co-founders already see it at the founding table: connected or not, a new sign-in
 --   needed, how much of the login's usage window is used, and when a used-up login resets. Never an email or account.
 -- * A member who leaves: the agents that worked for them work for nobody, and the asks that involve them are void.
--- Locks: two new tables; a trigger on qorpera_profile_members (after delete). Every body carries 20260930700000.
+-- Locks: an ask and an answer take the company's member rows FOR SHARE first (in user order), then the ask, then the
+-- agent's staff row: a member leaving (a delete of their row, whose trigger clears their agents and asks) waits for
+-- them or goes first, never in between, and the two never wait on each other the other way round. Two new tables; a
+-- trigger on qorpera_profile_members (after delete). Every body carries 20260930700000.
 
 create table public.qorpera_agent_works_for (
 	profile_id uuid not null,
@@ -51,8 +54,8 @@ create table public.qorpera_agent_works_for_asks (
 	answered_at timestamptz,
 	foreign key (profile_id, staff_agent_id)
 		references public.qorpera_profile_staff(profile_id, staff_agent_id) on delete cascade,
-	check ((status = 'open') = (answered_at is null)),
-	check (asked_by_user_id is not null or asked_by_staff_agent_id is not null)
+	-- Who asked may be gone from both columns once a deleted account cleared it.
+	check ((status = 'open') = (answered_at is null))
 );
 create unique index qorpera_agent_works_for_asks_one_open
 	on public.qorpera_agent_works_for_asks(profile_id, staff_agent_id) where status = 'open';
@@ -164,6 +167,16 @@ end $$;
 revoke all on function public.qorpera_read_works_for(uuid) from public, anon;
 grant execute on function public.qorpera_read_works_for(uuid) to authenticated;
 
+-- Holds the company's members as they are until the transaction ends: a member who leaves meanwhile waits. Internal.
+create function public.qorpera_works_for_hold_members(p_profile_id uuid)
+returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+	-- 20260930700000
+	perform 1 from public.qorpera_profile_members where profile_id = p_profile_id order by user_id for share;
+end $$;
+revoke all on function public.qorpera_works_for_hold_members(uuid) from public, anon, authenticated, service_role;
+
 -- Moves the agent to the member, recording when. Internal.
 create function public.qorpera_works_for_move(p_profile_id uuid, p_staff_agent_id uuid, p_user_id uuid)
 returns void
@@ -195,6 +208,7 @@ begin
 		raise exception 'A viewer cannot move agents' using errcode = '42501'; end if;
 	if p_staff_agent_id is null or p_to_user_id is null then
 		raise exception 'agent and member are required' using errcode = '22023'; end if;
+	perform public.qorpera_works_for_hold_members(p_profile_id);
 	select member.role into v_to_role from public.qorpera_profile_members as member
 		where member.profile_id = p_profile_id and member.user_id = p_to_user_id;
 	if v_to_role is null or v_to_role = 'viewer' then
@@ -241,9 +255,11 @@ begin
 	-- 20260930700000
 	if v_actor is null then raise exception 'authentication required' using errcode = '42501'; end if;
 	if p_ask_id is null or p_yes is null then raise exception 'ask and answer are required' using errcode = '22023'; end if;
-	select * into v_ask from public.qorpera_agent_works_for_asks where id = p_ask_id for update;
+	select * into v_ask from public.qorpera_agent_works_for_asks where id = p_ask_id;
 	if not found or public.qorpera_member_role(v_ask.profile_id) is null then
 		raise exception 'That ask is not here' using errcode = '42501'; end if;
+	perform public.qorpera_works_for_hold_members(v_ask.profile_id);
+	select * into v_ask from public.qorpera_agent_works_for_asks where id = p_ask_id for update;
 	if v_ask.status <> 'open' then
 		return jsonb_build_object('status', v_ask.status, 'moved', false); end if;
 	if v_actor = v_ask.answer_by_user_id then

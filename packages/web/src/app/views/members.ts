@@ -90,8 +90,11 @@ export function renderMembers(container: HTMLElement, company: CompanyController
 		pages.set(container, fresh);
 		void read(container, fresh);
 		fresh.timer = setInterval(() => {
-			if (!container.isConnected || pages.get(container) !== fresh || company.signal.aborted) {
+			// The page ends when another view took its container (the app reuses it), the container left the document or
+			// the company stopped; coming back draws a new one.
+			if (!showing(container, fresh) || company.signal.aborted) {
 				clearInterval(fresh.timer);
+				if (pages.get(container) === fresh) pages.delete(container);
 				return;
 			}
 			void read(container, fresh);
@@ -109,6 +112,15 @@ export function worksForCount(company: CompanyController): number | undefined {
 	return lastRead.get(company)?.agents.filter((agent) => agent.userId === company.userId).length;
 }
 
+/** Whether the container still shows this page: its own section is the container's, and nothing else took it. */
+function showing(container: HTMLElement, page: Page): boolean {
+	return (
+		pages.get(container) === page &&
+		container.isConnected &&
+		drawn.get(container)?.element === container.firstElementChild
+	);
+}
+
 async function read(container: HTMLElement, page: Page): Promise<void> {
 	try {
 		page.data = await page.company.worksFor().read();
@@ -117,7 +129,8 @@ async function read(container: HTMLElement, page: Page): Promise<void> {
 	} catch (error) {
 		page.error = error instanceof Error ? error.message : String(error);
 	}
-	if (pages.get(container) === page && container.isConnected) draw(container, page);
+	// An answer that comes after the member went to another view draws nothing over it.
+	if (showing(container, page)) draw(container, page);
 }
 
 /** Runs a call, then reads again; what it did, or why it failed, shows at the top of the page. */
@@ -192,8 +205,9 @@ function draw(container: HTMLElement, page: Page): void {
 		return;
 	}
 	const viewer = company.userId;
+	// A viewer takes no agents, but one whose agents still work for them (made a viewer later) keeps their seat.
 	const members = [...(state.team?.members ?? [])]
-		.filter((member) => member.role !== "viewer")
+		.filter((member) => member.role !== "viewer" || data.agents.some((agent) => agent.userId === member.userId))
 		.sort(
 			(a, b) => Number(b.userId === viewer) - Number(a.userId === viewer) || a.joinedAt.localeCompare(b.joinedAt),
 		);
@@ -278,7 +292,10 @@ function asksForYou(container: HTMLElement, ctx: Ctx): HTMLElement | null {
 			const agent = ctx.agentName(pending.agentId);
 			const text =
 				pending.toUserId === ctx.viewer
-					? t("{asker} asks you to take {agent}. Your ChatGPT then carries {agent}'s own work.", { asker, agent })
+					? t("{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.", {
+							asker,
+							agent,
+						})
 					: t("{asker} asks to take {agent} from you.", { asker, agent });
 			const found = ctx.company.store.get().staff.find((candidate) => candidate.id === pending.agentId);
 			return h(
@@ -629,6 +646,7 @@ function seatHead(seat: Seat, size: number): HTMLElement {
 /** Whether the viewer may ask for an agent of `from` to go to `to`. */
 function sendable(ctx: Ctx, from: string | null, to: string): boolean {
 	if (!ctx.data.mayAsk || from === to) return false;
+	if (ctx.seats.find((seat) => seat.id === to)?.member?.role === "viewer") return false;
 	return ctx.data.mayAskForOthers || to === ctx.viewer || from === ctx.viewer;
 }
 
