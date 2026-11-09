@@ -89,6 +89,23 @@ interface Drag {
 	};
 }
 
+/** Where `item` is laid out, on screen: from its layout offsets, which no transform, `translate` or animation moves
+ * (the drawer's opening scale, a glide), placed by the grid's own box. */
+export function layoutSlot(grid: HTMLElement, item: HTMLElement): DOMRect {
+	const frame = grid.getBoundingClientRect();
+	// An icon measures from the grid when the grid is positioned, else from the parent they share.
+	const base =
+		item.offsetParent === grid
+			? { x: -grid.clientLeft, y: -grid.clientTop }
+			: { x: grid.offsetLeft, y: grid.offsetTop };
+	return new DOMRect(
+		frame.left + item.offsetLeft - base.x,
+		frame.top + item.offsetTop - base.y,
+		item.offsetWidth,
+		item.offsetHeight,
+	);
+}
+
 const inside = (r: DOMRect, x: number, y: number) => x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 
 /** Makes the icons in `grid` reorderable. Listeners live until `signal` aborts. */
@@ -174,14 +191,16 @@ export class AppGridDrag {
 				this.#drag = undefined;
 				return;
 			}
-			// An earlier move may still be gliding: its icons jump to where they stand, so the places are measured true.
+			// An earlier move may still be gliding: its icons jump to where they stand. The places are their layout
+			// boxes, so neither a glide nor the drawer's opening scale can skew them.
 			for (const animation of [...this.#moving]) animation.finish();
 			this.#moving.clear();
-			const rect = item.getBoundingClientRect();
+			const slots = items.map((candidate) => layoutSlot(this.#grid, candidate));
+			const rect = slots[items.indexOf(item)]!;
 			drag.lifted = {
 				item,
 				offset: { x: drag.start.x - rect.left, y: drag.start.y - rect.top },
-				slots: items.map((candidate) => candidate.getBoundingClientRect()),
+				slots,
 				before: items.map(keyOf),
 			};
 			item.classList.add("is-lifted");

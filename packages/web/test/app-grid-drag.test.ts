@@ -16,6 +16,18 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+/** The layout jsdom lacks: four to a row, 50 × 60, measured from the grid (as a positioned grid's icons are). */
+function layOut(element: HTMLElement, icon: HTMLElement) {
+	const index = () => [...element.children].indexOf(icon);
+	Object.defineProperties(icon, {
+		offsetParent: { get: () => element },
+		offsetLeft: { get: () => (index() % 4) * 50 },
+		offsetTop: { get: () => Math.floor(index() / 4) * 60 },
+		offsetWidth: { get: () => 50 },
+		offsetHeight: { get: () => 60 },
+	});
+}
+
 function grid(keys: readonly string[]) {
 	const element = h("div", { class: "rail-apps-grid" });
 	for (const key of keys) {
@@ -24,6 +36,7 @@ function grid(keys: readonly string[]) {
 			const index = [...element.children].indexOf(icon);
 			return new DOMRect((index % 4) * 50, Math.floor(index / 4) * 60, 50, 60);
 		});
+		layOut(element, icon);
 		element.append(icon);
 	}
 	vi.spyOn(element, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 120));
@@ -222,6 +235,7 @@ describe("the apps drawer's order", () => {
 		pointer("pointerdown", 25, 30, pressed);
 		// A new badge rebuilds the Mailbox icon before the pointer has moved far.
 		const rebuilt = h("a", { class: "rail-app", href: "#/mailbox", "data-app-key": "mailbox" }, "mailbox 1");
+		layOut(element, rebuilt);
 		vi.spyOn(rebuilt, "getBoundingClientRect").mockImplementation(() => {
 			const index = [...element.children].indexOf(rebuilt);
 			return new DOMRect((index % 4) * 50, Math.floor(index / 4) * 60, 50, 60);
@@ -324,5 +338,22 @@ describe("the apps drawer's order", () => {
 		expect(gridOrder(element)).toEqual(["bank", "members", "mailbox", "app:shop"]);
 		pointer("pointerup", 25, 30);
 		expect(drops.at(-1)).toEqual(["bank", "members", "mailbox", "app:shop"]);
+	});
+
+	it("measures the places as laid out while the drawer is still opening, its icons scaled and sliding in", () => {
+		const { element, drops, icon } = setup(["mailbox", "members", "bank", "app:shop"]);
+		// Mid-opening, every icon is drawn at 0.4 of its size and 6px up from its place.
+		for (const item of element.children)
+			vi.spyOn(item as HTMLElement, "getBoundingClientRect").mockImplementation(() => {
+				const index = [...element.children].indexOf(item);
+				return new DOMRect((index % 4) * 50 + 15, Math.floor(index / 4) * 60 + 12, 20, 24);
+			});
+		pointer("pointerdown", 25, 30, icon("mailbox"));
+		pointer("pointermove", 35, 30);
+		// Near the third place's edge, outside the shrunken drawing but inside the place.
+		pointer("pointermove", 104, 55);
+		expect(gridOrder(element)).toEqual(["members", "bank", "mailbox", "app:shop"]);
+		pointer("pointerup", 104, 55);
+		expect(drops).toEqual([["members", "bank", "mailbox", "app:shop"]]);
 	});
 });
