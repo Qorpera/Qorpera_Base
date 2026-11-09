@@ -120,7 +120,11 @@ export function bundleLayout(metafile, { root, outdir }) {
 /** The vendored classic scripts index.html loads by a fixed name from
  * `/assets/`, which is cached for a day; each gets its content hash as a
  * query, so a deploy that changes one is fetched at once. */
-export const VENDORED_SCRIPTS = ["assets/avatars/motion-model.js", "assets/avatars/avatar-appearance.js"];
+export const VENDORED_SCRIPTS = [
+	"assets/avatars/motion-model.js",
+	"assets/avatars/light-field.js",
+	"assets/avatars/avatar-appearance.js",
+];
 
 /** Point index.html at the hashed files and preload main.js's static chunks,
  * so splitting adds no request that waits for main.js to be parsed.

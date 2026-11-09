@@ -27,10 +27,6 @@
 		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
 	});
 	const encode = (channel) => Math.round(Math.max(0, Math.min(1, channel <= .0031308 ? channel * 12.92 : 1.055 * channel ** (1 / 2.4) - .055)) * 255);
-	// Range weights for the light smoothing, indexed by a difference in stops
-	// over its range (4 ranges at most) at 256 steps per range.
-	const lightRange = .16;
-	const rangeWeights = Float32Array.from({ length: 1025 }, (_, index) => Math.exp(-.5 * (index / 256) ** 2));
 	// The material's tone ramp, sampled per 1/256 stop over the stops it reaches.
 	const toneLow = -1.6, toneHigh = .8, toneSamples = 615;
 	// The source renders' silhouettes fade over about 6 px at 512; their
@@ -66,51 +62,9 @@
 		return low;
 	}
 
-	// One smooth light field per plate, in stops. The source renders carry a
-	// paper grain; neighbors across a real crease (Planet's ring, Acorn's cap)
-	// differ by far more than the grain does, so the edge-aware passes melt
-	// the grain and keep the creases. Eyes and transparent pixels never count
-	// as neighbors, so neither brightens nor darkens the rim around them.
-	function lightField(pixels, coverage, eyes, width, height) {
-		let stops = new Float32Array(width * height);
-		for (let index = 0; index < stops.length; index++) {
-			const offset = index * 4;
-			const light = linearChannels[pixels[offset]] * .2126 + linearChannels[pixels[offset + 1]] * .7152 + linearChannels[pixels[offset + 2]] * .0722;
-			stops[index] = Math.log2(Math.max(.0001, light));
-		}
-		const scale = width / 512;
-		const radius = Math.round(9 * scale);
-		const spatial = Float32Array.from({ length: radius * 2 + 1 }, (_, index) => Math.exp(-.5 * ((index - radius) / (4.5 * scale)) ** 2));
-		for (let pass = 0; pass < 3; pass++) {
-			for (const vertical of [false, true]) {
-				const output = new Float32Array(stops.length);
-				const limit = vertical ? height : width;
-				const stride = vertical ? width : 1;
-				for (let y = 0; y < height; y++) {
-					for (let x = 0; x < width; x++) {
-						const index = y * width + x;
-						output[index] = stops[index];
-						if (!coverage[index]) continue;
-						const position = vertical ? y : x;
-						let sum = 0;
-						let total = 0;
-						for (let distance = Math.max(-radius, -position); distance <= Math.min(radius, limit - position - 1); distance++) {
-							const neighbor = index + distance * stride;
-							if (coverage[neighbor] < .5 || (eyes && eyes[neighbor])) continue;
-							const difference = Math.round(Math.abs(stops[neighbor] - stops[index]) / lightRange * 256);
-							if (difference > 1024) continue;
-							const weight = spatial[distance + radius] * rangeWeights[difference] * coverage[neighbor];
-							sum += stops[neighbor] * weight;
-							total += weight;
-						}
-						if (total) output[index] = sum / total;
-					}
-				}
-				stops = output;
-			}
-		}
-		return stops;
-	}
+	// One smooth light field per plate, in stops: light-field.js, which runs it
+	// in a worker where it can, so preparing artwork leaves the page free to draw.
+	const light = window.QORPERA_LIGHT_FIELD;
 
 	function avatar(id) {
 		const item = model.avatars.find((entry) => entry.id === id);
@@ -259,11 +213,24 @@
 		return cover;
 	}
 
+	// Prepares one plate; resolves once it can be drawn. A face plate waits for
+	// its body when the body is still being prepared.
+	const preparing = new Map();
 	function prepare(id, image) {
 		const isFace = id.endsWith("-face");
 		const figure = isFace ? id.slice(0, -5) : id;
 		avatar(figure);
-		if (originals.has(id)) return;
+		if (originals.has(id)) return Promise.resolve();
+		if (preparing.has(id)) return preparing.get(id);
+		const run = (async () => {
+			if (isFace && preparing.has(figure)) await preparing.get(figure);
+			await prepareNow(id, image, isFace, figure);
+		})().finally(() => preparing.delete(id));
+		preparing.set(id, run);
+		return run;
+	}
+
+	async function prepareNow(id, image, isFace, figure) {
 		const body = isFace ? originals.get(figure) : null;
 		// A face plate is read at its body's size; the Planet plate's larger
 		// source is resampled here, as the other six plates were when exported.
@@ -291,7 +258,8 @@
 		const silhouette = body ? body.pixels.data : pixels.data;
 		const coverage = Float32Array.from({ length: width * height }, (_, index) => silhouette[index * 4 + 3] / 255);
 		const eyes = isFace ? null : eyeCover(figure, pixels.data, width, height);
-		const stops = lightField(pixels.data, coverage, eyes, width, height);
+		const stops = light ? await light.compute(pixels.data, coverage, eyes, width, height) : null;
+		if (!stops) throw new Error("Avatar light field unavailable");
 		// Anchor the ramp to the body's median light, so a body and its plate
 		// meet without a seam.
 		const lights = [];
